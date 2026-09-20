@@ -1,9 +1,9 @@
 ---
-'@substrat-run/contracts': patch
-'@substrat-run/kernel': patch
-'@substrat-run/adapter-sqlite': patch
-'@substrat-run/adapter-cloudflare': patch
-'@substrat-run/contract-tests': patch
+'@substrat-run/contracts': minor
+'@substrat-run/kernel': minor
+'@substrat-run/adapter-sqlite': minor
+'@substrat-run/adapter-cloudflare': minor
+'@substrat-run/contract-tests': minor
 ---
 
 A refused permission check now records which request it happened during, so a denial can be looked at beside everything else that call did.
