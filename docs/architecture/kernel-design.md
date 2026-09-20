@@ -97,8 +97,15 @@ interface Scope {
   name: string;
   status: 'provisioning' | 'active' | 'suspended' | 'archiving' | 'archived';
   storageShape: 'A' | 'B';    // §5.2; fixed at provisioning, migration is explicit
-  jurisdiction: 'eu' | null;  // CF DO jurisdiction; fixed at creation — a DO can
-                              // never relocate. 'eu' default for our markets (§7.3)
+  jurisdiction: 'eu' | 'us' | 'global';  // fixed at creation — a DO can never
+                              // relocate. Non-null, defaulting to 'global' (K-32): the
+                              // old `null` meant "unconstrained" and "nobody decided" at
+                              // once. The storable set is complete ahead of enforcement
+                              // because the value is immutable; what the provisioning
+                              // boundary ACCEPTS is the narrower
+                              // `provisionableJurisdiction` — 'global' alone today, since
+                              // 'eu'/'us' would record a residency guarantee with no
+                              // mechanism behind it (§7.3)
   schemaVersion: string;      // last applied migration journal entry (§6 below)
   createdAt: Instant;
 }
@@ -1173,6 +1180,17 @@ externalization convention is day one; translations are not).
     proofs already issued against a since-revoked edge. That half does not block
     membership revocation, which has no re-parenting analogue.
 
+    **It now has a consumer with a date on it.** Canopy, D-17's consumer #2, models
+    containment as a virtual path and therefore moves a file by rewriting a string — its
+    folder grants follow because they were never edges
+    ([canopy-scope-mapping.md §5](canopy-scope-mapping.md)). Re-platforming it onto
+    manifest-declared parent edges would take a working capability away, so the option
+    this question calls cheapest — *"requiring verticals to model movable containment as
+    vertical data rather than as a parent edge"* — is the one canopy already exercises, and
+    adopting it here means a drive whose reorganisations are invisible to the permission
+    model. That is the trade to argue when this closes, with a real product on the other
+    side of it rather than a thought experiment.
+
 16. **Consumer dispatch routes on event *type* alone, so D-28's dual-emit deprecation
     window is unimplementable — and actively dangerous.** D-28 says a real change to a
     shipped payload means a `schemaVersion` bump plus dual-emit through a deprecation
@@ -1217,6 +1235,64 @@ externalization convention is day one; translations are not).
     erasure — is what would make commerce-gaps §4.2's side-table placement safe, and it is
     tracked separately. Until it lands, D-27's guarantee-surface test still argues against
     putting a customer address in a vertical side table.
+
+18. **A principal who belongs to N scopes has no read path for the screen that lists them
+    — and no way to be told when one of them changes.** §5.6 offers three read paths and
+    §5.4 closes the fourth: in-scope reads are one hop by definition, an outbox-fed read
+    model cannot carry read-your-writes across the boundary, Tier 2 is *"never a UI list
+    view"*, and *"fleet questions never fan out."* Yet a "shared with me" screen is
+    cross-scope by construction, and it is the FIRST screen of any product whose unit of
+    sharing is the scope. A vertical can of course fan out from its own worker — N stub
+    calls merged in the host — and that is what every such screen will do. Nothing names
+    it as a sanctioned pattern, gives it a page contract, bounds the fan-out, or says what
+    happens when one scope in the set is suspended, mid-migration or cold. Each of those
+    answers will therefore be invented per screen, differently. Two adjacent gaps belong
+    with it because they are plausibly one mechanism. First, **there is no scope-wide
+    "everything since watermark N" read**: `readTimeline`/`readHistory` are per-`EntityRef`
+    (`packages/kernel/src/timeline.ts`), and the outbox is walked scope-wide only by the
+    platform drain — so `callout/timeline` hand-rolls the walk under rule 3's projection
+    permission, and an offline mirror would have to. Second, **there is no subscribe
+    surface at all**: no WebSocket, no `text/event-stream` and no push anywhere in
+    `packages/kernel`, `packages/adapter-cloudflare` or `packages/vertical-host`. The
+    ScopeDO could hold hibernatable WebSockets and a vertical cannot reach the namespace
+    to use them (K-8), so the honest options are polling or a second DO class beside the
+    scope — a vertical building its own coordination plane, which is the shape the kernel
+    exists to prevent. Raised by [canopy-scope-mapping.md §3](canopy-scope-mapping.md),
+    where a drive's sidebar, its search and its offline delta feed are all this question;
+    `demos/todo`'s shared lists avoid it only because every list lives in one scope. Decide
+    before the second vertical invents its own answer.
+19. **A tuple whose subject is another scope has no store.** §4.2 places tuples
+    scope-locally, *"with the tenant-level slice cached from the tenant-root DO"*, and that
+    locality is exactly what buys check-after-write consistency and a tractable `explain`:
+    a revoked tuple is invisible to the very next operation because there is only one
+    serialization domain to be revoked in. A group-of-groups edge — *members of scope S are
+    members of scope T* — belongs to neither scope's domain. K-22 answered the same
+    question for **membership** by moving it to the directory and reaching it through a
+    connector rather than `ctx`, and gave the reason: an in-scope write of a tenant-wide
+    fact is a cross-DO write inside a scope transaction. Whether a scope-as-subject edge
+    gets that same answer, is remodelled as an org (K-22's `OrgId`), or is refused outright
+    is decided nowhere. The proof-path guarantee is what makes it non-trivial: a chain that
+    crosses a scope boundary must be assembled from two stores, and a revocation on one
+    side must be visible to the other's next operation. Raised by
+    [canopy-scope-mapping.md §6](canopy-scope-mapping.md), whose access control nests
+    spaces recursively today. Couples with question 15 — canopy also deletes tuples, and
+    the kernel has no edge revocation of any kind.
+20. **Content-addressed dedup does not survive scope isolation, and the trade has never
+    been written down.** `attachmentBlobKey` is `scope/<scopeId>/<attachmentId>` with a
+    fresh ULID per upload (`packages/kernel/src/scope-host.ts`), so keys are scope-prefixed
+    and write-once — the two properties the attachment integrity story rests on. The
+    consequence is that there is no dedup anywhere: not across scopes, and not even within
+    one, where the same bytes uploaded twice are stored twice. For entity-attached files on
+    a work order that is a rounding error and the integrity property is clearly worth more.
+    For a documents product it is the storage bill — the same PDF filed into twenty scopes
+    is twenty objects — and it is the kind of number discovered in production rather than
+    in review. The three-way trade (dedup versus write-once keys versus what a delete in
+    one scope means for bytes another scope references) has never been stated, because
+    nothing has needed it. Raised by [canopy-scope-mapping.md §6](canopy-scope-mapping.md),
+    which refcounts blobs globally by `sha256` today. Decide with D-17's documents service
+    (question: does the dedup boundary become the per-tenant blob store, and does that make
+    cross-tenant dedup a thing we deliberately refuse?), not before — but decide it there
+    rather than discovering it.
 
 ### 13.1 The answer to question 17, in full: what subject erasure reaches (#37)
 
