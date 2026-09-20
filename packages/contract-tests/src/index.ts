@@ -10,6 +10,7 @@ export { concurrencyContractSuite } from './concurrency-suite.js';
 export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
+export { jobRunContractSuite } from './job-run-suite.js';
 export { inputParseContractSuite } from './input-parse-suite.js';
 export { spineGuardContractSuite } from './spine-guard-suite.js';
 export { grantExpiryContractSuite } from './grant-expiry-suite.js';
@@ -38,6 +39,7 @@ export {
   liveModManifest,
   permMod,
   scheduleMod,
+  jobsMod,
   testMod,
   freshnessMod,
   searchMod,

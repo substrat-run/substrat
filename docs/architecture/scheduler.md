@@ -228,3 +228,20 @@ alarms. Start with the latter — retry is the higher-frequency, more latency-se
 
 Step 1 is landed. Step 2 is the only thing between here and an autonomous connector, and it waits
 on a deployed vertical, not on more platform code. The rest is scale and latency, each additive.
+
+## 6. The fourth driver, and why it is not in the sweep yet
+
+`runDueJobs` (#1577) is a driver of the same class as `drainDue` and `runDueSchedules`: a
+per-scope unit of work, idempotent, safe when nothing is due, reporting rather than throwing.
+It covers the one shape the three above cannot — work that must stop halfway through an hour
+and carry on from a committed cursor rather than starting again.
+
+It is **deliberately not a phase of `runPlatformSweep` yet**, and the reason is the same one
+§1 gives for not inventing a timer per feature, read the other way round. A sweep phase only
+does something if runs exist, and a run only exists because something called `startJobRun` —
+which nothing does. Wiring the phase first would add an enumeration and a report field to
+every pass in the fleet in exchange for a loop that finds nothing, and would fix the driver's
+budget (how many runs, how many passes per tick) before a single real walk has said what that
+budget should be. The first real consumer is what settles both, and there is not one yet — the
+nearest candidate shape, a file-bearing source, is itself still unproven (#1578). Until then
+the driver is called by whoever started the run.

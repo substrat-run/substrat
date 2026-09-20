@@ -288,6 +288,21 @@ import {
   SCHEDULE_STATE_DDL,
   SCHEDULE_STATE_REBUILD,
   scheduleStateHasKind,
+  JOB_RUN_DDL,
+  jobRunListLimit,
+  jobRunOf,
+  runDueJobRuns,
+  startJobRun,
+  type JobDriveReport,
+  type JobHandler,
+  type JobRun,
+  type JobRunFilter,
+  type JobRunKey,
+  type JobRunPatch,
+  type JobRunRow,
+  type JobRunStore,
+  type JobStepRow,
+  type StartJobRunInput,
   type EntityVersion,
   type EntityVersionRow,
   type InvokeOptions,
@@ -567,6 +582,12 @@ const KERNEL_DDL = `
   -- the copies the gate could not see. Every scope db passes through runtime(), which
   -- runs this, so the lazy creates were load-bearing for nothing.
   ${SCHEDULE_STATE_DDL}
+  -- #1577: the resumable-run driver's record and the step ledger of the pass it
+  -- currently has in flight. Spine (kernel-written), never a module migration.
+  -- Shared with the DO adapter from @substrat-run/kernel so the shape a self-host
+  -- builds and the shape production builds cannot part company; the column
+  -- comments, and the reason coalescing is NOT a unique index, are in there.
+  ${JOB_RUN_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
     module_id TEXT NOT NULL,
     version TEXT NOT NULL,
@@ -1207,6 +1228,13 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly roles = new Map<string, RoleDefinition>(); // 'tenantId/roleKey'
   /** Executor id → {eventType, handler} (K-22 §4.2). Host code, not module code. */
   private readonly executors = new Map<string, RegisteredEffector>();
+  /**
+   * `<moduleId>/<job>` → the pass body and its default step policy (#1577). Host
+   * code like `executors`, and keyed the way a run row is: the coalescing key's
+   * first two thirds, so a run picked off the table finds its handler by the
+   * columns it already carries.
+   */
+  private readonly jobs = new Map<string, { handler: JobHandler; retry?: ExecutorRetryPolicy }>();
   /**
    * The event currently being effected by an executor, stamped onto any admin rows
    * it writes. Ambient rather than threaded through every HostAdmin signature: it is
@@ -3782,6 +3810,186 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     return rt.actor.enqueue(() => this.dispatchExecutors(rt));
+  }
+
+  registerJob(
+    moduleId: ModuleId,
+    name: string,
+    handler: JobHandler,
+    retry?: ExecutorRetryPolicy,
+  ): void {
+    const key = `${moduleId}/${name}`;
+    if (this.jobs.has(key)) throw new Error(`job '${key}' is already registered`);
+    this.jobs.set(key, { handler, retry });
+  }
+
+  /**
+   * D-14's in-process driver: the run store is direct SQL on the scope db.
+   *
+   * **The PASS stays outside the actor; every STORE OPERATION takes a turn on it.**
+   * That split is the whole of the concurrency design here, and the first cut got
+   * the second half wrong — it ran these statements on `rt.db` with no turn at all,
+   * under a comment claiming they "interleave exactly as any other write does".
+   * They do not. `invoke` opens a raw `BEGIN IMMEDIATE` on this same connection and
+   * HOLDS IT ACROSS AWAITS (its guards, its handler), so a job-store statement
+   * issued while some unrelated request was mid-operation landed INSIDE that
+   * request's transaction — and rolled back with it. A step whose effect had
+   * already happened would lose its ledger row and run a second time, for no reason
+   * connected to the job at all.
+   *
+   * A turn each is the fix, and it keeps the property the original comment wanted:
+   * a pass may take an hour, and holding the scope's lock for it would stop every
+   * request on that scope, so the pass itself is never enqueued. Only the short
+   * writes are. Nothing nests — a store operation never invokes, and the `invoke`s
+   * a pass makes through `pass.scope()` take their own separate turns — so there is
+   * no path by which this can deadlock against itself.
+   */
+  private jobStore(rt: ScopeRuntime): JobRunStore {
+    const db = rt.db;
+    const row = (v: unknown): JobRunRow | null => (v as JobRunRow | undefined) ?? null;
+    const findLive = db.prepare(
+      `SELECT * FROM _substrat_job_runs
+        WHERE module_id = ? AND job = ? AND instance = ? AND status = 'running'
+        ORDER BY id DESC LIMIT 1`,
+    );
+    const insertRun = db.prepare(
+      `INSERT INTO _substrat_job_runs
+         (id, module_id, job, instance, payload, status, cursor, counters, attempts,
+          last_error, started_at, updated_at, next_attempt_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const patchRun = db.prepare(
+      `UPDATE _substrat_job_runs
+          SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
+              updated_at = ?, next_attempt_at = ?, ended_at = ?
+        WHERE id = ?`,
+    );
+    const patchArgs = (id: string, p: JobRunPatch) =>
+      [p.status, p.cursor, p.counters, p.attempts, p.lastError, p.updatedAt, p.nextAttemptAt, p.endedAt, id] as const;
+    // `db.transaction` on better-sqlite3 runs its body SYNCHRONOUSLY inside a real
+    // SQLite transaction, so nothing — not another turn of the event loop, not
+    // another caller of this host — can interleave between the read and the write.
+    // That is what makes the two operations below atomic rather than merely ordered.
+    const startOrJoinTx = db.transaction((key: JobRunKey, r: JobRunRow): JobRunRow => {
+      const live = row(findLive.get(key.moduleId, key.job, key.instance));
+      if (live) return live;
+      insertRun.run(
+        r.id, r.module_id, r.job, r.instance, r.payload, r.status, r.cursor, r.counters,
+        r.attempts, r.last_error, r.started_at, r.updated_at, r.next_attempt_at, r.ended_at,
+      );
+      return r;
+    });
+    const commitPassTx = db.transaction((id: string, p: JobRunPatch): void => {
+      patchRun.run(...patchArgs(id, p));
+      db.prepare('DELETE FROM _substrat_job_steps WHERE run_id = ?').run(id);
+    });
+    // Every store operation takes its own short turn on the scope actor, so no
+    // statement here can land inside an `invoke`'s open transaction. `turn` is the
+    // one place that happens; adding a method without it reintroduces the bug.
+    const turn = <T>(fn: () => T): Promise<T> => rt.actor.enqueue(fn);
+    return {
+      startOrJoin: (key: JobRunKey, r: JobRunRow) => turn(() => startOrJoinTx(key, r)),
+      get: (id: string) =>
+        turn(() => row(db.prepare('SELECT * FROM _substrat_job_runs WHERE id = ?').get(id))),
+      due: (now: string, limit: number, afterId?: string) =>
+        turn(() => db
+          .prepare(
+            `SELECT * FROM _substrat_job_runs
+              WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                AND (? IS NULL OR id > ?)
+              ORDER BY id LIMIT ?`,
+          )
+          .all(now, afterId ?? null, afterId ?? null, limit) as JobRunRow[]),
+      list: (filter: JobRunFilter) => turn(() => {
+        const where: string[] = [];
+        const params: SqlValue[] = [];
+        for (const [column, value] of [
+          ['module_id', filter.moduleId],
+          ['job', filter.job],
+          ['instance', filter.instance],
+          ['status', filter.status],
+        ] as const) {
+          if (value !== undefined) {
+            where.push(`${column} = ?`);
+            params.push(value);
+          }
+        }
+        params.push(jobRunListLimit(filter.limit));
+        return db
+          .prepare(
+            `SELECT * FROM _substrat_job_runs
+             ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+             ORDER BY id DESC LIMIT ?`,
+          )
+          .all(...params) as JobRunRow[];
+      }),
+      patch: (id: string, p: JobRunPatch) =>
+        turn(() => {
+          patchRun.run(...patchArgs(id, p));
+        }),
+      commitPass: (id: string, p: JobRunPatch) => turn(() => commitPassTx(id, p)),
+      step: (runId: string, name: string) =>
+        turn(() => (db
+          .prepare(
+            'SELECT step, result, attempts, last_error FROM _substrat_job_steps WHERE run_id = ? AND step = ?',
+          )
+          .get(runId, name) as JobStepRow | undefined) ?? null),
+      recordStep: (
+        runId: string,
+        name: string,
+        result: string | null,
+        attempts: number,
+        lastError: string | null,
+        at: string,
+      ) =>
+        turn(() => {
+          db.prepare(
+          `INSERT INTO _substrat_job_steps (run_id, step, result, attempts, last_error, recorded_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (run_id, step) DO UPDATE SET result = excluded.result,
+                                                    attempts = excluded.attempts,
+                                                    last_error = excluded.last_error,
+                                                    recorded_at = excluded.recorded_at`,
+          ).run(runId, name, result, attempts, lastError, at);
+        }),
+    };
+  }
+
+  async startJobRun(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: StartJobRunInput,
+  ): Promise<JobRun> {
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    return jobRunOf(await startJobRun(this.jobStore(rt), input, ulid, this.clock));
+  }
+
+  async runDueJobs(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: { maxPasses?: number; limit?: number },
+  ): Promise<JobDriveReport> {
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    return runDueJobRuns({
+      store: this.jobStore(rt),
+      handlerFor: (run) => this.jobs.get(`${run.module_id}/${run.job}`),
+      now: this.clock,
+      openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
+      maxPasses: options?.maxPasses,
+      limit: options?.limit,
+    });
+  }
+
+  async jobRuns(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: JobRunFilter,
+  ): Promise<JobRun[]> {
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    return (await this.jobStore(rt).list(filter ?? {})).map(jobRunOf);
   }
 
   async dispatchConnector(

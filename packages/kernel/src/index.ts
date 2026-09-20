@@ -235,6 +235,36 @@ export {
   type IdempotentReplay,
 } from './idempotency.js';
 export {
+  JOB_RUN_DDL,
+  JOB_DRIVE_LIMIT,
+  JOB_DRIVE_SCAN_MAX,
+  JOB_RUN_LIST_LIMIT,
+  JOB_RUN_LIST_MAX,
+  jobRunListLimit,
+  JOB_STEP_REUSED,
+  assertQueueSafe,
+  jobRunOf,
+  runDueJobRuns,
+  runJobPass,
+  startJobRun,
+} from './job-run.js';
+export type {
+  JobDriveReport,
+  JobHandler,
+  JobPassContext,
+  JobPassOutcome,
+  JobPassResult,
+  JobRun,
+  JobRunFilter,
+  JobRunKey,
+  JobRunPatch,
+  JobRunRow,
+  JobRunStatus,
+  JobRunStore,
+  JobStepRow,
+  StartJobRunInput,
+} from './job-run.js';
+export {
   isTerminalDispatchFailure,
   isTerminalProviderError,
   providerErrorStatus,

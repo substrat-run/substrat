@@ -71,6 +71,8 @@ indistinguishable from a real one.
 | `_substrat_platform_requests` | durable [platform intents](/concepts/platform) a vertical enqueued for the platform to execute |
 | `_substrat_schedule_state` | the platform sweep's gating state, one row per *unit* it sweeps, keyed `(kind, schedule_op)`: `kind = 'schedule'` for an operation keyed `module/verb` (when it last ran, how it ended), `kind = 'freshness'` for an expectation keyed `freshness:<eventType>` (when its verdict was last recorded, and what it was — nothing ran). The `kind` column is what tells the two apart, so a schedule operation that happens to be *named* `freshness:…` gets its own row rather than sharing the evaluator's |
 | `_substrat_idempotency` | recorded responses per `(subject, Idempotency-Key)`, with the request fingerprint that tells a replay from a reuse; pruned after 24 hours |
+| `_substrat_job_runs` | one row per long, resumable run: its status, the resume cursor the last committed pass handed forward, a counter bag, start/end and last error. Retained after the run ends — it is what says afterwards what the walk did |
+| `_substrat_job_steps` | the named steps of the pass a run currently has in flight, with each one's committed result — what makes a resumed pass skip the steps that already succeeded. Dropped when a pass commits; a *failed* run keeps its last pass's rows as the record of how far it got. Either way it holds one pass's worth of steps rather than growing with the length of the walk |
 
 The directory database holds the other half — tenants, scopes, hostnames, verticals and
 their versions and channels, orgs, roles, entitlements, identity pools and links,
@@ -89,6 +91,7 @@ Beyond `getScope`, the host implements the admin-side contract the platform driv
 - **connectors** — `registerConnector`, `dispatchConnector`, `getConnectorScope`,
   `getConnectorAttachments`
 - **schedules** — `registeredSchedules`, `runDueSchedules`, `getSystemScope`
+- **resumable runs** — `registerJob`, `startJobRun`, `runDueJobs`, `jobRuns`
 - **platform intents** — `listPlatformRequests`, `listPlatformRequestHistory`,
   `settlePlatformRequest`
 - **attachments** — `attachments`

@@ -125,6 +125,16 @@ import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './mode
 import type { SealedSecret } from './secret-box.js';
 import type { SearchHit, SearchOptions } from './search-index.js';
 import type { EntityVersion } from './entity-version.js';
+// Type-only, and the cycle it completes is therefore not one at runtime: `job-run.ts`
+// imports `backoffAt`/`resolveRetryPolicy` from here as VALUES, which is the same
+// direction `platform-sweep.ts` already goes.
+import type {
+  JobDriveReport,
+  JobHandler,
+  JobRun,
+  JobRunFilter,
+  StartJobRunInput,
+} from './job-run.js';
 
 /**
  * What a caller asks a paged read for (#811).
@@ -3830,6 +3840,94 @@ export interface ScopeHost {
    * nothing is due.
    */
   drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport>;
+
+  /**
+   * Register a JOB — long, resumable work (#1577). Host code, like
+   * `registerExecutor`, and for the same reason: a walk of an external system
+   * holds credentials and makes network calls, which module code may not.
+   *
+   * `moduleId` and `name` are two thirds of the coalescing key; the third is the
+   * `instance` a run names. The handler is the body of ONE PASS — see `JobHandler`
+   * and this driver's contract in `job-run.ts`. `retry` is the DEFAULT policy for
+   * the job's steps; a step may pass its own.
+   *
+   * The fourth driver, and a SIBLING of the three that already exist rather than a
+   * widening of any of them. An executor retries one delivery whole; a schedule
+   * fires one operation that must finish; the platform sweep does a pass of
+   * maintenance. None of them can stop halfway through an hour and carry on.
+   */
+  registerJob(
+    moduleId: ModuleId,
+    name: string,
+    handler: JobHandler,
+    retry?: ExecutorRetryPolicy,
+  ): void;
+
+  /**
+   * Start a run, or JOIN the one already in flight for the same
+   * `(module, job, instance)` — the coalescing half of the driver.
+   *
+   * A start against a live key returns THAT run: its id, its cursor, its counters.
+   * Not a second row, and not a refusal — asking for a re-index while one is
+   * running is a reasonable thing to do, and the useful answer is the walk that is
+   * already happening. Coalescing is the driver's decision, never a unique index:
+   * a run whose worker was evicted is still `running` and MUST be restartable, so
+   * the constraint cannot be "one row ever" (which is what `_substrat_sweep_runs`
+   * legitimately carries, being a receipt rather than a cursor).
+   *
+   * The payload is held to the queue-safety rule at this boundary and refused with
+   * the offending path named, the way an operation's input failure already is: ids
+   * and configuration, never bytes, class instances or functions.
+   *
+   * Fleet maintenance, no actor — the same class as `drainDue`. What the run may DO
+   * is decided inside it, by an ordinary `ctx.check` against `system:<moduleId>`.
+   */
+  startJobRun(tenantId: TenantId, scopeId: ScopeId, input: StartJobRunInput): Promise<JobRun>;
+
+  /**
+   * Advance every DUE run on this scope — the driver proper, the resumable sibling
+   * of `drainDue`.
+   *
+   * One pass per run by default: a pass does a bounded chunk, commits a cursor, and
+   * the next call resumes from it, so an hour-long walk is never one call anybody
+   * has to keep alive. `maxPasses` raises that for a caller with a budget; `limit`
+   * caps how many runs one call picks up.
+   *
+   * A step that exhausts its retries fails ITS run and is reported — never thrown,
+   * so one bad run cannot stop the ones behind it. Idempotent and safe when nothing
+   * is due. A run whose job this host does not register is left untouched: it may
+   * belong to another deployment, and failing it would destroy a resumable run
+   * because the wrong process looked at it.
+   *
+   * Deliberately NOT gated on the module's `system:<moduleId>` grant the way
+   * `runDueSchedules` is. A schedule is started by the platform and the grant is
+   * the switch that says whether it should be; a run was started explicitly, and a
+   * grant gate here would STALL it silently rather than refuse it. The authority it
+   * exercises is checked where it is used, inside the operations its steps invoke.
+   *
+   * **One driver per scope at a time**, and that is a bound the caller holds, not one
+   * this enforces — there is no lease. Coalescing stops duplicate RUNS; two concurrent
+   * calls of THIS would advance the same run together. Every topology the driver is
+   * built for gives a scope one tick (the platform sweep does one call per scope, a
+   * scope DO's alarm fires for its own), so the bound holds by construction; the full
+   * argument, and what an overlap would actually cost, is in `job-run.ts`.
+   */
+  runDueJobs(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: { maxPasses?: number; limit?: number },
+  ): Promise<JobDriveReport>;
+
+  /**
+   * The scope's run records, newest first — "the outcome has to be legible to an
+   * operator afterwards", as a read rather than as a promise.
+   *
+   * Every run, in whatever state it settled, with the cursor it reached, the
+   * counters it accumulated and the error that stopped it. Fleet maintenance, no
+   * actor — the same class as `listPlatformRequestHistory`, which it is shaped
+   * after for the same reason: a record nobody can read is not evidence.
+   */
+  jobRuns(tenantId: TenantId, scopeId: ScopeId, filter?: JobRunFilter): Promise<JobRun[]>;
 
   /**
    * Execute ONE connector delivery with this host's directory, credentials and egress —
