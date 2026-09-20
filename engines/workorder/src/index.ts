@@ -88,6 +88,25 @@ export {
   type MaterialLine,
 } from './schemas.js';
 export { workorderOperations, WORKORDER_PERMISSIONS } from './operations.js';
+/**
+ * The event contract (#696) — what a VERTICAL imports so that consuming this
+ * engine by event is checked rather than guessed. `events.ts` says what these
+ * are and what they are not: types only, vertical-facing only, and a sibling
+ * engine (invoicing, downstream of `workorder.completed`) still writes its own
+ * Zod view.
+ */
+export {
+  type WorkorderEvents,
+  type WorkorderEventType,
+  type WorkorderCreatedPayload,
+  type WorkorderAssignedPayload,
+  type WorkorderStartedPayload,
+  type WorkorderTimeReportedPayload,
+  type WorkorderMaterialReportedPayload,
+  type WorkorderCompletedPayload,
+  type WorkorderClosedPayload,
+} from './events.js';
+import { emitWorkorderEvent } from './events.js';
 // The declared state machine (#844). PUBLIC: a composing vertical reads it to
 // render available actions, and `substrat.model` emits it into `model.json`.
 export { workorderLifecycles, workorderLifecycle } from './lifecycle.js';
@@ -358,7 +377,7 @@ export function createWorkOrder(ctx: OperationContext, rawInput: CreateWorkOrder
     ],
   );
   ctx.link(orderRef(id), input.facility);
-  ctx.emit({
+  emitWorkorderEvent(ctx, {
     type: 'workorder.created',
     schemaVersion: 1,
     entity: orderRef(id),
@@ -461,7 +480,7 @@ export function assignWorkOrder(ctx: OperationContext, rawInput: AssignWorkOrder
     input.technician,
     row.id,
   ]);
-  ctx.emit({
+  emitWorkorderEvent(ctx, {
     type: 'workorder.assigned',
     schemaVersion: 1,
     entity: orderRef(row.id),
@@ -478,7 +497,7 @@ export function startWorkOrder(ctx: OperationContext, rawInput: StartWorkOrderIn
   const row = getRow(ctx, input.orderId);
   requireTransition(row, 'workorder/start');
   ctx.sql.exec(`UPDATE workorder_orders SET status = 'in_progress' WHERE id = ?`, [row.id]);
-  ctx.emit({
+  emitWorkorderEvent(ctx, {
     type: 'workorder.started',
     schemaVersion: 1,
     entity: orderRef(row.id),
@@ -503,7 +522,7 @@ export function reportTime(ctx: OperationContext, rawInput: ReportTimeInput): Ti
      VALUES (?, ?, ?, ?, ?, ?)`,
     [id, row.id, ctx.principal, hours, input.note ?? null, ctx.now()],
   );
-  ctx.emit({
+  emitWorkorderEvent(ctx, {
     type: 'workorder.time-reported',
     schemaVersion: 1,
     entity: orderRef(row.id),
@@ -533,7 +552,7 @@ export function reportMaterial(ctx: OperationContext, rawInput: ReportMaterialIn
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [id, row.id, input.article, qty, input.note ?? null, ctx.principal, ctx.now()],
   );
-  ctx.emit({
+  emitWorkorderEvent(ctx, {
     type: 'workorder.material-reported',
     schemaVersion: 1,
     entity: orderRef(row.id),
@@ -583,7 +602,7 @@ export function completeWorkOrder(
     completedAt,
     row.id,
   ]);
-  ctx.emit({
+  emitWorkorderEvent(ctx, {
     type: 'workorder.completed',
     schemaVersion: 1,
     entity: orderRef(row.id),
@@ -613,7 +632,7 @@ export function closeWorkOrder(ctx: OperationContext, input: { orderId: string }
   const row = getRow(ctx, input.orderId);
   requireTransition(row, 'workorder/close');
   ctx.sql.exec(`UPDATE workorder_orders SET status = 'closed' WHERE id = ?`, [row.id]);
-  ctx.emit({
+  emitWorkorderEvent(ctx, {
     type: 'workorder.closed',
     schemaVersion: 1,
     entity: orderRef(row.id),

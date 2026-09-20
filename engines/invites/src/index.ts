@@ -49,6 +49,21 @@ import { invitation, invitationRow } from './entities.js';
 // readable by the conformance kit and by a composing vertical's routes.
 export { invitesOperations, INVITES_PERMISSIONS } from './operations.js';
 import { invitesOperations } from './operations.js';
+/**
+ * The event contract (#696) — what a VERTICAL imports so that consuming this
+ * engine by event is checked rather than guessed. `events.ts` says what these
+ * are and what they are not: types only, vertical-facing only, and why no
+ * payload here names a person.
+ */
+export {
+  type InvitesEvents,
+  type InvitesEventType,
+  type InvitesSentPayload,
+  type InvitesAcceptedPayload,
+  type InvitesRevokedPayload,
+  type MemberAddRequestedPayload,
+} from './events.js';
+import { emitInvitesEvent } from './events.js';
 import { columnsOf, returns } from './seam.js';
 import { z } from 'zod';
 import {
@@ -304,7 +319,7 @@ export async function sendInvite(
     [id, input.orgId, hash, input.roleKey, ctx.principal, ctx.now(), expiresAt],
   );
 
-  ctx.emit({
+  emitInvitesEvent(ctx, {
     type: 'invites.sent',
     schemaVersion: 1,
     entity: entityRef.parse({ entityType: 'invitation', entityId: id }),
@@ -357,7 +372,7 @@ export async function acceptInvite(
     [ctx.principal, ctx.now(), row.id],
   );
 
-  ctx.emit({
+  emitInvitesEvent(ctx, {
     type: 'invites.accepted',
     schemaVersion: 1,
     entity: entityRef.parse({ entityType: 'invitation', entityId: row.id }),
@@ -373,7 +388,7 @@ export async function acceptInvite(
     },
   });
   // Fat (D-19): the executor must never need a cross-module read to act.
-  ctx.emit({
+  emitInvitesEvent(ctx, {
     type: 'member.add-requested',
     schemaVersion: 1,
     entity: entityRef.parse({ entityType: 'membership', entityId: ctx.principal }),
@@ -402,7 +417,7 @@ export function revokeInvite(ctx: OperationContext, invitationId: string): void 
     [ctx.now(), invitationId],
   );
   if (!changed[0]) return; // already settled, or never existed — idempotent and silent
-  ctx.emit({
+  emitInvitesEvent(ctx, {
     type: 'invites.revoked',
     schemaVersion: 1,
     entity: entityRef.parse({ entityType: 'invitation', entityId: invitationId }),

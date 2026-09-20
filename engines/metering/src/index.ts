@@ -87,6 +87,21 @@ export {
   periodLine,
 } from './operations.js';
 import { meteringOperations } from './operations.js';
+/**
+ * The event contract (#696) — what a VERTICAL imports so that consuming this
+ * engine by event is checked rather than guessed. `events.ts` says what these
+ * are and what they are not: types only, vertical-facing only, and why a close
+ * is the payload that most needs typing.
+ */
+export {
+  type MeteringEvents,
+  type MeteringEventType,
+  type MeteringMeterConfiguredPayload,
+  type MeteringUsageRecordedPayload,
+  type MeteringPeriodLine,
+  type MeteringPeriodClosedPayload,
+} from './events.js';
+import { emitMeteringEvent } from './events.js';
 // The value formats, shared with the declared surface above so a caller cannot be
 // told a value is acceptable and then have the handler refuse it.
 import { isoInstant, isoInstantIn, nonNegDecimal, signedDecimal } from './formats.js';
@@ -487,7 +502,7 @@ export function configureMeter(ctx: OperationContext, rawInput: ConfigureMeterIn
     );
   }
   const row = getMeterRow(ctx, input.key);
-  ctx.emit({
+  emitMeteringEvent(ctx, {
     type: 'metering.meter-configured',
     schemaVersion: 1,
     entity: { entityType: 'metering-meter', entityId: row.key },
@@ -616,7 +631,7 @@ export function recordUsage(
   const entry = toEntry(
     ctx.sql.query<EntryRow>(`SELECT ${ENTRY_COLUMNS} FROM metering_entries WHERE id = ?`, [id])[0]!,
   );
-  ctx.emit({
+  emitMeteringEvent(ctx, {
     type: 'metering.usage-recorded',
     schemaVersion: 1,
     entity: { entityType: 'metering-entry', entityId: id },
@@ -735,7 +750,7 @@ export function closePeriod(
     );
   }
 
-  ctx.emit({
+  emitMeteringEvent(ctx, {
     type: 'metering.period-closed',
     schemaVersion: 1,
     entity: { entityType: 'metering-period', entityId: id },

@@ -57,6 +57,26 @@ export { absenceEntities, leaveTypeRow } from './entities.js';
 // a composing vertical imports one module, as it did when these lived inline.
 export { ABSENCE_PERMISSIONS, absenceOperations } from './operations.js';
 export * from './schemas.js';
+/**
+ * The event contract (#696) — what a VERTICAL imports so that consuming this
+ * engine by event is checked rather than guessed. `events.ts` says what these
+ * are and what they are not: types only, vertical-facing only, and why
+ * `absence.cancelled` and `absence.expired` form a completion group.
+ */
+export {
+  type AbsenceEvents,
+  type AbsenceEventType,
+  type AbsenceSubjectRef,
+  type AbsenceLeaveTypeConfiguredPayload,
+  type AbsenceEntryRecordedPayload,
+  type AbsenceRequestedPayload,
+  type AbsenceApprovedPayload,
+  type AbsenceRejectedPayload,
+  type AbsenceDecidedPayload,
+  type AbsenceCancelledPayload,
+  type AbsenceExpiredPayload,
+} from './events.js';
+import { emitAbsenceEvent } from './events.js';
 import { absenceOperations } from './operations.js';
 import { leaveTypeRow } from './entities.js';
 import { columnsOf, returns } from './seam.js';
@@ -405,7 +425,7 @@ function insertEntry(
     ],
   );
   const entry = toEntry(getEntryRow(ctx, id));
-  ctx.emit({
+  emitAbsenceEvent(ctx, {
     type: 'absence.entry-recorded',
     schemaVersion: 1,
     entity: input.subject.ref,
@@ -451,7 +471,7 @@ export function configureLeaveType(
     ],
   );
   const row = getLeaveTypeRow(ctx, input.key);
-  ctx.emit({
+  emitAbsenceEvent(ctx, {
     type: 'absence.leave-type-configured',
     schemaVersion: 1,
     entity: { entityType: 'absence-leave-type', entityId: input.key },
@@ -539,7 +559,7 @@ export function requestAbsence(ctx: OperationContext, rawInput: RequestAbsenceIn
       ctx.now(),
     ],
   );
-  ctx.emit({
+  emitAbsenceEvent(ctx, {
     type: 'absence.requested',
     schemaVersion: 1,
     entity: input.subject.ref,
@@ -578,7 +598,7 @@ export function decideAbsence(
       `UPDATE absence_requests SET status = 'rejected', decided_by = ?, decided_at = ?, note = COALESCE(?, note) WHERE id = ?`,
       [ctx.principal, now, input.note ?? null, req.id],
     );
-    ctx.emit({
+    emitAbsenceEvent(ctx, {
       type: 'absence.decided',
       schemaVersion: 1,
       entity: subject.ref,
@@ -618,7 +638,7 @@ export function decideAbsence(
     `UPDATE absence_requests SET status = 'approved', decided_by = ?, decided_at = ? WHERE id = ?`,
     [ctx.principal, now, req.id],
   );
-  ctx.emit({
+  emitAbsenceEvent(ctx, {
     type: 'absence.decided',
     schemaVersion: 1,
     entity: subject.ref,
@@ -680,7 +700,7 @@ export function cancelAbsence(
     `UPDATE absence_requests SET status = 'cancelled', decided_at = ?, note = COALESCE(?, note) WHERE id = ?`,
     [now, input.reason ?? null, req.id],
   );
-  ctx.emit({
+  emitAbsenceEvent(ctx, {
     type: 'absence.cancelled',
     schemaVersion: 1,
     entity: subject.ref,
@@ -723,7 +743,7 @@ export function expireStaleRequests(ctx: OperationContext): { expired: number } 
         WHERE id = ?`,
       [now, req.id],
     );
-    ctx.emit({
+    emitAbsenceEvent(ctx, {
       type: 'absence.expired',
       schemaVersion: 1,
       entity: subjectRefOf(req),
