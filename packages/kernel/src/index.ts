@@ -234,6 +234,7 @@ export {
 export {
   JOB_RUN_DDL,
   JOB_DRIVE_LIMIT,
+  JOB_DRIVE_SCAN_MAX,
   JOB_RUN_LIST_LIMIT,
   JOB_STEP_REUSED,
   assertQueueSafe,

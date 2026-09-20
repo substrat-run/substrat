@@ -56,6 +56,12 @@ export function jobRunContractSuite(
     /** Passes that have entered the walk handler — the replay counter. */
     let passes = 0;
 
+    /** What the `shapes` job's step handed its handler, once per pass. */
+    const shapesSeen: { type: string; value: string }[] = [];
+
+    /** How many times the `doomed` job's step BODY actually ran. */
+    let doomedCalls = 0;
+
     /** A scope of its own, with the module's system grant on it. */
     const newScope = async (): Promise<ScopeId> => {
       const s = scopeId.parse(ulid());
@@ -127,11 +133,39 @@ export function jobRunContractSuite(
         'doomed',
         async (pass: JobPassContext) => {
           await pass.step('always-fails', () => {
+            doomedCalls += 1;
             throw new Error('upstream said no');
           });
           return { done: true };
         },
         { maxAttempts: 3, baseDelayMs: 0 },
+      );
+
+      // A job whose handler hands back an explicitly-undefined cursor — a SUPPLIED
+      // cursor, which must be refused rather than coalesced into "start over".
+      host.registerJob(
+        JOBS_MODULE,
+        'undef-cursor',
+        () => ({ cursor: undefined }),
+        { maxAttempts: 2, baseDelayMs: 0 },
+      );
+
+      // A job whose step returns a value JSON cannot carry unchanged. What it returns
+      // is recorded by the handler so the test can compare the first pass (which ran
+      // the step) against the second (which replayed its memo).
+      host.registerJob(
+        JOBS_MODULE,
+        'shapes',
+        async (pass: JobPassContext) => {
+          const got = await pass.step('shape', () => new Date('2026-01-01T00:00:00.000Z'));
+          shapesSeen.push({ type: typeof got, value: String(got) });
+          if (evictAfter === 'shape') {
+            evictAfter = null;
+            throw new Error('evicted after shape');
+          }
+          return { done: true };
+        },
+        { maxAttempts: 4, baseDelayMs: 0 },
       );
 
       // A job that does nothing but finish: no steps, no scope, no module table. The
@@ -341,6 +375,102 @@ export function jobRunContractSuite(
       expect(await host.jobRuns(t, s)).toEqual([]);
     });
 
+    /**
+     * F1: two starts that race must still produce ONE run.
+     *
+     * `Promise.all` is a real interleave here, not a decoration: `startJobRun` is
+     * `async` on both adapters, so the two calls genuinely suspend across the store
+     * round trips and the second reaches its lookup before the first has inserted.
+     * With the lookup and the insert as separate store calls both saw no live run
+     * and both inserted — and nothing in the schema could refuse the second, by
+     * design, since a crashed run has to stay restartable.
+     */
+    it('starts exactly one run when two starts race', async () => {
+      const s = await newScope();
+      const start = () =>
+        host.startJobRun(t, s, {
+          moduleId: JOBS_MODULE,
+          job: 'walk',
+          instance: 'racy',
+          payload: { total: 2, chunk: 1 },
+        });
+      const [a, b, c] = await Promise.all([start(), start(), start()]);
+      expect(b.id).toBe(a.id);
+      expect(c.id).toBe(a.id);
+      // The row count is the assertion that cannot be satisfied by luck: three
+      // concurrent callers, one run.
+      expect(await host.jobRuns(t, s, { instance: 'racy' })).toHaveLength(1);
+    });
+
+    /**
+     * F8: `{ cursor: undefined }` is a SUPPLIED cursor, and supplying it used to
+     * coalesce to null — silently restarting the walk. Refused now, by path.
+     */
+    it('refuses an explicitly undefined cursor rather than resetting the walk', async () => {
+      const s = await newScope();
+      const run = await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'undef-cursor' });
+      const report = await host.runDueJobs(t, s);
+      expect(report.retrying + report.failed).toBe(1);
+      const after = await runOf(s, run.id);
+      expect(after?.lastError).toContain('cursor is not queue-safe');
+      // The cursor the last commit left is untouched — the pass did not "reset" it.
+      expect(after?.cursor).toBeNull();
+    });
+
+    /** F5: a sparse array survives `forEach` and changes value through JSON. */
+    it('refuses a payload carrying a hole in a sparse array', async () => {
+      const s = await newScope();
+      const holed = [1, 2, 3];
+      // eslint-disable-next-line @typescript-eslint/no-array-delete
+      delete holed[1];
+      await expect(
+        host.startJobRun(t, s, {
+          moduleId: JOBS_MODULE,
+          job: 'walk',
+          instance: 'sparse',
+          payload: { pages: holed },
+        }),
+      ).rejects.toThrow(/payload\.pages\.1 is a hole in a sparse array/);
+      expect(await host.jobRuns(t, s)).toEqual([]);
+    });
+
+    /**
+     * F7: a step must hand the handler the SAME shape whether it just ran or was
+     * replayed from the memo. `walk-dates` returns a `Date` from its step; the first
+     * pass is evicted after it, so the second pass reads the memo — and the two
+     * passes must agree about what they got.
+     */
+    it('returns the same shape from a step whether it ran or was replayed', async () => {
+      const s = await newScope();
+      const run = await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'shapes' });
+      shapesSeen.length = 0;
+      evictAfter = 'shape';
+      await host.runDueJobs(t, s);
+      await host.runDueJobs(t, s);
+      expect(shapesSeen).toHaveLength(2);
+      // Ran, then replayed — and the handler could not tell the difference.
+      expect(shapesSeen[0]).toEqual(shapesSeen[1]);
+      expect((await runOf(s, run.id))?.status).toBe('done');
+    });
+
+    /**
+     * F9: runs this host cannot drive must not hold the head of the queue forever.
+     * Three unregistered runs are started first, so they sort ahead of the real one;
+     * with the budget applied to the QUERY rather than to runnable runs, a limit of
+     * 1 returned the same unrunnable row on every call and the real run never ran.
+     */
+    it('pages past runs it cannot drive instead of starving on them', async () => {
+      const s = await newScope();
+      for (const n of ['a', 'b', 'c']) {
+        await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'absent-job', instance: n });
+      }
+      const real = await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'inert' });
+      const report = await host.runDueJobs(t, s, { limit: 1 });
+      expect(report.attempted).toBe(1);
+      expect(report.completed).toBe(1);
+      expect((await runOf(s, real.id))?.status).toBe('done');
+    });
+
     it('refuses two steps under one name in one pass', async () => {
       const s = await newScope();
       const run = await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'ambiguous' });
@@ -445,6 +575,70 @@ export function jobRunContractSuite(
       expect(broken?.decodeError).toContain('JSON');
       expect(broken?.counters).toEqual({});
       expect((await runOf(s, healthy.id))?.decodeError).toBeNull();
+    });
+
+    /**
+     * F6: a step whose RECORDED attempts already reached its policy must not be
+     * invoked one more time to discover what its own ledger row already says.
+     *
+     * The state is reachable by a stop between `recordStep` writing the final failed
+     * attempt and the run patch marking the run terminal, so it is restored here
+     * directly: a `running` run with `attempts = 0`, and beside it a step row with
+     * `attempts = 3` (its policy's maximum) and a NULL result. The assertion is the
+     * CALL COUNTER, because both the fixed and the broken code end with the run
+     * `failed` — the difference is only whether somebody else's API was called once
+     * more on the way there, which is exactly the cost being avoided.
+     */
+    it('does not re-invoke a step whose recorded attempts are already spent', async () => {
+      const s = await newScope();
+      const runId = '00000000000000000000000001';
+      await host.restoreScope(staff, t, s, {
+        tenantId: t,
+        scopeId: s,
+        capturedAt: '2026-09-01T00:00:00.000Z',
+        tables: [
+          {
+            name: '_substrat_job_runs',
+            ddl:
+              'CREATE TABLE _substrat_job_runs (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, ' +
+              'job TEXT NOT NULL, instance TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, ' +
+              'cursor TEXT, counters TEXT NOT NULL DEFAULT \'{}\', attempts INTEGER NOT NULL DEFAULT 0, ' +
+              'last_error TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
+              'next_attempt_at TEXT, ended_at TEXT)',
+            columns: [
+              'id', 'module_id', 'job', 'instance', 'payload', 'status', 'cursor', 'counters',
+              'attempts', 'last_error', 'started_at', 'updated_at', 'next_attempt_at', 'ended_at',
+            ],
+            rows: [
+              [
+                runId, JOBS_MODULE, 'doomed', 'default', 'null', 'running', null, '{}', 0, null,
+                '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', null, null,
+              ],
+            ],
+          },
+          {
+            name: '_substrat_job_steps',
+            ddl:
+              'CREATE TABLE _substrat_job_steps (run_id TEXT NOT NULL, step TEXT NOT NULL, ' +
+              'result TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, ' +
+              'recorded_at TEXT NOT NULL, PRIMARY KEY (run_id, step))',
+            columns: ['run_id', 'step', 'result', 'attempts', 'last_error', 'recorded_at'],
+            // attempts = 3 = `doomed`'s maxAttempts, result NULL = it never succeeded.
+            rows: [[runId, 'always-fails', null, 3, 'upstream said no', '2026-09-01T00:00:00.000Z']],
+          },
+        ],
+      });
+
+      const before = doomedCalls;
+      const report = await host.runDueJobs(t, s);
+      // The step body was NOT run again — this is the whole assertion.
+      expect(doomedCalls).toBe(before);
+      expect(report.failed).toBe(1);
+      const settled = await runOf(s, runId);
+      expect(settled?.status).toBe('failed');
+      // Settled on the error the ledger already held, not on a freshly-produced one.
+      expect(settled?.lastError).toContain('upstream said no');
+      expect(settled?.endedAt).not.toBeNull();
     });
 
     it('leaves a run whose job this host does not register untouched', async () => {

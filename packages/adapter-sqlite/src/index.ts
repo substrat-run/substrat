@@ -3810,38 +3810,55 @@ export class SqliteScopeHost implements ScopeHost {
   private jobStore(rt: ScopeRuntime): JobRunStore {
     const db = rt.db;
     const row = (v: unknown): JobRunRow | null => (v as JobRunRow | undefined) ?? null;
+    const findLive = db.prepare(
+      `SELECT * FROM _substrat_job_runs
+        WHERE module_id = ? AND job = ? AND instance = ? AND status = 'running'
+        ORDER BY id DESC LIMIT 1`,
+    );
+    const insertRun = db.prepare(
+      `INSERT INTO _substrat_job_runs
+         (id, module_id, job, instance, payload, status, cursor, counters, attempts,
+          last_error, started_at, updated_at, next_attempt_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const patchRun = db.prepare(
+      `UPDATE _substrat_job_runs
+          SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
+              updated_at = ?, next_attempt_at = ?, ended_at = ?
+        WHERE id = ?`,
+    );
+    const patchArgs = (id: string, p: JobRunPatch) =>
+      [p.status, p.cursor, p.counters, p.attempts, p.lastError, p.updatedAt, p.nextAttemptAt, p.endedAt, id] as const;
+    // `db.transaction` on better-sqlite3 runs its body SYNCHRONOUSLY inside a real
+    // SQLite transaction, so nothing — not another turn of the event loop, not
+    // another caller of this host — can interleave between the read and the write.
+    // That is what makes the two operations below atomic rather than merely ordered.
+    const startOrJoinTx = db.transaction((key: JobRunKey, r: JobRunRow): JobRunRow => {
+      const live = row(findLive.get(key.moduleId, key.job, key.instance));
+      if (live) return live;
+      insertRun.run(
+        r.id, r.module_id, r.job, r.instance, r.payload, r.status, r.cursor, r.counters,
+        r.attempts, r.last_error, r.started_at, r.updated_at, r.next_attempt_at, r.ended_at,
+      );
+      return r;
+    });
+    const commitPassTx = db.transaction((id: string, p: JobRunPatch): void => {
+      patchRun.run(...patchArgs(id, p));
+      db.prepare('DELETE FROM _substrat_job_steps WHERE run_id = ?').run(id);
+    });
     return {
-      findLive: async (key: JobRunKey) =>
-        row(
-          db
-            .prepare(
-              `SELECT * FROM _substrat_job_runs
-                WHERE module_id = ? AND job = ? AND instance = ? AND status = 'running'
-                ORDER BY id DESC LIMIT 1`,
-            )
-            .get(key.moduleId, key.job, key.instance),
-        ),
+      startOrJoin: async (key: JobRunKey, r: JobRunRow) => startOrJoinTx(key, r),
       get: async (id: string) =>
         row(db.prepare('SELECT * FROM _substrat_job_runs WHERE id = ?').get(id)),
-      insert: async (r: JobRunRow) => {
-        db.prepare(
-          `INSERT INTO _substrat_job_runs
-             (id, module_id, job, instance, payload, status, cursor, counters, attempts,
-              last_error, started_at, updated_at, next_attempt_at, ended_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(
-          r.id, r.module_id, r.job, r.instance, r.payload, r.status, r.cursor, r.counters,
-          r.attempts, r.last_error, r.started_at, r.updated_at, r.next_attempt_at, r.ended_at,
-        );
-      },
-      due: async (now: string, limit: number) =>
+      due: async (now: string, limit: number, afterId?: string) =>
         db
           .prepare(
             `SELECT * FROM _substrat_job_runs
               WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                AND (? IS NULL OR id > ?)
               ORDER BY id LIMIT ?`,
           )
-          .all(now, limit) as JobRunRow[],
+          .all(now, afterId ?? null, afterId ?? null, limit) as JobRunRow[],
       list: async (filter: JobRunFilter) => {
         const where: string[] = [];
         const params: SqlValue[] = [];
@@ -3866,16 +3883,9 @@ export class SqliteScopeHost implements ScopeHost {
           .all(...params) as JobRunRow[];
       },
       patch: async (id: string, p: JobRunPatch) => {
-        db.prepare(
-          `UPDATE _substrat_job_runs
-              SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
-                  updated_at = ?, next_attempt_at = ?, ended_at = ?
-            WHERE id = ?`,
-        ).run(
-          p.status, p.cursor, p.counters, p.attempts, p.lastError,
-          p.updatedAt, p.nextAttemptAt, p.endedAt, id,
-        );
+        patchRun.run(...patchArgs(id, p));
       },
+      commitPass: async (id: string, p: JobRunPatch) => commitPassTx(id, p),
       step: async (runId: string, name: string) =>
         (db
           .prepare(
@@ -3898,9 +3908,6 @@ export class SqliteScopeHost implements ScopeHost {
                                                     last_error = excluded.last_error,
                                                     recorded_at = excluded.recorded_at`,
         ).run(runId, name, result, attempts, lastError, at);
-      },
-      clearSteps: async (runId: string) => {
-        db.prepare('DELETE FROM _substrat_job_steps WHERE run_id = ?').run(runId);
       },
     };
   }

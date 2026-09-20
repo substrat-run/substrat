@@ -2157,9 +2157,25 @@ export function defineScopeDO(
     // the end. That is what a mid-pass eviction keeps, and a DO is evicted and
     // revived constantly — batching would lose exactly the work resume exists for.
 
-    /** The live (`running`) run for a coalescing key, or null. */
-    async jobRunLive(moduleId: string, job: string, instance: string): Promise<JobRunRow | null> {
-      return (
+    /**
+     * Coalescing, as ONE round trip: the live (`running`) run for this key, or this
+     * row inserted and returned.
+     *
+     * **The single RPC is the atomicity**, and that is the whole reason it is shaped
+     * this way rather than as a `jobRunLive` the coordinator follows with a
+     * `jobRunInsert`. A Durable Object serializes its RPCs, so the lookup and the
+     * insert cannot be interleaved by another caller; split across two calls they
+     * can, and two concurrent starts then both find nothing and both insert. The
+     * schema carries no unique constraint to catch that, deliberately — a crashed
+     * run must stay restartable — so the indivisibility has to come from here.
+     */
+    async jobRunStartOrJoin(
+      moduleId: string,
+      job: string,
+      instance: string,
+      row: JobRunRow,
+    ): Promise<JobRunRow> {
+      const live =
         (this.sql
           .exec(
             `SELECT * FROM _substrat_job_runs
@@ -2169,8 +2185,10 @@ export function defineScopeDO(
             job,
             instance,
           )
-          .toArray()[0] as unknown as JobRunRow | undefined) ?? null
-      );
+          .toArray()[0] as unknown as JobRunRow | undefined) ?? null;
+      if (live) return live;
+      await this.jobRunInsert(row);
+      return row;
     }
 
     /** One run by id, whatever its status. */
@@ -2195,14 +2213,28 @@ export function defineScopeDO(
       );
     }
 
-    /** `running` runs whose backoff has elapsed, oldest first. */
-    async jobRunsDue(now: string, limit: number): Promise<JobRunRow[]> {
+    /**
+     * `running` runs whose backoff has elapsed, oldest first, after `afterId`.
+     *
+     * The cursor is what lets the coordinator page past runs it cannot drive: it
+     * skips any whose job this deployment does not register, and without a cursor
+     * those rows head every batch forever (`runDueJobRuns`). `afterId` is LAST, as
+     * every argument added to an RPC on this interface must be.
+     */
+    async jobRunsDue(now: string, limit: number, afterId?: string): Promise<JobRunRow[]> {
       return this.sql
         .exec(
+          // `afterId` bound TWICE rather than as `?2`: mixing anonymous and numbered
+          // parameters makes the anonymous ones resume from the highest index used,
+          // which is a footgun for the next person to add a clause. Spelled exactly
+          // as the pure adapter spells it.
           `SELECT * FROM _substrat_job_runs
             WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+              AND (? IS NULL OR id > ?)
             ORDER BY id LIMIT ?`,
           now,
+          afterId ?? null,
+          afterId ?? null,
           limit,
         )
         .toArray() as unknown as JobRunRow[];
@@ -2286,9 +2318,20 @@ export function defineScopeDO(
       );
     }
 
-    /** Drop a run's ledger — called when, and only when, a pass commits. */
-    async jobStepsClear(runId: string): Promise<void> {
-      this.sql.exec('DELETE FROM _substrat_job_steps WHERE run_id = ?', runId);
+    /**
+     * A COMMITTED pass: the run's new state and the dropping of its step ledger, in
+     * ONE RPC so they cannot come apart.
+     *
+     * Same reasoning as `jobRunStartOrJoin` — the single round trip is the
+     * atomicity. As two calls, a stop in between leaves the advanced cursor beside
+     * the finished pass's memo rows, and a handler that reuses a step name across
+     * passes (legal: the determinism rule binds names to the payload and prior
+     * results, not to the cursor) then skips work it never did. The kernel's
+     * `runJobPass` carries the full argument.
+     */
+    async jobCommitPass(id: string, patch: JobRunPatch): Promise<void> {
+      await this.jobRunPatch(id, patch);
+      this.sql.exec('DELETE FROM _substrat_job_steps WHERE run_id = ?', id);
     }
 
     // -- guards (K-17) --------------------------------------------------------

@@ -900,12 +900,24 @@ interface ScopeStubRpc {
   //    it also has no `_substrat_job_runs` (the table is created by KERNEL_DDL on the
   //    constructor that would carry these), so a run started against it would have
   //    nowhere to live. Fail closed and visible, never a row written to nowhere.
-  jobRunLive(moduleId: string, job: string, instance: string): Promise<JobRunRow | null>;
+  //    Two of them are single RPCs BECAUSE a DO serializes its RPCs, which is the
+  //    only atomicity available across this seam: `jobRunStartOrJoin` (else two
+  //    concurrent starts both insert, and no unique index exists to catch the
+  //    second) and `jobCommitPass` (else an advanced cursor can outlive the ledger
+  //    drop and the next pass reads a stale memo). Splitting either back into two
+  //    calls silently reintroduces the race.
+  jobRunStartOrJoin(
+    moduleId: string,
+    job: string,
+    instance: string,
+    row: JobRunRow,
+  ): Promise<JobRunRow>;
   jobRunById(id: string): Promise<JobRunRow | null>;
   jobRunInsert(row: JobRunRow): Promise<void>;
-  jobRunsDue(now: string, limit: number): Promise<JobRunRow[]>;
+  jobRunsDue(now: string, limit: number, afterId?: string): Promise<JobRunRow[]>;
   jobRunList(filter: JobRunFilter): Promise<JobRunRow[]>;
   jobRunPatch(id: string, patch: JobRunPatch): Promise<void>;
+  jobCommitPass(id: string, patch: JobRunPatch): Promise<void>;
   jobStepRow(runId: string, step: string): Promise<JobStepRow | null>;
   jobStepRecord(
     runId: string,
@@ -915,7 +927,6 @@ interface ScopeStubRpc {
     lastError: string | null,
     at: string,
   ): Promise<void>;
-  jobStepsClear(runId: string): Promise<void>;
   /** This scope's live `connection:<id>` grant tuples (#726 gap 1) — the read-back.
    *  Unions the scope's own tuples with the projected tenant-level ones, because a
    *  scope check consults both (rule 2 inheritance). */
@@ -1620,16 +1631,15 @@ export class CloudflareScopeHost implements ScopeHost {
   private jobStore(scopeId: ScopeId): JobRunStore {
     const stub = this.scopeStub(scopeId);
     return {
-      findLive: (key) => stub.jobRunLive(key.moduleId, key.job, key.instance),
+      startOrJoin: (key, row) => stub.jobRunStartOrJoin(key.moduleId, key.job, key.instance, row),
       get: (id) => stub.jobRunById(id),
-      insert: (row) => stub.jobRunInsert(row),
-      due: (now, limit) => stub.jobRunsDue(now, limit),
+      due: (now, limit, afterId) => stub.jobRunsDue(now, limit, afterId),
       list: (filter) => stub.jobRunList(filter),
       patch: (id, patch) => stub.jobRunPatch(id, patch),
+      commitPass: (id, patch) => stub.jobCommitPass(id, patch),
       step: (runId, name) => stub.jobStepRow(runId, name),
       recordStep: (runId, name, result, attempts, lastError, at) =>
         stub.jobStepRecord(runId, name, result, attempts, lastError, at),
-      clearSteps: (runId) => stub.jobStepsClear(runId),
     };
   }
 

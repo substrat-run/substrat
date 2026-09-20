@@ -237,6 +237,17 @@ export const JOB_RUN_LIST_LIMIT = 50;
 /** Runs one `runDueJobs` call picks up by default. */
 export const JOB_DRIVE_LIMIT = 50;
 
+/**
+ * Rows one `runDueJobs` call will READ while looking for runnable ones.
+ *
+ * The drive skips runs whose job this host does not register, so "read `limit` rows"
+ * and "find `limit` runs to drive" are different numbers, and a scope can hold an
+ * arbitrary number of the unrunnable kind. This caps the difference: past it the call
+ * drives what it found and returns, rather than scanning a scope's whole history on a
+ * maintenance tick.
+ */
+export const JOB_DRIVE_SCAN_MAX = 500;
+
 /** What a handler says at the end of a pass. */
 export interface JobPassResult {
   /**
@@ -270,6 +281,18 @@ export interface JobPassContext {
    *
    * `name` must be a pure function of the payload and prior results. Two calls
    * under one name in one pass are refused rather than silently memo-aliased.
+   *
+   * **AT-LEAST-ONCE. `fn` must be idempotent, and this is not a formality.** The
+   * ledger row is written AFTER `fn` resolves, which is the only ordering that is
+   * safe — claiming the step first would make it at-most-once and lose the effect on
+   * any crash in between. The cost is the opposite window: a stop after `fn`'s effect
+   * lands and before `recordStep` commits leaves no memo, so the next pass runs that
+   * effect a second time. It is the same trade, made the same way and for the same
+   * reason, as `recordExecutorDelivery` in the executor journal — whose docblock says
+   * it plainly — and like an executor handler, a step body absorbs the residue.
+   *
+   * `value` is round-tripped through its stored JSON before being returned, so what a
+   * handler sees is identical whether the step just ran or was replayed from the memo.
    */
   step<T>(name: string, fn: () => T | Promise<T>, retry?: ExecutorRetryPolicy): Promise<T>;
   /** Add to a counter. Committed with the pass; discarded if the pass fails. */
@@ -360,15 +383,51 @@ export interface JobRunPatch {
  * the work a mid-pass kill is supposed to keep.
  */
 export interface JobRunStore {
-  /** The live (`running`) run for this key, or null. Newest first if several exist. */
-  findLive(key: JobRunKey): Promise<JobRunRow | null>;
+  /**
+   * The coalescing decision itself, as ONE operation: return the live (`running`)
+   * run for `row`'s key if there is one, otherwise insert `row` and return it.
+   *
+   * **Atomic, and it has to be.** Split into a lookup and an insert — which is how
+   * this was first written — two concurrent starts both see no live row and both
+   * insert, and the schema deliberately carries no constraint that could reject the
+   * second. The result is two runs walking one source: exactly what "a start against
+   * a live key joins it" promises not to happen, defeated by the promise's own
+   * mechanism. Nothing underneath made it safe: no unique index (by design), no
+   * transaction, and neither the pure host's actor queue nor a single DO RPC wrapped
+   * the pair.
+   *
+   * It is the port's job rather than the kernel's because atomicity is the one thing
+   * only the adapter can supply — a transaction on the pure side, a single RPC on the
+   * DO side, where the input gate makes one round trip indivisible.
+   */
+  startOrJoin(key: JobRunKey, row: JobRunRow): Promise<JobRunRow>;
   /** One run by id, whatever its status. */
   get(id: string): Promise<JobRunRow | null>;
-  insert(row: JobRunRow): Promise<void>;
-  /** `running` runs whose `next_attempt_at` has passed (or is NULL), oldest first. */
-  due(now: string, limit: number): Promise<JobRunRow[]>;
+  /**
+   * `running` runs whose `next_attempt_at` has passed (or is NULL), oldest first,
+   * starting strictly after `afterId` when one is given.
+   *
+   * The cursor exists for starvation, not for paging convenience: the driver skips
+   * runs whose job this host does not register, and without a cursor those rows sit
+   * at the head of every batch forever, so a scope holding `limit` of them never
+   * drives anything newer. See `runDueJobRuns`.
+   */
+  due(now: string, limit: number, afterId?: string): Promise<JobRunRow[]>;
   list(filter: JobRunFilter): Promise<JobRunRow[]>;
   patch(id: string, patch: JobRunPatch): Promise<void>;
+  /**
+   * A COMMITTED pass: write the run's new state and drop its step ledger together,
+   * indivisibly.
+   *
+   * Two statements, one operation, for the reason `startOrJoin` is one: a stop
+   * between them leaves the advanced cursor beside the finished pass's memo rows,
+   * and the next pass — which is entitled to reuse a step name, since the
+   * determinism rule binds names to the payload and prior results, NOT to the
+   * cursor — reads that stale memo and skips work it never did. The first cut of
+   * this file ordered the two calls carefully and explained in a comment why the
+   * gap was harmless. The comment was wrong; only atomicity makes it true.
+   */
+  commitPass(id: string, patch: JobRunPatch): Promise<void>;
   step(runId: string, name: string): Promise<JobStepRow | null>;
   recordStep(
     runId: string,
@@ -378,8 +437,6 @@ export interface JobRunStore {
     lastError: string | null,
     at: string,
   ): Promise<void>;
-  /** Drop every step row of a run — called when, and only when, a pass commits. */
-  clearSteps(runId: string): Promise<void>;
 }
 
 /** `conflict` reason: two `step()` calls under one name in one pass. */
@@ -442,7 +499,14 @@ export function assertQueueSafe(value: unknown, root: string): void {
     if (open.has(obj)) reject(path, 'a cycle back to a value already on this path');
     open.add(obj);
     if (Array.isArray(obj)) {
-      obj.forEach((item, i) => walk(item, `${path}.${i}`));
+      // BY INDEX, not `forEach`, and a HOLE is refused. `forEach` skips a sparse
+      // slot entirely, so `new Array(3)` walked cleanly and then stored as
+      // `[null,null,null]` — a value that passed the queue-safety check and changed
+      // on its way to storage, which is the one thing this function exists to stop.
+      for (let i = 0; i < obj.length; i += 1) {
+        if (!(i in obj)) reject(`${path}.${i}`, 'a hole in a sparse array, which JSON stores as null');
+        walk(obj[i], `${path}.${i}`);
+      }
     } else {
       const proto = Object.getPrototypeOf(obj) as unknown;
       if (proto !== Object.prototype && proto !== null) reject(path, describe(obj));
@@ -512,6 +576,12 @@ export function jobRunOf(row: JobRunRow): JobRun {
  * time. A second caller therefore learns the id of the walk that is already
  * happening and can watch it, which is what "joins the first" has to mean for the
  * caller to be able to do anything with the answer.
+ *
+ * **The lookup and the insert are ONE store operation** (`startOrJoin`), not two.
+ * As two, concurrent starts both find no live run and both insert — and there is no
+ * unique index to catch the second, deliberately, because a crashed run must stay
+ * restartable. The coalescing guarantee would then be false exactly when it is load
+ * bearing: two callers asking at once, which is the case it exists for.
  */
 export async function startJobRun(
   store: JobRunStore,
@@ -526,8 +596,6 @@ export async function startJobRun(
     job: input.job,
     instance: input.instance ?? 'default',
   };
-  const live = await store.findLive(key);
-  if (live) return live;
   const at = now();
   const row: JobRunRow = {
     id: mintId(),
@@ -545,8 +613,11 @@ export async function startJobRun(
     next_attempt_at: null,
     ended_at: null,
   };
-  await store.insert(row);
-  return row;
+  // The row is built unconditionally — an id is minted and a start time stamped even
+  // when this call turns out to be a join. That is the price of doing the decision in
+  // one store operation, and it is cheap: a ULID nobody kept costs nothing, whereas a
+  // "look first so we do not waste an id" round trip is the race this exists to close.
+  return store.startOrJoin(key, row);
 }
 
 /** A step that threw, carrying what the driver needs to decide the run's fate. */
@@ -654,6 +725,15 @@ export async function runJobPass(options: {
         // with a null result and a raised count, and must run again.
         if (prior && prior.result !== null) return JSON.parse(prior.result) as T;
         const attempts = (prior?.attempts ?? 0) + 1;
+        // A step whose RECORDED attempts already reached the policy is spent, and
+        // calling `fn` again would be one more real request to somebody else's API
+        // for a run that is going to fail anyway. Reachable: a stop after
+        // `recordStep` wrote the final failed attempt but before the run patch below
+        // marked the run terminal leaves exactly this row, and the next drive would
+        // otherwise spend one extra attempt discovering what the row already says.
+        if (prior && prior.attempts >= policy.maxAttempts) {
+          throw new JobStepFailure(name, prior.attempts, policy, prior.last_error ?? 'exhausted');
+        }
         let value: T;
         try {
           value = await fn();
@@ -664,19 +744,46 @@ export async function runJobPass(options: {
         }
         // `undefined` becomes the JSON text 'null', not SQL NULL: a step done purely
         // for its effect must still read as completed on the next pass.
-        await store.recordStep(run.id, name, JSON.stringify(value) ?? 'null', attempts, null, now());
-        return value;
+        const stored = JSON.stringify(value) ?? 'null';
+        await store.recordStep(run.id, name, stored, attempts, null, now());
+        // RETURNED THROUGH THE STORED FORM, not as the raw value. The resume path
+        // returns `JSON.parse(row.result)`, so returning `value` here would hand the
+        // handler a `Date` on the first pass and the string `"2026-01-01T…"` on the
+        // replay — the same code taking a different branch depending on whether it
+        // was interrupted, which is the determinism failure this driver is most
+        // exposed to and the one least likely to be noticed in a test that never
+        // resumes. Both paths now return the same shape.
+        return JSON.parse(stored) as T;
       },
     };
 
     const result = (await handler(pass)) ?? {};
     const keepsCursor = !('cursor' in result);
-    if (!keepsCursor) assertQueueSafe(result.cursor ?? null, 'cursor');
+    // NOT `result.cursor ?? null`. An explicitly supplied `cursor: undefined` is a
+    // supplied cursor — `'cursor' in result` is true — and coalescing it to null
+    // before the check meant it validated cleanly and RESET the walk to the
+    // beginning. The difference between "keep going" and "start over" turned on a
+    // `??`, silently, in the direction that repeats an hour of work. `assertQueueSafe`
+    // already refuses `undefined`; it simply never saw it.
+    if (!keepsCursor) assertQueueSafe(result.cursor, 'cursor');
     const at = now();
     const done = result.done === true;
-    await store.patch(run.id, {
+    // ONE operation: the run's new state and the dropping of its step ledger commit
+    // together or not at all.
+    //
+    // This was two calls, ordered patch-then-clear, with a comment explaining that a
+    // stop in between was harmless because the next pass's step names "derive from
+    // the new cursor" and would miss the stale rows. THAT WAS FALSE. The determinism
+    // rule binds a step name to the payload and prior results, not to the cursor, so
+    // a handler naming its steps `fetch-page` / `write-batch` — legal, and the
+    // obvious way to write one — hits the finished pass's memo on the next pass and
+    // skips work it never did. The gap was also wrong in the other direction: a
+    // throw from the clear landed in the catch below, which wrote the OLD cursor
+    // back and filed an already-committed pass as failed, so the record a human
+    // reads to recover would have understated the run's own progress.
+    await store.commitPass(run.id, {
       status: done ? 'done' : 'running',
-      cursor: keepsCursor ? run.cursor : JSON.stringify(result.cursor ?? null),
+      cursor: keepsCursor ? run.cursor : JSON.stringify(result.cursor),
       counters: JSON.stringify(counters),
       attempts: 0,
       lastError: null,
@@ -684,10 +791,6 @@ export async function runJobPass(options: {
       nextAttemptAt: null,
       endedAt: done ? at : null,
     });
-    // Only after the cursor is durable: a kill between the patch and this leaves a
-    // committed cursor with a stale ledger, and the ledger is keyed by step NAME,
-    // so the next pass's names (derived from the new cursor) simply miss it.
-    await store.clearSteps(run.id);
     return { status: done ? 'completed' : 'advanced' };
   } catch (err) {
     const stepFailure = err instanceof JobStepFailure ? err : null;
@@ -723,6 +826,20 @@ export async function runJobPass(options: {
  * is simply left `running` and due, and the next call takes it — the same "reported
  * rather than looped" shape the event drain's `incomplete` has. Default `maxPasses`
  * is 1, so a caller gets one predictable unit of work unless it asks for more.
+ *
+ * **`limit` counts RUNNABLE runs, not rows read**, and that distinction is a fix
+ * rather than a nicety. Runs whose job this host does not register are skipped, and
+ * when the budget was applied to the query instead, a scope holding `limit` such rows
+ * at the head of the due order returned the same unrunnable batch on every call —
+ * nothing newer was ever reached, and the report said `attempted: 0` forever with no
+ * indication why. So the read pages past them, bounded by `JOB_DRIVE_SCAN_MAX` rows
+ * examined so one scope full of orphans cannot turn a tick into a table scan.
+ *
+ * The starvation was spotted while re-reading this file, judged unlikely and left
+ * alone — and then found independently by a reviewer. The judgement may even have
+ * been right; recording it only in the author's head was not, because a decision
+ * nobody can see is indistinguishable from an oversight. Hence the fix and hence
+ * this paragraph.
  */
 export async function runDueJobRuns(options: {
   store: JobRunStore;
@@ -742,13 +859,30 @@ export async function runDueJobRuns(options: {
     errors: [],
   };
   const maxPasses = Math.max(1, options.maxPasses ?? 1);
-  const due = await options.store.due(options.now(), options.limit ?? JOB_DRIVE_LIMIT);
-  for (const row of due) {
-    const registered = options.handlerFor(row);
-    // A run whose job this host does not register: another deployment's, or one
-    // whose registration was removed. Left untouched and uncounted — failing it
-    // would destroy a resumable run because the wrong process looked at it.
-    if (!registered) continue;
+  const want = options.limit ?? JOB_DRIVE_LIMIT;
+
+  // Page the due read until `want` RUNNABLE runs have been gathered, or the scope
+  // runs out, or the scan cap is hit. A run whose job this host does not register —
+  // another deployment's, or one whose registration was removed — is stepped over
+  // and NOT failed: failing it would destroy a resumable run because the wrong
+  // process happened to look at it.
+  const runnable: JobRunRow[] = [];
+  let scanned = 0;
+  let afterId: string | undefined;
+  while (runnable.length < want && scanned < JOB_DRIVE_SCAN_MAX) {
+    const batch = await options.store.due(options.now(), want, afterId);
+    if (batch.length === 0) break;
+    scanned += batch.length;
+    for (const row of batch) {
+      if (options.handlerFor(row) && runnable.length < want) runnable.push(row);
+    }
+    afterId = batch[batch.length - 1]!.id;
+    // A short batch is the end of the due set; another round trip would read nothing.
+    if (batch.length < want) break;
+  }
+
+  for (const row of runnable) {
+    const registered = options.handlerFor(row)!;
     report.attempted += 1;
     let run = row;
     for (let pass = 0; pass < maxPasses; pass += 1) {
