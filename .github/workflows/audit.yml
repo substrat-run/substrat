@@ -1,0 +1,86 @@
+name: Dependency audit
+
+# Asks the npm advisory database about the resolved tree in pnpm-lock.yaml (#1590).
+#
+# THE DECISION, stated rather than defaulted: this BLOCKS on `critical` and only REPORTS
+# everything else.
+#
+#   * critical  -> the step fails. A critical advisory in the tree is worth a red check even
+#                  when nothing in the PR touched it, and there are none today, so the gate
+#                  costs nothing until it matters.
+#   * high and below -> written to the run summary, never a failure. The tree carries dozens
+#                  of them at any time, most transitive (a bundler's dev server, a docs-site
+#                  dependency), many with no reachable path from what ships. A scanner that
+#                  reddens every PR for those gets switched off within a week, and one nobody
+#                  reads is worse than none — so they are surfaced where someone looks, and
+#                  Dependabot (`.github/dependabot.yml`) is what turns them into PRs.
+#
+# It is a separate workflow, not a job in ci.yml, for two reasons. The advisory database
+# changes without a commit, so the check has to run on a schedule as well as on a push — and a
+# `schedule:` trigger on ci.yml would run the whole test suite weekly. And a registry hiccup
+# here should never sit inside the job that gates the build.
+#
+# If a critical advisory has no fix, or the vulnerable path is provably unreachable, the way
+# through is a reviewed line in the root package.json, one GHSA id with the reason in the PR:
+#
+#   "pnpm": { "auditConfig": { "ignoreGhsas": ["GHSA-xxxx-xxxx-xxxx"] } }
+#
+# Measured on pnpm 10.10.0: that key is honoured in package.json and NOT in
+# pnpm-workspace.yaml, which is where the rest of this repo's pnpm settings live.
+#
+# It reads the lockfile, so it needs no install and no build.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Mondays, 06:17 UTC — before Dependabot's own Monday run has anything to say.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    # A registry that hangs must not hold a runner for the default six hours.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # Everything, every severity, into the run summary. Never fails: the gate below is the
+      # only step allowed to.
+      - name: Report
+        run: |
+          pnpm audit --json > audit.json || true
+          {
+            echo "## Dependency audit"
+            echo
+            if jq -e '.metadata.vulnerabilities' audit.json > /dev/null 2>&1; then
+              jq -r '.metadata.vulnerabilities
+                | "critical **\(.critical)** · high **\(.high)** · moderate **\(.moderate)** · low **\(.low)**"' audit.json
+              echo
+              echo "Only **critical** fails this workflow. High and below are listed for triage."
+              echo
+              echo "| Severity | Package | Vulnerable | Patched | Advisory |"
+              echo "|---|---|---|---|---|"
+              jq -r '.advisories | to_entries
+                | map(.value)
+                | map(select(.severity == "critical" or .severity == "high"))
+                | sort_by(.severity, .module_name)
+                | .[]
+                | "| \(.severity) | `\(.module_name)` | `\(.vulnerable_versions)` | `\(if .patched_versions == "<0.0.0" then "none" else .patched_versions end)` | [\(.github_advisory_id)](\(.url)) |"' audit.json
+            else
+              echo "The advisory lookup returned no report — see the gate step for the error."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The gate. Exits 1 on any critical advisory, and on a registry error — a scanner that
+      # cannot reach its database must not report the tree clean.
+      - name: Fail on critical
+        run: pnpm audit --audit-level critical
