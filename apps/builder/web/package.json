@@ -17,13 +17,13 @@
     "@substrat-run/ui": "workspace:*",
     "dompurify": "^3.2.0",
     "marked": "^15.0.0",
-    "react": "^18.3.0",
+    "react": "^19.3.0",
     "react-dom": "^18.3.0"
   },
   "devDependencies": {
     "@substrat-run/builder-generator": "workspace:*",
     "@substrat-run/builder-workspace": "workspace:*",
-    "@types/react": "^18.3.0",
+    "@types/react": "^19.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
     "typescript": "catalog:",
