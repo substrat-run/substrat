@@ -31,7 +31,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "hono": "^4.6.0",
+    "hono": "^4.13.8",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

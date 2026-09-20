@@ -22,7 +22,7 @@
     "@substrat-run/dev-issuer": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
-    "hono": "^4.6.0",
+    "hono": "^4.13.8",
     "zod": "catalog:"
   },
   "devDependencies": {
@@ -30,7 +30,7 @@
     "@substrat-run/model-emit": "workspace:*",
     "@types/node": "catalog:",
     "concurrently": "^9.0.0",
-    "tsx": "^4.19.0",
+    "tsx": "^4.23.13",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

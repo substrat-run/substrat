@@ -29,7 +29,7 @@
     "@substrat-run/engine-workorder": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/oidc-rp": "workspace:^",
-    "hono": "^4.6.0",
+    "hono": "^4.13.8",
     "tweetnacl": "^1.0.3",
     "zod": "catalog:"
   },

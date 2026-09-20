@@ -36,13 +36,13 @@
     "jose": "^6.2.3"
   },
   "peerDependencies": {
-    "hono": "^4.6.0"
+    "hono": "^4.13.8"
   },
   "devDependencies": {
     "@substrat-run/oidc-rp": "workspace:^",
     "@types/node": "catalog:",
-    "hono": "^4.6.0",
-    "tsx": "^4.19.0",
+    "hono": "^4.13.8",
+    "tsx": "^4.23.13",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

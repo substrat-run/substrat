@@ -109,7 +109,7 @@
     "@substrat-run/vertical-auth": "workspace:^",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.6.0",
+    "hono": "^4.13.8",
     "zod": "catalog:"
   },
   "devDependencies": {
@@ -119,7 +119,7 @@
     "@substrat-run/vertical-host": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
     "concurrently": "^9.0.0",
-    "tsx": "^4.19.0",
+    "tsx": "^4.23.13",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

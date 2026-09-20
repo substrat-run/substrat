@@ -28,9 +28,9 @@
     "update-rate-card": "node scripts/update-rate-card.mjs"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "3.0.30",
+    "@ai-sdk/openai-compatible": "3.0.51",
     "@substrat-run/contracts": "workspace:^",
-    "ai": "7.0.62"
+    "ai": "7.0.105"
   },
   "devDependencies": {
     "typescript": "catalog:",

@@ -35,7 +35,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "ai": "7.0.62",
+    "ai": "7.0.105",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

@@ -31,7 +31,7 @@
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/psl": "workspace:^",
-    "hono": "^4.6.0"
+    "hono": "^4.13.8"
   },
   "devDependencies": {
     "@hono/node-server": "^1.13.0",
@@ -40,8 +40,8 @@
     "@types/better-sqlite3": "^9.6.0",
     "better-auth": "^1.7.1",
     "better-sqlite3": "^13.0.3",
-    "hono": "^4.6.0",
-    "tsx": "^4.19.0",
+    "hono": "^4.13.8",
+    "tsx": "^4.23.13",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
