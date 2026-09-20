@@ -40,14 +40,18 @@ updates:
           - minor
           - patch
     ignore:
-      # Held back on purpose; see the catalog notes in pnpm-workspace.yaml. vitest 4 needs
-      # @cloudflare/vitest-pool-workers >= 0.21, which replaced `defineWorkersConfig` — a
-      # migration through the production Durable Object adapter, tracked separately. Both
-      # would otherwise arrive as a red PR every week. Drop these two entries when it lands.
+      # Held back on purpose; see the catalog notes in pnpm-workspace.yaml. vitest 4 is a
+      # migration through the production Durable Object adapter, tracked separately, and
+      # @cloudflare/vitest-pool-workers moves to it at 0.13.0 — its `vitest` peer range is
+      # 2.0.x - 3.2.x up to 0.12.x and ^4.1.0 from 0.13.0 (`npm view … peerDependencies`).
+      # So the ignore starts at 0.13.0, not earlier: 0.10 - 0.12 still accept the vitest 3
+      # we run, and an ignore also suppresses SECURITY updates for the versions it covers.
+      # Both would otherwise arrive as a red PR every week. Drop these entries when the
+      # migration lands.
       - dependency-name: vitest
         update-types: ["version-update:semver-major"]
       - dependency-name: "@cloudflare/vitest-pool-workers"
-        versions: [">=0.10.0"]
+        versions: [">=0.13.0"]
 
   - package-ecosystem: github-actions
     directory: /
