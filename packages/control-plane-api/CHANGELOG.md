@@ -1,5 +1,47 @@
 # @substrat-run/control-plane-api
 
+## 0.116.0
+
+### Minor Changes
+
+- b935471: `ControlPlaneClient.identityTenants(externalId)` — the builder studio's membership read (`POST /internal/builder/identity-tenants`): the tenants a login builds for, each flagged with whether it holds the `builder` entitlement. Additive: a new method and two new exports (`identityTenantsResponse`, the schema the answer is parsed with, and its `IdentityTenant` type); nothing existing changes.
+
+  The answer is parsed rather than cast, and a failure is raised as `ControlPlaneError` like every other client call — a refusal carries the plane's problem-document `detail`, and a body of the wrong shape (a renamed `entitled`, an `{ error }` answered with a 200) throws `identity-tenants returned an unexpected shape: …` naming the field that was wrong, never the body. The studio read this as `${status} ${text}` by hand and never saw the document; it now uses the client.
+
+- e99332e: `redrainEvents` can now answer how many rows a window holds without reopening any of them: `countOnly: true` on its input, absent everywhere else, so the verb behaves exactly as before for every caller that does not ask. The count is UNBOUNDED where the reopen is batched at `REDRAIN_BATCH` — an aggregate materialises no rows, so it answers for the whole window in one call rather than the first batch of it.
+
+  A count leaves an **access-log** row, because it is a `HostAdmin` read and K-24 takes all reads rather than a chosen subset — the window it named and the number it found, so "who counted this tenant's outbox" has an answer. What it writes no row in is the **admin** log: those two receipts exist because a reopen is a second egress of a tenant's payloads, and a row claiming a redrain on a scope that was only counted would be a false statement in the log that is the evidence.
+
+  The transport keeps the two apart by PATH rather than by a flag, at both hops where the peer is deployed on its own clock: `POST /tenants/:tenantId/scopes/:scopeId/redrain-count` on the control plane and `POST /internal/redrain-count` on a vertical. A `countOnly` field on the existing routes would be stripped by an older deployment's Zod boundary, which would then reopen the window and answer with a number shaped exactly like the count that was asked for. A path it does not serve refuses instead, with the rows untouched.
+
+  `pnpm lake:redrain --drained-before=… --dry-run` therefore prints real per-scope totals and a fleet total, in place of the paragraph saying it could not know (#1545).
+
+### Patch Changes
+
+- 77f0c1d: `ControlPlaneError` takes an optional third constructor argument, `probe` — the provider's own answer when the plane refused a connect because the credential was rejected upstream (#605, 422). Additive: every existing `new ControlPlaneError(status, message)` is unchanged, and `probe` is `undefined` unless a caller passes one. The dashboard declared its own class of the same name to carry exactly this field; it now imports this one instead of keeping a second copy.
+- 72d3736: The `deploy refused:` refusal carries its own code, and `mapError`'s `CODE_PATTERNS` table loses its row — 21 rows to 20 (#113 phase 5). `assertSandboxContract`'s one throw site now says `substratError('forbidden', …)`, so the 403 comes from the throw's declaration rather than a regex over its prose. The message is byte-identical and the response is unchanged — same 403, same detail.
+
+  This is the first family whose throw is not in an adapter: it lives in this package, on the coordinator, with no Durable Object hop to fold its `name` into the message. An untyped `deploy refused:` sentence now falls through to the generic 500, which is the point, and the sandbox-contract unit cases assert the code on every refusal branch rather than the sentence alone.
+
+- 70c1dc7: `mapError`'s `CODE_PATTERNS` table loses its `was rejected — publish a new one` row — 19 rows to 18 (#113 phase 5). Both adapters now throw that refusal typed as `conflict`, so the code is read from the declaration one branch earlier and the row had nothing left to match. The response is unchanged — same 409, same detail — and every other row is untouched. An untyped throw of the same sentence now falls through to the generic 500, which is the point, and a new case pins both halves.
+- 93710da: Deleting a vertical that still backs an ARCHIVED scope answers **409 with the refusal that names the way out**, where it used to answer a generic 500 saying `internal error`.
+
+  `deleteVertical` refuses twice, and `mapError`'s `CODE_PATTERNS` row read `/still backs \d+ scope\(s\)/` — which the archived sentence ("still backs 1 archived scope(s) — reap or restore them first") never matched, because the word `archived` sits between the digits and `scope(s)`. No other row caught it, so an operator who archived an app and then deleted its vertical was told nothing at all. Both adapters now throw that refusal typed, the 409 is read from the declaration one branch earlier, and the row is deleted — 20 rows to 19 (#113 phase 5). The LIVE variant's response is unchanged, and every other row in the table is untouched.
+
+- b9d6a7b: `mapError`'s `CODE_PATTERNS` table loses its `unknown version` row — 22 rows to 21 (#113 phase 5). Both adapters now throw that refusal typed, so the code is read from the declaration one branch earlier and the row had nothing left to match. The response is unchanged — same 404, same detail — and every other row in the table is untouched. The row could only go after the throws were typed: an untyped `unknown version` now falls through to the generic 500, which is the point, and a new case pins both halves.
+
+  The table's header now also records what decides whether a row CAN go, so the next person does not have to re-derive it: the throws must live on the COORDINATOR. A `substratError` raised inside a Durable Object — `scope-do.ts` or `control-plane-do.ts` — arrives here as a plain `Error` whose message has grown a `Substrat.<code>: ` prefix, because workerd folds `name` into the message and resets it. Typing a DO-side throw today therefore loses the code _and_ rewrites the sentence, and roughly half the remaining rows are waiting on the `{ ok, error }` envelope rather than on attention.
+
+- ebe283f: `mapError`'s `CODE_PATTERNS` table loses its `unknown vertical` row (#113 phase 5). Both adapters now throw that refusal typed, so the code is read from the declaration one branch earlier and the row had nothing left to match. The response is unchanged — same 404, same detail — and every other row in the table is untouched. The row could only go after the throws were typed: an untyped `unknown vertical` now falls through to the generic 500, which is the point, and a new case pins both halves.
+- Updated dependencies [e22db55]
+- Updated dependencies [a67c59b]
+- Updated dependencies [45d2f15]
+- Updated dependencies [e99332e]
+- Updated dependencies [1c55458]
+- Updated dependencies [0b993ff]
+  - @substrat-run/contracts@0.116.0
+  - @substrat-run/kernel@0.116.0
+
 ## 0.115.0
 
 ### Minor Changes

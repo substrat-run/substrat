@@ -1,5 +1,98 @@
 # @substrat-run/contract-tests
 
+## 0.116.0
+
+### Minor Changes
+
+- e22db55: A delivery now records which request attempted it, so a retry can be told apart from the call that first produced the work.
+
+  Events already carried the identifier of the request that produced them, and a delivery could be traced back to its event. What that gave was the call that _emitted_ the work, never the call that _attempted to deliver_ it — and for anything with retries those are routinely different. The first attempt happens while the original request is still finishing; every attempt after it happens on a background sweep minutes or hours later. So a delivery that eventually gave up appeared to belong to the request that started it, and the work that actually failed was filed under a call that had long since returned successfully.
+
+  The identifier now goes onto the delivery as each attempt is written, on both the self-hosted and the hosted store, and it moves with the row — a record always describes its most recent attempt, the way the attempt count and the timestamp already do. Nothing is invented where none was supplied: a background sweep, a scheduled run or a seeding script records none, which reads as unrecorded rather than as an attempt that belonged to nowhere. Deliveries already recorded keep that unrecorded value; nothing can decide afterwards which attempt produced them.
+
+  Both places a delivery is read carry the new field — the view of what one event set off, and the list of deliveries that gave up. The second of those already showed a request identifier, which was the emitting call; it now shows both, and describes each for what it is.
+
+  No application code changes to adopt it. It does take a redeploy: the identifier is minted by platform code an app bundles into its own deployment, so an app already running keeps recording nothing until it is rebuilt on this version and pushed.
+
+- a67c59b: A refused permission check now records which request it happened during, so a denial can be looked at beside everything else that call did.
+
+  Events already carried the identifier of the request that produced them. A denial carried none — and a denial produces no event, which is the whole point of it, so it was the one thing a request could do that nothing could tie back to the request. The record named the operation that was attempted, never which attempt, so two refusals a second apart were indistinguishable and "what else was this call doing" stopped at the parts that succeeded.
+
+  The identifier now goes onto the denial the same way it goes onto an event: minted by the platform per request and stamped on the refusal as it is written, on both the self-hosted and the hosted store. Nothing is invented where none was supplied — a seeding script, an internal call or an attachment request records none, which reads as unrecorded rather than as a refusal that belonged to nowhere. Refusals already recorded keep that unrecorded value; nothing can decide afterwards which call they came from.
+
+  The denial read surfaces carry the new field, so anything already reading a scope's refusals sees it without changing how it asks.
+
+  No application code changes to adopt it. It does take a redeploy: the identifier is minted by platform code an app bundles into its own deployment, so an app already running keeps recording nothing until it is rebuilt on this version and pushed.
+
+- 45d2f15: An app's screens can now be told when something changed, instead of asking every few seconds.
+
+  Every screen that watches for change has had to poll, because nothing on the platform could hold a connection open and push. An app's scope keeps the one truthful record of what happened — every change it makes is written there — and it can now also hand out a subscription to it: a connection stays open, and when a change commits, whoever is watching is told.
+
+  What is sent is a notice, not the row. A frame names what changed — the kind of thing, which one, and when — and the screen re-reads it through the same operation it already calls. So nothing arrives that has not been through the app's own declared read, with that read's permission check and its own handling of personal data, and a subscription can never become a second way to get at data that the ordinary way would have refused.
+
+  Who is told what is decided per change, per watcher, after the change has committed. An app says which kinds of thing are watchable and which permission it takes to read one, and a change is announced only to watchers who pass that permission **on that particular record** — the same walk a read of it would make, so a record shared with one person and not another is announced the same way. A kind of thing the app has not declared watchable is announced to nobody, which is also what an app that says nothing gets: silence, exactly as before. Permission is re-checked on every frame rather than once when the connection opens, so access taken away while somebody is watching stops the notices with it.
+
+  A watcher costs nothing while it is idle — a scope with connections open still sleeps between them — and a change that cannot be announced never affects the change itself: it has already been saved, and the screen's existing periodic refresh remains the floor underneath the notices.
+
+  Not every connection can carry one. Where an app is reached through a customer's own domain that is itself proxied, the network in front of us does not carry these connections at all, so the platform declines the subscription rather than opening one that would never deliver — and says so in the reply, so the screen knows it is falling back to asking rather than being told. That is decided per request, from what the connection itself reports, so it follows the customer's own DNS the moment they change it.
+
+  Self-hosted apps are unaffected and unchanged: the self-hosted store runs inside the calling process, with nothing that outlives a request to hold a connection open, so it does not offer subscriptions — and asking it for one is refused when the app is compiled, rather than hanging at runtime.
+
+  Nothing changes for an app that says nothing: no app is watched until it declares which of its records are watchable, and one that declares none behaves exactly as it did. Taking it up is not automatic either — an app says what is watchable, opens the door on a screen, and has that screen listen — and the last two of those are not in this release. What ships here is the platform side: the subscription, the filter, and the declaration they read.
+
+- e99332e: `redrainEvents` can now answer how many rows a window holds without reopening any of them: `countOnly: true` on its input, absent everywhere else, so the verb behaves exactly as before for every caller that does not ask. The count is UNBOUNDED where the reopen is batched at `REDRAIN_BATCH` — an aggregate materialises no rows, so it answers for the whole window in one call rather than the first batch of it.
+
+  A count leaves an **access-log** row, because it is a `HostAdmin` read and K-24 takes all reads rather than a chosen subset — the window it named and the number it found, so "who counted this tenant's outbox" has an answer. What it writes no row in is the **admin** log: those two receipts exist because a reopen is a second egress of a tenant's payloads, and a row claiming a redrain on a scope that was only counted would be a false statement in the log that is the evidence.
+
+  The transport keeps the two apart by PATH rather than by a flag, at both hops where the peer is deployed on its own clock: `POST /tenants/:tenantId/scopes/:scopeId/redrain-count` on the control plane and `POST /internal/redrain-count` on a vertical. A `countOnly` field on the existing routes would be stripped by an older deployment's Zod boundary, which would then reopen the window and answer with a number shaped exactly like the count that was asked for. A path it does not serve refuses instead, with the rows untouched.
+
+  `pnpm lake:redrain --drained-before=… --dry-run` therefore prints real per-scope totals and a fleet total, in place of the paragraph saying it could not know (#1545).
+
+- 1c55458: Long work can now stop halfway through and carry on from where it stopped, instead of starting again.
+
+  The platform already had three ways to move work off a request, and each one assumes the work finishes. An effect that fails is retried whole. A recurring operation fires and must run to the end. A maintenance pass does its round and reports it. None of them fits an import that walks a hundred thousand records in an external system over an hour, where a deploy, an eviction or a single upstream hiccup means starting from nothing.
+
+  There is now a fourth kind of work for exactly that. A run is a record kept with the app's own data: what it was asked to do, where it has got to, what it has counted, when it started, and — if it stopped — why. Work inside a run is done in named steps, and a step that has already succeeded is not done a second time, whether the interruption was a failure further along or the machine disappearing mid-way. Between stretches of work the run hands forward a marker of where it reached, so the next stretch resumes there rather than at the beginning.
+
+  Asking for a run that is already in flight joins the one already happening and gives back its identity, rather than starting a rival walk over the same source. That is a decision the driver makes rather than a constraint on the record, deliberately: a run whose worker vanished is still an unfinished run and has to be restartable, which a "only ever one of these" rule would refuse.
+
+  What may be handed to a run is ids and configuration — the things that survive being passed between machines. Bytes, dates, class instances and functions are refused when the run is started, naming the exact field, the same way an invalid request to an app is refused. A step that runs out of retries ends its own run with the error kept on the record, and never disturbs the other runs beside it.
+
+  Both the self-hosted and the hosted store keep the same records and behave identically; the behaviour is pinned by one shared conformance suite that runs against each.
+
+  No application code changes to adopt it, and nothing existing behaves differently. Runs only appear where a deployment registers work of this kind and starts one.
+
+- 0b993ff: The platform sweep's gating state now records which KIND of unit each row is about, so a recurring schedule and a freshness expectation can no longer end up sharing one row.
+
+  The sweep keeps two kinds of bookkeeping per app: when each recurring operation last ran, and when each freshness expectation's verdict was last recorded. Both lived in one table, told apart only by the spelling of their key — a freshness row's key began with `freshness:`. Nothing enforced the other half of that: an operation name is any non-empty string, so an app declaring a schedule literally named `freshness:orders.placed` wrote into the row the freshness evaluator was using for `orders.placed`. The two then overwrote each other every pass — the schedule read the evaluator's last verdict as its own last run and skipped when it was due, and the freshness view reported a verdict that came from a schedule.
+
+  The row now says which it is, in a column, using the same two words — `schedule` and `freshness` — that the recorded sweep history already uses. Both are part of the key, so the two families cannot meet however they are named, and the writer states which kind it is writing rather than the reader guessing from the key.
+
+  Rows already recorded are migrated in place on the store's next wake, on both the self-hosted and the hosted store: each keeps its key and its recorded time and verdict exactly, and is filed under the kind its key already implied. Nothing is re-run and nothing is re-judged by the migration — a schedule does not fire early because of it, and a freshness verdict is not recomputed.
+
+  No application code changes to adopt it. The gating state is platform-owned and nothing user-facing reads it directly.
+
+### Patch Changes
+
+- ebe283f: The scope-host suite asserts the `unknown vertical` refusals by the error CODE they declare, not by matching their message (#113 phase 5). A new `expectRefusal(promise, code)` helper reads `errorCodeOf` — the same reading the control plane's `mapError` does — so the suite and the problem document a transport renders agree by construction rather than by coincidence. A promise that resolves fails it too, so the assertion cannot pass by not throwing.
+- 70c1dc7: The scope-host suite pins `admitVersion`'s refusal of a rejected version by the error CODE it declares (`conflict`), via the existing `expectRefusal(promise, code)` helper, rather than by matching `/was rejected/` in the message (#113 phase 5). The message is now free to change; the type is what cannot.
+- 93710da: The scope-host suite pins both of `deleteVertical`'s bound-scope refusals by the error CODE they declare, on both adapters (#113 phase 5).
+
+  `expectRefusal` takes an optional message pattern for the minority of refusals where the sentence carries what the code cannot: which of two same-coded branches fired. `deleteVertical` is exactly that case — a live scope is refused with "delete or rebind", an archived one with "reap or restore", both `conflict` — so the code and the way out are now asserted together, and an adapter that answered the wrong sentence would send an operator to a button that is not there.
+
+- b9d6a7b: The scope-host suite pins the `unknown version` refusal on all five registry verbs — `admitVersion`, `rejectVersion`, `promoteVersion`, `bindScopeVersion`, `versionManifest` — by the error CODE they declare, via the existing `expectRefusal(promise, code)` helper (#113 phase 5).
+
+  This is new coverage, not a moved assertion: the suite asserted on that message **zero** times before, so five throw sites per adapter were pinned by nothing at all and a regression to a bare `Error` at any of them was invisible. Each of the ten was broken in turn and the case fails on the adapter carrying the break every time.
+
+- Updated dependencies [e22db55]
+- Updated dependencies [a67c59b]
+- Updated dependencies [45d2f15]
+- Updated dependencies [e99332e]
+- Updated dependencies [1c55458]
+- Updated dependencies [0b993ff]
+  - @substrat-run/contracts@0.116.0
+  - @substrat-run/kernel@0.116.0
+
 ## 0.115.0
 
 ### Minor Changes
@@ -4089,7 +4182,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
