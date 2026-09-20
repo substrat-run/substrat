@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Toast, Dialog, Input, SupportWidget, useAutoRefresh } from '@substrat-run/ui';
 import { api, signIn, signOut, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
+import { removalRefusalDetail } from './lib/bound-scopes';
 import { navigate as go, obsPath, setTeamSlug, teamPath } from './lib/router';
 import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
@@ -506,7 +507,7 @@ export function App() {
       if (promoting) return;
       if (
         !window.confirm(
-          `Remove ${slug}?\n\nIts pushed versions and release channels are deleted from the registry. Apps still running it block the removal — delete them first.`,
+          `Remove ${slug}?\n\nIts pushed versions and release channels are deleted from the registry. Installs still bound to it block the removal — move or retire them first, from its page.`,
         )
       )
         return;
@@ -520,7 +521,18 @@ export function App() {
         }
         setToast({ status: 'success', title: 'Vertical removed', detail: `${slug} was removed from the registry.` });
       } catch (e) {
-        setToast({ status: 'danger', title: 'Removal failed', detail: e instanceof Error ? e.message : String(e) });
+        // The registry's one 409 on this route is "still backs N scope(s)" — a count with
+        // nowhere to go. The vertical's page lists exactly those installs and lets you move
+        // or retire them, so a refusal takes you there rather than leaving you with a number.
+        if (e instanceof ApiError && e.status === 409) {
+          go(`/verticals/${encodeURIComponent(slug)}`);
+          // The plane counts every team's installs; the page lists only this team's. When
+          // none of the counted ones are ours, say so instead of pointing at an empty list.
+          const ours = await api.listBoundScopes(slug).then((v) => v.scopes.length).catch(() => null);
+          setToast({ status: 'danger', title: 'Removal refused', detail: removalRefusalDetail(e.message, ours) });
+        } else {
+          setToast({ status: 'danger', title: 'Removal failed', detail: e instanceof Error ? e.message : String(e) });
+        }
       } finally {
         setPromoting(false);
       }
@@ -853,6 +865,7 @@ export function App() {
       ) : route.section === 'verticals' && openVertical ? (
         <VerticalDetail
           d={openVertical}
+          deployments={deployments}
           busy={promoting}
           onPromote={(vid, ch) => void promoteDeployment(openVertical.slug, vid, ch)}
           onRemove={() => void removeDeployment(openVertical.slug)}
