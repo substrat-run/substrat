@@ -20,6 +20,7 @@ import {
   pageVisible,
   principalId,
   substratError,
+  z,
   type CountedPage,
   type EntityRow,
   type HandlerInput,
@@ -76,6 +77,7 @@ type AiTurnRow = EntityRow<typeof ticket0Entities, 'aiTurn'>;
 type UsageRateRow = EntityRow<typeof ticket0Entities, 'usageRate'>;
 type NotificationRow = EntityRow<typeof ticket0Entities, 'notification'>;
 type SignupRow = EntityRow<typeof ticket0Entities, 'signup'>;
+type BlockRuleRow = EntityRow<typeof ticket0Entities, 'blockRule'>;
 
 const conversationRef = (id: string) => ({ entityType: 'conversation', entityId: id });
 const contactRef = (id: string) => ({ entityType: 'contact', entityId: id });
@@ -561,6 +563,136 @@ function signupByUnsubscribeToken(
  */
 function addressKey(email: string): string {
   return email.toLowerCase();
+}
+
+// ---------------------------------------------------------------------------
+// The blocklist (#1088)
+// ---------------------------------------------------------------------------
+
+/**
+ * What a refused sender is told, and it is the same sentence at both doors.
+ *
+ * It names no rule, and that is deliberate on the widget side: the visitor reads this
+ * in a chat bubble, and "the domain example.com is blocked here" would let anyone with
+ * a browser enumerate a desk's blocklist one address at a time. It says enough to stop
+ * somebody retyping the message, and nothing a probe could learn from.
+ *
+ * Exported so the suite and the inbound receiver can recognise it without re-typing the
+ * prose — see `harness/inbound.ts`, which turns this refusal into a 200 rather than
+ * letting Resend retry a mail this desk will never accept.
+ */
+export const SENDER_BLOCKED = 'this desk is not accepting messages from you';
+
+/** What a rule looks like once a person's typing has been taken out of it. */
+function blockValueOf(ctx: OperationContext, kind: BlockRuleRow['kind'], raw: string): string {
+  const value = raw.trim();
+  if (kind === 'contact') {
+    // A rule naming nobody would sit in the table refusing no one, and read as
+    // protection. `contactOrThrow` is the same check every other contact input gets.
+    return contactOrThrow(ctx, value).id;
+  }
+  if (kind === 'email') {
+    const parsed = z.string().email().safeParse(value);
+    if (!parsed.success) throw substratError('validation_failed', `${raw} is not an email address`);
+    return addressKey(parsed.data);
+  }
+  // A domain, however it was offered: `@example.com`, `EXAMPLE.com`, or an address
+  // somebody pasted whole because that is what was in front of them.
+  const domain = addressKey(value.includes('@') ? value.slice(value.lastIndexOf('@') + 1) : value);
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domain))
+    throw substratError('validation_failed', `${raw} is not a domain`);
+  return domain;
+}
+
+/**
+ * Every domain a rule could refuse this address by — its own, then each parent.
+ *
+ * `spam@mail.throwaway.example` → `mail.throwaway.example`, `throwaway.example`. So one
+ * rule on `throwaway.example` covers every sub-domain a provider hands out, which is
+ * the shape abuse from email actually takes; the alternative is an admin adding a row
+ * per sub-domain against a generator that makes them for free.
+ *
+ * It stops before the bare TLD — not by taste, but because `blockValueOf` will not
+ * store a domain without a dot in it, so a rule on `example` cannot exist to be found.
+ * The two halves agree by construction rather than by both remembering.
+ */
+function domainChainOf(email: string): string[] {
+  const at = email.lastIndexOf('@');
+  if (at < 0) return [];
+  const labels = addressKey(email.slice(at + 1))
+    .split('.')
+    .filter(Boolean);
+  return labels
+    .map((_, i) => labels.slice(i).join('.'))
+    .filter((domain) => domain.includes('.'));
+}
+
+/** Whoever is knocking, in the two terms a rule can be about. */
+interface BlockProbe {
+  readonly email?: string | null;
+  readonly contactId?: string | null;
+}
+
+/**
+ * The rule that refuses this sender, or nothing.
+ *
+ * One query over all three kinds rather than three, because the answer is "is anything
+ * in this table about them" and three round trips would be three chances for two of
+ * them to be about different moments.
+ */
+function blockedBy(ctx: OperationContext, probe: BlockProbe): BlockRuleRow | undefined {
+  const clauses: string[] = [];
+  const params: SqlValue[] = [];
+  if (probe.contactId) {
+    clauses.push("(kind = 'contact' AND value = ?)");
+    params.push(probe.contactId);
+  }
+  if (probe.email) {
+    clauses.push("(kind = 'email' AND value = ?)");
+    params.push(addressKey(probe.email));
+    const domains = domainChainOf(probe.email);
+    if (domains.length > 0) {
+      clauses.push(`(kind = 'domain' AND value IN (${domains.map(() => '?').join(', ')}))`);
+      params.push(...domains);
+    }
+  }
+  if (clauses.length === 0) return undefined;
+  return ctx.sql.query<BlockRuleRow>(
+    `SELECT * FROM ticket0_block_rules WHERE ${clauses.join(' OR ')}
+      ORDER BY created_at ASC, id ASC LIMIT 1`,
+    params,
+  )[0];
+}
+
+/**
+ * Refuse, before anything is written and before a model is called.
+ *
+ * `forbidden` rather than `permission_denied`: nothing about a permission key decided
+ * this, and the two codes stay distinguishable to a caller that has to tell "this
+ * principal may not do that" from "this desk will not hear from this person". It is
+ * also what lets `harness/inbound.ts` answer Resend a 200 for a mail that will never be
+ * accepted instead of asking it to retry forever.
+ */
+function refuseIfBlocked(ctx: OperationContext, probe: BlockProbe): void {
+  if (blockedBy(ctx, probe)) throw substratError('forbidden', SENDER_BLOCKED, { reason: 'sender-blocked' });
+}
+
+/**
+ * The same check for a widget caller, whichever side of its first message they are on.
+ *
+ * An anonymous visitor who has said nothing has no contact and no address, so there is
+ * nothing here to key on and nothing is refused — which is honest rather than a hole:
+ * volume from brand-new strangers is what the widget surface's rate limit (#937) is
+ * for, and this table cannot and should not pretend to do that job. From the second
+ * message on, and from the first for a visitor the host site vouched for, there is a
+ * contact, and a rule about them bites here.
+ */
+function refuseIfBlockedVisitor(ctx: OperationContext, hold: WidgetHold): void {
+  const contactId =
+    hold.kind === 'session' ? hold.conversation.contact_id : hold.opening.contact_id;
+  if (!contactId) return;
+  const contact = contactOrThrow(ctx, contactId);
+  refuseIfBlocked(ctx, { email: contact.email, contactId: contact.id });
 }
 
 /** One place that writes `state` and `updated_at`, so they cannot disagree. */
@@ -1620,6 +1752,90 @@ const operations = {
       payload: { id: DESK },
     });
     return { id: DESK, secret, rotatedAt: now };
+  },
+
+  // --- The blocklist (#1088) -----------------------------------------------
+
+  'ticket0/list-block-rules': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.deskConfigure));
+    // Same shape as `list-signups`: an absent filter must be absent rather than an
+    // explicit undefined, which becomes a `WHERE kind IS NULL` that returns nothing.
+    const filters: Record<string, unknown> = {};
+    if (input.kind !== undefined) filters.kind = input.kind;
+    return (await ctx.page<BlockRuleRow>('blockRule', {
+      ...input,
+      filters,
+      total: true,
+    })) as CountedPage<BlockRuleRow>;
+  },
+
+  /**
+   * Block somebody. Idempotent on the rule rather than on the click.
+   *
+   * A second Block on an address already blocked answers with the row that is already
+   * there and writes nothing — no second row (the key forbids one), no second event,
+   * and in particular no new `created_by`: the person who decided is the person who
+   * decided first, and overwriting that would quietly reassign a decision.
+   */
+  'ticket0/add-block-rule': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.deskConfigure));
+    const value = blockValueOf(ctx, input.kind, input.value);
+    const existing = ctx.sql.query<BlockRuleRow>(
+      'SELECT * FROM ticket0_block_rules WHERE kind = ? AND value = ?',
+      [input.kind, value],
+    )[0];
+    if (existing) return existing;
+
+    const id = ulid();
+    const now = ctx.now();
+    ctx.sql.exec(
+      `INSERT INTO ticket0_block_rules (id, kind, value, reason, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, input.kind, value, input.reason ?? null, String(ctx.principal), now],
+    );
+    const row = ctx.sql.query<BlockRuleRow>('SELECT * FROM ticket0_block_rules WHERE id = ?', [
+      id,
+    ])[0]!;
+    ctx.emit({
+      type: 'ticket0.block-rule-added',
+      schemaVersion: 1,
+      entity: { entityType: 'blockRule', entityId: row.id },
+      // Never `value`. An event is immutable, and this one would be an immutable copy
+      // of a person's address kept in order to say the desk has stopped hearing from
+      // them — see the declaration for the whole of that argument.
+      piiClass: 'none',
+      payload: {
+        id: row.id,
+        kind: row.kind,
+        created_by: row.created_by,
+        created_at: row.created_at,
+      },
+    });
+    return row;
+  },
+
+  /**
+   * Unblock one rule, and only that one.
+   *
+   * By `id`, which is the half the JSON-column shape could not have offered: two
+   * admins unblocking two different people in the same minute each delete their own
+   * row, and neither rewrites the other's list.
+   */
+  'ticket0/remove-block-rule': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.deskConfigure));
+    const row = ctx.sql.query<BlockRuleRow>('SELECT * FROM ticket0_block_rules WHERE id = ?', [
+      input.ruleId,
+    ])[0];
+    if (!row) throw substratError('not_found', `block rule not found: ${input.ruleId}`);
+    ctx.sql.exec('DELETE FROM ticket0_block_rules WHERE id = ?', [row.id]);
+    ctx.emit({
+      type: 'ticket0.block-rule-removed',
+      schemaVersion: 1,
+      entity: { entityType: 'blockRule', entityId: row.id },
+      piiClass: 'none',
+      payload: { id: row.id, kind: row.kind },
+    });
+    return { id: row.id, kind: row.kind };
   },
 
   'ticket0/set-agent-profile': async (ctx, input) => {
@@ -3518,8 +3734,23 @@ const operations = {
     )[0];
     if (seen) return seen;
 
+    /**
+     * The blocklist, and it sits BELOW the idempotency check on purpose (#1088).
+     *
+     * A redelivery of a mail this desk already accepted must still answer with the
+     * message that is in the thread: the words are recorded, blocking the sender
+     * afterwards does not unsay them, and throwing here would make Resend retry a
+     * delivery that has already succeeded until it gives up.
+     *
+     * Above every write, though — no contact, no conversation, no message, and on the
+     * widget's side no model call. That is the whole point of the table: junk a human
+     * would delete in a second is junk the desk has not paid for.
+     */
+    const known = contactByEmail(ctx, input.contactEmail);
+    refuseIfBlocked(ctx, { email: input.contactEmail, contactId: known?.id ?? null });
+
     const contact =
-      contactByEmail(ctx, input.contactEmail) ??
+      known ??
       createContact(ctx, {
         email: input.contactEmail,
         display_name: input.contactName ?? null,
@@ -3724,6 +3955,21 @@ const operations = {
     }
 
     /**
+     * A blocked visitor never gets a session (#1088).
+     *
+     * Only reachable for the middle rung and above, because only they are anybody
+     * yet — an anonymous visitor is refused at their second message instead, once
+     * there is a contact to be about. Both the stored address and the one the host
+     * site is vouching for this time are probed: they can differ, and an admin who
+     * blocked a domain means the domain rather than whichever copy of it we happen to
+     * have written down.
+     */
+    refuseIfBlocked(ctx, {
+      email: contact?.email ?? input.identity?.email ?? null,
+      contactId: contact?.id ?? null,
+    });
+
+    /**
      * No conversation, no principal, no grant — and that is the design.
      *
      * Opening the widget is not a conversation: the thread exists from the first
@@ -3798,6 +4044,8 @@ const operations = {
     // The token decides WHICH conversation, and there is no conversation id in the
     // input for a caller to substitute one.
     const hold = await holdOrThrow(ctx, input.sessionId, input.token);
+    // Before the conversation is bound and before a model is ever asked (#1088).
+    refuseIfBlockedVisitor(ctx, hold);
     // The first message opens the conversation, every later one finds it bound — and a
     // conversation an agent has closed hands over to the follow-up that continues it.
     const conversation = heldConversation(ctx, input.sessionId, hold);
@@ -3831,6 +4079,9 @@ const operations = {
   'ticket0/request-human': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationWidget));
     const hold = await holdOrThrow(ctx, input.sessionId, input.token);
+    // The same refusal as `widget-post`, for the same visitor — this door writes two
+    // messages and notifies the desk, so it is the more expensive one to leave open.
+    refuseIfBlockedVisitor(ctx, hold);
     const conversation = heldConversation(ctx, input.sessionId, hold);
     const next = step(conversation, 'ticket0/request-human');
 

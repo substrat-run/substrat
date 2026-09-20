@@ -199,6 +199,16 @@ export interface DeskSettings {
   updated_at: string;
 }
 
+/** `ticket0_block_rules` — declared in spec/model.ts. */
+export interface BlockRule {
+  id: string;
+  kind: "email" | "domain" | "contact";
+  value: string;
+  reason: string | null;
+  created_by: string;
+  created_at: string;
+}
+
 /** `ticket0_kb_sources` — declared in spec/model.ts. */
 export interface KbSource {
   id: string;
@@ -279,6 +289,13 @@ export interface Signup {
 
 /** Every operation this vertical binds to HTTP, one method each. */
 export interface Ticket0Client {
+  /**
+   * Refuse a sender
+   *
+   * `POST /desk/block-rules` — `ticket0/add-block-rule`
+   */
+  addBlockRule(input: { kind: "email" | "domain" | "contact"; value: string; reason?: string | null }): Promise<BlockRule>;
+
   /**
    * Point the desk at a source of documentation
    *
@@ -421,6 +438,15 @@ export interface Ticket0Client {
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
   listAgents(): Promise<Paged<AgentProfile>>;
+
+  /**
+   * Who this desk refuses
+   *
+   * `GET /desk/block-rules` — `ticket0/list-block-rules`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  listBlockRules(input: { kind?: "email" | "domain" | "contact" }): Promise<Paged<BlockRule>>;
 
   /**
    * The people who have asked something
@@ -627,6 +653,13 @@ export interface Ticket0Client {
    * `POST /kb/sources/{sourceId}/token/redeem` — `ticket0/redeem-kb-refresh-token`
    */
   redeemKbRefreshToken(input: { sourceId: string; token: string }): Promise<{ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string }>;
+
+  /**
+   * Hear from them again
+   *
+   * `DELETE /desk/block-rules/{ruleId}` — `ticket0/remove-block-rule`
+   */
+  removeBlockRule(input: { ruleId: string }): Promise<{ id: string; kind: "email" | "domain" | "contact" }>;
 
   /**
    * A canned answer with this conversation’s facts filled in
@@ -993,6 +1026,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
     await readPage(await raw(`${baseUrl}${path}${query(params as Record<string, unknown>)}`, method, body));
 
   return {
+    addBlockRule: (input: Args) =>
+      send("/desk/block-rules", "POST", input, undefined),
     addKbSource: (input: Args) =>
       send("/kb/sources", "POST", input, undefined),
     assign: (input: Args) =>
@@ -1031,6 +1066,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/relay/inbound", "POST", input, undefined),
     listAgents: () =>
       page("/agents", "GET", undefined, undefined),
+    listBlockRules: (input: Args) =>
+      page("/desk/block-rules", "GET", undefined, input),
     listContacts: () =>
       page("/contacts", "GET", undefined, undefined),
     listConversationTags: (input: Args) =>
@@ -1083,6 +1120,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/failure`, "POST", omit(input, ["sourceId"]), undefined),
     redeemKbRefreshToken: (input: Args) =>
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/token/redeem`, "POST", omit(input, ["sourceId"]), undefined),
+    removeBlockRule: (input: Args) =>
+      send(`/desk/block-rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
     renderSavedReply: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/saved-replies/${encodeURIComponent(String(input.savedReplyId))}/render`, "GET", undefined, omit(input, ["conversationId","savedReplyId"])),
     requestHuman: (input: Args) =>

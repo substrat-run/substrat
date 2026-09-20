@@ -149,6 +149,57 @@
         "conversation"
       ]
     },
+    "blockRule": {
+      "table": "ticket0_block_rules",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "email",
+              "domain",
+              "contact"
+            ]
+          },
+          "value": {
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "value",
+          "reason",
+          "created_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "kind",
+        "value"
+      ]
+    },
     "contact": {
       "table": "ticket0_contacts",
       "fields": {

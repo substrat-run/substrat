@@ -35,7 +35,7 @@
  * Attachments arrive as METADATA: `ingest-message` writes the internal note naming each
  * file (#1080), and the bytes are not fetched, because the desk has nowhere to put them.
  */
-import { z } from '@substrat-run/contracts';
+import { errorCodeOf, z } from '@substrat-run/contracts';
 import type { FetchLike } from '@substrat-run/kernel';
 import type { RelayInvoke } from './relay.js';
 
@@ -268,19 +268,40 @@ export async function receiveInbound(options: {
     sizeBytes: typeof a.size === 'number' && a.size >= 0 ? Math.floor(a.size) : 0,
   }));
 
-  const row = await invoke<{ id: string; conversation_id: string }>('ticket0/ingest-message', {
-    conversationId: null,
-    contactEmail: sender.email,
-    contactName: sender.name,
-    subject: email.subject ?? '(no subject)',
-    bodyText: email.text ?? '',
-    bodyHtml: email.html ?? null,
-    // The wire `Message-ID` when Resend names one; otherwise Resend's own id, which is
-    // stable across redeliveries and so still keeps the ingest idempotent.
-    emailMessageId: email.message_id ? bracketed(email.message_id) : `resend:${emailId}`,
-    emailInReplyTo: headerOf(email, 'in-reply-to'),
-    ...(attachments.length > 0 ? { attachments } : {}),
-  });
+  let row: { id: string; conversation_id: string };
+  try {
+    row = await invoke<{ id: string; conversation_id: string }>('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: sender.email,
+      contactName: sender.name,
+      subject: email.subject ?? '(no subject)',
+      bodyText: email.text ?? '',
+      bodyHtml: email.html ?? null,
+      // The wire `Message-ID` when Resend names one; otherwise Resend's own id, which is
+      // stable across redeliveries and so still keeps the ingest idempotent.
+      emailMessageId: email.message_id ? bracketed(email.message_id) : `resend:${emailId}`,
+      emailInReplyTo: headerOf(email, 'in-reply-to'),
+      ...(attachments.length > 0 ? { attachments } : {}),
+    });
+  } catch (error) {
+    /**
+     * A blocked sender, and the retries have to stop (#1088).
+     *
+     * This is the file's own rule about statuses, applied to a new permanent refusal:
+     * a 2xx tells Resend this desk will never accept the delivery, and anything else
+     * asks it to try the same blocked mail again in a minute, and again after that.
+     * The block is a standing decision, so a retry can only ever reach the same
+     * answer.
+     *
+     * `forbidden` is the narrow signal `ingest-message` raises for exactly this and
+     * for nothing else — a missing conversation is `not_found`, a caller without
+     * `conversation:relay` is `permission_denied`, and both of those still throw past
+     * here to the route that logs them. Nothing else is swallowed, which is what keeps
+     * a real fault from being quietly answered 200.
+     */
+    if (errorCodeOf(error) !== 'forbidden') throw error;
+    return { status: 200, body: { ignored: 'the sending address is blocked at this desk' } };
+  }
 
   return {
     status: 200,
