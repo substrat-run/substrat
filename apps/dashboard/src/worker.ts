@@ -284,7 +284,12 @@ function controlPlaneFor(env: Env, tenantId: DashboardNode['tenantId']): TenantN
   return new TenantNarrowedControlPlane({
     baseUrl,
     actor: env.CP_ACTOR ?? DASHBOARD_CP_ACTOR,
-    credential: () => {
+    credential: (opts) => {
+      // `fresh` is the seam asking after a 401: whatever is cached is no longer one the
+      // plane accepts (the signing secret was rotated under this isolate), so drop it
+      // and mint again. That is what makes rotating `TENANT_TOKEN_SECRET` the blip it
+      // is documented to be instead of 401s until the isolate recycles.
+      if (opts?.fresh) tenantTokens.delete(tenantId);
       const cached = tenantTokens.get(tenantId);
       if (cached) return cached;
       const pending = mint().catch((e: unknown) => {

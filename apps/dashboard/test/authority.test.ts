@@ -808,12 +808,15 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
   // -- the credential provider (#977) ---------------------------------------
 
   describe('the credential is resolved per call, not baked in', () => {
-    const drive = (credential: string | (() => Promise<string>)) => {
+    const drive = (
+      credential: string | ((opts?: { fresh?: boolean }) => Promise<string>),
+      status: (n: number) => number = () => 200,
+    ) => {
       const tokens: (string | null)[] = [];
       const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
         tokens.push(new Headers(init?.headers).get('x-service-token'));
         return new Response(JSON.stringify({ entries: [], nextCursor: null }), {
-          status: 200, headers: { 'content-type': 'application/json' },
+          status: status(tokens.length), headers: { 'content-type': 'application/json' },
         });
       }) as unknown as typeof globalThis.fetch;
       const cp = new TenantNarrowedControlPlane({
@@ -834,12 +837,37 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     });
 
     it('a provider that cannot mint fails the call — it never falls back', async () => {
-      const { cp, tokens } = drive(() => Promise.reject(new Error('no tenant credential')));
-      await expect(cp.listScopes('acme/app')).rejects.toThrow('no tenant credential');
+      class NotConfigured extends Error {}
+      const { cp, tokens } = drive(() => Promise.reject(new NotConfigured('no tenant credential')));
+      // The provider's own error, NOT rewrapped as a transport failure: the worker
+      // answers 503 naming what is unconfigured, and burying that under "control plane
+      // unreachable" would send an operator looking at the wrong thing.
+      await expect(cp.listScopes('acme/app')).rejects.toBeInstanceOf(NotConfigured);
       // Nothing reached the plane: there is no second, fleet-wide credential to try.
       // A fallback here would make #977's fix optional in practice, which is the whole
       // reason the dashboard 503s on a plane that cannot mint.
       expect(tokens).toEqual([]);
+    });
+
+    it('re-mints once on a 401 — the rotation blip, not 401s until the isolate recycles', async () => {
+      // The plane refuses the first credential (its signing secret was rotated under
+      // this isolate) and accepts the re-minted one.
+      let minted = 0;
+      const { cp, tokens } = drive(
+        async (opts) => {
+          if (opts?.fresh) minted += 1;
+          return `stt1.mint-${minted}`;
+        },
+        (n) => (n === 1 ? 401 : 200),
+      );
+      await cp.listScopes('acme/app');
+      expect(tokens).toEqual(['stt1.mint-0', 'stt1.mint-1']);
+    });
+
+    it('does not retry forever — a second 401 is the answer', async () => {
+      const { cp, tokens } = drive(async () => 'stt1.dead', () => 401);
+      await expect(cp.listScopes('acme/app')).rejects.toThrow();
+      expect(tokens).toHaveLength(2);
     });
 
     it('still accepts a plain string — the shape the tests and self-host use', async () => {

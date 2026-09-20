@@ -153,8 +153,14 @@ export interface TenantNarrowedControlPlaneOptions {
    * about. Awaited on every call and expected to be cached by the provider; a throw
    * surfaces as the call failing, which is the right answer for a dashboard that
    * cannot obtain a credential for the tenant it is rendering.
+   *
+   * `fresh` asks the provider to discard whatever it cached and mint again. It is how
+   * the ONE revocation lever a tenant token has — rotating the plane's signing secret
+   * — stays the blip it is documented to be: without it, a cached token stays dead
+   * until its isolate is recycled, and "re-mints on its next request" would be a claim
+   * about isolate lifetimes rather than about this code.
    */
-  credential: string | (() => Promise<string>);
+  credential: string | ((opts?: { fresh?: boolean }) => Promise<string>);
   /** The ONE tenant every call is pinned to — the caller's own, ambient from their session. */
   tenantId: TenantId;
   /** A Worker service-binding's `fetch` (bound to `substrat-control-plane`). Defaults to global fetch. */
@@ -211,7 +217,7 @@ export interface PreviewRecord {
 export class TenantNarrowedControlPlane {
   private readonly baseUrl: string;
   private readonly actor: string;
-  private readonly credential: () => Promise<string>;
+  private readonly credential: (opts?: { fresh?: boolean }) => Promise<string>;
   private readonly fetchImpl: typeof globalThis.fetch;
   /** Read-only: the pinned tenant. Every write below silently injects it. */
   readonly tenantId: TenantId;
@@ -227,30 +233,49 @@ export class TenantNarrowedControlPlane {
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
+  /** One request, with the headers this seam always carries and the credential handed in. */
+  private send(path: string, init: RequestInit, credential: string): Promise<Response> {
+    return this.fetchImpl(`${this.baseUrl}${path}`, {
+      ...init,
+      headers: {
+        'content-type': 'application/json',
+        'x-platform-actor': this.actor,
+        'x-service-token': credential,
+        // The workspace this seam acts for (#417): vertical routes use this to resolve
+        // a bare slug to the tenant's `<tenantSlug>/<name>` registry id — already-
+        // prefixed catalog slugs pass through unchanged.
+        //
+        // It is NOT the narrowing, and never was (#977): over a tenant token the plane
+        // refuses a header that disagrees with the credential, so this can only ever
+        // repeat what the credential already says.
+        'x-substrat-tenant': this.tenantId,
+        ...(init.headers as Record<string, string> | undefined),
+      },
+    });
+  }
+
   private async call<T>(path: string, init: RequestInit & { idempotent?: boolean } = {}): Promise<T> {
-    let res: Response;
-    const credential = await this.credential();
-    try {
-      res = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        ...init,
-        headers: {
-          'content-type': 'application/json',
-          'x-platform-actor': this.actor,
-          'x-service-token': credential,
-          // The workspace this seam acts for (#417): vertical routes use this to resolve
-          // a bare slug to the tenant's `<tenantSlug>/<name>` registry id — already-
-          // prefixed catalog slugs pass through unchanged.
-          //
-          // It is NOT the narrowing, and never was (#977): over a tenant token the plane
-          // refuses a header that disagrees with the credential, so this can only ever
-          // repeat what the credential already says.
-          'x-substrat-tenant': this.tenantId,
-          ...(init.headers as Record<string, string> | undefined),
-        },
-      });
-    } catch (e) {
-      throw new ControlPlaneError(0, `control plane unreachable: ${(e as Error).message}`);
-    }
+    // Only the FETCH is wrapped as "unreachable". A credential the provider cannot
+    // resolve is a different failure with its own answer (the worker's 503 naming what
+    // is unconfigured), and burying it under a transport message would lose that.
+    const attempt = async (credential: string): Promise<Response> => {
+      try {
+        return await this.send(path, init, credential);
+      } catch (e) {
+        throw new ControlPlaneError(0, `control plane unreachable: ${(e as Error).message}`);
+      }
+    };
+    let res = await attempt(await this.credential());
+    // A 401 means the credential this seam holds is no longer one the plane accepts —
+    // in practice, its signing secret was rotated while this isolate held a token minted
+    // under the old one. Re-mint ONCE and try again, so a rotation is the blip it is
+    // documented to be rather than 401s until the isolate recycles. Bounded to one extra
+    // round trip: if the fresh credential is refused too, that is the answer.
+    //
+    // Safe to replay: every body on this seam is a string (or absent), never a consumed
+    // stream, and a request the plane refused at the auth middleware never reached a
+    // handler — so there is nothing half-done to repeat.
+    if (res.status === 401) res = await attempt(await this.credential({ fresh: true }));
     if (!res.ok) {
       // A tenant/entitlement that already exists is fine on an idempotent step
       // (re-provisioning, a retried create) — the directory already reflects it.
