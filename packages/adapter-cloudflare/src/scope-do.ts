@@ -13,6 +13,8 @@ import {
   type WireFailure,
   grantRefFromProof,
   principalId,
+  scopeId as scopeIdOf,
+  tenantId as tenantIdOf,
   platformRequestInput,
   platformRequestId,
   MAX_PENDING_PLATFORM_REQUESTS,
@@ -116,9 +118,22 @@ import {
   scheduleStateHasKind,
   type EntityVersion,
   type EntityVersionRow,
+  type LiveChange,
   type ScheduleStateKind,
 } from '@substrat-run/kernel';
 import type { CheckSubject, ImpersonationSession, ModuleId } from '@substrat-run/contracts';
+import {
+  isUpgradeRequest,
+  readSubscription,
+  LIVE_FANOUT_LIMIT,
+  LIVE_MODE_HEADER,
+  LIVE_PRINCIPAL_HEADER,
+  LIVE_SCOPE_HEADER,
+  LIVE_SUBSCRIBE_PATH,
+  LIVE_TENANT_HEADER,
+  type LiveRefusal,
+  type LiveSubscription,
+} from './live-reads.js';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql } from './sql.js';
 import { facetEvents, readDeadLetters, readHistory, readInvocation, walkEventCause, walkEventEffects } from '@substrat-run/kernel';
@@ -738,6 +753,12 @@ export function defineScopeDO(
     private readonly listPlans = new Map<string, ListIndexPlan>();
     /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
     private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
+    /**
+     * entityType → the declared live-read gate (#938): the key a subscriber must hold
+     * ON THAT ENTITY before a change to it is announced. Absent = announced to nobody;
+     * `fanOutLive` treats a miss as silence, never as "unguarded".
+     */
+    private readonly liveTargets = new Map<string, PermissionKey>();
     private readonly checker: PermissionChecker;
     private readonly systemPrincipal: PrincipalId = principalId.parse(ulid());
     /**
@@ -868,6 +889,22 @@ export function defineScopeDO(
           );
         }
         this.attachmentTargets.set(target.entityType, gate);
+      }
+      // Live-read targets (#938): entityType → the read key a subscriber must pass ON
+      // THAT ENTITY before a change to it is announced. Validated exactly like the
+      // attachment gate above, and for a sharper reason: two modules disagreeing about
+      // which key guards an entity type would make "who may watch this" depend on
+      // registration order, and the losing declaration would be the one that was meant
+      // to be stricter. An entity type nobody declares is announced to nobody.
+      for (const target of manifest.liveTargets ?? []) {
+        const existing = this.liveTargets.get(target.entityType);
+        if (existing && existing !== target.readPermission) {
+          throw new Error(
+            `conflicting liveTargets for '${target.entityType}': ` +
+              `(${existing}) vs (${target.readPermission})`,
+          );
+        }
+        this.liveTargets.set(target.entityType, target.readPermission);
       }
       for (const name of manifest.withdraws ?? []) {
         this.withdrawn.set(name, manifest.id);
@@ -1609,6 +1646,21 @@ export function defineScopeDO(
         // one call. Same placement as the SQLite adapter's actor task, for this reason.
         this.invocationId = invokeOptions?.invocationId ?? null;
         try {
+        /**
+         * #938: the outbox's high-water mark BEFORE this call wrote anything, so the
+         * post-commit fan-out can name exactly the events this call (and the consumers
+         * it set off) added. Read here — inside the queued body, before the
+         * transaction — because that is the region where this call holds the DO to
+         * itself, the same reason `invocationId` is set here.
+         *
+         * A socket that connects between here and the fan-out is served whatever this
+         * call committed, and one that connects while `null` was decided hears nothing
+         * about it. Both are harmless and neither is worth a lock: a frame is an
+         * invalidation, so hearing about a change from just before you subscribed costs
+         * one redundant re-read, and missing one costs a wait for the client's poll —
+         * which is the floor this whole surface sits on.
+         */
+        const liveSince = this.liveHighWaterMark();
         let result: unknown;
         let committedVersion: string | null = null;
         // #116: set when this invocation was answered from a recording rather
@@ -1757,7 +1809,11 @@ export function defineScopeDO(
         // Skipped on a replay: nothing was written, so there is nothing this
         // invocation added to drain. Anything the ORIGINAL left undrained is the
         // outbox's own retry backstop, which is what that backstop is for.
-        if (!replayed) await this.dispatch(tenantId, scopeId);
+        // Drain to consumers, then announce what landed (#938). Skipped whole on a
+        // replay: nothing was written, so there is nothing this invocation added to
+        // drain or to announce. Anything the ORIGINAL left undrained is the outbox's
+        // own retry backstop, which is what that backstop is for.
+        if (!replayed) await this.settleCommitted(tenantId, scopeId, liveSince);
         return {
           result,
           platformRequests: signals.platformRequests,
@@ -1788,6 +1844,313 @@ export function defineScopeDO(
           this.invocationId = null;
         }
       });
+    }
+
+    // -- live reads (#938): the subscription half of the change feed ------------
+    // The ONLY part of this DO addressed as a fetch target rather than over RPC, and
+    // only because a WebSocket cannot cross RPC — a socket is not serializable, so the
+    // one way to hand one back is a `Response` carrying a `webSocket`. Everything the
+    // coordinator asserts on the way in is named in `live-reads.ts`, shared with
+    // `host.ts` so the two ends cannot drift.
+
+    /**
+     * Accept a subscription to this scope's changes.
+     *
+     * The coordinator has already decided that this connection can carry a push at all
+     * (the O2O check) and WHO is asking. What is decided here is nothing about
+     * authority: a subscription is not an authorization, and accepting one grants the
+     * subscriber no read it did not already have. Every frame is checked on its way
+     * out, individually, against the tuple state at that moment — so a grant revoked
+     * while the socket is open stops the frames it used to allow, which a
+     * subscription-time check would not.
+     *
+     * **This adds no authority to a holder of the stub, and the question is worth
+     * answering rather than leaving to be asked.** Being a public method, anything with
+     * the `SCOPE` binding can call it and assert whatever principal it likes in the
+     * headers. That is already true of `invoke`, which takes the principal as an
+     * argument and acts on it: a stub is the key to the scope, which is precisely why
+     * the router is not given one. The trust boundary is who holds the binding, not
+     * what this method checks — and what it does NOT do is let a stub-holder read
+     * anything the asserted principal could not, because the filter downstream re-checks
+     * that principal against every frame.
+     */
+    async fetch(request: Request): Promise<Response> {
+      const url = new URL(request.url);
+      if (url.pathname !== LIVE_SUBSCRIBE_PATH) {
+        // The DO has exactly one fetch surface. Anything else reaching here is a
+        // coordinator bug, and a 404 says so without guessing at an intent.
+        return new Response('this scope has no such surface', { status: 404 });
+      }
+      if (!isUpgradeRequest(request)) {
+        return new Response('live reads are a WebSocket surface', {
+          status: 426,
+          headers: { [LIVE_MODE_HEADER]: 'not-an-upgrade' satisfies LiveRefusal },
+        });
+      }
+      const principal = request.headers.get(LIVE_PRINCIPAL_HEADER);
+      const tenantId = request.headers.get(LIVE_TENANT_HEADER);
+      const scopeId = request.headers.get(LIVE_SCOPE_HEADER);
+      if (!principal || !tenantId || !scopeId) {
+        // Fail closed and loudly. An unnamed subscriber is one whose permissions
+        // cannot be evaluated, and the only safe thing to do with a channel we cannot
+        // filter is to refuse to open it. 500, not 400: the caller is the coordinator
+        // in this same package, so a missing assertion is OUR bug, not the client's.
+        return new Response('live reads require an asserted principal, tenant and scope', {
+          status: 500,
+        });
+      }
+      // A subscriber arriving before the scope's migrations have run would be told
+      // about events against a schema it cannot read back through. Same gate every
+      // other entry point takes, for the same reason.
+      await this.ensureMigrations();
+
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+      // HIBERNATABLE, not `server.accept()`. A scope with a watcher open would
+      // otherwise be pinned in memory for as long as somebody has a tab open, which is
+      // the cost model inverted: a support desk being WATCHED is the normal state.
+      // Hibernation also fixes the worse half — an in-memory roster does not survive
+      // eviction, so the socket would stay open and silently stop receiving, which is
+      // indistinguishable from a quiet scope.
+      this.ctx.acceptWebSocket(server);
+      // `.parse`, not a cast: these three arrived as header strings, and the branded
+      // ids are what every check downstream is keyed on. A malformed one would
+      // otherwise be carried all the way to a `ctx.check` that quietly matches nothing —
+      // which reads as "this subscriber may see nothing" and is indistinguishable from
+      // a correct denial. Refused here instead, where it is still one subscriber's
+      // problem. Throwing is right: the coordinator built this request.
+      server.serializeAttachment({
+        principal: principalId.parse(principal),
+        tenantId: tenantIdOf.parse(tenantId),
+        scopeId: scopeIdOf.parse(scopeId),
+        since: new Date().toISOString(),
+      } satisfies LiveSubscription);
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    /**
+     * A subscriber said something.
+     *
+     * The channel is one-way by design — the server announces, the client re-reads
+     * through the ordinary operation — so there is no client message that can cause a
+     * read, a write, or a change of subscription. `ping`/`pong` is the whole protocol,
+     * and it exists so an idle connection can be kept alive by either end.
+     *
+     * Deliberately NOT a place to let a client narrow or widen what it receives: a
+     * filter the client chooses is a filter the client can choose wrongly, and the
+     * only filter that matters here is the one it does not control.
+     */
+    webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+      if (message === 'ping') ws.send('pong');
+    }
+
+    /**
+     * The client hung up. Close our end so the runtime stops holding the subscription.
+     *
+     * The runtime passes `reason` and `wasClean` too; neither is read, so neither is
+     * named — there is nothing to do differently for an unclean close, because the
+     * socket is going away either way and the client's poll is what covers the gap.
+     */
+    webSocketClose(ws: WebSocket, code: number): void {
+      // 1006 is reserved: it is what the runtime REPORTS for an abnormal closure and
+      // is not a code anything may SEND, so echoing it back throws — on precisely the
+      // path where the connection is already in trouble.
+      try {
+        ws.close(code === 1006 ? 1000 : code, 'scope closing the subscription');
+      } catch {
+        // Already gone. Nothing to do, and nothing worth reporting.
+      }
+    }
+
+    /**
+     * A socket failed. Logged and not rethrown: there is no caller to fail, and the
+     * runtime delivers `webSocketClose` after this, which is what does the cleanup.
+     */
+    webSocketError(_ws: WebSocket, error: unknown): void {
+      console.error('substrat: live-read socket error', error);
+    }
+
+    /**
+     * The outbox's high-water mark before a committing path runs (#938), or `null`
+     * when nobody is listening.
+     *
+     * `null` and `''` are different answers: `null` means no subscriber, so nothing is
+     * read at all and a scope pays nothing for a feature it is not using; `''` is the
+     * honest empty-outbox answer, and every ULID sorts above it.
+     *
+     * Read BEFORE the transaction by every caller, which is what makes the pair below
+     * able to name exactly the events that path added.
+     */
+    private liveHighWaterMark(): string | null {
+      if (this.ctx.getWebSockets().length === 0) return null;
+      return (
+        (
+          this.sql.exec('SELECT MAX(id) AS id FROM _substrat_outbox').toArray() as unknown as {
+            id: string | null;
+          }[]
+        )[0]?.id ?? ''
+      );
+    }
+
+    /**
+     * What every committing path does after its transaction closes: drain the outbox
+     * to consumers, then announce what landed to whoever may see it.
+     *
+     * **One step, because there is one rule.** The fan-out was wired into `invoke`
+     * alone at first, and `attachmentAdd`/`attachmentRemove` commit and emit too —
+     * `attachment.added` and `attachment.removed`, about a real entity. A watcher of
+     * that entity would have missed them: no error, no gap it could see, just a screen
+     * that did not update for one kind of change. That is the exact failure the
+     * hibernation design exists to prevent, arriving through a different door, so the
+     * answer is a step both doors take rather than a second call both must remember.
+     *
+     * Order is load-bearing: drain FIRST, announce after. A consumer's own emits are
+     * changes too, and they land in the outbox above `liveSince` — so announcing first
+     * would tell a subscriber about the cause and not the effect, and it would re-read
+     * too early.
+     */
+    private async settleCommitted(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      liveSince: string | null,
+    ): Promise<void> {
+      await this.dispatch(tenantId, scopeId);
+      if (liveSince === null) return;
+      try {
+        await this.fanOutLive(liveSince, tenantId, scopeId);
+      } catch (err) {
+        // The write has COMMITTED and the caller is owed its answer. A failure to
+        // announce is a failure of a hint, and the client's poll is the floor
+        // underneath it — so this is logged and never rethrown. Rethrowing would turn
+        // a delivered write into a 500 the caller would reasonably retry.
+        console.error('substrat: live-read fan-out failed after commit', err);
+      }
+    }
+
+    /**
+     * Announce what just committed, to whoever may see it (#938).
+     *
+     * **Three properties, and each is load-bearing.**
+     *
+     * *Post-commit.* Called after the operation's transaction has closed and after the
+     * consumer drain, so nothing is announced that a rollback could take back and
+     * nothing a consumer emitted is missed. A subscriber told about a row that then
+     * vanished would re-read, find nothing, and have no way to tell that from a
+     * deletion.
+     *
+     * *Filtered per subscriber, per event, after the check.* The declared
+     * `liveTargets` key is checked ON THE EVENT'S OWN ENTITY, through `ctx.check` —
+     * the same evaluator, the same entity-narrowed grants, the same parent walk as the
+     * read the client is about to make. An entity type no module declared is announced
+     * to nobody. Knowing that a row exists and changed at 14:02 is information about
+     * that row, so the empty payload is not what makes this safe; this is.
+     *
+     * *Never able to fail the operation.* The write has committed and the caller has
+     * its answer. A socket that has gone away mid-fan-out, or a check that cannot be
+     * evaluated, costs a subscriber its live update — which it survives, because the
+     * client's contract is that a push is a hint and the poll is the floor.
+     */
+    private async fanOutLive(
+      sinceEventId: string,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+    ): Promise<void> {
+      const sockets = this.ctx.getWebSockets();
+      if (sockets.length === 0) return;
+      const rows = this.sql
+        .exec(
+          `SELECT id, type, entity_type, entity_id, occurred_at FROM _substrat_outbox
+            WHERE id > ? ORDER BY id LIMIT ?`,
+          sinceEventId,
+          LIVE_FANOUT_LIMIT,
+        )
+        .toArray() as unknown as {
+        id: string;
+        type: string;
+        entity_type: string;
+        entity_id: string;
+        occurred_at: string;
+      }[];
+      // Drop the undeclared entity types BEFORE any per-subscriber work. Not an
+      // optimisation: it is the fail-closed rule stated once, in the one place that
+      // decides, rather than relied upon inside the loop below.
+      const announceable = rows.filter((r) => this.liveTargets.has(r.entity_type));
+      if (announceable.length === 0) return;
+
+      for (const ws of sockets) {
+        let subscription: LiveSubscription | null = null;
+        try {
+          subscription = readSubscription(ws.deserializeAttachment());
+        } catch {
+          subscription = null;
+        }
+        // A socket we cannot name is a socket we cannot filter for. Skipped, never
+        // sent to — see `readSubscription` for why every unusable shape fails closed.
+        if (!subscription) continue;
+        // A socket that outlived a scope rebind, or was somehow accepted for another
+        // node, must not be fed this scope's events. Cheap, and it makes the identity
+        // the frames are filtered against an explicit precondition rather than an
+        // assumption about how the subscription was created.
+        if (subscription.tenantId !== tenantId || subscription.scopeId !== scopeId) continue;
+
+        // One context per subscriber, not per event: `ctx.check` is the expensive part
+        // and the context is only the subject it is evaluated for.
+        //
+        // A frame this subscriber does not pass is NOT recorded as a denial (K-35),
+        // and that is deliberate: `recordDenial` is called on a refused REQUEST, where
+        // somebody asked for something and was told no. Nobody asked for these. Logging
+        // one row per unentitled subscriber per event would bury the denials that mean
+        // something — a broken screen, or somebody walking the surface — under the
+        // ordinary, correct working of a filter.
+        //
+        // The operation name is carried anyway, for the events a fan-out cannot emit
+        // but a future reader of this context might.
+        const ctx = this.operationContext(
+          subscription.principal,
+          tenantId,
+          scopeId,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          'live.subscribe',
+        );
+        for (const row of announceable) {
+          // Non-null: `announceable` is exactly the rows whose type is in the map.
+          const permission = this.liveTargets.get(row.entity_type) as PermissionKey;
+          let allowed = false;
+          try {
+            const decision = await ctx.check(permission, {
+              entityType: row.entity_type,
+              entityId: row.entity_id,
+            });
+            allowed = decision.allowed;
+          } catch {
+            // A check that cannot answer is a check that refuses. The alternative —
+            // treating an evaluator failure as an allow — turns an outage in the
+            // permission path into a disclosure, which is the one failure mode this
+            // surface must not have.
+            allowed = false;
+          }
+          if (!allowed) continue;
+          const frame: LiveChange = {
+            kind: 'change',
+            id: row.id,
+            type: row.type,
+            entityType: row.entity_type,
+            entityId: row.entity_id,
+            at: row.occurred_at,
+          };
+          try {
+            ws.send(JSON.stringify(frame));
+          } catch {
+            // The socket went away between `getWebSockets()` and here. Stop writing to
+            // this one and move on; the runtime will deliver `webSocketClose`.
+            break;
+          }
+        }
+      }
     }
 
     // -- attachments (#473): the metadata half of the attachment surface --------
@@ -1852,6 +2215,10 @@ export function defineScopeDO(
       const parsed = attachmentRecord.parse(record);
       const gate = this.attachmentGate(parsed.entity.entityType);
       return this.queue.enqueue(async () => {
+        // #938: this path commits and emits too, so it takes the same mark-then-settle
+        // pair `invoke` takes. Inside the queued body and before the transaction, for
+        // the reason it is read there: that is where this call holds the DO to itself.
+        const liveSince = this.liveHighWaterMark();
         try {
           await this.ctx.storage.transaction(async () => {
             const ctx = this.operationContext(
@@ -1889,7 +2256,7 @@ export function defineScopeDO(
           }
           throw toRpcError(err);
         }
-        await this.dispatch(tenantId, scopeId);
+        await this.settleCommitted(tenantId, scopeId, liveSince);
         return parsed;
       });
     }
@@ -1995,6 +2362,8 @@ export function defineScopeDO(
         const record = this.attachmentRow(attachmentId);
         if (!record) return null;
         const gate = this.attachmentGate(record.entity.entityType);
+        // #938: same mark-then-settle pair as the upload path above.
+        const liveSince = this.liveHighWaterMark();
         try {
           await this.ctx.storage.transaction(async () => {
             const ctx = this.operationContext(
@@ -2017,7 +2386,7 @@ export function defineScopeDO(
           }
           throw toRpcError(err);
         }
-        await this.dispatch(tenantId, scopeId);
+        await this.settleCommitted(tenantId, scopeId, liveSince);
         return record;
       });
     }

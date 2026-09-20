@@ -3932,10 +3932,145 @@ export interface ScopeHost {
     },
   ): Promise<void>;
 
+  /**
+   * Live reads (#938) — a subscription to this scope's change feed, or absent.
+   *
+   * **Optional on the contract, and that is the whole design.** A live read needs a
+   * transport that can hold a connection open for longer than a request, and only one
+   * host has one: on Cloudflare a scope IS a Durable Object, which the runtime keeps
+   * addressable between requests and can hand a `WebSocketPair` to. The pure host is a
+   * function call inside somebody else's process — there is no connection for it to
+   * hold and nothing to wake when an event lands — so `SqliteScopeHost` declares
+   * `liveReads?: never`, the `clock?: never` precedent (`CloudflareScopeHostOptions`)
+   * applied in the other direction: there, the hosted adapter refuses an option it
+   * cannot honour; here, the pure adapter refuses a surface it cannot honour. A
+   * mistaken `host.liveReads!.subscribe(…)` against SQLite is a compile error rather
+   * than a promise that never resolves.
+   *
+   * What this costs, stated rather than hidden, exactly as the clock seam states it:
+   * live-read behaviour is held to its tests on the Cloudflare host ONLY. There is no
+   * contract suite for it, because a contract suite is a claim that both adapters
+   * answer the same way, and on this one they deliberately do not.
+   *
+   * A caller therefore asks rather than assumes:
+   *
+   * ```ts
+   * const live = host.liveReads;
+   * if (!live) return new Response('live reads are not available here', { status: 501 });
+   * return live.subscribe({ tenantId, scopeId, principal, request });
+   * ```
+   */
+  readonly liveReads?: LiveReadSurface;
+
   /** Bare operation registration (tests, glue). Names are module-namespaced: 'workorder/create'. */
   defineOperation<I, O>(name: string, handler: OperationHandler<I, O>): void;
 
   close(): Promise<void>;
+}
+
+/**
+ * The live-read surface (#938): one `Upgrade` in, one long-lived subscription out.
+ *
+ * **What crosses it is an invalidation, never a payload.** A frame names the event
+ * type and the `(entityType, entityId)` it was about, and the client re-reads that
+ * entity through the ordinary operation it already calls. That is what keeps the
+ * change feed from quietly becoming a second, ungoverned read API: every field a
+ * subscriber ever sees came back through the declared read surface, with that read's
+ * own permission check, its own field-level omissions and its own PII handling.
+ *
+ * **Every frame is filtered per subscriber, after the commit and after the check.**
+ * The host offers each committed event to each subscriber and delivers it only if
+ * that subscriber passes the entity type's declared `liveTargets.readPermission` ON
+ * THAT ENTITY — the same walk `ctx.check(key, entityRef)` makes, through the same
+ * evaluator, so an entity-narrowed grant decides a push exactly as it decides a read.
+ * An entity type no module declared reaches nobody. Knowing that a row exists and
+ * changed at 14:02 is information about that row, so "the body was empty" is not a
+ * defence: the filter runs whether or not there is a payload to withhold.
+ *
+ * **Generic over the runtime's request and response, because the kernel names
+ * neither.** This package has one dependency and no DOM or workers lib
+ * (`docs/architecture/dependency-policy.md`), which is why `FetchLike` above describes
+ * a `fetch` structurally rather than importing one. The same rule applies here, and it
+ * is load-bearing in the other direction too: what a caller gets back must be the
+ * runtime's OWN response object, because a Worker's handler has to return one. A
+ * structural stand-in would describe it correctly and still not be returnable. So the
+ * type travels through instead of being restated — `CloudflareScopeHost` binds it to
+ * the real `Request`/`Response`, and code holding the bare contract gets `unknown` back
+ * and narrows at its own mount point, where it knows which host it is on.
+ */
+export interface LiveReadSurface<Req extends LiveUpgradeRequest = LiveUpgradeRequest, Res = unknown> {
+  /**
+   * Accept a WebSocket `Upgrade` and subscribe the principal to the scope's changes.
+   *
+   * The caller is the vertical, and it has already done the one thing this surface
+   * cannot do for itself: resolved WHO is asking. The principal is an authenticated
+   * fact the vertical's session carries, exactly as it is for an `invoke` — this
+   * surface trusts it the same way and no further, which is why every frame is still
+   * checked against it individually rather than a subscription being authorized once.
+   *
+   * Returns the 101 to hand back to the client, or a refusal to return as-is: a
+   * request that is not an upgrade gets 426, and one arriving over a hop that cannot
+   * carry a socket gets a refusal naming that, so the client can fall back to polling
+   * KNOWINGLY. Neither is thrown, because both are answers to a client rather than
+   * faults of the caller.
+   */
+  subscribe(input: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    /** WHO is subscribing — resolved by the vertical from its own session, never by the client. */
+    principal: PrincipalId;
+    /** The upgrade request as it arrived, carried whole so the host reads its own headers. */
+    request: Req;
+  }): Promise<Res>;
+}
+
+/**
+ * The only thing this surface needs of an incoming request: its headers.
+ *
+ * Narrow on purpose. A live-read door reads `Upgrade` to know what is being asked for
+ * and `cf-connecting-o2o` to know whether this hop can carry it, and nothing else — it
+ * does not route on the path, read the body, or care about the method. Describing
+ * exactly that much is what lets a test drive the door with a two-line object instead
+ * of constructing a runtime request.
+ */
+export interface LiveUpgradeRequest {
+  readonly headers: { get(name: string): string | null };
+}
+
+/**
+ * One frame on a live read (#938) — the wire shape, so both ends name it once.
+ *
+ * Deliberately not the outbox envelope. An envelope carries the payload, the
+ * authorization chain, the impersonation stamp and the PII class, and none of those
+ * belong on a channel whose contract is "re-read it yourself". What a subscriber
+ * needs in order to act is what is here: which entity changed, and what happened to it.
+ */
+export interface LiveChange {
+  /** Always `'change'` today; a field rather than an assumption, so a second kind can be added. */
+  readonly kind: 'change';
+  /**
+   * The event id — a ULID, so frames sort and a repeat is recognisable.
+   *
+   * **Not a gap detector, and a client must not use it as one.** ULIDs are ordered but
+   * not contiguous, so "the next id is not the one after this" says nothing on its own.
+   * More to the point, gaps here are the NORMAL case and the deliberate one: the
+   * permission filter withholds every event this subscriber may not read, so the ids it
+   * receives are a sparse subset of what the scope emitted, by design. A client
+   * inferring missed updates from the spacing would be reading someone else's
+   * entitlements as its own packet loss.
+   *
+   * What it is good for: ordering frames that arrive out of order, and discarding one
+   * it has already acted on. Detecting a genuinely missed update would need an
+   * authorized contiguous cursor — a per-subscriber sequence, counted after the filter —
+   * which this protocol does not have and should not grow by accident.
+   */
+  readonly id: string;
+  /** The emitted event type, e.g. `'ticket0/message-posted'`. */
+  readonly type: string;
+  readonly entityType: string;
+  readonly entityId: string;
+  /** When the event was emitted (ISO 8601), i.e. the emitting operation's instant. */
+  readonly at: string;
 }
 
 /**

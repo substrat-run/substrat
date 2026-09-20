@@ -1132,6 +1132,32 @@ type TupleReadRow = { subject: string; relation: string; expires_at: string | nu
 
 export class SqliteScopeHost implements ScopeHost {
   readonly admin: HostAdmin;
+  /**
+   * Live reads are not available on this host (#938) — `never`, not `undefined`.
+   *
+   * This is the `clock?: never` seam (`CloudflareScopeHostOptions`) pointing the other
+   * way. There, the hosted adapter refuses an option it could only honour for half of
+   * the host's judgements; here, the pure adapter refuses a surface it cannot honour at
+   * all. A live read needs something that outlives a request and can be woken when an
+   * event lands. On Cloudflare that is the scope's own Durable Object, which the runtime
+   * keeps addressable between requests. This host is a function call inside somebody
+   * else's process: nothing here survives the return, so the only honest answer is that
+   * there is no subscription to hand out.
+   *
+   * `never` rather than an omission, and rather than a `subscribe` that throws, because
+   * those two fail in the places this one does not: an omission makes
+   * `host.liveReads?.subscribe(…)` compile and silently do nothing, and a thrower moves
+   * the discovery to runtime, in production, on the one path nobody drove in a test.
+   * The field is declared so that reaching for it is refused by the compiler at the call
+   * site — the same argument the clock seam makes in its own comment.
+   *
+   * What this costs, stated rather than hidden: nothing in the fan-out is held to a
+   * CONTRACT suite, because a contract suite asserts the two adapters agree and on this
+   * they deliberately do not. The tests live on `adapter-cloudflare` instead, beside the
+   * only host that can run them. The day a pure host grows a long-lived transport, this
+   * comment and those tests' home are the whole change.
+   */
+  readonly liveReads?: never;
   private readonly dir: string;
   private readonly checker: PermissionChecker;
   private readonly directory: Database.Database;
