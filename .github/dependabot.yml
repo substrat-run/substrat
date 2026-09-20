@@ -29,17 +29,40 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: "chore(deps)"
-    labels:
-      - dependencies
     # Routine bumps travel together: one PR a week for every minor and patch, instead of one per
     # package — sixty-odd manifests would otherwise be a stream of single-line PRs nobody reads.
-    # A major stays on its own PR, because it is the one that needs a person's attention.
+    # A major does not arrive at all; see the first `ignore` entry below.
     groups:
       npm-minor-and-patch:
         update-types:
           - minor
           - patch
     ignore:
+      # No major update, for any npm dependency, until a person asks for one. A major is a
+      # migration, not an update: it changes an API, a peer range or a runtime requirement, so it
+      # wants a person, a branch and a plan, and a bot-opened PR carries none of those. The first
+      # run of this file opened NINE of them at once (zod 4, React, @types/node 26, the Vite
+      # plugins, …), all red, on the day the config landed — which is how a scanner gets muted: a
+      # checks column that is red by default trains everyone to stop reading it, and the one PR
+      # that matters is then the one nobody looks at. To take a major, do it by hand in a PR of
+      # its own.
+      #
+      # What this does NOT do: it removes the majors, not the red. A minor or patch can still
+      # break the build (better-auth 1.7.5 is a patch, and it does: #1622), and a pre-1.0
+      # package ships its breaking changes as a "minor".
+      #
+      # Deliberately NOT repeated on the `github-actions` entry below: an action pinned to a
+      # major tag (`@v6`) never moves by minor or patch, so ignoring majors there would silence
+      # that ecosystem entirely.
+      #
+      # Security: `ignore` is documented as applying to security updates too, so an advisory
+      # whose only fix is a new major will not become a PR from this file. `audit.yml` still
+      # names it — that reads the lockfile on every push and every Monday, independent of this.
+      #
+      # The `vitest` major below is now covered by this entry as well, and stays anyway: it is
+      # the hold that survives someone lifting the blanket.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
       # Held back on purpose; see the catalog notes in pnpm-workspace.yaml. vitest 4 is a
       # migration through the production Durable Object adapter, tracked separately, and
       # @cloudflare/vitest-pool-workers moves to it at 0.13.0 — its `vitest` peer range is
@@ -60,8 +83,6 @@ updates:
       day: monday
     commit-message:
       prefix: "chore(ci)"
-    labels:
-      - dependencies
     groups:
       actions-minor-and-patch:
         update-types:

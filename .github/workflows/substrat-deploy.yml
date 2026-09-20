@@ -153,7 +153,17 @@ jobs:
           npx @substrat-run/cli scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot
 
   preview:
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    # Not for a Dependabot PR (#1590): a dependency bump has no vertical change to preview, and
+    # the job could not pass anyway — GitHub runs Dependabot-triggered workflows against a
+    # SEPARATE secret store, so `SUBSTRAT_SERVICE_TOKEN` is empty and the CLI stops at "not
+    # authenticated". The condition is the PR's AUTHOR, not `github.actor`: the actor is whoever
+    # pushed last, so a maintainer merging `main` into a Dependabot branch would flip it and
+    # mint a preview of a bump. `if:` on a job SKIPS it (grey, not red), and a skipped job does
+    # not fail the run.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     # Never overlap two runs for the same PR — a rapid re-push waits for the first.
     concurrency: substrat-preview-${{ github.event.number }}
@@ -261,7 +271,12 @@ jobs:
 
   preview_cleanup:
     # Reap only — no repo build needed, so skip checkout/install and just run the CLI.
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    # Not for a Dependabot PR either: it never had a preview to reap (see `preview`), and the
+    # CLI has no token in that secret store either.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     concurrency: substrat-preview-${{ github.event.number }}
     steps:
