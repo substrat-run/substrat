@@ -365,7 +365,14 @@ guess, and a refusal spike or an exfiltration attempt shows up attributed to a v
     worker→DO hop and for DO→DO stub calls and carries no url or server.
     Spans are head-sampled and retained 3–7 days, so this is a drift signal, not a compliance
     record — the durable record is the disclosure register (#860), and whether to also *refuse*
-    DO-originated egress is the open fork (#861).
+    DO-originated egress was the open fork (#861).
+    [D-61](../decisions/D-061-do-originated-egress-is-observed-and-never-refused-d-46-s-limit.md)
+    proposes closing it on **observe only** — the enforcement limit this bullet qualifies stays
+    as written, and no platform-authored `fetch` wrapper goes into a customer's bundle — and is
+    awaiting ratification. Two things that entry establishes are worth knowing before relying on
+    this bullet: the observation is not switched on in production (the `traces` block rides
+    `VERTICAL_TRACE_SAMPLING`, which is set on TEST only), and the hostile-bundle remainder that
+    observing does not close is tracked separately as #1579.
 - Attaching an outbound worker **disables raw TCP `connect()`** for every dispatched
   script — sockets are closed entirely, by construction.
 - **The control plane's own dispatch binding** carries no outbound worker (internal
