@@ -59,14 +59,20 @@ a `traces` block that rides an upload (`packages/control-plane-api/src/wfp.ts:66
 `:316`–`:318`), the control plane derives its rate from `VERTICAL_TRACE_SAMPLING`
 (`apps/control-plane/src/worker.ts:363`–`:368`, passed at `:390`), and that var is set **only**
 inside the `test` environment (`apps/control-plane/wrangler.jsonc:249`, in the `env.test` block
-opened at `:224`–`:225`). Every prod-pushed script therefore still ships
-`observability: { enabled: true }` and no `traces` block — logs, no spans — so
-`GET /verticals/:slug/egress` (`packages/control-plane-api/src/api.ts:4807`) reads an empty set for
-every version the production control plane uploaded, and would render a clean bill of health it has
-not earned. Choosing A is choosing to buy the observation: a production
-sampling rate has to be picked and paid for, beta pricing ends 2026-10-01, one real operation
-approaches twenty spans (D-58), and nothing is retroactive — the rate arrives vertical by vertical
-as each re-pushes. **The residue is named rather than discovered later**, and
+opened at `:224`–`:225`). None of which needs deriving, because the comment directly above that
+variable says it outright — *"Prod sets nothing, so prod scripts keep emitting logs and no spans"*
+(`:244`). So every prod-pushed script still ships `observability: { enabled: true }` and no `traces`
+block, and `GET /verticals/:slug/egress` (`packages/control-plane-api/src/api.ts:4807`) reads an
+empty set for every version the production control plane uploaded — rendering a clean bill of health
+it has not earned, which is worse than an empty screen because it answers the question falsely.
+Choosing A is choosing to buy the observation: a production rate has to be picked and paid for, one
+real operation approaches twenty spans (D-58), and nothing is retroactive — the rate arrives
+vertical by vertical as each re-pushes. **That is one decision with two settings rather than two
+decisions**, because the same comment sets a review point that has now arrived: it reads *"Turn this
+off, or down, once #858 reports; beta pricing ends 2026-10-01"* (`:246`–`:247`), and #858 closed
+completed on 2026-09-19. TEST therefore samples at `1` — every span on every pushed script — while
+production samples nothing, eleven days before the billing change, and whoever picks the production
+rate is already in that file. **The residue is named rather than discovered later**, and
 [#1579](https://github.com/substrat-run/substrat/issues/1579) now holds it: A leaves the hostile
 bundle exactly where it found it. The follow-up #861 itself proposed — running the layer rules
 platform-side at push/admit over the built bundle — is no longer available in that shape, because
