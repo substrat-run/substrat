@@ -999,9 +999,11 @@ export function defineScopeDO(
      * and skips the write when nothing changed.
      *
      * `ensureMigrations` memoises its promise, so every later call on a warm DO
-     * resolves to the SAME `true` without applying anything. Reporting on each of
-     * those would bill a control-plane RPC per stub mint to store a number that
-     * has not moved — hence the once-per-instance latch.
+     * resolves to the SAME `true` without applying anything — until something
+     * clears the memo (`retryMigrations`, `importDump`), which is a fresh pass and
+     * may apply. Reporting on each of the cached ones would bill a control-plane
+     * RPC per stub mint to store a number that has not moved — hence the
+     * once-per-instance latch.
      */
     async migrate(): Promise<number | null> {
       const applied = await this.ensureMigrations();
@@ -3340,6 +3342,9 @@ export function defineScopeDO(
      * `destScopeId` is the scope being written INTO. A dump carries scope-level tuples
      * naming the scope it was captured from, so restoring one anywhere else needs them
      * re-pointed — see `rewriteScopeTuples`.
+     *
+     * What the dump did NOT carry is rebuilt by the next migration pass, which is why
+     * this ends by forgetting the memoised one (#1589) — see the tail of the method.
      */
     /**
      * The additive spine-column migrations. KERNEL_DDL is all IF NOT EXISTS, so a
@@ -3537,6 +3542,29 @@ export function defineScopeDO(
         .toArray() as unknown as { module_id: string; version: string }[]) {
         this.applied.add(`${row.module_id}@${row.version}`);
       }
+      // …and forget that this INSTANCE ever ran a migration pass (#1589). Refreshing
+      // the set above is not enough on its own: `ensureMigrations` memoises its
+      // promise, so a warm DO answers "already migrated" from the cache and never
+      // reads the set again. A restore replays only what the dump carries, so a dump
+      // that omits a module's tables — a world that keeps part of the spine
+      // elsewhere, a targeted repair supplying only the tables being fixed — leaves
+      // them dropped and never rebuilt, and the next operation touching one fails
+      // with a bare `no such table` until an eviction or `retryMigrations` resets the
+      // latch. The pure host has no such memo (it re-reads `appliedMigrations` on
+      // every pass), so this is the line that makes the two adapters agree; without
+      // it the divergence is invisible to dev, CI and self-host, which is the #969
+      // class exactly. Same two fields `retryMigrations` clears, for the same reason:
+      // the next pass has to be a fresh one. Already-journaled versions are skipped
+      // by the `applied` set and the in-transaction re-check, so a dump that DID
+      // carry its tables re-applies nothing.
+      //
+      // `schemaVersionReported` is deliberately left set, as `retryMigrations` leaves
+      // it. `migrate()` reports only when a pass APPLIED something, and a pass that
+      // applies after this reset ends with every code-defined migration journaled —
+      // the same `applied.size` the first pass already reported. A dump whose frontier
+      // is complete applies nothing, so there is nothing to report either way.
+      this.migrationPromise = undefined;
+      this.lastFailure = null;
     }
 
     /**
