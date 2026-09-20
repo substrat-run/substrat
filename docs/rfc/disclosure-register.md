@@ -138,7 +138,8 @@ the scope's spine, and with it in every export, backup, and PITR window"*
 **This is a defect under K-37 as written, not a new case.** A mutable table in the live scope
 database is Tier 1; Tier 1 is redacted; this one is not. It needs no register, no decision
 and no new column — only the same `UPDATE`, against a JSON payload, keyed the same way.
-**Recommendation: file it separately from #860 and fix it under K-37.** Three things a fixer
+**Recommendation: fix it under K-37, separately from #860 — filed as
+[#1600](https://github.com/substrat-run/substrat/issues/1600).** Three things a fixer
 should decide rather than discover. The column is `payload TEXT NOT NULL`
 (`packages/adapter-sqlite/src/index.ts:531`; `scope-do.ts:335`), so the outbox's
 `SET payload = NULL` does not transfer — redaction here has to *replace* the JSON, which
@@ -270,8 +271,9 @@ to support.
 
 **Not yet, and not in the shape proposed.** Three pieces, and they should not travel together:
 
-1. **A defect to fix now, under K-37, with no decision required** — §3.1. Erasure misses a
-   Tier-1 copy in a table we own. This is the only part of #860 that is unambiguously owed.
+1. **A defect to fix now, under K-37, with no decision required** — §3.1, filed as
+   [#1600](https://github.com/substrat-run/substrat/issues/1600). Erasure misses a Tier-1 copy
+   in a table we own. This is the only part of #860 that is unambiguously owed.
 2. **The register itself: derive first.** §2 shows the sanctioned journal already exists and
    §5/F1 recommends reading it before storing anything. A new spine table is not yet
    justified, because nobody has yet written the query that would show what it lacks.
