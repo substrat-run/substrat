@@ -70,6 +70,7 @@ import {
   firstBuilderAuth,
   firstPlatformActorAuth,
   pushTokenBuilderAuth,
+  tenantTokenAuth,
   serviceTokenAuth,
   sessionPlatformAuth,
   UNSAFE_devPlatformActorAuth,
@@ -160,6 +161,23 @@ interface Env extends StaffAuthEnv, ConnectorEnv {
    * push tokens simply never authenticate.
    */
   PUSH_TOKEN_SECRET?: string;
+  /**
+   * Signs TENANT tokens (`stt1.…` — the dashboard's tenant-scoped service credential,
+   * #977). A DEDICATED secret (`openssl rand -hex 32`), never the same value as
+   * `PUSH_TOKEN_SECRET` and never `PLATFORM_SECRET`: one signing key for both classes
+   * would make a compromised customer CI token and a compromised dashboard credential
+   * the same incident, and `PLATFORM_SECRET` is injected into every pushed vertical.
+   *
+   * Rotating it invalidates every issued tenant token; the dashboard re-mints on its
+   * next request, so it IS the revocation lever rather than an outage — unlike push
+   * tokens, which a customer has to re-install into their repo.
+   *
+   * Unset ⇒ minting 501s and presented tenant tokens never authenticate, which the
+   * dashboard reports as "not connected" rather than falling back to the fleet-wide
+   * service token. So this must be set on the control plane BEFORE a dashboard that
+   * expects it is deployed.
+   */
+  TENANT_TOKEN_SECRET?: string;
   /**
    * Keys the pseudonymizer behind a MASKED scope export (#1034). Not a decryption key —
    * it never reaches the dump and no mapping is stored — so what it buys is stability:
@@ -1567,6 +1585,15 @@ export default {
           oidcBuilderReader(hostFor(env), env),
           ...(env.PUSH_TOKEN_SECRET ? [pushTokenBuilderAuth(env.PUSH_TOKEN_SECRET)] : []),
         ),
+        // The dashboard's own credential (#977): tenant-scoped, read BEFORE staff, and
+        // audited as the SAME service actor a platform service token already resolves
+        // to — the actor is this host's decision, never the token's. What changes is
+        // WHOSE data it can reach, which the plane now refuses rather than trusting the
+        // dashboard to narrow. Absent secret ⇒ no tenant-scoped path at all.
+        ...(env.TENANT_TOKEN_SECRET
+          ? { authenticateTenantService: tenantTokenAuth(env.TENANT_TOKEN_SECRET, SERVICE_ACTOR) }
+          : {}),
+        tenantTokenSecret: env.TENANT_TOKEN_SECRET,
         pushTokenSecret: env.PUSH_TOKEN_SECRET,
         maskSalt: env.MASK_SALT,
         verticals: verticalsFor(env),

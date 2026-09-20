@@ -120,22 +120,41 @@ export interface SweepRunRead {
  *
  * The tenant is fixed at construction from the caller's dashboard node — it is NOT
  * a parameter any method takes. So operation code physically cannot name another
- * tenant: cross-tenant is impossible by construction, the same move the #97
- * connector-authority seam makes ("authority is inherited, not re-declared").
+ * tenant, the same move the #97 connector-authority seam makes ("authority is
+ * inherited, not re-declared").
  *
- * Auth is a shared service credential (`x-service-token`) that the control plane
- * resolves to its fixed SERVICE_ACTOR — machine-to-machine, distinct from staff
- * sign-in (control-plane-api/auth.ts). The audit subject on the shared plane is
- * therefore the service actor today; attributing each write to the customer's own
- * principal (the §4 ideal) waits on a per-principal control-plane credential.
+ * **That pin used to be the whole narrowing, and that was the defect (#977.)** The
+ * credential presented here was the platform `SERVICE_TOKEN`, which the control plane
+ * resolves to a fleet-wide `{ kind: 'staff' }` principal: every method below could have
+ * named any tenant on the platform and the plane would have answered. "Impossible by
+ * construction" described this file, not the seam — one wrong tenant id at one of the
+ * ~90 call sites reached another customer's data, and nothing server-side refused it.
+ *
+ * So `credential` is now a TENANT TOKEN (control-plane-api/tenant-token.ts): a
+ * credential that CARRIES the tenant it may act for. The plane refuses a request naming
+ * another tenant whatever this client asks, which makes the pin below a convenience for
+ * callers rather than the security boundary it was being asked to be.
+ *
+ * The audit subject on the shared plane is still the platform service actor — the token
+ * deliberately carries none. Attributing each write to the customer's own principal (the
+ * §4 ideal) is the second half of #977 and its own change: it makes `PlatformActorId`
+ * stop being the type of an audit actor.
  */
 export interface TenantNarrowedControlPlaneOptions {
   /** Base URL of the control-plane API, e.g. `https://cp/api`. Host is ignored over a service binding. */
   baseUrl: string;
   /** The platform actor id stamped as `x-platform-actor` (prod resolves the real subject from the token). */
   actor: string;
-  /** The shared service credential proving the caller is an authorized platform vertical. */
-  serviceToken: string;
+  /**
+   * The credential presented as `x-service-token`, or a provider that resolves one.
+   *
+   * A provider, because the credential this seam should present is MINTED per tenant
+   * (#977) and the mint is a round trip the 90-odd call sites must not each learn
+   * about. Awaited on every call and expected to be cached by the provider; a throw
+   * surfaces as the call failing, which is the right answer for a dashboard that
+   * cannot obtain a credential for the tenant it is rendering.
+   */
+  credential: string | (() => Promise<string>);
   /** The ONE tenant every call is pinned to — the caller's own, ambient from their session. */
   tenantId: TenantId;
   /** A Worker service-binding's `fetch` (bound to `substrat-control-plane`). Defaults to global fetch. */
@@ -192,7 +211,7 @@ export interface PreviewRecord {
 export class TenantNarrowedControlPlane {
   private readonly baseUrl: string;
   private readonly actor: string;
-  private readonly serviceToken: string;
+  private readonly credential: () => Promise<string>;
   private readonly fetchImpl: typeof globalThis.fetch;
   /** Read-only: the pinned tenant. Every write below silently injects it. */
   readonly tenantId: TenantId;
@@ -200,7 +219,8 @@ export class TenantNarrowedControlPlane {
   constructor(opts: TenantNarrowedControlPlaneOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
     this.actor = opts.actor;
-    this.serviceToken = opts.serviceToken;
+    this.credential =
+      typeof opts.credential === 'string' ? () => Promise.resolve(opts.credential as string) : opts.credential;
     this.tenantId = opts.tenantId;
     // Bind to globalThis: workerd throws "Illegal invocation" if a service-binding
     // fetch is called with the wrong `this`. An injected fetch is used as-is.
@@ -209,17 +229,21 @@ export class TenantNarrowedControlPlane {
 
   private async call<T>(path: string, init: RequestInit & { idempotent?: boolean } = {}): Promise<T> {
     let res: Response;
+    const credential = await this.credential();
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
         ...init,
         headers: {
           'content-type': 'application/json',
           'x-platform-actor': this.actor,
-          'x-service-token': this.serviceToken,
-          // The workspace this seam acts for (#417): the service token keeps its staff
-          // reach, but vertical routes use this to resolve a bare slug to the tenant's
-          // `<tenantSlug>/<name>` registry id — the id already-prefixed catalog slugs
-          // pass through unchanged.
+          'x-service-token': credential,
+          // The workspace this seam acts for (#417): vertical routes use this to resolve
+          // a bare slug to the tenant's `<tenantSlug>/<name>` registry id — already-
+          // prefixed catalog slugs pass through unchanged.
+          //
+          // It is NOT the narrowing, and never was (#977): over a tenant token the plane
+          // refuses a header that disagrees with the credential, so this can only ever
+          // repeat what the credential already says.
           'x-substrat-tenant': this.tenantId,
           ...(init.headers as Record<string, string> | undefined),
         },

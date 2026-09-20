@@ -91,7 +91,7 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
     return new TenantNarrowedControlPlane({
       baseUrl: 'http://cp',
       actor: staff,
-      serviceToken: 'unused-by-the-dev-authenticator',
+      credential: 'unused-by-the-dev-authenticator',
       tenantId: tenant,
       fetch: (async (url: string | URL | Request, init?: RequestInit) => {
         const u = new URL(String(url));
@@ -319,7 +319,7 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
       const cp = new TenantNarrowedControlPlane({
         baseUrl: 'http://cp',
         actor: staff,
-        serviceToken: 'x',
+        credential: 'x',
         tenantId: A,
         fetch: (async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));
@@ -349,7 +349,7 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
       const more = await install(A, 'acme/courses', 'more');
       const noBackups = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
       const cp = new TenantNarrowedControlPlane({
-        baseUrl: 'http://cp', actor: staff, serviceToken: 'x', tenantId: A,
+        baseUrl: 'http://cp', actor: staff, credential: 'x', tenantId: A,
         fetch: (async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));
           return noBackups.request(u.pathname + u.search, init);
@@ -457,7 +457,7 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
     const cp = new TenantNarrowedControlPlane({
       baseUrl: 'https://cp/api',
       actor: staff,
-      serviceToken: 't',
+      credential: 't',
       tenantId: A,
       fetch: (async (url: string | URL | Request, init?: RequestInit) => {
         seen.push({ url: String(url), method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : undefined });

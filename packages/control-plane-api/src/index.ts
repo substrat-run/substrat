@@ -1,4 +1,9 @@
-export { createControlPlaneApi, CLI_MIN_VERSION_HEADER, CLI_LATEST_VERSION_HEADER } from './api.js';
+export {
+  createControlPlaneApi,
+  tenantCredentialPin,
+  CLI_MIN_VERSION_HEADER,
+  CLI_LATEST_VERSION_HEADER,
+} from './api.js';
 export type { ControlPlaneApiOptions, ConnectionInspector } from './api.js';
 export {
   DEV_ACTOR_HEADER,
@@ -10,6 +15,7 @@ export {
   serviceTokenAuth,
   firstPlatformActorAuth,
   firstBuilderAuth,
+  confinedTenant,
 } from './auth.js';
 export { relayConnectionUpsert, ConnectionRelayError } from './connection-relay.js';
 export { relayConnectUrl, ConnectUrlRelayError } from './connect-url.js';
@@ -20,6 +26,7 @@ export {
   type ConnectionGrantReconcileReport,
 } from './connection-grants.js';
 export { mintPushToken, verifyPushToken, pushTokenBuilderAuth, pushActorFor } from './push-token.js';
+export { mintTenantToken, verifyTenantToken, tenantTokenAuth } from './tenant-token.js';
 export type {
   PlatformActorAuth,
   StaffIdentity,
@@ -27,6 +34,8 @@ export type {
   StaffActorResolver,
   BuilderIdentity,
   BuilderAuth,
+  TenantServiceIdentity,
+  TenantServiceAuth,
   Principal,
 } from './auth.js';
 export { ControlPlaneClient, ControlPlaneError } from './client.js';

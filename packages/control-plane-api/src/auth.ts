@@ -197,14 +197,64 @@ export function firstBuilderAuth(...auths: BuilderAuth[]): BuilderAuth {
   };
 }
 
+// -- the tenant-scoped service principal (#977) ------------------------------
+//
+// A MACHINE acting for one tenant with the platform's own capability — the
+// dashboard, which must provision, configure, observe and reap apps on the shared
+// plane, but only ever inside the tenant whose page a customer is looking at.
+//
+// Distinct from both neighbours on purpose. A `builder` is a tenant USER and reaches
+// only the vertical-management allowlist; a `staff` service token has every route and
+// every tenant. This is the third cell of that table — every route the dashboard
+// needs, exactly one tenant — and until #977 it did not exist, so the dashboard held
+// the staff credential and promised to narrow itself.
+
+/**
+ * A tenant-scoped service identity, resolved from a credential that CARRIES the
+ * tenant (`tenant-token.ts`) rather than from a caller-asserted header.
+ *
+ * `actor` is the audited subject, supplied by the host exactly as `serviceTokenAuth`
+ * takes it — never read out of the credential, so a minted token cannot name who its
+ * writes are attributed to.
+ */
+export interface TenantServiceIdentity {
+  actor: PlatformActorId;
+  tenantId: TenantId;
+  /** The tenant's slug — the prefix a bare vertical slug resolves under (#417). */
+  tenantSlug: string;
+}
+
+/**
+ * Resolves a request to a tenant-scoped service principal, or null to decline. Null is
+ * not an error — it means "not a tenant token", and the other readers get their turn.
+ */
+export type TenantServiceAuth = (
+  request: Request,
+) => Promise<TenantServiceIdentity | null> | TenantServiceIdentity | null;
+
 /**
  * Who is acting on the control-plane surface, once authenticated.
  *
  * `staff` has cross-tenant reach (the console, service registration). `builder` is
- * narrowed: it may only reach the vertical-management subset, and only for verticals
- * its `tenantId` owns. The distinction is carried here, not by the actor-id brand —
- * `actor` is just "the audited subject", staff or builder alike.
+ * narrowed twice: it may only reach the vertical-management subset, and only for
+ * verticals its `tenantId` owns. `tenant` is narrowed once: the dashboard's own
+ * credential, which reaches the surface a dashboard needs but never leaves its tenant.
+ * The distinction is carried here, not by the actor-id brand — `actor` is just "the
+ * audited subject", the same for all three.
  */
 export type Principal =
   | { kind: 'staff'; actor: PlatformActorId }
-  | { kind: 'builder'; actor: PlatformActorId; tenantId: TenantId; tenantSlug: string };
+  | { kind: 'builder'; actor: PlatformActorId; tenantId: TenantId; tenantSlug: string }
+  | { kind: 'tenant'; actor: PlatformActorId; tenantId: TenantId; tenantSlug: string };
+
+/**
+ * The tenant a principal is CONFINED to, or null when it is fleet-wide staff.
+ *
+ * The one predicate every narrowing should ask, rather than `kind === 'builder'`:
+ * "confined, and to which tenant" is the question a per-tenant filter has, and
+ * spelling it as a kind check is what made the dashboard's credential — confined in
+ * intent, staff in code — indistinguishable from the console's.
+ */
+export function confinedTenant(p: Principal): TenantId | null {
+  return p.kind === 'staff' ? null : p.tenantId;
+}

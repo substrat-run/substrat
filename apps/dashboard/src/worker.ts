@@ -219,28 +219,83 @@ interface Env extends OidcEnv, EmailIdentifierEnv {
 const DASHBOARD_CP_ACTOR = platformActorId.parse('01JZ000000000000000000DASH');
 
 /**
+ * Tenant tokens this isolate has already minted, by tenant (#977).
+ *
+ * Isolate-lifetime and nothing more: a cold start costs one extra service-binding
+ * round trip per tenant it serves, and an eviction costs another. Deliberately not
+ * stored — a tenant token has no expiry in v1, so persisting it would only create a
+ * second place a rotation has to reach, and the mint is cheap enough that "ask again"
+ * is a better revocation story than "remember until told otherwise".
+ *
+ * The promise, not the token, is what is cached: two concurrent requests for the same
+ * tenant share one mint. A rejected mint is evicted so the next request retries.
+ */
+const tenantTokens = new Map<string, Promise<string>>();
+
+/**
  * The tenant-narrowed control-plane seam for a caller (§4). The tenant is pinned to
- * the caller's own — read from their dashboard node, never a request argument — so
- * provisioning cannot escape their tenant.
+ * the caller's own — read from their dashboard node, never a request argument.
+ *
+ * Since #977 the pin is also a property of the CREDENTIAL: this mints a tenant token
+ * for that tenant and presents it, so the shared plane refuses anything outside it.
+ * The fleet-wide `CP_SERVICE_TOKEN` stays, and is now used for exactly ONE thing —
+ * asking the plane to mint that per-tenant credential. That is the single fleet-wide
+ * act a multi-tenant dashboard cannot avoid, and it is one audited route instead of
+ * ambient staff reach across sixty.
  *
  * The binding is REQUIRED (#978). It used to be optional, and its absence selected a
  * second, embedded mode; every surface then carried two arms and the quiet one wrote
  * into DOs nothing could route to. A misconfigured deployment now says so — loudly,
- * on the first request that needs the plane — instead of half-working.
+ * on the first request that needs the plane — instead of half-working. A plane with no
+ * `TENANT_TOKEN_SECRET` is the same class of misconfiguration and gets the same
+ * answer: there is deliberately NO fallback to the service token, because that
+ * fallback is the vulnerability, and a silent one would make this fix optional in
+ * practice. Deploy the control plane with the secret set BEFORE this worker.
  */
 function controlPlaneFor(env: Env, tenantId: DashboardNode['tenantId']): TenantNarrowedControlPlane {
-  if (!env.CONTROL_PLANE_SVC || !env.CP_SERVICE_TOKEN) {
+  const svc = env.CONTROL_PLANE_SVC;
+  const serviceToken = env.CP_SERVICE_TOKEN;
+  if (!svc || !serviceToken) {
     throw new HTTPException(503, {
       message: 'the dashboard is not connected to the control plane — bind CONTROL_PLANE_SVC and set CP_SERVICE_TOKEN',
     });
   }
+  // Host is ignored over a service binding; the control-plane API mounts at `/api`.
+  const baseUrl = 'https://control-plane/api';
+  const fetchImpl = svc.fetch.bind(svc);
+
+  const mint = async (): Promise<string> => {
+    const res = await fetchImpl(`${baseUrl}/tenant-tokens`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-service-token': serviceToken },
+      body: JSON.stringify({ tenantId }),
+    });
+    if (!res.ok) {
+      throw new HTTPException(503, {
+        message:
+          res.status === 501
+            ? 'the control plane cannot mint tenant credentials — set TENANT_TOKEN_SECRET there'
+            : `the control plane refused a tenant credential (${res.status})`,
+      });
+    }
+    return ((await res.json()) as { token: string }).token;
+  };
+
   return new TenantNarrowedControlPlane({
-    // Host is ignored over a service binding; the control-plane API mounts at `/api`.
-    baseUrl: 'https://control-plane/api',
+    baseUrl,
     actor: env.CP_ACTOR ?? DASHBOARD_CP_ACTOR,
-    serviceToken: env.CP_SERVICE_TOKEN,
+    credential: () => {
+      const cached = tenantTokens.get(tenantId);
+      if (cached) return cached;
+      const pending = mint().catch((e: unknown) => {
+        tenantTokens.delete(tenantId);
+        throw e;
+      });
+      tenantTokens.set(tenantId, pending);
+      return pending;
+    },
     tenantId,
-    fetch: env.CONTROL_PLANE_SVC.fetch.bind(env.CONTROL_PLANE_SVC),
+    fetch: fetchImpl,
   });
 }
 

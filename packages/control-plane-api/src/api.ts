@@ -84,8 +84,9 @@ import type {
 import type { OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import { migrationProgress, ulid } from '@substrat-run/kernel';
-import { TENANT_HEADER } from './auth.js';
-import type { PlatformActorAuth, BuilderAuth, Principal } from './auth.js';
+import { TENANT_HEADER, confinedTenant } from './auth.js';
+import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
+import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
@@ -306,12 +307,29 @@ export interface ControlPlaneApiOptions {
    */
   authenticateBuilder?: BuilderAuth;
   /**
+   * Resolves a TENANT-SCOPED SERVICE principal — the dashboard's own credential
+   * (tenant-token.ts, #977). Tried FIRST, before staff: a credential that carries its
+   * tenant must never be read as fleet-wide staff by a reader configured later, and
+   * ordering is the only thing that can guarantee that. Absent ⇒ no tenant-scoped
+   * path, and the surface behaves exactly as it did before #977.
+   */
+  authenticateTenantService?: TenantServiceAuth;
+  /**
    * Signs tenant-scoped push tokens (push-token.ts) — the CI credential the dashboard
    * mints into a customer repo. Absent ⇒ the mint route 501s. A dedicated secret,
    * never PLATFORM_SECRET (injected into pushed verticals) and never the service
    * token; set once, out of routine rotation (rotating it revokes every issued token).
    */
   pushTokenSecret?: string;
+  /**
+   * Signs tenant tokens (tenant-token.ts, #977) — the dashboard's per-tenant
+   * credential. Absent ⇒ `POST /tenant-tokens` 501s. A DEDICATED secret: sharing
+   * `pushTokenSecret` would make a compromised CI token and a compromised dashboard
+   * credential one incident, and `PLATFORM_SECRET` is injected into every pushed
+   * vertical. Rotating it revokes every issued tenant token at once; the dashboard
+   * re-mints on its next request, so that is the revocation lever, not an outage.
+   */
+  tenantTokenSecret?: string;
   /**
    * Keys the pseudonymizer behind a masked export (#1034, `pseudonymize.ts`). The salt
    * never reaches the dump and no mapping is stored, so it is not a decryption key —
@@ -435,6 +453,19 @@ export const CLI_LATEST_VERSION_HEADER = 'x-substrat-cli-latest-version';
 // `principal` carries the authz distinction the builder routes read. Both are set by
 // the auth middleware; keeping `actor` means every existing route is untouched.
 type Vars = { actor: PlatformActorId; principal: Principal };
+
+/**
+ * "This principal is confined to a tenant, and this is not that tenant."
+ *
+ * The question every `/tenants/:tenantId/…` route asks before it answers. Spelled in
+ * terms of CONFINEMENT rather than of a principal kind, because a route that asks
+ * `kind === 'builder'` answers fleet-wide for every other confined credential — which
+ * is the shape #977 found the dashboard's in.
+ */
+function outsideTenant(p: Principal, tenantId: TenantId): boolean {
+  const pin = confinedTenant(p);
+  return pin !== null && pin !== tenantId;
+}
 
 // -- request schemas ---------------------------------------------------------
 // Parse, don't trust: every input crosses Zod at the boundary. The ids stay
@@ -790,6 +821,144 @@ export const DEFAULT_MODEL_MARGIN_PERCENT = 20;
  *  Cloudflare's `internal error; reference = <id>` shape (#559). */
 const UPSTREAM_REFERENCE = /\breference\s*=\s*([a-z0-9]+)/i;
 
+// -- the tenant-scoped credential's confinement (#977) ----------------------
+//
+// A `tenant` principal (tenant-token.ts) has the dashboard's CAPABILITY and ONE
+// tenant's reach. Which is which is decided here, not by the dashboard: this is the
+// whole point of the issue, whose complaint was that the narrowing lived in the
+// caller and so held only as long as every one of its ~90 call sites was right.
+//
+// Default-deny, same reflex as BUILDER_ROUTES: a route not listed 403s, so
+// forgetting one costs a dashboard feature — visibly — and never an escalation.
+//
+// Each entry declares HOW its tenant is named, because "the pin matches" is only
+// authz when the route's answer is actually determined by the thing being matched:
+//
+//   'path'    the `/tenants/:tenantId/…` segment IS the subject. Structural: there
+//             is no fleet-wide answer for a forgotten filter to fall back to.
+//   'query'   a `?tenantId=` the route already forces its answer through. REQUIRED
+//             here, not merely checked — these routes answer fleet-wide when it is
+//             absent, which is exactly the leak, so absent is a refusal.
+//   'catalog' `?ownerTenant=`/`?visibleTo=` on GET /verticals: one of the two must
+//             be present and be the pin. `visibleTo` legitimately also returns
+//             PUBLISHED verticals owned by others — that is the install catalog,
+//             which is meant to be visible to every tenant, and the handler's own
+//             filter is what bounds it.
+//   'body'    a `tenantId` (or `id`, creating the tenant) in the JSON body.
+//   'owner'   the route addresses a vertical or a hostname, and its tenant is a
+//             fact about the REGISTRY, not about the request. The handler narrows
+//             by ownership — `confinedTenant`, the same check a builder gets — and
+//             a route is listed here only once that check is in it.
+//
+// Whatever the mechanism, the `namedTenants` sweep below ALSO refuses any request
+// that names some OTHER tenant anywhere the middleware can see it. Defence in depth:
+// the pin check is what each entry rests on, and the sweep is what catches a second
+// tenant id riding along in a place the entry did not think about.
+type TenantPin = 'path' | 'query' | 'catalog' | 'body' | 'owner';
+const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] = [
+  // Everything under one tenant's own path. One entry rather than sixty, because
+  // the confinement is carried by the URL shape and not by a list anybody has to
+  // keep current: `/tenants/<pin>/…` cannot address another tenant's row whatever
+  // the sub-route does. `/tenants` itself (the fleet list) does not match.
+  { method: 'GET', re: /\/tenants\/[^/]+(\/.*)?$/, pin: 'path' },
+  { method: 'POST', re: /\/tenants\/[^/]+(\/.*)?$/, pin: 'path' },
+  { method: 'PUT', re: /\/tenants\/[^/]+(\/.*)?$/, pin: 'path' },
+  { method: 'PATCH', re: /\/tenants\/[^/]+(\/.*)?$/, pin: 'path' },
+  { method: 'DELETE', re: /\/tenants\/[^/]+(\/.*)?$/, pin: 'path' },
+  // Create the tenant's own directory row (idempotent) — `id` is the pin.
+  { method: 'POST', re: /\/tenants$/, pin: 'body' },
+  // Provision an app + materialize its instance.
+  { method: 'POST', re: /\/scopes$/, pin: 'body' },
+  { method: 'POST', re: /\/verticals\/[^/]+\/instances$/, pin: 'body' },
+  // Mint the tenant's CI push token. Note what is NOT here: `/tenant-tokens`. A
+  // tenant credential cannot mint another, for itself or for anyone — the mint
+  // stays staff-only, so this credential can never widen its own reach.
+  { method: 'POST', re: /\/push-tokens$/, pin: 'body' },
+  // The forced-filter reads: the route refuses without a tenantId and answers only
+  // that tenant's rows.
+  //
+  // `GET /scopes` is the one the dashboard leans on hardest — the Data tab's scope
+  // switcher and the whole Move/Retire flow (#1593) read it — and it is the one a
+  // path-shaped reading of this list would miss, because it names its tenant in a
+  // query while every other scope route names it in the path.
+  { method: 'GET', re: /\/scopes$/, pin: 'query' },
+  { method: 'GET', re: /\/admin-log$/, pin: 'query' },
+  { method: 'GET', re: /\/ops-failures$/, pin: 'query' },
+  { method: 'GET', re: /\/sweep-runs$/, pin: 'query' },
+  { method: 'GET', re: /\/service-refs$/, pin: 'query' },
+  { method: 'GET', re: /\/observability\/tenant-metrics$/, pin: 'query' },
+  { method: 'GET', re: /\/observability\/tenant-metrics-series$/, pin: 'query' },
+  { method: 'GET', re: /\/observability\/tenant-logs$/, pin: 'query' },
+  { method: 'GET', re: /\/hostnames$/, pin: 'query' },
+  { method: 'POST', re: /\/hostnames$/, pin: 'body' },
+  // The registry + install catalog.
+  { method: 'GET', re: /\/verticals$/, pin: 'catalog' },
+  // Ownership-narrowed: the handler resolves who owns the slug / the hostname.
+  // Not listed, because the dashboard does not call them and an unused route on an
+  // allowlist is reach nobody asked for: POST /verticals (register), POST
+  // /verticals/:slug/versions (publish), .../deploy, .../publish-request. A push is
+  // the CLI's act, over a push token, and stays one.
+  { method: 'DELETE', re: /\/verticals\/[^/]+$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/versions$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/registry$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/model$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/flow$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/assets$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/schedules$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/channels$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/, pin: 'owner' },
+  { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/previews$/, pin: 'owner' },
+  { method: 'POST', re: /\/verticals\/[^/]+\/previews$/, pin: 'owner' },
+  { method: 'DELETE', re: /\/verticals\/[^/]+\/previews\/[^/]+$/, pin: 'owner' },
+  { method: 'POST', re: /\/hostnames\/[^/]+\/verify$/, pin: 'owner' },
+  { method: 'PATCH', re: /\/hostnames\/[^/]+\/status$/, pin: 'owner' },
+  { method: 'DELETE', re: /\/hostnames\/[^/]+$/, pin: 'owner' },
+  // Script-grain observability, narrowed in the handler to the services this
+  // tenant's own verticals deploy (see `ownedServices`). Without that narrowing
+  // these are fleet reads, which is how the dashboard used them over the staff
+  // token — filtering the fleet's answer in the browser worker's memory.
+  { method: 'GET', re: /\/observability\/metrics$/, pin: 'owner' },
+  { method: 'GET', re: /\/observability\/metrics-series$/, pin: 'owner' },
+  { method: 'GET', re: /\/observability\/logs$/, pin: 'owner' },
+];
+
+/**
+ * How a tenant-scoped credential's pin is checked on this route, or `undefined` when
+ * the route is off its allowlist entirely (default-deny).
+ *
+ * Exported so the DASHBOARD's own suite can assert the other direction: that every
+ * route its authority seam can issue is one this credential reaches. Nothing else can
+ * check that — the allowlist lives here and the call sites live there — and the gap
+ * between the two is a 403 in production and a green test on both sides. The first
+ * pass of this list was written by reading `authority.ts`, and reading it missed
+ * `GET /scopes`, which is the route the Data tab and Move/Retire lean on hardest.
+ */
+export function tenantCredentialPin(method: string, path: string): TenantPin | undefined {
+  return TENANT_ROUTES.find((r) => r.method === method && r.re.test(path))?.pin;
+}
+
+/** The `/tenants/<id>/…` segment a path names, if it names one. */
+const pathTenant = (path: string): string | undefined =>
+  /\/tenants\/([^/]+)(?:\/|$)/.exec(path)?.[1];
+
+/**
+ * Every tenant this request names where the middleware can see it — the path
+ * segment, the tenant-ish query params, and the `x-substrat-tenant` pin header.
+ * The BODY is not swept here: it is read only for a `'body'` route, because parsing
+ * it costs a read on every request and only those routes are decided by it.
+ */
+const namedTenants = (c: Context<{ Variables: Vars }>): string[] => {
+  const named: (string | undefined)[] = [
+    pathTenant(c.req.path),
+    c.req.query('tenantId'),
+    c.req.query('ownerTenant'),
+    c.req.query('visibleTo'),
+    c.req.header(TENANT_HEADER)?.trim() || undefined,
+  ];
+  return named.filter((v): v is string => typeof v === 'string' && v.length > 0);
+};
+
 /**
  * The audited HTTP surface over `HostAdmin` (control-plane.md §4.5).
  *
@@ -818,7 +987,7 @@ const UPSTREAM_REFERENCE = /\breference\s*=\s*([a-z0-9]+)/i;
  *    adapter's read path, not an admin surface.
  */
 export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ Variables: Vars }> {
-  const { host, authenticate, authenticateBuilder } = options;
+  const { host, authenticate, authenticateBuilder, authenticateTenantService } = options;
   const admin = host.admin;
   const app = new Hono<{ Variables: Vars }>();
 
@@ -835,11 +1004,32 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
   }
 
-  // Fail closed, before any route runs: no principal, no reach. Staff/service first
-  // (unchanged, a superset); a builder session only when staff declines.
+  // Fail closed, before any route runs: no principal, no reach.
+  //
+  // The TENANT-SCOPED credential is read FIRST (#977), ahead of staff. Not for
+  // precedence between two things that could both match — an `stt1.` value is not a
+  // platform service token and never will be — but because order is the only thing
+  // that makes "a tenant token is never staff" hold no matter how `authenticate` is
+  // configured. A deployment that pasted a tenant token into `SERVICE_TOKEN` would,
+  // with the readers the other way round, silently hand it the whole fleet.
+  //
+  // Staff/service next (unchanged, a superset); a builder session only when staff
+  // declines.
   app.use('*', async (c, next) => {
-    const staff = await authenticate(c.req.raw);
-    let principal: Principal | null = staff ? { kind: 'staff', actor: staff } : null;
+    let principal: Principal | null = null;
+    if (authenticateTenantService) {
+      const tenant = await authenticateTenantService(c.req.raw);
+      if (tenant) {
+        principal = {
+          kind: 'tenant',
+          actor: tenant.actor,
+          tenantId: tenant.tenantId,
+          tenantSlug: tenant.tenantSlug,
+        };
+      }
+    }
+    const staff = principal ? null : await authenticate(c.req.raw);
+    if (!principal && staff) principal = { kind: 'staff', actor: staff };
     if (!principal && authenticateBuilder) {
       const builder = await authenticateBuilder(c.req.raw);
       if (builder) {
@@ -948,6 +1138,46 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (c.get('principal').kind === 'builder') {
       const allowed = BUILDER_ROUTES.some((r) => r.method === c.req.method && r.re.test(c.req.path));
       if (!allowed) return c.json({ error: 'forbidden' }, 403);
+    }
+    await next();
+  });
+
+  app.use('*', async (c, next) => {
+    const p = c.get('principal');
+    if (p.kind !== 'tenant') return next();
+    const pin = tenantCredentialPin(c.req.method, c.req.path);
+    if (!pin) return c.json({ error: 'forbidden' }, 403);
+
+    // The sweep: anything naming a tenant must name THIS one. `x-substrat-tenant` is
+    // included, which is what stops the pre-#977 shape — a fleet credential plus a
+    // caller-asserted tenant header — from surviving as a way to ask for another.
+    if (namedTenants(c).some((t) => t !== p.tenantId)) {
+      return c.json({ error: 'forbidden: outside this credential’s tenant' }, 403);
+    }
+
+    // The route's own pin must be PRESENT, not merely consistent. A missing filter is
+    // what makes these routes answer fleet-wide, so absence is the refusal.
+    if (pin === 'path' && pathTenant(c.req.path) !== p.tenantId) {
+      return c.json({ error: 'forbidden: outside this credential’s tenant' }, 403);
+    }
+    if (pin === 'query' && c.req.query('tenantId') !== p.tenantId) {
+      return c.json({ error: 'forbidden: this credential must name its own tenant' }, 403);
+    }
+    if (pin === 'catalog') {
+      const named = c.req.query('ownerTenant') ?? c.req.query('visibleTo');
+      if (named !== p.tenantId) {
+        return c.json({ error: 'forbidden: this credential must name its own tenant' }, 403);
+      }
+    }
+    if (pin === 'body') {
+      // Hono caches a parsed body, so the handler's own `c.req.json()` still works.
+      // An unparseable body names no tenant, which is a refusal here rather than the
+      // handler's 400 — a request this middleware cannot read is one it cannot clear.
+      const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+      const named = body && typeof body === 'object' ? (body['tenantId'] ?? body['id']) : undefined;
+      if (named !== p.tenantId) {
+        return c.json({ error: 'forbidden: this credential must name its own tenant' }, 403);
+      }
     }
     await next();
   });
@@ -1405,7 +1635,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const filter = listScopesQuery.parse({
       // A builder reads only its OWN tenant's directory rows — the filter is forced,
       // not trusted from the query (#424 CLI parity for `substrat installs`).
-      tenantId: p.kind === 'builder' ? p.tenantId : c.req.query('tenantId'),
+      tenantId: confinedTenant(p) ?? c.req.query('tenantId'),
       status: c.req.queries('status'),
       vertical: c.req.query('vertical'),
     });
@@ -1456,7 +1686,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     // A builder acts only within its own tenant; a foreign tenant is hidden as 404 (K-3),
     // never distinguished from "no such scope".
-    if (p.kind === 'builder' && p.tenantId !== tenantId) {
+    if (outsideTenant(p, tenantId)) {
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${input.parentScopeId})` }, 404);
     }
     // The provisioning sequence lives in one place — `provisionSiblingScope` — shared with the
@@ -1486,7 +1716,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     // A builder reads only its own tenant; a foreign tenant is hidden as 404 (K-3).
     const p = c.get('principal');
-    if (p.kind === 'builder' && p.tenantId !== tenantId) {
+    if (outsideTenant(p, tenantId)) {
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     }
     const record = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
@@ -1826,7 +2056,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     // A builder reads only its own tenant; a foreign tenant is hidden as 404 (K-3).
     const principal = c.get('principal');
-    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+    if (outsideTenant(principal, tenantId)) {
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     }
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
@@ -1882,7 +2112,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const principal = c.get('principal');
-    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+    if (outsideTenant(principal, tenantId)) {
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     }
     const filter = platformRequestFilter.parse({
@@ -1916,9 +2146,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     const p = c.get('principal');
-    if (p.kind === 'builder') {
+    const scopePin = confinedTenant(p);
+    if (scopePin) {
       const v = scope.vertical ? await verticalOf(actor, scope.vertical) : undefined;
-      if (!v || v.ownerTenant !== p.tenantId) return c.json({ error: 'forbidden' }, 403);
+      if (!v || v.ownerTenant !== scopePin) return c.json({ error: 'forbidden' }, 403);
     }
     const vertical = await verticalForScope(c, scope);
     if (!vertical) return c.json({ error: await diagnoseUnboundScope(c.get('actor'), scope) }, 501);
@@ -2335,7 +2566,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const principal = c.get('principal');
-    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+    if (outsideTenant(principal, tenantId)) {
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     }
     const filter = denialLogQuery.parse(c.req.query());
@@ -2357,7 +2588,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const principal = c.get('principal');
-    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+    if (outsideTenant(principal, tenantId)) {
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     }
     const filter = denialLogQuery.parse(c.req.query());
@@ -2386,7 +2617,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const principal = c.get('principal');
-    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+    if (outsideTenant(principal, tenantId)) {
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     }
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
@@ -2405,7 +2636,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const principal = c.get('principal');
-    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+    if (outsideTenant(principal, tenantId)) {
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     }
     const actor = c.get('actor');
@@ -3320,9 +3551,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     const actor = c.get('actor');
-    if (p.kind === 'builder') {
+    const adoptPin = confinedTenant(p);
+    if (adoptPin) {
       const v = await verticalOf(actor, slug);
-      if (!v || v.ownerTenant !== p.tenantId) return c.json({ error: 'forbidden' }, 403);
+      if (!v || v.ownerTenant !== adoptPin) return c.json({ error: 'forbidden' }, 403);
     }
     const v = await verticalOf(actor, slug);
     if (!v) return c.json({ error: `unknown vertical '${slug}'` }, 404);
@@ -3582,6 +3814,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const verticalOf = async (actor: PlatformActorId, slug: string) =>
     (await admin.listVerticals(actor)).find((x) => x.slug === slug);
 
+  /**
+   * "This principal is confined, and this vertical is not its tenant's." The one
+   * predicate every slug-addressed route asks.
+   *
+   * It is `confinedTenant`, not `kind === 'builder'`, because the question is about
+   * confinement and never about which KIND of credential is confined — the dashboard's
+   * tenant token (#977) is confined too, and a route asking the narrower question
+   * would hand it the fleet. Staff are unconfined and always pass.
+   */
+  const notOwned = async (p: Principal, slug: string): Promise<boolean> => {
+    const pin = confinedTenant(p);
+    return pin !== null && (await ownerOf(p.actor, slug)) !== pin;
+  };
+
   // The vertical id a request actually addresses. For a BUILDER it is `<tenantSlug>/<name>`
   // (builder-plane.md §5): they send a bare `--slug`, the control plane forms the prefix
   // from their authenticated tenant — so two builders can each own a `helpdesk` with no
@@ -3654,32 +3900,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // release-health and issues views) whether or not a telemetry backend is
   // configured. The dashboard's ownedServiceRefs() fetches this instead of
   // re-deriving it, so every consumer means the same thing by `version`.
-  app.get('/service-refs', async (c) => {
-    const p = c.get('principal');
-    // The /ops-failures forced-filter pattern: a builder's tenant comes from the
-    // principal, never the query. A staff/service caller must SAY whose view it
-    // wants — answering fleet-wide on a forgotten param would leak, so refuse.
-    const tenantId = p.kind === 'builder' ? p.tenantId : c.req.query('tenantId');
-    if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
-    const query = z
-      .object({ tenantId: tenantIdSchema, vertical: z.string().optional() })
-      .parse({ tenantId, vertical: c.req.query('vertical') });
+  // Cap the per-vertical fan-out and REPORT the cut — truncating silently is the
+  // defect the egress route names (#859), and the same posture holds here.
+  const MAX_SERVICE_REF_VERTICALS = 50;
 
-    const actor = c.get('actor');
-    const all = (await admin.listVerticals(actor)).filter((v) => v.ownerTenant === query.tenantId);
-    let considered = all;
-    if (query.vertical !== undefined) {
-      const slug = await resolveVerticalId(c, query.vertical);
-      considered = all.filter((v) => v.slug === slug);
-      // Non-ownership reads as absence (K-3), exactly like the per-slug registry reads.
-      if (considered.length === 0) throw new ControlPlaneError(404, 'not found');
-    }
-    // Cap the per-vertical fan-out and REPORT the cut — truncating silently is the
-    // defect the egress route names (#859), and the same posture holds here.
-    const MAX_VERTICALS = 50;
-    const verticalsTruncated = considered.length > MAX_VERTICALS;
+  /**
+   * Every Cloudflare service ref a tenant's own verticals deploy, mapped to the
+   * signals dimensions it stamps. The ONE implementation of "what a service ref
+   * means", and now also of "which service refs are this tenant's" — the two are the
+   * same enumeration, and #977's observability narrowing must not be a second copy of
+   * it that can drift when a third ref scheme appears.
+   */
+  const tenantServiceRefs = async (
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    slug?: string,
+  ): Promise<{ entries: ServiceDimensions[]; verticalsTruncated: boolean; matched: number }> => {
+    const all = (await admin.listVerticals(actor)).filter((v) => v.ownerTenant === tenantId);
+    const considered = slug === undefined ? all : all.filter((v) => v.slug === slug);
+    const verticalsTruncated = considered.length > MAX_SERVICE_REF_VERTICALS;
     const entries: ServiceDimensions[] = [];
-    for (const v of considered.slice(0, MAX_VERTICALS)) {
+    for (const v of considered.slice(0, MAX_SERVICE_REF_VERTICALS)) {
       const versions = await admin.listVersions(actor, v.slug);
       const labelOf = new Map(versions.map((ver) => [ver.id, ver.version]));
       // The stable serving script — where real traffic lands. Its version is the
@@ -3704,6 +3945,44 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }));
       }
     }
+    return { entries, verticalsTruncated, matched: considered.length };
+  };
+
+  /**
+   * The service names a CONFINED principal may see telemetry for — its tenant's own,
+   * and nothing else (#977).
+   *
+   * `null` means unconfined (staff): no narrowing, the fleet view the console reads.
+   * A truncated enumeration throws rather than narrowing to a partial set: a chart
+   * missing a vertical reads as "that vertical had no traffic", and inventing silence
+   * is the one answer an observability route must never give.
+   */
+  const ownedServices = async (p: Principal, actor: PlatformActorId): Promise<Set<string> | null> => {
+    const pin = confinedTenant(p);
+    if (pin === null) return null;
+    const refs = await tenantServiceRefs(actor, pin);
+    if (refs.verticalsTruncated) {
+      throw new ControlPlaneError(503, 'service map truncated: too many verticals to resolve in one answer');
+    }
+    return new Set(refs.entries.map((e) => e.service));
+  };
+
+  app.get('/service-refs', async (c) => {
+    const p = c.get('principal');
+    // The /ops-failures forced-filter pattern: a confined principal's tenant comes from
+    // the principal, never the query. A staff/service caller must SAY whose view it
+    // wants — answering fleet-wide on a forgotten param would leak, so refuse.
+    const tenantId = confinedTenant(p) ?? c.req.query('tenantId');
+    if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
+    const query = z
+      .object({ tenantId: tenantIdSchema, vertical: z.string().optional() })
+      .parse({ tenantId, vertical: c.req.query('vertical') });
+
+    const actor = c.get('actor');
+    const slug = query.vertical === undefined ? undefined : await resolveVerticalId(c, query.vertical);
+    const { entries, verticalsTruncated, matched } = await tenantServiceRefs(actor, query.tenantId, slug);
+    // Non-ownership reads as absence (K-3), exactly like the per-slug registry reads.
+    if (slug !== undefined && matched === 0) throw new ControlPlaneError(404, 'not found');
     return c.json({ entries, verticalsTruncated });
   });
 
@@ -3732,7 +4011,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     // A builder reading a vertical it does not own gets 404 — indistinguishable from
     // absent, the same fail-closed reflex K-3 uses for a cross-tenant scope.
-    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+    if (await notOwned(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const page = pageParams(c);
@@ -3750,7 +4029,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, input.verticalSlug);
-    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+    if (await notOwned(p, slug)) {
       return c.json({ error: 'forbidden' }, 403);
     }
     input.verticalSlug = slug;
@@ -3768,7 +4047,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/versions/:id/registry', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+    if (await notOwned(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
@@ -3786,7 +4065,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/versions/:id/schedules', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+    if (await notOwned(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
@@ -3810,7 +4089,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/versions/:id/flow', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+    if (await notOwned(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
@@ -3833,7 +4112,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/versions/:id/model', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+    if (await notOwned(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
@@ -3853,7 +4132,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/versions/:id/assets', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+    if (await notOwned(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
@@ -3881,7 +4160,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/verticals/:slug/publish-request', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+    if (await notOwned(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     await admin.requestPublish(c.get('actor'), slug);
@@ -3930,11 +4209,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ slug, emailSender: granted });
   });
 
-  // Delete a vertical + its versions and channels (staff-only, same confinement).
-  // Refused below the seam while any scope is still bound — surfaces as a 4xx via
-  // mapError, naming the count. Dispatch scripts become orphans for cleanup (#248).
+  // Delete a vertical + its versions and channels. Refused below the seam while any
+  // scope is still bound — surfaces as a 4xx via mapError, naming the count. Dispatch
+  // scripts become orphans for cleanup (#248).
+  //
+  // A CONFINED principal deletes only what its tenant owns (#977). This route had no
+  // ownership check at all, because it was staff-only and the dashboard — which calls
+  // it — checked ownership in its own worker before asking. That check was the whole
+  // guard on a destructive registry write, and it lived in the caller.
   app.delete('/verticals/:slug', async (c) => {
     const slug = c.req.param('slug');
+    // 404, not 403: a slug this tenant does not own reads as absent, the same
+    // existence-hiding reflex the registry's other per-slug reads use (K-3).
+    if (await notOwned(c.get('principal'), slug)) return c.json({ error: 'not found' }, 404);
     await admin.deleteVertical(c.get('actor'), slug);
     return c.json({ slug, deleted: true });
   });
@@ -3942,7 +4229,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/channels', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+    if (await notOwned(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const page = pageParams(c);
@@ -3961,7 +4248,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: `channel '${rawChannel}' is retired — only 'prod' has history` }, 400);
     }
     const channel = channelName.parse(rawChannel);
-    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+    if (await notOwned(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const page = pageParams(c);
@@ -4152,16 +4439,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     }
     const channel = channelName.parse(rawChannel);
-    if (p.kind === 'builder') {
-      // A builder promotes only verticals it owns — and prod only while the vertical
-      // is PRIVATE (not listed). A private vertical's blast radius is the owning
-      // tenant itself, and dev/staging already run the same bundle in the same
-      // sandbox, so a staff prod gate there protected nothing; it returns the moment
-      // the audience widens (publish flips `listed`, and prod becomes staff-only
-      // again — the trust boundary marketplace-publish.md §2 draws).
+    const promotePin = confinedTenant(p);
+    if (promotePin) {
+      // A confined principal promotes only verticals its tenant owns.
       const v = await verticalOf(p.actor, slug);
-      if (!v || v.ownerTenant !== p.tenantId) return c.json({ error: 'forbidden' }, 403);
-      if (channel === 'prod' && v.listed) {
+      if (!v || v.ownerTenant !== promotePin) return c.json({ error: 'forbidden' }, 403);
+      // …and a BUILDER promotes prod only while the vertical is PRIVATE (not listed).
+      // A private vertical's blast radius is the owning tenant itself, and dev/staging
+      // already run the same bundle in the same sandbox, so a staff prod gate there
+      // protected nothing; it returns the moment the audience widens (publish flips
+      // `listed`, and prod becomes staff-only again — the trust boundary
+      // marketplace-publish.md §2 draws).
+      //
+      // Deliberately NOT widened to #977's tenant credential: promoting a vertical the
+      // tenant has published is something the dashboard could already do over the
+      // service token, and this issue narrows WHOSE data a credential reaches, not what
+      // a tenant may do inside its own. Taking the gate away from them here would be a
+      // capability change hidden in a security fix.
+      if (p.kind === 'builder' && channel === 'prod' && v.listed) {
         return c.json({ error: 'promotion to prod is staff-only for a listed vertical' }, 403);
       }
     }
@@ -4214,8 +4509,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // installed their vertical. The rest is a count, which tells them the fleet was covered
     // without naming who is in it.
     const p2 = c.get('principal');
-    const visible =
-      p2.kind === 'builder' ? backfill.minted.filter((m) => m.tenantId === p2.tenantId) : backfill.minted;
+    const reportPin = confinedTenant(p2);
+    const visible = reportPin ? backfill.minted.filter((m) => m.tenantId === reportPin) : backfill.minted;
     const otherTenants = new Set(
       backfill.minted.filter((m) => !visible.includes(m)).map((m) => m.tenantId),
     ).size;
@@ -4596,11 +4891,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   });
 
   // -- observability (design/observability.md §4.1) --------------------------
-  // Proxied Cloudflare-native reads: the console's fleet view and (later, owner-
-  // narrowed) the dashboard's builder view. STAFF-ONLY — not in BUILDER_ROUTES; see
-  // the option's doc for why. Tier-3 numbers (master-plan §5.3): sampled, approximate,
+  // Proxied Cloudflare-native reads at SCRIPT grain: one deployed unit, which serves
+  // every tenant that installed the vertical. Not in BUILDER_ROUTES — a builder reads
+  // the tenant grain below. Tier-3 numbers (master-plan §5.3): sampled, approximate,
   // never money.
-
+  //
+  // For a CONFINED principal (#977) the answer is narrowed to the services its own
+  // tenant's verticals deploy, HERE. These three were the sharpest edge of this issue:
+  // they are fleet reads by construction, `/observability/metrics` takes no filter at
+  // all, and the dashboard read them over the staff token and dropped other tenants'
+  // rows in its own worker. So every one of the fleet's numbers crossed the seam and
+  // the narrowing was a `.filter()` in the caller — the exact shape the issue is about,
+  // on the route where a mistake is least visible.
   app.get('/observability/metrics', async (c) => {
     if (!options.observability) {
       return c.json({ error: 'observability is not configured on this control plane' }, 501);
@@ -4608,7 +4910,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { hours } = z
       .object({ hours: z.coerce.number().int().min(1).max(72).default(24) })
       .parse({ hours: c.req.query('hours') });
-    return c.json(await options.observability.serviceMetrics({ hours }));
+    const owned = await ownedServices(c.get('principal'), c.get('actor'));
+    const rows = await options.observability.serviceMetrics({ hours });
+    // The route takes no service filter, so the narrowing is on the way OUT. It is the
+    // last step before the response either way: a row this tenant does not own must not
+    // leave the plane, whatever the backend was asked.
+    return c.json(owned ? rows.filter((r) => owned.has(r.service)) : rows);
   });
 
   // The bucketed twin (#1236): the series a chart plots, with the deploy markers
@@ -4624,7 +4931,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Repeats like /observability/logs' `service`: a caller narrows to the handful
     // it will plot, which is what keeps scripts × buckets bounded.
     const services = c.req.queries('service') ?? undefined;
-    return c.json(await options.observability.serviceMetricsSeries({ hours, services }));
+    const owned = await ownedServices(c.get('principal'), c.get('actor'));
+    if (!owned) return c.json(await options.observability.serviceMetricsSeries({ hours, services }));
+    // A confined principal plots its own services: what it asked for, intersected —
+    // and its whole set when it asked for none, since an unfiltered ask here means
+    // "everything I may see", never "everything there is". Asking for nothing but
+    // foreign refs is an empty series, indistinguishable from services with no
+    // traffic (existence hiding, K-3).
+    const narrowed = (services ?? [...owned]).filter((s) => owned.has(s));
+    if (narrowed.length === 0) return c.json([]);
+    const rows = await options.observability.serviceMetricsSeries({ hours, services: narrowed });
+    return c.json(rows.filter((r) => owned.has(r.service)));
   });
 
   app.get('/observability/logs', async (c) => {
@@ -4634,7 +4951,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // `service` repeats: one deployed unit per param, so a caller can ask for a
     // vertical's whole set (the dashboard's "all versions") in one query and get one
     // merged stream back. Capped because each extra service is another backend query.
-    const services = (c.req.queries('service') ?? []).filter((s) => s.length > 0);
+    const asked = (c.req.queries('service') ?? []).filter((s) => s.length > 0);
+    const ownedLogServices = await ownedServices(c.get('principal'), c.get('actor'));
+    // A confined principal reads only its own services' lines. An ask that names none
+    // of them answers `[]` rather than the fleet's stream — and an ask naming NOTHING
+    // is one such ask, because for this caller "no filter" cannot mean "everything".
+    const services = ownedLogServices ? asked.filter((s) => ownedLogServices.has(s)) : asked;
+    if (ownedLogServices && services.length === 0) return c.json([]);
     const input = z
       .object({
         services: z.array(z.string().min(1).max(200)).max(20).optional(),
@@ -4673,7 +4996,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'tenant-grain observability is not configured on this control plane' }, 501);
     }
     const p = c.get('principal');
-    const tenantId = p.kind === 'builder' ? p.tenantId : c.req.query('tenantId');
+    const tenantId = confinedTenant(p) ?? c.req.query('tenantId');
     if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
     const input = z
       .object({
@@ -4704,7 +5027,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'bucketed tenant-grain observability is not configured on this control plane' }, 501);
     }
     const p = c.get('principal');
-    const tenantId = p.kind === 'builder' ? p.tenantId : c.req.query('tenantId');
+    const tenantId = confinedTenant(p) ?? c.req.query('tenantId');
     if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
     const scopeIds = (c.req.queries('scopeId') ?? []).filter((s) => s.length > 0);
     const input = z
@@ -4724,7 +5047,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'tenant-grain observability is not configured on this control plane' }, 501);
     }
     const p = c.get('principal');
-    const tenantId = p.kind === 'builder' ? p.tenantId : c.req.query('tenantId');
+    const tenantId = confinedTenant(p) ?? c.req.query('tenantId');
     if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
     const input = z
       .object({
@@ -4898,6 +5221,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ token, tenantSlug: tenant.slug }, 201);
   });
 
+  // -- tenant tokens (tenant-token.ts, #977) ---------------------------------
+  // Mint the dashboard's tenant-scoped service credential. STAFF-ONLY, and this is
+  // the load-bearing part of the whole design: it is on NEITHER allowlist, so a
+  // tenant token can never mint another — not for a different tenant, not even for
+  // its own. The power to mint one for any tenant stays with the platform service
+  // credential, which is what a multi-tenant dashboard must hold and which is now the
+  // ONLY fleet-wide thing it does. Everything else it does is spent per tenant.
+  app.post('/tenant-tokens', async (c) => {
+    if (!options.tenantTokenSecret) {
+      return c.json({ error: 'tenant tokens are not configured on this control plane' }, 501);
+    }
+    const { tenantId } = z.object({ tenantId: tenantIdSchema }).parse(await c.req.json());
+    const tenant = await admin.getTenant(c.get('actor'), tenantId);
+    if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
+    const token = await mintTenantToken(options.tenantTokenSecret, { tenantId, tenantSlug: tenant.slug });
+    return c.json({ token, tenantSlug: tenant.slug }, 201);
+  });
+
   // -- the hostname map (§4.7, K-26) -----------------------------------------
   // Staff actions, PLUS a tenant-narrowed builder view (multi-surface exposure —
   // binding an EKA-style second surface is self-serve for the scope's own tenant).
@@ -4912,7 +5253,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // (which would confirm the name is taken by someone).
   const tenantHostname = async (c: Context<{ Variables: Vars }>, name: string) => {
     const p = c.get('principal');
-    const filter = p.kind === 'builder' ? { tenantId: p.tenantId } : {};
+    const pin = confinedTenant(p);
+    const filter = pin ? { tenantId: pin } : {};
     return (await admin.listHostnames(c.get('actor'), filter)).find(
       (h) => h.hostname === name.toLowerCase(),
     );
@@ -4924,9 +5266,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       tenantId: c.req.query('tenantId'),
       scopeId: c.req.query('scopeId'),
     });
-    // A builder's list is ALWAYS its own tenant's — the query may narrow further
-    // (scopeId) but never widen; a foreign tenantId in the query loses silently.
-    if (p.kind === 'builder') filter.tenantId = p.tenantId;
+    // A CONFINED principal's list is ALWAYS its own tenant's — the query may narrow
+    // further (scopeId) but never widen; a foreign tenantId in the query loses
+    // silently. `confinedTenant`, not a kind check: the dashboard's tenant token is
+    // confined too (#977), and reading this as "builders only" is what left it
+    // paging the whole fleet's bindings.
+    const hostnamePin = confinedTenant(p);
+    if (hostnamePin) filter.tenantId = hostnamePin;
     const page = pageParams(c);
     const entries = await admin.listHostnames(c.get('actor'), { ...filter, ...page });
     return c.json(pageOf(entries, page.limit, (h) => h.hostname));
@@ -5003,11 +5349,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/hostnames', async (c) => {
     const p = c.get('principal');
     const input = bindHostnameBody.parse(await c.req.json());
+    const bindPin = confinedTenant(p);
+    if (bindPin) {
+      // The body names the tenant the binding lands under; a confined principal may
+      // only name its own (the adapter then verifies the scope belongs to it, K-3).
+      if (input.tenantId !== bindPin) return c.json({ error: 'forbidden' }, 403);
+    }
     if (p.kind === 'builder') {
-      // The body names the tenant the binding lands under; a builder may only name
-      // its own (the adapter then verifies the scope belongs to it, K-3).
-      if (input.tenantId !== p.tenantId) return c.json({ error: 'forbidden' }, 403);
       // The region column is an EU-residency claim (K-30) — never builder-suppliable.
+      // Left as a BUILDER rule rather than a confinement one: the dashboard binds the
+      // platform's own hostnames for a tenant and has always been able to say where
+      // the binding sits, so widening this to #977's credential would be a behaviour
+      // change wearing a security fix's clothes.
       if (input.region !== null) {
         return c.json({ error: 'region is derived from the scope, not chosen on a binding' }, 403);
       }
@@ -5037,7 +5390,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // re-affirm. Idempotent and safe to hammer — it just reflects Cloudflare's current state.
   app.post('/hostnames/:hostname/verify', async (c) => {
     const name = c.req.param('hostname');
-    if (c.get('principal').kind === 'builder' && !(await tenantHostname(c, name))) {
+    if (confinedTenant(c.get('principal')) !== null && !(await tenantHostname(c, name))) {
       return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
     }
     const row = await hostnameRow(c, name);
@@ -5051,7 +5404,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Not path-parsed through the schema: a hostname is the path segment here, and
     // `setHostnameStatus` normalizes and 404s an unknown one below the seam.
     const name = c.req.param('hostname');
-    if (c.get('principal').kind === 'builder' && !(await tenantHostname(c, name))) {
+    if (confinedTenant(c.get('principal')) !== null && !(await tenantHostname(c, name))) {
       return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
     }
     await admin.setHostnameStatus(c.get('actor'), name, status, note);
@@ -5068,7 +5421,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // idempotency yields to existence hiding at the tenant boundary.
   app.delete('/hostnames/:hostname', async (c) => {
     const name = c.req.param('hostname');
-    if (c.get('principal').kind === 'builder' && !(await tenantHostname(c, name))) {
+    if (confinedTenant(c.get('principal')) !== null && !(await tenantHostname(c, name))) {
       return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
     }
     // Release the Cloudflare custom hostname before dropping the row, or the CF object
@@ -5386,7 +5739,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const slug = await resolveVerticalId(c, c.req.param('slug')!);
     const v = await verticalOf(c.get('actor'), slug);
     if (!v) return { error: `unknown vertical '${slug}'`, status: 404 };
-    if (p.kind === 'builder' && v.ownerTenant !== p.tenantId) return { error: 'forbidden', status: 403 };
+    if (confinedTenant(p) !== null && v.ownerTenant !== confinedTenant(p)) {
+      return { error: 'forbidden', status: 403 };
+    }
     if (v.ownerTenant === null) return { error: `vertical '${slug}' has no owner tenant`, status: 409 };
     return { tenantId: v.ownerTenant, slug };
   };
@@ -5588,7 +5943,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/ops-failures', async (c) => {
     const p = c.get('principal');
     const filter = opsFailuresQuery.parse({
-      tenantId: p.kind === 'builder' ? p.tenantId : c.req.query('tenantId'),
+      tenantId: confinedTenant(p) ?? c.req.query('tenantId'),
       scopeId: c.req.query('scopeId'),
       vertical: c.req.query('vertical'),
       version: c.req.query('version'),
@@ -5617,7 +5972,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       kind: c.req.query('kind'),
       unit: c.req.query('unit'),
       outcome: c.req.query('outcome'),
-      tenantId: p.kind === 'builder' ? p.tenantId : c.req.query('tenantId'),
+      tenantId: confinedTenant(p) ?? c.req.query('tenantId'),
       scopeId: c.req.query('scopeId'),
       vertical: c.req.query('vertical'),
       connectionId: c.req.query('connectionId'),

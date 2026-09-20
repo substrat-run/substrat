@@ -46,12 +46,13 @@ handful of groups:
 
 Provisioning an app is `assertAllowed(ctx.check('dashboard:provision-app'))` then a
 **tenant-narrowed** `provisionScope` into the caller's own tenant. The permission half is the
-kernel's: a caller without the key is refused before anything is created. The tenant half is
-narrower than it looks — the Dashboard pins the tenant in its own process, and the credential it
-presents to the control plane is not itself tenant-scoped, so the narrowing is enforced by the
-caller rather than by the server, and an action is audited as the Dashboard rather than as the
-customer's admin. The [design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/dashboard.md)
-§4 says exactly where the line falls and what closes it.
+kernel's: a caller without the key is refused before anything is created. The tenant half is the
+credential's: the Dashboard presents a **tenant token** the control plane mints per tenant, and the
+plane refuses a request that names another — so the narrowing is the server's, not a promise the
+Dashboard keeps about itself. What is still the Dashboard's own is the *attribution*: an action is
+audited as the Dashboard rather than as the customer's admin. The
+[design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/dashboard.md)
+§4 says exactly where that line falls and what closes it.
 
 ## Auth
 
@@ -243,5 +244,6 @@ export/import, **Previews**, per-app **Environment**, custom **Domains**, team *
 accept / remove / leave, with a Team view), and third-party **connections** (an Integrations view).
 Billing and the plan are the main pieces still on the roadmap the
 [design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/dashboard.md) lays out,
-alongside making the seam's tenant narrowing server-enforced rather than caller-enforced.
+alongside naming the customer's own admin in the audit row (the seam's tenant narrowing is now
+server-enforced; its attribution is not).
 It is served as a React SPA bundled into its worker; the account menu lives in the sidebar footer.
