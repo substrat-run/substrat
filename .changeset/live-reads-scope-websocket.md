@@ -20,4 +20,4 @@ Not every connection can carry one. Where an app is reached through a customer's
 
 Self-hosted apps are unaffected and unchanged: the self-hosted store runs inside the calling process, with nothing that outlives a request to hold a connection open, so it does not offer subscriptions — and asking it for one is refused when the app is compiled, rather than hanging at runtime.
 
-No application code changes to adopt it, and nothing changes for an app that declares nothing.
+Nothing changes for an app that says nothing: no app is watched until it declares which of its records are watchable, and one that declares none behaves exactly as it did. Taking it up is not automatic either — an app says what is watchable, opens the door on a screen, and has that screen listen — and the last two of those are not in this release. What ships here is the platform side: the subscription, the filter, and the declaration they read.

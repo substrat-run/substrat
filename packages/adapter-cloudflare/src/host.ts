@@ -5449,6 +5449,13 @@ export class CloudflareScopeHost implements ScopeHost {
    * Cloudflare that is the scope's own Durable Object. The seam's full reasoning is on
    * the contract (`ScopeHost.liveReads`), beside the `clock?: never` precedent it
    * mirrors.
+   *
+   * **Two kinds of refusal, and they are deliberately different shapes.** A request
+   * that cannot carry a socket is answered with a `Response` (426, 501) — that is a
+   * fact about the connection, addressed to the client. A scope that must not be
+   * reached at all THROWS, exactly as `getScope` and the attachment door do, because
+   * it is the same refusal an ordinary read of that scope would get and it should not
+   * arrive as a different class of answer just because the caller asked for a socket.
    */
   readonly liveReads: LiveReadSurface<Request, Response> = {
     subscribe: async ({ tenantId, scopeId, principal, request }) => {
@@ -5483,6 +5490,27 @@ export class CloudflareScopeHost implements ScopeHost {
           { status: 501, headers: { [LIVE_MODE_HEADER]: 'poll' satisfies LiveRefusal } },
         );
       }
+      /**
+       * The same fail-closed lifecycle gate + lazy migration every other door takes
+       * (`getScope`, `attachments`; control-plane.md §4.1/§4.2, K-3).
+       *
+       * A subscription is a new way INTO a scope, and the permission filter downstream
+       * answers a different question: it decides what a subscriber may see, not whether
+       * this scope should be reachable at all. Without this, an unknown, cross-tenant,
+       * suspended or archiving scope could still be addressed and handed a 101 — a
+       * scope that refuses every ordinary read while quietly holding an open socket.
+       *
+       * Costs a CP-less vertical nothing: `validateScopeAccess` is a **no-op** on the
+       * null control plane (the router already gated lifecycle and tenancy from the
+       * shared directory), so this is the hosted-vertical shape unchanged.
+       *
+       * `migrateAndRecord`, not the DO's own `ensureMigrations`: the DO migrates
+       * itself when the socket opens either way, but only this reports the applied
+       * count to the directory — so a scope whose first contact after a deploy is a
+       * subscription does not go dark in the migration fleet view.
+       */
+      await this.cp.validateScopeAccess(tenantId, scopeId);
+      await this.migrateAndRecord(scopeId);
       // Asserted, not carried through from the client: the principal is the
       // vertical's own resolution of its session, and the tenant and scope are the
       // node the router resolved. Every inbound copy is replaced, for the reason the

@@ -1653,10 +1653,6 @@ export function defineScopeDO(
          * transaction — because that is the region where this call holds the DO to
          * itself, the same reason `invocationId` is set here.
          *
-         * `null` means nobody is listening, and then nothing is read at all: a scope
-         * with no subscriber must not pay a query per invoke for a feature it is not
-         * using. `''` is the honest empty-outbox answer, and every ULID sorts above it.
-         *
          * A socket that connects between here and the fan-out is served whatever this
          * call committed, and one that connects while `null` was decided hears nothing
          * about it. Both are harmless and neither is worth a lock: a frame is an
@@ -1664,14 +1660,7 @@ export function defineScopeDO(
          * one redundant re-read, and missing one costs a wait for the client's poll —
          * which is the floor this whole surface sits on.
          */
-        const liveSince =
-          this.ctx.getWebSockets().length === 0
-            ? null
-            : ((
-                this.sql.exec('SELECT MAX(id) AS id FROM _substrat_outbox').toArray() as unknown as {
-                  id: string | null;
-                }[]
-              )[0]?.id ?? '');
+        const liveSince = this.liveHighWaterMark();
         let result: unknown;
         let committedVersion: string | null = null;
         // #116: set when this invocation was answered from a recording rather
@@ -1820,22 +1809,11 @@ export function defineScopeDO(
         // Skipped on a replay: nothing was written, so there is nothing this
         // invocation added to drain. Anything the ORIGINAL left undrained is the
         // outbox's own retry backstop, which is what that backstop is for.
-        if (!replayed) await this.dispatch(tenantId, scopeId);
-        // #938: and now announce what committed, to whoever may see it. AFTER the
-        // drain, not before it: a consumer's own emits are changes too, and a
-        // subscriber told about the cause but not the effect re-reads too early.
-        // Skipped on a replay for the same reason the drain is — nothing was written.
-        if (!replayed && liveSince !== null) {
-          try {
-            await this.fanOutLive(liveSince, tenantId, scopeId);
-          } catch (err) {
-            // The operation has COMMITTED and the caller is owed its answer. A failure
-            // to announce is a failure of a hint, and the client's poll is the floor
-            // underneath it — so this is logged and never rethrown. Rethrowing would
-            // turn a delivered write into a 500 the caller would reasonably retry.
-            console.error('substrat: live-read fan-out failed after commit', err);
-          }
-        }
+        // Drain to consumers, then announce what landed (#938). Skipped whole on a
+        // replay: nothing was written, so there is nothing this invocation added to
+        // drain or to announce. Anything the ORIGINAL left undrained is the outbox's
+        // own retry backstop, which is what that backstop is for.
+        if (!replayed) await this.settleCommitted(tenantId, scopeId, liveSince);
         return {
           result,
           platformRequests: signals.platformRequests,
@@ -1990,6 +1968,63 @@ export function defineScopeDO(
      */
     webSocketError(_ws: WebSocket, error: unknown): void {
       console.error('substrat: live-read socket error', error);
+    }
+
+    /**
+     * The outbox's high-water mark before a committing path runs (#938), or `null`
+     * when nobody is listening.
+     *
+     * `null` and `''` are different answers: `null` means no subscriber, so nothing is
+     * read at all and a scope pays nothing for a feature it is not using; `''` is the
+     * honest empty-outbox answer, and every ULID sorts above it.
+     *
+     * Read BEFORE the transaction by every caller, which is what makes the pair below
+     * able to name exactly the events that path added.
+     */
+    private liveHighWaterMark(): string | null {
+      if (this.ctx.getWebSockets().length === 0) return null;
+      return (
+        (
+          this.sql.exec('SELECT MAX(id) AS id FROM _substrat_outbox').toArray() as unknown as {
+            id: string | null;
+          }[]
+        )[0]?.id ?? ''
+      );
+    }
+
+    /**
+     * What every committing path does after its transaction closes: drain the outbox
+     * to consumers, then announce what landed to whoever may see it.
+     *
+     * **One step, because there is one rule.** The fan-out was wired into `invoke`
+     * alone at first, and `attachmentAdd`/`attachmentRemove` commit and emit too —
+     * `attachment.added` and `attachment.removed`, about a real entity. A watcher of
+     * that entity would have missed them: no error, no gap it could see, just a screen
+     * that did not update for one kind of change. That is the exact failure the
+     * hibernation design exists to prevent, arriving through a different door, so the
+     * answer is a step both doors take rather than a second call both must remember.
+     *
+     * Order is load-bearing: drain FIRST, announce after. A consumer's own emits are
+     * changes too, and they land in the outbox above `liveSince` — so announcing first
+     * would tell a subscriber about the cause and not the effect, and it would re-read
+     * too early.
+     */
+    private async settleCommitted(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      liveSince: string | null,
+    ): Promise<void> {
+      await this.dispatch(tenantId, scopeId);
+      if (liveSince === null) return;
+      try {
+        await this.fanOutLive(liveSince, tenantId, scopeId);
+      } catch (err) {
+        // The write has COMMITTED and the caller is owed its answer. A failure to
+        // announce is a failure of a hint, and the client's poll is the floor
+        // underneath it — so this is logged and never rethrown. Rethrowing would turn
+        // a delivered write into a 500 the caller would reasonably retry.
+        console.error('substrat: live-read fan-out failed after commit', err);
+      }
     }
 
     /**
@@ -2180,6 +2215,10 @@ export function defineScopeDO(
       const parsed = attachmentRecord.parse(record);
       const gate = this.attachmentGate(parsed.entity.entityType);
       return this.queue.enqueue(async () => {
+        // #938: this path commits and emits too, so it takes the same mark-then-settle
+        // pair `invoke` takes. Inside the queued body and before the transaction, for
+        // the reason it is read there: that is where this call holds the DO to itself.
+        const liveSince = this.liveHighWaterMark();
         try {
           await this.ctx.storage.transaction(async () => {
             const ctx = this.operationContext(
@@ -2217,7 +2256,7 @@ export function defineScopeDO(
           }
           throw toRpcError(err);
         }
-        await this.dispatch(tenantId, scopeId);
+        await this.settleCommitted(tenantId, scopeId, liveSince);
         return parsed;
       });
     }
@@ -2323,6 +2362,8 @@ export function defineScopeDO(
         const record = this.attachmentRow(attachmentId);
         if (!record) return null;
         const gate = this.attachmentGate(record.entity.entityType);
+        // #938: same mark-then-settle pair as the upload path above.
+        const liveSince = this.liveHighWaterMark();
         try {
           await this.ctx.storage.transaction(async () => {
             const ctx = this.operationContext(
@@ -2345,7 +2386,7 @@ export function defineScopeDO(
           }
           throw toRpcError(err);
         }
-        await this.dispatch(tenantId, scopeId);
+        await this.settleCommitted(tenantId, scopeId, liveSince);
         return record;
       });
     }

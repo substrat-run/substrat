@@ -1865,11 +1865,23 @@ export const liveModManifest = moduleManifest.parse({
     emits: [
       { type: 'live.note-touched', schemaVersion: 1 },
       { type: 'live.ledger-touched', schemaVersion: 1 },
+      // Declared for the reason permMod declares them: an attachment target implies
+      // these, and the module's emitted-event set should say so rather than have the
+      // kernel emit a type the manifest never mentions.
+      { type: 'attachment.added', schemaVersion: 1 },
+      { type: 'attachment.removed', schemaVersion: 1 },
     ],
     consumes: [],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
-  attachmentTargets: [],
+  // `note` is attachable as well as watchable, and that overlap is the fixture for a
+  // second committing path: `attachmentAdd`/`attachmentRemove` emit about the entity
+  // too, so a watcher of `note` must hear those exactly as it hears an operation's
+  // own event. Without this the attachment path would have had no live-read test at
+  // all, which is how it came to be the one door the fan-out was not wired into.
+  attachmentTargets: [
+    { entityType: 'note', readPermission: 'live:read', writePermission: 'live:write' },
+  ],
   // The declaration under test. `note` is watchable, gated by the key that reads it;
   // `ledger` is absent, and its absence is the assertion.
   liveTargets: [{ entityType: 'note', readPermission: 'live:read' }],

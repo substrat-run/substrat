@@ -4048,7 +4048,22 @@ export interface LiveUpgradeRequest {
 export interface LiveChange {
   /** Always `'change'` today; a field rather than an assumption, so a second kind can be added. */
   readonly kind: 'change';
-  /** The event id — a ULID, so a client can order frames and spot a gap. */
+  /**
+   * The event id — a ULID, so frames sort and a repeat is recognisable.
+   *
+   * **Not a gap detector, and a client must not use it as one.** ULIDs are ordered but
+   * not contiguous, so "the next id is not the one after this" says nothing on its own.
+   * More to the point, gaps here are the NORMAL case and the deliberate one: the
+   * permission filter withholds every event this subscriber may not read, so the ids it
+   * receives are a sparse subset of what the scope emitted, by design. A client
+   * inferring missed updates from the spacing would be reading someone else's
+   * entitlements as its own packet loss.
+   *
+   * What it is good for: ordering frames that arrive out of order, and discarding one
+   * it has already acted on. Detecting a genuinely missed update would need an
+   * authorized contiguous cursor — a per-subscriber sequence, counted after the filter —
+   * which this protocol does not have and should not grow by accident.
+   */
   readonly id: string;
   /** The emitted event type, e.g. `'ticket0/message-posted'`. */
   readonly type: string;

@@ -171,6 +171,17 @@ describe('live reads: the permission filter (#938)', () => {
     await stub.invoke('live/touch', { noteId });
   };
 
+  /** The scope DO addressed directly, for the one RPC the host surface cannot reach without R2. */
+  const attachmentDo = (): {
+    attachmentAdd(
+      record: Record<string, unknown>,
+      principal: typeof writer,
+      tenantId: typeof t,
+      scopeId: typeof s,
+    ): Promise<unknown>;
+  } =>
+    env.LIVE_SCOPE.get(env.LIVE_SCOPE.idFromName(s)) as unknown as ReturnType<typeof attachmentDo>;
+
   // -- THE NEGATIVE, first ---------------------------------------------------
 
   it('sends NOTHING to a subscriber who may not read the entity that changed', async () => {
@@ -242,6 +253,69 @@ describe('live reads: the permission filter (#938)', () => {
     expect(mayNot.frames.map((f) => f.entityId)).toEqual([NOTE_B]);
   });
 
+  it('announces a change that arrives through the ATTACHMENT door, not just an invoke', async () => {
+    // Regression for the second committing path. `attachmentAdd` commits and emits
+    // `attachment.added` about the entity, then drains — and for a while it did not
+    // fan out, so a watcher of that entity missed one whole kind of change with no
+    // error and no gap it could see. The fix is a shared settle step both doors take;
+    // this is what proves the attachment door takes it.
+    //
+    // Driven as the DO's own RPC rather than through `host.attachments(…)`, because
+    // the wiring under test is in the DO and the host surface would drag in the R2
+    // plumbing — a fake bucket, a blob-store ledger — none of which decides whether a
+    // committed event is announced. Bytes never reach the DO anyway; only this record does.
+    const seen = await watch(host, insider);
+    open.push(seen);
+
+    await attachmentDo().attachmentAdd(
+      {
+        id: '01JLIVEATT0000000000000001',
+        entity: { entityType: 'note', entityId: NOTE_A },
+        filename: 'note.txt',
+        contentType: 'text/plain',
+        size: 3,
+        sha256: 'a'.repeat(64),
+        visibility: 'internal',
+        createdBy: writer,
+        createdAt: new Date().toISOString(),
+      },
+      writer,
+      t,
+      s,
+    );
+    await settle();
+
+    expect(seen.frames.map((f) => f.type)).toEqual(['attachment.added']);
+    expect(seen.frames[0]).toMatchObject({ entityType: 'note', entityId: NOTE_A });
+  });
+
+  it('applies the same permission filter to an attachment change', async () => {
+    // …and the filter is not skipped on that path either: `outsider` may read note B,
+    // so an attachment on note A reaches it no more than a touch of note A does.
+    const seen = await watch(host, outsider);
+    open.push(seen);
+
+    await attachmentDo().attachmentAdd(
+      {
+        id: '01JLIVEATT0000000000000002',
+        entity: { entityType: 'note', entityId: NOTE_A },
+        filename: 'note2.txt',
+        contentType: 'text/plain',
+        size: 3,
+        sha256: 'b'.repeat(64),
+        visibility: 'internal',
+        createdBy: writer,
+        createdAt: new Date().toISOString(),
+      },
+      writer,
+      t,
+      s,
+    );
+    await settle();
+
+    expect(seen.frames).toEqual([]);
+  });
+
   it('stops sending when the grant behind the frames is revoked', async () => {
     const seen = await watch(host, insider);
     open.push(seen);
@@ -309,6 +383,28 @@ describe('live reads: the door (#938)', () => {
     expect(response.status).toBe(501);
     expect(response.headers.get(LIVE_MODE_HEADER)).toBe('poll');
     expect(response.webSocket).toBeNull();
+  });
+
+  it('refuses a scope the lifecycle gate refuses, before any socket exists', async () => {
+    // A subscription is a new way INTO a scope, and the permission filter answers a
+    // different question — what a subscriber may SEE, not whether this scope should be
+    // reachable at all. Without the same `validateScopeAccess` gate every other door
+    // takes, an unknown, cross-tenant, suspended or archiving scope could still be
+    // addressed and handed a 101: a scope refusing every ordinary read while quietly
+    // holding an open socket.
+    //
+    // A never-provisioned scope is the cheapest instance of that class, and it is the
+    // one an attacker supplies: the caller asserts the scope id, so "a scope id the
+    // directory does not know" is one header away on any deployment with a control plane.
+    const unknownScope = scopeIdOf.parse(ulid());
+    await expect(
+      host.liveReads.subscribe({
+        tenantId: t,
+        scopeId: unknownScope,
+        principal: insider,
+        request: upgrade(),
+      }),
+    ).rejects.toThrow();
   });
 
   it('is unmoved by an O2O header that is not exactly Cloudflare’s marker', async () => {
