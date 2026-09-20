@@ -41,7 +41,7 @@
     "better-auth": "^1.7.1",
     "better-sqlite3": "^13.0.3",
     "hono": "^4.6.0",
-    "tsx": "^4.19.0",
+    "tsx": "^4.23.13",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

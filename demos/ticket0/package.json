@@ -40,10 +40,10 @@
     "@substrat-run/oidc-rp": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "catalog:",
-    "ai": "7.0.62",
+    "ai": "7.0.105",
     "better-sqlite3": "^13.0.3",
     "concurrently": "^9.0.0",
-    "tsx": "^4.19.0",
+    "tsx": "^4.23.13",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
