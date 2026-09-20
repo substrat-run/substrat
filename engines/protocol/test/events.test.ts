@@ -20,12 +20,47 @@ import { describe, expect, it } from 'vitest';
 import type { DataSubjectId } from '@substrat-run/contracts';
 import { consumersFor, type OperationContext } from '@substrat-run/kernel';
 
-import {
-  emitProtocolEvent,
-  type ProtocolCountersignedPayload,
-  type ProtocolEvents,
-  type ProtocolSignedPayload,
-} from '../src/events.js';
+import { emitProtocolEvent } from '../src/events.js';
+/**
+ * The PUBLIC surface, imported the way a vertical imports it — from the package
+ * root, not from `src/events.ts`. Everything below is checked through these, so
+ * a name missing or mistyped in `src/index.ts` fails here instead of leaving
+ * every gate green while the documented import breaks.
+ */
+import type {
+  ProtocolEvents,
+  ProtocolEventType,
+  ProtocolSubjectRef,
+  ProtocolInstantiatedPayload,
+  ProtocolResponseRecordedPayload,
+  ProtocolContentBoundPayload,
+  ProtocolRequestedParty,
+  ProtocolSignaturesRequestedPayload,
+  ProtocolSignatureDeclinedPayload,
+  ProtocolSignaturesCancelledPayload,
+  ProtocolSignatureBase,
+  ProtocolSignedPayload,
+  ProtocolCountersignedPayload,
+  ProtocolVoidedPayload,
+} from '../src/index.js';
+
+/** Every published name, referenced — an absent re-export cannot compile. */
+type _PublishedSurface = [
+  ProtocolEvents extends never ? never : true,
+  ProtocolEventType extends never ? never : true,
+  ProtocolSubjectRef extends never ? never : true,
+  ProtocolInstantiatedPayload extends never ? never : true,
+  ProtocolResponseRecordedPayload extends never ? never : true,
+  ProtocolContentBoundPayload extends never ? never : true,
+  ProtocolRequestedParty extends never ? never : true,
+  ProtocolSignaturesRequestedPayload extends never ? never : true,
+  ProtocolSignatureDeclinedPayload extends never ? never : true,
+  ProtocolSignaturesCancelledPayload extends never ? never : true,
+  ProtocolSignatureBase extends never ? never : true,
+  ProtocolSignedPayload extends never ? never : true,
+  ProtocolCountersignedPayload extends never ? never : true,
+  ProtocolVoidedPayload extends never ? never : true,
+];
 
 // A contract is a type, never a value — nothing in `events.ts` exists at runtime.
 type _AssertContractShape = ProtocolEvents extends {

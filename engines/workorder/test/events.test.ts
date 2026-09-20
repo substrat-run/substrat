@@ -17,7 +17,37 @@ import { describe, expect, it } from 'vitest';
 import type { DataSubjectId } from '@substrat-run/contracts';
 import { consumersFor, type OperationContext } from '@substrat-run/kernel';
 
-import { emitWorkorderEvent, type WorkorderCompletedPayload, type WorkorderEvents } from '../src/events.js';
+import { emitWorkorderEvent } from '../src/events.js';
+/**
+ * The PUBLIC surface, imported the way a vertical imports it — from the package
+ * root, not from `src/events.ts`. Everything below is checked through these, so
+ * a name missing or mistyped in `src/index.ts` fails here instead of leaving
+ * every gate green while the documented import breaks.
+ */
+import type {
+  WorkorderEvents,
+  WorkorderEventType,
+  WorkorderCreatedPayload,
+  WorkorderAssignedPayload,
+  WorkorderStartedPayload,
+  WorkorderTimeReportedPayload,
+  WorkorderMaterialReportedPayload,
+  WorkorderCompletedPayload,
+  WorkorderClosedPayload,
+} from '../src/index.js';
+
+/** Every published name, referenced — an absent re-export cannot compile. */
+type _PublishedSurface = [
+  WorkorderEvents extends never ? never : true,
+  WorkorderEventType extends never ? never : true,
+  WorkorderCreatedPayload extends never ? never : true,
+  WorkorderAssignedPayload extends never ? never : true,
+  WorkorderStartedPayload extends never ? never : true,
+  WorkorderTimeReportedPayload extends never ? never : true,
+  WorkorderMaterialReportedPayload extends never ? never : true,
+  WorkorderCompletedPayload extends never ? never : true,
+  WorkorderClosedPayload extends never ? never : true,
+];
 
 // ===========================================================================
 // THE CONSUMING SIDE — what a vertical gets.

@@ -17,7 +17,51 @@ import { describe, expect, it } from 'vitest';
 import type { DataSubjectId } from '@substrat-run/contracts';
 import { consumersFor, type OperationContext } from '@substrat-run/kernel';
 
-import { emitBookingEvent, type BookingEvents, type BookingMovedPayload } from '../src/events.js';
+import { emitBookingEvent } from '../src/events.js';
+/**
+ * The PUBLIC surface, imported the way a vertical imports it — from the package
+ * root, not from `src/events.ts`. Everything below is checked through these, so
+ * a name missing or mistyped in `src/index.ts` fails here instead of leaving
+ * every gate green while the documented import breaks.
+ */
+import type {
+  BookingEvents,
+  BookingEventType,
+  BookingResourceRef,
+  BookingSlot,
+  BookingResourceCreatedPayload,
+  BookingHeldPayload,
+  BookingConfirmedPayload,
+  BookingExpiredPayload,
+  BookingParticipantJoinedPayload,
+  BookingOpenedPayload,
+  BookingParticipantLeftPayload,
+  BookingCancelledPayload,
+  BookingMovedPayload,
+  BookingStartedPayload,
+  BookingCompletedPayload,
+  BookingNoShowPayload,
+} from '../src/index.js';
+
+/** Every published name, referenced — an absent re-export cannot compile. */
+type _PublishedSurface = [
+  BookingEvents extends never ? never : true,
+  BookingEventType extends never ? never : true,
+  BookingResourceRef extends never ? never : true,
+  BookingSlot extends never ? never : true,
+  BookingResourceCreatedPayload extends never ? never : true,
+  BookingHeldPayload extends never ? never : true,
+  BookingConfirmedPayload extends never ? never : true,
+  BookingExpiredPayload extends never ? never : true,
+  BookingParticipantJoinedPayload extends never ? never : true,
+  BookingOpenedPayload extends never ? never : true,
+  BookingParticipantLeftPayload extends never ? never : true,
+  BookingCancelledPayload extends never ? never : true,
+  BookingMovedPayload extends never ? never : true,
+  BookingStartedPayload extends never ? never : true,
+  BookingCompletedPayload extends never ? never : true,
+  BookingNoShowPayload extends never ? never : true,
+];
 
 // ===========================================================================
 // THE CONSUMING SIDE — what a vertical gets.

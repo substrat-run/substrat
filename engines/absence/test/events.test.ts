@@ -17,7 +17,41 @@ import { describe, expect, it } from 'vitest';
 import type { DataSubjectId } from '@substrat-run/contracts';
 import { consumersFor, type OperationContext } from '@substrat-run/kernel';
 
-import { emitAbsenceEvent, type AbsenceApprovedPayload, type AbsenceEvents } from '../src/events.js';
+import { emitAbsenceEvent } from '../src/events.js';
+/**
+ * The PUBLIC surface, imported the way a vertical imports it — from the package
+ * root, not from `src/events.ts`. Everything below is checked through these, so
+ * a name missing or mistyped in `src/index.ts` fails here instead of leaving
+ * every gate green while the documented import breaks.
+ */
+import type {
+  AbsenceEvents,
+  AbsenceEventType,
+  AbsenceSubjectRef,
+  AbsenceLeaveTypeConfiguredPayload,
+  AbsenceEntryRecordedPayload,
+  AbsenceRequestedPayload,
+  AbsenceApprovedPayload,
+  AbsenceRejectedPayload,
+  AbsenceDecidedPayload,
+  AbsenceCancelledPayload,
+  AbsenceExpiredPayload,
+} from '../src/index.js';
+
+/** Every published name, referenced — an absent re-export cannot compile. */
+type _PublishedSurface = [
+  AbsenceEvents extends never ? never : true,
+  AbsenceEventType extends never ? never : true,
+  AbsenceSubjectRef extends never ? never : true,
+  AbsenceLeaveTypeConfiguredPayload extends never ? never : true,
+  AbsenceEntryRecordedPayload extends never ? never : true,
+  AbsenceRequestedPayload extends never ? never : true,
+  AbsenceApprovedPayload extends never ? never : true,
+  AbsenceRejectedPayload extends never ? never : true,
+  AbsenceDecidedPayload extends never ? never : true,
+  AbsenceCancelledPayload extends never ? never : true,
+  AbsenceExpiredPayload extends never ? never : true,
+];
 
 // ===========================================================================
 // THE CONSUMING SIDE — what a vertical gets.

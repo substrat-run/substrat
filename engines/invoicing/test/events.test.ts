@@ -21,7 +21,27 @@ import { describe, expect, it } from 'vitest';
 import { moneyOf, type Money } from '@substrat-run/contracts';
 import { consumersFor, type ConsumerHandler, type ModuleRegistration, type OperationContext } from '@substrat-run/kernel';
 
-import { emitInvoicingEvent, type InvoicingEvents } from '../src/events.js';
+import { emitInvoicingEvent } from '../src/events.js';
+/**
+ * The PUBLIC surface, imported the way a vertical imports it — from the package
+ * root, not from `src/events.ts`. Everything below is checked through these, so
+ * a name missing or mistyped in `src/index.ts` fails here instead of leaving
+ * every gate green while the documented import breaks.
+ */
+import type {
+  InvoicingEvents,
+  InvoicingEventType,
+  InvoicingUnderlagUpdatedPayload,
+  InvoicingUnderlagExportedPayload,
+} from '../src/index.js';
+
+/** Every published name, referenced — an absent re-export cannot compile. */
+type _PublishedSurface = [
+  InvoicingEvents extends never ? never : true,
+  InvoicingEventType extends never ? never : true,
+  InvoicingUnderlagUpdatedPayload extends never ? never : true,
+  InvoicingUnderlagExportedPayload extends never ? never : true,
+];
 
 // ===========================================================================
 // THE CONSUMING SIDE — what a vertical gets when it reads the basis back by

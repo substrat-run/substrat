@@ -16,7 +16,31 @@
 import { describe, expect, it } from 'vitest';
 import { consumersFor, type OperationContext } from '@substrat-run/kernel';
 
-import { emitMeteringEvent, type MeteringEvents, type MeteringPeriodClosedPayload } from '../src/events.js';
+import { emitMeteringEvent } from '../src/events.js';
+/**
+ * The PUBLIC surface, imported the way a vertical imports it — from the package
+ * root, not from `src/events.ts`. Everything below is checked through these, so
+ * a name missing or mistyped in `src/index.ts` fails here instead of leaving
+ * every gate green while the documented import breaks.
+ */
+import type {
+  MeteringEvents,
+  MeteringEventType,
+  MeteringMeterConfiguredPayload,
+  MeteringUsageRecordedPayload,
+  MeteringPeriodLine,
+  MeteringPeriodClosedPayload,
+} from '../src/index.js';
+
+/** Every published name, referenced — an absent re-export cannot compile. */
+type _PublishedSurface = [
+  MeteringEvents extends never ? never : true,
+  MeteringEventType extends never ? never : true,
+  MeteringMeterConfiguredPayload extends never ? never : true,
+  MeteringUsageRecordedPayload extends never ? never : true,
+  MeteringPeriodLine extends never ? never : true,
+  MeteringPeriodClosedPayload extends never ? never : true,
+];
 
 // ===========================================================================
 // THE CONSUMING SIDE — what a vertical gets. This engine's close is what the
