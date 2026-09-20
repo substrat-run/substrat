@@ -423,6 +423,17 @@ const KERNEL_DDL = `
     --   next_attempt_at IS NULL      -> terminal: error IS NULL delivered, else dead
     attempts INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT,
+    -- #1525: the invocation THIS ATTEMPT ran in, the same id #1237 stamps on every
+    -- event of a call. Not the emitting event's -- that one is already on the outbox
+    -- and a delivery joins to it through event_id. What that join cannot say is
+    -- which call attempted the DELIVERY, and for an executor the two differ by
+    -- design: attempt one runs in the emitting call's post-commit tail, every retry
+    -- afterwards in a drain that is a different call or none. Moves with the row on
+    -- an upsert, like delivered_at, error and attempts -- it describes the
+    -- latest attempt, not the first. NULL = that attempt carried no call (a
+    -- scheduled drain, an alarm, a seed, an attachment RPC), or the row predates
+    -- the column.
+    invocation_id TEXT,
     PRIMARY KEY (event_id, consumer_module)
   );
   -- Scope-local permissions (docs/architecture/scope-local-permissions.md): the
@@ -1825,7 +1836,9 @@ export function defineScopeDO(
         // replay: nothing was written, so there is nothing this invocation added to
         // drain or to announce. Anything the ORIGINAL left undrained is the outbox's
         // own retry backstop, which is what that backstop is for.
-        if (!replayed) await this.settleCommitted(tenantId, scopeId, liveSince);
+        // #1525: still inside the queued body that set it, so these deliveries are this
+        // call's own work — the same tail its consumers' emits are stamped in.
+        if (!replayed) await this.settleCommitted(tenantId, scopeId, liveSince, this.invocationId);
         return {
           result,
           platformRequests: signals.platformRequests,
@@ -2025,8 +2038,15 @@ export function defineScopeDO(
       tenantId: TenantId,
       scopeId: ScopeId,
       liveSince: string | null,
+      /**
+       * #1525: the call whose commit this is settling, or null — PASSED rather than
+       * read off `this.invocationId` inside `dispatch`, so each of the three doors
+       * says what it actually knows: `invoke` its own id, the two attachment verbs
+       * null. Same discipline `recordDenial` adopted, and for the same reason.
+       */
+      invocationId: string | null,
     ): Promise<void> {
-      await this.dispatch(tenantId, scopeId);
+      await this.dispatch(tenantId, scopeId, invocationId);
       if (liveSince === null) return;
       try {
         await this.fanOutLive(liveSince, tenantId, scopeId);
@@ -2268,7 +2288,9 @@ export function defineScopeDO(
           }
           throw toRpcError(err);
         }
-        await this.settleCommitted(tenantId, scopeId, liveSince);
+        // #1525: null. An attachment RPC carries no invocation, exactly as its denial
+        // records none — so the deliveries it drains name no call rather than a wrong one.
+        await this.settleCommitted(tenantId, scopeId, liveSince, null);
         return parsed;
       });
     }
@@ -2398,7 +2420,9 @@ export function defineScopeDO(
           }
           throw toRpcError(err);
         }
-        await this.settleCommitted(tenantId, scopeId, liveSince);
+        // #1525: null. An attachment RPC carries no invocation, exactly as its denial
+        // records none — so the deliveries it drains name no call rather than a wrong one.
+        await this.settleCommitted(tenantId, scopeId, liveSince, null);
         return record;
       });
     }
@@ -2880,12 +2904,29 @@ export function defineScopeDO(
      * Written AFTER the effect, so a crash mid-effect retries rather than silently
      * marking success. The coordinator computes the backoff because it owns the
      * per-executor policy; the DO owns the state.
+     *
+     * `invocationId` is LAST because this is a positional RPC — the same rule
+     * `recordScheduleRun` states. An old DO drops a trailing argument; a leading one
+     * it binds, and every value after it lands one column to the left, silently.
      */
     recordExecutorAttempt(
       eventId: string,
       deliveryId: string,
       error: string | null,
       nextAttemptAt: string | null,
+      /**
+       * #1525: the call THIS attempt ran in, or null. Passed rather than read off
+       * `this.invocationId`, and here there is no choice about it: executors run on
+       * the COORDINATOR, so by the time this RPC arrives the queued body that held
+       * the id has long returned and the field reads null. The coordinator is the
+       * only side that knows, which is why the SQLite twin passes it too — a recorded
+       * fact whose correctness argument differs per adapter is the kind that drifts.
+       *
+       * Defaulted, for the other half of the skew: a coordinator too old to pass it
+       * calls this with four arguments, and `undefined` is not a value SQLite binds.
+       * Null is the honest answer there anyway — that coordinator recorded no call.
+       */
+      invocationId: string | null = null,
     ): number {
       const prior = (
         this.sql
@@ -2899,19 +2940,26 @@ export function defineScopeDO(
       const attempts = (prior?.attempts ?? 0) + 1;
       this.sql.exec(
         `INSERT INTO _substrat_deliveries
-           (event_id, consumer_module, delivered_at, error, attempts, next_attempt_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+           (event_id, consumer_module, delivered_at, error, attempts, next_attempt_at,
+            invocation_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (event_id, consumer_module) DO UPDATE SET
            delivered_at = excluded.delivered_at,
            error = excluded.error,
            attempts = excluded.attempts,
-           next_attempt_at = excluded.next_attempt_at`,
+           next_attempt_at = excluded.next_attempt_at,
+           -- #1525: overwritten, like the four above. The row describes the LATEST
+           -- attempt, so a retry drained by a different call (or by none) must not
+           -- keep claiming the call that made the first one.
+           invocation_id = excluded.invocation_id`,
         eventId,
         deliveryId,
         new Date().toISOString(),
         error,
         attempts,
         nextAttemptAt,
+        // #1525: the call this attempt ran in, as the coordinator named it.
+        invocationId,
       );
       return attempts;
     }
@@ -2997,6 +3045,9 @@ export function defineScopeDO(
      * the event on the next drain). Backpressure throws BEFORE any write — the caller
      * records a failed attempt and the delivery retries on its own backoff, exactly as
      * a throwing handler would.
+     *
+     * `invocationId` is LAST, and defaulted, for the RPC-skew reason `recordExecutorAttempt`
+     * states at length.
      */
     routeExecutorEventToPlatform(
       eventId: string,
@@ -3004,6 +3055,13 @@ export function defineScopeDO(
       kind: string,
       payload: string,
       requestedBy: string,
+      /**
+       * #1525: the call this routing ran in, or null. On the hosted path this is the
+       * dominant executor journal — every vertical is CP-less, so a connector delivery
+       * becomes an intent here rather than running in `recordExecutorAttempt`'s caller —
+       * so leaving it null would make the column read "no call" for the common case.
+       */
+      invocationId: string | null = null,
     ): PlatformRequestId {
       const pending = Number(
         (
@@ -3038,7 +3096,7 @@ export function defineScopeDO(
         source?.impersonation ?? null,
         instant.parse(new Date().toISOString()),
       );
-      this.recordExecutorAttempt(eventId, deliveryId, null, null);
+      this.recordExecutorAttempt(eventId, deliveryId, null, null, invocationId);
       return id;
     }
 
@@ -3285,6 +3343,11 @@ export function defineScopeDO(
         // consumer dead-letter.
         'ALTER TABLE _substrat_deliveries ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0',
         'ALTER TABLE _substrat_deliveries ADD COLUMN next_attempt_at TEXT',
+        // #1525: the invocation an attempt ran in, on a scope DO created before the
+        // column. Nullable, and the null is honestly "no call was carried" — which
+        // attempt produced a delivery already journalled cannot be decided afterwards,
+        // exactly as #1237's outbox column argued.
+        'ALTER TABLE _substrat_deliveries ADD COLUMN invocation_id TEXT',
         // K-34: the authorization column on a scope DO created before it existed. Nullable,
         // so legacy outbox rows read as "unrecorded". (_substrat_denials is a new table,
         // covered by KERNEL_DDL's IF NOT EXISTS with no ALTER.)
@@ -3575,7 +3638,16 @@ export function defineScopeDO(
      */
     private invocationId: string | null = null;
 
-    private async dispatch(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+    private async dispatch(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      /**
+       * #1525: the call this drain is running in, or null. Every round of the loop
+       * belongs to it: a consumer's own emit is delivered in the same tail, so the
+       * whole cascade is one call's work.
+       */
+      invocationId: string | null,
+    ): Promise<void> {
       for (let round = 0; round < 50; round++) {
         let deliveredAny = false;
         for (const mod of this.modules.values()) {
@@ -3606,11 +3678,13 @@ export function defineScopeDO(
                   });
                   await consumer.handler(ctx, event);
                   this.sql.exec(
-                    `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at)
-                     VALUES (?, ?, ?)`,
+                    `INSERT INTO _substrat_deliveries
+                       (event_id, consumer_module, delivered_at, invocation_id)
+                     VALUES (?, ?, ?, ?)`,
                     event.id,
                     mod.id,
                     new Date().toISOString(),
+                    invocationId,
                   );
                 });
                 deliveredAny = true;
@@ -3618,12 +3692,14 @@ export function defineScopeDO(
                 // Dead-letter (v0): journal the failure so one poison event
                 // can't wedge the loop. Written outside the rolled-back txn.
                 this.sql.exec(
-                  `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, error)
-                   VALUES (?, ?, ?, ?)`,
+                  `INSERT INTO _substrat_deliveries
+                     (event_id, consumer_module, delivered_at, error, invocation_id)
+                   VALUES (?, ?, ?, ?, ?)`,
                   event.id,
                   mod.id,
                   new Date().toISOString(),
                   String(err),
+                  invocationId,
                 );
               } finally {
                 // Cleared on BOTH paths. Left set, the id leaks onto every later emit

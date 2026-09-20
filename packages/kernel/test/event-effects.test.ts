@@ -36,6 +36,8 @@ const DDL = `
     error TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT,
+    -- #1525: the call the LAST attempt ran in, which is not the event's.
+    invocation_id TEXT,
     PRIMARY KEY (event_id, consumer_module)
   )`;
 
@@ -52,6 +54,8 @@ interface Del {
   error?: string | null;
   attempts?: number;
   nextAttemptAt?: string | null;
+  /** #1525: the call the delivery's last attempt ran in. */
+  invocation?: string | null;
 }
 
 function readerOver(events: Ev[], deliveries: Del[] = []): Pick<ScopedSql, 'query'> {
@@ -74,8 +78,9 @@ function readerOver(events: Ev[], deliveries: Del[] = []): Pick<ScopedSql, 'quer
     );
   }
   const insD = db.prepare(
-    `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, error, attempts, next_attempt_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO _substrat_deliveries
+       (event_id, consumer_module, delivered_at, error, attempts, next_attempt_at, invocation_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const d of deliveries) {
     insD.run(
@@ -85,6 +90,7 @@ function readerOver(events: Ev[], deliveries: Del[] = []): Pick<ScopedSql, 'quer
       d.error ?? null,
       d.attempts ?? 0,
       d.nextAttemptAt ?? null,
+      d.invocation ?? null,
     );
   }
   return {
@@ -131,6 +137,28 @@ describe('walkEventEffects (#1237)', () => {
     expect(byConsumer['@x/retry']!.attempts).toBe(2);
     expect(byConsumer['@x/dead']!.state).toBe('dead');
     expect(byConsumer['@x/dead']!.error).toBe('fatal');
+  });
+
+  it('carries each delivery\'s own invocation, per row and independent of the event (#1525)', () => {
+    // PER ROW, which is the property a single-delivery assertion cannot see: three
+    // consumers of one event are attempted separately, so their calls can differ — an
+    // implementation that lifted one id for the whole event would pass that test and
+    // fail this one. Null beside a named id is the control: it must stay null rather
+    // than falling back to the event's.
+    const sql = readerOver(
+      [{ n: 1, operation: 'op' }],
+      [
+        { n: 1, consumer: '@x/ok', invocation: 'call-1' },
+        { n: 1, consumer: '@x/retry', error: 'boom', attempts: 2, nextAttemptAt: '2026-05-02T00:00:00.000Z', invocation: 'call-2' },
+        { n: 1, consumer: '@x/dead', error: 'fatal', attempts: 5 },
+      ],
+    );
+    const byConsumer = Object.fromEntries(
+      walkEventEffects({ sql }, id(1)).root!.deliveries.map((d) => [d.consumer, d]),
+    );
+    expect(byConsumer['@x/ok']!.invocationId).toBe('call-1');
+    expect(byConsumer['@x/retry']!.invocationId).toBe('call-2');
+    expect(byConsumer['@x/dead']!.invocationId).toBeNull();
   });
 
   it('reports no deliveries as empty, which is the ambiguous answer it is', () => {

@@ -4826,6 +4826,141 @@ export function scopeHostContractSuite(
       expect(new Set(reactions.map((r) => r.caused_by)).size).toBe(2);
     });
 
+    // -- the invocation a DELIVERY belongs to (#1525) -------------------------
+    //
+    // #1237 put `invocation_id` on the outbox, which answers "which call emitted this
+    // event". A delivery joins to that through `event_id`, so the tempting reading is
+    // that deliveries needed nothing. What the event's id cannot say is which call
+    // attempted the DELIVERY — and for an executor those come apart by design: attempt
+    // one runs in the emitting call's post-commit tail, every retry after it in a drain
+    // that is a different call or none at all.
+    //
+    // Each test takes its own scope: they assert over the whole delivery log they read.
+
+    describe('the invocation a delivery belongs to (#1525)', () => {
+      type DeliveryRow = { event_id: string; error: string | null; invocation_id: string | null };
+
+      const flowScope = async (): Promise<ScopeId> => {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s, vertical: 'flow-vertical' });
+        await host.admin.activateScope(staff, t1, s);
+        return s;
+      };
+
+      it('stamps a consumer delivery with the invocation the call carried', async () => {
+        const s = await flowScope();
+        const stub = await host.getScope(alice, t1, s);
+        const call = ulid();
+        await stub.invoke('flow/produce', undefined, { invocationId: call });
+
+        // The VALUE, not merely the column: a delivery that recorded null here would
+        // satisfy every "the column exists" assertion and join to nothing.
+        const rows = (await stub.invoke('flow/deliveries')) as DeliveryRow[];
+        expect(rows).toHaveLength(2);
+        expect(rows.map((r) => r.invocation_id)).toEqual([call, call]);
+
+        // A SECOND call is a second id. The field is cleared after each invocation
+        // (#1237), so a leak would file this call's deliveries under the previous one
+        // — which a single-call assertion cannot see.
+        const next = ulid();
+        await stub.invoke('flow/produce', undefined, { invocationId: next });
+        const after = (await stub.invoke('flow/deliveries')) as DeliveryRow[];
+        expect(after).toHaveLength(4);
+        expect(after.filter((r) => r.invocation_id === call)).toHaveLength(2);
+        expect(after.filter((r) => r.invocation_id === next)).toHaveLength(2);
+      });
+
+      it('records null when the caller carried no invocation, and still delivers', async () => {
+        // A seed, a test, an internal call. Null is the honest answer — and the
+        // delivery itself must still happen and still be journalled, since a drain that
+        // failed because no id was carried is a far worse outcome than an unjoined row.
+        // The positive twin above shares this mechanism, so breaking the write reddens
+        // that one rather than leaving both green on a column nobody fills.
+        const s = await flowScope();
+        const stub = await host.getScope(alice, t1, s);
+        await stub.invoke('flow/produce');
+
+        const rows = (await stub.invoke('flow/deliveries')) as DeliveryRow[];
+        expect(rows).toHaveLength(2);
+        expect(rows.every((r) => r.invocation_id === null)).toBe(true);
+        expect(rows.every((r) => r.error === null)).toBe(true);
+      });
+
+      it('carries the delivery\'s invocation out through the effects walk', async () => {
+        // The column is written; this is what makes it reachable. `walkEventEffects`
+        // is the read that renders a delivery, so a column added to the store and
+        // missed there would leave the join invisible to every surface that shows one.
+        const s = await flowScope();
+        const stub = await host.getScope(alice, t1, s);
+        const call = ulid();
+        await stub.invoke('flow/produce', undefined, { invocationId: call });
+
+        const rows = (await stub.invoke('flow/causes')) as { id: string; type: string }[];
+        const step1 = rows.find((r) => r.type === 'flow.step1')!;
+        const tree = await host.admin.eventEffects(staff, t1, s, {
+          eventId: eventId.parse(step1.id),
+        });
+        expect(tree.root!.deliveries).not.toHaveLength(0);
+        expect(tree.root!.deliveries.every((d) => d.invocationId === call)).toBe(true);
+      });
+
+      it('stamps an executor delivery with the call whose tail ran it', async () => {
+        // Executors are the half the event's own id could never have covered. On the
+        // hosted adapter this journal is written from the COORDINATOR over an RPC, so
+        // there is no ambient field to read and the id has to survive the hop.
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1,
+          scopeId: s,
+          vertical: 'connector-vertical',
+        });
+        await host.admin.activateScope(staff, t1, s);
+        const stub = await host.getScope(alice, t1, s);
+
+        const call = ulid();
+        await stub.invoke('connector/request-effect', { tag: 'inv-ok' }, { invocationId: call });
+
+        const emitted = await host.admin.invocationEvents(staff, t1, s, { invocationId: call });
+        const requested = emitted.events.find((e) => e.type === 'effect.requested')!;
+        const tree = await host.admin.eventEffects(staff, t1, s, { eventId: requested.id });
+        const delivery = tree.root!.deliveries.find((d) => d.consumer === 'executor:flaky-effector');
+        expect(delivery).toBeDefined();
+        expect(delivery!.state).toBe('delivered');
+        expect(delivery!.invocationId).toBe(call);
+      });
+
+      it('files a RETRY under the call that re-attempted it, not the one that emitted', async () => {
+        // The test that proves this column is not a copy of the outbox's. A doomed
+        // executor is attempted once in the emitting call's tail and once more on a
+        // drain — and the drain is not a call. So the dead row's event still names the
+        // request that produced it while the attempt that gave up names none, which is
+        // exactly the pair `DeadLetter` could not previously tell apart.
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1,
+          scopeId: s,
+          vertical: 'connector-vertical',
+        });
+        await host.admin.activateScope(staff, t1, s);
+        const stub = await host.getScope(alice, t1, s);
+
+        const call = ulid();
+        await stub.invoke('connector/request-doomed', { tag: 'inv-doomed' }, { invocationId: call });
+        // maxAttempts 2: attempt one ran inline under `call`, attempt two runs here.
+        expect((await host.drainDue(t1, s)).deadLettered).toBe(1);
+
+        const page = await host.admin.deadLetters(staff, t1, s, {});
+        const dead = page.entries.find((d) => d.consumer === 'executor:doomed-effector')!;
+        expect(dead).toBeDefined();
+        // The EVENT still joins to the request that emitted it…
+        expect(dead.invocationId).toBe(call);
+        // …and the ATTEMPT that gave up names no call, because a drain is not one. An
+        // implementation that copied the event's id here would read `call` and claim a
+        // request had done something it did not do.
+        expect(dead.attemptInvocationId).toBeNull();
+      });
+    });
+
     it('creates a tenant record, idempotently; only real creates are audited', async () => {
       await host.admin.createTenant(staff, { id: t3, slug: 'acme-co', name: 'Acme Co' });
       await host.admin.createTenant(staff, { id: t3, slug: 'acme-co', name: 'Acme Co' }); // no-op

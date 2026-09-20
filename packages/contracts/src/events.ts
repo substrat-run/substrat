@@ -338,6 +338,20 @@ export const eventDelivery = z.object({
   /** The thrown message, for a row that is not `delivered`. */
   error: z.string().nullable(),
   attempts: z.number().int().nonnegative(),
+  /**
+   * The invocation the attempt `at` dates ran in (#1525), or null.
+   *
+   * NOT the event's — that one is on the outbox, and a delivery already joins to it
+   * through its event id. This is the call that attempted the DELIVERY, which for an
+   * executor is a different fact: attempt one runs in the emitting call's post-commit
+   * tail, and every retry after it in a drain that is another call or none. It moves
+   * with the row, like `at`, `error` and `attempts`, so it describes the latest
+   * attempt rather than the first.
+   *
+   * Null is two facts, as ever: the attempt carried no call (a scheduled drain, an
+   * alarm, a seed, an attachment RPC), or the row predates the column.
+   */
+  invocationId: z.string().nullable(),
 });
 export type EventDelivery = z.infer<typeof eventDelivery>;
 
@@ -424,11 +438,29 @@ export interface DeadLetter {
   /** The entity the event was about — what a reader opens next. */
   entity: EntityRef;
   /**
-   * The call the event came from (#1237), which is how a delivery joins its request:
-   * dispatch runs in the same post-commit tail, so the event's id is the delivery's.
-   * Null for a seed or internal call, or an event older than the column.
+   * The call the EVENT came from (#1237). Null for a seed or internal call, or an
+   * event older than the column.
+   *
+   * It is not, in general, the call that attempted the delivery — see
+   * `attemptInvocationId`, which is. This one said it was until #1525 put the
+   * delivery's own id beside it, and the rows in this very list are where the two
+   * come apart most often.
    */
   invocationId: string | null;
+  /**
+   * The call the LAST attempt ran in (#1525) — the one that gave up, since these rows
+   * are terminal. Pairs with `at`, which is when that attempt happened.
+   *
+   * Usually NOT `invocationId`: an executor's first attempt runs in the emitting
+   * call's post-commit tail, and every retry after it in a drain that is a different
+   * call or none. A row that exhausted its attempts therefore most often names a
+   * later call, or null. An in-scope consumer does not retry, so for those two the
+   * ids do agree — and that agreement is a fact about consumers, not a rule.
+   *
+   * Null is two facts: the attempt carried no call (a drain, an alarm, a seed), or
+   * the row predates the column.
+   */
+  attemptInvocationId: string | null;
   /** The consumer that gave up — a module id, or `executor:<id>` for an executor. */
   consumer: ModuleId;
   /** When it was last attempted, which for a dead row is when it gave up. */

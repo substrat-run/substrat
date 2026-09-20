@@ -1082,7 +1082,7 @@ export const flowMod: ModuleRegistration = {
     >,
     'flow/deliveries': ((ctx) =>
       ctx.sql.query(
-        `SELECT event_id, consumer_module, error FROM _substrat_deliveries
+        `SELECT event_id, consumer_module, error, invocation_id FROM _substrat_deliveries
          WHERE consumer_module = '@test/flow' ORDER BY event_id`,
       )) as OperationHandler<never, unknown>,
     'flow/step2-actors': ((ctx) =>

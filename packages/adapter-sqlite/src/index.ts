@@ -620,6 +620,17 @@ const KERNEL_DDL = `
     --   next_attempt_at IS NULL      -> terminal: error IS NULL delivered, else dead
     attempts INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT,
+    -- #1525: the invocation THIS ATTEMPT ran in, the same id #1237 stamps on every
+    -- event of a call. Not the emitting event's — that one is already on the outbox
+    -- and a delivery joins to it through event_id. What that join cannot say is
+    -- which call attempted the DELIVERY, and for an executor the two differ by
+    -- design: attempt one runs in the emitting call's post-commit tail, every retry
+    -- afterwards in a drain that is a different call or none. Moves with the row on
+    -- an upsert, like delivered_at, error and attempts — it describes the
+    -- latest attempt, not the first. NULL = that attempt carried no call (a
+    -- scheduled drain, an alarm, a seed, an attachment RPC), or the row predates
+    -- the column.
+    invocation_id TEXT,
     PRIMARY KEY (event_id, consumer_module)
   );
   -- Attachment metadata facts (#473): one row per object in the per-tenant blob store,
@@ -2594,8 +2605,10 @@ export class SqliteScopeHost implements ScopeHost {
           if (err instanceof PermissionDenied) this.recordDenial(rt, subject, operation, err, null);
           throw err;
         }
-        await this.dispatch(rt);
-        await this.dispatchExecutors(rt);
+        // #1525: null, for the reason the denial two lines up records null — this task
+        // is the attachment RPC's own and no invoke set an id on the runtime.
+        await this.dispatch(rt, null);
+        await this.dispatchExecutors(rt, null);
         return result;
       });
 
@@ -3592,8 +3605,10 @@ export class SqliteScopeHost implements ScopeHost {
           // drain — and draining anyway would run consumers as a side effect of a
           // session that may not have side effects.
           if (session?.mode !== 'read-only') {
-            await this.dispatch(rt);
-            await this.dispatchExecutors(rt);
+            // #1525: still inside the actor task that set it, so these deliveries are
+            // this call's own work — the same tail its consumers' emits are stamped in.
+            await this.dispatch(rt, rt.invocationId);
+            await this.dispatchExecutors(rt, rt.invocationId);
           }
           return structuredClone(result);
           } finally {
@@ -3707,7 +3722,17 @@ export class SqliteScopeHost implements ScopeHost {
    * At-least-once still requires idempotent handlers. Retry is the backstop, not a
    * substitute.
    */
-  private async dispatchExecutors(rt: ScopeRuntime): Promise<ExecutorDrainReport> {
+  private async dispatchExecutors(
+    rt: ScopeRuntime,
+    /**
+     * #1525: the call this drain pass is running in, or null — PASSED, not read off
+     * `rt.invocationId`, for the reason `recordDenial` states. The Cloudflare twin
+     * has no ambient field to read here at all: its executors run on the coordinator
+     * and journal over RPC, so the id has to travel as an argument on that side, and
+     * a recorded fact whose correctness argument differs per adapter drifts.
+     */
+    invocationId: string | null,
+  ): Promise<ExecutorDrainReport> {
     const report: ExecutorDrainReport = {
       attempted: 0,
       delivered: 0,
@@ -3743,7 +3768,7 @@ export class SqliteScopeHost implements ScopeHost {
           } else {
             await executor.handler(this.admin, event);
           }
-          this.recordExecutorDelivery(rt, row.id, deliveryId, null, executor.retry);
+          this.recordExecutorDelivery(rt, row.id, deliveryId, null, executor.retry, invocationId);
           report.delivered += 1;
         } catch (err) {
           const dead = this.recordExecutorDelivery(
@@ -3752,6 +3777,7 @@ export class SqliteScopeHost implements ScopeHost {
             deliveryId,
             err instanceof Error ? (err.stack ?? err.message) : String(err),
             executor.retry,
+            invocationId,
           );
           if (dead) report.deadLettered += 1;
           else report.retrying += 1;
@@ -3777,6 +3803,8 @@ export class SqliteScopeHost implements ScopeHost {
     deliveryId: string,
     error: string | null,
     retry: Required<ExecutorRetryPolicy>,
+    /** #1525: the call THIS attempt ran in, or null. Last, mirroring the DO's RPC. */
+    invocationId: string | null,
   ): boolean {
     const prior =
       (
@@ -3794,22 +3822,39 @@ export class SqliteScopeHost implements ScopeHost {
     rt.db
       .prepare(
         `INSERT INTO _substrat_deliveries
-           (event_id, consumer_module, delivered_at, error, attempts, next_attempt_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+           (event_id, consumer_module, delivered_at, error, attempts, next_attempt_at,
+            invocation_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (event_id, consumer_module) DO UPDATE SET
            delivered_at = excluded.delivered_at,
            error = excluded.error,
            attempts = excluded.attempts,
-           next_attempt_at = excluded.next_attempt_at`,
+           next_attempt_at = excluded.next_attempt_at,
+           -- #1525: overwritten, like the four above. The row describes the LATEST
+           -- attempt, so a retry drained by a different call (or by none) must not
+           -- keep claiming the call that made the first one.
+           invocation_id = excluded.invocation_id`,
       )
-      .run(eventId, deliveryId, new Date().toISOString(), error, attempts, nextAttemptAt);
+      .run(
+        eventId,
+        deliveryId,
+        new Date().toISOString(),
+        error,
+        attempts,
+        nextAttemptAt,
+        // #1525: the call this attempt ran in, as the caller named it.
+        invocationId,
+      );
     return error !== null && exhausted;
   }
 
   async drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport> {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    return rt.actor.enqueue(() => this.dispatchExecutors(rt));
+    // #1525: null, and honestly so — a sweep is not a call. An attempt this pass makes
+    // records no invocation, which is what distinguishes it from the first attempt the
+    // emitting operation's own tail made.
+    return rt.actor.enqueue(() => this.dispatchExecutors(rt, null));
   }
 
   registerJob(
@@ -4211,7 +4256,15 @@ export class SqliteScopeHost implements ScopeHost {
     });
   }
 
-  private async dispatch(rt: ScopeRuntime): Promise<void> {
+  private async dispatch(
+    rt: ScopeRuntime,
+    /**
+     * #1525: the call this drain is running in, or null — PASSED, for the reason
+     * `dispatchExecutors` states. Every round of the loop belongs to it: a consumer's
+     * own emit is delivered in the same tail, so the whole cascade is one call's work.
+     */
+    invocationId: string | null,
+  ): Promise<void> {
     for (let round = 0; round < 50; round++) {
       let deliveredAny = false;
       for (const mod of this.modules.values()) {
@@ -4242,10 +4295,11 @@ export class SqliteScopeHost implements ScopeHost {
               await consumer.handler(ctx, event);
               rt.db
                 .prepare(
-                  `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at)
-                   VALUES (?, ?, ?)`,
+                  `INSERT INTO _substrat_deliveries
+                     (event_id, consumer_module, delivered_at, invocation_id)
+                   VALUES (?, ?, ?, ?)`,
                 )
-                .run(event.id, mod.id, new Date().toISOString());
+                .run(event.id, mod.id, new Date().toISOString(), invocationId);
               rt.db.exec('COMMIT');
               deliveredAny = true;
             } catch (err) {
@@ -4254,10 +4308,11 @@ export class SqliteScopeHost implements ScopeHost {
               // can't wedge the loop. Real redelivery/backoff is a later cut.
               rt.db
                 .prepare(
-                  `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, error)
-                   VALUES (?, ?, ?, ?)`,
+                  `INSERT INTO _substrat_deliveries
+                     (event_id, consumer_module, delivered_at, error, invocation_id)
+                   VALUES (?, ?, ?, ?, ?)`,
                 )
-                .run(event.id, mod.id, new Date().toISOString(), String(err));
+                .run(event.id, mod.id, new Date().toISOString(), String(err), invocationId);
             } finally {
               // Cleared on BOTH paths. Left set, the id would leak onto every later
               // emit in this scope — an operation's own event stamped as caused by
@@ -9045,6 +9100,11 @@ export class SqliteScopeHost implements ScopeHost {
     // consumer dead-letter.
     this.ensureColumn(db, '_substrat_deliveries', 'attempts', 'attempts INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn(db, '_substrat_deliveries', 'next_attempt_at', 'next_attempt_at TEXT');
+    // #1525: the invocation an attempt ran in, on a scope DB created before the column.
+    // Nullable, and the null is honestly "no call was carried" — which attempt produced
+    // a delivery already journalled cannot be decided afterwards, exactly as #1237's
+    // outbox column argued.
+    this.ensureColumn(db, '_substrat_deliveries', 'invocation_id', 'invocation_id TEXT');
     // K-34: the authorization column on a scope DB created before it existed. Nullable,
     // so legacy outbox rows read as "unrecorded" — the honest value. (_substrat_denials
     // is a whole new table, so KERNEL_DDL's IF NOT EXISTS covers it with no ALTER.)

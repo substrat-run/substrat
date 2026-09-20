@@ -77,6 +77,34 @@ describe('CP-less connector routing (#574 phase 3)', () => {
     expect(payload.event.scopeId).toBe(s);
   });
 
+  it('journals the routed delivery under the call that routed it (#1525)', async () => {
+    // The hosted-dominant executor journal: every vertical is CP-less, so a connector
+    // delivery is written here rather than by `recordExecutorAttempt`'s other caller.
+    // The id crosses two hops to land — the coordinator names it, `drainExecutors`
+    // carries it, and `routeExecutorEventToPlatform` writes it — so a drop anywhere on
+    // that path would leave the common case reading "no call".
+    const host = hostFor();
+    const s2 = scopeId.parse(ulid());
+    await host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: s2,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    const call = ulid();
+    const scope = await host.getScope(owner, t, s2);
+    await scope.invoke('perm/authorized-emit', { permission: USE }, { invocationId: call });
+
+    const emitted = await host.invocationEventsLocal(s2, { invocationId: call });
+    const acted = emitted.events.find((e) => e.type === 'perm.acted')!;
+    expect(acted).toBeDefined();
+    const tree = await host.eventEffectsLocal(s2, { eventId: acted.id });
+    const delivery = tree.root!.deliveries.find((d) => d.consumer === 'executor:signer')!;
+    expect(delivery).toBeDefined();
+    expect(delivery.invocationId).toBe(call);
+  });
+
   it('journals the delivery as routed — a later drain must not route it again', async () => {
     const host = hostFor();
     const report = await host.drainDue(t, s);

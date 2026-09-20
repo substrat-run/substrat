@@ -30,6 +30,9 @@ const DDL = `
     error TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT,
+    -- #1525: the call the LAST attempt ran in, which is a different column from the
+    -- outbox's and usually a different value — see the test that pins the pair.
+    invocation_id TEXT,
     PRIMARY KEY (event_id, consumer_module)
   )`;
 
@@ -41,6 +44,8 @@ interface Del {
   error?: string | null;
   attempts?: number;
   nextAttemptAt?: string | null;
+  /** #1525: the call the delivery's last attempt ran in. */
+  invocation?: string | null;
 }
 
 function readerOver(events: number[], deliveries: Del[], invocation: string | null = null): Pick<ScopedSql, 'query'> {
@@ -64,11 +69,20 @@ function readerOver(events: number[], deliveries: Del[], invocation: string | nu
     );
   }
   const insD = db.prepare(
-    `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, error, attempts, next_attempt_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO _substrat_deliveries
+       (event_id, consumer_module, delivered_at, error, attempts, next_attempt_at, invocation_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const d of deliveries) {
-    insD.run(id(d.n), d.consumer, '2026-09-17T00:01:00.000Z', d.error ?? null, d.attempts ?? 0, d.nextAttemptAt ?? null);
+    insD.run(
+      id(d.n),
+      d.consumer,
+      '2026-09-17T00:01:00.000Z',
+      d.error ?? null,
+      d.attempts ?? 0,
+      d.nextAttemptAt ?? null,
+      d.invocation ?? null,
+    );
   }
   return {
     query: (<T>(sql: string, params?: unknown[]) =>
@@ -93,7 +107,11 @@ describe('readDeadLetters (#1525)', () => {
   });
 
   it('carries the event envelope a reader opens next, and no payload', () => {
-    const sql = readerOver([4], [{ n: 4, consumer: '@test/doomed', error: 'always fails', attempts: 2 }], 'call-a');
+    const sql = readerOver(
+      [4],
+      [{ n: 4, consumer: '@test/doomed', error: 'always fails', attempts: 2, invocation: 'call-b' }],
+      'call-a',
+    );
     const [entry] = readDeadLetters({ sql }).entries;
     expect(entry).toEqual({
       eventId: id(4),
@@ -101,12 +119,43 @@ describe('readDeadLetters (#1525)', () => {
       occurredAt: '2026-09-17T00:00:04.000Z',
       entity: { entityType: 'order', entityId: 'order-4' },
       invocationId: 'call-a',
+      attemptInvocationId: 'call-b',
       consumer: '@test/doomed',
       at: '2026-09-17T00:01:00.000Z',
       error: 'always fails',
       attempts: 2,
     });
     expect(entry).not.toHaveProperty('payload');
+  });
+
+  it('reads the DELIVERY\'s invocation from the delivery, not the event\'s (#1525)', () => {
+    // The two columns are spelled identically on either side of the join, so the
+    // failure this pins is a one-word mistake in the SELECT that no shape assertion
+    // could see: both ids present, both plausible, one of them silently the event's.
+    // The values are deliberately different — a fixture that used one id for both
+    // would pass whichever column the query actually read.
+    const sql = readerOver(
+      [5],
+      [{ n: 5, consumer: 'executor:mailer', error: 'gave up', attempts: 3, invocation: 'the-drain' }],
+      'the-emit',
+    );
+    const [entry] = readDeadLetters({ sql }).entries;
+    expect(entry!.invocationId).toBe('the-emit');
+    expect(entry!.attemptInvocationId).toBe('the-drain');
+  });
+
+  it('reads a null attempt invocation as unrecorded, beside a named event call', () => {
+    // The ordinary hosted shape: the event was emitted by a request, and the attempt
+    // that gave up ran on a sweep, which is not a call. Null here is a fact about the
+    // attempt, never a missing event id — so the two must not be conflated on read.
+    const sql = readerOver(
+      [6],
+      [{ n: 6, consumer: 'executor:mailer', error: 'gave up', attempts: 3 }],
+      'the-emit',
+    );
+    const [entry] = readDeadLetters({ sql }).entries;
+    expect(entry!.invocationId).toBe('the-emit');
+    expect(entry!.attemptInvocationId).toBeNull();
   });
 
   it('orders newest event first', () => {
