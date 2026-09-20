@@ -1656,6 +1656,13 @@ export function defineScopeDO(
          * `null` means nobody is listening, and then nothing is read at all: a scope
          * with no subscriber must not pay a query per invoke for a feature it is not
          * using. `''` is the honest empty-outbox answer, and every ULID sorts above it.
+         *
+         * A socket that connects between here and the fan-out is served whatever this
+         * call committed, and one that connects while `null` was decided hears nothing
+         * about it. Both are harmless and neither is worth a lock: a frame is an
+         * invalidation, so hearing about a change from just before you subscribed costs
+         * one redundant re-read, and missing one costs a wait for the client's poll —
+         * which is the floor this whole surface sits on.
          */
         const liveSince =
           this.ctx.getWebSockets().length === 0
@@ -1878,6 +1885,16 @@ export function defineScopeDO(
      * out, individually, against the tuple state at that moment — so a grant revoked
      * while the socket is open stops the frames it used to allow, which a
      * subscription-time check would not.
+     *
+     * **This adds no authority to a holder of the stub, and the question is worth
+     * answering rather than leaving to be asked.** Being a public method, anything with
+     * the `SCOPE` binding can call it and assert whatever principal it likes in the
+     * headers. That is already true of `invoke`, which takes the principal as an
+     * argument and acts on it: a stub is the key to the scope, which is precisely why
+     * the router is not given one. The trust boundary is who holds the binding, not
+     * what this method checks — and what it does NOT do is let a stub-holder read
+     * anything the asserted principal could not, because the filter downstream re-checks
+     * that principal against every frame.
      */
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
