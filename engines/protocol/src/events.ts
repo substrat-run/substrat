@@ -24,7 +24,8 @@
  * parse** (kernel `EventContract`, `packages/kernel/src/scope-host.ts`).
  * Importing a producer's validator is what turns version skew into a crash
  * instead of a tolerated absence; these types are for the compiler, not for the
- * boundary. `emitProtocolEvent` compiles away to the `ctx.emit` it wraps.
+ * boundary. `emitProtocolEvent` is not erased — it is a real call that forwards
+ * to `ctx.emit` unchanged — but nothing about the emitted event differs.
  *
  * ## VERTICAL-FACING ONLY
  *

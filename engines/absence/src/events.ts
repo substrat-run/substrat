@@ -5,7 +5,8 @@
  * TYPES ONLY. The runtime contract is still the fat payload and **the
  * consumer's own Zod parse** (kernel `EventContract`,
  * `packages/kernel/src/scope-host.ts`); `emitAbsenceEvent` forwards to
- * `ctx.emit` unchanged and compiles away.
+ * `ctx.emit` unchanged — one extra call in the stack, and no change in what is
+ * emitted.
  *
  * VERTICAL-FACING ONLY. A sibling engine consuming one of these must NOT import
  * it — R1 (star topology) forbids the import, and the defensive parse is what

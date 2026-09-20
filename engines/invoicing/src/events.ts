@@ -20,9 +20,10 @@
  * - a vertical already imports the engines it composes, ships as one unit and
  *   upgrades them together, so for it the compile break is the point.
  *
- * TYPES ONLY. `emitInvoicingEvent` forwards to `ctx.emit` unchanged and compiles
- * away; the runtime contract is still the fat payload and the consumer's Zod
- * parse (kernel `EventContract`, `packages/kernel/src/scope-host.ts`).
+ * TYPES ONLY. `emitInvoicingEvent` forwards to `ctx.emit` unchanged — one extra
+ * call in the stack, and no change in what is emitted; the runtime contract is
+ * still the fat payload and the consumer's Zod parse (kernel `EventContract`,
+ * `packages/kernel/src/scope-host.ts`).
  *
  * **No completion group.** A group says two events report ONE fact by different
  * routes, so handling a subset strands the entity. These two are a running
