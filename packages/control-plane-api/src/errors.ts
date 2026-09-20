@@ -32,16 +32,22 @@ import { ConnectionRelayError } from './connection-relay.js';
  *   SUITE asserts on (`/unknown tenant/`, `/illegal scope transition/`, `/already
  *   taken/`, `/not active/`), against both adapters. Changing one turns a contract test
  *   red, not just this mapping. Phase 5 migrates those assertions onto codes and this
- *   table goes with them — **one family at a time, and three are gone.** `unknown vertical`
+ *   table goes with them — **one family at a time, and four are gone.** `unknown vertical`
  *   went first; `unknown version` followed, its ten throw sites across the two adapters
  *   now saying `substratError('not_found', …)` with the contract suite asserting that
  *   code rather than the sentence, so the row had nothing left to do. `deploy refused:`
  *   is the third, and the first whose throw is not in an adapter at all: its one site
  *   is `assertSandboxContract` in this package's own `deploy.ts`, now `substratError(
- *   'forbidden', …)`, pinned by `test/deploy.test.ts` on the code. That is the shape
- *   every remaining row is waiting for: type the throws, move the suite's assertion,
- *   delete the row. A row is not removed before its throws are typed — deleting one early
- *   turns its refusal into the generic 500 below.
+ *   'forbidden', …)`, pinned by `test/deploy.test.ts` on the code. `still backs` is the
+ *   fourth, and the first that fixed an operator-facing BUG rather than only removing a
+ *   row: `deleteVertical` refuses twice, and the row read `/still backs \d+ scope\(s\)/`
+ *   — which the archived sentence ("still backs 1 ARCHIVED scope(s) — reap or restore
+ *   them first") does not match, because the word sits between the digits and `scope(s)`.
+ *   Nothing else caught it, so archiving an app and then deleting its vertical answered
+ *   `internal error`. Both branches are typed now and a code cannot miss a reword.
+ *   That is the shape every remaining row is waiting for: type the throws, move the
+ *   suite's assertion, delete the row. A row is not removed before its throws are typed —
+ *   deleting one early turns its refusal into the generic 500 below.
  *
  *   **What decides whether a row CAN go, and it is not the row:** where its throws live.
  *   Both families removed so far are thrown on the COORDINATOR — `adapter-cloudflare`'s
@@ -95,10 +101,6 @@ const CODE_PATTERNS: readonly [RegExp, ErrorCode][] = [
   [/belongs to '/, 'conflict'],
   [/not admitted/, 'conflict'],
   [/acknowledge it explicitly to promote/, 'conflict'],
-  // deleteVertical's bound-scope refusal — the message names the count and the way
-  // out (delete or rebind the scopes), so it must reach the caller, not collapse
-  // into the generic 500 below.
-  [/still backs \d+ scope\(s\)/, 'conflict'],
   // The ADDRESSED resource does not exist — including the K-3 fail-closed case
   // where it exists under a DIFFERENT tenant and must read as absent.
   [/unknown tenant:/, 'not_found'],

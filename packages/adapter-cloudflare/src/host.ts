@@ -3528,12 +3528,14 @@ export class CloudflareScopeHost implements ScopeHost {
         // for the cleanup script (#248).
         const bound = await this.cp.countScopesForVertical(slug);
         if (bound.live > 0) {
-          throw new Error(
+          throw substratError(
+            'conflict',
             `vertical '${slug}' still backs ${bound.live} scope(s) — delete or rebind them first`,
           );
         }
         if (bound.archived > 0) {
-          throw new Error(
+          throw substratError(
+            'conflict',
             `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`,
           );
         }
