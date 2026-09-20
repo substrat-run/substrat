@@ -1,0 +1,65 @@
+# Dependency update automation (#1590).
+#
+# ONE npm entry at `/` covers the whole pnpm workspace, and that is deliberate rather than a
+# shortcut. Dependabot's npm updater reads `pnpm-workspace.yaml`, expands its `packages:` globs
+# (`packages/*`, `engines/*`, `demos/*/app`, `apps/*/web`, …) and fetches every member's
+# package.json alongside the one `pnpm-lock.yaml`; it also parses the `catalog:` block in
+# `pnpm-workspace.yaml` as dependencies of their own. So the members are reached through the
+# root, and a version bump lands as one PR that edits every manifest naming the dependency and
+# regenerates the single lockfile.
+#
+# The trap is the opposite one: a per-directory entry (`/packages/kernel`, `/demos/todo`, …)
+# resolves that member alone, against a lockfile it does not own, and opens a PR per member
+# that disagrees with its siblings — which is exactly the drift `catalog:` exists to end.
+# Do not add one. The `.builder/projects/*` members in the workspace globs are gitignored, so a
+# checkout Dependabot reads has none of them.
+#
+# Not covered, on purpose: `examples/external-vertical` (not a workspace member — it proves
+# an install from the registry works, so its pins are the published ones) and the
+# `create-substrat` template, which has no package.json at all — `packages/create-substrat/index.js`
+# writes one into each scaffolded project, and `pnpm lint:pins` keeps its ranges honest.
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+    # Routine bumps travel together: one PR a week for every minor and patch, instead of one per
+    # package — sixty-odd manifests would otherwise be a stream of single-line PRs nobody reads.
+    # A major stays on its own PR, because it is the one that needs a person's attention.
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Held back on purpose; see the catalog notes in pnpm-workspace.yaml. vitest 4 needs
+      # @cloudflare/vitest-pool-workers >= 0.21, which replaced `defineWorkersConfig` — a
+      # migration through the production Durable Object adapter, tracked separately. Both
+      # would otherwise arrive as a red PR every week. Drop these two entries when it lands.
+      - dependency-name: vitest
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@cloudflare/vitest-pool-workers"
+        versions: [">=0.10.0"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - minor
+          - patch
