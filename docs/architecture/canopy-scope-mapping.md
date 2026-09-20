@@ -9,8 +9,11 @@ description: How canopy's user/space/drive model maps onto tenant, scope and ver
 Canopy is Substrat **consumer #2** under [D-17](../DECISIONS.md): the document product's
 engine extracts into the kernel, and the product re-platforms onto the kernel piecemeal.
 This document is the mapping that makes both halves estimable. It is written against
-canopy `bc73c53` and this repository at `a67c59b7`, and it is kept current rather than
-dated — where the two repos move, this page moves with them.
+canopy `main` @ `b2178e2` and this repository at `a67c59b7`, and it is kept current rather
+than dated — where the two repos move, this page moves with them. Every line number cited
+below resolves on canopy `main`; note that canopy's **source** has not moved since
+2026-07-12, so the two sides of this mapping are not moving at the same speed, and §10
+says what that costs.
 
 > **What this is for.** Every other ticket on canopy's convergence rail currently costs
 > "we'd have to look." The July 2026 mapping was written against a Substrat with two
@@ -356,4 +359,4 @@ the rail.
 
 | When | What | Why |
 |---|---|---|
-| 2026-09-20 | First revision. Written against canopy `bc73c53` and substrat `a67c59b7`, superseding the July 2026 mapping in all particulars. Filed open questions 18, 19, 20 | The July mapping was written against a Substrat with two scaffolded engines and no Cloudflare adapter; every rail estimate downstream of it was guesswork |
+| 2026-09-20 | First revision. Written against canopy `main` @ `b2178e2` and substrat `a67c59b7`, superseding the July 2026 mapping in all particulars. Filed open questions 18, 19, 20 | The July mapping was written against a Substrat with two scaffolded engines and no Cloudflare adapter; every rail estimate downstream of it was guesswork |
