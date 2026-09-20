@@ -23,7 +23,7 @@
  *
  * Every address here is invented.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -134,6 +134,20 @@ beforeAll(async () => {
   desk = world.kestrel;
 }, 60_000);
 
+/**
+ * Every rule gone between cases, whatever happened inside one.
+ *
+ * The suite shares one seeded desk and has no per-test reset, so a case that fails
+ * before its own `unblock` leaves a live rule behind and the NEXT case fails for a
+ * reason that is not its own — one broken assertion becomes a screenful, and the
+ * diagnosis starts in the wrong place. The per-case `unblock` calls stay: they are
+ * part of what each case is saying (removing a rule lets the sender back in), and
+ * this is the net under them rather than a replacement for them.
+ */
+afterEach(async () => {
+  for (const rule of (await rules()).entries) await unblock(rule.id);
+});
+
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('an address on the blocklist never reaches the desk', () => {
@@ -217,6 +231,72 @@ describe('the widget door', () => {
 
     // No session, so nothing for them to hold and nothing to reap.
     expect(rowCount('ticket0_widget_openings')).toBe(openings);
+
+    await unblock(rule.id);
+  });
+
+  /**
+   * Note what this does NOT prove, because the difference matters.
+   *
+   * It pins that **no contact row survives a refusal**. It does not pin the ORDER of
+   * the check against `createContact`: moving the check back below the create leaves
+   * this green, because the operation's transaction unwinds the row either way. That
+   * was verified by mutation rather than assumed.
+   *
+   * The ordering is still what the code does, and deliberately — it is defence in
+   * depth against somebody later wrapping this region in a `ctx.atomic`, where the
+   * unwind would stop covering it. But it is not observable today, so this case
+   * claims only the property it can actually see.
+   */
+  it('leaves no contact row behind when it refuses', async () => {
+    const rule = await block('email', 'refused@blocked.example');
+    const widget = await at('widget');
+    const contacts = rowCount('ticket0_contacts');
+
+    await expect(
+      widget.invoke('ticket0/widget-start', {
+        origin: desk.origin,
+        identity: {
+          externalId: 'refused-visitor',
+          email: 'refused@blocked.example',
+          signature: await signIdentity(desk.verificationSecret, 'refused-visitor'),
+        },
+      }),
+    ).rejects.toThrow(SENDER_BLOCKED);
+
+    expect(rowCount('ticket0_contacts')).toBe(contacts);
+
+    await unblock(rule.id);
+  });
+
+  it('checks the address the host vouches for, not only the one on file', async () => {
+    const widget = await at('widget');
+    // A visitor the desk already knows, whose STORED address is perfectly fine.
+    const first = (await widget.invoke('ticket0/widget-start', {
+      origin: desk.origin,
+      identity: {
+        externalId: 'two-address-visitor',
+        email: 'fine@customer.example',
+        signature: await signIdentity(desk.verificationSecret, 'two-address-visitor'),
+      },
+    })) as { sessionId: string };
+    expect(first.sessionId).toBeTruthy();
+
+    const rule = await block('email', 'other@blocked.example');
+
+    // `verifyIdentity` signs only `externalId`, so the email is unverified input —
+    // which is exactly why it must be probed rather than trusted. Checking the stored
+    // address alone let a rule about this one through.
+    await expect(
+      widget.invoke('ticket0/widget-start', {
+        origin: desk.origin,
+        identity: {
+          externalId: 'two-address-visitor',
+          email: 'other@blocked.example',
+          signature: await signIdentity(desk.verificationSecret, 'two-address-visitor'),
+        },
+      }),
+    ).rejects.toThrow(SENDER_BLOCKED);
 
     await unblock(rule.id);
   });

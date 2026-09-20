@@ -627,9 +627,18 @@ function domainChainOf(email: string): string[] {
     .filter((domain) => domain.includes('.'));
 }
 
-/** Whoever is knocking, in the two terms a rule can be about. */
+/**
+ * Whoever is knocking, in the terms a rule can be about.
+ *
+ * `emails` is a LIST because a caller can hold more than one address for the same
+ * knock and they need not agree: `widget-start` has the address stored on the contact
+ * AND the one the host page is vouching for this time. Probing only the first lets a
+ * rule about the second through, so every address in hand is probed and any of them
+ * matching is a refusal. Nulls are tolerated so a call site can pass what it has
+ * without a ternary at each one.
+ */
 interface BlockProbe {
-  readonly email?: string | null;
+  readonly emails?: readonly (string | null | undefined)[];
   readonly contactId?: string | null;
 }
 
@@ -647,9 +656,13 @@ function blockedBy(ctx: OperationContext, probe: BlockProbe): BlockRuleRow | und
     clauses.push("(kind = 'contact' AND value = ?)");
     params.push(probe.contactId);
   }
-  if (probe.email) {
+  // De-duplicated, because the two addresses a caller holds are usually the same one
+  // and a repeated clause is a repeated scan for no extra answer.
+  for (const address of new Set(
+    (probe.emails ?? []).filter((e): e is string => typeof e === 'string' && e.length > 0).map(addressKey),
+  )) {
     clauses.push("(kind = 'email' AND value = ?)");
-    params.push(addressKey(probe.email));
+    params.push(address);
     /**
      * And any CONTACT rule about whoever owns this address, found by the address
      * rather than by the id the caller happened to resolve.
@@ -666,8 +679,8 @@ function blockedBy(ctx: OperationContext, probe: BlockProbe): BlockRuleRow | und
     clauses.push(
       "(kind = 'contact' AND value IN (SELECT id FROM ticket0_contacts WHERE LOWER(email) = ?))",
     );
-    params.push(addressKey(probe.email));
-    const domains = domainChainOf(probe.email);
+    params.push(address);
+    const domains = domainChainOf(address);
     if (domains.length > 0) {
       clauses.push(`(kind = 'domain' AND value IN (${domains.map(() => '?').join(', ')}))`);
       params.push(...domains);
@@ -709,7 +722,7 @@ function refuseIfBlockedVisitor(ctx: OperationContext, hold: WidgetHold): void {
     hold.kind === 'session' ? hold.conversation.contact_id : hold.opening.contact_id;
   if (!contactId) return;
   const contact = contactOrThrow(ctx, contactId);
-  refuseIfBlocked(ctx, { email: contact.email, contactId: contact.id });
+  refuseIfBlocked(ctx, { emails: [contact.email], contactId: contact.id });
 }
 
 /** One place that writes `state` and `updated_at`, so they cannot disagree. */
@@ -3764,7 +3777,7 @@ const operations = {
      * would delete in a second is junk the desk has not paid for.
      */
     const known = contactByEmail(ctx, input.contactEmail);
-    refuseIfBlocked(ctx, { email: input.contactEmail, contactId: known?.id ?? null });
+    refuseIfBlocked(ctx, { emails: [input.contactEmail], contactId: known?.id ?? null });
 
     const contact =
       known ??
@@ -3957,8 +3970,32 @@ const operations = {
       );
       if (!ok) throw substratError('permission_denied', 'identity signature does not verify');
       verified = true;
+      const known = contactByExternalId(ctx, input.identity.externalId);
+
+      /**
+       * Refused BEFORE the contact row is written, and on BOTH addresses.
+       *
+       * The ordering is **defence in depth, and no test can currently see it** — that
+       * was checked by moving the call back below `createContact`, where the whole
+       * suite stays green, because the operation's transaction unwinds the row either
+       * way. It is written this way regardless: leaning on the unwind is what stops
+       * being true the day somebody wraps this region in a `ctx.atomic`, and resolving
+       * first costs one read and needs no argument about rollback at all. Stated
+       * rather than dressed up as something the suite proves.
+       *
+       * Both addresses, because they need not agree: `known.email` is what the desk
+       * recorded, `identity.email` is what the host page is asserting this time, and
+       * `verifyIdentity` signs only `externalId` — so the supplied address is neither
+       * trusted nor checked unless it is checked here. Probing the stored one alone
+       * let a rule about the supplied one through.
+       */
+      refuseIfBlocked(ctx, {
+        emails: [known?.email, input.identity.email],
+        contactId: known?.id ?? null,
+      });
+
       contact =
-        contactByExternalId(ctx, input.identity.externalId) ??
+        known ??
         createContact(ctx, {
           external_id: input.identity.externalId,
           email: input.identity.email ?? null,
@@ -3971,20 +4008,10 @@ const operations = {
       contact = null;
     }
 
-    /**
-     * A blocked visitor never gets a session (#1088).
-     *
-     * Only reachable for the middle rung and above, because only they are anybody
-     * yet — an anonymous visitor is refused at their second message instead, once
-     * there is a contact to be about. Both the stored address and the one the host
-     * site is vouching for this time are probed: they can differ, and an admin who
-     * blocked a domain means the domain rather than whichever copy of it we happen to
-     * have written down.
-     */
-    refuseIfBlocked(ctx, {
-      email: contact?.email ?? input.identity?.email ?? null,
-      contactId: contact?.id ?? null,
-    });
+    // The blocklist check for this door is ABOVE, before the contact row is created —
+    // see the block beside `contactByExternalId`. An anonymous visitor reaches nothing
+    // to key on here and is refused at their second message instead, once there is a
+    // contact to be about.
 
     /**
      * No conversation, no principal, no grant — and that is the design.
