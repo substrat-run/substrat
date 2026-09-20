@@ -114,8 +114,14 @@ import {
   SCHEDULE_STATE_DDL,
   SCHEDULE_STATE_REBUILD,
   scheduleStateHasKind,
+  JOB_RUN_DDL,
+  JOB_RUN_LIST_LIMIT,
   type EntityVersion,
   type EntityVersionRow,
+  type JobRunFilter,
+  type JobRunPatch,
+  type JobRunRow,
+  type JobStepRow,
   type ScheduleStateKind,
 } from '@substrat-run/kernel';
 import type { CheckSubject, ImpersonationSession, ModuleId } from '@substrat-run/contracts';
@@ -357,6 +363,12 @@ const KERNEL_DDL = `
   -- adapter from @substrat-run/kernel, so the shape a rebuild produces and the shape
   -- a fresh store gets cannot part company; the column comments are in there.
   ${SCHEDULE_STATE_DDL}
+  -- #1577: the resumable-run driver's record and the step ledger of the pass it
+  -- currently has in flight. Spine (kernel-written), never a module migration.
+  -- Shared with the pure adapter from @substrat-run/kernel so the shape production
+  -- builds and the shape a self-host builds cannot part company; the column
+  -- comments, and the reason coalescing is NOT a unique index, are in there.
+  ${JOB_RUN_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
     module_id TEXT NOT NULL,
     version TEXT NOT NULL,
@@ -2131,6 +2143,152 @@ export function defineScopeDO(
         at,
         status,
       );
+    }
+
+    // -- the resumable-run driver's store (#1577) -----------------------------
+    //
+    // D-14's DURABLE driver, and the only half of it that lives in the DO: the run
+    // record and the step ledger. Every decision — what coalescing means, when a
+    // step is skipped, when a run fails — is in the kernel's `JobRunStore` callers,
+    // which the coordinator drives; these are reads and writes and nothing else, so
+    // the two drivers cannot disagree about any of it.
+    //
+    // Each step commits on its OWN round trip rather than the pass batching them at
+    // the end. That is what a mid-pass eviction keeps, and a DO is evicted and
+    // revived constantly — batching would lose exactly the work resume exists for.
+
+    /** The live (`running`) run for a coalescing key, or null. */
+    async jobRunLive(moduleId: string, job: string, instance: string): Promise<JobRunRow | null> {
+      return (
+        (this.sql
+          .exec(
+            `SELECT * FROM _substrat_job_runs
+              WHERE module_id = ? AND job = ? AND instance = ? AND status = 'running'
+              ORDER BY id DESC LIMIT 1`,
+            moduleId,
+            job,
+            instance,
+          )
+          .toArray()[0] as unknown as JobRunRow | undefined) ?? null
+      );
+    }
+
+    /** One run by id, whatever its status. */
+    async jobRunById(id: string): Promise<JobRunRow | null> {
+      return (
+        (this.sql.exec('SELECT * FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as unknown as
+          | JobRunRow
+          | undefined) ?? null
+      );
+    }
+
+    /** Insert a fresh run. The coordinator has already refused a non-queue-safe payload. */
+    async jobRunInsert(row: JobRunRow): Promise<void> {
+      this.sql.exec(
+        `INSERT INTO _substrat_job_runs
+           (id, module_id, job, instance, payload, status, cursor, counters, attempts,
+            last_error, started_at, updated_at, next_attempt_at, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        row.id, row.module_id, row.job, row.instance, row.payload, row.status, row.cursor,
+        row.counters, row.attempts, row.last_error, row.started_at, row.updated_at,
+        row.next_attempt_at, row.ended_at,
+      );
+    }
+
+    /** `running` runs whose backoff has elapsed, oldest first. */
+    async jobRunsDue(now: string, limit: number): Promise<JobRunRow[]> {
+      return this.sql
+        .exec(
+          `SELECT * FROM _substrat_job_runs
+            WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+            ORDER BY id LIMIT ?`,
+          now,
+          limit,
+        )
+        .toArray() as unknown as JobRunRow[];
+    }
+
+    /** The operator read, newest first. */
+    async jobRunList(filter: JobRunFilter): Promise<JobRunRow[]> {
+      const where: string[] = [];
+      const params: (string | number)[] = [];
+      for (const [column, value] of [
+        ['module_id', filter.moduleId],
+        ['job', filter.job],
+        ['instance', filter.instance],
+        ['status', filter.status],
+      ] as const) {
+        if (value !== undefined) {
+          where.push(`${column} = ?`);
+          params.push(value);
+        }
+      }
+      params.push(filter.limit ?? JOB_RUN_LIST_LIMIT);
+      return this.sql
+        .exec(
+          `SELECT * FROM _substrat_job_runs
+           ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+           ORDER BY id DESC LIMIT ?`,
+          ...params,
+        )
+        .toArray() as unknown as JobRunRow[];
+    }
+
+    /**
+     * Write a pass outcome onto the run row — every column at once.
+     *
+     * Whole rather than partial, and that is the shape not an accident: a commit
+     * writes cursor AND counters AND a cleared error AND a cleared backoff, and a
+     * partial update that wrote three of the four would leave a run carrying the
+     * last failure's error beside the new cursor, which reads as broken forever.
+     */
+    async jobRunPatch(id: string, patch: JobRunPatch): Promise<void> {
+      this.sql.exec(
+        `UPDATE _substrat_job_runs
+            SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
+                updated_at = ?, next_attempt_at = ?, ended_at = ?
+          WHERE id = ?`,
+        patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
+        patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id,
+      );
+    }
+
+    /** One step's ledger row — a non-null `result` is what means completed. */
+    async jobStepRow(runId: string, step: string): Promise<JobStepRow | null> {
+      return (
+        (this.sql
+          .exec(
+            'SELECT step, result, attempts, last_error FROM _substrat_job_steps WHERE run_id = ? AND step = ?',
+            runId,
+            step,
+          )
+          .toArray()[0] as unknown as JobStepRow | undefined) ?? null
+      );
+    }
+
+    /** Record one step attempt. `result` non-null = it completed and must not re-run. */
+    async jobStepRecord(
+      runId: string,
+      step: string,
+      result: string | null,
+      attempts: number,
+      lastError: string | null,
+      at: string,
+    ): Promise<void> {
+      this.sql.exec(
+        `INSERT INTO _substrat_job_steps (run_id, step, result, attempts, last_error, recorded_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (run_id, step) DO UPDATE SET result = excluded.result,
+                                                  attempts = excluded.attempts,
+                                                  last_error = excluded.last_error,
+                                                  recorded_at = excluded.recorded_at`,
+        runId, step, result, attempts, lastError, at,
+      );
+    }
+
+    /** Drop a run's ledger — called when, and only when, a pass commits. */
+    async jobStepsClear(runId: string): Promise<void> {
+      this.sql.exec('DELETE FROM _substrat_job_steps WHERE run_id = ?', runId);
     }
 
     // -- guards (K-17) --------------------------------------------------------

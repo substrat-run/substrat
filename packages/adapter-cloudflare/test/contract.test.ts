@@ -24,6 +24,7 @@ import {
   permissionContractSuite,
   scheduleContractSuite,
   scheduleMod,
+  jobRunContractSuite,
   scopeHostContractSuite,
   searchContractSuite,
   entityVersionContractSuite,
@@ -100,6 +101,20 @@ impersonationContractSuite('adapter-cloudflare', async () => {
 // The schedule suite (#383) also runs against the default tuple checker — it must
 // resolve the projected system grant, not an allow-all.
 scheduleContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #1577: the resumable-run driver, on the DURABLE half of D-14 — the run record and
+// the step ledger live in the scope DO, the pass engine on the coordinator. The
+// DEFAULT tuple checker: a job's steps act through the system door, and what they
+// may do has to resolve through the real grant (`jobsMod` declares no schedules, so
+// the suite writes the system grant itself).
+jobRunContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

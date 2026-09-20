@@ -10,6 +10,7 @@ import {
   connectorTestFetch,
   permissionContractSuite,
   scheduleContractSuite,
+  jobRunContractSuite,
   scopeHostContractSuite,
   searchContractSuite,
   entityVersionContractSuite,
@@ -61,6 +62,25 @@ permissionContractSuite('adapter-sqlite', async () => {
 // system grant resolves through the real tuple engine, not an allow-all.
 scheduleContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-sched-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1577: the resumable-run driver. The DEFAULT checker, for the same reason the
+// schedule suite above wants one — a job's steps act through the system door, and
+// what they may do has to resolve through the real tuple engine (an explicit
+// `grantToSystem`, since this module declares no schedules to project one).
+jobRunContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-jobs-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),

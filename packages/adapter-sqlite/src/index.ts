@@ -288,6 +288,21 @@ import {
   SCHEDULE_STATE_DDL,
   SCHEDULE_STATE_REBUILD,
   scheduleStateHasKind,
+  JOB_RUN_DDL,
+  JOB_RUN_LIST_LIMIT,
+  jobRunOf,
+  runDueJobRuns,
+  startJobRun,
+  type JobDriveReport,
+  type JobHandler,
+  type JobRun,
+  type JobRunFilter,
+  type JobRunKey,
+  type JobRunPatch,
+  type JobRunRow,
+  type JobRunStore,
+  type JobStepRow,
+  type StartJobRunInput,
   type EntityVersion,
   type EntityVersionRow,
   type InvokeOptions,
@@ -567,6 +582,12 @@ const KERNEL_DDL = `
   -- the copies the gate could not see. Every scope db passes through runtime(), which
   -- runs this, so the lazy creates were load-bearing for nothing.
   ${SCHEDULE_STATE_DDL}
+  -- #1577: the resumable-run driver's record and the step ledger of the pass it
+  -- currently has in flight. Spine (kernel-written), never a module migration.
+  -- Shared with the DO adapter from @substrat-run/kernel so the shape a self-host
+  -- builds and the shape production builds cannot part company; the column
+  -- comments, and the reason coalescing is NOT a unique index, are in there.
+  ${JOB_RUN_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
     module_id TEXT NOT NULL,
     version TEXT NOT NULL,
@@ -1181,6 +1202,13 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly roles = new Map<string, RoleDefinition>(); // 'tenantId/roleKey'
   /** Executor id → {eventType, handler} (K-22 §4.2). Host code, not module code. */
   private readonly executors = new Map<string, RegisteredEffector>();
+  /**
+   * `<moduleId>/<job>` → the pass body and its default step policy (#1577). Host
+   * code like `executors`, and keyed the way a run row is: the coalescing key's
+   * first two thirds, so a run picked off the table finds its handler by the
+   * columns it already carries.
+   */
+  private readonly jobs = new Map<string, { handler: JobHandler; retry?: ExecutorRetryPolicy }>();
   /**
    * The event currently being effected by an executor, stamped onto any admin rows
    * it writes. Ambient rather than threaded through every HostAdmin signature: it is
@@ -3756,6 +3784,162 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     return rt.actor.enqueue(() => this.dispatchExecutors(rt));
+  }
+
+  registerJob(
+    moduleId: ModuleId,
+    name: string,
+    handler: JobHandler,
+    retry?: ExecutorRetryPolicy,
+  ): void {
+    const key = `${moduleId}/${name}`;
+    if (this.jobs.has(key)) throw new Error(`job '${key}' is already registered`);
+    this.jobs.set(key, { handler, retry });
+  }
+
+  /**
+   * D-14's in-process driver: the run store is direct SQL on the scope db.
+   *
+   * NOT inside `rt.actor.enqueue`. A pass is long by construction — an hour-long
+   * walk is the whole point — and holding the scope's serialization lock for it
+   * would stop every request on the scope until it finished. Each of these writes
+   * is its own statement and the ledger is keyed by (run, step), so a concurrent
+   * operation interleaves with them exactly as it does with any other write. The
+   * `invoke`s a pass makes through `pass.scope()` take their own ordinary turns.
+   */
+  private jobStore(rt: ScopeRuntime): JobRunStore {
+    const db = rt.db;
+    const row = (v: unknown): JobRunRow | null => (v as JobRunRow | undefined) ?? null;
+    return {
+      findLive: async (key: JobRunKey) =>
+        row(
+          db
+            .prepare(
+              `SELECT * FROM _substrat_job_runs
+                WHERE module_id = ? AND job = ? AND instance = ? AND status = 'running'
+                ORDER BY id DESC LIMIT 1`,
+            )
+            .get(key.moduleId, key.job, key.instance),
+        ),
+      get: async (id: string) =>
+        row(db.prepare('SELECT * FROM _substrat_job_runs WHERE id = ?').get(id)),
+      insert: async (r: JobRunRow) => {
+        db.prepare(
+          `INSERT INTO _substrat_job_runs
+             (id, module_id, job, instance, payload, status, cursor, counters, attempts,
+              last_error, started_at, updated_at, next_attempt_at, ended_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          r.id, r.module_id, r.job, r.instance, r.payload, r.status, r.cursor, r.counters,
+          r.attempts, r.last_error, r.started_at, r.updated_at, r.next_attempt_at, r.ended_at,
+        );
+      },
+      due: async (now: string, limit: number) =>
+        db
+          .prepare(
+            `SELECT * FROM _substrat_job_runs
+              WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+              ORDER BY id LIMIT ?`,
+          )
+          .all(now, limit) as JobRunRow[],
+      list: async (filter: JobRunFilter) => {
+        const where: string[] = [];
+        const params: SqlValue[] = [];
+        for (const [column, value] of [
+          ['module_id', filter.moduleId],
+          ['job', filter.job],
+          ['instance', filter.instance],
+          ['status', filter.status],
+        ] as const) {
+          if (value !== undefined) {
+            where.push(`${column} = ?`);
+            params.push(value);
+          }
+        }
+        params.push(filter.limit ?? JOB_RUN_LIST_LIMIT);
+        return db
+          .prepare(
+            `SELECT * FROM _substrat_job_runs
+             ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+             ORDER BY id DESC LIMIT ?`,
+          )
+          .all(...params) as JobRunRow[];
+      },
+      patch: async (id: string, p: JobRunPatch) => {
+        db.prepare(
+          `UPDATE _substrat_job_runs
+              SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
+                  updated_at = ?, next_attempt_at = ?, ended_at = ?
+            WHERE id = ?`,
+        ).run(
+          p.status, p.cursor, p.counters, p.attempts, p.lastError,
+          p.updatedAt, p.nextAttemptAt, p.endedAt, id,
+        );
+      },
+      step: async (runId: string, name: string) =>
+        (db
+          .prepare(
+            'SELECT step, result, attempts, last_error FROM _substrat_job_steps WHERE run_id = ? AND step = ?',
+          )
+          .get(runId, name) as JobStepRow | undefined) ?? null,
+      recordStep: async (
+        runId: string,
+        name: string,
+        result: string | null,
+        attempts: number,
+        lastError: string | null,
+        at: string,
+      ) => {
+        db.prepare(
+          `INSERT INTO _substrat_job_steps (run_id, step, result, attempts, last_error, recorded_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (run_id, step) DO UPDATE SET result = excluded.result,
+                                                    attempts = excluded.attempts,
+                                                    last_error = excluded.last_error,
+                                                    recorded_at = excluded.recorded_at`,
+        ).run(runId, name, result, attempts, lastError, at);
+      },
+      clearSteps: async (runId: string) => {
+        db.prepare('DELETE FROM _substrat_job_steps WHERE run_id = ?').run(runId);
+      },
+    };
+  }
+
+  async startJobRun(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: StartJobRunInput,
+  ): Promise<JobRun> {
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    return jobRunOf(await startJobRun(this.jobStore(rt), input, ulid, this.clock));
+  }
+
+  async runDueJobs(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: { maxPasses?: number; limit?: number },
+  ): Promise<JobDriveReport> {
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    return runDueJobRuns({
+      store: this.jobStore(rt),
+      handlerFor: (run) => this.jobs.get(`${run.module_id}/${run.job}`),
+      now: this.clock,
+      openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
+      maxPasses: options?.maxPasses,
+      limit: options?.limit,
+    });
+  }
+
+  async jobRuns(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: JobRunFilter,
+  ): Promise<JobRun[]> {
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    return (await this.jobStore(rt).list(filter ?? {})).map(jobRunOf);
   }
 
   async dispatchConnector(

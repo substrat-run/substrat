@@ -109,6 +109,54 @@ export const freshnessMod: ModuleRegistration = {
   operations: {},
 };
 
+/**
+ * #1577: the module a resumable RUN acts through.
+ *
+ * The job's handler is NOT here — a job is host code (`registerJob`), so the suite
+ * hands the host a closure, which is precisely what an operation or consumer
+ * cannot be on the Cloudflare adapter. What has to be here is the operation the
+ * job's steps invoke, because the ScopeDO closes over a code-time module set and
+ * the step's write has to be a real write, through a real `ctx.check`, inside the
+ * scope — otherwise "no step before it repeated" is asserted against a counter in
+ * the test process and proves nothing about what survived a pass boundary.
+ *
+ * `jobs:write` is declared but NOT projected by any schedule: the module declares
+ * no schedules, so the suite grants it to `system:@test/jobs` explicitly with
+ * `grantToSystem`. That IS the shape a deployment uses — a job's authority is a
+ * grant a human can read in the permission diff and revoke per scope, same as a
+ * schedule's, and nothing about a job invents a second way in.
+ */
+export const jobsModManifest = moduleManifest.parse({
+  id: '@test/jobs',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [{ key: 'jobs:write', description: 'record one walked item' }],
+  events: { emits: [], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'jobs',
+});
+
+export const jobsMod: ModuleRegistration = {
+  manifest: jobsModManifest,
+  migrations: [
+    { version: '0001-init', sql: 'CREATE TABLE job_items (item TEXT NOT NULL)' },
+  ],
+  operations: {
+    // Deliberately NOT idempotent and NOT unique-keyed: a repeated step shows up as
+    // a DUPLICATE ROW rather than being silently absorbed, which is the only way the
+    // resume assertion can fail loudly when the memo stops working.
+    'jobs/record': (async (ctx, input: { item: string }) => {
+      assertAllowed(await ctx.check('jobs:write' as PermissionKey));
+      ctx.sql.exec('INSERT INTO job_items (item) VALUES (?)', [input.item]);
+    }) as OperationHandler<never, unknown>,
+    'jobs/items': ((ctx) =>
+      ctx.sql
+        .query<{ item: string }>('SELECT item FROM job_items ORDER BY rowid')
+        .map((r) => r.item)) as OperationHandler<never, unknown>,
+  },
+};
+
 export const flowModManifest = moduleManifest.parse({
   id: '@test/flow',
   version: '1.0.0',
@@ -1829,6 +1877,9 @@ export const contractTestModules: ModuleRegistration[] = [
   impersonationEchoMod,
   connectorMod,
   scheduleMod,
+  // #1577: the operation a resumable run's steps write through. Inert for every
+  // other suite — nothing else reads `job_items`.
+  jobsMod,
   atomicMod,
   searchMod,
   listMod,

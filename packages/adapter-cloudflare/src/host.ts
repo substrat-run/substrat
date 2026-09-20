@@ -224,6 +224,18 @@ import {
   type TenantStoreRecord,
   type FreshnessRegistration,
   type FreshnessReport,
+  jobRunOf,
+  runDueJobRuns,
+  startJobRun,
+  type JobDriveReport,
+  type JobHandler,
+  type JobRun,
+  type JobRunFilter,
+  type JobRunPatch,
+  type JobRunRow,
+  type JobRunStore,
+  type JobStepRow,
+  type StartJobRunInput,
   globalFetch,
   assertRedrainWindow,
 } from '@substrat-run/kernel';
@@ -878,6 +890,32 @@ interface ScopeStubRpc {
     status: 'ok' | 'failed' | 'skipped',
     kind: ScheduleStateKind,
   ): Promise<void>;
+  // -- the resumable-run driver's store (#1577). Reads and writes only: every
+  //    decision lives in the kernel, which the COORDINATOR drives, so the durable
+  //    driver and the in-process one cannot disagree about what a pass means.
+  //
+  //    NEW methods rather than widened ones, so the version-skew hazard the
+  //    `recordScheduleRun` note below spells out does not arise: a DO that predates
+  //    this has no such method and throws, which is the loud half and the right one —
+  //    it also has no `_substrat_job_runs` (the table is created by KERNEL_DDL on the
+  //    constructor that would carry these), so a run started against it would have
+  //    nowhere to live. Fail closed and visible, never a row written to nowhere.
+  jobRunLive(moduleId: string, job: string, instance: string): Promise<JobRunRow | null>;
+  jobRunById(id: string): Promise<JobRunRow | null>;
+  jobRunInsert(row: JobRunRow): Promise<void>;
+  jobRunsDue(now: string, limit: number): Promise<JobRunRow[]>;
+  jobRunList(filter: JobRunFilter): Promise<JobRunRow[]>;
+  jobRunPatch(id: string, patch: JobRunPatch): Promise<void>;
+  jobStepRow(runId: string, step: string): Promise<JobStepRow | null>;
+  jobStepRecord(
+    runId: string,
+    step: string,
+    result: string | null,
+    attempts: number,
+    lastError: string | null,
+    at: string,
+  ): Promise<void>;
+  jobStepsClear(runId: string): Promise<void>;
   /** This scope's live `connection:<id>` grant tuples (#726 gap 1) — the read-back.
    *  Unions the scope's own tuples with the projected tenant-level ones, because a
    *  scope check consults both (rule 2 inheritance). */
@@ -1294,6 +1332,14 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
   private readonly executors = new Map<string, RegisteredEffector>();
   /**
+   * `<moduleId>/<job>` → the pass body and its default step policy (#1577). Host
+   * code like `executors`, and keyed the way a run row is: the coalescing key's
+   * first two thirds, so a run read off the DO finds its handler by the columns it
+   * already carries. The HANDLER stays on the coordinator — it holds credentials
+   * and calls the internet, which is why the DO never sees it.
+   */
+  private readonly jobs = new Map<string, { handler: JobHandler; retry?: ExecutorRetryPolicy }>();
+  /**
    * The event currently being effected, stamped onto admin rows the executor writes.
    * Ambient rather than threaded through every HostAdmin signature: set and cleared
    * around one await, with executors running sequentially, so there is no window
@@ -1546,6 +1592,82 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     return this.drainExecutors(tenantId, scopeId);
+  }
+
+  registerJob(
+    moduleId: ModuleId,
+    name: string,
+    handler: JobHandler,
+    retry?: ExecutorRetryPolicy,
+  ): void {
+    const key = `${moduleId}/${name}`;
+    if (this.jobs.has(key)) throw new Error(`job '${key}' is already registered`);
+    this.jobs.set(key, { handler, retry });
+  }
+
+  /**
+   * D-14's DURABLE driver: the run store is RPC to the scope DO, and nothing else.
+   *
+   * The pass engine stays on the coordinator — it is the same kernel code the pure
+   * adapter runs, so the two drivers cannot disagree about when a step is skipped or
+   * when a run fails. What crosses into the DO is a row read and a row write, which
+   * is also the only part that has to be durable.
+   *
+   * Every step costs a round trip, deliberately. Batching a pass's steps into one
+   * write at the end would be cheaper and would lose exactly the work an eviction
+   * mid-pass is supposed to keep — and a DO is evicted and revived constantly.
+   */
+  private jobStore(scopeId: ScopeId): JobRunStore {
+    const stub = this.scopeStub(scopeId);
+    return {
+      findLive: (key) => stub.jobRunLive(key.moduleId, key.job, key.instance),
+      get: (id) => stub.jobRunById(id),
+      insert: (row) => stub.jobRunInsert(row),
+      due: (now, limit) => stub.jobRunsDue(now, limit),
+      list: (filter) => stub.jobRunList(filter),
+      patch: (id, patch) => stub.jobRunPatch(id, patch),
+      step: (runId, name) => stub.jobStepRow(runId, name),
+      recordStep: (runId, name, result, attempts, lastError, at) =>
+        stub.jobStepRecord(runId, name, result, attempts, lastError, at),
+      clearSteps: (runId) => stub.jobStepsClear(runId),
+    };
+  }
+
+  async startJobRun(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: StartJobRunInput,
+  ): Promise<JobRun> {
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return jobRunOf(
+      await startJobRun(this.jobStore(scopeId), input, ulid, () => new Date().toISOString()),
+    );
+  }
+
+  async runDueJobs(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: { maxPasses?: number; limit?: number },
+  ): Promise<JobDriveReport> {
+    // Same lifecycle gate as `drainDue`: a suspended scope's runs wait rather than
+    // advance, and an archived one's never move again.
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return runDueJobRuns({
+      store: this.jobStore(scopeId),
+      handlerFor: (run) => this.jobs.get(`${run.module_id}/${run.job}`),
+      now: () => new Date().toISOString(),
+      openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
+      maxPasses: options?.maxPasses,
+      limit: options?.limit,
+    });
+  }
+
+  async jobRuns(tenantId: TenantId, scopeId: ScopeId, filter?: JobRunFilter): Promise<JobRun[]> {
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return (await this.jobStore(scopeId).list(filter ?? {})).map(jobRunOf);
   }
 
   async dispatchConnector(
