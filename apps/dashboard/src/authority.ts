@@ -533,6 +533,47 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
+   * Wipe an ARCHIVED scope's storage — the terminal, irreversible half of retiring an
+   * install. The plane refuses anything not archived and anything still resolving a
+   * hostname (release the names first, `unbindScopeHostnames`), so the order that keeps a
+   * serving app from being wiped by accident is the plane's own, not this caller's.
+   *
+   * `backup: true` is the console's stance: a plane deployed with no backup store answers
+   * 501 and the scope stays intact, rather than the wipe quietly going ahead without the
+   * recoverable copy (#493). Tenant-pinned by the path, like every scope route here — a
+   * scope of another tenant reads as 404 below the seam (K-3).
+   */
+  reapScope(scopeId: ScopeId): Promise<void> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/reap`, { backup: true });
+  }
+
+  /**
+   * Rebind ONE of this tenant's scopes onto a different vertical lineage — the #389
+   * update-rebind, data first: the target's serving script receives the data and the
+   * source script keeps its copy, which is the backout.
+   *
+   * The plane's route is staff-only and this seam holds the staff-level service token, so
+   * the narrowing is the caller's to do — and `bound-scopes.ts` does it: the scope must be
+   * one this tenant has bound to the vertical being left, and the target must be a
+   * vertical this tenant owns. This method pins the TENANT (the path), not the target.
+   *
+   * `ackMigrations` is the operator's statement that they have read both lineages'
+   * migration surfaces; without it the plane refuses a crossing whose digests differ.
+   * `abandonData` is deliberately not exposed: it rebinds the directory and leaves the
+   * data behind, which is a staff repair, not something to offer from a button.
+   */
+  rebindScopeVertical(
+    scopeId: ScopeId,
+    vertical: string,
+    opts: { ackMigrations?: boolean } = {},
+  ): Promise<void> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/rebind-vertical`, {
+      vertical,
+      ...(opts.ackMigrations ? { ackMigrations: true } : {}),
+    });
+  }
+
+  /**
    * Bind a hostname so the router (reading this directory) can resolve it. Returns the
    * post-issuance row: a platform mint comes back `active`, a custom domain `verifying`
    * with the DNS records to publish (§4.7). The default-hostname bind at provision ignores

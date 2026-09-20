@@ -41,6 +41,7 @@ import { deriveOperationHealth } from './operation-health.js';
 import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './connection-sweep.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
+import { BoundScopeError, moveBoundScopes, readBoundScopes, retireBoundScopes } from './bound-scopes.js';
 import { listDeploymentsFromCp, ownedDeploymentFromCp, ownedDeploymentOrThrow, assertOwnedFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, versionPair, type Deployment } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type ListRead, type PreviewRecord, type SweepRunRead } from './authority.js';
@@ -4448,6 +4449,80 @@ app.delete('/api/deployments/:slug', async (c) => {
   }
   await cp.deleteVertical(slug);
   return c.body(null, 204);
+});
+
+// -- the installs a vertical still backs (#1592) ------------------------------
+// The delete above refuses while a scope is bound to the vertical, and names a count.
+// These are the list that count is counting and the two acts that clear it: Move (the
+// primary one — a rename that forks the lineage strands LIVE installs) and Retire (the
+// guarded one — it wipes storage, so it demands the count typed). Owned-slug-checked like
+// the routes around them; the tenant narrowing and the typed-confirmation guard live in
+// `bound-scopes.ts`, where they are tested without a worker.
+
+/** A refusal `bound-scopes.ts` made itself, surfaced under its own status. */
+async function asHttp<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (e) {
+    if (e instanceof BoundScopeError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
+    throw e;
+  }
+}
+
+/**
+ * The caller, their tenant-narrowed plane, and the vertical — verified to be theirs. `act`
+ * additionally asks the dashboard scope whether their role may change installs; a read
+ * does not, so a `viewer` still sees what a refused delete was counting.
+ */
+async function boundScopesContext(c: Context<{ Bindings: Env }>, act: boolean) {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug') as string;
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  await assertOwnedFromCp(cp, slug); // your vertical, or 4xx
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  if (act) await dash.invoke('dashboard/authorize-scope-change', {});
+  return { cp, slug, dash };
+}
+
+app.get('/api/deployments/:slug/scopes', async (c) => {
+  const { cp, slug } = await boundScopesContext(c, false);
+  return c.json(await readBoundScopes(cp, slug));
+});
+
+const moveScopesBody = z.object({
+  scopeIds: z.array(z.string().min(1)).min(1).max(100),
+  target: z.string().min(1),
+  ackMigrations: z.boolean().optional(),
+});
+
+app.post('/api/deployments/:slug/scopes/move', async (c) => {
+  const { cp, slug } = await boundScopesContext(c, true);
+  const body = moveScopesBody.parse(await c.req.json());
+  return c.json(await asHttp(() => moveBoundScopes(cp, { vertical: slug, ...body })));
+});
+
+const retireScopesBody = z.object({
+  scopeIds: z.array(z.string().min(1)).min(1).max(100),
+  // What the caller TYPED, verbatim — the count, checked server-side against how many
+  // scopes are being retired. Never a boolean the browser asserts on the user's behalf.
+  confirm: z.string(),
+});
+
+app.post('/api/deployments/:slug/scopes/retire', async (c) => {
+  const { cp, slug, dash } = await boundScopesContext(c, true);
+  const body = retireScopesBody.parse(await c.req.json());
+  return c.json(
+    await asHttp(() =>
+      retireBoundScopes(cp, { vertical: slug, ...body }, async (id) => {
+        // An app this dashboard installed has a row of its own; close it, or the Apps list
+        // keeps showing an app whose storage is gone. A scope with no row (a fork, or an
+        // install from before the dashboard tracked them) answers "no app" — nothing to close.
+        await dash.invoke('dashboard/delete-app', { appScopeId: id }).catch(() => undefined);
+      }),
+    ),
+  );
 });
 
 // -- builder previews / environments (#509) ---------------------------------

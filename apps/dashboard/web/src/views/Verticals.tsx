@@ -20,6 +20,7 @@ import { DEV_MOCK, MOCK_FAILURES, MOCK_FAILURE_GROUPS, MOCK_RELEASES, MOCK_PREVI
 import { Page, GridTable, Row } from '../components/layout';
 import { relativeTime } from '../lib/format';
 import { TrafficChart } from '../components/TrafficChart';
+import { BoundScopes } from './BoundScopes';
 import { card, CopyButton, OriginTag, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
 
 /**
@@ -769,12 +770,15 @@ function FailuresPanel({ d }: { d: Deployment }) {
 
 export function VerticalDetail({
   d,
+  deployments,
   busy,
   onPromote,
   onRemove,
   onBack,
 }: {
   d: Deployment;
+  /** Every vertical this team owns — where a Move can land, and what a rename left behind. */
+  deployments: readonly Deployment[];
   busy: boolean;
   onPromote: (versionId: string, channel: 'prod') => void;
   onRemove: () => void;
@@ -827,6 +831,9 @@ export function VerticalDetail({
             </span>
           </div>
         </div>
+        {/* Above the versions on purpose: it is what a refused Remove is counting, and a
+            vertical with no versions can still back installs (the rename case). */}
+        <BoundScopes d={d} all={deployments} />
         {d.versions.length === 0 ? (
           <div style={{ padding: 16, color: 'var(--text-tertiary)', fontSize: 13 }}>
             No versions yet — <code>substrat push</code> one.

@@ -625,6 +625,22 @@ const unbindAppHostnameOp: OperationHandler<z.infer<typeof snapshotAppInput>, { 
   return { ok: true };
 };
 
+/**
+ * The gate in front of moving or retiring the installs a vertical still backs (#1592).
+ *
+ * Those acts touch the SHARED plane — rebinding a scope onto another lineage, wiping a
+ * scope's storage — over a staff-level service token, so nothing below the seam asks who
+ * is calling. This is where that is asked: the same `dashboard:provision-app` every other
+ * install-changing operation here holds, so a `viewer` can read the list and not act on
+ * it. It writes nothing — a bound scope need not have a `dashboard_apps` row for the
+ * trail to hang off (a fork, or an install made before this dashboard tracked them), and
+ * the plane's own audit log records each rebind and reap.
+ */
+const authorizeScopeChangeOp: OperationHandler<Record<string, never>, { ok: true }> = async (ctx) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  return { ok: true };
+};
+
 const resumeAppInput = z.object({ appScopeId: z.string().min(1) });
 
 /**
@@ -1406,6 +1422,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/restore-app-data': restoreAppDataOp as OperationHandler<never, unknown>,
     'dashboard/bind-app-hostname': bindAppHostnameOp as OperationHandler<never, unknown>,
     'dashboard/unbind-app-hostname': unbindAppHostnameOp as OperationHandler<never, unknown>,
+    'dashboard/authorize-scope-change': authorizeScopeChangeOp as OperationHandler<never, unknown>,
     'dashboard/mark-app-failed': markAppFailedOp as OperationHandler<never, unknown>,
     'dashboard/record-install-step': recordInstallStepOp as OperationHandler<never, unknown>,
     'dashboard/install-steps': installStepsOp as OperationHandler<never, unknown>,

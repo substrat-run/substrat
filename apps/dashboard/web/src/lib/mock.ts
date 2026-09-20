@@ -1,4 +1,4 @@
-import type { AppOverlays, AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, TeamTrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppOverlays, BoundScopesView, AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, TeamTrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -89,7 +89,37 @@ export const MOCK_DEPLOYMENTS: Deployment[] = [
     ],
     channels: [],
   },
+  // The vertical the helpdesk's installs would move to after a package rename: pushed to
+  // most recently, with a version in prod — what the "Bound scopes" Move dialog offers.
+  {
+    slug: 'acme/support-desk',
+    displaySlug: 'support-desk',
+    name: 'Support desk',
+    source: 'cli',
+    owned: true,
+    versions: [
+      { id: '01J2Q8Z3V9K4W7X2M5N6P7D100', version: '1.0.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-support-desk-01j2q8z3v9k4w7x2m5n6p7d100', createdAt: '2026-07-25T12:00:00Z' },
+    ],
+    channels: [{ channel: 'prod', versionId: '01J2Q8Z3V9K4W7X2M5N6P7D100' }],
+  },
 ];
+
+/**
+ * Dev-preview sample for a vertical's "Bound scopes" section (#1592), keyed by vertical.
+ * Only `acme/helpdesk` backs anything — `acme/reports` has none, so the preview also
+ * shows the case where the section is not rendered at all.
+ */
+export const MOCK_BOUND_SCOPES: Record<string, BoundScopesView> = {
+  'acme/helpdesk': {
+    live: 2,
+    archived: 1,
+    scopes: [
+      { id: '01J2Q8Z3V9K4W7X2M5N6P7SC01', slug: 'hr', name: 'HR desk', status: 'active', fork: false, movable: true, verticalVersionId: '01J2Q8Z3V9K4W7X2M5N6P7V200', createdAt: '2026-07-01T09:00:00Z', hostnames: ['hr-acme.global.substrat.run'] },
+      { id: '01J2Q8Z3V9K4W7X2M5N6P7SC02', slug: 'support', name: 'Support desk', status: 'active', fork: false, movable: true, verticalVersionId: null, createdAt: '2026-07-05T09:00:00Z', hostnames: ['support.acme.se', 'support-acme.global.substrat.run'] },
+      { id: '01J2Q8Z3V9K4W7X2M5N6P7SC03', slug: 'old-desk', name: 'Old desk', status: 'archived', fork: false, movable: false, verticalVersionId: '01J2Q8Z3V9K4W7X2M5N6P7V100', createdAt: '2026-06-01T09:00:00Z', hostnames: [] },
+    ],
+  },
+};
 
 /**
  * Dev-preview sample for the Permissions tab (#336). Mirrors MOCK_DEPLOYMENTS[0]: the app

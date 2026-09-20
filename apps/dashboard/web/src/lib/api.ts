@@ -690,6 +690,44 @@ export interface ReleaseComparison {
   owned: boolean;
 }
 
+/**
+ * One install still bound to a vertical (#1592) — what a refused delete was counting.
+ * Mirrors the worker's `BoundScope` (`src/bound-scopes.ts`); `api-parity.ts` is the
+ * compiler check that the two agree.
+ */
+export interface BoundScopeRow {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  /** A preview/snapshot fork: retiring deletes it, and it is never moved. */
+  fork: boolean;
+  /** Whether Move applies — not a fork, not archived. */
+  movable: boolean;
+  verticalVersionId: string | null;
+  createdAt: string;
+  /** Names that go offline first when this scope is retired. */
+  hostnames: string[];
+}
+
+export interface BoundScopesView {
+  /** Neither archived nor reaped — the number `still backs N scope(s)` reports. */
+  live: number;
+  /** Archived — the number `still backs N archived scope(s)` reports. */
+  archived: number;
+  scopes: BoundScopeRow[];
+}
+
+export interface MoveScopesResult {
+  moved: string[];
+  refusal: { scopeId: string; message: string } | null;
+}
+
+export interface RetireScopesResult {
+  retired: string[];
+  failure: { scopeId: string; message: string } | null;
+}
+
 export interface ReleasesView {
   releases: ReleaseRow[];
   /** Scopes with no pin — they follow the prod channel. */
@@ -1665,6 +1703,23 @@ export const api = {
    *  still runs it — delete the apps first — and for a published vertical (staff-only). */
   deleteDeployment: (slug: string) =>
     call<void>(`/deployments/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
+  /** The installs this vertical still backs — what a refused delete counted (#1592). */
+  listBoundScopes: (slug: string) =>
+    call<BoundScopesView>(`/deployments/${encodeURIComponent(slug)}/scopes`),
+  /** Rebind installs onto another vertical this team owns. A refusal mid-run comes back
+   *  in the result (with what did move), not as a thrown error. */
+  moveBoundScopes: (slug: string, input: { scopeIds: string[]; target: string; ackMigrations?: boolean }) =>
+    call<MoveScopesResult>(`/deployments/${encodeURIComponent(slug)}/scopes/move`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** Archive and wipe installs. `confirm` is what the person TYPED — the count — and the
+   *  worker refuses without it. */
+  retireBoundScopes: (slug: string, input: { scopeIds: string[]; confirm: string }) =>
+    call<RetireScopesResult>(`/deployments/${encodeURIComponent(slug)}/scopes/retire`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   /** One channel's promotion timeline (newest first) — the rollback picker's data. */
   channelHistory: (slug: string, channel: 'prod') =>
     call<ChannelHistoryEntry[]>(
