@@ -17,7 +17,7 @@
     "@fontsource/geist-mono": "^5.2.8",
     "@fontsource/geist-sans": "^5.2.5",
     "@rgrove/parse-xml": "^4.2.0",
-    "@vitejs/plugin-vue": "^5.2.4",
+    "@vitejs/plugin-vue": "^6.0.9",
     "fflate": "^0.8.2",
     "markdown-it": "^14.1.0",
     "mermaid": "^11.16.0",
