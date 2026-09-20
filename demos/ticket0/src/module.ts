@@ -650,6 +650,23 @@ function blockedBy(ctx: OperationContext, probe: BlockProbe): BlockRuleRow | und
   if (probe.email) {
     clauses.push("(kind = 'email' AND value = ?)");
     params.push(addressKey(probe.email));
+    /**
+     * And any CONTACT rule about whoever owns this address, found by the address
+     * rather than by the id the caller happened to resolve.
+     *
+     * Without this the contact kind is evadable by one capital letter.
+     * `contactByEmail` matches exactly — deliberately, because `threadRepliedTo`
+     * must not stitch two people's threads together on a loose comparison — so mail
+     * from `Spam@…` resolves to no contact, a second contact row is created, and a
+     * rule an agent added against the first one never fires. The blocklist is
+     * case-insensitive everywhere else, and this is what makes the third kind agree
+     * with the other two. Threading semantics are untouched: this reads contacts, it
+     * does not decide which one the message belongs to.
+     */
+    clauses.push(
+      "(kind = 'contact' AND value IN (SELECT id FROM ticket0_contacts WHERE LOWER(email) = ?))",
+    );
+    params.push(addressKey(probe.email));
     const domains = domainChainOf(probe.email);
     if (domains.length > 0) {
       clauses.push(`(kind = 'domain' AND value IN (${domains.map(() => '?').join(', ')}))`);

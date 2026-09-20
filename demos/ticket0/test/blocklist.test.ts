@@ -273,6 +273,24 @@ describe('the widget door', () => {
     expect(after.id).toBeTruthy();
   });
 
+  it('a contact rule is not evadable by one capital letter', async () => {
+    const agent = await at('agent');
+    // The person appears through email, so the desk has a contact for them.
+    const first = await mailFrom('shouty@customer.example');
+    const conversation = (await agent.invoke('ticket0/get-conversation', {
+      conversationId: first.conversation_id,
+    })) as { contact_id: string };
+    const rule = await block('contact', conversation.contact_id);
+
+    // `contactByEmail` matches exactly, so this address resolves to NO contact and
+    // would otherwise open a second one — carrying the same person past a rule an
+    // agent added about them.
+    await expect(mailFrom('SHOUTY@customer.example')).rejects.toThrow(SENDER_BLOCKED);
+    await expect(mailFrom('shouty@customer.example')).rejects.toThrow(SENDER_BLOCKED);
+
+    await unblock(rule.id);
+  });
+
   it('refuses a rule naming a contact that does not exist', async () => {
     await expect(block('contact', '01ARZ3NDEKTSV4RRFFQ69G5FAV')).rejects.toThrow(/contact not/);
   });
