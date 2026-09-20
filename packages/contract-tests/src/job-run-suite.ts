@@ -641,6 +641,24 @@ export function jobRunContractSuite(
       expect(settled?.endedAt).not.toBeNull();
     });
 
+    /**
+     * A caller's `limit` is normalised before it reaches SQL. SQLite reads a
+     * NEGATIVE limit as unbounded, and finished runs are retained — so `-1` asked
+     * for the scope's entire history in one response, a read whose cost grows with
+     * retention rather than with what was asked for.
+     */
+    it('clamps the operator read to a sane row budget', async () => {
+      const s = await newScope();
+      for (const n of ['a', 'b', 'c']) {
+        await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'inert', instance: n });
+      }
+      expect(await host.jobRuns(t, s, { limit: -1 })).toHaveLength(1);
+      expect(await host.jobRuns(t, s, { limit: 0 })).toHaveLength(1);
+      // A fractional limit is a value SQLite refuses outright rather than rounds.
+      expect(await host.jobRuns(t, s, { limit: 2.7 })).toHaveLength(2);
+      expect(await host.jobRuns(t, s, { limit: 1_000_000 })).toHaveLength(3);
+    });
+
     it('leaves a run whose job this host does not register untouched', async () => {
       const s = await newScope();
       const run = await host.startJobRun(t, s, {

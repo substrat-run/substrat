@@ -236,6 +236,8 @@ export {
   JOB_DRIVE_LIMIT,
   JOB_DRIVE_SCAN_MAX,
   JOB_RUN_LIST_LIMIT,
+  JOB_RUN_LIST_MAX,
+  jobRunListLimit,
   JOB_STEP_REUSED,
   assertQueueSafe,
   jobRunOf,

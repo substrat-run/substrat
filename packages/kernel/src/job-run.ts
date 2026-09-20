@@ -234,6 +234,24 @@ export interface JobRunFilter {
 /** Rows one `jobRuns` read returns by default. */
 export const JOB_RUN_LIST_LIMIT = 50;
 
+/** The most rows one `jobRuns` read will ever return, whatever the caller asks for. */
+export const JOB_RUN_LIST_MAX = 500;
+
+/**
+ * The row budget for one operator read, normalised before it reaches SQL.
+ *
+ * `JobRunFilter.limit` comes from a caller and was bound straight to `LIMIT`, where
+ * SQLite reads a NEGATIVE value as unbounded, refuses a fractional one outright, and
+ * honours an oversized one. Since finished runs are retained, "unbounded" means the
+ * scope's entire history in one response — a read whose cost grows with retention,
+ * reachable by passing `-1`. Clamped here rather than in each adapter so the pure and
+ * the hosted read cannot answer the same filter differently.
+ */
+export function jobRunListLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) return JOB_RUN_LIST_LIMIT;
+  return Math.min(JOB_RUN_LIST_MAX, Math.max(1, Math.floor(limit)));
+}
+
 /** Runs one `runDueJobs` call picks up by default. */
 export const JOB_DRIVE_LIMIT = 50;
 

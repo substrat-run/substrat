@@ -115,7 +115,7 @@ import {
   SCHEDULE_STATE_REBUILD,
   scheduleStateHasKind,
   JOB_RUN_DDL,
-  JOB_RUN_LIST_LIMIT,
+  jobRunListLimit,
   type EntityVersion,
   type EntityVersionRow,
   type JobRunFilter,
@@ -2187,7 +2187,21 @@ export function defineScopeDO(
           )
           .toArray()[0] as unknown as JobRunRow | undefined) ?? null;
       if (live) return live;
-      await this.jobRunInsert(row);
+      // `transactionSync`, and the two writes inlined rather than reached through
+      // `jobRunInsert`: an `await` between them is an output-gate boundary, and the
+      // point of doing this in one RPC is that there is no boundary to be evicted
+      // at. Same reason `SCHEDULE_STATE_REBUILD` insists on it.
+      this.ctx.storage.transactionSync(() => {
+        this.sql.exec(
+          `INSERT INTO _substrat_job_runs
+             (id, module_id, job, instance, payload, status, cursor, counters, attempts,
+              last_error, started_at, updated_at, next_attempt_at, ended_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          row.id, row.module_id, row.job, row.instance, row.payload, row.status, row.cursor,
+          row.counters, row.attempts, row.last_error, row.started_at, row.updated_at,
+          row.next_attempt_at, row.ended_at,
+        );
+      });
       return row;
     }
 
@@ -2255,7 +2269,7 @@ export function defineScopeDO(
           params.push(value);
         }
       }
-      params.push(filter.limit ?? JOB_RUN_LIST_LIMIT);
+      params.push(jobRunListLimit(filter.limit));
       return this.sql
         .exec(
           `SELECT * FROM _substrat_job_runs
@@ -2330,8 +2344,20 @@ export function defineScopeDO(
      * `runJobPass` carries the full argument.
      */
     async jobCommitPass(id: string, patch: JobRunPatch): Promise<void> {
-      await this.jobRunPatch(id, patch);
-      this.sql.exec('DELETE FROM _substrat_job_steps WHERE run_id = ?', id);
+      // `transactionSync` with both statements inline — NOT `await
+      // this.jobRunPatch(...)` then the delete. The await is an output-gate
+      // boundary, which is precisely the gap this method exists to close.
+      this.ctx.storage.transactionSync(() => {
+        this.sql.exec(
+          `UPDATE _substrat_job_runs
+              SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
+                  updated_at = ?, next_attempt_at = ?, ended_at = ?
+            WHERE id = ?`,
+          patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
+          patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id,
+        );
+        this.sql.exec('DELETE FROM _substrat_job_steps WHERE run_id = ?', id);
+      });
     }
 
     // -- guards (K-17) --------------------------------------------------------

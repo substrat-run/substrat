@@ -289,7 +289,7 @@ import {
   SCHEDULE_STATE_REBUILD,
   scheduleStateHasKind,
   JOB_RUN_DDL,
-  JOB_RUN_LIST_LIMIT,
+  jobRunListLimit,
   jobRunOf,
   runDueJobRuns,
   startJobRun,
@@ -3800,12 +3800,23 @@ export class SqliteScopeHost implements ScopeHost {
   /**
    * D-14's in-process driver: the run store is direct SQL on the scope db.
    *
-   * NOT inside `rt.actor.enqueue`. A pass is long by construction — an hour-long
-   * walk is the whole point — and holding the scope's serialization lock for it
-   * would stop every request on the scope until it finished. Each of these writes
-   * is its own statement and the ledger is keyed by (run, step), so a concurrent
-   * operation interleaves with them exactly as it does with any other write. The
-   * `invoke`s a pass makes through `pass.scope()` take their own ordinary turns.
+   * **The PASS stays outside the actor; every STORE OPERATION takes a turn on it.**
+   * That split is the whole of the concurrency design here, and the first cut got
+   * the second half wrong — it ran these statements on `rt.db` with no turn at all,
+   * under a comment claiming they "interleave exactly as any other write does".
+   * They do not. `invoke` opens a raw `BEGIN IMMEDIATE` on this same connection and
+   * HOLDS IT ACROSS AWAITS (its guards, its handler), so a job-store statement
+   * issued while some unrelated request was mid-operation landed INSIDE that
+   * request's transaction — and rolled back with it. A step whose effect had
+   * already happened would lose its ledger row and run a second time, for no reason
+   * connected to the job at all.
+   *
+   * A turn each is the fix, and it keeps the property the original comment wanted:
+   * a pass may take an hour, and holding the scope's lock for it would stop every
+   * request on that scope, so the pass itself is never enqueued. Only the short
+   * writes are. Nothing nests — a store operation never invokes, and the `invoke`s
+   * a pass makes through `pass.scope()` take their own separate turns — so there is
+   * no path by which this can deadlock against itself.
    */
   private jobStore(rt: ScopeRuntime): JobRunStore {
     const db = rt.db;
@@ -3846,20 +3857,24 @@ export class SqliteScopeHost implements ScopeHost {
       patchRun.run(...patchArgs(id, p));
       db.prepare('DELETE FROM _substrat_job_steps WHERE run_id = ?').run(id);
     });
+    // Every store operation takes its own short turn on the scope actor, so no
+    // statement here can land inside an `invoke`'s open transaction. `turn` is the
+    // one place that happens; adding a method without it reintroduces the bug.
+    const turn = <T>(fn: () => T): Promise<T> => rt.actor.enqueue(fn);
     return {
-      startOrJoin: async (key: JobRunKey, r: JobRunRow) => startOrJoinTx(key, r),
-      get: async (id: string) =>
-        row(db.prepare('SELECT * FROM _substrat_job_runs WHERE id = ?').get(id)),
-      due: async (now: string, limit: number, afterId?: string) =>
-        db
+      startOrJoin: (key: JobRunKey, r: JobRunRow) => turn(() => startOrJoinTx(key, r)),
+      get: (id: string) =>
+        turn(() => row(db.prepare('SELECT * FROM _substrat_job_runs WHERE id = ?').get(id))),
+      due: (now: string, limit: number, afterId?: string) =>
+        turn(() => db
           .prepare(
             `SELECT * FROM _substrat_job_runs
               WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
                 AND (? IS NULL OR id > ?)
               ORDER BY id LIMIT ?`,
           )
-          .all(now, afterId ?? null, afterId ?? null, limit) as JobRunRow[],
-      list: async (filter: JobRunFilter) => {
+          .all(now, afterId ?? null, afterId ?? null, limit) as JobRunRow[]),
+      list: (filter: JobRunFilter) => turn(() => {
         const where: string[] = [];
         const params: SqlValue[] = [];
         for (const [column, value] of [
@@ -3873,7 +3888,7 @@ export class SqliteScopeHost implements ScopeHost {
             params.push(value);
           }
         }
-        params.push(filter.limit ?? JOB_RUN_LIST_LIMIT);
+        params.push(jobRunListLimit(filter.limit));
         return db
           .prepare(
             `SELECT * FROM _substrat_job_runs
@@ -3881,34 +3896,36 @@ export class SqliteScopeHost implements ScopeHost {
              ORDER BY id DESC LIMIT ?`,
           )
           .all(...params) as JobRunRow[];
-      },
-      patch: async (id: string, p: JobRunPatch) => {
-        patchRun.run(...patchArgs(id, p));
-      },
-      commitPass: async (id: string, p: JobRunPatch) => commitPassTx(id, p),
-      step: async (runId: string, name: string) =>
-        (db
+      }),
+      patch: (id: string, p: JobRunPatch) =>
+        turn(() => {
+          patchRun.run(...patchArgs(id, p));
+        }),
+      commitPass: (id: string, p: JobRunPatch) => turn(() => commitPassTx(id, p)),
+      step: (runId: string, name: string) =>
+        turn(() => (db
           .prepare(
             'SELECT step, result, attempts, last_error FROM _substrat_job_steps WHERE run_id = ? AND step = ?',
           )
-          .get(runId, name) as JobStepRow | undefined) ?? null,
-      recordStep: async (
+          .get(runId, name) as JobStepRow | undefined) ?? null),
+      recordStep: (
         runId: string,
         name: string,
         result: string | null,
         attempts: number,
         lastError: string | null,
         at: string,
-      ) => {
-        db.prepare(
+      ) =>
+        turn(() => {
+          db.prepare(
           `INSERT INTO _substrat_job_steps (run_id, step, result, attempts, last_error, recorded_at)
              VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT (run_id, step) DO UPDATE SET result = excluded.result,
                                                     attempts = excluded.attempts,
                                                     last_error = excluded.last_error,
                                                     recorded_at = excluded.recorded_at`,
-        ).run(runId, name, result, attempts, lastError, at);
-      },
+          ).run(runId, name, result, attempts, lastError, at);
+        }),
     };
   }
 
