@@ -61,6 +61,12 @@ import {
   entitlementDenial,
   platformRequestHistoryQuery,
   PLATFORM_REQUEST_COLUMNS,
+  PLATFORM_REQUEST_REDACTION_SQL,
+  platformRequestRedactionParams,
+  platformRequestRedactionQuery,
+  intentPayloadCarriesSubject,
+  type PlatformRequestRedactionCandidate,
+  type SubjectRedactionCounts,
   denialListQuery,
   denialSummaryQuery,
   denialTotalsQuery,
@@ -3014,6 +3020,15 @@ export function defineScopeDO(
      * `result` is COALESCE'd so a value written on an earlier pass (e.g. a minted sibling scope id,
      * for two-phase idempotency) survives a null on retry. `attempts` bumps each settle; `settled_at`
      * is set only on a terminal outcome.
+     *
+     * **Compare-and-set on `pending` (#1600 review).** The drain reads pending rows, runs a
+     * handler, then settles — and between the read and the settle a subject erasure can redact
+     * the row. Settling by `id` alone let that stale pass overwrite the redaction and write a
+     * provider's reply, which can quote the person, back into `last_error`. Nothing legitimate
+     * is refused: `pendingPlatformRequests` returns only pending rows, so every settle targets
+     * one that was pending when it was read. A settle that finds the row already terminal does
+     * nothing, deliberately silently — throwing would make the drain's blanket catch retry a
+     * row that is correctly over.
      */
     settlePlatformRequest(
       id: string,
@@ -3026,7 +3041,7 @@ export function defineScopeDO(
         `UPDATE _substrat_platform_requests
            SET status = ?, result = COALESCE(?, result), last_error = ?, last_failure = ?,
                attempts = attempts + 1, settled_at = ?
-         WHERE id = ?`,
+         WHERE id = ? AND status = 'pending'`,
         status,
         result,
         lastError,
@@ -3591,12 +3606,23 @@ export function defineScopeDO(
      * and transaction facts remain". A timeline still shows that something happened, to
      * what, and when; it no longer shows who, or what was said about them.
      *
+     * **Two tables, one verb (#1600).** The outbox is not the only place the spine holds
+     * an event's payload: this host is the CP-less one, so every connector delivery it
+     * cannot run becomes a `connector:<provider>` intent carrying the whole event, and
+     * nothing ever deletes those rows. Redacting one table and not the other left the
+     * name in the live database and in every copy taken from it afterwards. One RPC
+     * rather than two for `routeExecutorEventToPlatform`'s reason — a crash cannot land
+     * half an erasure — and both halves are idempotent anyway, so a retry converges.
+     *
      * This is the one sanctioned write that mutates the outbox. It is kernel code, not
      * module code, and an erasure request is precisely the case the append-only rule has
      * to yield to — the alternative is telling a data subject that the spine's convenience
      * outranks their Article 17 right.
      */
-    async redactSubject(subjectId: string): Promise<number> {
+    async redactSubject(subjectId: string): Promise<SubjectRedactionCounts> {
+      // One instant for the whole erasure — the intent tombstones must not disagree with
+      // each other about when a person was erased.
+      const at = new Date().toISOString();
       const doomed = (
         this.sql
           .exec(
@@ -3609,7 +3635,33 @@ export function defineScopeDO(
       for (const id of doomed) {
         this.sql.exec('UPDATE _substrat_outbox SET payload = NULL WHERE id = ?', id);
       }
-      return doomed.length;
+      return { events: doomed.length, intents: this.redactSubjectIntents(subjectId, at) };
+    }
+
+    /**
+     * The intent-journal half of `redactSubject` (#1600) — the SQLite adapter's twin.
+     *
+     * Row-by-row rather than one `UPDATE … WHERE`, because the decision is structural and
+     * SQL cannot make it: an intent payload is opaque JSON with no `pii_class` column to
+     * test, so the SQL narrows to rows that could possibly match and the kernel predicate
+     * decides. Query, predicate and statement all come from the kernel, so this adapter
+     * and the pure one cannot drift about what a redacted intent is.
+     */
+    private redactSubjectIntents(subjectId: string, at: string): number {
+      const q = platformRequestRedactionQuery(subjectId);
+      const candidates = this.sql
+        .exec(q.sql, ...q.params)
+        .toArray() as unknown as PlatformRequestRedactionCandidate[];
+      let redacted = 0;
+      for (const row of candidates) {
+        if (!intentPayloadCarriesSubject(row.payload, subjectId)) continue;
+        this.sql.exec(
+          PLATFORM_REQUEST_REDACTION_SQL,
+          ...platformRequestRedactionParams(row.id, subjectId, at),
+        );
+        redacted += 1;
+      }
+      return redacted;
     }
 
     // -- event dispatch (port of dispatch) ------------------------------------

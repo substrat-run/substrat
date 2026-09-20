@@ -237,6 +237,7 @@ import {
   type JobStepRow,
   type StartJobRunInput,
   type LiveReadSurface,
+  type SubjectRedactionCounts,
   globalFetch,
   assertRedrainWindow,
 } from '@substrat-run/kernel';
@@ -1032,8 +1033,22 @@ interface ScopeStubRpc {
   importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
-  /** Null the spine payloads keyed to one data subject (#37); returns how many moved. */
-  redactSubject(subjectId: string): Promise<number>;
+  /**
+   * Redact the spine payloads keyed to one data subject (#37); returns how many moved,
+   * per table. Both spine copies of an event go in this one RPC (#1600) — the outbox row
+   * and any platform intent this CP-less host routed the event into.
+   *
+   * **The `number` arm is version skew, not an alternative contract.** This RPC answered
+   * with a bare outbox count until #1600, and an old DO on the other end of a new
+   * coordinator still does — the skew this interface's own `recordScheduleRun` note
+   * spells out, in the direction a RETURN type can carry it. The caller MUST fail on it
+   * rather than read it as a count: an old DO redacts the outbox and leaves the intent
+   * journal, which is precisely the defect #1600 exists to close, so treating its reply
+   * as `{ events, intents: 0 }` would mint a receipt claiming an erasure that did not
+   * happen. Typed as a union rather than cast at the call site so the skew has to be
+   * handled to compile.
+   */
+  redactSubject(subjectId: string): Promise<SubjectRedactionCounts | number>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
   appliedMigrations(limit?: number): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
@@ -4625,12 +4640,32 @@ export class CloudflareScopeHost implements ScopeHost {
         // half-done state harms the person: dying after the redaction leaves ciphertext in
         // a backup that no key opens; destroying the key first would leave their PII in the
         // live database while the audit log already claims they were erased.
-        const eventsRedacted = await this.scopeStub(scopeId).redactSubject(subjectId);
+        // Both spine copies (#1600): the outbox row AND any platform intent this event was
+        // routed into. One RPC, so a crash cannot land half of it.
+        const redacted = await this.scopeStub(scopeId).redactSubject(subjectId);
+        // An OLD ScopeDO answers with a bare number — it redacted the outbox and never
+        // looked at the intent journal. Refused here, BEFORE the key is destroyed, and
+        // that order is the whole point: the key is the irreversible half, so proceeding
+        // would leave the subject's platform-retained copies permanently unreadable, their
+        // name still sitting in `_substrat_platform_requests`, and no admin-log row at all
+        // (the log is written after this). Refusing leaves an erasure that can simply be
+        // re-run once the scope is redeployed. Loud rather than partial, the way this
+        // interface's reverse skew is left loud on `recordScheduleRun`.
+        if (typeof redacted === 'number') {
+          throw substratError(
+            'unavailable',
+            `scope ${scopeId} runs a ScopeDO from before #1600, whose redaction does not reach ` +
+              `_substrat_platform_requests — erasing now would destroy the subject key while ` +
+              `leaving their payloads in the intent journal. Redeploy the vertical and re-run.`,
+          );
+        }
+        const { events: eventsRedacted, intents: intentsRedacted } = redacted;
         const at = new Date().toISOString();
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
           subjectId,
           eventsRedacted,
+          intentsRedacted,
           keyDestroyed: existed,
           tombstoned: true,
         });
@@ -4638,7 +4673,15 @@ export class CloudflareScopeHost implements ScopeHost {
         // because it destroys evidence. An erasure is the one action where "who asked for
         // this to disappear" is itself part of the record.
         await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
-        await this.recordAccess(actor, 'shredSubject', { tenantId, scopeId }, { subjectId }, eventsRedacted);
+        // BOTH counts: the access log's number is "how much evidence this destroyed", and
+        // an intent payload is a whole event's worth of it.
+        await this.recordAccess(
+          actor,
+          'shredSubject',
+          { tenantId, scopeId },
+          { subjectId },
+          eventsRedacted + intentsRedacted,
+        );
         return receipt;
       },
 

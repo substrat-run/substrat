@@ -203,6 +203,11 @@ import {
   backoffAt,
   platformRequestHistoryQuery,
   PLATFORM_REQUEST_COLUMNS,
+  PLATFORM_REQUEST_REDACTION_SQL,
+  platformRequestRedactionParams,
+  platformRequestRedactionQuery,
+  intentPayloadCarriesSubject,
+  type PlatformRequestRedactionCandidate,
   denialListQuery,
   denialSummaryQuery,
   denialTotalsQuery,
@@ -4238,12 +4243,20 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     await rt.actor.enqueue(() => {
+      // Compare-and-set on `pending` (#1600 review). The drain reads pending rows, runs a
+      // handler, then settles — and between the read and the settle a subject erasure can
+      // redact the row. Settling by `id` alone let that stale pass overwrite the redaction
+      // and write a provider's reply, which can quote the person, back into `last_error`.
+      // Nothing legitimate is refused by this: `listPlatformRequests` returns only pending
+      // rows, so every settle in the tree targets one that was pending when it was read.
+      // A settle that finds the row already terminal does nothing, deliberately silently —
+      // throwing would make the drain's blanket catch retry a row that is correctly over.
       rt.db
         .prepare(
           `UPDATE _substrat_platform_requests
              SET status = ?, result = COALESCE(?, result), last_error = ?, last_failure = ?,
                  attempts = attempts + 1, settled_at = ?
-           WHERE id = ?`,
+           WHERE id = ? AND status = 'pending'`,
         )
         .run(
           outcome.status,
@@ -6920,17 +6933,28 @@ export class SqliteScopeHost implements ScopeHost {
         // and transaction facts remain". A consumer's timeline still shows that something
         // happened, to what, and when; it no longer shows who or what was said.
         const db = this.scopeDbFor(tenantId, scopeId);
+        // One instant for the whole erasure, read before the first write: the intent
+        // tombstones below and the key's own tombstone should not disagree about when a
+        // person was erased.
+        const at = new Date().toISOString();
         const redacted = db
           .prepare(
             `UPDATE _substrat_outbox SET payload = NULL
               WHERE subject_id = ? AND pii_class != 'none' AND payload IS NOT NULL`,
           )
           .run(subjectId);
-        const at = new Date().toISOString();
+        // The spine's OTHER copy of an event (#1600). A CP-less host routes a connector
+        // delivery it cannot run into `_substrat_platform_requests` with the whole event
+        // embedded, and nothing ever deletes those rows — so the same line has to be held
+        // here, or the redaction above only moves the name one table across. Same
+        // idempotence as the outbox half: a re-run finds the tombstones and changes
+        // nothing.
+        const intentsRedacted = this.redactSubjectIntents(db, subjectId, at);
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
           subjectId,
           eventsRedacted: redacted.changes,
+          intentsRedacted,
           keyDestroyed: existed,
           tombstoned: true,
         });
@@ -6938,7 +6962,15 @@ export class SqliteScopeHost implements ScopeHost {
         // mutation, the access log because it destroys evidence. An erasure is the one
         // action where "who asked for this to disappear" is itself the record.
         this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
-        this.recordAccess(actor, 'shredSubject', { tenantId, scopeId }, { subjectId }, redacted.changes);
+        // BOTH counts: the access log's number is "how much evidence this destroyed", and
+        // an intent payload is a whole event's worth of it.
+        this.recordAccess(
+          actor,
+          'shredSubject',
+          { tenantId, scopeId },
+          { subjectId },
+          redacted.changes + intentsRedacted,
+        );
         return receipt;
       },
 
@@ -9075,6 +9107,32 @@ export class SqliteScopeHost implements ScopeHost {
     if (r.status === 'reaped') {
       throw new Error(`scope ${scopeId} is reaped — its storage is gone and cannot be read`);
     }
+  }
+
+  /**
+   * The intent-journal half of `shredSubject` (#1600) — the DO's `redactSubject` twin.
+   *
+   * Row-by-row rather than one `UPDATE … WHERE`: the decision is structural (does this
+   * payload embed an event the erasure redacts?) and SQL cannot make it, because an
+   * intent payload is opaque JSON with no `pii_class` column to test. The SQL narrows to
+   * the rows that could possibly match; the kernel predicate decides; the kernel's
+   * statement writes. All three are shared with the Durable-Object adapter so the two
+   * cannot drift about what a redacted intent is.
+   *
+   * Returns how many rows it redacted — zero on a re-run, the tombstones having already
+   * stopped matching.
+   */
+  private redactSubjectIntents(db: Database.Database, subjectId: string, at: string): number {
+    const q = platformRequestRedactionQuery(subjectId);
+    const candidates = db.prepare(q.sql).all(...q.params) as PlatformRequestRedactionCandidate[];
+    const write = db.prepare(PLATFORM_REQUEST_REDACTION_SQL);
+    let redacted = 0;
+    for (const row of candidates) {
+      if (!intentPayloadCarriesSubject(row.payload, subjectId)) continue;
+      write.run(...platformRequestRedactionParams(row.id, subjectId, at));
+      redacted += 1;
+    }
+    return redacted;
   }
 
   private scopeDbFor(tenantId: TenantId, scopeId: ScopeId): Database.Database {

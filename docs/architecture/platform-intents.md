@@ -108,6 +108,26 @@ CREATE TABLE _substrat_platform_requests (
 It is **spine** — written only by the kernel (module code may never write `_substrat_*`), read
 and settled only by the platform drain.
 
+**Being spine, it is also reached by subject erasure (#1600).** Nothing ever deletes an intent
+row — that retention is the point of `ctx.platformRequests` and `listPlatformRequestHistory` —
+so a payload holding a person's data would otherwise outlive their erasure indefinitely, here
+and in every copy taken from the scope afterwards. `HostAdmin.shredSubject` therefore redacts
+this table alongside the outbox, on the same Tier-1 line (kernel-design.md §13.1): the payload
+is replaced by an obviously-redacted tombstone rather than nulled, because the column is `NOT
+NULL`; `last_error` goes with it; a still-`pending` intent is settled `failed` in the same
+statement, so nothing is ever handed a tombstone to drain; and the row itself stays, so the
+journal still shows that something was asked of the platform, by whom and when. Which intents
+are selected is the outbox's own predicate applied to whatever `DomainEvent` the payload
+embeds — which today means the `connector:<provider>` family, the one kind that carries a whole
+event by design.
+
+That is also why **settling an intent is a compare-and-set on `status = 'pending'`**. The drain
+reads pending rows, runs a handler, then settles, so a settle can arrive after an erasure has
+redacted the row — and settling by `id` alone put a provider's reply, which can quote the
+person, back into `last_error` on a row whose payload had just been emptied. Nothing legitimate
+is refused: the drain only ever reads pending rows, so every settle targets one that was
+pending when it was read.
+
 ### 2. The kernel verb — `ctx.requestPlatform`
 
 A new `OperationContext` method, sibling to `ctx.emit`/`ctx.check`/`ctx.link`:

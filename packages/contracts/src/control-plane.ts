@@ -174,8 +174,19 @@ export type AdminAction = z.infer<typeof adminAction>;
  */
 export const subjectShredReceipt = z.object({
   subjectId: z.string().min(1),
-  /** Spine rows whose payload this call redacted. Zero on a re-run — the first one did it. */
+  /** Outbox rows whose payload this call redacted. Zero on a re-run — the first one did it. */
   eventsRedacted: z.number().int().nonnegative(),
+  /**
+   * Platform-intent rows whose payload this call redacted (#1600) — the spine's OTHER copy
+   * of an event, which a CP-less host writes whenever it routes a connector delivery it
+   * cannot run. Counted separately from `eventsRedacted` rather than folded into it,
+   * because the two answer different questions for a DSAR: one says how much was said
+   * about the person, the other says how many copies of it were queued for a third party.
+   *
+   * Defaulted, so a receipt minted before this field existed still parses as the zero it
+   * honestly was — nothing had redacted an intent then.
+   */
+  intentsRedacted: z.number().int().nonnegative().default(0),
   /**
    * Whether a subject key existed to destroy. False means nothing platform-retained was ever
    * sealed for this subject — either it was never exported, or a prior shred already ran.

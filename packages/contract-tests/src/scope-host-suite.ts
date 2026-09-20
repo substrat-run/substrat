@@ -3,6 +3,7 @@ import { connectorCalls, connectorTestFetch, resetConnectorCalls } from './conne
 import {
   connectionId,
   dataSubjectId,
+  domainEvent,
   errorCodeOf,
   eventId,
   instant,
@@ -26,6 +27,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   isSearchIndexTable,
+  REDACTED_INTENT_MARKER,
   runPlatformSweep,
   ulid,
   type OperationHandler,
@@ -1480,6 +1482,246 @@ export function scopeHostContractSuite(
         await expect(
           host.admin.sealSubjectPayloads(staff, t2, s1, [{ subjectId: subject, plaintext: 'x' }]),
         ).rejects.toThrow();
+      });
+
+      // -- the spine's OTHER copy of an event (#1600) -------------------------
+      //
+      // `_substrat_platform_requests` holds whole `DomainEvent`s. A CP-less host cannot
+      // run a connector, so each delivery becomes a `connector:<provider>` intent whose
+      // payload is the entire envelope, payload included — deliberately fat, because the
+      // platform's handler needs what the in-process handler would have been handed. And
+      // nothing ever deletes those rows: `listPlatformRequestHistory` exists precisely so
+      // a settled one stays readable. For a year the redaction reached the outbox and not
+      // this, so a shredded subject's name sat in the live scope database, and in every
+      // export, backup and PITR window taken from it afterwards.
+      //
+      // These drive the intent through `ctx.requestPlatform` with the exact payload the
+      // CP-less router writes (`{ executorId, event }`, `connectorDispatchPayload`), which
+      // is the one shape both adapters can be held to — the routing itself only exists on
+      // the Durable-Object host, and `connector-route.test.ts` asserts that what it really
+      // writes is a payload this redaction selects.
+      describe('the intent journal (#1600)', () => {
+        /** The whole spine envelope, as an intent embeds it. Parsed, so the fixture IS one. */
+        const envelopeFor = (subject: string, said: string) =>
+          domainEvent.parse({
+            id: eventId.parse(ulid()),
+            type: 'protocol.signatures-requested',
+            schemaVersion: 1,
+            occurredAt: instant.parse(new Date().toISOString()),
+            tenantId: t1,
+            scopeId: s1,
+            actor: { system: '@substrat-run/engine-protocol' },
+            entity: { entityType: 'protocol', entityId: ulid() },
+            piiClass: 'direct',
+            subjectId: subject,
+            payload: { senderParty: { label: said }, parties: [{ label: said }] },
+          });
+
+        /** Enqueue one routed-connector-shaped intent and hand back its id. */
+        const routeIntent = async (kind: string, subject: string, said: string) => {
+          const scope = await host.getScope(alice, t1, s1);
+          const id = await scope.invoke<string>('platform/request', {
+            kind,
+            payload: { executorId: 'signer', event: envelopeFor(subject, said) },
+          });
+          return id as PlatformRequestId;
+        };
+
+        const journal = async (kind: string): Promise<PlatformRequest[]> =>
+          host.listPlatformRequestHistory(t1, s1, { kind });
+
+        it('redacts the routed copy of the event, and leaves the neighbour intact', async () => {
+          // A distinct kind per test: this scope's journal is shared with every other
+          // suite that enqueues, and `connector:<provider>` IS a family of kinds.
+          const kind = `connector:erasure-${ulid()}`;
+          const erased = dataSubjectId.parse(ulid());
+          const spared = dataSubjectId.parse(ulid());
+          const theirs = await routeIntent(kind, erased, 'Anna Ek');
+          const neighbour = await routeIntent(kind, spared, 'Bo Lund');
+
+          const before = await journal(kind);
+          expect(JSON.stringify(before.find((r) => r.id === theirs))).toContain('Anna Ek');
+
+          const receipt = await host.admin.shredSubject(staff, t1, s1, erased);
+
+          const after = await journal(kind);
+          const mine = after.find((r) => r.id === theirs)!;
+          // THE property, asserted before the receipt that claims it: no trace of the
+          // name, anywhere in the row.
+          expect(JSON.stringify(mine)).not.toContain('Anna Ek');
+          // And the positive twin, without which a redact-everything bug passes the
+          // line above: the intent belonging to somebody else still says what it said,
+          // and is still waiting to be drained.
+          const other = after.find((r) => r.id === neighbour)!;
+          expect(JSON.stringify(other)).toContain('Bo Lund');
+          expect(other.status).toBe('pending');
+          expect(receipt.intentsRedacted).toBe(1);
+          // Settled afterwards so this test does not spend one of the scope's 32 pending
+          // slots for the rest of the run.
+          await host.settlePlatformRequest(t1, s1, neighbour, { status: 'done' });
+        });
+
+        it('keeps the envelope — the row is still there, still listed, still dated', async () => {
+          const kind = `connector:erasure-${ulid()}`;
+          const erased = dataSubjectId.parse(ulid());
+          const id = await routeIntent(kind, erased, 'Anna Ek');
+          const before = (await journal(kind)).find((r) => r.id === id)!;
+
+          await host.admin.shredSubject(staff, t1, s1, erased);
+
+          const after = (await journal(kind)).find((r) => r.id === id);
+          // The retention is intended, so the redaction must not become a delete: what
+          // this row proves — that something was asked of the platform, by whom, and
+          // when — is the audit trail, and it survives the erasure of what was said.
+          expect(after).toBeDefined();
+          expect(after!.kind).toBe(kind);
+          expect(after!.requestedAt).toBe(before.requestedAt);
+          expect(after!.requestedBy).toEqual(before.requestedBy);
+          // Obviously redacted rather than plausible data — a reader must not need the
+          // kind's schema to see that the content is gone.
+          expect(after!.payload).toEqual({
+            [REDACTED_INTENT_MARKER]: expect.objectContaining({
+              reason: 'subject-erasure',
+              subjectId: erased,
+            }),
+          });
+        });
+
+        it('never leaves a redacted intent drainable — a pending one settles failed', async () => {
+          const kind = `connector:erasure-${ulid()}`;
+          const erased = dataSubjectId.parse(ulid());
+          const id = await routeIntent(kind, erased, 'Anna Ek');
+          expect((await host.listPlatformRequests(t1, s1)).some((r) => r.id === id)).toBe(true);
+
+          await host.admin.shredSubject(staff, t1, s1, erased);
+
+          // Redacting and leaving it pending would hand the drain a tombstone to execute;
+          // leaving it pending and intact would keep the name. `failed` is the truthful
+          // terminal state — the delivery did not happen and now cannot.
+          const settled = (await journal(kind)).find((r) => r.id === id)!;
+          expect(settled.status).toBe('failed');
+          expect(settled.settledAt).not.toBeNull();
+          expect(settled.lastError).toContain('subject erasure');
+          const stillPending = await host.listPlatformRequests(t1, s1);
+          expect(stillPending.some((r) => r.id === id)).toBe(false);
+        });
+
+        it('redacts what the provider said back, not only what we sent', async () => {
+          const kind = `connector:erasure-${ulid()}`;
+          const erased = dataSubjectId.parse(ulid());
+          const id = await routeIntent(kind, erased, 'Anna Ek');
+          // #618 made a provider's own sentence readable on the journal, which is exactly
+          // why it can quote the person back at us. An erasure that emptied `payload` and
+          // left a name two columns over is the same defect, one column to the right.
+          await host.settlePlatformRequest(t1, s1, id, {
+            status: 'failed',
+            lastError: 'HTTP 409: Anna Ek requires a valid personal number field',
+          });
+
+          await host.admin.shredSubject(staff, t1, s1, erased);
+
+          const after = (await journal(kind)).find((r) => r.id === id)!;
+          expect(after.lastError).not.toContain('Anna Ek');
+          // Already settled, so the redaction does not re-date it or reopen it.
+          expect(after.status).toBe('failed');
+        });
+
+        it('keeps `result`, which is envelope — what the intent DID, not what it said', async () => {
+          // The redaction spares `result` on purpose, and until now nothing held it to
+          // that: for a routed dispatch it is `{ eventId }`, which names the event the
+          // outbox already keeps a redacted row for, so it is the same class of fact as
+          // `kind` and `requestedAt`. Asserted beside the two columns that DO go, so the
+          // line between them is a test rather than a sentence in the PR.
+          const kind = `connector:erasure-${ulid()}`;
+          const erased = dataSubjectId.parse(ulid());
+          const id = await routeIntent(kind, erased, 'Anna Ek');
+          await host.settlePlatformRequest(t1, s1, id, {
+            status: 'failed',
+            result: { eventId: 'evt-01', deliveredAt: '2026-09-20T00:00:00.000Z' },
+            lastError: 'HTTP 409: Anna Ek requires a valid personal number field',
+          });
+
+          await host.admin.shredSubject(staff, t1, s1, erased);
+
+          const after = (await journal(kind)).find((r) => r.id === id)!;
+          // What was said goes — both columns that could carry it.
+          expect(JSON.stringify(after.payload)).not.toContain('Anna Ek');
+          expect(after.lastError).not.toContain('Anna Ek');
+          expect(after.lastError).toContain('subject erasure');
+          // What happened stays, unchanged and whole.
+          expect(after.result).toEqual({
+            eventId: 'evt-01',
+            deliveredAt: '2026-09-20T00:00:00.000Z',
+          });
+        });
+
+        it('refuses a stale drain settling a row the erasure already redacted', async () => {
+          // The drain reads pending rows, runs the handler, then settles — so a settle can
+          // arrive after the erasure landed, carrying a provider's reply that quotes the
+          // person. Settling by id alone wrote that name back into `last_error` on a row
+          // whose payload had just been emptied. The settle is a compare-and-set on
+          // `pending`, so the stale pass is ignored rather than undoing the erasure.
+          //
+          // What this does NOT claim to stop is the DELIVERY: a handler that already read
+          // the payload has it. Only the writeback onto the redacted row is refused.
+          const kind = `connector:erasure-${ulid()}`;
+          const erased = dataSubjectId.parse(ulid());
+          const id = await routeIntent(kind, erased, 'Anna Ek');
+
+          await host.admin.shredSubject(staff, t1, s1, erased);
+
+          await host.settlePlatformRequest(t1, s1, id, {
+            status: 'done',
+            result: { eventId: 'delivered-before-the-shred' },
+            lastError: 'HTTP 409: Anna Ek requires a valid personal number field',
+          });
+
+          const after = (await journal(kind)).find((r) => r.id === id)!;
+          expect(JSON.stringify(after)).not.toContain('Anna Ek');
+          // The erasure's own settlement stands; the stale pass changed nothing at all.
+          expect(after.status).toBe('failed');
+          expect(after.result).toBeNull();
+          expect(after.attempts).toBe(0);
+        });
+
+        it('spares an intent whose embedded event is classified `none`', async () => {
+          // The outbox spares such an event even when it names the subject, so a COPY of
+          // it judged more harshly than its original would be incoherent, not stricter.
+          const kind = `connector:erasure-${ulid()}`;
+          const erased = dataSubjectId.parse(ulid());
+          const scope = await host.getScope(alice, t1, s1);
+          const id = (await scope.invoke<string>('platform/request', {
+            kind,
+            payload: {
+              executorId: 'signer',
+              event: {
+                ...envelopeFor(erased, 'Anna Ek'),
+                piiClass: 'none',
+                payload: { reference: 'nothing about anybody' },
+              },
+            },
+          })) as PlatformRequestId;
+
+          const receipt = await host.admin.shredSubject(staff, t1, s1, erased);
+          expect(receipt.intentsRedacted).toBe(0);
+          const after = (await journal(kind)).find((r) => r.id === id)!;
+          expect(JSON.stringify(after.payload)).toContain('nothing about anybody');
+          await host.settlePlatformRequest(t1, s1, id, { status: 'done' });
+        });
+
+        it('is idempotent — a second shred finds the tombstone and changes nothing', async () => {
+          const kind = `connector:erasure-${ulid()}`;
+          const erased = dataSubjectId.parse(ulid());
+          const id = await routeIntent(kind, erased, 'Anna Ek');
+
+          expect((await host.admin.shredSubject(staff, t1, s1, erased)).intentsRedacted).toBe(1);
+          const once = (await journal(kind)).find((r) => r.id === id)!;
+          // The tombstone names the subject, so it survives the candidate read and is
+          // declined by the predicate — which is the property, not a lucky shape.
+          expect((await host.admin.shredSubject(staff, t1, s1, erased)).intentsRedacted).toBe(0);
+          const twice = (await journal(kind)).find((r) => r.id === id)!;
+          expect(twice).toEqual(once);
+        });
       });
 
       it('records the erasure in BOTH logs — mutation and evidence-destruction', async () => {
