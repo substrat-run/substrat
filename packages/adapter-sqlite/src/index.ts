@@ -8315,6 +8315,25 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
+   * #1573: run a create-copy-drop-rename against the directory as ONE transaction.
+   * `exec` of four statements is four autocommits, and the state between DROP and
+   * RENAME is the one to fear: the next open runs the bootstrap first, whose `CREATE
+   * TABLE IF NOT EXISTS` puts an EMPTY table of the new shape back, detection then
+   * reads that shape and concludes the migration is done — and every copied row stays
+   * orphaned in the `_new` table, with nothing ever erroring. Atomic, neither
+   * intermediate state is reachable, so there is no recovery path to write (or to
+   * leave untested).
+   *
+   * `db.transaction` nests as a SAVEPOINT, as `ensureScheduleStateKind` (#1571) relies
+   * on. Each script leads with `DROP TABLE IF EXISTS <table>_new` to absorb a scratch
+   * table arriving from BELOW the transaction (a torn copy of the file, a backup that
+   * captured one mid-rebuild) — belt, not the fix.
+   */
+  private rebuildAtomically(script: string): void {
+    this.directory.transaction(() => this.directory.exec(script))();
+  }
+
+  /**
    * Rebuild `_substrat_identities` when it still carries the pre-K-22 global key.
    * A PRIMARY KEY cannot be ALTERed, so this is create-copy-drop-rename.
    *
@@ -8333,7 +8352,9 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
       .get('_substrat_identities') as { sql: string } | undefined;
     if (!row || row.sql.includes('PRIMARY KEY (tenant_id, provider, external_id)')) return;
-    this.directory.exec(`
+    // #1573: one transaction — see `rebuildAtomically`.
+    this.rebuildAtomically(`
+      DROP TABLE IF EXISTS _substrat_identities_new;
       CREATE TABLE _substrat_identities_new (
         provider     TEXT NOT NULL,
         external_id  TEXT NOT NULL,
@@ -8364,7 +8385,9 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
       .get('_substrat_admin_log') as { sql: string } | undefined;
     if (!row || !/tenant_id TEXT NOT NULL/.test(row.sql)) return;
-    this.directory.exec(`
+    // #1573: one transaction — see `rebuildAtomically`.
+    this.rebuildAtomically(`
+      DROP TABLE IF EXISTS _substrat_admin_log_new;
       CREATE TABLE _substrat_admin_log_new (
         id TEXT PRIMARY KEY,
         actor TEXT NOT NULL,
