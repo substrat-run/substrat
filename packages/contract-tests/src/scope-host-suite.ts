@@ -92,13 +92,24 @@ interface PlatformRequestRow {
  *
  * A promise that RESOLVES fails this too: `errorCodeOf(undefined)` is `undefined`, which
  * is never a code — so it cannot pass by not throwing at all.
+ *
+ * `message` is for the minority of refusals where the sentence carries something the code
+ * cannot: WHICH branch fired, when two branches share one code. `deleteVertical` refuses a
+ * live scope with "delete or rebind" and an archived one with "reap or restore" — both
+ * `conflict`, and an adapter that answered the wrong one would send an operator to a button
+ * that is not there. Pass it only for that; a code is the contract everywhere else.
  */
-const expectRefusal = async (p: Promise<unknown>, code: ErrorCode): Promise<void> => {
+const expectRefusal = async (
+  p: Promise<unknown>,
+  code: ErrorCode,
+  message?: RegExp,
+): Promise<void> => {
   const err = await p.then(
     () => undefined,
     (e: unknown) => e,
   );
   expect(errorCodeOf(err)).toBe(code);
+  if (message !== undefined) expect((err as Error | undefined)?.message).toMatch(message);
 };
 
 /** Adapter capability flags — everything an adapter cannot honor identically. */
@@ -3726,8 +3737,9 @@ export function scopeHostContractSuite(
 
     it('deletes a vertical — refused while a scope is bound, total once nothing is', async () => {
       // 'callout' still backs s1 (bound above): the refusal that stops a delete from
-      // stranding a live scope's version pin and routing.
-      await expect(host.admin.deleteVertical(staff, 'callout')).rejects.toThrow(/still backs/);
+      // stranding a live scope's version pin and routing. Pinned by the CODE (#113
+      // phase 5) — the sentence is free to change, the 409 is not.
+      await expectRefusal(host.admin.deleteVertical(staff, 'callout'), 'conflict');
       expect((await host.admin.listVerticals(staff)).some((v) => v.slug === 'callout')).toBe(true);
 
       // A vertical nothing is bound to deletes totally: row, versions, channels.
@@ -3821,12 +3833,21 @@ export function scopeHostContractSuite(
       const sRet = scopeId.parse(ulid());
       await host.admin.registerVertical(staff, { slug: 'retirable', name: 'Retirable', source: 'cli', ownerTenant: t2 });
       await host.provisionScope(staff, { tenantId: t2, scopeId: sRet, jurisdiction: 'eu', vertical: 'retirable' });
-      await expect(host.admin.deleteVertical(staff, 'retirable')).rejects.toThrow(
+      // Both halves are `conflict` and the sentence is what tells them apart, so both are
+      // asserted (#113 phase 5). The CODE is what the transport renders the 409 from —
+      // the archived half reached the control plane as a generic 500 until these throws
+      // were typed, because the pattern row that carried the live one read
+      // `/still backs \d+ scope\(s\)/` and the word `archived` sits in the middle of it.
+      await expectRefusal(
+        host.admin.deleteVertical(staff, 'retirable'),
+        'conflict',
         /still backs 1 scope\(s\) — delete or rebind/,
       );
 
       await host.admin.archiveScope(staff, t2, sRet);
-      await expect(host.admin.deleteVertical(staff, 'retirable')).rejects.toThrow(
+      await expectRefusal(
+        host.admin.deleteVertical(staff, 'retirable'),
+        'conflict',
         /1 archived scope\(s\) — reap or restore/,
       );
 

@@ -3709,6 +3709,29 @@ describe('control-plane API — vertical registry', () => {
     expect(ok.status).toBe(200);
     expect(await ok.json()).toMatchObject({ slug: 'unbound', deleted: true });
   });
+
+  it('maps the ARCHIVED-scope delete refusal to a 409 too — the sibling nothing pinned (#113)', async () => {
+    // `deleteVertical` refuses twice, and until #113 phase 5 only the LIVE half above
+    // ever reached the operator. The pattern row that carried it read
+    // `/still backs \d+ scope\(s\)/`, and the archived sentence puts the word `archived`
+    // between the digits and `scope(s)` — so it matched nothing, no other row caught it,
+    // and it collapsed into the generic 500. An operator who archived an app and then
+    // deleted its vertical read `internal error` instead of "reap or restore them first",
+    // which is the exact shape the case above exists to prevent.
+    //
+    // Both halves are typed refusals now, so the 409 comes from the throw's own code and
+    // this case holds the half the regex never covered.
+    const archived = scopeId.parse(ulid());
+    await json('/verticals', 'POST', { slug: 'retirable', name: 'Retirable', source: 'builtin' });
+    await json('/scopes', 'POST', { tenantId: t1, scopeId: archived, slug: 'retiring', vertical: 'retirable' });
+    await json(`/tenants/${t1}/scopes/${archived}/archive`, 'POST');
+
+    const refused = await json('/verticals/retirable', 'DELETE');
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(
+      /still backs 1 archived scope\(s\) — reap or restore/,
+    );
+  });
 });
 
 /**

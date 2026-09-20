@@ -129,6 +129,34 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     expect(mapError(new Error(sentence)).status).toBe(500);
   });
 
+  it('reads BOTH `still backs` refusals from the code — the archived one never matched (#113 phase 5)', () => {
+    // The fourth family off `CODE_PATTERNS`, and the one that was carrying a live defect.
+    // `deleteVertical` refuses twice on each adapter, and the row read
+    // `/still backs \d+ scope\(s\)/` — which the archived sentence does NOT match, because
+    // `archived` sits between the digits and `scope(s)`. No other row caught it, so it fell
+    // through to the generic 500: an operator who archived an app and then deleted its
+    // vertical was told `internal error` instead of how to proceed.
+    const live = `vertical 'fsm' still backs 1 scope(s) — delete or rebind them first`;
+    const archived = `vertical 'fsm' still backs 1 archived scope(s) — reap or restore them first`;
+
+    for (const sentence of [live, archived]) {
+      const typed = mapError(substratError('conflict', sentence));
+      expect(typed.status).toBe(409);
+      expect(typed.body.code).toBe('conflict');
+      expect(typed.body.detail).toBe(sentence);
+    }
+
+    // The old row, spelled out, so the defect cannot be re-introduced as an "equivalent"
+    // regex: it matched the live sentence and missed its sibling.
+    expect(/still backs \d+ scope\(s\)/.test(live)).toBe(true);
+    expect(/still backs \d+ scope\(s\)/.test(archived)).toBe(false);
+
+    // The other half: untyped, either sentence is an unreviewed throw and gets the generic
+    // 500 — which is what makes the deletion real rather than cosmetic.
+    expect(mapError(new Error(live)).status).toBe(500);
+    expect(mapError(new Error(archived)).status).toBe(500);
+  });
+
   it('relays a downstream status as about:blank — our taxonomy is not theirs to wear', () => {
     // auth-server's honest 501 for an unimplemented verb (the 2026-07-25 shape). The
     // status is the vertical's; putting a code of ours on it would be a claim we cannot
