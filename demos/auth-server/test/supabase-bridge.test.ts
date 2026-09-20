@@ -15,7 +15,7 @@ import { supabaseBridgeFrom } from '../src/settings.js';
  * to the person once it is: which account they land in, what stops them landing in somebody
  * else's, and the two ways the endpoint can refuse someone whose token was perfectly valid.
  *
- * The account key is the pair `(project issuer, Supabase sub)` — the same pair `genericOAuth`
+ * The account key is the pair `(provider id, Supabase sub)` — the same pair `genericOAuth`
  * would write if the project later migrated to signing keys and moved to the redirect flow.
  * The last test in the first block is what makes that claim mean something.
  */
@@ -96,8 +96,8 @@ const post = (token: string, extra: Record<string, unknown> = {}): Promise<Respo
 
 const users = (): { id: string; email: string; email_verified: number }[] =>
   db.prepare('SELECT id, email, email_verified FROM user ORDER BY email').all() as never;
-const accounts = (): { user_id: string; provider_id: string; issuer: string; account_id: string }[] =>
-  db.prepare('SELECT user_id, provider_id, issuer, account_id FROM account ORDER BY provider_id').all() as never;
+const accounts = (): { user_id: string; provider_id: string; account_id: string }[] =>
+  db.prepare('SELECT user_id, provider_id, account_id FROM account ORDER BY provider_id').all() as never;
 
 beforeEach(() => {
   db = new Database(':memory:');
@@ -115,7 +115,7 @@ async function seedLocal(emailVerified: boolean): Promise<string> {
 }
 
 describe('signing in with a Supabase token', () => {
-  it('creates the account, sets a session, and keys it on the project and the sub', async () => {
+  it('creates the account, sets a session, and keys it on the provider and the sub', async () => {
     const res = await post(await mint());
     expect(res.status).toBe(200);
     // A session cookie, not merely a 200 — the endpoint's whole job is to end in one.
@@ -123,7 +123,7 @@ describe('signing in with a Supabase token', () => {
 
     expect(users()).toMatchObject([{ email: 'newcomer@supabase.test' }]);
     expect(accounts()).toEqual([
-      { user_id: users()[0]!.id, provider_id: 'supabase', issuer: ISSUER, account_id: 'supabase-user-1' },
+      { user_id: users()[0]!.id, provider_id: 'supabase', account_id: 'supabase-user-1' },
     ]);
   });
 

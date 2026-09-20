@@ -61,9 +61,12 @@ export interface BankIdPluginOptions {
   clientIpHeader: string;
 }
 
-/** Mirrors Better Auth's `createLocalAccountIssuer('bankid')` — the helper is not exported
- *  from a public subpath, and the encoding is the identity for a plain lowercase id. */
-const ISSUER = 'local:bankid';
+/**
+ * The account's `providerId`, and with `accountId` (the person number) the whole key: Better
+ * Auth 1.7.3 went back to `(providerId, accountId)` (1.7.0–1.7.2 keyed `(issuer, accountId)`,
+ * where this was `local:bankid`). One BankID service, so the provider id is the namespace.
+ */
+const PROVIDER_ID = 'bankid';
 
 const orderKey = (orderRef: string): string => `bankid:${orderRef}`;
 
@@ -105,7 +108,7 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
   };
 
   return {
-    id: 'bankid',
+    id: PROVIDER_ID,
     endpoints: {
       bankidStart: createAuthEndpoint(
         '/bankid/start',
@@ -164,7 +167,7 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
 
           const who = result.completionData.user;
           const account = await ctx.context.internalAdapter.findAccountByKey({
-            issuer: ISSUER,
+            providerId: PROVIDER_ID,
             accountId: who.personalNumber,
           });
           let user = account ? await ctx.context.internalAdapter.findUserById(account.userId) : null;
@@ -184,12 +187,11 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
                 email: `${who.personalNumber}@bankid.placeholder.invalid`,
                 emailVerified: false,
               },
-              { method: 'bankid' },
+              { method: PROVIDER_ID },
             );
             await ctx.context.internalAdapter.linkAccount({
               userId: user.id,
-              providerId: 'bankid',
-              issuer: ISSUER,
+              providerId: PROVIDER_ID,
               accountId: who.personalNumber,
             });
           }

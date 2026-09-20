@@ -27,10 +27,16 @@ import { SupabaseTokenError, supabaseIssuerOf, verifySupabaseToken } from './sup
  * `oauth_query` hands someone a relying party sent here straight back to that app — the #898
  * contract, kept for free.
  *
- * The account is keyed `(issuer, accountId)` = (the project's issuer, Supabase's `sub`) — the
- * SAME pair `genericOAuth` would use if the project later migrates and moves to the redirect
- * flow. That is deliberate, and it is the migration story: the same person arrives at the same
- * account, and the `sub` every relying party of this issuer already stored does not move.
+ * The account is keyed `(providerId, accountId)` = (`supabase`, Supabase's `sub`) — the SAME
+ * pair `genericOAuth` writes if the project later migrates and moves to the redirect flow
+ * under the catalogue entry of that id. That is deliberate, and it is the migration story: the
+ * same person arrives at the same account, and the `sub` every relying party of this issuer
+ * already stored does not move.
+ *
+ * The project's `issuer` therefore names what a token must claim (`verifySupabaseToken`) and is
+ * no longer part of the account's key — Better Auth 1.7.3 dropped `account.issuer`, having
+ * added it in 1.7.0. A Supabase `sub` is a UUID, unique across projects, so the project was
+ * never what told two people apart.
  */
 
 export interface SupabaseBridgeOptions {
@@ -102,7 +108,7 @@ export const supabasePlugin = (opts: SupabaseBridgeOptions) => {
           });
 
           const account = await ctx.context.internalAdapter.findAccountByKey({
-            issuer,
+            providerId: PROVIDER_ID,
             accountId: identity.sub,
           });
           let user = account ? await ctx.context.internalAdapter.findUserById(account.userId) : null;
@@ -154,13 +160,13 @@ export const supabasePlugin = (opts: SupabaseBridgeOptions) => {
             // the Durable Object behind its input gate, the Node dev server on synchronous
             // better-sqlite3 — so two first sign-ins for one subject cannot interleave between
             // the miss above and this link. Swap in an adapter with a genuinely async driver
-            // and that stops being true: both would miss, both would create a user, and the
-            // loser of the unique `(issuer, accountId)` index would leave an account-less row
-            // squatting an email address. Whoever makes that change owns this sequence.
+            // and that stops being true: both would miss and both would link. Nothing catches
+            // it below — since 1.7.3 the account key `(providerId, accountId)` carries no unique
+            // index — so the subject would hold two rows, and Better Auth refuses a lookup that
+            // matches more than one. Whoever makes that change owns this sequence.
             await ctx.context.internalAdapter.linkAccount({
               userId: user.id,
               providerId: PROVIDER_ID,
-              issuer,
               accountId: identity.sub,
             });
           }

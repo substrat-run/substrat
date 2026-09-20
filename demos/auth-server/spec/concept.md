@@ -228,11 +228,13 @@ which instead: that reader has proved their token, and the answer is one they ca
 
 Two properties worth stating because they are choices, not consequences:
 
-- **The account key is `(project issuer, sub)`** — the SAME pair `genericOAuth` writes for the
-  redirect flow. So a project that later migrates its JWT secret and moves to the catalogue
-  entry finds its people in the accounts they already had, and the `sub` every relying party
-  of this issuer stored does not move. The legacy bridge is a stage, and this is what makes
-  leaving it cheap.
+- **The account key is `(provider id, sub)`** — the SAME pair `genericOAuth` writes for the
+  redirect flow under the catalogue entry of that id. So a project that later migrates its JWT
+  secret and moves to the catalogue entry finds its people in the accounts they already had,
+  and the `sub` every relying party of this issuer stored does not move. (Better Auth
+  1.7.0–1.7.2 keyed an account by `(issuer, sub)` instead; 1.7.3 went back to the provider id,
+  and the project's issuer now only says what a token must claim.) The legacy bridge is a
+  stage, and this is what makes leaving it cheap.
 - **`ACCOUNT_LINKING` is applied here explicitly.** Better Auth's own implicit-linking rules
   live in the OAuth callback; a plugin minting accounts through the internal adapter never
   passes through them. Without that, an address that already had an account here would have
@@ -432,10 +434,12 @@ hand-kept copy drifts silently — into a runtime error, inside a Durable Object
 real database and asserts the adapter can write through it.
 
 Neither store runs migrations; both are created from `CREATE TABLE IF NOT EXISTS` on boot,
-which cannot fix a table whose SHAPE changed. `db/upgrade.ts` handles the two places where
-1.7 does exactly that — `account` gained a required `issuer` column (backfilled: these are
-user credentials), and `oauth_access_token` / `oauth_consent` are reused names with new
-columns (renamed to `legacy_*`, not dropped). Relying parties must be re-registered after an
+which cannot fix a table whose SHAPE changed. `db/upgrade.ts` handles the places where
+that happens — a store that ran Better Auth 1.7.0–1.7.2 carries a required `account.issuer`
+that 1.7.3+ no longer writes, so every sign-up would fail on it: the column and its index are
+dropped, every account and credential kept (a 1.6 store never had it and is left alone) — and
+`oauth_access_token` / `oauth_consent` are reused names with new columns (renamed to
+`legacy_*`, not dropped). Relying parties must be re-registered after an
 upgrade; the old rows stay readable under `legacy_*`.
 
 ## Running it

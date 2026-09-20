@@ -435,9 +435,8 @@ describe('the providers admin surface', () => {
 
   it('refuses a discovery document that lies about its issuer or downgrades an endpoint', async () => {
     const cookie = await signInAs(ADMIN);
-    // The document at impostor.acme.test declares id.acme.test's issuer. That issuer becomes
-    // the account namespace (`accountIssuer` + the upstream's `sub`), so accepting it would
-    // let one upstream squat another configured provider's accounts.
+    // The document at impostor.acme.test declares id.acme.test's issuer. Accepting it would let
+    // one upstream pass itself off as another configured provider.
     const impostor = await addAcme(cookie, { issuer: 'https://impostor.acme.test' });
     expect(impostor.status).toBe(400);
     expect(((await impostor.json()) as { error: string }).error).toContain('issuer');
@@ -580,7 +579,6 @@ describe('rows becoming Better Auth config', () => {
       authorizationUrl: 'https://id.acme.test/oauth/authorize',
       tokenUrl: 'https://id.acme.test/oauth/token',
       userInfoUrl: 'https://id.acme.test/oauth/userinfo',
-      accountIssuer: 'https://id.acme.test',
       clientId: 'acme-client-id',
       clientSecret: 'acme-secret',
       scopes: ['openid', 'profile', 'email'],
@@ -588,6 +586,9 @@ describe('rows becoming Better Auth config', () => {
       disableSignUp: false,
     });
     expect(acme).not.toHaveProperty('discoveryUrl');
+    // Removed from Better Auth in 1.7.3: the account key is `(providerId, accountId)`, so there
+    // is no namespace option left to set, and a stale one must not creep back in.
+    expect(acme).not.toHaveProperty('accountIssuer');
     // The subject is the id_token's `sub` (mapped to `id` by the plugin's userinfo reader) —
     // never a field switch at runtime, which would change an account's identity.
     const subjectOf = acme!.accountSubject as (ctx: { profile: Record<string, unknown> }) => string;
@@ -614,9 +615,6 @@ describe('rows becoming Better Auth config', () => {
       authorizationUrl: `${SUPABASE_ISSUER}/oauth/authorize`,
       tokenUrl: `${SUPABASE_ISSUER}/oauth/token`,
       userInfoUrl: `${SUPABASE_ISSUER}/oauth/userinfo`,
-      // The account namespace is the issuer Supabase declares — the project, not the host.
-      // Two projects on `supabase.co` are two directories, and this is what keeps them apart.
-      accountIssuer: SUPABASE_ISSUER,
       clientId: 'supabase-client-id',
       scopes: ['openid', 'profile', 'email'],
       pkce: true,

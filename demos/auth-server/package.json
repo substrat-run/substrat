@@ -45,13 +45,13 @@
     "gen:schema": "tsx scripts/gen-schema.mts"
   },
   "dependencies": {
-    "@better-auth/cimd": "^1.7.2",
-    "@better-auth/oauth-provider": "^1.7.2",
+    "@better-auth/cimd": "^1.7.3",
+    "@better-auth/oauth-provider": "^1.7.3",
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-email": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
-    "better-auth": "^1.7.2",
+    "better-auth": "^1.7.3",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",

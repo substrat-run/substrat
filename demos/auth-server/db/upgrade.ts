@@ -5,14 +5,21 @@ import type { SqlExec } from '../src/introspect.js';
  * `SCHEMA_STATEMENTS`, on every boot, on every store.
  *
  * `CREATE TABLE IF NOT EXISTS` is the whole migration story for this vertical, and it is
- * exactly wrong twice across the `oidcProvider` → `oauthProvider` move:
+ * exactly wrong three times across the `oidcProvider` → `oauthProvider` move and the Better
+ * Auth 1.7.0–1.7.2 → 1.7.3 account revert:
  *
- *  1. **`account` gained a required `issuer` column** (Better Auth 1.7 core, not the OAuth
- *     plugin). `IF NOT EXISTS` sees a table and leaves it alone, so an upgraded install would
- *     keep an `account` table the adapter now writes an extra column to — and every
- *     password sign-in would fail. This is user credentials, not OAuth state: it is
- *     backfilled, never dropped. Better Auth writes `local:<provider_id>` for accounts whose
- *     provider has no issuer of its own, which is what the backfill reproduces.
+ *  1. **`account` carries an `issuer` column that Better Auth no longer writes.** 1.7.0–1.7.2
+ *     made it required (`NOT NULL`, with a unique `(issuer, account_id)` index), and this
+ *     upgrade used to ADD it; 1.7.3 went back to keying an account by `(provider_id,
+ *     account_id)`, as 1.6 did, and stopped writing it. `IF NOT EXISTS` sees a table and
+ *     leaves it alone, so an install that ran 1.7.0–1.7.2 keeps a `NOT NULL` column nothing
+ *     fills — and every sign-up and every account link fails on it, including the password
+ *     ones. So it is DROPPED, index first: SQLite refuses to drop an indexed column. That is
+ *     the cleanup Better Auth's own upgrade guide prescribes for SQLite, and it loses nothing
+ *     that is not derivable — `local:<provider_id>` for a local method, the provider row's own
+ *     `identity_provider.issuer` for a generic upstream. A store from 1.6 never had the
+ *     column and is left alone; adding it back would be the bug. This is user credentials'
+ *     table, not OAuth state, but it is a column being removed, not a table.
  *
  *  2. **`oauth_access_token` and `oauth_consent` are REUSED NAMES with new shapes.** This is
  *     the silent one: `IF NOT EXISTS` would keep the 1.6 tables, the plugin would query
@@ -38,6 +45,8 @@ export interface SchemaUpgrade {
   renamed: string[];
   /** Columns added to a surviving table. */
   added: string[];
+  /** Columns removed from a surviving table, by `table.column`. */
+  dropped: string[];
 }
 
 /**
@@ -54,7 +63,7 @@ const LEGACY_TABLES: { table: string; legacyOnlyColumn: string }[] = [
 ];
 
 export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
-  const upgrade: SchemaUpgrade = { renamed: [], added: [] };
+  const upgrade: SchemaUpgrade = { renamed: [], added: [], dropped: [] };
 
   for (const { table, legacyOnlyColumn } of LEGACY_TABLES) {
     const columns = columnsOf(sql, table);
@@ -70,18 +79,14 @@ export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
     }
   }
 
+  // The index goes first, and on its own guard: a boot that stopped between the two statements
+  // finds the column still there and the index already gone, and must still drop the column.
+  // Nothing wraps these in a transaction on the Node runtime.
   const account = columnsOf(sql, 'account');
-  if (account.length > 0) {
-    if (!account.includes('issuer')) {
-      // Added nullable — SQLite cannot add a NOT NULL column without a constant default.
-      sql.exec('ALTER TABLE account ADD COLUMN issuer TEXT');
-      upgrade.added.push('account.issuer');
-    }
-    // The adapter always writes the column from here on, so a null row can only be the
-    // upgrade's own — including one a crash left behind between the ALTER above and this
-    // fill, which is why the fill runs whenever the table exists rather than only beside
-    // its ALTER. Nothing wraps these statements in a transaction on the Node runtime.
-    sql.exec("UPDATE account SET issuer = 'local:' || provider_id WHERE issuer IS NULL");
+  if (account.includes('issuer')) {
+    sql.exec('DROP INDEX IF EXISTS account_issuer_account_id_idx');
+    sql.exec('ALTER TABLE account DROP COLUMN issuer');
+    upgrade.dropped.push('account.issuer');
   }
 
   // Generic OIDC providers (#1213's follow-up): `identity_provider` grew `issuer`, `label`

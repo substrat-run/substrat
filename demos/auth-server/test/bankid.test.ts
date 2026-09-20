@@ -359,9 +359,9 @@ describe('the sign-in flow', () => {
     // The identity key is the personal number, under the bankid provider — sign in twice,
     // land in the same account.
     const account = db
-      .prepare('SELECT issuer, account_id, user_id FROM account WHERE provider_id = ?')
-      .get('bankid') as { issuer: string; account_id: string; user_id: string };
-    expect(account).toMatchObject({ issuer: 'local:bankid', account_id: PNR });
+      .prepare('SELECT account_id, user_id FROM account WHERE provider_id = ?')
+      .get('bankid') as { account_id: string; user_id: string };
+    expect(account).toMatchObject({ account_id: PNR });
     expect(session?.user.id).toBe(account.user_id);
 
     // The order is spent: no more frames, no more polls.
