@@ -4361,6 +4361,21 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
 });
 
 /**
+ * Ask the caller's own dashboard scope whether their ROLE may change what this team runs
+ * (#1595). `resolveAccount` says who the caller is and an owned-slug check says the vertical
+ * is theirs; neither says what they may DO, and nothing below the seam can — the plane sees
+ * the dashboard's credential, not the person. The role is only known here, so every write
+ * under `/api/deployments/:slug` calls this before it acts. It is the
+ * `dashboard:provision-app` check the app-install operations already begin with, invoked as
+ * an operation that writes nothing (`dashboard/authorize-scope-change`): no new permission
+ * key, so no role changed. Reads stay open — a `viewer` still sees what they may not touch.
+ */
+async function assertMayManageApps(host: ScopeHost, node: DashboardNode): Promise<void> {
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  await dash.invoke('dashboard/authorize-scope-change', {});
+}
+
+/**
  * Promote one of MY verticals to `prod` — the one channel (#524; dev/staging retired). Self-
  * serve while the vertical is PRIVATE (its blast radius is this tenant alone — merge-to-main
  * deploys and dashboard rollback both land here). Prod on a LISTED vertical is refused:
@@ -4373,6 +4388,7 @@ app.post('/api/deployments/:slug/promote', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayManageApps(host, node);
   const body = promoteBody.parse(await c.req.json());
   const slug = c.req.param('slug');
   const cp = controlPlaneFor(c.env, node.tenantId);
@@ -4501,6 +4517,7 @@ app.delete('/api/deployments/:slug', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayManageApps(host, node);
   const slug = c.req.param('slug');
   const cp = controlPlaneFor(c.env, node.tenantId);
   // `listed` is on the vertical row, so the ownership read is the only one needed.
@@ -4541,8 +4558,8 @@ async function boundScopesContext(c: Context<{ Bindings: Env }>, act: boolean) {
   const slug = c.req.param('slug') as string;
   const cp = controlPlaneFor(c.env, node.tenantId);
   await assertOwnedFromCp(cp, slug); // your vertical, or 4xx
+  if (act) await assertMayManageApps(host, node);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  if (act) await dash.invoke('dashboard/authorize-scope-change', {});
   return { cp, slug, dash };
 }
 
@@ -4625,6 +4642,7 @@ app.post('/api/deployments/:slug/previews', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayManageApps(host, node);
   const slug = c.req.param('slug');
   const body = createPreviewBody.parse(await c.req.json());
   const cp = cpOrThrow(c.env, node.tenantId);
@@ -4650,6 +4668,7 @@ app.delete('/api/deployments/:slug/previews/:tag', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayManageApps(host, node);
   const slug = c.req.param('slug');
   const cp = cpOrThrow(c.env, node.tenantId);
   await assertOwnedFromCp(cp, slug);
@@ -4667,6 +4686,7 @@ app.post('/api/deployments/:slug/previews/:tag/domain', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayManageApps(host, node);
   const slug = c.req.param('slug');
   const tag = c.req.param('tag');
   const body = z
