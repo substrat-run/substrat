@@ -1020,7 +1020,9 @@ are honestly computable *honest*, and display them.
   `_substrat_outbox` is per-scope-database, so any cross-tenant aggregate needs the Tier-2
   fan-in sink that does not exist yet; reads emit nothing, so API-call volume is unmeterable
   from the spine *by construction*; and `drained_at` is declared but written nowhere in the
-  repo, so a metering consumer has no cursor to resume from.
+  repo, so a metering consumer has no cursor to resume from. *Storage* has since become
+  readable on demand, per tenant, for scope databases only (§5.2). It is a reading, not a
+  stored gauge.
 - **Meter 4 (network transactions)** needs the cross-tenant order flow (§5.4, plan §8.4),
   which does not exist.
 
@@ -1062,6 +1064,46 @@ where an operator would go looking for the number. That is the point of writing 
 their absence is a property of the architecture (per-scope outbox with no cross-tenant
 fan-in; reads emit nothing; no cross-tenant order flow), not a slice that was skipped. If
 a Tier-2 sink ever lands, meter 3 becomes a new question — not a resumption of this one.
+
+### 5.2 Storage, read on demand ([#1524](https://github.com/substrat-run/substrat/issues/1524))
+
+One tenant's storage is the sum of its **scope databases**, read when someone asks and
+stored nowhere: `GET /meters/storage?tenantId=…[&cursor=…&limit=…]` (staff-only, like
+`/meters`), rendered as the **Storage** card on the console's tenant page. Each scope
+answers `SqlStorage.databaseSize` on Cloudflare and `page_count × page_size` on SQLite,
+through `HostAdmin.scopeDatabaseSize` when the scope is co-located and through the
+vertical's `/internal/database-size` when a vertical's deployment holds its DO.
+
+**Read-only first, by decision.** A stored gauge would bundle a migration, a cadence and a
+billing-truth decision before anyone had seen a number. The cadence is the trap. A reading
+wakes the scope, so a daily sweep would cost a DO invocation per scope per day, on scopes
+nobody uses. So:
+
+- **No sweep, no drain phase, no fleet-wide form.** `tenantId` is required, and the card
+  reads nothing until the button is pressed.
+- **Bounded per request.** A reading is one page of the tenant's scopes, at most 200
+  (default 50), with at most 8 reads in flight. A tenant with thousands of scopes is read a
+  page per press, and the card says how many scopes remain unread.
+- **A partial sum says so.** A scope whose read fails (its DO is unreachable, or its
+  deployment predates the route and answers 501) is listed with the error and left out of
+  the sum, and the reading is `complete: false`. A sum is labelled a total only when ONE
+  page, read from one directory listing, covered every non-reaped scope and none failed. A
+  walk over several pages is never a total. The directory has no revision to compare between
+  pages, so a scope reaped and another provisioned mid-walk can swap places with every count
+  still agreeing, and the card says the directory may have changed. A scope naming a vertical that
+  no deployment resolves fails. It is never read from the control plane's own namespace,
+  where it would wake an empty placeholder and report that size.
+- **Reaped scopes are counted, not read.** Their storage is gone.
+
+**Explicitly excluded**, in the reading's `excluded` field and on the card:
+
+- **Attachment files.** Their bytes live in a blob store. The scope holds only their rows.
+- **Per-tenant D1 databases** (`GET /tenants/:id/stores` lists them, without sizes).
+- **The lake.** Its `bytes` column is event history as shipped, a different quantity.
+
+Preview forks are scopes of the tenant and are included. Backups are objects in a bucket
+and are not. The number is what the scope databases occupy, free pages included, which is
+what Cloudflare bills a DO for. It is not live row volume.
 
 ## 6. Auth: the sequencing
 

@@ -128,6 +128,13 @@ export type {
   TenantMetricsBucket,
 } from './observability.js';
 export { TENANT_SERIES_SCOPE_CAP } from './observability.js';
+export {
+  STORAGE_PAGE_DEFAULT,
+  STORAGE_PAGE_MAX,
+  STORAGE_READ_CONCURRENCY,
+  readStoragePage,
+} from './storage-meter.js';
+export type { StoragePageInput, StorageScope } from './storage-meter.js';
 export type { PlatformRuntime } from './platform-runtime.js';
 export { createCfDoNamespaceReader, namespacesForScript } from './do-namespaces.js';
 export type { DoNamespaceReader, DoNamespaceRecord, CfDoNamespaceOptions } from './do-namespaces.js';

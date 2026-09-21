@@ -1035,6 +1035,15 @@ export function defineScopeDO(
     }
 
     /**
+     * This scope's database size in bytes (#1524): `SqlStorage.databaseSize`, which Cloudflare
+     * bills on. Its one caller is an on-demand storage reading, never a sweep, because reaching
+     * it wakes this DO.
+     */
+    databaseSize(): number {
+      return this.sql.databaseSize;
+    }
+
+    /**
      * The PITR bookmarks this scope recorded before migration passes (#286),
      * newest first — what a backout UI offers as rewind points. Rows taken after
      * a rewind's target no longer exist post-rewind, by construction (they live

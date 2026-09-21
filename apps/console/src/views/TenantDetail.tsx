@@ -15,6 +15,7 @@ import { portalUrl } from '../lib/portal';
 import { KNOWN_SKUS } from '../lib/skus';
 import { d1DatabaseUrl, r2BucketUrl, type PlatformRuntime, type TenantStores } from '../lib/cf-links';
 import type { Api } from '../lib/api';
+import { StorageCard } from './StorageCard';
 
 /** One row of the store inventory below — the two ledgers flattened into the one
  *  question staff actually ask: what holds this tenant's bytes, and where is it? */
@@ -321,7 +322,7 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, run
         <Card
           title="Metered"
           description="What this tenant contributes to §5's two computable meters. Nothing here is billed — the platform meters and does not invoice."
-          footer={`read at ${new Date(meter.readAt).toLocaleString()} · meters 3 and 4 are uncomputable by construction`}
+          footer={`read at ${new Date(meter.readAt).toLocaleString()} · storage is read on demand below · meter 4 is uncomputable by construction`}
         >
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
             <Stat
@@ -349,6 +350,17 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, run
             />
           </div>
         </Card>
+      )}
+
+      {/* #1524: storage, on demand. Its own card because it is read differently. The meters
+          above are directory counts read on every visit, and this one wakes scopes, so it
+          waits for a press. */}
+      {meter?.perTenant[0] && (
+        <StorageCard
+          api={api}
+          tenantId={tenant.id}
+          readableScopes={meter.perTenant[0].scopes.total - meter.perTenant[0].scopes.reaped}
+        />
       )}
 
       <Card

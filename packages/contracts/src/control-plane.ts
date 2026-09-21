@@ -13,7 +13,7 @@ import {
 // #36's tenant export speaks the platform's own vocabulary rather than restating it, so
 // it composes the schemas that already define these shapes. One-way imports only —
 // none of these modules imports this one, so no cycle.
-import { org, scope, tenant, tenantStatus } from './tenancy.js';
+import { org, scope, scopeStatus, tenant, tenantStatus } from './tenancy.js';
 import { tenantRole } from './permission.js';
 import { hostnameBinding } from './routing.js';
 import {
@@ -1169,3 +1169,64 @@ export const meterReading = z.object({
   perTenant: z.array(tenantMeterRow),
 });
 export type MeterReading = z.infer<typeof meterReading>;
+
+/**
+ * Storage, read on demand (#1524): the size of each of one tenant's scope DATABASES,
+ * and their sum. Read-only first, by decision — nothing is stored, no sweep takes it,
+ * and there is no fleet-wide form. Reading a scope's size wakes that scope's Durable
+ * Object, so a periodic or fleet-wide reading would bill a DO invocation per idle scope
+ * per interval. The reading is taken when a person asks for it and costs what they asked.
+ *
+ * What it counts: `SqlStorage.databaseSize` on Cloudflare, `page_count × page_size` on
+ * SQLite. That is rows, indexes, the spine, and free pages the database has not given back.
+ * What it deliberately does NOT count, named in `excluded` so a consumer cannot mistake
+ * the number for the whole bill:
+ * - `attachments`: attachment bytes live in a blob store. The scope holds only their rows.
+ * - `tenant-stores`: per-tenant D1 databases are separate databases.
+ * - `lake`: shipped event history is volume in the lake, not in any scope.
+ */
+export const storageExclusion = z.enum(['attachments', 'tenant-stores', 'lake']);
+export type StorageExclusion = z.infer<typeof storageExclusion>;
+
+/** Every exclusion, in the order a surface lists them. A reading always carries all three. */
+export const STORAGE_EXCLUSIONS: readonly StorageExclusion[] = ['attachments', 'tenant-stores', 'lake'];
+
+/** One scope's database size, or why it could not be read. Exactly one of the two is set. */
+export const scopeStorageReading = z.union([
+  z.object({ scopeId, status: scopeStatus, bytes: z.number().int().nonnegative() }),
+  z.object({ scopeId, status: scopeStatus, bytes: z.null(), error: z.string().min(1) }),
+]);
+export type ScopeStorageReading = z.infer<typeof scopeStorageReading>;
+
+/**
+ * One PAGE of a tenant's storage reading. It is paged because each scope read wakes
+ * a DO, and one card opened on a tenant with thousands of scopes must not fan out to
+ * all of them. A caller that wants more asks for the next page. `nextCursor` is the
+ * scope id to resume after.
+ *
+ * `complete` is the only field that may be read as "this is the tenant's total". It is
+ * true when this one page covered every readable scope (no cursor was given and none is
+ * returned) and no read failed. A partial sum is `bytes` with `complete: false`, and a
+ * surface must say so rather than label it a total.
+ */
+export const storageMeterReading = z.object({
+  tenantId,
+  readAt: instant,
+  /** What `bytes` is a sum of. Only scope databases, for now. */
+  basis: z.literal('scope-databases'),
+  excluded: z.array(storageExclusion),
+  /** Sum of the successful reads on THIS page. Never includes a failed one. */
+  bytes: z.number().int().nonnegative(),
+  /** This page's scopes, in scope-id order. */
+  scopes: z.array(scopeStorageReading),
+  /** Reads on this page that succeeded, and that failed. */
+  read: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  /** Every readable (non-reaped) scope the tenant has, across all pages: the denominator. */
+  total: z.number().int().nonnegative(),
+  /** Reaped scopes are not read: their storage is gone. Counted so `total` reconciles with meter 1. */
+  reaped: z.number().int().nonnegative(),
+  nextCursor: scopeId.nullable(),
+  complete: z.boolean(),
+});
+export type StorageMeterReading = z.infer<typeof storageMeterReading>;

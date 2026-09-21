@@ -273,7 +273,7 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
 
       <Card
         title="What meter 3 still cannot count, and why meter 4 is not shown"
-        description="Storage is unbuilt; API reads and meter 4 are uncomputable, by construction. Writing it here so it stops being re-proposed."
+        description="Storage is read per tenant, on demand, not here; API reads and meter 4 are uncomputable, by construction. Writing it here so it stops being re-proposed."
       >
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
           <li>
@@ -281,9 +281,11 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
             calls fan in because each one is raised as a platform intent and drained here; nothing
             else does. The Tier-2 sink exists: the sweep drains every scope's outbox to the lake, and
             each row carries its tenant and its serialized size in bytes. What is missing is a reader.
-            Nothing aggregates those rows per tenant yet, and a scope's database size is not collected
-            at all, so storage stays unmetered (#1524). Reads emit nothing at all, so API volume is
-            unmeterable from the event spine by design, not by omission.
+            Nothing aggregates those rows per tenant yet. Storage is read on a tenant's own page, on
+            demand, as the sum of its scope databases (#1524). It is not shown on this fleet view
+            because a fleet-wide reading would wake every scope in the fleet. Attachment files,
+            per-tenant D1 databases and the lake are not in that sum. Reads emit nothing at all, so
+            API volume is unmeterable from the event spine by design, not by omission.
           </li>
           <li>
             <strong>Meter 4 (network transactions).</strong> Needs the cross-tenant order flow, which

@@ -150,6 +150,12 @@ export interface VerticalScopeHost {
    * count that quietly performs the reopen it was meant to preview.
    */
   redrainCountLocal?(scopeId: ScopeId, drainedBefore: string): Promise<number>;
+  /**
+   * The scope database's size in bytes (#1524), for an on-demand storage reading. OPTIONAL
+   * for the reason `redrainCountLocal` is: a host built before it satisfies this interface
+   * without it, and the route answers 501 rather than 0, which a sum would add.
+   */
+  databaseSizeLocal?(scopeId: ScopeId): Promise<number>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
   eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain>;
@@ -632,6 +638,18 @@ export function mountPlatformSurface<Env extends object>(
   app.get('/internal/migrations', async (c) =>
     c.json(await deps.hostFor(c.env).appliedMigrationsLocal(scopeIdOf.parse(c.req.query('scopeId')))),
   );
+
+  // #1524: one scope's database size, for the console's on-demand storage reading.
+  // Metadata only, and no scope bytes cross. The read wakes the scope's DO, which is why
+  // the platform asks only when a person opens the card and pages what it asks for.
+  app.get('/internal/database-size', async (c) => {
+    const scope = scopeIdOf.parse(c.req.query('scopeId'));
+    const host = deps.hostFor(c.env);
+    if (!host.databaseSizeLocal) {
+      return c.json({ error: 'this deployment cannot read a database size (#1524). Redeploy it' }, 501);
+    }
+    return c.json({ bytes: await host.databaseSizeLocal(scope) });
+  });
 
   // #286: the PITR bookmarks one scope recorded before its migration passes — the rewind
   // points a backout offers. Metadata only; no scope bytes cross the boundary.

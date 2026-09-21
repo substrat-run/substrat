@@ -786,6 +786,21 @@ export class VerticalClient {
   }
 
   /**
+   * One scope's database size in bytes (#1524), for the on-demand storage reading.
+   * Metadata only. A 200 without a number is a wire disagreement and throws, because a
+   * missing size read as 0 would sit inside a sum and look like a real, small scope.
+   */
+  async databaseSize(scopeId: ScopeId): Promise<number> {
+    const answer = await this.getInternal<{ bytes?: unknown }>(
+      `/internal/database-size?scopeId=${encodeURIComponent(scopeId)}`,
+    );
+    if (typeof answer.bytes !== 'number' || !Number.isInteger(answer.bytes) || answer.bytes < 0) {
+      throw new ControlPlaneError(502, `vertical answered database-size without a size for scope ${scopeId}`);
+    }
+    return answer.bytes;
+  }
+
+  /**
    * The PITR bookmarks one scope recorded before its migration passes (#286) —
    * the rewind points the deployments UI offers for a backout. Metadata only;
    * no scope bytes cross the boundary.
