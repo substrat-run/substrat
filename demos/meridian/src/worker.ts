@@ -280,9 +280,10 @@ mountPlatformSurface<Env>(app, {
     await identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner);
     // Onto the sweep roster, so the scope's schedules run (#1646). This hook also runs on
     // `/internal/reconcile`, which is how a scope provisioned before the sweeper existed
-    // joins. Meridian is a listed vertical, so a promote does not advance its installs'
-    // versions and #1172's post-push reconcile does not reach them: an install joins when
-    // its tenant updates it, or when somebody re-runs its provisioning (scheduler.md §3.3, #1653).
+    // joins. Meridian is a listed vertical, so a promote moves none of its installs'
+    // versions; #1172's reconcile follows the version each install RUNS (#1653), so every
+    // install is reconciled after a promote anyway, a bounded batch per control-plane pass
+    // (scheduler.md §3.3). Which is also why everything here must stay idempotent.
     await sweeper(env).noteScope(b.tenantId, b.scopeId);
   },
   // A reaped scope's alarm must never wake it again.
