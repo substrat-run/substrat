@@ -98,8 +98,10 @@ export const platformRequest = z.object({
    * A read returns a list, and a strict decode let one malformed row throw for all of them —
    * including `listPlatformRequestHistory`, the read that exists to explain a failure (#618),
    * disabled by the row that failed. So the read is tolerant and SAYS SO: every column that
-   * did not decode is named here, a JSON column that did not decode comes back empty rather
-   * than guessed at, and a scalar column comes back as stored.
+   * did not decode is named here, and its field comes back EMPTY (`null`, or a self-naming
+   * marker for `requestedBy`) rather than guessed at. Every other field still satisfies this
+   * schema — a row whose id, kind, status, attempts or `requestedAt` does not is never
+   * returned as one of these at all.
    *
    * The drain treats its presence as a refusal and never runs a handler on such a row: a
    * payload it could not decode is not a payload it may act on with `HostAdmin` authority.

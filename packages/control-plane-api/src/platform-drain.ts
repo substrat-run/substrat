@@ -191,23 +191,15 @@ export async function drainScopePlatformRequests(
         message: `platform intent ${request.id} failed: ${outcome.error ?? 'unknown'}`,
       });
     }
-    try {
-      await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, request.id, {
-        status: outcome.status,
-        result: outcome.result,
-        lastError: outcome.error ?? null,
-        failure: outcome.failure ?? null,
-      });
-    } catch (e) {
-      // An undecodable row may be unsettleable too — an id that is not a ULID is refused by
-      // the settle route's own parse — and it is refused identically on every pass. Letting
-      // that throw would hand the queue back to the one row the tolerant read exists to
-      // contain, so it is left pending (its terminal ops-failure above already landed) and
-      // the rows behind it drain. A healthy row's settle failure still throws, as it did.
-      if (request.decodeError === undefined) throw e;
-      report.pending++;
-      continue;
-    }
+    // No special case for a refused row: the tolerant read only ever hands back a row whose
+    // id satisfies the contract, so its settle is refused for the same reasons any settle
+    // is — transiently — and propagates the same way, surfacing the outage.
+    await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, request.id, {
+      status: outcome.status,
+      result: outcome.result,
+      lastError: outcome.error ?? null,
+      failure: outcome.failure ?? null,
+    });
     report[outcome.status]++;
   }
   return report;

@@ -18,13 +18,14 @@ Module code cannot write such a row, but a restore replays a dump's rows verbati
 from another world or one edited by hand was enough.
 
 The reads are tolerant now, and say so. A row that does not decode is returned beside all
-the others with a new optional `decodeError` naming every column that failed; a JSON column
-that did not decode comes back empty rather than guessed at, and a scalar column comes back
-as stored. A row the platform wrote carries no `decodeError` at all, so a healthy list reads
-exactly as it did before. The three copies of the decoder are now one, in the kernel
-(`platformRequestOf`).
+the others with a new optional `decodeError` naming every column that failed, and each of
+those fields comes back empty — `null`, or a self-naming marker for the requester — rather
+than guessed at. Every value a read returns still satisfies the published `PlatformRequest`
+schema: a row whose id, kind, status, attempt count or request time is itself corrupt has no
+honest empty value to fall back to, and is still refused as it was. A row the platform wrote
+carries no `decodeError` at all, so a healthy list reads exactly as it did before. The three
+copies of the decoder are now one, in the kernel (`platformRequestOf`).
 
 The drain stays strict where it acts. A row carrying `decodeError` never reaches a handler:
 it is settled `failed`, attributed to the platform, with the decode failure in its
-`lastError`, and lands as a terminal ops failure like any other refusal. A malformed row
-that cannot even be settled is left pending instead of stopping the rows behind it.
+`lastError`, and lands as a terminal ops failure like any other refusal.

@@ -215,40 +215,50 @@ describe('drainScopePlatformRequests — an undecodable row is refused, never ex
     expect(settled[0]!.lastError).toMatch(/could not be decoded \(result: /);
   });
 
-  it('a bad row that cannot even be SETTLED does not hand the queue back to it', async () => {
-    // An id that is not a ULID is refused by the settle route's own parse, identically on
-    // every pass. Sorted first, it would stop every pass before the rows behind it.
-    const broken = intent('provision-sibling', {
-      id: 'not-a-ulid' as PlatformRequest['id'],
-      decodeError: 'id: Invalid string: must match pattern',
+  /**
+   * #1634 review: a refused row's settle is an ordinary settle. A transient failure — the
+   * vertical answering 503 — must surface exactly as it does for a healthy row, not be
+   * swallowed into a row that stays pending while each pass re-records a terminal failure
+   * and the outage goes unreported. The pair differs ONLY in whether the settle works.
+   */
+  describe("the refusal's settle is an ordinary settle", () => {
+    const outage = (client: ReturnType<typeof fakeTransport>['client']) => {
+      client.settlePlatformRequest = async () => {
+        throw new ControlPlaneError(503, 'vertical unreachable');
+      };
+    };
+
+    it('a transient settle failure on a refused row propagates — the outage is not swallowed', async () => {
+      const broken = intent('provision-sibling', { payload: null, decodeError: 'payload: Unexpected token' });
+      const { client } = fakeTransport([broken]);
+      outage(client);
+      const { seen, handler } = recording();
+      await expect(drainScopePlatformRequests(client, ctx, { 'provision-sibling': handler })).rejects.toThrow(
+        /vertical unreachable/,
+      );
+      // Still refused: an outage on the way back does not turn into running the handler.
+      expect(seen).toEqual([]);
     });
-    const healthy = intent('provision-sibling');
-    const { client, settled } = fakeTransport([broken, healthy]);
-    const settle = client.settlePlatformRequest.bind(client);
-    client.settlePlatformRequest = async (t, s, id, outcome) => {
-      if (id === broken.id) throw new ControlPlaneError(400, 'invalid id');
-      return settle(t, s, id, outcome);
-    };
-    const { seen, handler } = recording();
 
-    const report = await drainScopePlatformRequests(client, ctx, { 'provision-sibling': handler });
+    it('…and a healthy row under the same outage propagates the same way', async () => {
+      const healthy = intent('provision-sibling');
+      const { client } = fakeTransport([healthy]);
+      outage(client);
+      const { handler } = recording();
+      await expect(drainScopePlatformRequests(client, ctx, { 'provision-sibling': handler })).rejects.toThrow(
+        /vertical unreachable/,
+      );
+    });
 
-    expect(seen).toEqual([healthy.id]);
-    expect(settled.map((s) => s.id)).toEqual([healthy.id]);
-    // Left pending — it was not settled, and the report says so rather than claiming a failure landed.
-    expect(report).toEqual({ drained: 2, done: 1, failed: 0, pending: 1 });
-  });
-
-  it('a HEALTHY row whose settle fails still throws, exactly as it did — the containment is for bad rows only', async () => {
-    const healthy = intent('provision-sibling');
-    const { client } = fakeTransport([healthy]);
-    client.settlePlatformRequest = async () => {
-      throw new ControlPlaneError(503, 'vertical unreachable');
-    };
-    const { handler } = recording();
-    await expect(drainScopePlatformRequests(client, ctx, { 'provision-sibling': handler })).rejects.toThrow(
-      /vertical unreachable/,
-    );
+    it('the positive twin: the same refused row with a working settle lands failed, and the pass completes', async () => {
+      const broken = intent('provision-sibling', { payload: null, decodeError: 'payload: Unexpected token' });
+      const { client, settled } = fakeTransport([broken]);
+      const { seen, handler } = recording();
+      const report = await drainScopePlatformRequests(client, ctx, { 'provision-sibling': handler });
+      expect(seen).toEqual([]);
+      expect(report).toEqual({ drained: 1, done: 0, failed: 1, pending: 0 });
+      expect(settled).toEqual([expect.objectContaining({ id: broken.id, status: 'failed' })]);
+    });
   });
 
   it('end to end on a real host: a restored bad row never reaches its handler, and lands failed', async () => {

@@ -86,15 +86,23 @@ interface Field<T> {
  * JSON would not parse threw out of the map and took every other intent on the scope with it.
  * That disabled the drain's own queue, and `listPlatformRequestHistory` too — the read that
  * exists so a settled intent's failure is legible afterwards (#618), switched off by the row
- * that failed. So no row throws here. Each field is decoded against its own contract field,
- * and whatever did not decode is named, by column, in `decodeError`:
+ * that failed. Each field is now decoded against its own contract field, and whatever did not
+ * decode is named, by column, in `decodeError`, with the field EMPTY in its place:
  *
- * - a JSON column comes back EMPTY — `null`, or {@link UNDECODED_REQUESTER} for the one that
- *   cannot be null. Never the raw text: a raw `payload` would read as a string payload that
- *   was never sent, which is a guess dressed as a fact.
- * - a scalar column comes back AS STORED. It has no empty value that would not itself read
- *   as a fact (a null `settledAt` says "not settled"), and the id especially must survive,
- *   since it is the only handle anyone has on the row.
+ * - a JSON column comes back `null`, or {@link UNDECODED_REQUESTER} for the one that cannot be
+ *   null. Never the raw text: a raw `payload` would read as a string payload that was never
+ *   sent, which is a guess dressed as a fact.
+ * - a nullable scalar (`last_error`, `settled_at`) comes back `null`.
+ *
+ * **Every value this returns satisfies the contract.** A field is only ever replaced by a value
+ * its own schema accepts, so the type is not asserting something the published schema would
+ * refuse — a consumer switching on `status` or passing `id` on as a branded id can trust both.
+ * The price is the REQUIRED scalars (`id`, `kind`, `status`, `attempts`, `requested_at`): they
+ * have no empty value, so a row that breaks one of them cannot be a `PlatformRequest` without
+ * lying, and it throws, naming every column it broke — the strict decode this replaced, kept
+ * for exactly the part it cannot honestly be relaxed for. JSON is what a foreign dump actually
+ * gets wrong; representing a row whose identity itself is corrupt needs a variant beside
+ * `PlatformRequest` on every read, which is a contract change of its own.
  *
  * A row the kernel wrote decodes whole and carries no `decodeError` at all, so a healthy list
  * is exactly what it was. This is the READ's half of #1587's rule — strict where work happens,
@@ -106,17 +114,26 @@ interface Field<T> {
  */
 export function platformRequestOf(row: PlatformRequestRawRow): PlatformRequest {
   const undecoded: string[] = [];
+  const unreadable: string[] = [];
   const shape = platformRequest.shape;
-  const refused = (column: string, error: Extract<FieldParse<unknown>, { success: false }>['error']) => {
+  const issueOf = (column: string, error: Extract<FieldParse<unknown>, { success: false }>['error']) => {
     const issue = error.issues[0];
     const at = issue && issue.path.length ? `.${issue.path.map(String).join('.')}` : '';
-    undecoded.push(`${column}${at}: ${issue?.message ?? 'does not match the contract'}`);
+    return `${column}${at}: ${issue?.message ?? 'does not match the contract'}`;
   };
-  const scalar = <T>(column: string, field: Field<T>, stored: unknown): T => {
+  // A required scalar has no honest empty value: a failure is collected here and thrown once
+  // every field has been read, so the value below never escapes this function.
+  const required = <T>(column: string, field: Field<T>, stored: unknown): T => {
     const r = field.safeParse(stored);
     if (r.success) return r.data;
-    refused(column, r.error);
-    return stored as T;
+    unreadable.push(issueOf(column, r.error));
+    return undefined as never;
+  };
+  const nullable = <T>(column: string, field: Field<T | null>, stored: unknown): T | null => {
+    const r = field.safeParse(stored);
+    if (r.success) return r.data;
+    undecoded.push(issueOf(column, r.error));
+    return null;
   };
   const json = <T>(column: string, field: Field<T>, stored: string | null, empty: T): T => {
     let value: unknown = null;
@@ -130,24 +147,30 @@ export function platformRequestOf(row: PlatformRequestRawRow): PlatformRequest {
     }
     const r = field.safeParse(value);
     if (r.success) return r.data;
-    refused(column, r.error);
+    undecoded.push(issueOf(column, r.error));
     return empty;
   };
-  // Every field is decoded before `undecoded` is read, so the error names every column that
-  // failed, in column order — not whichever one happened to be reached first.
+  // Every field is decoded before either list is read, so each names every column that failed —
+  // not whichever one happened to be reached first.
   const decoded: PlatformRequest = {
-    id: scalar<PlatformRequest['id']>('id', shape.id, row.id),
-    kind: scalar<string>('kind', shape.kind, row.kind),
+    id: required<PlatformRequest['id']>('id', shape.id, row.id),
+    kind: required<string>('kind', shape.kind, row.kind),
     payload: json<unknown>('payload', shape.payload, row.payload, null),
     requestedBy: json<Actor>('requested_by', shape.requestedBy, row.requested_by, UNDECODED_REQUESTER),
     impersonation: json<PlatformRequest['impersonation']>('impersonation', shape.impersonation, row.impersonation, null),
-    status: scalar<PlatformRequest['status']>('status', shape.status, row.status),
-    attempts: scalar<number>('attempts', shape.attempts, row.attempts),
-    lastError: scalar<string | null>('last_error', shape.lastError, row.last_error),
+    status: required<PlatformRequest['status']>('status', shape.status, row.status),
+    attempts: required<number>('attempts', shape.attempts, row.attempts),
+    lastError: nullable<string>('last_error', shape.lastError, row.last_error),
     failure: json<PlatformRequest['failure']>('last_failure', shape.failure, row.last_failure, null),
     result: json<unknown>('result', shape.result, row.result, null),
-    requestedAt: scalar<PlatformRequest['requestedAt']>('requested_at', shape.requestedAt, row.requested_at),
-    settledAt: scalar<PlatformRequest['settledAt']>('settled_at', shape.settledAt, row.settled_at),
+    requestedAt: required<PlatformRequest['requestedAt']>('requested_at', shape.requestedAt, row.requested_at),
+    settledAt: nullable<PlatformRequest['requestedAt']>('settled_at', shape.settledAt, row.settled_at),
   };
+  if (unreadable.length) {
+    throw new Error(
+      `platform request row ${JSON.stringify(row.id)} cannot be read as a PlatformRequest — ` +
+        `${[...unreadable, ...undecoded].join('; ')}`,
+    );
+  }
   return undecoded.length ? { ...decoded, decodeError: undecoded.join('; ') } : decoded;
 }

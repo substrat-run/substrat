@@ -106,13 +106,50 @@ describe('platformRequestOf — tolerant where evidence is read', () => {
     expect(decoded.decodeError).toMatch(/^requested_by: /);
   });
 
-  it('keeps a scalar AS STORED when it breaks the contract — the id is the only handle on the row', () => {
-    const decoded = platformRequestOf(stored({ id: 'not-a-ulid', status: 'queued' }));
-    expect(decoded.id).toBe('not-a-ulid');
-    expect(decoded.status).toBe('queued');
-    expect(decoded.decodeError).toMatch(/^id: .*; status: /);
-    // Scalars kept as stored do not empty the JSON columns beside them.
-    expect(decoded.payload).toEqual({ doc: 1 });
+  it('a nullable scalar that breaks the contract comes back null, named — not as stored', () => {
+    const decoded = platformRequestOf(
+      stored({ last_error: 42 as unknown as string, settled_at: 'yesterday' }),
+    );
+    expect(decoded.lastError).toBeNull();
+    expect(decoded.settledAt).toBeNull();
+    expect(decoded.decodeError).toMatch(/^last_error: .*; settled_at: /);
+  });
+
+  /**
+   * The type does not lie (#1634 review). `PlatformRequest` is the published schema's output,
+   * so everything this decoder hands back — tolerated or not — must be something that schema
+   * accepts. Parsed rather than asserted field by field, so a future fallback that slips a
+   * refused value through is caught without anyone remembering to add its line here.
+   */
+  it('every row it returns satisfies the published schema, however broken the row it read', () => {
+    const broken: Partial<PlatformRequestRawRow>[] = [
+      { payload: '{"not json' },
+      { requested_by: JSON.stringify(42) },
+      { requested_by: '{' },
+      { impersonation: JSON.stringify({ nope: true }) },
+      { last_failure: JSON.stringify({ origin: 'martian' }) },
+      { result: '{' },
+      { last_error: 7 as unknown as string },
+      { settled_at: 'yesterday' },
+      { payload: 'x', requested_by: 'y', impersonation: 'z', last_failure: 'w', result: 'v', settled_at: 'u' },
+    ];
+    for (const over of broken) {
+      const decoded = platformRequestOf(stored(over));
+      expect(decoded.decodeError).toBeDefined();
+      expect(() => platformRequest.parse(decoded)).not.toThrow();
+    }
+  });
+
+  it('a row whose REQUIRED scalars break the contract is never returned as a PlatformRequest', () => {
+    // id, kind, status, attempts and requested_at have no empty value, so the only honest
+    // answers are a different type or a refusal — never `id: "not-a-ulid"` typed as a branded id.
+    const read = () => platformRequestOf(stored({ id: 'not-a-ulid', status: 'queued', payload: 'nope' }));
+    expect(read).toThrow(/platform request row "not-a-ulid" cannot be read as a PlatformRequest/);
+    // Every column it broke is named, required ones first — including the JSON column beside them.
+    expect(read).toThrow(/id: .*; status: .*; payload: /);
+    for (const over of [{ kind: '' }, { attempts: -1 }, { requested_at: 'yesterday' }]) {
+      expect(() => platformRequestOf(stored(over))).toThrow(/cannot be read as a PlatformRequest/);
+    }
   });
 
   it('names every column that failed, in column order, not only the first one reached', () => {
