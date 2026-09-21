@@ -11,7 +11,7 @@ import {
   type DenialOperationSummary,
   type PermissionDenial,
 } from '@substrat-run/contracts';
-import { rowDecoder, UNDECODED_ACTOR } from './row-decode.js';
+import { rowDecoder, UNDECODED_ACTOR, UNDECODED_PERMISSION } from './row-decode.js';
 
 /**
  * The SELECTs behind every read of a scope's denial log (#867, K-35's stated tail).
@@ -71,7 +71,13 @@ export function storedActor(input: string): string {
  * only witness to a refused check is the worst read to lose. Each field is now decoded
  * against its own contract field and whatever did not decode is named in `decodeError`,
  * on `rowDecoder`'s rules — an undecodable actor reads as {@link UNDECODED_ACTOR}, and a
- * row whose id, permission, tenant or time does not decode still throws, naming them.
+ * row whose id, tenant or time does not decode still throws, naming them.
+ *
+ * `permission` is the exception to that last rule, deliberately. A malformed key is not
+ * only a dump's doing: nothing validates a checked key at runtime, so a module that casts
+ * one is refused and the refusal is recorded with it — and this log is where someone comes
+ * to find out why. Throwing would hide the evidence along with the list. So it reads as
+ * {@link UNDECODED_PERMISSION}, and `decodeError` quotes the stored key verbatim.
  */
 export function mapDenialRow(row: DenialRow): PermissionDenial {
   const shape = permissionDenial.shape;
@@ -79,7 +85,7 @@ export function mapDenialRow(row: DenialRow): PermissionDenial {
   return d.finish<PermissionDenial>({
     id: d.required<string>('id', shape.id, row.id),
     actor: d.json('actor', shape.actor, row.actor, UNDECODED_ACTOR),
-    permission: d.required('permission', shape.permission, row.permission),
+    permission: d.marked('permission', shape.permission, row.permission, UNDECODED_PERMISSION),
     tenantId: d.required('tenant_id', shape.tenantId, row.tenant_id),
     scopeId: d.nullable('scope_id', shape.scopeId, row.scope_id ?? null),
     operation: d.nullable('operation', shape.operation, row.operation ?? null),
@@ -188,14 +194,15 @@ export interface DenialBucketRow {
  * One (actor, permission) bucket, tolerantly (#1636). The buckets are `GROUP BY actor`, so a
  * stored actor that would not parse is its own bucket — and used to throw the whole summary,
  * the read a console opens first. It reads as {@link UNDECODED_ACTOR} now, still counted,
- * with `decodeError` saying why.
+ * with `decodeError` saying why. A malformed permission key is its own bucket too, and reads
+ * as {@link UNDECODED_PERMISSION} with the stored key quoted — `mapDenialRow` says why.
  */
 export function mapDenialBucketRow(row: DenialBucketRow): DenialBucket {
   const shape = denialBucket.shape;
   const d = rowDecoder(`denial bucket for ${JSON.stringify(row.permission)}`, 'DenialBucket');
   return d.finish<DenialBucket>({
     actor: d.json('actor', shape.actor, row.actor, UNDECODED_ACTOR),
-    permission: d.required('permission', shape.permission, row.permission),
+    permission: d.marked('permission', shape.permission, row.permission, UNDECODED_PERMISSION),
     count: d.required<number>('count', shape.count, Number(row.count)),
     operations: d.required<number>('operations', shape.operations, Number(row.operations)),
     firstAt: d.required<string>('first_at', shape.firstAt, row.first_at),

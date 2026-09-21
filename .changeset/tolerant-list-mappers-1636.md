@@ -22,8 +22,13 @@ denial-summary row that does not decode now comes back beside all the others. It
 optional `decodeError` naming every column that failed, and those fields come back empty: the
 actor as `{ system: 'undecodable' }`, a JSON field as `null`. That is what tells an unreadable
 payload from an erased one. Every value still satisfies the published schema. A row whose own id,
-type, time or permission is corrupt has no honest empty value and is still refused, as before. A
-healthy row carries no `decodeError` at all, so a clean list reads exactly as it did.
+type or time is corrupt has no honest empty value and is still refused, as before.
+
+A denial whose permission key is malformed is listed, not refused. That row can come from a
+module that cast a bad key into a permission check, not only from a dump, and the log is where
+you go to find out why. Its permission reads as `undecodable:permission`, and `decodeError` quotes
+the key it actually checked. A healthy row carries no `decodeError` at all, so a clean list reads
+exactly as it did.
 
 **The work skips it, and keeps going.** An event that does not decode is dead-lettered for each
 consumer and executor it was due for, with the columns that failed as the error. Its handlers are

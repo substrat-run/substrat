@@ -28,6 +28,7 @@ import {
   readTimeline,
   readUndrainedOutbox,
   UNDECODED_ACTOR,
+  UNDECODED_PERMISSION,
   UNDRAINED_SCAN_FACTOR,
   UNDRAINED_SKIPPED_IDS,
   walkEventCause,
@@ -358,10 +359,35 @@ describe('denial reads — tolerant (#1636)', () => {
   });
 
   it('throws naming the columns when a required scalar breaks', () => {
-    const db = denials([denial(1, { tenant_id: 'nope', permission: 'Not A Key', actor: '{' })]);
+    const db = denials([denial(1, { tenant_id: 'nope', at: '', actor: '{' })]);
     expect(() => mapDenialRow(rowsOf(db)[0]!)).toThrow(
-      /denial row ".*" cannot be read as a PermissionDenial — permission: .*; tenant_id: .*; actor: not valid JSON/,
+      /denial row ".*" cannot be read as a PermissionDenial — tenant_id: .*; at: .*; actor: not valid JSON/,
     );
+  });
+
+  it('lists a malformed permission key with the marker, and quotes the key it refused', () => {
+    // Reachable from live module code, not only a dump: nothing validates a checked key at
+    // runtime, so a module that casts `Workorder:Read` is refused and recorded with it.
+    // The key is the evidence of why — the row must be listed, and the key kept.
+    const db = denials([denial(1), denial(2, { permission: 'Workorder:Read' })]);
+    const [ok, bad] = rowsOf(db).map(mapDenialRow);
+    expect(bad!.permission).toBe(UNDECODED_PERMISSION);
+    expect(bad!.decodeError).toMatch(/^permission: .* \(stored "Workorder:Read"\)$/);
+    expect(() => permissionDenial.parse(bad)).not.toThrow();
+    // The rest of the row is the refusal as recorded.
+    expect(bad!.actor).toBe(PRINCIPAL);
+    expect(bad!.operation).toBe('thing/read');
+    // The positive twin: a valid key round-trips unchanged, and says nothing.
+    expect(ok!.permission).toBe('thing:read');
+    expect(ok).not.toHaveProperty('decodeError');
+  });
+
+  it('quotes a stored key only so far — it is an identifier, not a payload', () => {
+    const db = denials([denial(1, { permission: `X${'y'.repeat(500)}` })]);
+    const [bad] = rowsOf(db).map(mapDenialRow);
+    expect(bad!.permission).toBe(UNDECODED_PERMISSION);
+    expect(bad!.decodeError!.length).toBeLessThan(300);
+    expect(bad!.decodeError).toMatch(/…\)$/);
   });
 
   it('keeps a summary bucket whose actor did not decode — counted, and saying why', () => {
@@ -377,6 +403,11 @@ describe('denial reads — tolerant (#1636)', () => {
     const bad = mapDenialBucketRow({ ...healthy, actor: '{' });
     expect(bad).toEqual({ ...mapDenialBucketRow(healthy), actor: UNDECODED_ACTOR, decodeError: 'actor: not valid JSON' });
     expect(() => denialBucket.parse(bad)).not.toThrow();
+    // A malformed key is its own bucket: kept and counted under the marker, the key quoted.
+    const badKey = mapDenialBucketRow({ ...healthy, permission: 'Workorder:Read' });
+    expect(badKey).toMatchObject({ actor: PRINCIPAL, permission: UNDECODED_PERMISSION, count: 3 });
+    expect(badKey.decodeError).toMatch(/^permission: .* \(stored "Workorder:Read"\)$/);
+    expect(() => denialBucket.parse(badKey)).not.toThrow();
   });
 });
 

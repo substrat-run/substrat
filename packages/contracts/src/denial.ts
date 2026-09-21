@@ -80,8 +80,10 @@ export const permissionDenial = z.object({
    * tolerant and says so: each column that did not decode is named here and its field
    * comes back EMPTY — `actor` as the self-naming `{ system: 'undecodable' }` marker,
    * `impersonation` as `null` beside this reason, which is what keeps it from reading as
-   * "nobody was impersonating". A row whose id, permission, tenant or time does not
-   * decode is never returned as one of these at all.
+   * "nobody was impersonating". A stored `permission` that is not a permission key reads as
+   * the self-naming `undecodable:permission`, and this QUOTES the stored key: a module that
+   * casts a malformed key is refused with it, and the key is the evidence of why. A row
+   * whose id, tenant or time does not decode is never returned as one of these at all.
    */
   decodeError: z.string().min(1).optional(),
 });
@@ -189,6 +191,7 @@ export const denialBucket = z.object({
    * `GROUP BY actor`, so one stored actor that would not parse used to throw the whole
    * summary — "the read a console opens first". It now reads as the self-naming
    * `{ system: 'undecodable' }` marker, with the count still counted and this saying why.
+   * A malformed permission key reads as `undecodable:permission`, the stored key quoted here.
    */
   decodeError: z.string().min(1).optional(),
 });

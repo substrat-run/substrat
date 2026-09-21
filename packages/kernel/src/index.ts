@@ -242,7 +242,7 @@ export {
 export { readTimeline, readHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters } from './timeline.js';
 export type { TimelineReader } from './timeline.js';
 // #1636: one undecodable spine row no longer takes a list — or a delivery loop — with it.
-export { rowDecoder, UNDECODED_ACTOR } from './row-decode.js';
+export { rowDecoder, UNDECODED_ACTOR, UNDECODED_PERMISSION } from './row-decode.js';
 export type { RowDecoder } from './row-decode.js';
 export {
   domainEventOf,

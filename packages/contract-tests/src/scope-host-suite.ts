@@ -870,10 +870,13 @@ export function scopeHostContractSuite(
           for (const bucket of clean.summary.buckets) expect(bucket).not.toHaveProperty('decodeError');
 
           const bad = denial(badId(), { actor: '{', impersonation: 'nope' });
-          await restore(s, dump, { _substrat_denials: [bad, ...healthy] });
+          // A key a module CAST rather than declared — reachable from live code, since nothing
+          // validates a checked key at runtime. The key is the evidence, so it is kept.
+          const badKey = denial(ulid(), { permission: 'Workorder:Read' });
+          await restore(s, dump, { _substrat_denials: [bad, badKey, ...healthy] });
           const planted = await readAll();
 
-          expect(planted.rows).toHaveLength(3);
+          expect(planted.rows).toHaveLength(4);
           for (const row of clean.rows) expect(planted.rows.find((r) => r.id === row.id)).toEqual(row);
           const refused = planted.rows.find((r) => r.id === bad.id)!;
           expect(refused.decodeError).toBe('actor: not valid JSON; impersonation: not valid JSON');
@@ -881,15 +884,26 @@ export function scopeHostContractSuite(
           // Null beside a reason, never a silent null that reads as "nobody was impersonating".
           expect(refused.impersonation).toBeNull();
           expect(refused.permission).toBe('test:read');
+          // The malformed key is listed under the marker, the stored key quoted verbatim.
+          const castKey = planted.rows.find((r) => r.id === badKey.id)!;
+          expect(castKey.permission).toBe('undecodable:permission');
+          expect(castKey.decodeError).toMatch(/^permission: .* \(stored "Workorder:Read"\)$/);
+          expect(castKey.actor).toBe(alice);
 
-          // The summary — "the read a console opens first" — keeps the bucket, counted.
-          expect(planted.summary.total).toBe(3);
-          expect(planted.summary.buckets).toHaveLength(3);
-          expect(planted.summary.buckets.find((b) => 'decodeError' in b)).toMatchObject({
+          // The summary — "the read a console opens first" — keeps both buckets, counted.
+          expect(planted.summary.total).toBe(4);
+          expect(planted.summary.groupBy).toBe('actor-permission');
+          const buckets = planted.summary.groupBy === 'actor-permission' ? planted.summary.buckets : [];
+          expect(buckets).toHaveLength(4);
+          expect(buckets.find((b) => b.decodeError === 'actor: not valid JSON')).toMatchObject({
             actor: UNDECODED,
             permission: 'test:read',
             count: 1,
-            decodeError: 'actor: not valid JSON',
+          });
+          expect(buckets.find((b) => b.permission === 'undecodable:permission')).toMatchObject({
+            actor: alice,
+            count: 1,
+            decodeError: expect.stringContaining('(stored "Workorder:Read")'),
           });
           for (const bucket of clean.summary.buckets) expect(planted.summary.buckets).toContainEqual(bucket);
         });

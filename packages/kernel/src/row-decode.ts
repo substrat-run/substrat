@@ -1,4 +1,4 @@
-import { actor, type Actor } from '@substrat-run/contracts';
+import { actor, permissionKey, type Actor, type PermissionKey } from '@substrat-run/contracts';
 
 /**
  * The tolerant decode of one spine row, field by field (#1588, #1636).
@@ -30,7 +30,9 @@ import { actor, type Actor } from '@substrat-run/contracts';
  *
  * The message never quotes the stored text. `JSON.parse`'s own message does, and for a
  * payload that is the event's content: copied into a dead letter or a sweep log it would
- * be personal data somewhere an erasure does not reach.
+ * be personal data somewhere an erasure does not reach. The one exception is `marked`, for
+ * a short identifier whose stored value IS the evidence (a denial's permission key): that
+ * one is quoted, capped, on purpose.
  */
 
 type FieldParse<T> =
@@ -48,6 +50,21 @@ export interface Field<T> {
  * guessed principal would be the one thing worse than admitting nobody can tell.
  */
 export const UNDECODED_ACTOR: Actor = actor.parse({ system: 'undecodable' });
+
+/**
+ * What a denial's `permission` reads as when the stored key is not a permission key (#1636).
+ *
+ * Unlike the other required scalars, this one is reachable from LIVE module code rather than
+ * only from a dump: nothing validates a checked key at runtime, so a module that casts a
+ * malformed key into `ctx.check` is refused, and the refusal is recorded with that key. The
+ * denial log is exactly where someone goes to find out why — so the row must not take the
+ * list with it, and the bad key is the evidence: `marked` carries it, verbatim, in
+ * `decodeError`, beside this self-naming marker.
+ */
+export const UNDECODED_PERMISSION: PermissionKey = permissionKey.parse('undecodable:permission');
+
+/** How much of a stored scalar a `marked` field quotes back — a key, not a payload. */
+const QUOTED_MAX = 200;
 
 /** `column: message`, for the first issue a field's schema raised. */
 export function issueOf(
@@ -67,6 +84,13 @@ export interface RowDecoder {
   required<T>(column: string, field: Field<T>, stored: unknown): T;
   /** A nullable scalar: `null`, named in `decodeError`, when it breaks its schema. */
   nullable<T>(column: string, field: Field<T | null>, stored: unknown): T | null;
+  /**
+   * A required scalar with a self-naming `marker` to stand in for it — for the column whose
+   * stored value is the EVIDENCE (a denial's permission key), so the row is returned rather
+   * than thrown, and the value is quoted in `decodeError` rather than lost. `marker` must be
+   * a value `field` accepts. Only for a short identifier, never for content: it is quoted.
+   */
+  marked<T>(column: string, field: Field<T>, stored: unknown, marker: T): T;
   /** A JSON column: `empty`, named in `decodeError`, when it does not parse or breaks its schema. */
   json<T>(column: string, field: Field<T>, stored: string | null, empty: T): T;
   /** Every column that did not decode, required or not — for a caller whose logic reads one. */
@@ -103,6 +127,16 @@ export function rowDecoder(subject: string, contract: string): RowDecoder {
       undecoded.push(issueOf(column, r.error));
       failed.add(column);
       return null;
+    },
+    marked<T>(column: string, field: Field<T>, stored: unknown, marker: T): T {
+      const r = field.safeParse(stored);
+      if (r.success) return r.data;
+      const quoted = JSON.stringify(stored) ?? String(stored);
+      undecoded.push(
+        `${issueOf(column, r.error)} (stored ${quoted.length > QUOTED_MAX ? `${quoted.slice(0, QUOTED_MAX)}…` : quoted})`,
+      );
+      failed.add(column);
+      return marker;
     },
     json<T>(column: string, field: Field<T>, stored: string | null, empty: T): T {
       let value: unknown = null;
