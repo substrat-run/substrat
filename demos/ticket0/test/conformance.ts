@@ -100,6 +100,15 @@ export const conformance = declareEntityChecks({
         'ctx.revoke takes the same guardrail as ctx.grant — a caller may only withdraw ' +
         'a grant it could have made, so it must hold the key on that entity too',
     },
+    // The macro rule (#1087), met by the kit exactly as it is met by a person: a
+    // macro needs every key its parts need, and a public reply is a part. The kit's
+    // saved reply carries no actions, so reply-public is the whole of the rest.
+    'ticket0/apply-saved-reply': {
+      permissions: ['conversation:reply-public'],
+      because:
+        'a macro checks the union of the keys its parts declare, and sending its reply ' +
+        'publicly is ticket0/post-public-reply, which declares conversation:reply-public',
+    },
   },
   /**
    * `merge` names a second conversation, and needs a real one (#939).
@@ -128,5 +137,7 @@ export const conformance = declareEntityChecks({
     // for. So the kit makes one per case, the same way it makes the survivor a
     // merge folds into.
     'ticket0/render-saved-reply': { savedReplyId: 'savedReply' },
+    // The same reason, for the macro that sends it.
+    'ticket0/apply-saved-reply': { savedReplyId: 'savedReply' },
   },
 });

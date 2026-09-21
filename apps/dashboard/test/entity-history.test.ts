@@ -3,6 +3,9 @@ import type { EmittedEntity, HistoryEntry } from '@substrat-run/contracts';
 import {
   actorLabel,
   authorizationLabel,
+  callLogsButtonTitle,
+  callLogsWindow,
+  CALL_LOGS_MARGIN_MINUTES,
   deadLetterCalls,
   impersonationLabel,
   operationLabel,
@@ -225,5 +228,53 @@ describe('deadLetterCalls', () => {
     // A row from before the deliveries column: the event's own id is all there is.
     const calls = deadLetterCalls({ invocationId: 'inv_emit', attemptInvocationId: null });
     expect(calls.map((c) => [c.kind, c.invocationId])).toEqual([['emitted', 'inv_emit']]);
+  });
+});
+
+describe('callLogsWindow (#1525)', () => {
+  const NOW = Date.parse('2026-09-21T12:00:00.000Z');
+  const HOUR = 3_600_000;
+
+  it('brackets the event’s instant by the margin, and ends at the margin when that is in the past', () => {
+    const at = new Date(NOW - 3 * HOUR).toISOString();
+    const w = callLogsWindow(at, NOW)!;
+    const m = CALL_LOGS_MARGIN_MINUTES * 60_000;
+    expect(Date.parse(w.since)).toBe(NOW - 3 * HOUR - m);
+    expect(Date.parse(w.until)).toBe(NOW - 3 * HOUR + m);
+  });
+
+  // The plane refuses a window over 72h, and one that ends more than five minutes ahead.
+  it('is always inside what the plane accepts: narrow, and never ending in the future', () => {
+    for (const ageMs of [0, 1_000, 60_000, 5 * 60_000, HOUR, 47 * HOUR, 71 * HOUR]) {
+      const w = callLogsWindow(new Date(NOW - ageMs).toISOString(), NOW)!;
+      const since = Date.parse(w.since);
+      const until = Date.parse(w.until);
+      expect(until).toBeLessThanOrEqual(NOW);
+      expect(since).toBeLessThan(until);
+      expect(until - since).toBeLessThanOrEqual(2 * CALL_LOGS_MARGIN_MINUTES * 60_000);
+    }
+  });
+
+  it('keeps the window positive for an event stamped ahead of the browser’s clock', () => {
+    const w = callLogsWindow(new Date(NOW + 30 * 60_000).toISOString(), NOW)!;
+    expect(Date.parse(w.since)).toBeLessThan(Date.parse(w.until));
+    expect(Date.parse(w.until)).toBeLessThanOrEqual(NOW);
+  });
+
+  it('is null for an instant that does not parse, rather than a NaN on the wire', () => {
+    expect(callLogsWindow('not a time', NOW)).toBeNull();
+  });
+
+  it('is ISO 8601 text, the shape the plane takes', () => {
+    const w = callLogsWindow('2026-09-21T09:00:00.000Z', NOW)!;
+    expect(w.since).toBe('2026-09-21T08:50:00.000Z');
+    expect(w.until).toBe('2026-09-21T09:10:00.000Z');
+  });
+});
+
+describe('callLogsButtonTitle (#1525)', () => {
+  it('says why the control is shut when the event names no call, and what it opens when it does', () => {
+    expect(callLogsButtonTitle(null)).toMatch(/no call was recorded/);
+    expect(callLogsButtonTitle('01J8Z3KX0Q5R7T9V1W2Y4A6B8C')).toMatch(/log lines/);
   });
 });

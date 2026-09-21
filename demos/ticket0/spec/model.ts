@@ -177,6 +177,41 @@ export function savedReplyToken(): RegExp {
 }
 
 /**
+ * What a saved reply may DO besides say something (#1087): the action bag that makes a
+ * canned answer a macro.
+ *
+ * Each action is one of this desk's own operations with the conversation left out, and
+ * that is the design rather than a convenience. `tag` is `ticket0/tag-conversation`,
+ * `set-priority` is `ticket0/set-priority`, and so on. `MACRO_ACTION_OPERATIONS` below
+ * names the operation for every action, and applying a macro RUNS that operation, with
+ * its own permission check, its own lifecycle step and its own event. So an action
+ * cannot do anything its manual counterpart would not, and it cannot need a key that
+ * counterpart does not declare.
+ *
+ * A CLOSED set, for `SAVED_REPLY_VARIABLES`' reason: every entry is an operation a
+ * reviewer has already read. Adding one means adding a member here and an entry in
+ * `MACRO_ACTION_OPERATIONS`, and the `satisfies` there makes forgetting the second a
+ * compile error. `.strict()` on each, so a typo such as `{ type: 'tag', tags: 'x' }` is
+ * refused at save time instead of saving a macro that does nothing.
+ */
+export const macroAction = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('tag'), tag: z.string().min(1) }).strict(),
+  z.object({ type: z.literal('set-priority'), priority: z.enum(['low', 'normal', 'urgent']) }).strict(),
+  // `null` is "nobody", as it is on `ticket0/assign`. The principal is checked against
+  // the directory when the macro is APPLIED, by that operation, not when it is saved:
+  // a colleague can leave the desk between the two.
+  z.object({ type: z.literal('assign'), assignee: z.string().nullable() }).strict(),
+  z.object({ type: z.literal('resolve') }).strict(),
+]);
+export type MacroAction = z.infer<typeof macroAction>;
+
+/** How many actions one macro may carry. A macro is one click on one ticket, not a script. */
+export const MACRO_ACTIONS_MAX = 10;
+
+/** The bag, as a saved reply's input and output carry it. */
+export const macroActions = z.array(macroAction).max(MACRO_ACTIONS_MAX);
+
+/**
  * What the HOST knew about the browser when the widget opened — `ClientContext`
  * flattened into columns. Shared by `widgetOpening` (where `widget-start` records it)
  * and `widgetSession` (where the first message carries it), so the two tables cannot
@@ -483,6 +518,15 @@ export const ticket0Entities = defineEntities({
       body: z.string(),
       created_by: z.string(),
       created_at: z.string(),
+      /**
+       * The action bag (#1087), as JSON: a `macroActions` array. It is never read as
+       * a string anywhere outside `src/module.ts`. Every operation hands it out parsed
+       * (`savedReplyPublic`).
+       *
+       * Null is a reply with no actions, and so is every row older than the column.
+       * Nothing is back-filled, so every existing canned answer stays text only.
+       */
+      actions: z.string().nullable(),
     }),
     key: ['title'],
   },
@@ -1029,6 +1073,14 @@ const deskPublic = ticket0Entities.deskSettings.fields.omit({
   verification_secret: true,
   round_robin_last: true,
 });
+
+/**
+ * A saved reply as every operation hands it out: the action bag parsed, never the JSON
+ * text it is stored as. Declared once for `kbSourcePublic`'s reason.
+ */
+const savedReplyPublic = ticket0Entities.savedReply.fields
+  .omit({ actions: true })
+  .extend({ actions: macroActions });
 
 export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMISSIONS)({
   // ─── The desk ────────────────────────────────────────────────────────────────
@@ -2376,7 +2428,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   'ticket0/list-saved-replies': {
     summary: 'The desk’s canned answers',
     permission: 'conversation:draft',
-    output: ticket0Entities.savedReply.fields,
+    output: savedReplyPublic,
     paged: { over: { entity: 'savedReply', sortable: ['title', 'created_at'] } },
     http: { method: 'GET', path: '/saved-replies' },
   },
@@ -2384,8 +2436,13 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   'ticket0/create-saved-reply': {
     summary: 'Save a canned answer',
     permission: 'conversation:draft',
-    input: z.object({ title: z.string().min(1), body: z.string().min(1) }),
-    output: ticket0Entities.savedReply.fields,
+    input: z.object({
+      title: z.string().min(1),
+      body: z.string().min(1),
+      /** What the reply also does when it is applied (#1087). Absent is none. */
+      actions: macroActions.optional(),
+    }),
+    output: savedReplyPublic,
     http: { method: 'POST', path: '/saved-replies' },
     emits: {
       entity: 'savedReply',
@@ -2393,7 +2450,9 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       type: 'ticket0.saved-reply-created',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['id', 'title', 'body', 'created_by', 'created_at'],
+      // `actions` joined in #1087, additively. What a macro DOES is the part of it a
+      // reviewer of the trail cares about, so it rides on the event.
+      payload: ['id', 'title', 'body', 'created_by', 'created_at', 'actions'],
     },
   },
 
@@ -2417,16 +2476,16 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     summary: 'One canned answer',
     permission: 'conversation:draft',
     input: z.object({ savedReplyId: z.string() }),
-    output: ticket0Entities.savedReply.fields,
+    output: savedReplyPublic,
     http: { method: 'GET', path: '/saved-replies/{savedReplyId}' },
     concurrency: { over: 'savedReply', idFrom: 'savedReplyId' },
   },
 
   /**
-   * Change a canned answer's title or its text.
+   * Change a canned answer's title, its text or its actions.
    *
-   * A partial field-bag over `savedReply` — `savedReplyId` names the row, the two
-   * columns are optional — which is read-modify-write, and the model refuses that
+   * A partial field-bag over `savedReply` — `savedReplyId` names the row, the other
+   * fields are optional — which is read-modify-write, and the model refuses that
    * shape without a `concurrency` declaration (#129). It is right here rather than
    * merely required: a saved reply is a SHARED row on a desk, so two agents editing
    * the same one is the ordinary case rather than the exotic one, and the second
@@ -2447,8 +2506,10 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       savedReplyId: z.string(),
       title: z.string().min(1).optional(),
       body: z.string().min(1).optional(),
+      /** The whole bag, replaced. `[]` empties it; absent leaves it. */
+      actions: macroActions.optional(),
     }),
-    output: ticket0Entities.savedReply.fields,
+    output: savedReplyPublic,
     http: { method: 'PATCH', path: '/saved-replies/{savedReplyId}' },
     concurrency: { over: 'savedReply', idFrom: 'savedReplyId' },
     emits: {
@@ -2457,7 +2518,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       type: 'ticket0.saved-reply-updated',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['id', 'title', 'body', 'created_by', 'created_at'],
+      payload: ['id', 'title', 'body', 'created_by', 'created_at', 'actions'],
     },
   },
 
@@ -2529,6 +2590,76 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     http: {
       method: 'GET',
       path: '/conversations/{conversationId}/saved-replies/{savedReplyId}/render',
+    },
+  },
+
+  /**
+   * Use a macro: send its reply and run its actions, as one act (#1087).
+   *
+   * THE RULE, and the reason this operation is shaped the way it is: **a macro needs
+   * every key its parts need.** The key it declares here, `conversation:draft`, is only
+   * the first of them. Before anything is written, the handler checks the union of that
+   * key, the key of the operation that sends the reply (`post-public-reply` or
+   * `post-note`), and the key of the operation behind every action in the bag. It
+   * derives that union from the declarations (`macroPermissions` in `src/module.ts`
+   * reads `MACRO_ACTION_OPERATIONS` and each operation's own `permission`), so an action
+   * added to the bag next year is covered without anybody writing a new check. Without
+   * it, a key you hold (draft) becomes a wrapper around keys you do not (assign,
+   * resolve), and the bag is a privilege-escalation path.
+   *
+   * Then every part RUNS the operation it names, through the same handler a person's
+   * click runs. That handler makes its own check again, takes its own lifecycle step and
+   * emits its own event. So a macro's assignment looks the same on the trail as a
+   * person's, and it is refused where theirs would be: an assignee outside the
+   * directory, or a resolve with no public reply before it.
+   *
+   * All or nothing. It is one transaction, so a refusal anywhere, whether a missing key
+   * up front or a lifecycle or directory refusal halfway through, rolls back the reply
+   * and every action before it. Nothing goes out to the customer from a macro that
+   * could not finish.
+   *
+   * The reply goes first and the actions follow in the order the bag lists them. That
+   * is what lets a "reply and resolve" macro work: `resolve` refuses a conversation
+   * nobody has answered, and by then somebody has.
+   *
+   * `body` is the text the agent is actually sending. It is the rendered reply after
+   * whatever edits they made in the composer. Absent, the saved reply is rendered here
+   * exactly as `render-saved-reply` renders it. No key is needed to choose your own
+   * words, because the reply operation's key is already in the union.
+   */
+  'ticket0/apply-saved-reply': {
+    summary: 'Send a canned answer and run its actions, all or nothing',
+    permission: { key: 'conversation:draft', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({
+      conversationId: z.string(),
+      savedReplyId: z.string(),
+      body: z.string().min(1).optional(),
+      /** Public by default: that is what a canned answer is for. `internal` posts it as a note. */
+      visibility: z.enum(['public', 'internal']).optional(),
+    }),
+    output: z.object({
+      saved_reply_id: z.string(),
+      conversation_id: z.string(),
+      message_id: z.string(),
+      /** The action types, in the order they ran. */
+      actions: z.array(z.string()),
+      /** The conversation as the last action left it. */
+      conversation: ticket0Entities.conversation.fields,
+    }),
+    http: {
+      method: 'POST',
+      path: '/conversations/{conversationId}/saved-replies/{savedReplyId}/apply',
+    },
+    emits: {
+      // About the MACRO: the reply and each action already publish their own event
+      // about the conversation. This one says which canned answer did it, which is the
+      // fact a usage count will be read from.
+      entity: 'savedReply',
+      entityIdFrom: 'saved_reply_id',
+      type: 'ticket0.saved-reply-applied',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['saved_reply_id', 'conversation_id', 'message_id', 'actions'],
     },
   },
 
@@ -3603,6 +3734,30 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     http: { method: 'GET', path: '/signups/counts' },
   },
 });
+
+/**
+ * The operation behind every macro action (#1087), which is where its permission comes
+ * from.
+ *
+ * An action has no permission of its own to declare, and that is the point. Its key is
+ * whatever this operation declares, read from the declaration by `macroPermissions` in
+ * `src/module.ts`, and the action is applied by running this operation's handler. The
+ * `satisfies` is the gate: a new member of `macroAction` with no entry here fails to
+ * compile, so an action cannot exist without the operation, and therefore the key, that
+ * governs it.
+ */
+export const MACRO_ACTION_OPERATIONS = {
+  tag: 'ticket0/tag-conversation',
+  'set-priority': 'ticket0/set-priority',
+  assign: 'ticket0/assign',
+  resolve: 'ticket0/resolve',
+} as const satisfies Record<MacroAction['type'], keyof typeof ticket0Operations>;
+
+/** The operation that sends a macro's reply, by visibility. Its key is in the union too. */
+export const MACRO_REPLY_OPERATIONS = {
+  public: 'ticket0/post-public-reply',
+  internal: 'ticket0/post-note',
+} as const satisfies Record<'public' | 'internal', keyof typeof ticket0Operations>;
 
 /**
  * The conversation's state machine, declared once.

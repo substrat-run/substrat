@@ -633,6 +633,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     vertical?: string;
     level?: string;
     search?: string;
+    invocationId?: string;
     hours: number;
     since?: string;
     until?: string;
@@ -655,6 +656,16 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     ];
     if (input.scopeId) base.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
     if (input.vertical) base.push({ key: 'vertical', operation: 'eq', type: 'string', value: input.vertical });
+    // One call (#1525). The stamped line carries the id as a top-level `invocationId`
+    // (`InvocationLogLine`), so it is one more equality ANDed onto the tenant's own
+    // filter — never a replacement for it. That is the whole tenant boundary: an id that
+    // belongs to another tenant meets `tenantId = ours` and matches no line, and phase
+    // two then has no request id to expand, so nothing of theirs can be reached.
+    // `!== undefined`: this reader is a seam of its own, and an empty id that got past the
+    // route must narrow to nothing, not quietly read as "no filter".
+    if (input.invocationId !== undefined) {
+      base.push({ key: 'invocationId', operation: 'eq', type: 'string', value: input.invocationId });
+    }
 
     // Phase one. For every read but `error` this is one query: the tenant's stamped
     // lines, newest first.
@@ -687,7 +698,14 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // stamped line for THIS tenant on it — `ownsInvocation` below. Narrowing to (1)
     // alone, which is what this did first, silently dropped every crash that escaped the
     // envelope and every error logged by a request that went on to answer 200.
-    const isErrorRead = input.level?.toLowerCase() === 'error';
+    //
+    // A read of ONE call is never an error read in this sense, whatever its level: the
+    // tenant-filtered query already names the invocation, so there is nothing to select
+    // and nothing to search account-wide for. Taking the account-wide `console.error`
+    // branch would admit OTHER invocations of this tenant through `ownsInvocation`, which
+    // judges the tenant and not the call — a filter for one call answering with several.
+    // The level narrows at the merge below instead.
+    const isErrorRead = input.level?.toLowerCase() === 'error' && input.invocationId === undefined;
     // Over-fetched relative to `limit`, because each invocation may pull siblings in
     // phase two and the cap belongs on the merged answer.
     const phaseOneLimit = Math.min(input.limit * 2, 200);
@@ -732,12 +750,20 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // budget, and the trusted ids spend it first: this tenant's own failures must not be
     // crowded out of the page by a noisy neighbour's error lines.
     const requestIds = [...trusted, ...candidates].slice(0, MAX_CORRELATED_INVOCATIONS);
+    //
+    // The per-invocation line cap is there because a page spans up to 40 invocations and
+    // the budget must be shared out. A read of ONE call has no one to share with: capping
+    // it at 20 while the caller asked for 100 hides the diagnostic line of a chatty
+    // request — the very line the view was opened to find — so it gets the caller's own
+    // `limit` (the route bounds that at 200).
+    const linesPerInvocation =
+      input.invocationId !== undefined ? Math.min(input.limit, 200) : MAX_LINES_PER_INVOCATION;
     const sibling = await Promise.all(
       requestIds.map(async (id) => {
         const events = await queryRaw(
           [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }],
           timeframe,
-          MAX_LINES_PER_INVOCATION,
+          linesPerInvocation,
         );
         // An account-wide candidate earns its place only by producing this tenant's
         // stamped line. No stamped line, or somebody else's, and the whole invocation is

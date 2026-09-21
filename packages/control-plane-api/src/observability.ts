@@ -257,6 +257,12 @@ export interface ObservabilityReader {
     vertical?: string;
     level?: string;
     search?: string;
+    /**
+     * One call's lines (#1525): the id the stamped line carries. It NARROWS — it is one
+     * more equality beside `tenantId`, so an id that belongs to another tenant matches
+     * nothing here rather than that tenant's lines. Absent means every call, as before.
+     */
+    invocationId?: string;
     hours: number;
     since?: string;
     until?: string;

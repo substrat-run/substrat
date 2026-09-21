@@ -5098,6 +5098,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         vertical: z.string().min(1).max(200).optional(),
         level: z.enum(['log', 'info', 'warn', 'error', 'debug']).optional(),
         search: z.string().min(1).max(200).optional(),
+        // One call's lines (#1525): the id `invocationLog` stamps on its line and the
+        // events carry. The shape is `ulid()`'s — the only thing that mints it — so
+        // anything else is refused as a 400 rather than sent to the backend as a filter
+        // that can only match nothing, which reads as "no logs for that call".
+        // Tighter than the platform's id schemas (`ids.ts` accepts any Crockford
+        // character first): a 48-bit timestamp encodes to 10 characters whose first is
+        // 0–7, so `Z000…` is not a ULID however it looks. The contracts package exports
+        // no generic ULID schema to reuse — each id brands its own private copy.
+        invocationId: z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/, 'invocationId must be a ULID').optional(),
         hours: z.coerce.number().int().min(1).max(72).default(24),
         // The chart's time cursor (#1447): a window that ENDS in the past, which `hours`
         // cannot spell — it always ends at now.
@@ -5135,6 +5144,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         vertical: c.req.query('vertical') || undefined,
         level: c.req.query('level') || undefined,
         search: c.req.query('search') || undefined,
+        // Raw, not `|| undefined`: an EMPTY id is a caller bug, and folding it into
+        // "absent" would answer it with the tenant's whole log.
+        invocationId: c.req.query('invocationId'),
         hours: c.req.query('hours'),
         since: c.req.query('since') || undefined,
         until: c.req.query('until') || undefined,

@@ -101,6 +101,51 @@ export function callButtonTitle(invocationId: string | null): string {
 }
 
 /**
+ * The tooltip for "Logs for this call" (#1525) — the log-side twin of `callButtonTitle`,
+ * for the same reason: the control stays focusable when it is shut, so the sentence that
+ * says why has to exist for the shut state as well as the open one.
+ */
+export function callLogsButtonTitle(invocationId: string | null): string {
+  return invocationId === null
+    ? 'no call was recorded for this event, so there is no request to find log lines for'
+    : 'the log lines this app wrote while serving the same request — including its own console output';
+}
+
+/** Either side of the event, in minutes: how far from `occurredAt` the call's lines are looked for. */
+export const CALL_LOGS_MARGIN_MINUTES = 10;
+
+/**
+ * The window a call's log lines are read in, from the moment one of its events was
+ * recorded (#1525).
+ *
+ * The log read takes a window, not just an id, and "the last 24 hours" is the wrong one
+ * to hand it: an event from three days ago would find nothing and read as "this call
+ * logged nothing". The event's own instant is the anchor — the call that emitted it ran
+ * within moments of it — so the read is bracketed around that, wide enough for a slow
+ * request and narrow enough to stay inside the plane's 72-hour ceiling however old the
+ * event is.
+ *
+ * `until` is clamped to `now` (the plane refuses a window that ends in the future by more
+ * than five minutes, and a fresh event's margin would otherwise overshoot it), and the
+ * pair is returned as ISO 8601 text, the way the plane takes it. Null for an instant that
+ * does not parse, so a caller shows "no window" rather than sending `NaN` on the wire.
+ */
+export function callLogsWindow(
+  occurredAt: string,
+  now: number = Date.now(),
+): { since: string; until: string } | null {
+  const at = Date.parse(occurredAt);
+  if (!Number.isFinite(at)) return null;
+  const margin = CALL_LOGS_MARGIN_MINUTES * 60_000;
+  const until = Math.min(at + margin, now);
+  // The window must have a positive width: an event stamped ahead of `now` (skew between
+  // the browser's clock and the platform's) with a small margin could otherwise hand the
+  // plane a `since` at or after `until`, which it refuses as a 400.
+  const since = Math.min(at - margin, until - 1_000);
+  return { since: new Date(since).toISOString(), until: new Date(until).toISOString() };
+}
+
+/**
  * One call a dead-lettered delivery can be followed into (#1525).
  *
  * `kind` is what a reader needs to tell two ids apart, not decoration: the call that
