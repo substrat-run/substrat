@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type EffectsTree, type EffectsTerminal, type EventEffects, type EventDelivery, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type TrafficSeries } from '../lib/api';
-import { actorLabel, authorizationLabel, callButtonTitle, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
+import { actorLabel, authorizationLabel, callButtonTitle, callLogsButtonTitle, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_APP_TRAFFIC, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
@@ -16,6 +16,7 @@ import { DnsRecords } from './Domains';
 import { ReleaseComparisonCard, SchemaHistoryCard } from './ReleaseCards';
 import { StatusBand } from './StatusBand';
 import { InvocationStrip } from './InvocationStrip';
+import { InvocationLogsStrip } from './InvocationLogsStrip';
 import { Sparkline } from '../components/Sparkline';
 
 /**
@@ -2716,6 +2717,8 @@ function EntityTimeline({
   const [effects, setEffects] = useState<string | null>(null);
   /** …and which row's call is open. A third question: not cause at all, but "what else happened in that request". */
   const [call, setCall] = useState<string | null>(null);
+  /** …and which row's log lines are open (#1525): what the same call WROTE, beside what it recorded. */
+  const [callLogs, setCallLogs] = useState<string | null>(null);
 
   const when = (iso: string) => new Date(iso).toLocaleString();
 
@@ -2800,10 +2803,29 @@ function EntityTimeline({
           >
             {call === e.id ? 'Hide call' : 'Same call'}
           </button>
+          {/* The same null-id rule as the button above, and the same reason for
+              `aria-disabled` over `disabled`. */}
+          <button
+            type="button"
+            onClick={() => {
+              if (e.invocationId === null) return;
+              setCallLogs((w) => (w === e.id ? null : e.id));
+            }}
+            aria-disabled={e.invocationId === null}
+            aria-expanded={callLogs === e.id}
+            title={callLogsButtonTitle(e.invocationId)}
+            aria-description={callLogsButtonTitle(e.invocationId)}
+            style={{ ...pagerBtn(e.invocationId !== null), justifySelf: 'start', fontSize: 11.5, padding: '2px 8px' }}
+          >
+            {callLogs === e.id ? 'Hide logs' : 'Logs for this call'}
+          </button>
           {why === e.id && <CauseChainStrip scopeId={scopeId} eventId={e.id} />}
           {effects === e.id && <EffectsTreeStrip scopeId={scopeId} eventId={e.id} />}
           {call === e.id && e.invocationId !== null && (
             <InvocationStrip scopeId={scopeId} eventId={e.id} invocationId={e.invocationId} />
+          )}
+          {callLogs === e.id && e.invocationId !== null && (
+            <InvocationLogsStrip scopeId={scopeId} invocationId={e.invocationId} occurredAt={e.occurredAt} />
           )}
         </div>
       ))}

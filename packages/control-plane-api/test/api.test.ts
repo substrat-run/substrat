@@ -5281,6 +5281,60 @@ describe('control-plane API — observability proxy', () => {
     });
 
     /**
+     * One call's lines (#1525). The route's part is small and easy to get wrong in both
+     * directions: the id must reach the reader (or the filter is a no-op that looks like
+     * one), must be ABSENT when not asked for (or every ordinary read becomes a filtered
+     * one), and must be judged here so a garbage value is a 400 rather than an empty
+     * page that reads as "nothing logged for that call".
+     */
+    describe('the invocation filter', () => {
+      const call = '01J8Z3KX0Q5R7T9V1W2Y4A6B8C';
+
+      it('passes the id through to the reader, beside the principal’s tenant', async () => {
+        const app = appWith(tenantReader);
+        const res = await app.request(`/observability/tenant-logs?invocationId=${call}`, { headers: asBuilder });
+        expect(res.status).toBe(200);
+        expect(tenantSeen.logs.at(-1)).toMatchObject({ tenantId: builderTenant, invocationId: call });
+      });
+
+      it('carries no invocationId at all when none was asked for', async () => {
+        const app = appWith(tenantReader);
+        await app.request('/observability/tenant-logs?hours=24', { headers: asBuilder });
+        expect((tenantSeen.logs.at(-1) as { invocationId?: string }).invocationId).toBeUndefined();
+        expect(tenantSeen.logs.at(-1)).toMatchObject({ tenantId: builderTenant });
+      });
+
+      it('cannot be used to name another tenant — the principal still decides', async () => {
+        const app = appWith(tenantReader);
+        const someoneElse = tenantId.parse(ulid());
+        await app.request(`/observability/tenant-logs?tenantId=${someoneElse}&invocationId=${call}`, {
+          headers: asBuilder,
+        });
+        expect(tenantSeen.logs.at(-1)).toMatchObject({ tenantId: builderTenant, invocationId: call });
+      });
+
+      it.each([
+        ['too short', 'abc'],
+        ['not Crockford base32 (contains U)', '01J8Z3KX0Q5R7T9V1W2Y4A6B8U'],
+        ['first character outside 0-7 (not a 48-bit timestamp)', 'Z000000000000000000000000A'],
+        ['lower case', '01j8z3kx0q5r7t9v1w2y4a6b8c'],
+        ['with a space', '01J8Z3KX0Q5R7T9V1W2Y4A6B8 '],
+        ['a filter-shaped payload', "x' OR '1'='1"],
+        ['too long', `${call}${call}`],
+        ['empty', ''],
+      ])('refuses a malformed id with a 400: %s', async (_why, bad) => {
+        const app = appWith(tenantReader);
+        const before = tenantSeen.logs.length;
+        const res = await app.request(`/observability/tenant-logs?invocationId=${encodeURIComponent(bad)}`, {
+          headers: asBuilder,
+        });
+        expect(res.status).toBe(400);
+        // Refused before the reader — nothing was queried on its behalf.
+        expect(tenantSeen.logs).toHaveLength(before);
+      });
+    });
+
+    /**
      * The time cursor (#1447 step 3c). `hours` can only end at now, so a click on the
      * chart — which points at a minute in the PAST — needs the two instants. What the
      * route owes is that the pair reaches the reader untouched and that neither spelling

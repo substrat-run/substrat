@@ -1,4 +1,5 @@
 import { problemDetail } from '@substrat-run/contracts';
+import { tenantLogsQuery } from './logs-query';
 import type { CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
@@ -1656,15 +1657,18 @@ export const api = {
    *  `hours` cannot name. Sent instead of `hours`, never beside it. */
   appTenantLogs: (
     scopeId: string,
-    q: { level?: string; search?: string; hours?: number; limit?: number; since?: string; until?: string },
+    q: {
+      level?: string;
+      search?: string;
+      /** One call's lines (#1525) — narrows within this app, never past it. */
+      invocationId?: string;
+      hours?: number;
+      limit?: number;
+      since?: string;
+      until?: string;
+    },
   ) => {
-    const p = new URLSearchParams();
-    if (q.level) p.set('level', q.level);
-    if (q.search) p.set('search', q.search);
-    if (q.hours) p.set('hours', String(q.hours));
-    if (q.limit) p.set('limit', String(q.limit));
-    if (q.since) p.set('since', q.since);
-    if (q.until) p.set('until', q.until);
+    const p = tenantLogsQuery(q);
     return call<ObservabilityLogEvent[]>(
       `/apps/${encodeURIComponent(scopeId)}/observability/logs?${p.toString()}`,
     );
