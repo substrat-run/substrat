@@ -1448,11 +1448,12 @@ export interface HostAdmin {
    * stays `ctx.check`, not a bypass. Projected at scope provisioning from the
    * module's declared `schedules[].permissions`.
    *
-   * **Not the way to turn a scope's schedules back on** (#1666). Scheduling off is
-   * `revokeFromSystem`, and while that switch is off a grant here re-grants its one tuple
-   * and leaves the schedules off — only `restoreToSystem` moves the switch. A grant is not
-   * the lever: a stray one, or a reconcile seating a newly declared permission, must not
-   * silently undo an operator's decision.
+   * **Refused while the module's schedule kill switch is off on that scope** (#1666),
+   * with `conflict`: restore is the lever; a grant is not. A grant that went through would
+   * hand the module's system authority back to a job run or a `getSystemScope` invoke
+   * while its schedules stayed off. Only `restoreToSystem` turns the switch back on.
+   * (A TENANT-level grant — `node.scopeId` null — is not checked: the switch lives in each
+   * scope's storage and the directory cannot see it. Nothing in the platform writes one.)
    */
   grantToSystem(actor: PlatformActorId, grant: SystemGrant): Promise<void>;
   /**
@@ -1468,21 +1469,31 @@ export interface HostAdmin {
    *   and its cadence clock is untouched, so a due schedule fires on the first pass after
    *   `restoreToSystem`;
    * - anything acting with the module's system authority is denied by its own
-   *   `ctx.check` — a resumable job run (#1577) fails its step rather than proceeding;
-   * - a reconcile (#1659 seats, and creates only what is missing) and `grantToSystem`
-   *   both leave it off. `restoreToSystem` is the only way back.
+   *   `ctx.check` — a resumable job run (#1577) fails its step, a `getSystemScope` invoke
+   *   is refused;
+   * - and nothing can hand that authority back: `grantToSystem` refuses, and a reconcile
+   *   seats no `system:` grant for the module, not even one a newer version declares.
+   *   `restoreToSystem` is the only way back.
    *
-   * Idempotent: a repeat reports `changed: false` and is not audited, as `unassignRole`.
+   * **Audited first, on every attempt**: an intent row (with the `reason`) before anything
+   * moves, then an outcome row (`applied`, `refused`, or `failed`), paired by the
+   * `operationId` the call answers with. A repeat — including the retry after a crash
+   * between the move and its outcome row — answers `changed: false` and is audited all the
+   * same. The scope's storage and the admin log are separate stores, so the pair is not
+   * atomic: this order fails toward "an intent with no outcome", never toward "a switch
+   * that moved with no row".
+   *
    * Throws `not_found` when the scope holds no `system:<module>` grant at all — a typo in
    * an emergency must not answer "done". On a host that delegates to the deployment
-   * serving the scope, the write happens THERE and the audit row HERE.
+   * serving the scope, the write happens THERE and the audit rows HERE.
    */
   revokeFromSystem(actor: PlatformActorId, input: SystemSwitch): Promise<SystemSwitchResult>;
   /**
    * The inverse of `revokeFromSystem` (#1666), and the ONLY way to turn a switched-off
    * module's schedules back on: tombstones the OFF marker and restores exactly the grants
-   * the scope holds tombstoned for the module. Same shape, same `reason`, same audit,
-   * same idempotence and `not_found`.
+   * the OFF took — a grant revoked independently before the switch was pulled stays
+   * revoked, so ON never widens the system principal. Same shape, same `reason`, same
+   * audit-first rows, same idempotence and `not_found`.
    */
   restoreToSystem(actor: PlatformActorId, input: SystemSwitch): Promise<SystemSwitchResult>;
 

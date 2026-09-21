@@ -6001,16 +6001,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // One module's scheduled work on ONE scope, off and back on — `revokeFromSystem` and
   // `restoreToSystem`. Module-wide on the scope by design (the body schema says why a
   // per-permission switch is either inexpressible or noisy), `reason` required, and both
-  // halves audited on the admin log. Idempotent: a repeat answers `changed: false`.
+  // halves audited on the admin log — intent first, then outcome, on every attempt,
+  // paired by the `operationId` the route answers with. Idempotent: a repeat answers
+  // `changed: false`, and is audited all the same.
   //
-  // **Restore is the lever; a grant is not.** While the switch is off, neither a
-  // reconcile seating a newly declared permission nor a `grantToSystem` turns the
-  // schedules back on — only the POST below does. A switch that the next deploy, or a
-  // stray grant, silently undid would not be a kill switch.
+  // **Restore is the lever; a grant is not.** While the switch is off, a `grantToSystem`
+  // for the module is refused (409) and a reconcile seats none of its system grants, not
+  // even a newly declared one — only the POST below turns it back on, and it gives back
+  // exactly what the DELETE took. A switch that the next deploy, or a stray grant,
+  // silently undid would not be a kill switch.
   //
   // For a HOSTED scope the grants live in the vertical's deployment, and the host's
   // `systemSwitchDelegation` moves the switch there; a deployment built before the far
-  // end existed answers 501 "redeploy", and nothing is switched or audited.
+  // end existed answers 501 "redeploy", nothing is switched, and the log shows the intent
+  // and its failure.
   //
   // **Staff and the platform service token ONLY.** Builders are refused by BUILDER_ROUTES
   // (default-deny). A tenant-scoped credential (#977) would pass this path's `/tenants/<pin>`

@@ -76,7 +76,7 @@ connection it holds no memberships; its authority is exactly the grants written 
 `system:<moduleId>`, projected at provisioning. The schedule switch
 (`revokeFromSystem` / `restoreToSystem`) turns one module's scheduled work off on one scope
 and back on. While it is off, the module's system grants there are revoked, so a job acting
-with that authority is denied too, and a re-grant does not turn the switch back on.
+with that authority is denied too, and a new grant to the module there is refused.
 
 Organizations are a real directory record, not a string you make up at the call site:
 

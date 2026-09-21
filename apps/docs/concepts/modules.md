@@ -196,9 +196,11 @@ calls are audited with a reason. While the switch is off, nothing fires. Each sc
 reported *skipped*, not *failed*, so a switched-off scope makes no noise, and a due schedule
 fires on the first pass after the restore.
 
-The switch holds through a reconcile, including one that grants a permission a newer
-version declares. A `grantToSystem` does not undo it either. **Restore is the lever; a
-grant is not.**
+The switch holds through a reconcile: while it is off, no system grant is seated for the
+module, not even one for a permission a newer version declares. A `grantToSystem` for the
+module on that scope is refused. **Restore is the lever; a grant is not.** Restore gives back
+exactly the grants the switch took, so a grant revoked separately before the switch was pulled
+stays revoked.
 
 `cadence` is a floor, not a guarantee of exact timing: a schedule fires no more often
 than `everyMinutes`, and the sweep is what actually runs it (typically every couple of
