@@ -248,7 +248,7 @@ const AT_THE_LIMIT = {
   'escaped wildcards': '%'.repeat(24),
 } as const;
 
-/** The same kind of term, one character longer — 51, 52 and 73 bytes of pattern. */
+/** The same kind of term, one character longer — 51, 52 and 52 bytes of pattern (a `%` is 2 + 2 wrappers). */
 const ONE_OVER = {
   ascii: `${AT_THE_LIMIT.ascii}x`,
   'two-byte letters': `${AT_THE_LIMIT['two-byte letters']}å`,
@@ -298,6 +298,8 @@ describe('ticket0 on workerd — a search term the desk\'s database can run (#16
       expect(patternBytes(AT_THE_LIMIT[kind])).toBe(LIKE_LIMIT);
       expect(patternBytes(ONE_OVER[kind])).toBeGreaterThan(LIKE_LIMIT);
     }
+    // The counts the comment above states, held rather than trusted.
+    expect(KINDS.map((kind) => patternBytes(ONE_OVER[kind]))).toEqual([51, 52, 52]);
     // The point of a byte bound: 24 letters against 48 is far from a character limit.
     expect(AT_THE_LIMIT['two-byte letters'].length).toBe(24);
   });
