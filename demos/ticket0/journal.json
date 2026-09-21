@@ -49,6 +49,11 @@
       "version": "0010",
       "slug": "add-ticket0_block_rules",
       "sql": "CREATE TABLE ticket0_block_rules (\n  id TEXT PRIMARY KEY NOT NULL,\n  kind TEXT NOT NULL CHECK (kind IN ('email','domain','contact')),\n  value TEXT NOT NULL,\n  reason TEXT,\n  created_by TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  UNIQUE (kind, value)\n);"
+    },
+    {
+      "version": "0011",
+      "slug": "add-ticket0_conversations-first_assigned_at-and-2-more",
+      "sql": "ALTER TABLE ticket0_conversations ADD COLUMN first_assigned_at TEXT;\n\nALTER TABLE ticket0_desk_settings ADD COLUMN settings TEXT;\n\nALTER TABLE ticket0_desk_settings ADD COLUMN round_robin_last TEXT;\n\nCREATE INDEX ticket0_conversations_waiting ON ticket0_conversations (assignee, created_at, id)\n  WHERE assignee IS NULL AND first_assigned_at IS NULL AND state IN ('new', 'open') AND merged_into IS NULL;\n\nCREATE INDEX ticket0_ai_turns_by_conversation ON ticket0_ai_turns (conversation_id, created_at, id);\n\nCREATE INDEX ticket0_messages_public_by_conversation ON ticket0_messages (conversation_id, visibility, id);"
     }
   ]
 }

@@ -437,8 +437,9 @@ function desk(ctx: OperationContext): DeskRow {
   ctx.sql.exec(
     `INSERT INTO ticket0_desk_settings
        (id, from_address, greeting, allowed_origins, verification_secret, business_hours,
-        assistant_autonomous, abandoned_after_days, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        assistant_autonomous, abandoned_after_days, settings, round_robin_last,
+        created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     // Supervised, written down rather than left null: a new desk HAS decided, and the
     // decision is the conservative one.
     //
@@ -447,14 +448,35 @@ function desk(ctx: OperationContext): DeskRow {
     // reaping window is one the platform makes FOR a desk until it says otherwise, and
     // writing 30 here would put the number in two places, so a later change to the
     // default would move it for desks minted after the change and not for the rest.
-    [DESK, 'support@example.com', 'Hi - how can we help?', '[]', ulid(), null, 0, null, now, now],
+    //
+    // `settings` is null for the same reason as the migration's: nothing switched on,
+    // which is what every behaviour reads as off. A new desk starts where an old one
+    // does. `round_robin_last` is null because nobody has been handed anything yet.
+    [
+      DESK,
+      'support@example.com',
+      'Hi - how can we help?',
+      '[]',
+      ulid(),
+      null,
+      0,
+      null,
+      null,
+      null,
+      now,
+      now,
+    ],
   );
   return ctx.sql.query<DeskRow>('SELECT * FROM ticket0_desk_settings WHERE id = ?', [DESK])[0]!;
 }
 
-/** Never hand the secret back on an ordinary read. */
+/**
+ * Never hand the secret back on an ordinary read — nor the round-robin cursor, which
+ * is the sweep's bookkeeping rather than anything the desk decided (`deskPublic` in
+ * the model says the same thing to the schema).
+ */
 function publicDesk(row: DeskRow) {
-  const { verification_secret: _secret, ...rest } = row;
+  const { verification_secret: _secret, round_robin_last: _cursor, ...rest } = row;
   return rest;
 }
 
@@ -903,16 +925,63 @@ function lastCustomerMessage(ctx: OperationContext, conversationId: string): Mes
  * thinking out loud — the visitor has been told nothing, so their request is still the
  * one the desk was told about, and treating a note as a reply would ping everybody a
  * second time over an answer nobody has sent.
+ *
+ * `handoffStandsSql` is the rule; this is its reading for one conversation. Round-robin
+ * reads the same fragment inside its scan (#1083), so "handed to a person" cannot mean
+ * one thing when the desk decides whether to notify and another when it decides whether
+ * to assign.
  */
 function handoffStands(ctx: OperationContext, conversationId: string): boolean {
-  const last = ctx.sql.query<MessageRow>(
-    `SELECT * FROM ticket0_messages
-      WHERE conversation_id = ? AND visibility = 'public'
-        AND author_kind IN ('system', 'agent', 'assistant')
-      ORDER BY id DESC LIMIT 1`,
-    [conversationId],
-  )[0];
-  return last?.author_kind === 'system' && last.body_text === HANDED_TO_A_PERSON;
+  return (
+    ctx.sql.query<{ stands: number }>(`SELECT ${handoffStandsSql('?')} AS stands`, [
+      HANDED_TO_A_PERSON,
+      conversationId,
+    ])[0]?.stands === 1
+  );
+}
+
+/**
+ * "A request for a person still stands on this conversation", as SQL.
+ *
+ * The newest thing the desk said in public is the acknowledgement `request-human`
+ * wrote, so nobody has answered since. `handoffStands` above says why each word of that
+ * is what it is.
+ *
+ * `conversation` is the SQL expression that names the conversation: `?` for one named
+ * row, `c.id` inside a scan. The fragment binds ONE parameter of its own,
+ * `HANDED_TO_A_PERSON`, and it comes textually BEFORE the conversation's placeholder, so
+ * a caller passing `?` binds `[HANDED_TO_A_PERSON, conversationId]` in that order.
+ *
+ * Answers 1 or 0, never NULL: a conversation where the desk has said nothing in public
+ * has no newest word, and `IS 1` reads that as "no request stands" rather than as a
+ * third value.
+ */
+function handoffStandsSql(conversation: string): string {
+  return `(SELECT m.author_kind = 'system' AND m.body_text = ?
+             FROM ticket0_messages m
+            WHERE m.conversation_id = ${conversation}
+              AND m.visibility = 'public'
+              AND m.author_kind IN ('system', 'agent', 'assistant')
+            ORDER BY m.id DESC LIMIT 1) IS 1`;
+}
+
+/**
+ * "The assistant's latest turn on this conversation handed it to a person", as SQL
+ * (#1083).
+ *
+ * `escalated` (the documentation had nothing) and `failed` (the assistant did not run)
+ * are the two outcomes that already tell the whole desk. Only the LATEST turn counts,
+ * for the reason only the newest desk word counts in `handoffStandsSql`. A turn that
+ * escalated, followed by one the assistant answered, is a conversation the assistant is
+ * handling again, and a historical escalation must not hand it to somebody.
+ *
+ * Binds nothing. Same `conversation` contract as `handoffStandsSql`.
+ */
+function escalationStandsSql(conversation: string): string {
+  return `(SELECT t.outcome IN ('escalated', 'failed')
+             FROM ticket0_ai_turns t
+            WHERE t.conversation_id = ${conversation}
+            ORDER BY t.created_at DESC, t.id DESC LIMIT 1) IS 1`;
 }
 
 /** The one shape every message event carries. Bodies are erasable and never ride. */
@@ -985,6 +1054,145 @@ function notifyStaff(
   let told = 0;
   for (const row of staff) if (notify(ctx, row.principal, kind, conversation.id)) told++;
   return told;
+}
+
+// ---------------------------------------------------------------------------
+// Assignment — one body, two doors
+// ---------------------------------------------------------------------------
+
+/**
+ * Put a conversation in somebody's hands, or nobody's — everything `ticket0/assign`
+ * does after its permission check (#1083).
+ *
+ * Two operations run this: a person's `assign` and the desk's own
+ * `assign-round-robin`. They share it so that round-robin cannot become a second,
+ * looser way to assign. The directory test, the lifecycle edge, the notification and
+ * the event are the same code for both, and the only thing that differs is who passed
+ * the permission check before calling it. Each caller makes that check itself, on the
+ * same key and the same conversation.
+ *
+ * `first_assigned_at` is stamped here the first time a name goes on, and never cleared
+ * — so unassigning leaves it standing, which is exactly how round-robin tells "nobody
+ * has picked this up" from "somebody put it back".
+ */
+function assignConversation(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  assignee: string | null,
+): ConversationRow {
+  // Before the write, not after: an assignee nobody can resolve is a queue entry
+  // that never gets worked and a notification nobody receives.
+  //
+  // `!== null` rather than truthiness, because `''` is a string the schema accepts
+  // and truthiness would wave it through — and an empty assignee is the exact
+  // failure this check exists for: not null, so the row reads as assigned, and not
+  // a person, so nobody is told and nobody works it.
+  //
+  // The assistant fails the same test for the same reason (#1154): it has a profile
+  // row so its messages carry a name, not so it can hold a queue. The app stopped
+  // offering it in #1323; this is the half that makes the API agree.
+  if (assignee !== null) assignableStaffOrThrow(ctx, assignee);
+  const next = step(conversation, 'ticket0/assign');
+  ctx.sql.exec(
+    `UPDATE ticket0_conversations
+        SET assignee = ?, first_assigned_at = COALESCE(first_assigned_at, ?)
+      WHERE id = ?`,
+    [assignee, assignee === null ? null : ctx.now(), conversation.id],
+  );
+  const row = settle(ctx, conversation, next);
+  if (assignee) notify(ctx, assignee, 'assigned', conversation.id);
+  ctx.emit({
+    type: 'ticket0.conversation-assigned',
+    schemaVersion: 1,
+    entity: conversationRef(row.id),
+    piiClass: 'none',
+    payload: { id: row.id, assignee: row.assignee, state: row.state },
+  });
+  return row;
+}
+
+/**
+ * How many waiting conversations one run of `ticket0/assign-round-robin` hands out.
+ * `WAKE_BATCH`'s bargain: a bound on one transaction, not a cap on the feature, because
+ * the schedule comes back.
+ */
+const ROUND_ROBIN_BATCH = 200;
+
+/**
+ * The conversations round-robin may hand out, oldest first: the sweep's whole scan, as
+ * one statement (#1083). `ticket0/assign-round-robin` says why each clause is there.
+ *
+ * It runs on every tick of every desk that has switched round-robin on, so it has
+ * indexes of its own in migration 0011, one per table it reads:
+ *
+ *   - `ticket0_conversations_waiting`, PARTIAL over exactly this WHERE's first four
+ *     terms, so it holds the waiting conversations and nothing else. A closed
+ *     conversation the reaper took, which is never assigned and accumulates for the
+ *     life of the desk, is not in it. It is led by `assignee`, although every row in it
+ *     has NULL there. SQLite has no statistics for these tables, and without the
+ *     equality on a leading column it prefers the kernel's own `(assignee, created_at,
+ *     id)` list index. That index holds every unassigned conversation ever, reaped ones
+ *     included.
+ *   - `ticket0_ai_turns_by_conversation` for `escalationStandsSql`: seek to the
+ *     conversation, newest turn first, no sort.
+ *   - `ticket0_messages_public_by_conversation` for `handoffStandsSql`. The kernel's
+ *     `(conversation_id, created_at, id)` list index exists, but with no statistics the
+ *     planner picks `(visibility, created_at, id)` for this subquery instead, which
+ *     reads every public message on the desk per candidate. Two equalities beat one.
+ *
+ * The four waiting terms must stay textually the same as the partial index's WHERE, or
+ * SQLite stops using it. `test/round-robin.test.ts` holds the PLAN to all three
+ * indexes, which is why this is exported.
+ *
+ * Binds `[autonomous ? 1 : 0, HANDED_TO_A_PERSON, limit]`.
+ */
+export const ROUND_ROBIN_WAITING = `SELECT * FROM ticket0_conversations c
+        WHERE c.assignee IS NULL
+          AND c.first_assigned_at IS NULL
+          AND c.state IN ('new', 'open')
+          AND c.merged_into IS NULL
+          AND (? = 0
+               OR c.channel != 'widget'
+               OR ${escalationStandsSql('c.id')}
+               OR ${handoffStandsSql('c.id')})
+        ORDER BY c.created_at, c.id LIMIT ?`;
+
+/**
+ * Who is next, after `after` — or who is first, when nobody has been handed anything
+ * yet or `after` was the last in line.
+ *
+ * The ring is the desk's directory less the assistant: exactly the set `assign` accepts
+ * as an assignee, by exactly the same test (`notifyStaff` reads the same set for the
+ * same reason). Ordered by principal, which is stable and unique — a rename does not
+ * reshuffle the ring, and two people who joined in the same millisecond still have an
+ * order. The comparison runs in SQL, in the same collation the `ORDER BY` uses, so
+ * "after" means the same thing on both sides of it.
+ *
+ * `after` need not still be in the ring. Somebody who was last in line and has since
+ * become unassignable still marks a place in the order, and the next person after that
+ * place is next.
+ *
+ * What the ring does NOT know is who is at their desk. There is no presence to read
+ * (see `notifyStaff`), and nothing in a scope records that someone has left: a profile
+ * is never deleted, and module code cannot ask the kernel who still holds a role. So an
+ * agent who has been off-boarded stays in line until their profile says otherwise.
+ * That is a sharp edge of switching this on, and it is named on #1083 and in the
+ * Settings hint rather than papered over here.
+ *
+ * `undefined` is a desk with nobody to hand anything to.
+ */
+function nextInTurn(ctx: OperationContext, after: string | null): string | undefined {
+  const ring = 'SELECT principal FROM ticket0_agent_profiles WHERE display_name != ?';
+  if (after !== null) {
+    const next = ctx.sql.query<{ principal: string }>(
+      `${ring} AND principal > ? ORDER BY principal LIMIT 1`,
+      [ASSISTANT_NAME, after],
+    )[0];
+    if (next) return next.principal;
+  }
+  return ctx.sql.query<{ principal: string }>(`${ring} ORDER BY principal LIMIT 1`, [
+    ASSISTANT_NAME,
+  ])[0]?.principal;
 }
 
 // ---------------------------------------------------------------------------
@@ -1120,8 +1328,9 @@ function openConversation(
   ctx.sql.exec(
     `INSERT INTO ticket0_conversations
        (id, contact_id, channel, subject, state, assignee, priority, snoozed_until,
-        first_public_reply_at, resolved_at, merged_into, follows, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'new', NULL, 'normal', NULL, NULL, NULL, NULL, ?, ?, ?)`,
+        first_public_reply_at, first_assigned_at, resolved_at, merged_into, follows,
+        created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'new', NULL, 'normal', NULL, NULL, NULL, NULL, NULL, ?, ?, ?)`,
     [id, contact.id, channel, subject, follows, now, now],
   );
   // The edge the permission walk follows: a contact's grant on their own entity
@@ -1228,6 +1437,40 @@ function allowedOrigins(ctx: OperationContext): string[] {
  */
 function isAutonomous(ctx: OperationContext): boolean {
   return desk(ctx).assistant_autonomous === 1;
+}
+
+/**
+ * The desk's switches as they are STORED — read leniently, where they are written
+ * strictly (#1083).
+ *
+ * `configure-desk` accepts only the keys `deskSettingsBlob` declares, so everything
+ * this vertical writes is well-formed. The leniency is for what it did not write:
+ * a key a later version added, still on the row after a rollback, is carried through
+ * untouched rather than refused, so the rollback does not quietly switch that
+ * behaviour off for good. Anything that is not a JSON object at all reads as nothing
+ * switched on — every behaviour's safe answer is the one the desk never opted into.
+ *
+ * Readers ask for one key and compare it to exactly `true`; see `roundRobinOn`.
+ */
+function storedSettings(row: DeskRow): Record<string, unknown> {
+  if (row.settings === null) return {};
+  try {
+    const parsed: unknown = JSON.parse(row.settings);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Has this desk switched round-robin on? Only an explicit `true` counts — the rule
+ * `isAutonomous` applies to its column, for the same reason: a behaviour that hands
+ * conversations to people unattended is one a desk has to opt into.
+ */
+function roundRobinOn(row: DeskRow): boolean {
+  return storedSettings(row).roundRobin === true;
 }
 
 /**
@@ -1483,8 +1726,8 @@ function likeTerm(term: string): string {
 
 /** Named rather than `SELECT c.*`: a search read returns the published entity, not the table. */
 const CONVERSATION_COLUMNS = `c.id, c.contact_id, c.channel, c.subject, c.state, c.assignee,
-  c.priority, c.snoozed_until, c.first_public_reply_at, c.resolved_at, c.merged_into,
-  c.follows, c.created_at, c.updated_at`;
+  c.priority, c.snoozed_until, c.first_public_reply_at, c.first_assigned_at, c.resolved_at,
+  c.merged_into, c.follows, c.created_at, c.updated_at`;
 
 // ---------------------------------------------------------------------------
 // Pricing - the vertical's, never the ledger's
@@ -1721,7 +1964,7 @@ const operations = {
     ctx.sql.exec(
       `UPDATE ticket0_desk_settings
           SET from_address = ?, greeting = ?, allowed_origins = ?, business_hours = ?,
-              assistant_autonomous = ?, abandoned_after_days = ?, updated_at = ?
+              assistant_autonomous = ?, abandoned_after_days = ?, settings = ?, updated_at = ?
         WHERE id = ?`,
       [
         input.fromAddress ?? current.from_address,
@@ -1742,6 +1985,13 @@ const operations = {
         input.abandonedAfterDays === undefined
           ? current.abandoned_after_days
           : input.abandonedAfterDays,
+        // Merged key by key over what is stored, never replaced wholesale: a call that
+        // names `roundRobin` changes `roundRobin`, and a key this version does not know
+        // — from a later one, before a rollback — rides through. Absent keeps the column
+        // exactly as it was, null included.
+        input.settings === undefined
+          ? current.settings
+          : JSON.stringify({ ...storedSettings(current), ...input.settings }),
         ctx.now(),
         DESK,
       ],
@@ -1758,6 +2008,7 @@ const operations = {
         allowed_origins: row.allowed_origins,
         assistant_autonomous: row.assistant_autonomous,
         abandoned_after_days: row.abandoned_after_days,
+        settings: row.settings,
       },
     });
     return publicDesk(row);
@@ -2445,34 +2696,79 @@ const operations = {
     assertAllowed(
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
     );
-    const conversation = conversationOrThrow(ctx, input.conversationId);
-    // Before the write, not after: an assignee nobody can resolve is a queue entry
-    // that never gets worked and a notification nobody receives.
-    //
-    // `!== null` rather than truthiness, because `''` is a string the schema accepts
-    // and truthiness would wave it through — and an empty assignee is the exact
-    // failure this check exists for: not null, so the row reads as assigned, and not
-    // a person, so nobody is told and nobody works it.
-    //
-    // The assistant fails the same test for the same reason (#1154): it has a profile
-    // row so its messages carry a name, not so it can hold a queue. The app stopped
-    // offering it in #1323; this is the half that makes the API agree.
-    if (input.assignee !== null) assignableStaffOrThrow(ctx, input.assignee);
-    const next = step(conversation, 'ticket0/assign');
-    ctx.sql.exec('UPDATE ticket0_conversations SET assignee = ? WHERE id = ?', [
-      input.assignee,
-      conversation.id,
+    // Everything after the check is `assignConversation`, which round-robin runs too.
+    return assignConversation(ctx, conversationOrThrow(ctx, input.conversationId), input.assignee);
+  },
+
+  /**
+   * Round-robin (#1083) — the schedule's only entry point, never a route.
+   *
+   * Off unless the desk switched it on, and then it hands out the conversations nobody
+   * has picked up, oldest first, one person at a time around the ring `nextInTurn`
+   * reads. Every hand-out is `assignConversation`, behind the same per-conversation
+   * check `ticket0/assign` makes, so the desk's own assignment and a person's are the
+   * same act under the same key.
+   *
+   * WHICH conversations is the predicate below, and every clause is a decision:
+   *
+   *   - `assignee IS NULL AND first_assigned_at IS NULL` — nobody has EVER had it. An
+   *     agent who puts a conversation back has made a decision, and the next sweep must
+   *     not overrule it by handing the thread straight to somebody else. Only the
+   *     never-assigned are the desk's to distribute. That does include the backlog a
+   *     desk already has when it switches this on: "everything unassigned" was the
+   *     decision, and the backlog is what that means.
+   *   - `state IN ('new', 'open')` — work that is live. A snoozed conversation was
+   *     parked on purpose and comes back through `wake-snoozed` as `open`, when this
+   *     picks it up. A resolved or closed one is done, and the lifecycle would refuse to
+   *     assign it anyway.
+   *   - `merged_into IS NULL` — the losing half of a merge is already folded into a
+   *     survivor, and the survivor is the one to hand out.
+   *   - the assistant's own conversations are left to it. On a desk that lets the
+   *     assistant answer, a widget conversation belongs to the assistant until a
+   *     hand-off to a person STANDS. Either its latest turn is `escalated` or `failed`
+   *     (`escalationStandsSql`), or the newest thing the desk said in public is the
+   *     acknowledgement `request-human` writes (`handoffStandsSql`, the very fragment
+   *     `handoffStands` reads). "Stands", not "happened once": a hand-off the assistant
+   *     or an agent has since answered is not an open request for a person, and handing
+   *     that conversation to somebody would act on history. Without this clause, every
+   *     widget conversation the assistant was answering would get a human assignee and
+   *     a notification. The assistant never answers mail, and on a supervised desk it
+   *     cannot send at all, so both of those are a person's work from the start.
+   *
+   * Idempotent by construction rather than by bookkeeping: what it assigns no longer
+   * matches the predicate, so a second run — a duplicate fire, a retried sweep — finds
+   * nothing it has already handled. The cursor moves only past people it actually handed
+   * something to, so a desk with nobody in the ring leaves the cursor where it was and
+   * every conversation where it was: unassigned, in the inbox, and not an error.
+   */
+  'ticket0/assign-round-robin': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationAssign));
+    const settings = desk(ctx);
+    if (!roundRobinOn(settings)) return { assigned: 0 };
+    const waiting = ctx.sql.query<ConversationRow>(ROUND_ROBIN_WAITING, [
+      isAutonomous(ctx) ? 1 : 0,
+      HANDED_TO_A_PERSON,
+      ROUND_ROBIN_BATCH,
     ]);
-    const row = settle(ctx, conversation, next);
-    if (input.assignee) notify(ctx, input.assignee, 'assigned', conversation.id);
-    ctx.emit({
-      type: 'ticket0.conversation-assigned',
-      schemaVersion: 1,
-      entity: conversationRef(row.id),
-      piiClass: 'none',
-      payload: { id: row.id, assignee: row.assignee, state: row.state },
-    });
-    return row;
+    let last = settings.round_robin_last;
+    let assigned = 0;
+    for (const conversation of waiting) {
+      assertAllowed(
+        await ctx.check(T0_PERM.conversationAssign, conversationRef(conversation.id)),
+      );
+      const next = nextInTurn(ctx, last);
+      if (next === undefined) break;
+      assignConversation(ctx, conversation, next);
+      last = next;
+      assigned++;
+    }
+    if (assigned > 0) {
+      ctx.sql.exec('UPDATE ticket0_desk_settings SET round_robin_last = ? WHERE id = ?', [
+        last,
+        DESK,
+      ]);
+    }
+    return { assigned };
   },
 
   'ticket0/set-priority': async (ctx, input) => {

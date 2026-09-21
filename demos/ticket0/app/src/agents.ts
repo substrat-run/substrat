@@ -11,6 +11,7 @@
  * that set minus the one row in it that is not a colleague.
  */
 import { api, type AgentProfile } from './api.js';
+import { everyPage } from './staff.js';
 
 // The picker's rule lives in `staff.ts` — a leaf the vertical's suite can import
 // without a DOM — and is re-exported here so a screen has one place to import staff
@@ -20,21 +21,24 @@ export { ASSISTANT_DISPLAY_NAME, assignableStaff } from './staff.js';
 let cache: Promise<Map<string, AgentProfile>> | null = null;
 
 /**
- * The WHOLE directory, not its first page.
+ * The WHOLE directory, not its first page, read fresh every time.
  *
  * A picker is the one read where a truncated answer is invisible: it does not look
  * short, it looks like the person you wanted does not work here. So this follows
  * `page.next` to the end rather than mapping the first response, which is also the
- * only way the app's options stay the same set the handler validates against.
+ * only way the app's options stay the same set the handler validates against. The
+ * Team roster reads it too (#1083): round-robin hands work to the whole directory, and
+ * the roster is how an admin sees who that is.
  */
+export function everyAgentProfile(): Promise<AgentProfile[]> {
+  return everyPage(
+    () => api.listAgents(),
+    (next) => api.follow<AgentProfile>(next),
+  );
+}
+
 async function everyAgent(): Promise<Map<string, AgentProfile>> {
-  const all = new Map<string, AgentProfile>();
-  let page = await api.listAgents();
-  for (;;) {
-    for (const a of page.entries) all.set(a.principal, a);
-    if (!page.next) return all;
-    page = await api.follow<AgentProfile>(page.next);
-  }
+  return new Map((await everyAgentProfile()).map((a) => [a.principal, a]));
 }
 
 /**
