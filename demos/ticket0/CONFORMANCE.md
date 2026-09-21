@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-80 operations · 30 narrowed checks · 30 conformance pairs driven
+81 operations · 31 narrowed checks · 31 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,10 +37,11 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**30 pairs driven** across 30 of this package's 30 narrowed checks.
+**31 pairs driven** across 31 of this package's 31 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
+| `ticket0/apply-saved-reply` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/assign` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/close` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/follow-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
@@ -89,6 +90,7 @@ extra keys are here with the reason — the one place that gap is written down.
 
 | Operation | Also granted | Because |
 | --- | --- | --- |
+| `ticket0/apply-saved-reply` | `conversation:reply-public` | a macro checks the union of the keys its parts declare, and sending its reply publicly is ticket0/post-public-reply, which declares conversation:reply-public |
 | `ticket0/follow-conversation` | `conversation:read` | the handler delegates conversation:read to the follower via ctx.grant, and delegation only narrows a permission the caller already holds on that entity |
 | `ticket0/unfollow-conversation` | `conversation:read` | ctx.revoke takes the same guardrail as ctx.grant — a caller may only withdraw a grant it could have made, so it must hold the key on that entity too |
 
@@ -102,6 +104,7 @@ own claim, and is **not** asserted here.
 
 | Operation | Field | Made as |
 | --- | --- | --- |
+| `ticket0/apply-saved-reply` | `savedReplyId` | `savedReply` |
 | `ticket0/merge` | `intoConversationId` | `conversation` |
 | `ticket0/render-saved-reply` | `savedReplyId` | `savedReply` |
 

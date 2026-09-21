@@ -18,6 +18,8 @@ import {
   operationInputsOf,
   pageOf,
   pageVisible,
+  permissionKey,
+  permissionsUsedBy,
   principalId,
   substratError,
   z,
@@ -25,6 +27,7 @@ import {
   type EntityRow,
   type HandlerInput,
   type HandlerOutput,
+  type PermissionKey,
   type PrincipalId,
   MODEL_USAGE_KIND,
 } from '@substrat-run/contracts';
@@ -49,6 +52,9 @@ import {
   DESK_METRICS_AGENTS,
   DESK_METRICS_MAX_DAYS,
   DESK_METRICS_WINDOW_DAYS,
+  MACRO_ACTION_OPERATIONS,
+  MACRO_REPLY_OPERATIONS,
+  macroActions,
   SAVED_REPLY_VARIABLES,
   savedReplyToken,
   SEARCH_OVERFETCH,
@@ -58,6 +64,7 @@ import {
   ticket0Entities,
   ticket0Lifecycles,
   ticket0Operations,
+  type MacroAction,
 } from '../spec/model.js';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
 import { ticket0Migrations } from './migrations.generated.js';
@@ -318,6 +325,114 @@ function savedReplyOrThrow(ctx: OperationContext, id: string): SavedReplyRow {
   ])[0];
   if (!row) throw substratError('not_found', `saved reply not found: ${id}`);
   return row;
+}
+
+/**
+ * The action bag off the row, parsed.
+ *
+ * A row whose JSON does not parse is refused rather than read as "no actions". This
+ * module is the only writer and parses on the way in, so a bad value is a row some
+ * other version wrote, and a macro that quietly stopped assigning would be wrong data
+ * on a screen. A throw is what somebody notices.
+ */
+function savedReplyActions(row: Pick<SavedReplyRow, 'id' | 'actions'>): MacroAction[] {
+  if (row.actions === null) return [];
+  let raw: unknown;
+  try {
+    raw = JSON.parse(row.actions);
+  } catch {
+    raw = undefined;
+  }
+  const parsed = macroActions.safeParse(raw);
+  if (!parsed.success) {
+    throw substratError('internal', `saved reply ${row.id} carries actions this version cannot read`);
+  }
+  return parsed.data;
+}
+
+/** A saved reply as every operation hands it out: `actions` parsed, never the JSON. */
+function savedReplyPublic(row: SavedReplyRow): Omit<SavedReplyRow, 'actions'> & { actions: MacroAction[] } {
+  return { ...row, actions: savedReplyActions(row) };
+}
+
+/**
+ * A saved reply filled in for one conversation, by the caller. Shared by
+ * `render-saved-reply` and `apply-saved-reply`, so what the preview showed is what the
+ * macro sends.
+ */
+function renderFor(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  reply: SavedReplyRow,
+): { body: string; blank: string[]; unresolved: string[] } {
+  const contact = ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE id = ?', [
+    conversation.contact_id,
+  ])[0];
+  // The caller's OWN profile, never a principal from the input: a saved reply
+  // signs itself with the name of whoever is pasting it.
+  const profile = ctx.sql.query<AgentProfileRow>(
+    'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
+    [String(ctx.principal)],
+  )[0];
+  return renderSavedReplyBody(reply.body, {
+    'agent.name': profile?.display_name ?? null,
+    'agent.signature': profile?.signature ?? null,
+    'contact.name': contact?.display_name ?? null,
+    'conversation.subject': conversation.subject,
+  });
+}
+
+/** The bag as the column stores it. An empty bag is stored as null, the same as none. */
+function storedActions(actions: readonly MacroAction[]): string | null {
+  return actions.length === 0 ? null : JSON.stringify(actions);
+}
+
+/**
+ * THE MACRO RULE (#1087): the permission keys a macro needs, which is every key its
+ * parts need.
+ *
+ * The parts are this operation itself, the operation that sends the reply, and the
+ * operation behind each action. Every key is read off the DECLARATIONS
+ * (`MACRO_ACTION_OPERATIONS` and each operation's own `permission`), through
+ * `permissionsUsedBy`, the same reading the manifest's permission list is built from.
+ * No action carries a key of its own. So the day somebody adds `close` to the bag, the
+ * key `ticket0/close` declares is required of every macro that closes, and nobody has to
+ * remember to say so.
+ *
+ * Exported for the test that holds it to that.
+ */
+export function macroPermissions(
+  visibility: keyof typeof MACRO_REPLY_OPERATIONS,
+  actions: readonly MacroAction[],
+): PermissionKey[] {
+  const parts: (keyof typeof ticket0Operations)[] = [
+    'ticket0/apply-saved-reply',
+    MACRO_REPLY_OPERATIONS[visibility],
+    ...actions.map((a) => MACRO_ACTION_OPERATIONS[a.type]),
+  ];
+  return permissionsUsedBy(Object.fromEntries(parts.map((op) => [op, ticket0Operations[op]]))).map(
+    (key) => permissionKey.parse(key),
+  );
+}
+
+/**
+ * Run one part of a macro as the operation it names: that operation's declared input
+ * schema, then that operation's own handler.
+ *
+ * Nothing is reimplemented here, which is the lesson #1640 taught. A macro that wrote
+ * the row itself would be a second assignment path, one that could drift from the first
+ * on the check, the directory, the lifecycle or the event. Instead it is the first path,
+ * called with the conversation filled in. The handler re-checks its own key, which the
+ * union has already checked, so the handler's check is a second lock, not the only one.
+ */
+async function runMacroPart(
+  ctx: OperationContext,
+  op: keyof typeof ticket0Operations,
+  input: Record<string, unknown>,
+): Promise<unknown> {
+  const declared = ticket0Operations[op] as { input?: z.ZodTypeAny };
+  const handler = operations[op] as unknown as OperationHandler<unknown, unknown>;
+  return handler(ctx, declared.input ? declared.input.parse(input) : input);
 }
 
 /**
@@ -3741,7 +3856,8 @@ const operations = {
 
   'ticket0/list-saved-replies': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationDraft));
-    return ctx.page<SavedReplyRow>('savedReply', input);
+    const page = ctx.page<SavedReplyRow>('savedReply', input);
+    return { ...page, entries: page.entries.map(savedReplyPublic) };
   },
 
   'ticket0/create-saved-reply': async (ctx, input) => {
@@ -3750,15 +3866,13 @@ const operations = {
       'SELECT * FROM ticket0_saved_replies WHERE title = ?',
       [input.title],
     )[0];
-    if (existing) return existing;
+    if (existing) return savedReplyPublic(existing);
     const id = ulid();
     ctx.sql.exec(
-      'INSERT INTO ticket0_saved_replies (id, title, body, created_by, created_at) VALUES (?, ?, ?, ?, ?)',
-      [id, input.title, input.body, String(ctx.principal), ctx.now()],
+      'INSERT INTO ticket0_saved_replies (id, title, body, created_by, created_at, actions) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, input.title, input.body, String(ctx.principal), ctx.now(), storedActions(input.actions ?? [])],
     );
-    const row = ctx.sql.query<SavedReplyRow>('SELECT * FROM ticket0_saved_replies WHERE id = ?', [
-      id,
-    ])[0]!;
+    const row = savedReplyPublic(savedReplyOrThrow(ctx, id));
     ctx.emit({
       type: 'ticket0.saved-reply-created',
       schemaVersion: 1,
@@ -3770,6 +3884,7 @@ const operations = {
         body: row.body,
         created_by: row.created_by,
         created_at: row.created_at,
+        actions: row.actions,
       },
     });
     return row;
@@ -3781,7 +3896,7 @@ const operations = {
    */
   'ticket0/get-saved-reply': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationDraft));
-    return savedReplyOrThrow(ctx, input.savedReplyId);
+    return savedReplyPublic(savedReplyOrThrow(ctx, input.savedReplyId));
   },
 
   /**
@@ -3809,13 +3924,18 @@ const operations = {
     if (clash) {
       throw substratError('conflict', `another saved reply is already called "${title}"`);
     }
-    if (title === existing.title && body === existing.body) return existing;
-    ctx.sql.exec('UPDATE ticket0_saved_replies SET title = ?, body = ? WHERE id = ?', [
+    const actions =
+      input.actions !== undefined ? storedActions(input.actions) : existing.actions;
+    if (title === existing.title && body === existing.body && actions === existing.actions) {
+      return savedReplyPublic(existing);
+    }
+    ctx.sql.exec('UPDATE ticket0_saved_replies SET title = ?, body = ?, actions = ? WHERE id = ?', [
       title,
       body,
+      actions,
       existing.id,
     ]);
-    const row = savedReplyOrThrow(ctx, existing.id);
+    const row = savedReplyPublic(savedReplyOrThrow(ctx, existing.id));
     ctx.emit({
       type: 'ticket0.saved-reply-updated',
       schemaVersion: 1,
@@ -3827,6 +3947,7 @@ const operations = {
         body: row.body,
         created_by: row.created_by,
         created_at: row.created_at,
+        actions: row.actions,
       },
     });
     return row;
@@ -3869,22 +3990,63 @@ const operations = {
     assertAllowed(await ctx.check(T0_PERM.conversationDraft, conversationRef(input.conversationId)));
     const conversation = conversationOrThrow(ctx, input.conversationId);
     const reply = savedReplyOrThrow(ctx, input.savedReplyId);
-    const contact = ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE id = ?', [
-      conversation.contact_id,
-    ])[0];
-    // The caller's OWN profile, never a principal from the input: a saved reply
-    // signs itself with the name of whoever is pasting it.
-    const profile = ctx.sql.query<AgentProfileRow>(
-      'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
-      [String(ctx.principal)],
-    )[0];
-    const rendered = renderSavedReplyBody(reply.body, {
-      'agent.name': profile?.display_name ?? null,
-      'agent.signature': profile?.signature ?? null,
-      'contact.name': contact?.display_name ?? null,
-      'conversation.subject': conversation.subject,
+    return { id: reply.id, title: reply.title, ...renderFor(ctx, conversation, reply) };
+  },
+
+  /**
+   * A macro, applied (#1087): the union check, then the reply, then each action, each
+   * through its own operation. The model's docblock states the rule; `macroPermissions`
+   * is where it is derived and `runMacroPart` is where each part runs.
+   *
+   * Every key is checked before anything is written, so a caller short of one is
+   * refused and nothing moves. Each handler then makes its own check again, on the key
+   * it declares, which is the key the union was read from. The union is what does not
+   * depend on every future handler remembering its check. The transaction is the last
+   * line: anything that throws after the reply, such as an assignee outside the
+   * directory, rolls the reply back with it.
+   */
+  'ticket0/apply-saved-reply': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft, conversationRef(input.conversationId)));
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const reply = savedReplyOrThrow(ctx, input.savedReplyId);
+    const actions = savedReplyActions(reply);
+    const visibility = input.visibility ?? 'public';
+    for (const key of macroPermissions(visibility, actions)) {
+      assertAllowed(await ctx.check(key, conversationRef(conversation.id)));
+    }
+
+    const body = input.body ?? renderFor(ctx, conversation, reply).body;
+    if (body.trim() === '') {
+      // Everything in it was a placeholder that resolved to nothing. Sending a blank
+      // reply is never what somebody meant.
+      throw substratError('validation_failed', 'this reply renders to nothing for this conversation');
+    }
+    const message = (await runMacroPart(ctx, MACRO_REPLY_OPERATIONS[visibility], {
+      conversationId: conversation.id,
+      body,
+    })) as MessageRow;
+    for (const action of actions) {
+      const { type, ...rest } = action;
+      await runMacroPart(ctx, MACRO_ACTION_OPERATIONS[type], {
+        ...rest,
+        conversationId: conversation.id,
+      });
+    }
+
+    const out = {
+      saved_reply_id: reply.id,
+      conversation_id: conversation.id,
+      message_id: message.id,
+      actions: actions.map((a) => a.type),
+    };
+    ctx.emit({
+      type: 'ticket0.saved-reply-applied',
+      schemaVersion: 1,
+      entity: { entityType: 'savedReply', entityId: reply.id },
+      piiClass: 'none',
+      payload: out,
     });
-    return { id: reply.id, title: reply.title, ...rendered };
+    return { ...out, conversation: conversationOrThrow(ctx, conversation.id) };
   },
 
   // --- The assistant -------------------------------------------------------

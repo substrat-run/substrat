@@ -137,6 +137,7 @@ export interface SavedReply {
   body: string;
   created_by: string;
   created_at: string;
+  actions: string | null;
 }
 
 /** `ticket0_csat` — declared in spec/model.ts. */
@@ -311,6 +312,13 @@ export interface Ticket0Client {
   addKbSource(input: { kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string }): Promise<{ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string }>;
 
   /**
+   * Send a canned answer and run its actions, all or nothing
+   *
+   * `POST /conversations/{conversationId}/saved-replies/{savedReplyId}/apply` — `ticket0/apply-saved-reply`
+   */
+  applySavedReply(input: { conversationId: string; savedReplyId: string; body?: string; visibility?: "public" | "internal" }): Promise<{ saved_reply_id: string; conversation_id: string; message_id: string; actions: string[]; conversation: Conversation }>;
+
+  /**
    * Assign a conversation to someone (or nobody)
    *
    * `POST /conversations/{conversationId}/assignee` — `ticket0/assign`
@@ -364,7 +372,7 @@ export interface Ticket0Client {
    *
    * `POST /saved-replies` — `ticket0/create-saved-reply`
    */
-  createSavedReply(input: { title: string; body: string }): Promise<SavedReply>;
+  createSavedReply(input: { title: string; body: string; actions?: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] }): Promise<{ id: string; title: string; body: string; created_by: string; created_at: string; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] }>;
 
   /**
    * Delete a canned answer
@@ -421,7 +429,7 @@ export interface Ticket0Client {
    * remembered and sent as `If-Match` on the next write to the same entity, so a
    * write that would overwrite someone else's change fails with 412 instead.
    */
-  getSavedReply(input: { savedReplyId: string }): Promise<SavedReply>;
+  getSavedReply(input: { savedReplyId: string }): Promise<{ id: string; title: string; body: string; created_by: string; created_at: string; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] }>;
 
   /**
    * Re-read a documentation source
@@ -523,7 +531,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listSavedReplies(): Promise<Paged<SavedReply>>;
+  listSavedReplies(): Promise<Paged<({ id: string; title: string; body: string; created_by: string; created_at: string; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] })>>;
 
   /**
    * Who is waiting, and who is subscribed
@@ -821,7 +829,7 @@ export interface Ticket0Client {
    * remembered and sent as `If-Match` on the next write to the same entity, so a
    * write that would overwrite someone else's change fails with 412 instead.
    */
-  updateSavedReply(input: { savedReplyId: string; title?: string; body?: string }): Promise<SavedReply>;
+  updateSavedReply(input: { savedReplyId: string; title?: string; body?: string; actions?: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] }): Promise<{ id: string; title: string; body: string; created_by: string; created_at: string; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] }>;
 
   /**
    * Token usage and what it cost
@@ -1037,6 +1045,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/desk/block-rules", "POST", input, undefined),
     addKbSource: (input: Args) =>
       send("/kb/sources", "POST", input, undefined),
+    applySavedReply: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/saved-replies/${encodeURIComponent(String(input.savedReplyId))}/apply`, "POST", omit(input, ["conversationId","savedReplyId"]), undefined),
     assign: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/assignee`, "POST", omit(input, ["conversationId"]), undefined),
     assistantHealth: () =>

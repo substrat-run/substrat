@@ -13,7 +13,15 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
 import type { Session } from '../api.js';
-import { ApiError, api, type AgentProfile, type Contact, type Conversation, type Message, type SavedReply } from '../api.js';
+import {
+  ApiError,
+  api,
+  type AgentProfile,
+  type Contact,
+  type Conversation,
+  type Message,
+  type Ticket0Client,
+} from '../api.js';
 import { agentName, agents, assignableStaff } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
@@ -171,7 +179,7 @@ export function ConversationView({
             </div>
           ) : null}
           <Thread messages={messages} turnFor={turnFor} conv={conv} busy={busy} act={act} />
-          <Composer conv={conv} busy={busy} act={act} session={session} />
+          <Composer conv={conv} busy={busy} act={act} session={session} staff={staff} />
         </div>
         <Rail
           conv={conv}
@@ -679,15 +687,27 @@ function Composer({
   busy,
   act,
   session,
+  staff,
 }: {
   conv: Conversation;
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
   session: Session;
+  staff: Map<string, AgentProfile>;
 }) {
   const [internal, setInternal] = useState(false);
   const [text, setText] = useState('');
   const [picker, setPicker] = useState(false);
+  /**
+   * The macro whose actions ride on the next send (#1087), if the text came from one.
+   *
+   * Sending then goes through `apply-saved-reply`, which sends this text AND runs the
+   * actions as one act. The server checks every key the actions need, so a person
+   * who may not assign gets a refusal and nothing is sent at all. That is why the
+   * actions are shown above the button rather than applied quietly: the person
+   * pressing it should know what it will do.
+   */
+  const [macro, setMacro] = useState<{ id: string; title: string; actions: MacroAction[] } | null>(null);
   /** What the last insert could not fill in. Lives HERE rather than in the picker,
    *  which unmounts the moment the text lands. */
   const [insertNote, setInsertNote] = useState<string | null>(null);
@@ -697,11 +717,21 @@ function Composer({
     const body = text.trim();
     if (!body) return;
     void act(async () => {
-      await (internal
-        ? api.postNote({ conversationId: conv.id, body })
-        : api.postPublicReply({ conversationId: conv.id, body }));
+      if (macro) {
+        await api.applySavedReply({
+          conversationId: conv.id,
+          savedReplyId: macro.id,
+          body,
+          visibility: internal ? 'internal' : 'public',
+        });
+      } else {
+        await (internal
+          ? api.postNote({ conversationId: conv.id, body })
+          : api.postPublicReply({ conversationId: conv.id, body }));
+      }
       setText('');
       setInsertNote(null);
+      setMacro(null);
     });
   };
 
@@ -729,9 +759,14 @@ function Composer({
       {picker ? (
         <SavedReplies
           conversationId={conv.id}
-          onPick={(body, note) => {
+          staff={staff}
+          onPick={(body, note, reply) => {
             setText((t) => (t ? `${t}\n${body}` : body));
             setInsertNote(note);
+            // The last macro picked is the one that runs. Picking a text-only reply
+            // after one leaves the earlier macro's actions in place: the person
+            // chose them and has not taken them back.
+            if (reply.actions.length > 0) setMacro({ id: reply.id, title: reply.title, actions: reply.actions });
             setPicker(false);
             ta.current?.focus();
           }}
@@ -801,6 +836,16 @@ function Composer({
             </button>
           </div>
         </div>
+        {macro ? (
+          <div className="t-small" style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span>
+              Sending also runs “{macro.title}”: {macro.actions.map((a) => describeAction(a, staff)).join(' · ')}.
+            </span>
+            <button className="btn btn-ghost" disabled={busy} onClick={() => setMacro(null)}>
+              Send just the text
+            </button>
+          </div>
+        ) : null}
         {insertNote ? (
           <div className="t-small" style={{ marginTop: 6, color: 'var(--internal-text)' }}>
             {insertNote}
@@ -829,20 +874,125 @@ function Composer({
  */
 const TOKEN_HINT = /\{\{\s*[A-Za-z0-9_.]+\s*\}\}/;
 
+/** A saved reply as the API hands it out: the action bag parsed. */
+type SavedReplyOut = Awaited<ReturnType<Ticket0Client['getSavedReply']>>;
+type MacroAction = SavedReplyOut['actions'][number];
+
+/** One action, as a person reads it. */
+function describeAction(action: MacroAction, staff: Map<string, AgentProfile>): string {
+  switch (action.type) {
+    case 'tag':
+      return `tag “${action.tag}”`;
+    case 'set-priority':
+      return `priority ${action.priority}`;
+    case 'assign':
+      return action.assignee ? `assign to ${agentName(staff, action.assignee)}` : 'unassign';
+    case 'resolve':
+      return 'resolve';
+  }
+}
+
+/**
+ * The action bag, edited in place.
+ *
+ * Each row is one of the four operations a macro may run. What the person may SAVE is
+ * not narrowed by their own keys: the check is made when the macro is applied, against
+ * whoever applies it, so a desk-admin can build a macro their agents will use.
+ */
+function ActionsEditor({
+  actions,
+  staff,
+  onChange,
+}: {
+  actions: MacroAction[];
+  staff: Map<string, AgentProfile>;
+  onChange: (next: MacroAction[]) => void;
+}) {
+  const [type, setType] = useState<MacroAction['type']>('tag');
+  const [tag, setTag] = useState('');
+  const [priority, setPriority] = useState<'low' | 'normal' | 'urgent'>('urgent');
+  const [assignee, setAssignee] = useState<string>('');
+  const people = assignableStaff(staff.values());
+
+  const add = () => {
+    const next: MacroAction | null =
+      type === 'tag'
+        ? tag.trim()
+          ? { type, tag: tag.trim() }
+          : null
+        : type === 'set-priority'
+          ? { type, priority }
+          : type === 'assign'
+            ? { type, assignee: assignee || null }
+            : { type };
+    if (!next) return;
+    onChange([...actions, next]);
+    setTag('');
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div className="micro">Also, when used</div>
+      {actions.length === 0 ? <div className="t-small">Nothing. It inserts text only.</div> : null}
+      {actions.map((a, n) => (
+        <div key={n} className="t-small" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{ flex: 1 }}>{describeAction(a, staff)}</span>
+          <button className="btn btn-ghost" onClick={() => onChange(actions.filter((_, k) => k !== n))}>
+            Remove
+          </button>
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <select className="input" value={type} onChange={(e) => setType(e.target.value as MacroAction['type'])}>
+          <option value="tag">Tag</option>
+          <option value="set-priority">Set priority</option>
+          <option value="assign">Assign</option>
+          <option value="resolve">Resolve</option>
+        </select>
+        {type === 'tag' ? (
+          <input className="input" value={tag} placeholder="tag" onChange={(e) => setTag(e.target.value)} />
+        ) : type === 'set-priority' ? (
+          <select className="input" value={priority} onChange={(e) => setPriority(e.target.value as typeof priority)}>
+            <option value="low">low</option>
+            <option value="normal">normal</option>
+            <option value="urgent">urgent</option>
+          </select>
+        ) : type === 'assign' ? (
+          <select className="input" value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+            <option value="">Nobody</option>
+            {people.map((p) => (
+              <option key={p.principal} value={p.principal}>
+                {p.display_name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        <button className="btn" disabled={type === 'tag' && !tag.trim()} onClick={add}>
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SavedReplies({
   conversationId,
+  staff,
   onPick,
   onClose,
 }: {
   conversationId: string;
-  onPick: (body: string, note: string | null) => void;
+  staff: Map<string, AgentProfile>;
+  onPick: (body: string, note: string | null, reply: SavedReplyOut) => void;
   onClose: () => void;
 }) {
-  const [items, setItems] = useState<SavedReply[]>([]);
+  const [items, setItems] = useState<SavedReplyOut[]>([]);
   const [q, setQ] = useState('');
   const [i, setI] = useState(0);
   /** The reply being edited, as a draft — `null` means the list is just a list. */
-  const [draft, setDraft] = useState<{ id: string; title: string; body: string } | null>(null);
+  const [draft, setDraft] = useState<{ id: string; title: string; body: string; actions: MacroAction[] } | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** Which reply's Delete button is asking a second time. A deletion is not undoable
@@ -889,7 +1039,7 @@ function SavedReplies({
    * pastes `{{contact.name}}` for a person to fix. The failure is said out loud
    * rather than swallowed.
    */
-  const pick = (reply: SavedReply) => {
+  const pick = (reply: SavedReplyOut) => {
     setBusy(true);
     void api
       .renderSavedReply({ conversationId, savedReplyId: reply.id })
@@ -901,10 +1051,10 @@ function SavedReplies({
           r.blank.length > 0 ? `nothing to put in ${r.blank.join(', ')}` : '',
           r.unresolved.length > 0 ? `left ${r.unresolved.join(', ')} as written` : '',
         ].filter(Boolean);
-        onPick(r.body, parts.length > 0 ? `Inserted — ${parts.join('; ')}.` : null);
+        onPick(r.body, parts.length > 0 ? `Inserted — ${parts.join('; ')}.` : null, reply);
       })
       .catch(() =>
-        onPick(reply.body, 'Inserted as written — the placeholders could not be filled in.'),
+        onPick(reply.body, 'Inserted as written — the placeholders could not be filled in.', reply),
       )
       .finally(() => setBusy(false));
   };
@@ -918,7 +1068,7 @@ function SavedReplies({
    * overwrite. Seeding the form from the list row would skip that and look identical
    * until the day it mattered.
    */
-  const edit = (reply: SavedReply) => {
+  const edit = (reply: SavedReplyOut) => {
     setError(null);
     // An armed Delete must not survive the trip through the editor: click Delete,
     // click Edit, cancel, and the next single click would delete without asking.
@@ -926,7 +1076,7 @@ function SavedReplies({
     setBusy(true);
     void api
       .getSavedReply({ savedReplyId: reply.id })
-      .then((r) => setDraft({ id: r.id, title: r.title, body: r.body }))
+      .then((r) => setDraft({ id: r.id, title: r.title, body: r.body, actions: r.actions }))
       .catch((e: unknown) => setError(e instanceof ApiError ? e.message : 'Could not open that reply.'))
       .finally(() => setBusy(false));
   };
@@ -935,7 +1085,12 @@ function SavedReplies({
     if (!draft) return;
     setBusy(true);
     void api
-      .updateSavedReply({ savedReplyId: draft.id, title: draft.title, body: draft.body })
+      .updateSavedReply({
+        savedReplyId: draft.id,
+        title: draft.title,
+        body: draft.body,
+        actions: draft.actions,
+      })
       .then(async () => {
         setDraft(null);
         setError(null);
@@ -953,7 +1108,7 @@ function SavedReplies({
       .finally(() => setBusy(false));
   };
 
-  const remove = (reply: SavedReply) => {
+  const remove = (reply: SavedReplyOut) => {
     if (confirming !== reply.id) {
       setConfirming(reply.id);
       return;
@@ -1064,6 +1219,11 @@ function SavedReplies({
               placeholder="The reply. {{contact.name}}, {{conversation.subject}}, {{agent.name}}, {{agent.signature}}"
               style={{ resize: 'vertical', font: "400 12px/1.6 'Geist', sans-serif" }}
             />
+            <ActionsEditor
+              actions={draft.actions}
+              staff={staff}
+              onChange={(actions) => setDraft({ ...draft, actions })}
+            />
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 className="btn btn-primary"
@@ -1084,6 +1244,11 @@ function SavedReplies({
             </div>
             {active && TOKEN_HINT.test(active.body) ? (
               <div className="t-small">Placeholders fill in when you insert.</div>
+            ) : null}
+            {active && active.actions.length > 0 ? (
+              <div className="t-small">
+                When you send it, also: {active.actions.map((a) => describeAction(a, staff)).join(' · ')}.
+              </div>
             ) : null}
             {active ? (
               <div style={{ display: 'flex', gap: 8 }}>
