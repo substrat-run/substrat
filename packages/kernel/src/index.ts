@@ -201,6 +201,7 @@ export type {
   PlatformRequestRedactionCandidate,
   SubjectRedactionCounts,
 } from './subject-redaction.js';
+export { SEAT_SCOPE_TUPLE_SQL } from './scope-tuple-seat.js';
 export {
   DENIAL_COLUMNS,
   DENIAL_WINDOW_QUERY,
