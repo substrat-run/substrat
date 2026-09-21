@@ -962,6 +962,13 @@ describe('setEntitlementsHandler — reconcile a managed tenant to a plan\'s tar
   });
 });
 
+// Pass times are relative to the real clock, never literals: the host prunes a sweep run
+// older than SWEEP_RUN_RETENTION_DAYS against Date.now(), so a fixed date is a fixture
+// that expires (and did, 14 days after it was written). Offsets keep the order the
+// literals had: `passAt(3)` is the earliest, `passAt(0)` the latest.
+const PASS_BASE = Date.now();
+const passAt = (hoursAgo: number) => new Date(PASS_BASE - hoursAgo * 3_600_000).toISOString();
+
 describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idempotently (#1232)', () => {
   let dir: string;
   let host: SqliteScopeHost;
@@ -974,9 +981,9 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
   const payload = {
     version: '01JPASSVERSIONAAAAAAAAAAAA',
     entries: [
-      { operation: 'sched/tick', outcome: 'ok', at: '2026-09-07T10:00:00.000Z' },
-      { operation: 'sched/rest', outcome: 'skipped', at: '2026-09-07T10:00:00.000Z' },
-      { operation: 'sched/broken', outcome: 'failed', at: '2026-09-07T10:00:00.000Z', error: 'operation threw' },
+      { operation: 'sched/tick', outcome: 'ok', at: passAt(3) },
+      { operation: 'sched/rest', outcome: 'skipped', at: passAt(3) },
+      { operation: 'sched/broken', outcome: 'failed', at: passAt(3), error: 'operation threw' },
     ],
   };
 
@@ -1006,7 +1013,7 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
       // The pass's own version wins over the drain's bound-version approximation.
       version: '01JPASSVERSIONAAAAAAAAAAAA',
       // Pass time, not drain time — the freshness read depends on it.
-      at: '2026-09-07T10:00:00.000Z',
+      at: passAt(3),
     });
     expect(byOp.get('sched/broken')).toMatchObject({ outcome: 'failed', error: 'operation threw' });
   });
@@ -1022,7 +1029,7 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
     const handler = sweepRunsHandler({ host });
     await handler(
       ctx,
-      request({ version: null, entries: [{ operation: 'sched/late', outcome: 'ok', at: '2026-09-07T11:00:00.000Z' }] }),
+      request({ version: null, entries: [{ operation: 'sched/late', outcome: 'ok', at: passAt(2) }] }),
     );
     const [row] = await host.admin.listSweepRuns(staff, { unit: `${s}:sched/late` });
     expect(row!.version).toBe('01JBOUNDATDRAINAAAAAAAAAAA');
@@ -1039,7 +1046,7 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
             kind: 'freshness',
             eventType: 'receipt.landed',
             outcome: 'failed',
-            at: '2026-09-07T12:00:00.000Z',
+            at: passAt(1),
             observedAt: '2026-09-06T09:00:00.000Z',
           },
         ],
@@ -1056,7 +1063,7 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
       eventType: 'receipt.landed',
       operation: null,
       observedAt: '2026-09-06T09:00:00.000Z',
-      at: '2026-09-07T12:00:00.000Z',
+      at: passAt(1),
       tenantId: t,
       scopeId: s,
     });
@@ -1071,12 +1078,12 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
     const batch = {
       version: null,
       entries: [
-        { kind: 'schedule', operation: 'orders.placed', outcome: 'skipped', at: '2026-09-07T13:00:00.000Z' },
+        { kind: 'schedule', operation: 'orders.placed', outcome: 'skipped', at: passAt(0) },
         {
           kind: 'freshness',
           eventType: 'orders.placed',
           outcome: 'failed',
-          at: '2026-09-07T13:00:00.000Z',
+          at: passAt(0),
           observedAt: null,
         },
       ],
@@ -1100,7 +1107,7 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
       ctx,
       request({
         version: null,
-        entries: [{ kind: 'connector', operation: 'sweep.connector:scrive', outcome: 'ok', at: '2026-09-07T12:00:00.000Z' }],
+        entries: [{ kind: 'connector', operation: 'sweep.connector:scrive', outcome: 'ok', at: passAt(1) }],
       }),
     );
     expect(outcome.status).toBe('failed');
@@ -1113,7 +1120,7 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
       ctx,
       request({
         version: null,
-        entries: [{ kind: 'freshness', eventType: 'receipt.landed', operation: 'sneaky/op', outcome: 'ok', at: '2026-09-07T12:00:00.000Z' }],
+        entries: [{ kind: 'freshness', eventType: 'receipt.landed', operation: 'sneaky/op', outcome: 'ok', at: passAt(1) }],
       }),
     );
     expect(smuggledOp.status).toBe('failed');
@@ -1122,7 +1129,7 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
       ctx,
       request({
         version: null,
-        entries: [{ kind: 'schedule', operation: 'sched/tick', eventType: 'x.y', outcome: 'ok', at: '2026-09-07T12:00:00.000Z' }],
+        entries: [{ kind: 'schedule', operation: 'sched/tick', eventType: 'x.y', outcome: 'ok', at: passAt(1) }],
       }),
     );
     expect(smuggledEvidence.status).toBe('failed');
@@ -1135,7 +1142,7 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
     // operation: both malformed, both terminal.
     const bad = await handler(
       ctx,
-      request({ version: null, entries: [{ kind: 'freshness', outcome: 'ok', at: '2026-09-07T12:00:00.000Z' }] }),
+      request({ version: null, entries: [{ kind: 'freshness', outcome: 'ok', at: passAt(1) }] }),
     );
     expect(bad.status).toBe('failed');
     expect(bad.error).toMatch(/event type/);
@@ -1167,7 +1174,8 @@ describe('modelUsageHandler — meter 3, idempotent on the intent id (#1054)', (
     cachedInputTokens: 0,
     cacheWriteTokens: 0,
     listUsd: '0.75',
-    at: '2026-08-29T10:00:00.000Z',
+    // Real-clock relative: model usage older than MODEL_USAGE_RETENTION_DAYS is pruned on write.
+    at: passAt(3),
     elapsedMs: 250,
     ...over,
   });

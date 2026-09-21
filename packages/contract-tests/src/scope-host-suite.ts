@@ -3172,6 +3172,11 @@ export function scopeHostContractSuite(
     // -- model usage (#1054): meter 3's ledger, idempotent on the intent id ----------------
 
     describe('model usage (#1054)', () => {
+      // Window edges are derived from the real clock, never literals: the host prunes model
+      // usage older than MODEL_USAGE_RETENTION_DAYS against Date.now(), so a fixed date is a
+      // fixture that expires. `day(n)` is midnight UTC, `n` days after a base 40 days back.
+      const BASE = new Date(Date.now() - 40 * 86_400_000).setUTCHours(0, 0, 0, 0);
+      const day = (n: number, hour = 0) => new Date(BASE + n * 86_400_000 + hour * 3_600_000).toISOString();
       const line = (at: string, over: Partial<ModelUsageLine> = {}): ModelUsageLine => ({
         attribution: {
           tenant: t1,
@@ -3197,23 +3202,23 @@ export function scopeHostContractSuite(
       it('records a line once per intent id, lists it, and folds the window exactly', async () => {
         const first = await host.admin.recordModelUsage({
           requestId: 'req-model-usage-1',
-          line: line('2026-08-01T10:00:00.000Z', { listUsd: '0.75' }),
+          line: line(day(0, 10), { listUsd: '0.75' }),
         });
         expect(first.recorded).toBe(true);
         // The drain replays a settled-then-retried intent: nothing is billed twice.
         const again = await host.admin.recordModelUsage({
           requestId: 'req-model-usage-1',
-          line: line('2026-08-01T10:00:00.000Z', { listUsd: '0.75' }),
+          line: line(day(0, 10), { listUsd: '0.75' }),
         });
         expect(again.recorded).toBe(false);
         await host.admin.recordModelUsage({
           requestId: 'req-model-usage-2',
-          line: line('2026-08-02T10:00:00.000Z', { listUsd: '0.5', inputTokens: 50_000, outputTokens: 5_000 }),
+          line: line(day(1, 10), { listUsd: '0.5', inputTokens: 50_000, outputTokens: 5_000 }),
         });
         // An unpriced call: counted, never folded in as $0.
         await host.admin.recordModelUsage({
           requestId: 'req-model-usage-3',
-          line: line('2026-08-03T10:00:00.000Z', {
+          line: line(day(2, 10), {
             listUsd: null,
             model: 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fast',
             provider: 'cloudflare',
@@ -3225,17 +3230,17 @@ export function scopeHostContractSuite(
         // Outside the window below.
         await host.admin.recordModelUsage({
           requestId: 'req-model-usage-4',
-          line: line('2026-09-01T00:00:00.000Z', { listUsd: '9' }),
+          line: line(day(30), { listUsd: '9' }),
         });
 
-        const listed = await host.admin.listModelUsage(staff, { tenantId: t1, since: '2026-08-01T00:00:00.000Z' });
+        const listed = await host.admin.listModelUsage(staff, { tenantId: t1, since: day(0) });
         expect(listed.length).toBe(4);
         expect(listed[0]!.requestId).toBe('req-model-usage-4'); // newest first
         expect(listed.every((e) => e.attribution.tenant === t1)).toBe(true);
 
         const summary = await host.admin.summarizeModelUsage(
           staff,
-          { tenantId: t1, since: '2026-08-01T00:00:00.000Z', until: '2026-09-01T00:00:00.000Z' },
+          { tenantId: t1, since: day(0), until: day(30) },
           20,
         );
         expect(summary.marginPercent).toBe(20);
@@ -3534,13 +3539,17 @@ export function scopeHostContractSuite(
 
       it('dedupes on (requestId, kind, unit) — a replayed drained batch writes nothing twice (#1232)', async () => {
         const unit = `${ulid()}:sched/tick`;
+        // Relative to the real clock, never a literal: the host prunes a sweep run older
+        // than SWEEP_RUN_RETENTION_DAYS against Date.now(), so a fixed date is a fixture
+        // that expires and takes the suite with it.
+        const passAt = new Date(Date.now() - 3_600_000).toISOString();
         const write = () =>
           host.admin.recordSweepRun({
             kind: 'schedule',
             unit,
             outcome: 'ok',
             tenantId: t1,
-            at: '2026-09-07T10:00:00.000Z',
+            at: passAt,
             requestId: '01JDEDUPEINTENTAAAAAAAAAAA',
           });
         await write();
@@ -3548,7 +3557,7 @@ export function scopeHostContractSuite(
         const rows = await host.admin.listSweepRuns(staff, { unit });
         expect(rows).toHaveLength(1);
         // The carried pass time survives, never overwritten by write time.
-        expect(rows[0]!.at).toBe('2026-09-07T10:00:00.000Z');
+        expect(rows[0]!.at).toBe(passAt);
 
         // The DIRECT path (no requestId) never dedupes: NULLs are distinct, and two
         // real passes over one unit are two facts.
