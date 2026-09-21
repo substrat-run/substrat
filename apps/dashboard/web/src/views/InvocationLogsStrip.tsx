@@ -22,11 +22,14 @@ export function InvocationLogsStrip({
   scopeId,
   invocationId,
   occurredAt,
+  anchorNoun = 'event',
 }: {
   scopeId: string;
   invocationId: string;
   /** The instant the event was recorded — the anchor the read's window is built around. */
   occurredAt: string;
+  /** What `occurredAt` is the instant of, as a noun phrase in the copy — "event" unless the caller anchors on something else (a delivery attempt). */
+  anchorNoun?: string;
 }) {
   const [logs, setLogs] = useState<ObservabilityLogEvent[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -37,7 +40,7 @@ export function InvocationLogsStrip({
     setErr(null);
     const window = callLogsWindow(occurredAt);
     if (window === null) {
-      setErr('This event carries no usable time, so its log lines cannot be looked up.');
+      setErr(`This ${anchorNoun} carries no usable time, so its log lines cannot be looked up.`);
       return;
     }
     api
@@ -58,7 +61,7 @@ export function InvocationLogsStrip({
     return () => {
       live = false;
     };
-  }, [scopeId, invocationId, occurredAt]);
+  }, [scopeId, invocationId, occurredAt, anchorNoun]);
 
   if (err) return <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>;
   if (!logs) return <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Reading the call’s log lines…</div>;
@@ -70,7 +73,7 @@ export function InvocationLogsStrip({
       </div>
       {logs.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--status-warning-fg)' }}>
-          No log lines found for this call within {CALL_LOGS_MARGIN_MINUTES} minutes of the event. They may be
+          No log lines found for this call within {CALL_LOGS_MARGIN_MINUTES} minutes of the {anchorNoun}. They may be
           older than the platform keeps logs, or the version that served the call predates per-request logging.
         </div>
       ) : (

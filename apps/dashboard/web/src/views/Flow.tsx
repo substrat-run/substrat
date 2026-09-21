@@ -525,7 +525,7 @@ function DeadLetterRow({ scopeId, d }: { scopeId: string; d: DeadLetter }) {
         </div>
       )}
       {logsOpen && attemptId !== null && (
-        <InvocationLogsStrip scopeId={scopeId} invocationId={attemptId} occurredAt={d.at} />
+        <InvocationLogsStrip scopeId={scopeId} invocationId={attemptId} occurredAt={d.at} anchorNoun="last delivery attempt" />
       )}
       {opened && (
         <InvocationStrip
