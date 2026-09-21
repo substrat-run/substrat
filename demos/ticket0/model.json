@@ -340,6 +340,28 @@
               }
             ]
           },
+          "snoozed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snoozed_ms": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "first_public_reply_at": {
             "anyOf": [
               {
@@ -446,6 +468,8 @@
           "assignee",
           "priority",
           "snoozed_until",
+          "snoozed_at",
+          "snoozed_ms",
           "first_public_reply_at",
           "first_assigned_at",
           "resolved_at",
