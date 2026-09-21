@@ -10,9 +10,11 @@ import {
   permissionKey,
   platformActorId,
   principalId,
+  projectedConnectionGrant,
   scopeId,
   tenantId,
   type EntitlementGrant,
+  type ProjectedConnectionGrant,
   type ScopeTable,
 } from '@substrat-run/contracts';
 import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
@@ -1218,7 +1220,7 @@ describe('#1659 — a reconcile keeps an operator’s revoke (CP-less)', () => {
 
   const provision = (
     scope: string,
-    connectionGrants?: { connectionId: string; permission: typeof READ; expiresAt?: string }[],
+    connectionGrants?: ProjectedConnectionGrant[],
   ): Promise<void> =>
     host.provisionScopeLocal({
       tenantId: t,
@@ -1375,15 +1377,18 @@ describe('#1659 — a reconcile keeps an operator’s revoke (CP-less)', () => {
     const LATEST = '2099-06-01T00:00:00.000Z';
     const live = async (): Promise<string[]> =>
       (await rawStub(s).listConnectionGrants(new Date().toISOString())).map((g) => `${g.subject} ${g.expires_at}`);
+    const delivered = (expiresAt: string): ProjectedConnectionGrant[] => [
+      projectedConnectionGrant.parse({ connectionId: conn, permission: READ, expiresAt }),
+    ];
 
-    await provision(s, [{ connectionId: conn, permission: READ, expiresAt: LATER }]);
+    await provision(s, delivered(LATER));
     expect(await live()).toEqual([`connection:${conn} ${LATER}`]);
     // A LIVE grant's expiry still follows the platform's on re-delivery (#592), as before.
-    await provision(s, [{ connectionId: conn, permission: READ, expiresAt: LATEST }]);
+    await provision(s, delivered(LATEST));
     expect(await live()).toEqual([`connection:${conn} ${LATEST}`]);
 
     await rawStub(s).revokeTuple(`connection:${conn}`, `granted:${READ}`, `scope:${s}`, REVOKED_AT);
-    await provision(s, [{ connectionId: conn, permission: READ, expiresAt: LATER }]);
+    await provision(s, delivered(LATER));
     expect(await live()).toEqual([]);
     // Untouched, expiry included — the re-delivery's LATER did not land on the tombstone.
     expect(await tupleRow(s, `connection:${conn}`, `granted:${READ}`)).toEqual({
