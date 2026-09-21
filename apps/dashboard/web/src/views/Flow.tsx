@@ -4,8 +4,9 @@ import { card } from '../components/ui';
 import { shortId } from '../lib/format';
 import { Button } from '@substrat-run/ui';
 import { navigate, obsPath, teamPath } from '../lib/router';
-import { deadLetterCalls } from '../lib/history';
+import { callLogsButtonTitle, deadLetterCalls } from '../lib/history';
 import { InvocationStrip } from './InvocationStrip';
+import { InvocationLogsStrip } from './InvocationLogsStrip';
 
 /**
  * The flow map and its declared-vs-observed findings (#1234), moved off the app page
@@ -458,6 +459,11 @@ function DeadLetterRow({ scopeId, d }: { scopeId: string; d: DeadLetter }) {
   const [open, setOpen] = useState<string | null>(null);
   const calls = deadLetterCalls(d);
   const opened = calls.find((c) => c.invocationId === open);
+  // Logs are for the attempt call: it is the one that gave up. Anchored on `at`, when that
+  // attempt ran, not `occurredAt` — retries can put the last attempt hours after the event,
+  // outside the log window an event-anchored read would search.
+  const attemptId = d.attemptInvocationId;
+  const [logsOpen, setLogsOpen] = useState(false);
   const href = obsPath({ app: scopeId, view: 'events', type: d.eventType });
   return (
     <div style={{ display: 'grid', gap: 3 }}>
@@ -505,7 +511,21 @@ function DeadLetterRow({ scopeId, d }: { scopeId: string; d: DeadLetter }) {
               <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}> {shortId(c.invocationId)}</span>
             </button>
           ))}
+          {attemptId !== null && (
+            <button
+              type="button"
+              onClick={() => setLogsOpen((w) => !w)}
+              aria-expanded={logsOpen}
+              title={callLogsButtonTitle(attemptId)}
+              style={{ border: 0, background: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-link)', textDecoration: 'underline', fontSize: 11.5 }}
+            >
+              {logsOpen ? 'Hide logs' : 'Logs for this call'}
+            </button>
+          )}
         </div>
+      )}
+      {logsOpen && attemptId !== null && (
+        <InvocationLogsStrip scopeId={scopeId} invocationId={attemptId} occurredAt={d.at} />
       )}
       {opened && (
         <InvocationStrip
