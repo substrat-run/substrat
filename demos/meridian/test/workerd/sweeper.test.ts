@@ -400,3 +400,77 @@ describe("a listed vertical's promote reaches an install's onProvision (#1653)",
     for (const id of [s, copy]) expect((await platform('/internal/delete-scope', { scopeId: id })).status).toBe(200);
   });
 });
+
+/**
+ * The schedule kill switch on a real hosted Meridian (#1666), end to end on the platform's
+ * own path: the control plane's `VerticalClient` → this deployed worker's
+ * `/internal/system-switch` → the scope's DO, and the deployment's own sweeper as the judge.
+ * Node SQLite is not DO SQLite, which is why this is here and not only in the contract suite.
+ *
+ * The scope is entitled to `absence`, holds a stale leave, and has never run the timer — so
+ * a pass that reached it with the switch ON would cancel the leave. That is what makes the
+ * leave staying `requested` evidence of the switch rather than of a cadence window.
+ */
+describe("the schedule kill switch reaches a hosted Meridian's timer (#1666)", () => {
+  const ABSENCE = '@substrat-run/engine-absence' as never;
+
+  it('off: nothing fires and nothing fails, through a reconcile; on: the next pass fires', async () => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const keys = [...INSTALLED, 'absence'];
+    await provision(t, s, keys);
+    const stale = await leaveStarting(t, s, '2020-01-06', '2020-01-10');
+    const client = new VerticalClient({
+      fetch: ((input: RequestInfo, init?: RequestInit) => SELF.fetch(input, init)) as typeof fetch,
+      baseUrl: 'https://meridian.test',
+      platformSecret: env.PLATFORM_SECRET,
+    });
+    const runsOf = async (): Promise<{ operation?: string; outcome: string }[]> =>
+      (await host().listPlatformRequests(t, s))
+        .filter((r) => r.kind === SWEEP_RUNS_KIND)
+        .flatMap((r) => sweepRunsPayload.parse(r.payload).entries)
+        .filter((e) => e.kind === 'schedule');
+
+    expect(await client.systemSwitch({ scopeId: s, moduleId: ABSENCE, to: 'off' })).toEqual({
+      held: true,
+      changed: true,
+      permissions: ['absence:approve'],
+    });
+
+    let report = await sweep();
+    expect(report.errors).toEqual([]);
+    expect(report.schedules.fired).toBe(0);
+    expect(report.schedules.failed).toBe(0);
+    expect(await statusOf(t, s, stale)).toBe('requested');
+    // What the platform will read for this scope: a skip, never a failure.
+    expect(await runsOf()).toEqual([expect.objectContaining({ operation: 'absence/expire-stale', outcome: 'skipped' })]);
+
+    // A reconcile — what every promote now sends every install (#1653) — leaves it off.
+    expect((await platform('/internal/reconcile', { tenantId: t, scopeId: s, entitlements: grants(keys) })).status).toBe(200);
+    report = await sweep();
+    expect(report.schedules.fired).toBe(0);
+    expect(report.schedules.failed).toBe(0);
+    expect(await statusOf(t, s, stale)).toBe('requested');
+    expect((await runsOf()).map((e) => e.outcome)).toEqual(['skipped', 'skipped']);
+
+    // A module the scope never ran is an answer, not an error, and switches nothing.
+    expect(await client.systemSwitch({ scopeId: s, moduleId: '@substrat-run/engine-absense' as never, to: 'off' })).toEqual({
+      held: false,
+      changed: false,
+      permissions: [],
+    });
+
+    // The twin: restored, the very next pass fires — the cadence clock was never touched.
+    expect(await client.systemSwitch({ scopeId: s, moduleId: ABSENCE, to: 'on' })).toEqual({
+      held: true,
+      changed: true,
+      permissions: ['absence:approve'],
+    });
+    report = await sweep();
+    expect(report.errors).toEqual([]);
+    expect(report.schedules.fired).toBe(1);
+    expect(await statusOf(t, s, stale)).toBe('cancelled');
+
+    expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+});
