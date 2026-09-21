@@ -834,8 +834,8 @@ function Desk() {
             them all empty to switch service levels off. A conversation keeps the targets it was given when it
             arrived or when its priority last changed, so editing them here moves nothing already promised, and
             the conversations waiting before you set them get targets only if somebody changes their priority. A
-            snooze does not pause the
-            clock. An overdue conversation is flagged and whoever holds it (everyone on the Team list, when nobody
+            snooze pauses the resolution target, not the first-response one: the time a conversation sleeps is
+            added to its resolution target when it wakes. An overdue conversation is flagged and whoever holds it (everyone on the Team list, when nobody
             does) is told once, the next time the desk&apos;s timer runs: every 5 minutes at the soonest, so a
             breach can be noticed up to one timer run late. A reply or resolution sent late records the breach
             itself, and so does changing the priority of a conversation that is already late.

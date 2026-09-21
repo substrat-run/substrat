@@ -883,14 +883,20 @@ function refuseIfBlockedVisitor(ctx: OperationContext, hold: WidgetHold): void {
   refuseIfBlocked(ctx, { emails: [contact.email], contactId: contact.id });
 }
 
-/** One place that writes `state` and `updated_at`, so they cannot disagree. */
-function moveTo(ctx: OperationContext, id: string, state: string): ConversationRow {
+/**
+ * One place that writes `state` and `updated_at`, so they cannot disagree — and so the
+ * service-level clocks pause and resume on every edge into and out of `snoozed`, whichever
+ * operation took it (#1648, `beginSnooze` / `endSnooze`).
+ */
+function moveTo(ctx: OperationContext, from: ConversationRow, state: string): ConversationRow {
+  if (from.state === 'snoozed' && state !== 'snoozed') endSnooze(ctx, from.id);
+  if (state === 'snoozed' && from.state !== 'snoozed') beginSnooze(ctx, from.id);
   ctx.sql.exec('UPDATE ticket0_conversations SET state = ?, updated_at = ? WHERE id = ?', [
     state,
     ctx.now(),
-    id,
+    from.id,
   ]);
-  return conversationOrThrow(ctx, id);
+  return conversationOrThrow(ctx, from.id);
 }
 
 function touch(ctx: OperationContext, id: string): ConversationRow {
@@ -900,7 +906,7 @@ function touch(ctx: OperationContext, id: string): ConversationRow {
 
 /** Apply whatever the lifecycle decided, in one place. */
 function settle(ctx: OperationContext, row: ConversationRow, next: string): ConversationRow {
-  return next === row.state ? touch(ctx, row.id) : moveTo(ctx, row.id, next);
+  return next === row.state ? touch(ctx, row.id) : moveTo(ctx, row, next);
 }
 
 // ---------------------------------------------------------------------------
@@ -1683,18 +1689,33 @@ function slaPolicy(row: DeskRow): SlaPolicy | null {
  * of its urgent target. That is how a desk finds out that triage was late. It is also
  * why re-prioritising an old conversation can make it overdue at once: it IS overdue for
  * the priority it now has.
+ *
+ * Plus `snoozedMs`, the time already spent in finished snoozes, for each target that
+ * pauses on a snooze (#1648). Waiting on the customer is not the desk's time, and a
+ * priority change must not take it back: without this, marking a conversation `urgent`
+ * after a two-day snooze would re-aim its resolution from `created_at` alone and make it
+ * late at once, for time it was parked on purpose. A snooze still in progress is not in
+ * it yet; `endSnooze` adds it when the snooze ends, to whatever due this wrote.
  */
 function slaDue(
   policy: SlaPolicy | null,
   createdAt: string,
   priority: Priority,
+  snoozedMs = 0,
 ): { firstResponse: string | null; resolution: string | null } {
-  const at = (minutes: number | undefined) =>
-    minutes === undefined ? null : new Date(Date.parse(createdAt) + minutes * 60_000).toISOString();
+  const at = (minutes: number | undefined, t: SlaTarget) =>
+    minutes === undefined
+      ? null
+      : shiftInstant(createdAt, minutes * 60_000 + (t.pausesOnSnooze ? snoozedMs : 0));
   return {
-    firstResponse: at(policy?.firstResponseMinutes[priority]),
-    resolution: at(policy?.resolutionMinutes[priority]),
+    firstResponse: at(policy?.firstResponseMinutes[priority], SLA_FIRST_RESPONSE),
+    resolution: at(policy?.resolutionMinutes[priority], SLA_RESOLUTION),
   };
+}
+
+/** A canonical instant `ms` later. */
+function shiftInstant(at: string, ms: number): string {
+  return new Date(Date.parse(at) + ms).toISOString();
 }
 
 /**
@@ -1744,27 +1765,58 @@ const RESOLUTION_RUNNING = 'resolution_breached_at IS NULL AND resolved_at IS NU
 /**
  * Live work, for the sweep: a conversation that can still be late.
  *
- * `snoozed` IS in it, deliberately: in this slice the clock does not pause. A customer
- * waiting on a snoozed conversation is still waiting, and a snooze placed before
- * anybody answered them hides nothing from the target. Pausing on snooze is a follow-up
- * that needs its own column (#1648). `resolved` and `closed` are done. The losing half
- * of a merge is folded into its survivor, which keeps its own targets.
+ * `snoozed` is in it: a snooze stops a target's clock only where that target says it
+ * pauses (`SLA_PAUSED`, below). `resolved` and `closed` are done. The losing half of a
+ * merge is folded into its survivor, which keeps its own targets.
  */
 const SLA_LIVE = "state IN ('new', 'open', 'snoozed') AND merged_into IS NULL";
 
-/** The two targets, each with the columns and the running test that belong to it. */
+/**
+ * "No snooze is holding this target's clock right now", as SQL (#1648).
+ *
+ * Keyed on `snoozed_at`, not on `state = 'snoozed'`, and the difference is the rows that
+ * were already snoozed when the column arrived. They carry no start instant, so nothing
+ * could ever push their due back for that snooze; leaving them out of the running set
+ * would hide them from the sweep and from `recordIfLate` without ever giving the time
+ * back. Keyed on the column, they keep exactly the behaviour they were snoozed under
+ * (the clock runs) until they wake, and their next snooze pauses.
+ */
+const SLA_PAUSED = 'snoozed_at IS NULL';
+
+/**
+ * The two targets, each with the columns and the running test that belong to it.
+ *
+ * `pausesOnSnooze` is the product rule, and the ONE place it is stated (#1648):
+ *
+ *   - RESOLUTION pauses. A snooze usually means "answered, now waiting on the customer",
+ *     and a two-day wait on them must not burn an eight-hour resolution target.
+ *   - FIRST RESPONSE does not. A conversation parked before anybody answered it still
+ *     has a customer waiting for a first word, and the snooze hides nothing from them.
+ *
+ * Everything else reads the flag: which rows can be late (`slaOverdueSql`), which due
+ * instants a finished snooze pushes back (`endSnooze`), which ones a priority change
+ * re-aims past the time already parked (`slaDue`), and which misses a snooze must record
+ * before it stops the clock (`beginSnooze`). Flipping first response to `true` is the whole code
+ * change for a desk that wants both paused, and it is correct on its own: the scan's WHERE
+ * still implies migration 0012's wider first-response index, so SQLite still uses it. That
+ * index would then also hold paused rows the scan skips, so narrowing it the way 0014
+ * narrowed the resolution one is the migration that should follow. `test/sla.test.ts`
+ * pins which index carries the term, so that test has to move with the flag.
+ */
 const SLA_TARGETS = [
   {
     target: 'first_response',
     due: 'first_response_due_at',
     breached: 'first_response_breached_at',
     running: FIRST_RESPONSE_RUNNING,
+    pausesOnSnooze: false,
   },
   {
     target: 'resolution',
     due: 'resolution_due_at',
     breached: 'resolution_breached_at',
     running: RESOLUTION_RUNNING,
+    pausesOnSnooze: true,
   },
 ] as const;
 type SlaTarget = (typeof SLA_TARGETS)[number];
@@ -1791,7 +1843,8 @@ const [SLA_FIRST_RESPONSE, SLA_RESOLUTION] = SLA_TARGETS;
  *     that would be every late answer.
  */
 function slaOverdueSql(t: SlaTarget): string {
-  return `${t.due} IS NOT NULL AND ${t.running} AND ${SLA_LIVE} AND ${t.due} < ?`;
+  const live = t.pausesOnSnooze ? `${SLA_LIVE} AND ${SLA_PAUSED}` : SLA_LIVE;
+  return `${t.due} IS NOT NULL AND ${t.running} AND ${live} AND ${t.due} < ?`;
 }
 
 /**
@@ -1897,6 +1950,74 @@ function recordIfLate(ctx: OperationContext, conversation: ConversationRow, t: S
   if (!late) return false;
   recordBreach(ctx, late, t, now);
   return true;
+}
+
+/**
+ * A conversation goes to sleep: the clocks that pause on a snooze stop (#1648).
+ *
+ * Called by `moveTo` on the way INTO `snoozed` and from nowhere else, so no door can
+ * snooze a conversation without it.
+ *
+ * A target that pauses leaves the running set the moment `snoozed_at` is written, so a
+ * miss already past its due is recorded FIRST, exactly as `recordIfLate`'s other callers
+ * do before their own writes. Otherwise snoozing a late conversation would be a way to
+ * hide that it was late, and on a host whose sweep had not run yet, every late
+ * conversation someone snoozed would be. Nobody is told, like a late reply: the person
+ * snoozing it is looking at it, and has just decided what happens next.
+ */
+function beginSnooze(ctx: OperationContext, id: string): void {
+  const conversation = conversationOrThrow(ctx, id);
+  for (const t of SLA_TARGETS) if (t.pausesOnSnooze) recordIfLate(ctx, conversation, t);
+  ctx.sql.exec('UPDATE ticket0_conversations SET snoozed_at = ? WHERE id = ?', [ctx.now(), id]);
+}
+
+/**
+ * A conversation wakes: the time it slept is given back to every target that paused
+ * (#1648).
+ *
+ * Every way out of `snoozed` comes through here — the `wake-snoozed` timer, a person's
+ * `wake`, the customer writing (`ingest-message`, `widget-post`, `request-human`),
+ * `resolve` and `close` — because `moveTo`, the one writer of `state`, calls it. So the
+ * timer and a person cannot disagree about how long the conversation slept.
+ *
+ * The due instant of a paused target that is still running moves later by exactly the
+ * length of the snooze. One already met or already missed stays where it was, the rule
+ * `set-priority` follows. The length is also added to `snoozed_ms`, which is what lets a
+ * later priority change re-aim past it (`slaDue`), and repeated snoozes add up because
+ * each one moves the due from wherever the last one left it.
+ *
+ * A due that fell INSIDE the snooze is never a breach: it is pushed past the moment of
+ * waking before anything reads it. A conversation that was not late when it went to sleep
+ * (`beginSnooze` recorded it otherwise) wakes with its due as far ahead of now as it was
+ * ahead of the moment it slept, so nothing it wakes into can call it late. The one way to
+ * wake late is a priority change made while it slept that re-aimed the due into the past:
+ * that is late exactly as the same change made awake would be, and the first sweep or
+ * `recordIfLate` after the wake records it.
+ *
+ * A row with no `snoozed_at` has nothing to give back and is left as it is: one that is
+ * not snoozed, or one snoozed before the column existed, whose clock ran throughout.
+ *
+ * Idempotent, and it reads the row itself, so `resolve` can call it before its own
+ * writes and `moveTo` again after them without counting the snooze twice.
+ */
+function endSnooze(ctx: OperationContext, id: string): void {
+  const conversation = conversationOrThrow(ctx, id);
+  if (conversation.snoozed_at === null) return;
+  const slept = Math.max(0, Date.parse(ctx.now()) - Date.parse(conversation.snoozed_at));
+  const paused = SLA_TARGETS.filter((t) => t.pausesOnSnooze);
+  const shifts = paused.map(
+    (t) => `${t.due} = CASE WHEN ${t.due} IS NOT NULL AND ${t.running} THEN ? ELSE ${t.due} END`,
+  );
+  const shifted = paused.map((t) => {
+    const due = conversation[t.due];
+    return due === null ? null : shiftInstant(due, slept);
+  });
+  ctx.sql.exec(
+    `UPDATE ticket0_conversations
+        SET ${[...shifts, 'snoozed_ms = COALESCE(snoozed_ms, 0) + ?', 'snoozed_at = NULL'].join(', ')}
+      WHERE id = ?`,
+    [...shifted, slept, id],
+  );
 }
 
 /**
@@ -2135,8 +2256,8 @@ function publicThread(
 
 /** Named rather than `SELECT c.*`: a search read returns the published entity, not the table. */
 const CONVERSATION_COLUMNS = `c.id, c.contact_id, c.channel, c.subject, c.state, c.assignee,
-  c.priority, c.snoozed_until, c.first_public_reply_at, c.first_assigned_at, c.resolved_at,
-  c.first_response_due_at, c.resolution_due_at, c.first_response_breached_at,
+  c.priority, c.snoozed_until, c.snoozed_at, c.snoozed_ms, c.first_public_reply_at,
+  c.first_assigned_at, c.resolved_at, c.first_response_due_at, c.resolution_due_at, c.first_response_breached_at,
   c.resolution_breached_at, c.merged_into, c.follows, c.created_at, c.updated_at`;
 
 // ---------------------------------------------------------------------------
@@ -3263,11 +3384,21 @@ const operations = {
      * waiting, so unlike a late reply, somebody is told, as the sweep would have told
      * them: whoever holds it, or the whole desk, never the person changing the priority,
      * who is looking at it.
+     *
+     * The re-aim counts past the time already spent in finished snoozes, for the targets
+     * a snooze pauses (#1648, `slaDue`). A snooze in progress is not counted yet, and
+     * need not be: a paused target cannot be recorded late while it sleeps, and
+     * `endSnooze` adds this snooze to whatever due this writes, when it ends.
      */
     let missed = false;
     for (const t of SLA_TARGETS) if (recordIfLate(ctx, conversation, t)) missed = true;
     if (missed) notifyStaff(ctx, conversation, 'escalated');
-    const due = slaDue(slaPolicy(desk(ctx)), conversation.created_at, input.priority);
+    const due = slaDue(
+      slaPolicy(desk(ctx)),
+      conversation.created_at,
+      input.priority,
+      conversation.snoozed_ms ?? 0,
+    );
     ctx.sql.exec(
       `UPDATE ticket0_conversations
           SET priority = ?,
@@ -3404,7 +3535,11 @@ const operations = {
       });
     }
     // Resolving meets the resolution target, the first time. Late is recorded before
-    // `resolved_at` takes the conversation out of the running set (#1082).
+    // `resolved_at` takes the conversation out of the running set (#1082). A snooze this
+    // resolve ends is ended FIRST (#1648), so the late test reads the due the snooze
+    // pushed back rather than the paused one: resolving a snoozed conversation is judged
+    // on the time the desk actually had, and `moveTo` finds nothing left to give back.
+    endSnooze(ctx, conversation.id);
     recordIfLate(ctx, conversation, SLA_RESOLUTION);
     ctx.sql.exec('UPDATE ticket0_conversations SET resolved_at = ? WHERE id = ?', [
       ctx.now(),
