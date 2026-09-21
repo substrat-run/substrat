@@ -10338,7 +10338,8 @@
             "required": true,
             "schema": {
               "type": "string",
-              "minLength": 2
+              "minLength": 2,
+              "description": "Two characters at least. At most 48 bytes of UTF-8, each %, _ or \\ counting twice — a longer term is a 400."
             }
           }
         ],
@@ -10502,7 +10503,8 @@
             "required": true,
             "schema": {
               "type": "string",
-              "minLength": 2
+              "minLength": 2,
+              "description": "Two characters at least. At most 48 bytes of UTF-8, each %, _ or \\ counting twice — a longer term is a 400."
             }
           },
           {
