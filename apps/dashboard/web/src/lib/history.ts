@@ -100,6 +100,60 @@ export function callButtonTitle(invocationId: string | null): string {
     : 'everything else the same request recorded, including events with no causal link to this one';
 }
 
+/**
+ * One call a dead-lettered delivery can be followed into (#1525).
+ *
+ * `kind` is what a reader needs to tell two ids apart, not decoration: the call that
+ * EMITTED the event and the call that ATTEMPTED the delivery are routinely different for
+ * an executor (attempt one runs in the emitting call's tail, every retry in a drain), so
+ * a bare "call" would send someone to the wrong request and let them conclude it was the
+ * culprit.
+ */
+export interface DeadLetterCall {
+  readonly kind: 'attempt' | 'emitted';
+  readonly invocationId: string;
+  /** The control's label. */
+  readonly label: string;
+  /** What it opens, in a sentence — the tooltip. */
+  readonly title: string;
+}
+
+/**
+ * The calls a dead letter can be followed into — none, one, or two.
+ *
+ * A null id yields NO entry rather than a disabled one: on this list null is common (a
+ * drain or alarm carries no call, and every row from before the columns existed has
+ * none), so a greyed control on most rows would read as a fault to be fixed. Absence is
+ * the honest rendering, and the row's own text says nothing about a call at all.
+ *
+ * The attempt call comes first because it is the one that gave up. The emitting call is
+ * listed only when it is a DIFFERENT call: for an in-scope consumer the two agree, and
+ * two controls opening the same list would suggest there were two calls to look at.
+ */
+export function deadLetterCalls(d: {
+  readonly invocationId: string | null;
+  readonly attemptInvocationId: string | null;
+}): DeadLetterCall[] {
+  const calls: DeadLetterCall[] = [];
+  if (d.attemptInvocationId !== null) {
+    calls.push({
+      kind: 'attempt',
+      invocationId: d.attemptInvocationId,
+      label: 'Attempt call',
+      title: 'the call the last attempt ran in, the one that gave up — with everything else that call recorded',
+    });
+  }
+  if (d.invocationId !== null && d.invocationId !== d.attemptInvocationId) {
+    calls.push({
+      kind: 'emitted',
+      invocationId: d.invocationId,
+      label: 'Emitting call',
+      title: 'the call that emitted this event — usually not the one that attempted the delivery',
+    });
+  }
+  return calls;
+}
+
 /** Which cell in a browsed table opens that record's story. */
 export interface TimelineTarget {
   /** The entity type a history read is keyed by — the model's own name for it. */
