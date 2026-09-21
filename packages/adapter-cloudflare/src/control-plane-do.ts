@@ -1035,6 +1035,28 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
+   * #1573: run a create-copy-drop-rename as ONE transaction. Autocommit would make each
+   * statement durable on its own, and the state between DROP and RENAME is the one to
+   * fear: the next construction runs `DIRECTORY_DDL` first, whose `CREATE TABLE IF NOT
+   * EXISTS` puts an EMPTY table of the new shape back, detection then reads that shape
+   * and concludes the migration is done — and every copied row stays orphaned in the
+   * `_new` table, with nothing ever erroring. Atomic, neither intermediate state is
+   * reachable, so there is no recovery path to write (or to leave untested).
+   *
+   * `transactionSync`, as `ScopeDO.ensureScheduleStateKind` (#1571) uses it: the runtime
+   * refuses a manual BEGIN through `sql.exec`, and this body has no `await`, which is
+   * the one case the sync API is for. The caller is the constructor, so it must be
+   * synchronous anyway. Each list leads with `DROP TABLE IF EXISTS <table>_new` to absorb
+   * a scratch table arriving from BELOW the transaction (a restored backup that captured
+   * one mid-rebuild) — belt, not the fix.
+   */
+  private rebuildAtomically(statements: readonly string[]): void {
+    this.ctx.storage.transactionSync(() => {
+      for (const stmt of statements) this.sql.exec(stmt);
+    });
+  }
+
+  /**
    * Rebuild `_substrat_identities` when it still carries the pre-K-22 global key
    * (§4.3: a globally-keyed identity mapping is a cross-tenant identity bleed). A
    * PRIMARY KEY cannot be ALTERed, so this is create-copy-drop-rename.
@@ -1048,7 +1070,8 @@ export class ControlPlaneDO extends DurableObject {
       .exec("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", '_substrat_identities')
       .toArray()[0] as unknown as { sql: string } | undefined;
     if (!row || row.sql.includes('PRIMARY KEY (tenant_id, provider, external_id)')) return;
-    for (const stmt of [
+    this.rebuildAtomically([
+      'DROP TABLE IF EXISTS _substrat_identities_new',
       `CREATE TABLE _substrat_identities_new (
          provider     TEXT NOT NULL,
          external_id  TEXT NOT NULL,
@@ -1064,9 +1087,7 @@ export class ControlPlaneDO extends DurableObject {
          FROM _substrat_identities`,
       'DROP TABLE _substrat_identities',
       'ALTER TABLE _substrat_identities_new RENAME TO _substrat_identities',
-    ]) {
-      this.sql.exec(stmt);
-    }
+    ]);
   }
 
   /**
@@ -1078,7 +1099,8 @@ export class ControlPlaneDO extends DurableObject {
       .exec("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", '_substrat_admin_log')
       .toArray()[0] as unknown as { sql: string } | undefined;
     if (!row || !/tenant_id TEXT NOT NULL/.test(row.sql)) return;
-    for (const stmt of [
+    this.rebuildAtomically([
+      'DROP TABLE IF EXISTS _substrat_admin_log_new',
       `CREATE TABLE _substrat_admin_log_new (
          id TEXT PRIMARY KEY,
          actor TEXT NOT NULL,
@@ -1095,9 +1117,7 @@ export class ControlPlaneDO extends DurableObject {
          FROM _substrat_admin_log`,
       'DROP TABLE _substrat_admin_log',
       'ALTER TABLE _substrat_admin_log_new RENAME TO _substrat_admin_log',
-    ]) {
-      this.sql.exec(stmt);
-    }
+    ]);
   }
 
   private ensureDirectoryColumns(): void {
