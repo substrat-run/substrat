@@ -79,6 +79,13 @@ the sweep, reconcile and delete.)
 
 ## Known follow-ups (not blockers for provisioning, but for full hosted UX)
 
+- **Stale-leave expiry on a standard install (#1654).** The sweeper (#1646) runs engine-absence's
+  `absence/expire-stale`, but as the absence module's own operation, so it needs the `absence`
+  entitlement, which a standard install (`substrat.entitlements`: meridian, protocol) does not grant.
+  There every daily run is recorded `failed` and the leave stays `requested`.
+- **Installs that predate the sweeper (#1653).** Meridian is listed, so a promote does not
+  reconcile its installs: one joins the sweep roster when it is updated, or when somebody runs
+  **Re-run provisioning** on its scope in the console (or `substrat scope provision <scopeId>`).
 - **App data contract — done.** `/api/me` returns the SPA shape (`{ key, display, role, country,
   employeeId }`) via `hr/whoami`, and owner **login-linking is done** — the first sign-in claims the
   owner seat (`hr-admin`), so a real signed-up owner lands on the Admin/setup surface. (Reconciled

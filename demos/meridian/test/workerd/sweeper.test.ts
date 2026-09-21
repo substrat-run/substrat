@@ -20,7 +20,7 @@
  *     projected entitlements, and a standard install is never granted `absence`. This case
  *     pins that honest outcome rather than hiding it: a hosted Meridian on a standard
  *     install does not expire stale leave yet, and the run says why. The fix is a separate
- *     decision (see the PR); when it lands, this case is the one that changes.
+ *     decision (#1654); when it lands, this case is the one that changes.
  *
  * The reconcile and delete cases hold the roster's other two doors, as ticket0's suite
  * does. No clock is moved: the DO host has none to inject, so the stale leave simply

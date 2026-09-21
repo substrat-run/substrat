@@ -162,7 +162,7 @@ the roster on its Update, or when somebody re-runs its provisioning (the console
 detail, or `substrat scope provision <scopeId>`), and until then its schedules do not run.
 Enrolling from request traffic would close the gap and open a worse one — a PR preview is
 a fork of production data, restored rather than provisioned and then routed — so the
-roster stays platform-fed, and the gap stays named.
+roster stays platform-fed, and the gap stays named (#1653).
 
 The split this leaves is clean: a CP-less deployment owns its **scope-local** recurring work
 (retries, schedules); the **directory-owned** phases — connector sweeps, snapshot GC, reaps,

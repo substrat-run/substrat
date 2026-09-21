@@ -61,6 +61,8 @@ export { IdentityDO };
  * each provisioned scope's due recurring work — executor retries and every schedule the
  * bundled modules declare, which today is engine-absence's `absence/expire-stale` (a
  * leave still `requested` past its start date is cancelled, attributed to the engine).
+ * That schedule runs as the absence module, so it needs the tenant to hold `absence`,
+ * which a standard install does not grant: there it fires and fails (#1654).
  *
  * Nothing else fires it on a hosted deploy: the control plane's cron sweeps a host that
  * registers no modules, and a dispatch script's `triggers.crons` is not honoured
@@ -279,7 +281,7 @@ mountPlatformSurface<Env>(app, {
     // `/internal/reconcile`, which is how a scope provisioned before the sweeper existed
     // joins. Meridian is a listed vertical, so a promote does not advance its installs'
     // versions and #1172's post-push reconcile does not reach them: an install joins when
-    // its tenant updates it, or when somebody re-runs its provisioning (scheduler.md §3.3).
+    // its tenant updates it, or when somebody re-runs its provisioning (scheduler.md §3.3, #1653).
     await sweeper(env).noteScope(b.tenantId, b.scopeId);
   },
   // A reaped scope's alarm must never wake it again.
