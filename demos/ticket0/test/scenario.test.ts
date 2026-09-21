@@ -482,7 +482,7 @@ describe('search finds a thread, and a person', () => {
   /**
    * A hosted desk's database refuses a `LIKE` pattern over 50 bytes (#1655), and node's
    * allows 50 000 — so this is the one place the bound can be pinned outside workerd
-   * (`test/workerd/search-bound.test.ts` is the one that proves the runtime side).
+   * (`test/workerd/sweeper.test.ts`, its second `describe`, proves the runtime side).
    *
    * The pattern sent is `%` + the term with `\ % _` escaped + `%`, so 48 bytes of term is
    * the most there is: an ASCII term of 48, or 24 two-byte characters, or 24 of the
