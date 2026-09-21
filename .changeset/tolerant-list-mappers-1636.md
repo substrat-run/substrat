@@ -38,3 +38,8 @@ steps over the row too. It is never shipped in a guessed-at form, because the la
 row back, and it is never stamped as drained, because it never left. The events behind it still
 ship. The sweep reports the skipped event ids on every pass, and `readHistory` still returns the
 event with its `decodeError`. That event is missing from the lake until the row is repaired.
+
+The platform also checks every event against the published schema itself, just before it
+ships to the lake. An app deployed on an older version sends its events unchecked, so this is
+what keeps a malformed one out of the lake whichever version the app runs. An event that fails
+is treated exactly like a skipped row: not shipped, not stamped, and counted in the report.

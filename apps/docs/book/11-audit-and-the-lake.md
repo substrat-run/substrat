@@ -114,7 +114,10 @@ restored dump, since the kernel writes every outbox row. The drain leaves it und
 the events behind it. It is never sent in a guessed-at form: the lake is append-only, so a wrong
 row could not be taken back. The cost is a gap: that event is missing from the lake for as long
 as the row stays unreadable. The sweep reports the skipped ids on every pass, and the event is
-still in the scope, where `readHistory` returns it with a `decodeError`. One read looks at no
+still in the scope, where `readHistory` returns it with a `decodeError`. The platform checks
+every event against the published schema once more before it ships, so an app on an older
+version, which does not check its own, cannot send a malformed event into the lake either. One
+read looks at no
 more than ten times its batch, so a scope whose next few thousand rows are *all* unreadable
 ships nothing until the dump is repaired, and the report says so.
 

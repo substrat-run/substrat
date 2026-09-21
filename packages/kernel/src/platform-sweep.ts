@@ -1,4 +1,4 @@
-import { instant } from '@substrat-run/contracts';
+import { drainedEvent, instant } from '@substrat-run/contracts';
 import type {
   AccessLogEntry,
   ConnectionId,
@@ -13,6 +13,7 @@ import type {
 import type { ExecutorDrainReport, FetchLike, ScopeHost, SweepRunInput } from './scope-host.js';
 import { backoffAt } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
+import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
 
 // setTimeout/clearTimeout are web-standard (Node, Workers, browsers) but the
 // kernel pulls in no platform lib typings; declared locally, returning an opaque
@@ -482,7 +483,9 @@ export interface EventDrainReport {
    */
   incomplete: number;
   /**
-   * Undrained rows a scope's read stepped over because they would not decode (#1636),
+   * Undrained rows a scope's read stepped over because they would not decode (#1636), plus
+   * any event this sweep refused itself because the published `drainedEvent` schema did not
+   * accept it (#1641 — what an older vertical, which does not validate, can still send),
    * one entry per scope that had any — ABSENT when no scope did.
    *
    * These rows are never shipped and never stamped: the lake is append-only, so a row
@@ -1117,22 +1120,38 @@ export async function runPlatformSweep(
  * What the read stepped over (#1636) comes back beside the count, for the report —
  * and ONLY for the report: those rows were never in `events`, so nothing here can
  * ship or stamp them. A host too old to say leaves it undefined.
+ *
+ * **And every event is parsed here, by the published `drainedEvent`, before the sink sees
+ * it** (#1641). This is the last point before an append-only lake, and it is the control
+ * plane's: a hosted scope's events arrive over HTTP from the vertical's own deployment,
+ * decoded by whatever adapter version that vertical was pushed with. A vertical older
+ * than #1636 decodes the envelope and copies its lifted columns unvalidated, so without
+ * this parse a corrupt one would still ship — the invariant would hold only for verticals
+ * new enough to hold it themselves. An event that fails is treated exactly as the read's
+ * own skips are: not shipped, not stamped, and folded into `skipped`.
  */
 async function drainScopeEvents(
   host: ScopeHost,
   options: PlatformSweepOptions,
   sink: EventSink,
   input: { tenantId: TenantId; scopeId: ScopeId; budget: number },
-): Promise<{ shipped: number; skipped?: { count: number; eventIds: string[] } }> {
+): Promise<{ shipped: number; skipped?: UndrainedSkipped }> {
   const read = await host.admin.readUndrainedEvents(
     options.actor,
     input.tenantId,
     input.scopeId,
     input.budget,
   );
-  const skipped = read.skipped && read.skipped.count > 0 ? read.skipped : undefined;
-  // A plain array to the sink: the skip is this function's to report, not the lake's.
-  const events: DrainedEvent[] = [...read];
+  // A plain array to the sink, of the published schema's own output: nothing typed as a
+  // DrainedEvent reaches the lake unless the schema accepted it here.
+  const events: DrainedEvent[] = [];
+  const refused: string[] = [];
+  for (const event of read) {
+    const parsed = drainedEvent.safeParse(event);
+    if (parsed.success) events.push(parsed.data);
+    else refused.push(String((event as { id?: unknown } | null)?.id));
+  }
+  const skipped = skippedOf(read.skipped, refused);
   if (events.length === 0) return { shipped: 0, skipped };
   await sink.ship({ tenantId: input.tenantId, scopeId: input.scopeId }, events);
   await host.admin.markEventsDrained(
@@ -1142,6 +1161,17 @@ async function drainScopeEvents(
     events.map((e) => e.id),
   );
   return { shipped: events.length, skipped };
+}
+
+/**
+ * The read's own skip, plus the events this side refused (#1641): one count, exact, and the
+ * ids capped as the read caps them. Undefined when there was neither — a clean pass reports
+ * nothing rather than a zero.
+ */
+function skippedOf(read: UndrainedSkipped | undefined, refused: string[]): UndrainedSkipped | undefined {
+  const count = (read?.count ?? 0) + refused.length;
+  if (count === 0) return undefined;
+  return { count, eventIds: [...(read?.eventIds ?? []), ...refused].slice(0, UNDRAINED_SKIPPED_IDS) };
 }
 
 /**
