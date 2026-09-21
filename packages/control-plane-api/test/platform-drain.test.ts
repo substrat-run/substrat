@@ -1011,7 +1011,7 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
     expect(byOp.get('sched/broken')).toMatchObject({ outcome: 'failed', error: 'operation threw' });
   });
 
-  it('a replayed drain writes nothing twice — idempotent on (intent id, unit)', async () => {
+  it('a replayed drain writes nothing twice — idempotent on (intent id, kind, unit)', async () => {
     const handler = sweepRunsHandler({ host });
     const outcome = await handler(ctx, request(payload, '01JSWEEPINTENTAAAAAAAAAAAA'));
     expect(outcome.status).toBe('done');
@@ -1060,6 +1060,38 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
       tenantId: t,
       scopeId: s,
     });
+  });
+
+  it('lands both rows when a schedule and a freshness entry of one batch derive the same unit (#1572)', async () => {
+    // `orders.placed` is an ordinary spelling for an operation AND an event type, and
+    // the two derived units carry nothing else to tell them apart. Every entry of a
+    // batch is written under the one intent id, so the old (intent id, unit) key
+    // IGNOREd the second — `recorded: 2`, and one row.
+    const handler = sweepRunsHandler({ host });
+    const batch = {
+      version: null,
+      entries: [
+        { kind: 'schedule', operation: 'orders.placed', outcome: 'skipped', at: '2026-09-07T13:00:00.000Z' },
+        {
+          kind: 'freshness',
+          eventType: 'orders.placed',
+          outcome: 'failed',
+          at: '2026-09-07T13:00:00.000Z',
+          observedAt: null,
+        },
+      ],
+    };
+    const outcome = await handler(ctx, request(batch, '01JSAMEUNITINTENTAAAAAAAAA'));
+    expect(outcome).toMatchObject({ status: 'done', result: { recorded: 2 } });
+    const rows = await host.admin.listSweepRuns(staff, { unit: `${s}:orders.placed` });
+    expect(rows.map((r) => [r.kind, r.outcome]).sort()).toEqual([
+      ['freshness', 'failed'],
+      ['schedule', 'skipped'],
+    ]);
+
+    // Replayed, it is still two rows: the key grew, it did not stop deduping.
+    await handler(ctx, request(batch, '01JSAMEUNITINTENTAAAAAAAAA'));
+    expect(await host.admin.listSweepRuns(staff, { unit: `${s}:orders.placed` })).toHaveLength(2);
   });
 
   it('refuses a connector-kind entry outright — a scope-drained batch cannot carry scope-less rows', async () => {

@@ -73,6 +73,8 @@ export {
   resolveRetryPolicy,
   OPS_FAILURE_RETENTION_DAYS,
   SWEEP_RUN_RETENTION_DAYS,
+  SWEEP_RUNS_INTENT_INDEX,
+  sweepRunsIntentHasKind,
   ISSUE_RETENTION_DAYS,
 } from './scope-host.js';
 export {

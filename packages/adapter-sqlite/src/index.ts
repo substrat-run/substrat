@@ -172,6 +172,8 @@ import {
   ISSUE_RETENTION_DAYS,
   OPS_FAILURE_RETENTION_DAYS,
   SWEEP_RUN_RETENTION_DAYS,
+  SWEEP_RUNS_INTENT_INDEX,
+  sweepRunsIntentHasKind,
   type FreshnessReport,
   type FreshnessRegistration,
   type AccessLogFilter,
@@ -1800,7 +1802,9 @@ export class SqliteScopeHost implements ScopeHost {
         at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_unit ON _substrat_sweep_runs (kind, unit, id);
-      CREATE UNIQUE INDEX IF NOT EXISTS _substrat_sweep_runs_intent ON _substrat_sweep_runs (request_id, unit);
+      -- (request_id, kind, unit) since #1572; a directory holding the older
+      -- (request_id, unit) is rebuilt by ensureSweepRunsIntentKind, not by this line.
+      ${SWEEP_RUNS_INTENT_INDEX}
       CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_tenant ON _substrat_sweep_runs (tenant_id, id);
       CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_at ON _substrat_sweep_runs (at);
       -- Model usage (#1054, meter 3): one line per model call a vertical made through
@@ -8375,6 +8379,30 @@ export class SqliteScopeHost implements ScopeHost {
     `);
   }
 
+  /**
+   * #1572: `_substrat_sweep_runs_intent` with `kind` in it, on a directory whose index
+   * predates that. `CREATE UNIQUE INDEX IF NOT EXISTS` matches on the name alone, so the
+   * bootstrap cannot do this: on an existing directory it sees the old index and skips,
+   * and the schedule/freshness collision the new key refuses stays live for good.
+   *
+   * Detected from `sqlite_master.sql`, like the table rebuilds above, and replaced as
+   * DROP-then-CREATE in one transaction (`rebuildAtomically`). Less rides on that than on
+   * a table rebuild — the index holds no rows, and one dropped but not re-created comes
+   * back on the next open, because the bootstrap creates it by name — but there is then
+   * no committed directory with no dedupe key at all. The CREATE cannot meet a row it
+   * refuses: every set of rows unique on (request_id, unit) is unique on the wider key.
+   */
+  private ensureSweepRunsIntentKind(): void {
+    const row = this.directory
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
+      .get('_substrat_sweep_runs_intent') as { sql: string } | undefined;
+    if (row && sweepRunsIntentHasKind(row.sql)) return;
+    this.rebuildAtomically(`
+      DROP INDEX IF EXISTS _substrat_sweep_runs_intent;
+      ${SWEEP_RUNS_INTENT_INDEX}
+    `);
+  }
+
   private ensureDirectoryColumns(): void {
     this.ensureIdentityKey();
     this.ensureAdminLogTenantNullable();
@@ -8450,9 +8478,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, '_substrat_sweep_runs', 'request_id', 'request_id TEXT');
     this.ensureColumn(this.directory, '_substrat_sweep_runs', 'event_type', 'event_type TEXT');
     this.ensureColumn(this.directory, '_substrat_sweep_runs', 'observed_at', 'observed_at TEXT');
-    this.directory.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS _substrat_sweep_runs_intent ON _substrat_sweep_runs (request_id, unit)',
-    );
+    this.ensureSweepRunsIntentKind();
     const existing = new Set(
       (this.directory.prepare('PRAGMA table_info(scopes)').all() as { name: string }[]).map(
         (c) => c.name,

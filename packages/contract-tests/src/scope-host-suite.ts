@@ -3183,7 +3183,7 @@ export function scopeHostContractSuite(
         expect(row!.elapsedMs).toBeNull();
       });
 
-      it('dedupes on (requestId, unit) — a replayed drained batch writes nothing twice (#1232)', async () => {
+      it('dedupes on (requestId, kind, unit) — a replayed drained batch writes nothing twice (#1232)', async () => {
         const unit = `${ulid()}:sched/tick`;
         const write = () =>
           host.admin.recordSweepRun({
@@ -3207,6 +3207,32 @@ export function scopeHostContractSuite(
         await host.admin.recordSweepRun({ kind: 'schedule', unit: direct, outcome: 'ok' });
         await host.admin.recordSweepRun({ kind: 'schedule', unit: direct, outcome: 'ok' });
         expect(await host.admin.listSweepRuns(staff, { unit: direct })).toHaveLength(2);
+      });
+
+      it('keeps a schedule row and a freshness row of one batch that derive the same unit (#1572)', async () => {
+        // The drain derives a schedule's unit from its operation and a freshness unit
+        // from its event type, and nothing keeps those apart: `orders.placed` is an
+        // ordinary spelling for both. One batch shares one requestId, so under the old
+        // (requestId, unit) key the second write was IGNOREd, silently.
+        const unit = `${ulid()}:orders.placed`;
+        const requestId = '01JKINDINTENTAAAAAAAAAAAAA';
+        const schedule = () =>
+          host.admin.recordSweepRun({ kind: 'schedule', unit, outcome: 'skipped', operation: 'orders.placed', requestId });
+        const freshness = () =>
+          host.admin.recordSweepRun({ kind: 'freshness', unit, outcome: 'failed', eventType: 'orders.placed', requestId });
+        await schedule();
+        await freshness();
+        const both = await host.admin.listSweepRuns(staff, { unit });
+        expect(both.map((r) => [r.kind, r.outcome]).sort()).toEqual([
+          ['freshness', 'failed'],
+          ['schedule', 'skipped'],
+        ]);
+
+        // The twin: kind widened the key, it did not drop it. A replay of either entry
+        // is still the same row and still writes nothing.
+        await schedule();
+        await freshness();
+        expect(await host.admin.listSweepRuns(staff, { unit })).toHaveLength(2);
       });
 
       it('bounds the recorded error — one runaway provider body never becomes a runaway row', async () => {

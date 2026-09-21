@@ -753,8 +753,10 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
  * The payload carries NO tenant/scope/vertical — identity is proven by the scope the
  * intent physically lives in (the model-usage rule), so nothing in it can mislabel
  * its origin. `kind`/`unit` are derived here, never trusted. The write is idempotent
- * on (request.id, unit), so a replayed drain — a settle lost in transport, a partial
- * batch re-run — writes nothing twice.
+ * on (request.id, kind, unit), so a replayed drain — a settle lost in transport, a
+ * partial batch re-run — writes nothing twice. `kind` is in that key because the two
+ * unit namespaces below meet (#1572): a schedule named like an event type its scope
+ * expects freshness on derives the same unit, in the same batch.
  */
 export function sweepRunsHandler(deps: { host: ScopeHost }): PlatformRequestHandler {
   return async (ctx, request) => {
