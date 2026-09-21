@@ -18,6 +18,7 @@
  * The workerd suite (`test/workerd/sweeper.test.ts`) is the other half: there the sweep
  * runs on a real Durable Object and wakes a due snooze.
  */
+import { createRequire } from 'node:module';
 import { afterAll, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { CANONICAL_INSTANT_PARTS, canonicalInstant } from '../src/module.js';
@@ -60,7 +61,13 @@ const NEAR_MISSES = [
   '2026-03-09',
 ];
 
-const db = new Database(':memory:');
+// The node suites run with a Durable Object's 50-byte pattern limit on (`tools/vitest/like-pattern-limit.cjs`,
+// #1655). This file's oracle IS the 92-byte pattern the limit refuses, so this one connection lifts it — the
+// pieces are held to the limit by the byte-count test below.
+const { liftLimit } = createRequire(import.meta.url)('../../../tools/vitest/like-pattern-limit.cjs') as {
+  liftLimit: (db: Database.Database) => Database.Database;
+};
+const db = liftLimit(new Database(':memory:'));
 afterAll(() => db.close());
 
 /** Both predicates over one value: [the original single GLOB, the pieces]. */

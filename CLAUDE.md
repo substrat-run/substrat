@@ -106,6 +106,18 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 - `pnpm lint:tests` — a scenario suite must not read the emitted model to decide what to
   assert. A test that does agrees with the generator rather than with the vertical, so a
   wrong model passes its own test.
+- **Every node suite runs with a Durable Object's `LIKE`/`GLOB` pattern limit on** (#1655).
+  A DO's SQLite refuses a pattern over **50 bytes** (`LIKE or GLOB pattern too complex`);
+  node's allows 50 000, so a 92-byte `GLOB` passed every suite and failed every hosted
+  `ticket0/wake-snoozed` call (#1646). `better-sqlite3` exposes no `sqlite3_limit`, so
+  `tools/vitest/like-pattern-limit.cjs` overrides `like()`/`glob()` on each connection —
+  `--require`d by the root `pnpm test` and by the CI test step through `NODE_OPTIONS`, which
+  is why a bare `pnpm --filter … test` does **not** have it: run the suite as
+  `NODE_OPTIONS="--require=$PWD/tools/vitest/like-pattern-limit.cjs" pnpm --filter … test` to
+  see what CI sees. A test whose oracle is a longer pattern lifts it on ONE connection with
+  `liftLimit(db)` and says why. `pnpm lint:like-pattern` is the source half: a `LIKE`/`GLOB`
+  literal over 50 bytes, or a `const` of three or more `[0-9]`-style classes over it, is
+  refused — the run-time limit is what catches a pattern built from input.
 - `pnpm lint:permissions` — emit each vertical's `PERMISSIONS.md` (the permission-diff
   checkpoint below); CI runs it with `--check` and fails on drift
 - `pnpm lint:changelog` — the published weekly changelog (`apps/docs/changelog/`).
@@ -501,6 +513,8 @@ writes nothing, which from the outside is the same empty view. Same shape as
 `lint:vite-proxy`, for the same reason: no scenario suite drives the mounted app, #1418.
 Local-only demos with a `server.ts` harness and no worker entry are out of scope, since
 no router fronts them and no request carries an asserted tenant),
+`lint:like-pattern` (`tools/like-pattern-length.mjs`: a `LIKE`/`GLOB` pattern written into
+source is at most 50 bytes, the limit a Durable Object enforces and node does not, #1655),
 `lint:module-inputs` (`tools/module-inputs.mjs`: a `ModuleRegistration` that declares
 `operations:` hands the host `operationInputs: operationInputsOf(ops)` — the mechanism behind
 the "parse, don't trust" rule above. The kernel field is **optional**, so that rule held only

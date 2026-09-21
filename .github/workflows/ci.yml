@@ -76,6 +76,13 @@ jobs:
       # sign-in and every suite was green: a scenario drives the module and never
       # reaches `server.ts` (#1388). Only a source check can see this.
       - run: pnpm lint:vite-proxy
+      # A LIKE or GLOB pattern over 50 bytes runs on node, where the limit is 50 000, and
+      # fails on a Durable Object, where it is 50 — `LIKE or GLOB pattern too complex`, on
+      # every hosted call, with every suite green (#1646, #1655). This reads the source for
+      # a literal over the limit, including the `const` of character classes that shipped;
+      # the test step below is the other half, since it makes node enforce the limit at run
+      # time and so catches a pattern built from input, which no source scan can measure.
+      - run: pnpm lint:like-pattern
       # A deployable vertical mounts `invocationLog()` as its FIRST middleware, or its
       # tenant-facing logs are partly or wholly empty. Hono composes handlers in
       # registration order and stops at the first that answers, so a mount below a route
@@ -299,9 +306,16 @@ jobs:
       # demo's nine-step scenario — and the TEMPLATE's own nine-step scenario,
       # via packages/template-check (#878), which is how a surface that still
       # typechecks but no longer behaves gets caught before it is published.
+      #
+      # Every node suite runs with a Durable Object's LIKE/GLOB pattern limit (50 bytes)
+      # switched on: `better-sqlite3` cannot set `sqlite3_limit`, so the preload overrides
+      # `like()` and `glob()` per connection (#1655). Without it a 92-byte GLOB passed
+      # every suite and failed every hosted call. An absolute path, because `pnpm -r`
+      # changes directory into each package before it starts node.
       - run: pnpm -r ${SCOPE_FILTER:+"$SCOPE_FILTER"} test
         env:
           SCOPE_FILTER: ${{ steps.scope.outputs.filter }}
+          NODE_OPTIONS: --require=${{ github.workspace }}/tools/vitest/like-pattern-limit.cjs
 
   # Deploy the prod apps to the shared TEST environment on every green push to
   # main. Prod itself is deployed separately, only on an actual changeset
