@@ -190,6 +190,35 @@ const CLIENT_COLUMNS = {
   timezone: z.string().nullable(),
 } as const;
 
+/**
+ * Everything `desk_settings.settings` may say — the built-in behaviours a desk switches
+ * on, one key each (#1083).
+ *
+ * A CLOSED set, and that is the decision rather than an unfinished start. The issue
+ * asked for tenant-authored rules; the answer was a fixed set of behaviours, because a
+ * condition language evaluated inside a scope is a security surface and a support burden
+ * before it has done anything, and because narrowing even one of them — by channel, say
+ * — would already be a rule. So there are no conditions here, only switches, and each
+ * behaviour behind one is code a reviewer read.
+ *
+ * `.strict()` because this is also what `ticket0/configure-desk` accepts, and a typo
+ * like `roundrobin: true` that saved cleanly and switched nothing on is the one failure
+ * a settings screen cannot show anybody.
+ *
+ * Every key is optional and absent means off. Adding a behaviour is adding a key: no
+ * column, no migration.
+ */
+export const deskSettingsBlob = z
+  .object({
+    /**
+     * Hand every conversation nobody has picked up to the next person on the desk, in
+     * turn. Swept by `ticket0/assign-round-robin`; `src/module.ts` says who counts as
+     * "nobody has picked up" and who counts as "the next person".
+     */
+    roundRobin: z.boolean().optional(),
+  })
+  .strict();
+
 export const ticket0Entities = defineEntities({
   /**
    * A person who asked something.
@@ -275,6 +304,26 @@ export const ticket0Entities = defineEntities({
       priority: z.enum(['low', 'normal', 'urgent']),
       snoozed_until: z.string().nullable(),
       first_public_reply_at: z.string().nullable(),
+      /**
+       * When somebody's name was first put on this conversation — and never cleared
+       * (#1083).
+       *
+       * `assignee` says who holds it NOW, and null there means two different things: a
+       * conversation nobody has ever picked up, and one a person deliberately put back.
+       * Round-robin must hand out the first and leave the second alone, or an agent who
+       * unassigns a thread watches the next sweep give it straight back to somebody. This
+       * column is what tells them apart. It is written by the one body both assignment
+       * doors run, so a manual assign and a round-robin one stamp it the same way, and
+       * unassigning leaves it where it was.
+       *
+       * Null on every row that predates the column — including one somebody assigned
+       * and then unassigned before it existed, which the column cannot know about.
+       * Round-robin reads such a row as never assigned and may hand it out once. A row
+       * that is assigned NOW is protected by `assignee` either way. Back-filling from
+       * the event log would close the gap, but it would make the audit spine the source
+       * of a business rule, so it was not done.
+       */
+      first_assigned_at: z.string().nullable(),
       resolved_at: z.string().nullable(),
       merged_into: z.string().nullable(),
       follows: z.string().nullable(),
@@ -478,6 +527,32 @@ export const ticket0Entities = defineEntities({
        * its messages and the contact all stay — the conversation leaves the inbox.
        */
       abandoned_after_days: z.number().nullable(),
+      /**
+       * The desk's switches, as one JSON object (#1083) — `deskSettingsBlob` above says
+       * which keys exist.
+       *
+       * One column rather than a column per switch, and that is the whole reason it is
+       * here. Every setting before it was a column, and a column on a table that has
+       * shipped is a migration, which is a human checkpoint: a boolean cost the same
+       * review as a new table. The built-in behaviours a desk turns on one at a time
+       * (#1083 chose those over a rule language) would each have paid it again. This
+       * pays it once; the next switch is a key in `deskSettingsBlob` and no DDL.
+       *
+       * Null is a desk that has switched nothing on, and every behaviour reads it as
+       * off. Nothing is back-filled, so every desk that existed before the column
+       * behaves exactly as it did the day before.
+       */
+      settings: z.string().nullable(),
+      /**
+       * Where round-robin stands: the principal it last handed a conversation to.
+       *
+       * State the sweep keeps, not a setting anybody chose — which is why it is its own
+       * column rather than a key in `settings`, and why neither desk read returns it. A
+       * setting and a cursor in one blob would have `configure-desk` and the sweep both
+       * writing the same value for different reasons, and the desk read showing
+       * bookkeeping as though somebody had decided it.
+       */
+      round_robin_last: z.string().nullable(),
       created_at: z.string(),
       updated_at: z.string(),
     }),
@@ -846,13 +921,26 @@ export const TICKET0_PERMISSIONS = [
  */
 const kbSourcePublic = ticket0Entities.kbSource.fields.omit({ refresh_token_hash: true });
 
+/**
+ * The desk as its admin reads it: everything except the secret and the sweep's cursor.
+ *
+ * Declared once for the reason `kbSourcePublic` is. The secret is omitted because it is
+ * shown exactly once, by `rotate-verification-secret`. `round_robin_last` is omitted
+ * because it is bookkeeping rather than a setting: publishing it would freeze a cursor
+ * into the API contract for a reader nobody has.
+ */
+const deskPublic = ticket0Entities.deskSettings.fields.omit({
+  verification_secret: true,
+  round_robin_last: true,
+});
+
 export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMISSIONS)({
   // ─── The desk ────────────────────────────────────────────────────────────────
 
   'ticket0/get-desk': {
     summary: 'The desk’s settings',
     permission: 'desk:configure',
-    output: ticket0Entities.deskSettings.fields.omit({ verification_secret: true }),
+    output: deskPublic,
     http: { method: 'GET', path: '/desk' },
   },
 
@@ -890,8 +978,17 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
        * answering the mail.
        */
       abandonedAfterDays: z.number().int().min(1).max(3650).nullable().optional(),
+      /**
+       * Switch a built-in behaviour on or off (#1083).
+       *
+       * A patch, key by key. A key the call names is set, and a key it leaves out keeps
+       * whatever the desk had. So `{ roundRobin: false }` turns round-robin off and
+       * touches nothing else, and a form that only knows today's keys cannot switch
+       * off a behaviour a later version added.
+       */
+      settings: deskSettingsBlob.optional(),
     }),
-    output: ticket0Entities.deskSettings.fields.omit({ verification_secret: true }),
+    output: deskPublic,
     http: { method: 'PATCH', path: '/desk' },
     emits: {
       entity: 'deskSettings',
@@ -903,13 +1000,16 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       // answer customers unattended" is exactly the kind of thing a trail should
       // carry. Additive to a shipped payload, so no schemaVersion bump —
       // `abandoned_after_days` joins it on the same terms, and for the same reason:
-      // it decides what silently leaves this desk's inbox.
+      // it decides what silently leaves this desk's inbox. `settings` joins for the
+      // reason both do: a switch that hands conversations to people on its own is
+      // a decision the trail should be able to date.
       payload: [
         'id',
         'from_address',
         'allowed_origins',
         'assistant_autonomous',
         'abandoned_after_days',
+        'settings',
       ],
     },
   },
@@ -1668,6 +1768,42 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       piiClass: 'none',
       payload: ['id', 'assignee', 'state'],
     },
+  },
+
+  /**
+   * Round-robin — the first of the desk's built-in behaviours (#1083), and `assign` done
+   * by the desk rather than by a person.
+   *
+   * A SCHEDULE and not an event consumer, which is the decision the rest of this rests on.
+   * A consumer runs as an override actor whose every `ctx.check` is allowed
+   * unconditionally, on both adapters, and nothing records the authorisation. That is
+   * assignment going AROUND the permission a person's `assign` has to pass. A schedule
+   * runs as the module's system principal against a real grant — the one provisioning
+   * projects from the schedules the manifest declares, which `wake-snoozed` already holds
+   * for this same key — so revoking that tuple switches the behaviour off for one desk,
+   * and every assignment it makes carries the check it passed and the name of this
+   * operation on its event. The trail says which behaviour acted.
+   *
+   * The price is latency, and it is named rather than hidden: the declared cadence is a
+   * floor, and a hosted desk's schedules fire when the platform sweep does. A conversation
+   * can therefore wait in the inbox, unassigned and visible, for up to one sweep interval
+   * before it has a name on it.
+   *
+   * Not an HTTP operation, for `wake-snoozed`'s reason: the schedule is its only caller,
+   * and a person handing out one conversation has `ticket0/assign`. The permission is a
+   * NODE check here because a sweep cannot name its rows in advance, and the handler then
+   * makes the per-conversation check `assign` makes before each one it hands out.
+   *
+   * `output` is a count, so no `emits` here: each conversation it hands out publishes
+   * `ticket0.conversation-assigned`, the same event a person's assign publishes, from
+   * the same code.
+   */
+  'ticket0/assign-round-robin': {
+    // Not a tool: a schedule's entry point; nothing calls it by hand.
+    mcp: false,
+    summary: 'Hand each conversation nobody has picked up to the next person in turn',
+    permission: 'conversation:assign',
+    output: z.object({ assigned: z.number().int() }),
   },
 
   /**

@@ -50,6 +50,35 @@ export const ASSISTANT_DISPLAY_NAME = 'Assistant';
  * Structural rather than tied to `AgentProfile`, which is the only way this file stays
  * a leaf; the callers pass the generated entity and get it back.
  */
+/**
+ * Every page of a paged read, in order: the whole directory, not its first twenty rows.
+ *
+ * Here rather than in `agents.ts` so it stays a leaf, for the reason this file's header
+ * gives. `first` and `follow` are the two calls, handed in: the browser passes
+ * `api.listAgents` and `api.follow`, and the vertical's suite passes the operation
+ * itself, invoked with the cursor. So the walk the roster runs is the walk the suite
+ * drives.
+ *
+ * Every screen that presents the directory AS the desk's people reads it through this,
+ * because a truncated answer there is invisible — it does not look short, it looks like
+ * the person is not on the desk. That matters twice over since round-robin (#1083): the
+ * rotation is the whole directory, and the Team roster is where an admin looks to see
+ * who is in it. A roster that stopped at twenty would hide exactly the people a
+ * rotation can still hand work to.
+ */
+export async function everyPage<T>(
+  first: () => Promise<{ entries: T[]; next: string | null }>,
+  follow: (next: string) => Promise<{ entries: T[]; next: string | null }>,
+): Promise<T[]> {
+  const all: T[] = [];
+  let page = await first();
+  for (;;) {
+    all.push(...page.entries);
+    if (!page.next) return all;
+    page = await follow(page.next);
+  }
+}
+
 export function assignableStaff<T extends { principal: string; display_name: string }>(
   staff: Iterable<T>,
   keep?: string | null,
