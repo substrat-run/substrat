@@ -94,6 +94,8 @@ export interface Conversation {
   assignee: string | null;
   priority: "low" | "normal" | "urgent";
   snoozed_until: string | null;
+  snoozed_at: string | null;
+  snoozed_ms: number | null;
   first_public_reply_at: string | null;
   first_assigned_at: string | null;
   resolved_at: string | null;

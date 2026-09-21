@@ -32,7 +32,8 @@
  * invalidating this Durable Object" — measured, as a 400 from `/internal/provision`, whose
  * roster note reaches the one sweeper DO both files share. One file, one module instance.
  * The third (#1653) is here for the same reason: provisioning a desk twice must leave the
- * state provisioning it once did.
+ * state provisioning it once did. So is the fourth (#1648): a snooze pausing the resolution
+ * target, read and written by the sweep's own schedules on a Durable Object's SQLite.
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -407,5 +408,115 @@ describe('ticket0 provision is idempotent (#1653)', () => {
 
     expect(again).toEqual(once);
     expect((await platform('/internal/delete-scope', { scopeId: fresh })).status).toBe(200);
+  });
+});
+
+/**
+ * #1648 on the runtime a hosted desk runs: a snooze pauses the resolution target, and the
+ * sweep's two schedules — `wake-snoozed` and `escalate-sla-breaches` — read and write the
+ * pause through a Durable Object's SQLite, over migration 0014's narrowed partial index.
+ *
+ * The DO host has no clock to move, so the instants are written into the desk's own
+ * storage instead: a snooze that began, and a resolution due that fell, years ago. Each
+ * pair differs in one column. The one whose snooze start is on record is paused: woken, its
+ * due is pushed past now with no breach, and still asleep, the escalation's scan does not
+ * see it. The one without — a conversation snoozed before the column existed — keeps the
+ * clock it was snoozed under, and the same pass records it, awake or asleep. The asleep pair
+ * is what reaches the scan: a pass wakes before it escalates, so a woken row has already
+ * had its time back by the time the escalation reads it.
+ */
+describe('ticket0 on workerd — a snooze pauses the resolution target (#1648)', () => {
+  const slaDesk = scopeId.parse(ulid());
+  const SNOOZED_AT = '2020-01-01T00:00:00.000Z';
+  /** Half an hour into that snooze: a due that fell while the conversation slept. */
+  const DUE = '2020-01-01T00:30:00.000Z';
+  const stub = () => env.SCOPE.get(env.SCOPE.idFromName(slaDesk));
+
+  interface SlaRow extends Conversation {
+    snoozed_at: string | null;
+    snoozed_ms: number | null;
+    resolution_due_at: string | null;
+    resolution_breached_at: string | null;
+  }
+
+  beforeAll(async () => {
+    expect((await platform('/internal/provision', { tenantId: t, scopeId: slaDesk, owner, entitlements })).status).toBe(201);
+    await (await host().getScope(owner, t, slaDesk)).invoke('ticket0/configure-desk', {
+      settings: { sla: { resolutionMinutes: { normal: 60 } } },
+    });
+  });
+
+  afterAll(async () => {
+    expect((await platform('/internal/delete-scope', { scopeId: slaDesk })).status).toBe(200);
+  });
+
+  /** Arrived, answered, snoozed until `until` — then its snooze and its due placed in 2020. */
+  async function sleptSince(snoozedAt: string | null, until = PAST): Promise<string> {
+    const id = await snoozedUntil(slaDesk, until);
+    await runInDurableObject(stub(), (_i, state) => {
+      state.storage.sql.exec(
+        `UPDATE ticket0_conversations
+            SET first_public_reply_at = ?, resolution_due_at = ?, snoozed_at = ?
+          WHERE id = ?`,
+        SNOOZED_AT,
+        DUE,
+        snoozedAt,
+        id,
+      );
+    });
+    return id;
+  }
+
+  it('the migration narrowed the resolution index on the DO, and only that one', async () => {
+    const sql = await runInDurableObject(stub(), (_i, state) =>
+      Object.fromEntries(
+        [
+          ...state.storage.sql.exec(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND name LIKE 'ticket0_conversations_%_running'",
+          ),
+        ].map((r) => [String(r.name), String(r.sql)]),
+      ),
+    );
+    expect(sql['ticket0_conversations_resolution_running']).toMatch(/AND snoozed_at IS NULL$/);
+    expect(sql['ticket0_conversations_first_response_running']).not.toMatch(/snoozed_at/);
+  });
+
+  it('a pass wakes a paused conversation past its due with the time back and no breach; an unpaused one is recorded', async () => {
+    const paused = await sleptSince(SNOOZED_AT);
+    const legacy = await sleptSince(null);
+    // Still asleep after the pass, so the escalation's scan meets them snoozed: the
+    // paused one must be outside it, and the legacy one inside it.
+    const stillPaused = await sleptSince(SNOOZED_AT, FUTURE);
+    const stillLegacy = await sleptSince(null, FUTURE);
+
+    const before = Date.now();
+    const report = await sweep();
+    const after = Date.now();
+    expect(report.errors).toEqual([]);
+    expect(report.schedules.failed).toBe(0);
+
+    const p = (await conversation(slaDesk, paused)) as SlaRow;
+    expect(p).toMatchObject({ state: 'open', snoozed_at: null, resolution_breached_at: null });
+    // Pushed back by exactly how long it slept, so it lands half an hour after the wake.
+    const pushed = Date.parse(p.resolution_due_at!);
+    expect(pushed).toBeGreaterThanOrEqual(before + 30 * 60_000);
+    expect(pushed).toBeLessThanOrEqual(after + 30 * 60_000);
+    expect(pushed - Date.parse(DUE)).toBe(p.snoozed_ms);
+
+    const l = (await conversation(slaDesk, legacy)) as SlaRow;
+    expect(l.state).toBe('open');
+    expect(l.resolution_due_at).toBe(DUE);
+    expect(l.snoozed_ms).toBeNull();
+    expect(l.resolution_breached_at).not.toBeNull();
+
+    expect(await conversation(slaDesk, stillPaused)).toMatchObject({
+      state: 'snoozed',
+      snoozed_at: SNOOZED_AT,
+      resolution_due_at: DUE,
+      resolution_breached_at: null,
+    });
+    const sl = (await conversation(slaDesk, stillLegacy)) as SlaRow;
+    expect(sl.state).toBe('snoozed');
+    expect(sl.resolution_breached_at).not.toBeNull();
   });
 });

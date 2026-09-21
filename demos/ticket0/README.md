@@ -319,8 +319,13 @@ to one run late. On a hosted desk the schedules run on the deployment's own time
 (`SweeperDO` in `src/worker.ts`, #1646), a pass every two minutes over every desk it has been
 told about. A desk is told about when it is provisioned, and a desk provisioned before the
 timer existed when the platform next reconciles it. A desk on no roster records a breach only
-when somebody acts on the late conversation: a reply, a resolution or a priority change. A
-snooze does not pause the clock yet (#1648).
+when somebody acts on the late conversation: a reply, a resolution or a priority change.
+A snooze pauses the **resolution** target and not the first-response one (#1648): a
+snoozed conversation is usually waiting on the customer, but one parked before anybody
+answered still has a customer waiting for a first word. The time asleep is added to the
+resolution due when it wakes, whichever way it wakes, so a due that fell inside the snooze
+is not a breach. A conversation that was already snoozed when this shipped keeps its
+clock running until it wakes; its next snooze pauses.
 
 The inbox filters narrow the read **on the server**: `state`, `assignee`, `channel` and
 `priority` are declared inputs on `ticket0/list-conversations`, and the kernel composes
