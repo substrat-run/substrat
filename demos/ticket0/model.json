@@ -370,6 +370,46 @@
               }
             ]
           },
+          "first_response_due_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolution_due_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "first_response_breached_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolution_breached_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "merged_into": {
             "anyOf": [
               {
@@ -409,6 +449,10 @@
           "first_public_reply_at",
           "first_assigned_at",
           "resolved_at",
+          "first_response_due_at",
+          "resolution_due_at",
+          "first_response_breached_at",
+          "resolution_breached_at",
           "merged_into",
           "follows",
           "created_at",

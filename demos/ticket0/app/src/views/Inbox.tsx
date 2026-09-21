@@ -47,6 +47,7 @@ import {
 import { agentName, agents, assignableStaff } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
+import { slaMissedLabel } from '../sla.js';
 import { Avatar, Empty, OwnerPicker, Priority, StateBadge, Unassigned, ago } from '../ui.js';
 
 // Owner is 150px rather than the 44px an avatar needed: since #1079 the cell is a
@@ -906,6 +907,8 @@ function Row({
   // "Unread" in the design is a warm tint. Here it means nobody has replied yet, which
   // is the fact the colour is standing for.
   const unread = !c.first_public_reply_at;
+  // A missed service-level target (#1082), exactly as the desk recorded it.
+  const missed = slaMissedLabel(c);
   return (
     <div
       onClick={onOpen}
@@ -941,6 +944,11 @@ function Row({
         >
           — {c.priority === 'urgent' ? 'needs attention' : 'in the queue'}
         </span>
+        {missed ? (
+          <span className="t-small" style={{ color: 'var(--danger-2)', marginLeft: 6, whiteSpace: 'nowrap' }}>
+            · {missed}
+          </span>
+        ) : null}
       </div>
       <div className="mono" style={{ fontSize: 11, color: 'var(--secondary-2)' }}>
         {c.channel}

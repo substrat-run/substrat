@@ -326,4 +326,23 @@ export const ticket0Migrations: SqlMigration[] = [
       CREATE INDEX ticket0_messages_public_by_conversation ON ticket0_messages (conversation_id, visibility, id);
     `,
   },
+  {
+    // add-ticket0_conversations-first_response_due_at-and-3-more
+    version: '0012',
+    sql: `
+      ALTER TABLE ticket0_conversations ADD COLUMN first_response_due_at TEXT;
+
+      ALTER TABLE ticket0_conversations ADD COLUMN resolution_due_at TEXT;
+
+      ALTER TABLE ticket0_conversations ADD COLUMN first_response_breached_at TEXT;
+
+      ALTER TABLE ticket0_conversations ADD COLUMN resolution_breached_at TEXT;
+
+      CREATE INDEX ticket0_conversations_first_response_running ON ticket0_conversations (first_response_breached_at, first_response_due_at, id)
+        WHERE first_response_due_at IS NOT NULL AND first_response_breached_at IS NULL AND first_public_reply_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL;
+
+      CREATE INDEX ticket0_conversations_resolution_running ON ticket0_conversations (resolution_breached_at, resolution_due_at, id)
+        WHERE resolution_due_at IS NOT NULL AND resolution_breached_at IS NULL AND resolved_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL;
+    `,
+  },
 ];

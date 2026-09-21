@@ -489,8 +489,10 @@ Each with a recommendation, so this is a choice and not a specification exercise
 
 ## 10. Out of scope
 
-Deliberately not in this build, so the review is about a bounded thing: service-level
-timers and escalation policies; phone, SMS and social channels; multilingual answering;
+Deliberately not in this build, so the review is about a bounded thing: service levels
+beyond per-priority first-response and resolution targets with a breach state and a
+one-time escalation (#1082 built those; pausing on snooze, business-hours clocks and a
+"breaching soon" view are #1648); phone, SMS and social channels; multilingual answering;
 routing rules beyond assignment and round-robin; satisfaction analytics beyond storing the
 score; knowledge bases that live in Notion or Confluence; a public help centre; billing
 (section 5); and any marketplace listing.

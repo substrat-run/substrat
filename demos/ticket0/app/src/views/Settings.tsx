@@ -20,6 +20,15 @@ import {
 } from '../api.js';
 import { assignableStaff, everyAgentProfile, forgetAgents } from '../agents.js';
 import { contacts } from '../contacts.js';
+import {
+  formatMinutes,
+  SLA_MAX_MINUTES,
+  SLA_PRIORITIES,
+  slaErrorOf,
+  slaFormOf,
+  slaPayloadOf,
+  type SlaForm,
+} from '../sla.js';
 import { Avatar, Dot, Empty, UnitPrice, ago } from '../ui.js';
 
 export type SettingsTab =
@@ -604,9 +613,19 @@ function Desk() {
   // sends, so what is shown and what is saved cannot be two different arrays.
   const [draft, setDraft] = useState('');
   const [draftError, setDraftError] = useState<string | null>(null);
+  // The service-level boxes, as typed (#1082). Their own state rather than a rewrite of
+  // `desk.settings` on every keystroke: a half-typed number is not a setting, and
+  // `slaPayloadOf` turns the boxes into one only at Save.
+  const [sla, setSla] = useState<SlaForm>(() => slaFormOf(null));
 
   useEffect(() => {
-    void api.getDesk().then(setDesk).catch((e: Error) => setLoadFailed(e.message));
+    void api
+      .getDesk()
+      .then((d) => {
+        setDesk(d);
+        setSla(slaFormOf(d.settings));
+      })
+      .catch((e: Error) => setLoadFailed(e.message));
   }, []);
   // A rejected request is not a slow one. Saying "Loading…" forever is the screen
   // lying about which of the two happened.
@@ -674,11 +693,13 @@ function Desk() {
     return null;
   })(desk.abandoned_after_days);
 
+  const slaError = slaErrorOf(sla);
+
   const save = async () => {
     // Refused here rather than sent and refused there: the message is already on
     // screen against the field, and Save is disabled, so this is the last guard
     // rather than the first.
-    if (windowError) return;
+    if (windowError || slaError) return;
     setSaving(true);
     setSaved(false);
     setFailed(null);
@@ -692,7 +713,9 @@ function Desk() {
         // omitting the field would mean "leave whatever is there" — which is the one
         // way this form could refuse to clear a number somebody typed by mistake.
         abandonedAfterDays: desk.abandoned_after_days,
-        settings: { roundRobin },
+        // `sla` goes whole, and `null` when every box is empty: the desk sets this key
+        // whole, and null is how it hears "no service levels".
+        settings: { roundRobin, sla: slaPayloadOf(sla) },
       });
       setSaved(true);
     } catch (e) {
@@ -791,6 +814,47 @@ function Desk() {
         </span>
       </Field>
       <Field
+        label="Service levels"
+        hint={
+          <>
+            How long a conversation of each priority may wait for its first public reply (from a person or the
+            assistant) and for being resolved, counted from when it arrived. Leave a box empty for no target; leave
+            them all empty to switch service levels off. A conversation keeps the targets it was given when it
+            arrived or when its priority last changed, so editing them here moves nothing already promised, and
+            the conversations waiting before you set them get targets only if somebody changes their priority. A
+            snooze does not pause the
+            clock. An overdue conversation is flagged and whoever holds it (everyone on the Team list, when nobody
+            does) is told once, the next time the desk&apos;s timer runs: every 5 minutes at the soonest, so a
+            breach can be noticed up to one timer run late. A reply or resolution sent late records the breach
+            itself, and so does changing the priority of a conversation that is already late. On a hosted desk
+            that timer does not run yet (
+            <a href="https://github.com/substrat-run/substrat/issues/1646" target="_blank" rel="noreferrer">
+              #1646
+            </a>
+            ), so there a breach is recorded only when somebody replies to, resolves or re-prioritises the late
+            conversation, and nobody is told before that.
+          </>
+        }
+      >
+        <div style={{ display: 'grid', gridTemplateColumns: '80px 170px 170px', gap: 6, alignItems: 'center' }}>
+          <span />
+          <span className="t-small" style={{ color: 'var(--text-secondary)' }}>
+            First response
+          </span>
+          <span className="t-small" style={{ color: 'var(--text-secondary)' }}>
+            Resolution
+          </span>
+          {SLA_PRIORITIES.map((p) => (
+            <SlaRow key={p} priority={p} form={sla} onChange={setSla} />
+          ))}
+        </div>
+        {slaError ? (
+          <div className="t-small" style={{ color: 'var(--danger-2)', marginTop: 6 }}>
+            {slaError}
+          </div>
+        ) : null}
+      </Field>
+      <Field
         label="Widget origins"
         hint="A site not on this list is refused before a conversation exists. Add the origin the page is served from, then Save."
       >
@@ -857,7 +921,7 @@ function Desk() {
         <button
           className="btn btn-primary"
           onClick={() => void save()}
-          disabled={saving || windowError !== null}
+          disabled={saving || windowError !== null || slaError !== null}
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
@@ -868,6 +932,52 @@ function Desk() {
           </span>
         ) : null}
       </div>
+    </>
+  );
+}
+
+/**
+ * One priority's two targets: two minute boxes, each read back as a duration so that
+ * "480" is visibly a working day rather than a number somebody has to divide.
+ */
+function SlaRow({
+  priority,
+  form,
+  onChange,
+}: {
+  priority: (typeof SLA_PRIORITIES)[number];
+  form: SlaForm;
+  onChange: (next: SlaForm) => void;
+}) {
+  const box = (which: 'firstResponse' | 'resolution') => {
+    const raw = form[which][priority];
+    const n = Number(raw);
+    return (
+      <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <input
+          className="input mono"
+          type="number"
+          min={1}
+          max={SLA_MAX_MINUTES}
+          style={{ width: 80 }}
+          placeholder="—"
+          aria-label={`${which === 'firstResponse' ? 'First response' : 'Resolution'} target for ${priority}, in minutes`}
+          value={raw}
+          onChange={(e) => onChange({ ...form, [which]: { ...form[which], [priority]: e.target.value } })}
+        />
+        <span className="t-small" style={{ color: 'var(--text-secondary)' }}>
+          {raw.trim() !== '' && Number.isInteger(n) && n >= 1 ? formatMinutes(n) : 'min'}
+        </span>
+      </span>
+    );
+  };
+  return (
+    <>
+      <span className="t-small" style={{ textTransform: 'capitalize' }}>
+        {priority}
+      </span>
+      {box('firstResponse')}
+      {box('resolution')}
     </>
   );
 }

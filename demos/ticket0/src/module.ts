@@ -54,6 +54,7 @@ import {
   SEARCH_OVERFETCH,
   SIGNUP_HOURLY_MAX,
   SIGNUP_RESEND_SECONDS,
+  SLA_TARGET_MAX_MINUTES,
   ticket0Entities,
   ticket0Lifecycles,
   ticket0Operations,
@@ -1325,13 +1326,19 @@ function openConversation(
 ): ConversationRow {
   const id = ulid();
   const now = ctx.now();
+  // Arrival is the first moment a priority is decided ('normal', always), so it is the
+  // first moment the desk's service levels are stamped on (#1082). Null on a desk that
+  // has none, and for a priority it set no target for.
+  const due = slaDue(slaPolicy(desk(ctx)), now, 'normal');
   ctx.sql.exec(
     `INSERT INTO ticket0_conversations
        (id, contact_id, channel, subject, state, assignee, priority, snoozed_until,
-        first_public_reply_at, first_assigned_at, resolved_at, merged_into, follows,
-        created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'new', NULL, 'normal', NULL, NULL, NULL, NULL, NULL, ?, ?, ?)`,
-    [id, contact.id, channel, subject, follows, now, now],
+        first_public_reply_at, first_assigned_at, resolved_at, first_response_due_at,
+        resolution_due_at, first_response_breached_at, resolution_breached_at,
+        merged_into, follows, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'new', NULL, 'normal', NULL, NULL, NULL, NULL, ?, ?, NULL, NULL,
+             NULL, ?, ?, ?)`,
+    [id, contact.id, channel, subject, due.firstResponse, due.resolution, follows, now, now],
   );
   // The edge the permission walk follows: a contact's grant on their own entity
   // reaches their conversations through this, and reaches nobody else's.
@@ -1471,6 +1478,289 @@ function storedSettings(row: DeskRow): Record<string, unknown> {
  */
 function roundRobinOn(row: DeskRow): boolean {
   return storedSettings(row).roundRobin === true;
+}
+
+// ---------------------------------------------------------------------------
+// Service levels (#1082)
+// ---------------------------------------------------------------------------
+
+type Priority = ConversationRow['priority'];
+
+/** Minutes per priority. A priority that is absent has no target. */
+type SlaTargets = Partial<Record<Priority, number>>;
+
+/** The desk's service levels, as the handlers use them. */
+interface SlaPolicy {
+  readonly firstResponseMinutes: SlaTargets;
+  readonly resolutionMinutes: SlaTargets;
+}
+
+const PRIORITIES: readonly Priority[] = ['low', 'normal', 'urgent'];
+
+/**
+ * The desk's service levels, or null when it has none — read leniently, the way
+ * `storedSettings` reads every switch.
+ *
+ * A target counts only when it is a whole number of minutes inside the bounds
+ * `deskSettingsBlob` declares. Anything else in the row reads as no target: a value
+ * this version did not write, a later version's shape after a rollback, or a number
+ * nobody chose. Re-checked on the way OUT for `abandonedAfter`'s reason: the row
+ * outlives the parse that wrote it, so the guard sits where the value is used.
+ *
+ * Null when no priority has a target at all, whatever the row says. That is what
+ * "off" means: `sla: null`, an absent `sla`, and an `sla` holding nothing usable all
+ * leave the sweep with nothing to do, and it does nothing.
+ */
+function slaPolicy(row: DeskRow): SlaPolicy | null {
+  const raw = storedSettings(row).sla;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const targetsOf = (value: unknown): SlaTargets => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+    const out: SlaTargets = {};
+    for (const priority of PRIORITIES) {
+      const minutes = (value as Record<string, unknown>)[priority];
+      if (
+        typeof minutes === 'number' &&
+        Number.isInteger(minutes) &&
+        minutes >= 1 &&
+        minutes <= SLA_TARGET_MAX_MINUTES
+      )
+        out[priority] = minutes;
+    }
+    return out;
+  };
+  const policy: SlaPolicy = {
+    firstResponseMinutes: targetsOf((raw as Record<string, unknown>).firstResponseMinutes),
+    resolutionMinutes: targetsOf((raw as Record<string, unknown>).resolutionMinutes),
+  };
+  const any =
+    Object.keys(policy.firstResponseMinutes).length > 0 ||
+    Object.keys(policy.resolutionMinutes).length > 0;
+  return any ? policy : null;
+}
+
+/**
+ * The instants a conversation of this priority, arriving at `createdAt`, is held to.
+ *
+ * Counted from `created_at` whenever it is called, including from a priority change
+ * made days later. The customer started waiting when they wrote, not when somebody
+ * triaged them, so a conversation marked urgent after an hour has already used an hour
+ * of its urgent target. That is how a desk finds out that triage was late. It is also
+ * why re-prioritising an old conversation can make it overdue at once: it IS overdue for
+ * the priority it now has.
+ */
+function slaDue(
+  policy: SlaPolicy | null,
+  createdAt: string,
+  priority: Priority,
+): { firstResponse: string | null; resolution: string | null } {
+  const at = (minutes: number | undefined) =>
+    minutes === undefined ? null : new Date(Date.parse(createdAt) + minutes * 60_000).toISOString();
+  return {
+    firstResponse: at(policy?.firstResponseMinutes[priority]),
+    resolution: at(policy?.resolutionMinutes[priority]),
+  };
+}
+
+/**
+ * "This conversation's first-response target is still running", as SQL: nobody has
+ * met it and nobody has missed it.
+ *
+ * MET is `first_public_reply_at`, and that column is the definition, not a stand-in
+ * for one. It is written by exactly one path, `ticket0/post-public-reply`, the first
+ * time the desk says something the customer receives. That makes the definition:
+ *
+ *   - a person's public reply COUNTS;
+ *   - the assistant's public reply COUNTS. On a desk that lets it answer, what the
+ *     customer received was the desk's answer, sent under the same permission a
+ *     person's is, and `post-public-reply` cannot tell the two apart by design;
+ *   - an internal note does NOT count. The customer has been told nothing;
+ *   - an assistant turn that was only drafted, or that escalated, does NOT count. Both
+ *     are internal messages until somebody sends them;
+ *   - the acknowledgement `request-human` writes does NOT count. It is a system
+ *     message saying a person will come, which is the promise, not the response;
+ *   - the customer's own messages do NOT count.
+ *
+ * It is also the column `ticket0/desk-metrics` measures its first-response percentile
+ * on, so the target a desk sets and the number its report shows are one measurement.
+ *
+ * MISSED is `first_response_breached_at`, which only `recordBreach` writes (for the
+ * sweep, or for the reply that meets the target late). `ticket0/set-priority` (to decide
+ * which targets a new priority re-aims) and `slaOverdueSql` (to decide what has breached)
+ * both read this one fragment. Column names are bare so it serves an UPDATE as well as a
+ * SELECT.
+ */
+const FIRST_RESPONSE_RUNNING = 'first_response_breached_at IS NULL AND first_public_reply_at IS NULL';
+
+/**
+ * "This conversation's resolution target is still running", as SQL.
+ *
+ * MET is `resolved_at`: set by `ticket0/resolve` and by nothing else, and never cleared.
+ * So the target is met the first time the desk resolves the conversation, and a
+ * customer who writes again afterwards reopens the conversation without un-meeting it.
+ * A reopened thread carries no running target, and a "thanks!" does not escalate a
+ * conversation that was answered in an hour. This is also the column the report's
+ * resolution percentile reads. A conversation closed WITHOUT being resolved never meets
+ * the target, but it never breaches either: the sweep takes only the live states, and
+ * `closed` is the desk saying the conversation was not its to answer.
+ */
+const RESOLUTION_RUNNING = 'resolution_breached_at IS NULL AND resolved_at IS NULL';
+
+/**
+ * Live work, for the sweep: a conversation that can still be late.
+ *
+ * `snoozed` IS in it, deliberately: in this slice the clock does not pause. A customer
+ * waiting on a snoozed conversation is still waiting, and a snooze placed before
+ * anybody answered them hides nothing from the target. Pausing on snooze is a follow-up
+ * that needs its own column (#1648). `resolved` and `closed` are done. The losing half
+ * of a merge is folded into its survivor, which keeps its own targets.
+ */
+const SLA_LIVE = "state IN ('new', 'open', 'snoozed') AND merged_into IS NULL";
+
+/** The two targets, each with the columns and the running test that belong to it. */
+const SLA_TARGETS = [
+  {
+    target: 'first_response',
+    due: 'first_response_due_at',
+    breached: 'first_response_breached_at',
+    running: FIRST_RESPONSE_RUNNING,
+  },
+  {
+    target: 'resolution',
+    due: 'resolution_due_at',
+    breached: 'resolution_breached_at',
+    running: RESOLUTION_RUNNING,
+  },
+] as const;
+type SlaTarget = (typeof SLA_TARGETS)[number];
+const [SLA_FIRST_RESPONSE, SLA_RESOLUTION] = SLA_TARGETS;
+
+/**
+ * "This target has been missed and nobody has recorded it yet", as SQL: a due instant,
+ * still running, on live work, and now strictly past. Binds `[now]`.
+ *
+ * STRICTLY past. A reply at exactly the due instant is on time, because "within an hour"
+ * includes the hour.
+ *
+ * The ONE definition of a breach, read by every place that records one, so they cannot
+ * disagree:
+ *
+ *   - the sweep, which finds a target missed while it is still running and tells the
+ *     desk (`slaOverdueScan`);
+ *   - an act that is about to take a missed target out of the running set
+ *     (`recordIfLate`): the reply or resolve that meets it late, or the priority change
+ *     that re-aims it. Without this, a reply sent after the due instant but before the
+ *     next sweep would meet the target, take the conversation out of the sweep's scan,
+ *     and leave a late answer on record as an on-time one. On a host that runs no sweep
+ *     at all (#1646), that would be every late answer.
+ */
+function slaOverdueSql(t: SlaTarget): string {
+  return `${t.due} IS NOT NULL AND ${t.running} AND ${SLA_LIVE} AND ${t.due} < ?`;
+}
+
+/**
+ * The sweep's scan for one target: every conversation `slaOverdueSql` says was missed,
+ * soonest-due first.
+ *
+ * Each target has a PARTIAL index of its own in migration 0012, over exactly the running,
+ * live set that has a due instant, so the scan never reads a desk's whole history. A
+ * conversation drops out of the index the moment its target is met, missed, resolved,
+ * closed or merged.
+ *
+ * Each index is led by its `*_breached_at` column, although every row in it has NULL
+ * there. That is `ticket0_conversations_waiting`'s trick, for its reason: SQLite has no
+ * statistics for these tables, and without an equality on a leading column it prefers
+ * the kernel's own `(state, priority, id)` list index for the `state IN (…)` term, then
+ * sorts. The leading equality is what makes the partial index win outright. It also
+ * keeps the index in `due, id` order, so the scan sorts nothing.
+ *
+ * The index's WHERE must stay implied by this WHERE, or SQLite stops using it.
+ * `test/sla.test.ts` pins the plan, which is why this is exported.
+ *
+ * Binds `[now, limit]`.
+ */
+export function slaOverdueScan(target: SlaTarget['target']): string {
+  const t = SLA_TARGETS.find((x) => x.target === target)!;
+  return `SELECT * FROM ticket0_conversations
+        WHERE ${slaOverdueSql(t)}
+        ORDER BY ${t.due}, id LIMIT ?`;
+}
+
+/**
+ * How many overdue conversations one run records, per target. `WAKE_BATCH`'s bargain: a
+ * bound on one transaction, not a cap on the feature, because the schedule comes back.
+ */
+const SLA_BATCH = 200;
+
+/**
+ * Write one breach down: the stamp, and the event that says so.
+ *
+ * Notifying is NOT here, on purpose, because whether to tell anybody depends on whether
+ * the conversation is still waiting. The sweep and `set-priority` tell the desk: nothing
+ * has met the target, and somebody should act. The reply or resolution that noticed a
+ * late target does not, because it has just met that target, and a notice to act on
+ * something already done is the kind people learn to ignore.
+ *
+ * The event is the same from every door. The kernel stamps the operation that recorded
+ * it (`ticket0/escalate-sla-breaches`, `ticket0/post-public-reply`, `ticket0/resolve`,
+ * `ticket0/set-priority`), so the trail says which one noticed without a payload field
+ * to say it again.
+ */
+function recordBreach(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  t: SlaTarget,
+  now: string,
+): void {
+  ctx.sql.exec(`UPDATE ticket0_conversations SET ${t.breached} = ? WHERE id = ?`, [
+    now,
+    conversation.id,
+  ]);
+  ctx.emit({
+    type: 'ticket0.sla-breached',
+    schemaVersion: 1,
+    entity: conversationRef(conversation.id),
+    piiClass: 'none',
+    payload: {
+      id: conversation.id,
+      target: t.target,
+      due_at: conversation[t.due],
+      breached_at: now,
+      priority: conversation.priority,
+      state: conversation.state,
+      assignee: conversation.assignee,
+    },
+  });
+}
+
+/**
+ * Record a breach the sweep has not noticed yet, at a moment that is about to take the
+ * target out of the running set. Three callers, each BEFORE its own write, since
+ * afterwards the miss would no longer be visible:
+ *
+ *   - `post-public-reply`, which meets the first-response target;
+ *   - `resolve`, which meets the resolution target;
+ *   - `set-priority`, which re-aims every running target. Without this, lowering the
+ *     priority of a conversation already past its due would move the due later and
+ *     erase a miss nobody had recorded yet.
+ *
+ * Gated on the desk's service levels exactly as the sweep is: a desk that has switched
+ * them off records no breach from any door. The due column is tested first, so a
+ * conversation that was never given a target costs nothing beyond the row the caller
+ * already read. Returns whether it recorded one, for the caller that must decide
+ * whether to tell anybody.
+ */
+function recordIfLate(ctx: OperationContext, conversation: ConversationRow, t: SlaTarget): boolean {
+  if (conversation[t.due] === null) return false;
+  if (slaPolicy(desk(ctx)) === null) return false;
+  const now = ctx.now();
+  const late = ctx.sql.query<ConversationRow>(
+    `SELECT * FROM ticket0_conversations WHERE id = ? AND ${slaOverdueSql(t)}`,
+    [conversation.id, now],
+  )[0];
+  if (!late) return false;
+  recordBreach(ctx, late, t, now);
+  return true;
 }
 
 /**
@@ -1727,7 +2017,8 @@ function likeTerm(term: string): string {
 /** Named rather than `SELECT c.*`: a search read returns the published entity, not the table. */
 const CONVERSATION_COLUMNS = `c.id, c.contact_id, c.channel, c.subject, c.state, c.assignee,
   c.priority, c.snoozed_until, c.first_public_reply_at, c.first_assigned_at, c.resolved_at,
-  c.merged_into, c.follows, c.created_at, c.updated_at`;
+  c.first_response_due_at, c.resolution_due_at, c.first_response_breached_at,
+  c.resolution_breached_at, c.merged_into, c.follows, c.created_at, c.updated_at`;
 
 // ---------------------------------------------------------------------------
 // Pricing - the vertical's, never the ledger's
@@ -2661,6 +2952,9 @@ const operations = {
       citedArticleIds: input.citedArticleIds,
     });
     if (!conversation.first_public_reply_at) {
+      // This reply meets the first-response target. If it meets it late, the breach
+      // goes on record now, while the target is still running (#1082).
+      recordIfLate(ctx, conversation, SLA_FIRST_RESPONSE);
       ctx.sql.exec('UPDATE ticket0_conversations SET first_public_reply_at = ? WHERE id = ?', [
         ctx.now(),
         conversation.id,
@@ -2771,23 +3065,113 @@ const operations = {
     return { assigned };
   },
 
+  /**
+   * Service levels (#1082): the schedule's only entry point, never a route.
+   *
+   * Off unless the desk has set a target, and it says so before reading a single
+   * conversation: a desk with no service levels breaches nothing, even a conversation
+   * stamped while it had some. Then, for each target, it takes every conversation
+   * `slaOverdueSql` says was missed (`slaOverdueScan`), and for each one it:
+   *
+   *   - records the breach (`recordBreach`): stamps `*_breached_at` with now, and
+   *     publishes `ticket0.sla-breached`, one per target missed, carrying everything a
+   *     consumer needs to know which promise was missed, by how much and whose it was.
+   *     The stamp is what makes this idempotent: a breached target is no longer running,
+   *     so it is no longer in the scan, and a second run, a duplicate fire or a retried
+   *     sweep finds nothing to repeat;
+   *   - tells the desk through `notifyStaff`, with the `escalated` kind the assistant's
+   *     own hand-offs use. That goes to whoever holds the conversation or, when nobody
+   *     does, to everybody on the desk. It goes out ONCE per conversation per run, so a
+   *     conversation that missed both targets while the sweep was not running produces
+   *     two breaches on the trail and one notification per person, not two identical
+   *     ones.
+   *
+   * It does not touch `updated_at`, and that is deliberate. That column means the
+   * customer or the desk did something. A breach is neither, and bumping it would float a
+   * late conversation to the top of an inbox sorted by activity, and restart the silence
+   * `reap-abandoned` measures on exactly the conversation nobody is working.
+   *
+   * Every conversation it stamps passes the per-conversation check first, as round-robin
+   * does before each hand-out, on the same key as the node check.
+   */
+  'ticket0/escalate-sla-breaches': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationEscalate));
+    if (slaPolicy(desk(ctx)) === null) return { breached: 0 };
+    const now = ctx.now();
+    const told = new Set<string>();
+    let breached = 0;
+    for (const target of SLA_TARGETS) {
+      const overdue = ctx.sql.query<ConversationRow>(slaOverdueScan(target.target), [
+        now,
+        SLA_BATCH,
+      ]);
+      for (const conversation of overdue) {
+        assertAllowed(
+          await ctx.check(T0_PERM.conversationEscalate, conversationRef(conversation.id)),
+        );
+        recordBreach(ctx, conversation, target, now);
+        breached++;
+        if (told.has(conversation.id)) continue;
+        told.add(conversation.id);
+        notifyStaff(ctx, conversation, 'escalated');
+      }
+    }
+    return { breached };
+  },
+
   'ticket0/set-priority': async (ctx, input) => {
     assertAllowed(
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
     const next = step(conversation, 'ticket0/set-priority');
-    ctx.sql.exec('UPDATE ticket0_conversations SET priority = ? WHERE id = ?', [
-      input.priority,
-      conversation.id,
-    ]);
+    /**
+     * A new priority re-aims the service-level targets (#1082), but only the ones still
+     * RUNNING. A target already met is history, and so is one already missed: marking a
+     * conversation `low` after it breached its urgent first-response target does not
+     * un-breach it, and marking an answered one `urgent` does not re-open its first
+     * response. The running test is the same fragment the sweep reads, evaluated here
+     * against the row as it stands before this write.
+     *
+     * Re-aimed from the policy in force NOW, counted from `created_at` (`slaDue` says
+     * why). A desk with no service levels re-aims a running target to null, so a
+     * conversation stamped under an old policy stops being held to it the next time
+     * somebody decides its priority.
+     *
+     * A target already past its due that no sweep has recorded yet is recorded FIRST
+     * (`recordIfLate`), so it is missed rather than running when the re-aim reads it. A
+     * priority change must not be a way to erase a miss. That conversation is still
+     * waiting, so unlike a late reply, somebody is told, as the sweep would have told
+     * them: whoever holds it, or the whole desk, never the person changing the priority,
+     * who is looking at it.
+     */
+    let missed = false;
+    for (const t of SLA_TARGETS) if (recordIfLate(ctx, conversation, t)) missed = true;
+    if (missed) notifyStaff(ctx, conversation, 'escalated');
+    const due = slaDue(slaPolicy(desk(ctx)), conversation.created_at, input.priority);
+    ctx.sql.exec(
+      `UPDATE ticket0_conversations
+          SET priority = ?,
+              first_response_due_at =
+                CASE WHEN ${FIRST_RESPONSE_RUNNING} THEN ? ELSE first_response_due_at END,
+              resolution_due_at =
+                CASE WHEN ${RESOLUTION_RUNNING} THEN ? ELSE resolution_due_at END
+        WHERE id = ?`,
+      [input.priority, due.firstResponse, due.resolution, conversation.id],
+    );
     const row = settle(ctx, conversation, next);
     ctx.emit({
       type: 'ticket0.conversation-priority-set',
       schemaVersion: 1,
       entity: conversationRef(row.id),
       piiClass: 'none',
-      payload: { id: row.id, priority: row.priority, state: row.state },
+      payload: {
+        id: row.id,
+        priority: row.priority,
+        state: row.state,
+        first_response_due_at: row.first_response_due_at,
+        resolution_due_at: row.resolution_due_at,
+      },
     });
     return row;
   },
@@ -2900,6 +3284,9 @@ const operations = {
         reason: 'no_public_reply',
       });
     }
+    // Resolving meets the resolution target, the first time. Late is recorded before
+    // `resolved_at` takes the conversation out of the running set (#1082).
+    recordIfLate(ctx, conversation, SLA_RESOLUTION);
     ctx.sql.exec('UPDATE ticket0_conversations SET resolved_at = ? WHERE id = ?', [
       ctx.now(),
       conversation.id,
