@@ -11,6 +11,21 @@ const noFetch = (() => {
 }) as unknown as FetchLike;
 
 /**
+ * The sweep's errors that belong to one scope (#1591).
+ *
+ * `runPlatformSweep` enumerates every active scope in the directory it is handed, and
+ * the Cloudflare contract file hands every suite the SAME control plane
+ * (`isolatedStorage: false`), so `report.errors` is the whole file's accumulated
+ * state, not the schedule phase's. A scope is named two ways: `<scope>` on the
+ * phases that fail per scope, and `<scope>:<operation | module>` on the schedule
+ * phase, hence the two arms — matching only the second would drop this scope's own
+ * `freshness` error.
+ */
+export function errorsOfScope<E extends { id: string }>(errors: readonly E[], scope: string): E[] {
+  return errors.filter((e) => e.id === scope || e.id.startsWith(`${scope}:`));
+}
+
+/**
  * Contract suite for vertical-declared recurring schedules (#383). Both adapters
  * must: fire a due schedule under a system actor, gate re-runs by cadence, and let
  * `ctx.check` (not a bypass) decide what the schedule may do.
@@ -59,7 +74,14 @@ export function scheduleContractSuite(
       expect(report.schedules).not.toBeNull();
       // Two: `sched/tick`, and #1288's collision fixture `freshness:sched.ticked`.
       expect(report.schedules!.fired).toBe(2);
-      expect(report.errors).toEqual([]);
+      // Only THIS scope's errors: the sweep also walks every other suite's scopes in
+      // a shared control plane (#1591). The foreign ones are printed, not dropped
+      // silently — if one is a real defect, a red CI log names it.
+      const foreign = report.errors.filter((e) => !errorsOfScope([e], s).length);
+      if (foreign.length > 0) {
+        console.warn(`schedule contract: ignoring ${foreign.length} error(s) from other scopes:`, foreign);
+      }
+      expect(errorsOfScope(report.errors, s)).toEqual([]);
 
       // The operation ran exactly once, and its emitted event reads as the module,
       // never a person — the attribution the whole issue is about.
