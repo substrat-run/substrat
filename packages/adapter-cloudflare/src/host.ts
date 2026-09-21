@@ -2221,9 +2221,10 @@ export class CloudflareScopeHost implements ScopeHost {
     // `ctx.check` resolves for scheduled work (the gate stays the check). Written to
     // the scope's own tuples, where the checker reads them — the same place the owner
     // grant and connection grants land. Idempotent, so a re-provision re-asserts them —
-    // SEATED (#1659): a missing grant is recreated, a revoked one stays revoked, since a
-    // revoke of this grant is the per-scope schedule kill switch. `grantToSystem` is the
-    // explicit way back, and it does clear the tombstone.
+    // SEATED (#1659): a missing grant is recreated, a revoked one stays revoked. The
+    // per-scope schedule kill switch is `revokeFromSystem` (#1666), and its OFF marker is
+    // not a grant, so no reconcile can seat it away; `restoreToSystem` is the only way back.
+    // (`grantToSystem` still clears a tuple's tombstone, but it does not move the switch.)
     for (const [moduleId, schedules] of this.moduleSchedules) {
       const perms = new Set<string>();
       for (const s of schedules) for (const p of s.permissions) perms.add(p);

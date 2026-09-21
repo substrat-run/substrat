@@ -192,6 +192,36 @@ describe('the schedule switch routes (#1666)', () => {
     expect(await state(s)).toBe('on');
   });
 
+  it("the runbook's confirm step: the scope's SQL console shows the switch position", async () => {
+    // The exact statement the CHECKPOINT's emergency runbook gives an operator. There is no
+    // dedicated status read yet, so this read has to keep working, and this pins it.
+    const s = await newScope();
+    const confirm = async () => {
+      const res = await send('POST', `/tenants/${t}/scopes/${s}/query`, asStaff, {
+        sql: `SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = 'system:${TICK}' ORDER BY relation`,
+      });
+      expect(res.status).toBe(200);
+      const { columns, rows } = (await res.json()) as { columns: string[]; rows: unknown[][] };
+      return rows.map((r) => ({
+        relation: r[columns.indexOf('relation')],
+        revoked: r[columns.indexOf('revoked_at')] !== null,
+      }));
+    };
+    expect(await confirm()).toEqual([{ relation: 'granted:tick:run', revoked: false }]);
+    await send('DELETE', route(s), asStaff, off);
+    // OFF: the marker is live, the grant revoked.
+    expect(await confirm()).toEqual([
+      { relation: 'granted:tick:run', revoked: true },
+      { relation: 'switch:off', revoked: false },
+    ]);
+    await send('POST', route(s), asStaff, on);
+    // ON: the grant is live again, and the marker stays as evidence, revoked.
+    expect(await confirm()).toEqual([
+      { relation: 'granted:tick:run', revoked: false },
+      { relation: 'switch:off', revoked: true },
+    ]);
+  });
+
   it('is idempotent — a repeat answers changed: false', async () => {
     const s = await newScope();
     await send('DELETE', route(s), asStaff, off);

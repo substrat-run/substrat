@@ -187,8 +187,18 @@ unattended:
   any caller — a schedule can do exactly what it declares and no more. Those permissions
   appear in the vertical's [`PERMISSIONS.md`](/concepts/permissions#from-declaration-to-enforcement)
   under a *Scheduled work* section, so widening what a schedule may do lands in the
-  reviewed diff. Revoking that grant for one tenant turns the schedule off for them —
-  no special "disabled" flag, the operation just fails its own check closed.
+  reviewed diff.
+
+**Turning a scope's schedules off** is a platform operator's switch, not something the
+vertical does: `revokeFromSystem` switches off every schedule one module has on one scope
+and revokes the module's system grants there. `restoreToSystem` switches them back on. Both
+calls are audited with a reason. While the switch is off, nothing fires. Each schedule is
+reported *skipped*, not *failed*, so a switched-off scope makes no noise, and a due schedule
+fires on the first pass after the restore.
+
+The switch holds through a reconcile, including one that grants a permission a newer
+version declares. A `grantToSystem` does not undo it either. **Restore is the lever; a
+grant is not.**
 
 `cadence` is a floor, not a guarantee of exact timing: a schedule fires no more often
 than `everyMinutes`, and the sweep is what actually runs it (typically every couple of

@@ -1623,8 +1623,13 @@ describe('#1659 — a reconcile keeps an operator’s revoke (CP-less)', () => {
 
 /**
  * #1659 on the CP-FULL path: `provisionScope` seats each module's `system:` grant through
- * the same statement, so a re-provision keeps the kill switch off — and `grantToSystem`,
- * the explicit grant, is what turns it back on. The pure adapter asserts the same.
+ * the same statement, so a re-provision keeps a revoked grant revoked — and `grantToSystem`,
+ * the explicit grant, clears its tombstone. The pure adapter asserts the same.
+ *
+ * The tombstone here is a raw write of ONE tuple, not the kill switch: with no OFF marker
+ * the gate reads grants alone, which is why the re-grant turns these schedules back on.
+ * The switch proper (#1666, `revokeFromSystem`) is NOT undone by a grant — that is pinned
+ * in `systemSwitchContractSuite`.
  */
 describe('#1659 — a re-provision keeps a revoked schedule grant (CP-full)', () => {
   it('re-provision leaves the revoke; `grantToSystem` re-grants; a wiped grant is recreated', async () => {

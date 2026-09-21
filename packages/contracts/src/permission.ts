@@ -160,9 +160,10 @@ export type CapabilityGrant = z.infer<typeof capabilityGrant>;
  * Narrow by construction: it reaches only scopes of the module it names, and only
  * the one permission. It is projected from the module's declared `schedules`
  * (`scheduleSpec.permissions`) at scope provisioning, so what a schedule may do is
- * both readable in the permission diff (code) and revocable per scope (runtime — a
- * revoke fails the operation's own `ctx.check` closed, which is how scheduling is
- * disabled for a tenant without a special "off" code path).
+ * readable in the permission diff (code). Turning a scope's schedules OFF is not a
+ * revoke of one of these but the schedule kill switch, `systemSwitch` below (#1666):
+ * a per-permission revoke would leave the gate open and fail the schedule's own
+ * `ctx.check` on every pass, and a re-grant must not be able to turn it back on.
  */
 export const systemGrant = z.object({
   moduleId,

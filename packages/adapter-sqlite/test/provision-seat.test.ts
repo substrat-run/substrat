@@ -12,14 +12,15 @@ import { SqliteScopeHost } from '../src/index.js';
  * #1659 on the pure adapter: `provisionScope` SEATS each module's `system:` schedule grant
  * (#383) with the kernel's `SEAT_SCOPE_TUPLE_SQL` — the statement the Cloudflare adapter
  * seats with — so a re-provision recreates a missing grant and leaves a revoked one
- * revoked. Revoking that grant is the per-scope schedule kill switch; it used to be
- * `INSERT OR REPLACE`, which turned the schedules back on at the next re-provision.
+ * revoked. It used to be `INSERT OR REPLACE`, which un-revoked it at the next re-provision.
  *
- * `grantToSystem` is the explicit grant and still goes through `INSERT OR REPLACE`, so it is
- * the way back — a re-grant that kept the tombstone would be a silent no-op.
+ * `grantToSystem` is the explicit grant and still goes through `INSERT OR REPLACE`, so it
+ * clears the tuple's tombstone — a re-grant that kept the tombstone would be a silent no-op.
  *
- * The tombstone is written from a second connection to the scope file: no `HostAdmin` verb
- * revokes a `system:` grant today, so an operator's revoke is exactly that raw K-21 write.
+ * The tombstone is a raw K-21 write from a second connection to the scope file, of ONE
+ * tuple and with no OFF marker, so the gate reads grants alone and the re-grant turns these
+ * schedules back on. The operator's kill switch (#1666, `revokeFromSystem`) writes a marker
+ * a grant does not touch; `systemSwitchContractSuite` pins that a grant does NOT undo it.
  */
 describe('#1659: a re-provision keeps a revoked schedule grant (pure adapter)', () => {
   it('leaves the revoke, recreates a missing grant, and `grantToSystem` grants again', async () => {

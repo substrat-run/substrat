@@ -437,6 +437,16 @@ describe("the schedule kill switch reaches a hosted Meridian's timer (#1666)", (
       permissions: ['absence:approve'],
     });
 
+    // The runbook's confirm step, on DO SQLite: the scope's read-only SQL console, as the
+    // control plane's `/query` route delegates it here, shows the marker live.
+    const position = await client.queryScope(s, {
+      sql: `SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = 'system:${ABSENCE}' ORDER BY relation`,
+    });
+    expect(position.rows.map((r) => [r[0], r[1] !== null])).toEqual([
+      ['granted:absence:approve', true],
+      ['switch:off', false],
+    ]);
+
     let report = await sweep();
     expect(report.errors).toEqual([]);
     expect(report.schedules.fired).toBe(0);

@@ -2282,12 +2282,12 @@ export class SqliteScopeHost implements ScopeHost {
     await this.applyPendingMigrations(rt);
     // Project each registered module's SCHEDULE grants (#383): a system principal
     // holds exactly the permissions its schedules declared, on this scope. This is
-    // what makes `ctx.check` resolve for scheduled work — the gate stays the check,
-    // and revoking the tuple is how scheduling is turned off per scope. Idempotent, so a
-    // re-provision re-asserts the same grants — SEATED (#1659), with the statement the
-    // Cloudflare adapter seats with: a missing grant is recreated, a revoked one stays
-    // revoked, so a re-provision cannot turn a scope's schedules back on. `grantToSystem`
-    // is the explicit way back, and it does clear the tombstone.
+    // what makes `ctx.check` resolve for scheduled work — the gate stays the check.
+    // Idempotent, so a re-provision re-asserts the same grants — SEATED (#1659), with the
+    // statement the Cloudflare adapter seats with: a missing grant is recreated, a revoked
+    // one stays revoked. Turning a scope's schedules off is `revokeFromSystem` (#1666), and
+    // its OFF marker is not a grant, so no re-provision can seat it away; `restoreToSystem`
+    // is the only way back (`grantToSystem` clears a tuple's tombstone, not the switch).
     for (const mod of this.modules.values()) {
       const perms = new Set<string>();
       for (const s of mod.schedules) for (const p of s.permissions) perms.add(p);
