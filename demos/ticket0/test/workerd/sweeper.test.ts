@@ -31,6 +31,8 @@
  * a Durable Object a previous file left alive answers its first call with "changed,
  * invalidating this Durable Object" — measured, as a 400 from `/internal/provision`, whose
  * roster note reaches the one sweeper DO both files share. One file, one module instance.
+ * The third (#1653) is here for the same reason: provisioning a desk twice must leave the
+ * state provisioning it once did.
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -335,5 +337,75 @@ describe('ticket0 on workerd — a search term the desk\'s database can run (#16
       expect(classifyError(refused)).toMatchObject({ status: 400 });
       expect(classifyError(refused)?.platformFault).toBeUndefined();
     }
+  });
+});
+
+/**
+ * Provisioning a desk twice leaves exactly the state provisioning it once did (#1653). In
+ * this file rather than its own because the pool invalidates live Durable Objects between
+ * test files, and this suite's cases share one deployment's roster.
+ *
+ * Idempotence was always the contract (`mountPlatformSurface`: "`onProvision` is required
+ * to be idempotent"), but little leaned on it: a desk was reconciled when an operator
+ * pressed "Re-run provisioning", or once after a push moved its version. Since #1653 the
+ * platform reconciles every install of a vertical each time the code it RUNS changes —
+ * for a listed vertical, every tenant's install, after every promote, with nobody
+ * watching. A hook that minted a second service account, re-opened the owner's
+ * first-sign-in window, or re-sent anything would do it to every live desk at once.
+ *
+ * So this compares the WHOLE of what a provision writes — every table in the desk's scope
+ * database, every table in its tenant's identity directory, and the sweeper roster — after
+ * one `/internal/provision`, and again after a second provision (the platform-intent
+ * drain's retry) and two `/internal/reconcile`s (the sweep, twice). Row for row.
+ */
+describe('ticket0 provision is idempotent (#1653)', () => {
+  const tenant = tenantId.parse(ulid());
+  const fresh = scopeId.parse(ulid());
+  const install = { tenantId: tenant, scopeId: fresh, owner, entitlements };
+
+  /** Every row of every table in one Durable Object's SQLite, order-free. */
+  const tablesOf = (stub: DurableObjectStub): Promise<Record<string, string[]>> =>
+    runInDurableObject(stub, async (_instance, state) => {
+      const names = [
+        ...state.storage.sql.exec(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name",
+        ),
+      ].map((r) => String(r.name));
+      const out: Record<string, string[]> = {};
+      for (const name of names) {
+        out[name] = [...state.storage.sql.exec(`SELECT * FROM "${name}"`)].map((r) => JSON.stringify(r)).sort();
+      }
+      return out;
+    });
+
+  const everything = async () => ({
+    scope: await tablesOf(env.SCOPE.get(env.SCOPE.idFromName(fresh))),
+    identity: await tablesOf(env.AUTH.get(env.AUTH.idFromName(tenant))),
+    roster: await runInDurableObject(sweeper(), async (_instance, state) =>
+      Object.fromEntries(await state.storage.list({ prefix: 'scope:' })),
+    ),
+  });
+
+  it('a second provision and two reconciles leave every row exactly as one provision did', async () => {
+    expect((await platform('/internal/provision', install)).status).toBe(201);
+    const once = await everything();
+
+    // The drain's retry, then the sweep reaching the desk on two promotes.
+    expect((await platform('/internal/provision', install)).status).toBe(201);
+    for (let i = 0; i < 2; i++) {
+      const { owner: _owner, ...reconcile } = install;
+      expect((await platform('/internal/reconcile', reconcile)).status).toBe(200);
+    }
+    const again = await everything();
+
+    // The comparison is only worth something if the first provision wrote things: the
+    // service accounts' role tuples, the owner seat, the desk on the roster.
+    expect(once.scope['_substrat_tuples']!.length).toBeGreaterThan(1);
+    expect(once.identity['owner_of_record']).toHaveLength(1);
+    expect(once.identity['pending_owner']).toHaveLength(1);
+    expect(Object.keys(once.roster)).toContain(`scope:${fresh}`);
+
+    expect(again).toEqual(once);
+    expect((await platform('/internal/delete-scope', { scopeId: fresh })).status).toBe(200);
   });
 });

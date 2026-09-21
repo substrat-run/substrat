@@ -43,6 +43,8 @@ export type { ControlPlaneClientOptions, ClientProvisionScopeInput } from './cli
 export { identityTenant, identityTenantsResponse } from './identity-tenants.js';
 export type { IdentityTenant } from './identity-tenants.js';
 export { VerticalClient } from './vertical-client.js';
+export { versionReachedAt } from './scope-deployment.js';
+export type { ScopeDeployment, ScopeDeploymentVia } from './scope-deployment.js';
 export {
   drainScopePlatformRequests,
   MAX_PLATFORM_REQUEST_ATTEMPTS,

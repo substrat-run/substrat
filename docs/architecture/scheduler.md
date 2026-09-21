@@ -152,17 +152,28 @@ locally knowable. The alarm lapses on an empty roster and re-arms on the next `n
 so an idle deployment costs nothing. Scopes provisioned before the sweeper shipped join on
 their next platform reconcile.
 
-"Next platform reconcile" is narrower than it reads, and #1646 found where. The one
-automatic reconcile is #1172's phase of the control plane's sweep, and it runs for a scope
-only when the version the scope is bound to has moved past the one its provision last ran
-against. A promote moves that pointer for a **private** vertical's own scopes
-(`adoptAndRebindOwnedScopes`); it does not move it for any install of a **listed**
-vertical, the owner's included, whose version changes when that install is updated. So such an install joins
-the roster on its Update, or when somebody re-runs its provisioning (the console's scope
-detail, or `substrat scope provision <scopeId>`), and until then its schedules do not run.
-Enrolling from request traffic would close the gap and open a worse one — a PR preview is
-a fork of production data, restored rather than provisioned and then routed — so the
-roster stays platform-fed, and the gap stays named (#1653).
+"Next platform reconcile" means #1172's phase of the control plane's sweep, the one
+automatic reconcile. It re-runs a scope's provision when the version whose code **runs** on
+the scope differs from the one its provision last ran against (`runningVersionOf`, #1653).
+For a scope on its vertical's stable serving script that is the version the script serves,
+not the scope's pointer — and the difference is the whole of #1653. A promote re-serves the
+script in place, so every install runs the new code at once; it moves the pointers only of a
+**private** vertical's own scopes (`adoptAndRebindOwnedScopes`). A **listed** vertical's
+installs keep their tenants' pointers, which move on Update. Compared against the pointer,
+the phase never saw those installs, so they joined the roster only on Update or on a manual
+**Re-run provisioning**. Compared against what runs, they are reconciled after every promote,
+and the tenant's pointer — and so their Update offer — is left alone.
+
+A popular listed vertical puts thousands of installs behind at once, so the phase takes at
+most `provisionReconcileBatch` per pass (the control plane's `PROVISION_RECONCILE_BATCH`,
+default 50; `0` pauses it). The window starts at a random point in the behind set, so installs
+that fail on every pass cannot hold the same slots and starve the healthy ones. A vertical
+with no `/internal/reconcile` answers 501 and is counted `unsupported`, apart from the
+failures. Forks never enter: the phase filters with `isPrimaryScope` (`forkedFrom` unset
+**and** `kind !== 'preview'`), the directory being the only oracle for fork-ness. Enrolling
+from request traffic would have closed the same gap and opened a worse one — a PR preview is
+a fork of production data, restored rather than provisioned and then routed — so the roster
+stays platform-fed.
 
 The split this leaves is clean: a CP-less deployment owns its **scope-local** recurring work
 (retries, schedules); the **directory-owned** phases — connector sweeps, snapshot GC, reaps,

@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { platformActorId, connectionId, scopeId, tenantId } from '@substrat-run/contracts';
 import type { MigrationFailure, MigrationStraggler, Scope, Tenant } from '@substrat-run/contracts';
-import { runPlatformSweep, startPlatformSweeper } from '../src/platform-sweep.js';
-import type { ConnectorSweeper } from '../src/platform-sweep.js';
+import {
+  isPrimaryScope,
+  PROVISION_RECONCILE_BATCH,
+  PROVISION_RECONCILE_REPORTED_IDS,
+  runningVersionOf,
+  runPlatformSweep,
+  startPlatformSweeper,
+} from '../src/platform-sweep.js';
+import type { ConnectorSweeper, PlatformSweepOptions } from '../src/platform-sweep.js';
 import type { FetchLike, MigrateScopeOutcome, ScopeHost } from '../src/scope-host.js';
 
 /**
@@ -52,6 +59,17 @@ function fakeHost(opts: {
  * acts only on scopes that are behind, it records a receipt, a failure stays unmarked so
  * the next pass retries, and it leaves forks alone.
  */
+/** The #1172 report with the #1653 fields at their quiet defaults, unless given. */
+function tally(r: {
+  behind: number;
+  reconciled: number;
+  failed: number;
+  deferred?: number;
+  unsupported?: { count: number; scopeIds: string[] };
+}) {
+  return { deferred: 0, unsupported: { count: 0, scopeIds: [] }, ...r };
+}
+
 describe('runPlatformSweep · provision reconcile (#1172)', () => {
   type FakeScope = {
     id: ReturnType<typeof sid>;
@@ -60,12 +78,18 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     provisionedVersionId: string | null;
     forkedFrom?: string | null;
     kind?: string;
+    vertical?: string | null;
+    servingRef?: string | null;
   };
 
-  function hostWithScopes(scopes: FakeScope[]) {
+  function hostWithScopes(
+    scopes: FakeScope[],
+    verticals: { slug: string; servingRef?: string; servingVersionId?: string }[] = [],
+  ) {
     const marked: { id: string; versionId: string }[] = [];
     const admin = {
       listScopes: async () => scopes.map((s) => ({ ...s, status: 'active' })),
+      listVerticals: async () => verticals,
       listConnections: async () => [],
       markScopeProvisioned: async (
         _a: unknown,
@@ -85,12 +109,17 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     return { host, marked };
   }
 
-  const sweep = (host: ScopeHost, fn: (t: unknown, s: unknown) => Promise<void>) =>
+  const sweep = (
+    host: ScopeHost,
+    fn: (t: unknown, s: unknown, expected?: unknown) => Promise<void | 'unsupported'>,
+    extra: Pick<PlatformSweepOptions, 'provisionReconcileBatch' | 'provisionReconcileRng' | 'concurrency'> = {},
+  ) =>
     runPlatformSweep(host, {
       actor: ACTOR,
       fetch: FETCH,
       sweepers: {},
       reconcileScopeFn: fn as never,
+      ...extra,
     });
 
   it('reconciles a scope whose bound version is ahead of its provisioned one, then marks it', async () => {
@@ -108,7 +137,7 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     });
 
     expect(seen).toEqual([behind.id]);
-    expect(report.provisionReconcile).toEqual({ behind: 1, reconciled: 1, failed: 0 });
+    expect(report.provisionReconcile).toEqual(tally({ behind: 1, reconciled: 1, failed: 0 }));
     // The receipt names the version it reconciled AGAINST, which is what makes the next
     // pass a no-op rather than a second attempt.
     expect(marked).toEqual([{ id: behind.id, versionId: 'v2' }]);
@@ -118,7 +147,7 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     const again = await sweep(host, async () => {
       throw new Error('a scope already provisioned against its version must not be touched');
     });
-    expect(again.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
+    expect(again.provisionReconcile).toEqual(tally({ behind: 0, reconciled: 0, failed: 0 }));
   });
 
   /**
@@ -142,7 +171,7 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     const report = await sweep(host, async () => {
       throw new Error('must not reconcile a scope that is up to date');
     });
-    expect(report.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
+    expect(report.provisionReconcile).toEqual(tally({ behind: 0, reconciled: 0, failed: 0 }));
     expect(marked).toEqual([]);
   });
 
@@ -153,7 +182,7 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     const report = await sweep(host, async () => {
       throw new Error('must not reconcile a scope with no bound version');
     });
-    expect(report.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
+    expect(report.provisionReconcile).toEqual(tally({ behind: 0, reconciled: 0, failed: 0 }));
   });
 
   /**
@@ -173,7 +202,7 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     const report = await sweep(host, async () => {
       throw new Error('must not reconcile a fork');
     });
-    expect(report.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
+    expect(report.provisionReconcile).toEqual(tally({ behind: 0, reconciled: 0, failed: 0 }));
   });
 
   /**
@@ -195,7 +224,7 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     const report = await sweep(host, async () => {
       throw new Error('must not reconcile a clean-room preview');
     });
-    expect(report.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
+    expect(report.provisionReconcile).toEqual(tally({ behind: 0, reconciled: 0, failed: 0 }));
   });
 
   /**
@@ -216,7 +245,7 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
       throw new Error('the vertical refused');
     });
 
-    expect(report.provisionReconcile).toEqual({ behind: 1, reconciled: 0, failed: 1 });
+    expect(report.provisionReconcile).toEqual(tally({ behind: 1, reconciled: 0, failed: 1 }));
     expect(marked).toEqual([]);
     expect(report.errors).toContainEqual({
       kind: 'provision-reconcile',
@@ -239,6 +268,280 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     ]);
     const report = await runPlatformSweep(host, { actor: ACTOR, fetch: FETCH, sweepers: {} });
     expect(report.provisionReconcile).toBeNull();
+  });
+
+  /**
+   * #1653. A LISTED vertical's promote re-uploads its serving script in place, so every
+   * install of it runs the new code at once — but it moves none of their version pointers
+   * (those are each tenant's, and move on their Update). Compared against the pointer, the
+   * phase never saw those installs, and whatever the new version's `onProvision` sets up
+   * never reached them. The phase now compares against the version that RUNS.
+   */
+  describe("a listed vertical's promote (#1653)", () => {
+    const SLUG = 'acme/listed';
+    const REF = 'acme-listed';
+    /** The vertical after its promote: the serving script now runs v2. */
+    const PROMOTED = [{ slug: SLUG, servingRef: REF, servingVersionId: 'v2' }];
+    /** Another tenant's install, born on the serving script at v1 and never updated. */
+    const install = (over: Partial<FakeScope> = {}): FakeScope => ({
+      id: sid(),
+      tenantId: tenantId.parse(genId()),
+      vertical: SLUG,
+      servingRef: REF,
+      verticalVersionId: 'v1',
+      provisionedVersionId: 'v1',
+      ...over,
+    });
+
+    it('reconciles an install whose serving script moved on though its pointer did not, and marks what it runs', async () => {
+      const a = install();
+      const { host, marked } = hostWithScopes([a], PROMOTED);
+      const seen: string[] = [];
+
+      const report = await sweep(host, async (_t, s) => {
+        seen.push(s as string);
+      });
+
+      expect(seen).toEqual([a.id]);
+      expect(report.provisionReconcile).toEqual(tally({ behind: 1, reconciled: 1, failed: 0 }));
+      // The receipt is the version the hook ran as — the served one — and the tenant's
+      // pointer is left exactly where the tenant left it: Update is still theirs to press.
+      expect(marked).toEqual([{ id: a.id, versionId: 'v2' }]);
+      expect(a.verticalVersionId).toBe('v1');
+
+      // Idempotent: the receipt now matches what runs, so the next pass does nothing.
+      const again = await sweep(host, async () => {
+        throw new Error('an install already provisioned against what it runs must not be touched');
+      });
+      expect(again.provisionReconcile).toEqual(tally({ behind: 0, reconciled: 0, failed: 0 }));
+    });
+
+    /**
+     * The constraint that matters most. A PR preview is a restored copy of production
+     * data, and since #1656 a reconcile puts a scope on its deployment's sweeper — reap,
+     * round-robin and escalation, run against a copy. The directory is the only oracle,
+     * so both shapes sit here beside the install they copy, on the same serving script
+     * and the same versions: the ONLY thing that tells them apart is the predicate.
+     */
+    it('never reconciles a fork or a clean-room preview of that install, and does reconcile the install', async () => {
+      const real = install();
+      const fork = install({ forkedFrom: real.id });
+      const cleanRoom = install({ kind: 'preview' });
+      const { host, marked } = hostWithScopes([real, fork, cleanRoom], PROMOTED);
+      const seen: string[] = [];
+
+      const report = await sweep(host, async (_t, s) => {
+        seen.push(s as string);
+      });
+
+      expect(seen).toEqual([real.id]);
+      expect(marked).toEqual([{ id: real.id, versionId: 'v2' }]);
+      expect(report.provisionReconcile).toEqual(tally({ behind: 1, reconciled: 1, failed: 0 }));
+    });
+
+    /**
+     * The fn is told which version will be recorded, so a caller whose deployment for the
+     * scope runs something else can refuse rather than let a receipt name a hook that never
+     * ran (#1661 review). For a listed install that is the SERVED version; for a scope on
+     * per-version dispatch it is the bound one.
+     */
+    it('tells the fn the version it will record — the one that runs', async () => {
+      const listed = install();
+      const legacy = install({ servingRef: null, verticalVersionId: 'v3', provisionedVersionId: 'v1' });
+      const { host } = hostWithScopes([listed, legacy], PROMOTED);
+      const told = new Map<string, unknown>();
+
+      await sweep(host, async (_t, s, expected?: unknown) => {
+        told.set(s as string, expected);
+      });
+
+      expect(told.get(listed.id)).toBe('v2');
+      expect(told.get(legacy.id)).toBe('v3');
+    });
+
+    it('shares its fork test with every caller, and it takes both halves', () => {
+      expect(isPrimaryScope({ forkedFrom: null, kind: 'app' })).toBe(true);
+      expect(isPrimaryScope({ forkedFrom: sid(), kind: 'app' })).toBe(false);
+      expect(isPrimaryScope({ forkedFrom: null, kind: 'preview' })).toBe(false);
+    });
+
+    /**
+     * A private vertical's promote already moves its scopes' pointers to the served
+     * version (`adoptAndRebindOwnedScopes`), so bound and running agree and nothing about
+     * those scopes changes here — which is the point of this case.
+     */
+    it("leaves a private vertical's scopes as #1172 left them", async () => {
+      const PRIV = [{ slug: 'own/app', servingRef: 'own-app', servingVersionId: 'p5' }];
+      const current = install({ vertical: 'own/app', servingRef: 'own-app', verticalVersionId: 'p5', provisionedVersionId: 'p5' });
+      const pushed = install({ vertical: 'own/app', servingRef: 'own-app', verticalVersionId: 'p5', provisionedVersionId: 'p4' });
+      const { host, marked } = hostWithScopes([current, pushed], PRIV);
+
+      const report = await sweep(host, async () => {});
+
+      expect(report.provisionReconcile).toEqual(tally({ behind: 1, reconciled: 1, failed: 0 }));
+      expect(marked).toEqual([{ id: pushed.id, versionId: 'p5' }]);
+    });
+
+    /**
+     * An unknown never manufactures a reconcile: wherever the serving script cannot be
+     * named, the phase answers exactly what it answered before #1653.
+     */
+    it('falls back to the bound version wherever the serving script cannot be named', async () => {
+      // Legacy per-version dispatch: its own version's script is what runs.
+      const legacy = install({ servingRef: null });
+      // A serving ref that is not the vertical's current one.
+      const stale = install({ servingRef: 'some-older-script' });
+      // A vertical with nothing served in place yet.
+      const unserved = install({ vertical: 'never/served' });
+      const { host } = hostWithScopes([legacy, stale, unserved], [...PROMOTED, { slug: 'never/served' }]);
+
+      const report = await sweep(host, async () => {
+        throw new Error('bound = provisioned on all three: nothing to reconcile');
+      });
+
+      expect(report.provisionReconcile).toEqual(tally({ behind: 0, reconciled: 0, failed: 0 }));
+      expect(runningVersionOf({ verticalVersionId: 'v1', servingRef: REF }, null)).toBe('v1');
+      expect(runningVersionOf({ verticalVersionId: 'v1', servingRef: REF }, { ref: REF, versionId: 'v2' })).toBe('v2');
+    });
+
+    it('reads the serving pointers once per pass, and not at all when nothing is served in place', async () => {
+      const { host } = hostWithScopes([install(), install(), install()], PROMOTED);
+      const admin = (host as unknown as { admin: { listVerticals: () => Promise<unknown[]> } }).admin;
+      const read = admin.listVerticals;
+      let reads = 0;
+      admin.listVerticals = async () => {
+        reads += 1;
+        return read();
+      };
+      await sweep(host, async () => {});
+      expect(reads).toBe(1);
+
+      const legacyOnly = hostWithScopes([install({ servingRef: null, provisionedVersionId: null })]).host;
+      (legacyOnly as unknown as { admin: { listVerticals: () => never } }).admin.listVerticals = () => {
+        throw new Error('no scope is on a serving script — there is nothing to look up');
+      };
+      const report = await sweep(legacyOnly, async () => {});
+      expect(report.provisionReconcile?.reconciled).toBe(1);
+    });
+
+    /**
+     * A popular listed vertical has thousands of installs, all behind at once. The pass
+     * takes a bounded window and the rest wait — never one unbounded fan-out.
+     */
+    it('reconciles at most the batch per pass, the rest on the passes after, and each install once', async () => {
+      const installs = Array.from({ length: 120 }, () => install());
+      const { host, marked } = hostWithScopes(installs, PROMOTED);
+      const calls = new Map<string, number>();
+      const fn = async (_t: unknown, s: unknown) => {
+        calls.set(s as string, (calls.get(s as string) ?? 0) + 1);
+      };
+
+      const first = await sweep(host, fn); // the default batch
+      expect(first.provisionReconcile).toEqual(tally({ behind: 120, reconciled: 50, failed: 0, deferred: 70 }));
+      expect(calls.size).toBe(PROVISION_RECONCILE_BATCH);
+
+      const second = await sweep(host, fn);
+      expect(second.provisionReconcile).toEqual(tally({ behind: 70, reconciled: 50, failed: 0, deferred: 20 }));
+      const third = await sweep(host, fn);
+      expect(third.provisionReconcile).toEqual(tally({ behind: 20, reconciled: 20, failed: 0, deferred: 0 }));
+      const fourth = await sweep(host, fn);
+      expect(fourth.provisionReconcile).toEqual(tally({ behind: 0, reconciled: 0, failed: 0 }));
+
+      // Every install reached, none twice: ceil(120 / 50) = 3 passes, then silence.
+      expect(calls.size).toBe(120);
+      expect([...calls.values()].every((n) => n === 1)).toBe(true);
+      expect(new Set(marked.map((m) => m.id)).size).toBe(120);
+    });
+
+    it('a batch of 0 reconciles nothing and still says who is behind', async () => {
+      const { host, marked } = hostWithScopes([install(), install()], PROMOTED);
+      const report = await sweep(
+        host,
+        async () => {
+          throw new Error('paused: nothing may be reconciled');
+        },
+        { provisionReconcileBatch: 0 },
+      );
+      expect(report.provisionReconcile).toEqual(tally({ behind: 2, reconciled: 0, failed: 0, deferred: 2 }));
+      expect(marked).toEqual([]);
+    });
+
+    it('one install failing does not stop the rest of its window', async () => {
+      const installs = Array.from({ length: 5 }, () => install());
+      const broken = installs[2]!;
+      const { host, marked } = hostWithScopes(installs, PROMOTED);
+
+      const report = await sweep(host, async (_t, s) => {
+        if (s === broken.id) throw new Error('this one refused');
+      });
+
+      expect(report.provisionReconcile).toEqual(tally({ behind: 5, reconciled: 4, failed: 1 }));
+      expect(marked.map((m) => m.id).sort()).toEqual(installs.filter((i) => i !== broken).map((i) => i.id).sort());
+      expect(report.errors).toEqual([{ kind: 'provision-reconcile', id: broken.id, error: 'this one refused' }]);
+    });
+
+    /**
+     * Installs that fail on every pass must not hold the window forever. 60 of them sort
+     * ahead of one healthy install; the batch is 10.
+     */
+    it('a random window start keeps persistently failing installs from starving a healthy one', async () => {
+      const failing = Array.from({ length: 60 }, () => install());
+      const healthy = install(); // generated last, so it sorts last
+      const run = async (rng: () => number, passes: number) => {
+        const { host, marked } = hostWithScopes([...failing.map((f) => ({ ...f })), { ...healthy }], PROMOTED);
+        for (let i = 0; i < passes; i++) {
+          await sweep(
+            host,
+            async (_t, s) => {
+              if (s !== healthy.id) throw new Error('fails every pass');
+            },
+            { provisionReconcileBatch: 10, provisionReconcileRng: rng },
+          );
+        }
+        return marked.some((m) => m.id === healthy.id);
+      };
+
+      // The negative twin: a FIXED start is what starvation looks like. However many
+      // passes run, the same ten failures take the same ten slots.
+      expect(await run(() => 0, 20)).toBe(false);
+
+      // Over every possible start, the healthy install is inside the window for exactly
+      // `batch` of them — a chance of batch/behind (10/61) on each pass, whatever the
+      // other sixty do.
+      let reached = 0;
+      for (let k = 0; k < 61; k++) if (await run(() => k / 61, 1)) reached += 1;
+      expect(reached).toBe(10);
+    });
+
+    /**
+     * A vertical with no `/internal/reconcile` (it answers 501) is not failing — it
+     * answered exactly. Counted apart, no receipt (nothing ran), and not an error, so it
+     * cannot bury the refusals somebody has to read.
+     */
+    it('counts a vertical with no reconcile as unsupported, not failed, and leaves it unmarked', async () => {
+      const a = install();
+      const { host, marked } = hostWithScopes([a], PROMOTED);
+
+      const report = await sweep(host, async () => 'unsupported');
+
+      expect(report.provisionReconcile).toEqual(
+        tally({ behind: 1, reconciled: 0, failed: 0, unsupported: { count: 1, scopeIds: [a.id] } }),
+      );
+      expect(report.errors).toEqual([]);
+      expect(marked).toEqual([]);
+
+      // Still behind, and asked again: a later version that adds the route is reconciled.
+      const later = await sweep(host, async () => {});
+      expect(later.provisionReconcile).toEqual(tally({ behind: 1, reconciled: 1, failed: 0 }));
+    });
+
+    it('caps the unsupported ids it reports and keeps the count exact', async () => {
+      const installs = Array.from({ length: 60 }, () => install());
+      const { host } = hostWithScopes(installs, PROMOTED);
+      const report = await sweep(host, async () => 'unsupported', { provisionReconcileBatch: 100 });
+      expect(report.provisionReconcile?.unsupported.count).toBe(60);
+      expect(report.provisionReconcile?.unsupported.scopeIds).toHaveLength(PROVISION_RECONCILE_REPORTED_IDS);
+    });
   });
 });
 

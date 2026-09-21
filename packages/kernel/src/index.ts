@@ -329,6 +329,15 @@ export type {
   ScheduleStateKind,
   StartPlatformSweeperOptions,
 } from './platform-sweep.js';
+// #1653: which scopes are the real install, and which version runs on them — shared so
+// every receipt writer and the sweep answer both questions the same way.
+export {
+  isPrimaryScope,
+  runningVersionOf,
+  PROVISION_RECONCILE_BATCH,
+  PROVISION_RECONCILE_REPORTED_IDS,
+} from './platform-sweep.js';
+export type { ProvisionReconcileReport, ServingPointer } from './platform-sweep.js';
 export {
   MIGRATION_FLAG_THRESHOLD,
   migrationFleet,

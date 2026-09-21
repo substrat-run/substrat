@@ -137,11 +137,45 @@ export interface PlatformSweepOptions {
    * What makes the phase necessary: a vertical's `onProvision` runs ONCE per scope, at
    * install. Anything the vertical mints for itself there — a service principal, a site
    * registration — therefore never reaches an install that predates it. The new code
-   * deploys, and the thing it depends on was never created. Comparing the scope's bound
-   * version against the one its provision last ran against is how the platform sees that,
-   * and this fn is how it fixes it.
+   * deploys, and the thing it depends on was never created. Comparing the version whose
+   * code RUNS on the scope (`runningVersionOf`, #1653) against the one its provision last
+   * ran against is how the platform sees that, and this fn is how it fixes it.
+   *
+   * `expected` is the version the phase will record on success — the one running on the
+   * scope. A fn whose deployment for the scope runs a DIFFERENT version (its resolver fell
+   * back from the serving script to the bound version's, say) must throw rather than
+   * resolve: the receipt would otherwise name a hook that never ran, and the scope would
+   * read as repaired while the code it runs was never provisioned for. A throw leaves it
+   * unmarked and counted `failed`, which is where it belongs.
+   *
+   * Resolves `'unsupported'` when the vertical answered that it implements no reconcile
+   * (a 501 from `/internal/reconcile`). That is neither a success nor a failure: no
+   * receipt is written, since nothing ran, and it is counted apart from `failed` so a
+   * vertical that simply lacks the route does not drown the refusals somebody must read.
    */
-  reconcileScopeFn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<void>;
+  reconcileScopeFn?: (tenantId: TenantId, scopeId: ScopeId, expected: string) => Promise<void | 'unsupported'>;
+  /**
+   * The most scopes the #1172 phase reconciles in ONE pass (#1653). Default
+   * {@link PROVISION_RECONCILE_BATCH}.
+   *
+   * A promote of a LISTED vertical puts every install of it behind at once — each one is
+   * another tenant's scope, and a popular vertical has thousands. Reconciling them all in
+   * one tick is how a cron becomes an incident, so the phase takes at most this many and
+   * the rest wait for the next pass (`deferred`). `0` reconciles nothing: the phase still
+   * counts who is behind, which makes it the pause switch.
+   */
+  provisionReconcileBatch?: number;
+  /**
+   * Where the #1172 window starts, as a number in [0, 1) — `Math.random` unless given.
+   *
+   * The behind scopes are ordered by id and the pass takes a contiguous window of
+   * `provisionReconcileBatch` from a random starting point, wrapping. A FIXED start would
+   * let installs that fail on every pass hold the same slots forever and starve every
+   * healthy one behind them; a random start gives each behind scope a chance of
+   * batch/behind per pass however many of the others keep failing. Injectable so that
+   * property is tested rather than hoped for.
+   */
+  provisionReconcileRng?: () => number;
   /**
    * Also reap expired snapshots (preview-and-snapshots.md §3/§9): any FORK
    * (`forkedFrom` set) whose `expiresAt` has passed is hard-deleted via
@@ -393,12 +427,90 @@ export interface ScheduleSweepReport {
 
 /** What the #1172 phase did — see `reconcileScopeFn`. */
 export interface ProvisionReconcileReport {
-  /** Scopes whose bound version was ahead of their provisioned one this pass. */
+  /**
+   * Scopes whose running version differed from the one their provision last ran against
+   * this pass. Always `reconciled + failed + unsupported + deferred`.
+   */
   behind: number;
   /** Of those, the ones whose reconcile succeeded and were marked. */
   reconciled: number;
   /** Of those, the ones whose reconcile threw. They stay behind and retry next pass. */
   failed: number;
+  /**
+   * Of those, the ones whose vertical implements no reconcile (a 501). Unmarked like a
+   * failure, so they are asked again next pass; counted apart so they cannot pass for one.
+   * `scopeIds` is capped at {@link PROVISION_RECONCILE_REPORTED_IDS}; `count` is exact.
+   */
+  unsupported: { count: number; scopeIds: string[] };
+  /** Of those, the ones past this pass's `provisionReconcileBatch`. Next pass's work. */
+  deferred: number;
+}
+
+/** The #1172 phase's per-pass bound when `provisionReconcileBatch` is unset (#1653). */
+export const PROVISION_RECONCILE_BATCH = 50;
+
+/** How many `unsupported` scope ids one report carries — the count stays exact. */
+export const PROVISION_RECONCILE_REPORTED_IDS = 50;
+
+/**
+ * A scope the platform may treat as the REAL install, rather than a copy of one (#1172,
+ * #1653). The directory is the only oracle for this, and it takes BOTH tests, not one.
+ *
+ * A fork is an archive or a preview of somebody else's data, and re-provisioning one
+ * runs the vertical's install-side hook against a copy, minting a second set of whatever
+ * it mints — or, since #1656, putting a copy of production on a sweeper that reaps and
+ * assigns. But a CLEAN-ROOM preview (#509) is an empty scope with no source to copy, so
+ * it carries `kind: 'preview'` and NO `forkedFrom` — the reap sweep keys on `kind` for
+ * exactly that reason. Filtering on lineage alone would let those through, which is the
+ * one shape of scope where the hook's effects are least wanted.
+ */
+export function isPrimaryScope(scope: Pick<Scope, 'forkedFrom' | 'kind'>): boolean {
+  return !scope.forkedFrom && scope.kind !== 'preview';
+}
+
+/** What a vertical's stable serving script runs (#286) — `Vertical.servingRef`/`servingVersionId`. */
+export interface ServingPointer {
+  ref: string;
+  versionId: string;
+}
+
+/**
+ * The version whose code actually executes for `scope` (#1653) — which is not always the
+ * one it is bound to.
+ *
+ * A scope on its vertical's stable serving script (`servingRef`, #286) runs whatever that
+ * script serves, and a promote re-uploads the script in place: the code changes under
+ * the scope at that moment, whatever its version pointer says. For a PRIVATE vertical
+ * the promote moves the pointer too, so the two agree. For a LISTED one it does not —
+ * the pointer is the tenant's, and moves only on their Update — so an install can run
+ * version N+1 with its provision state still at N. Measuring against the running version
+ * is what lets the reconcile follow the code instead of the pointer.
+ *
+ * Falls back to the bound version whenever the serving script cannot be named: a scope
+ * with no `servingRef` (legacy per-version dispatch, where the bound version's own
+ * script IS what runs), a vertical with nothing served in place yet, or a `servingRef`
+ * that is not the vertical's current one. The fallback is exactly the pre-#1653 answer,
+ * so an unknown never manufactures a reconcile.
+ */
+export function runningVersionOf(
+  scope: Pick<Scope, 'verticalVersionId' | 'servingRef'>,
+  serving: ServingPointer | null | undefined,
+): string | null {
+  if (scope.servingRef && serving && scope.servingRef === serving.ref) return serving.versionId;
+  return scope.verticalVersionId;
+}
+
+/**
+ * This pass's share of the behind scopes: at most `batch`, as a contiguous window over
+ * the id order, starting at `rng()` of the way round and wrapping. Deterministic for a
+ * given `rng`, which is what makes the fairness claim testable.
+ */
+function reconcileWindow<T extends { id: string }>(behind: readonly T[], batch: number, rng: () => number): T[] {
+  if (behind.length <= batch) return [...behind];
+  if (batch <= 0) return [];
+  const ordered = [...behind].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const start = Math.min(ordered.length - 1, Math.max(0, Math.floor(rng() * ordered.length)));
+  return Array.from({ length: batch }, (_, i) => ordered[(start + i) % ordered.length]!);
 }
 
 export interface PlatformSweepReport {
@@ -419,8 +531,9 @@ export interface PlatformSweepReport {
   /** Platform-intent drain outcomes summed across scopes (platform-intents.md). */
   platformRequestTotals: PlatformRequestDrainTotals;
   /**
-   * Scopes whose provision was re-run because their bound version had moved past the one
-   * it last ran against (#1172), or null when no `reconcileScopeFn` was supplied.
+   * Scopes whose provision was re-run because the version running on them had moved past
+   * the one it last ran against (#1172, #1653), or null when no `reconcileScopeFn` was
+   * supplied.
    *
    * Null and `{ reconciled: 0 }` are different facts, as everywhere else in this report:
    * the first is "nobody looked".
@@ -737,51 +850,80 @@ export async function runPlatformSweep(
     });
   }
 
-  // -- provision reconcile (#1172) --------------------------------------------
+  // -- provision reconcile (#1172, #1653) -------------------------------------
   // A vertical's `onProvision` runs once per scope, at install. So a scope serving code
   // whose provision hook never ran against it is missing whatever that hook creates —
   // and no other path will ever deliver it. This phase is what makes a push repair its
-  // own installs: bound version != provisioned version ⇒ reconcile once, then record it.
+  // own installs: running version != provisioned version ⇒ reconcile once, then record it.
+  //
+  // RUNNING, not bound (#1653): a listed vertical's promote re-serves every install in
+  // place and moves none of their pointers, so comparing against the pointer never saw
+  // those installs at all. See `runningVersionOf`.
   //
   // AFTER the migration phase and skipping what failed there, like every phase that
   // touches a vertical: a fail-closed scope would only re-throw its migration error.
   if (options.reconcileScopeFn) {
     const reconcile = options.reconcileScopeFn;
-    const provisionReconcile: ProvisionReconcileReport = { behind: 0, reconciled: 0, failed: 0 };
-    /**
-     * Primaries only — and that takes BOTH tests, not one.
-     *
-     * A fork is an archive or a preview of somebody else's data, and re-provisioning one
-     * runs the vertical's install-side hook against a copy, minting a second set of
-     * whatever it mints. But a CLEAN-ROOM preview (#509) is an empty scope with no source
-     * to copy, so it carries `kind: 'preview'` and NO `forkedFrom` — the reap sweep keys
-     * on `kind` for exactly that reason. Filtering on lineage alone would let those
-     * through, which is the one shape of scope where the hook's effects are least wanted.
-     */
+    const provisionReconcile: ProvisionReconcileReport = {
+      behind: 0,
+      reconciled: 0,
+      failed: 0,
+      unsupported: { count: 0, scopeIds: [] },
+      deferred: 0,
+    };
     const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
-      (s) => !s.forkedFrom && s.kind !== 'preview',
+      (s) => isPrimaryScope(s) && !failedThisPass.has(s.id),
     );
-    await mapBounded(scopes, concurrency, async (s) => {
-      if (failedThisPass.has(s.id)) return;
-      // No bound version ⇒ nothing to compare, and nothing a reconcile could target.
-      if (!s.verticalVersionId) return;
+    // One directory read for every vertical's serving pointer — and only when some scope
+    // is actually on a serving script, since nothing else can differ from its binding.
+    const serving = new Map<string, ServingPointer>();
+    if (scopes.some((s) => s.servingRef)) {
+      for (const v of await host.admin.listVerticals(options.actor)) {
+        if (v.servingRef && v.servingVersionId) {
+          serving.set(v.slug, { ref: v.servingRef, versionId: v.servingVersionId });
+        }
+      }
+    }
+    const behind: { id: ScopeId; tenantId: TenantId; target: string }[] = [];
+    for (const s of scopes) {
+      const running = runningVersionOf(s, s.vertical ? serving.get(s.vertical) : null);
+      // No running version ⇒ nothing to compare, and nothing a reconcile could target.
+      if (!running) continue;
       // A null receipt is "unknown", NOT "up to date": a scope provisioned before the
       // platform recorded this has no evidence either way, and guessing the optimistic
       // answer leaves exactly the broken installs this phase exists to heal. It costs
       // one reconcile per pre-existing scope, once, and then the receipt is there.
-      if (s.provisionedVersionId === s.verticalVersionId) return;
-      provisionReconcile.behind += 1;
-      const target = s.verticalVersionId;
+      if (s.provisionedVersionId === running) continue;
+      behind.push({ id: s.id, tenantId: s.tenantId, target: running });
+    }
+    provisionReconcile.behind = behind.length;
+    const batch = options.provisionReconcileBatch ?? PROVISION_RECONCILE_BATCH;
+    const window = reconcileWindow(behind, batch, options.provisionReconcileRng ?? Math.random);
+    provisionReconcile.deferred = behind.length - window.length;
+    await mapBounded(window, concurrency, async (s) => {
       try {
-        await reconcile(s.tenantId, s.id);
+        const outcome = await reconcile(s.tenantId, s.id, s.target);
+        if (outcome === 'unsupported') {
+          // Nothing ran, so there is nothing true to record: left unmarked, like a
+          // failure, and asked again next pass. Not an error — the vertical answered
+          // exactly, and it is not the kind of refusal a person has to act on per pass.
+          provisionReconcile.unsupported.count += 1;
+          if (provisionReconcile.unsupported.scopeIds.length < PROVISION_RECONCILE_REPORTED_IDS) {
+            provisionReconcile.unsupported.scopeIds.push(s.id);
+          }
+          return;
+        }
         // Marked with the version we RECONCILED against, read before the call — not
-        // whatever the scope happens to be bound to now. A push that lands mid-pass must
-        // not have its new version marked by a reconcile that ran against the old one.
-        await host.admin.markScopeProvisioned(options.actor, s.tenantId, s.id, target);
+        // whatever the scope runs now. A promote that lands mid-pass must not have its
+        // new version marked by a reconcile that ran against the old one. The serving
+        // pointer is written only after its upload succeeds, so the version read here is
+        // one the script was already running when the pass read it.
+        await host.admin.markScopeProvisioned(options.actor, s.tenantId, s.id, s.target);
         provisionReconcile.reconciled += 1;
       } catch (err) {
         // Left unmarked on purpose: it stays behind and is retried next pass, which is
-        // the whole difference between a backstop and a one-shot.
+        // the whole difference between a backstop and a one-shot. One scope's failure
+        // is its own: the rest of the window carries on.
         provisionReconcile.failed += 1;
         report.errors.push({ kind: 'provision-reconcile', id: s.id, error: message(err) });
       }
