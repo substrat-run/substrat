@@ -56,6 +56,67 @@ export const SEARCH_OVERFETCH = 4;
 export const TICKET0_SEARCH_MAX = Math.floor(MAX_SEARCH_LIMIT / SEARCH_OVERFETCH);
 
 /**
+ * The longest `LIKE` pattern a hosted desk's SQLite accepts, in bytes (#1655).
+ *
+ * A Durable Object's SQLite refuses any pattern longer than this with `LIKE or GLOB
+ * pattern too complex`, where Node's allows 50 000 — so a search that fails on every
+ * hosted desk passes every suite on the node host. It is a limit on UTF-8 BYTES of
+ * the pattern as sent, which is why the bound on a search term below is a refinement
+ * and not a `.max()`: `.max()` counts UTF-16 units, and `å`, `ä` and `ö` are two bytes
+ * each, an emoji four.
+ */
+export const LIKE_PATTERN_MAX_BYTES = 50;
+
+/**
+ * A caller's term, as a `LIKE` pattern that means what they typed.
+ *
+ * `%` and `_` are wildcards inside a pattern, so a search for `100%` matches
+ * everything beginning `100` unless they are escaped, and `_` silently matches any
+ * character at all. The backslash is escaped first, or escaping the other two would
+ * turn a literal backslash into an escape. Every query built from this says
+ * `ESCAPE '\'`, which is what makes the escaping mean anything.
+ *
+ * The match is case-insensitive because SQLite's `LIKE` is, for ASCII, by default —
+ * so `lower()` on both sides would buy nothing here and only hide where the
+ * behaviour comes from.
+ *
+ * It lives beside the model, not in the module, because the bound on a term is judged
+ * on THIS string — the escaped, wrapped pattern that is sent — and the two must never
+ * be able to drift apart.
+ */
+export function likeTerm(term: string): string {
+  return `%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+}
+
+/**
+ * A search term: two characters at least, and a pattern a hosted desk can run.
+ *
+ * Two characters, the same floor `search-kb` takes: a one-character `LIKE '%a%'` is a
+ * table scan whose answer is "everyone", which is not a lookup.
+ *
+ * The ceiling is `byteLength(likeTerm(q)) <= LIKE_PATTERN_MAX_BYTES`. That is the
+ * pattern actually sent, so the two `%` wrappers and the escape byte in front of every
+ * `%`, `_` or `\` in the term all count: 48 bytes for a term with none of them, fewer
+ * for one with. Refused at the door as `validation_failed`, a 400 naming the limit —
+ * on a hosted desk the same input is otherwise a 500 out of the database.
+ * Not applied to `search-kb`, which asks the FTS index through `ctx.search` and
+ * builds no `LIKE`.
+ */
+export const searchTerm = z
+  .string()
+  .min(2)
+  .refine((q) => new TextEncoder().encode(likeTerm(q)).length <= LIKE_PATTERN_MAX_BYTES, {
+    message:
+      `a search term is at most ${LIKE_PATTERN_MAX_BYTES - 2} bytes of UTF-8 (a hosted desk's ` +
+      `database refuses a longer LIKE pattern), and each %, _ or \\ in it counts twice — ` +
+      'a character outside ASCII is two to four bytes',
+  })
+  .describe(
+    `Two characters at least. At most ${LIKE_PATTERN_MAX_BYTES - 2} bytes of UTF-8, ` +
+      'each %, _ or \\ counting twice — a longer term is a 400.',
+  );
+
+/**
  * How much of a failure's reason a turn keeps. A provider's error body can be a page
  * of HTML; the first two thousand characters carry the status line and the sentence
  * after it, which is what a person reading the card needs. The harness truncates to
@@ -1603,9 +1664,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   'ticket0/search-contacts': {
     summary: 'Find a person by email or name',
     permission: 'contact:read',
-    // Two characters, the same floor `search-kb` takes: a one-character `LIKE '%a%'`
-    // is a table scan whose answer is "everyone", which is not a lookup.
-    input: z.object({ q: z.string().min(2) }),
+    // `searchTerm` carries the floor and the ceiling — see there for both.
+    input: z.object({ q: searchTerm }),
     output: ticket0Entities.contact.fields,
     // The handler composes its own `LIKE`, so the cursor is read off the ENTRY.
     // Newest first: the person who wrote most recently is the one being looked for.
@@ -1719,7 +1779,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     summary: 'Find a conversation by subject or by what was said in it',
     permission: 'conversation:read',
     input: z.object({
-      q: z.string().min(2),
+      q: searchTerm,
       state: z.enum(['new', 'open', 'snoozed', 'resolved', 'closed']).optional(),
       assignee: z.string().optional(),
       channel: z.enum(['widget', 'email']).optional(),

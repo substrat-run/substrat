@@ -52,6 +52,7 @@ import {
   DESK_METRICS_AGENTS,
   DESK_METRICS_MAX_DAYS,
   DESK_METRICS_WINDOW_DAYS,
+  likeTerm,
   MACRO_ACTION_OPERATIONS,
   MACRO_REPLY_OPERATIONS,
   macroActions,
@@ -2131,23 +2132,6 @@ function publicThread(
 // ---------------------------------------------------------------------------
 // Free-text lookup - the two search reads (#1081)
 // ---------------------------------------------------------------------------
-
-/**
- * A caller's term, as a `LIKE` pattern that means what they typed.
- *
- * `%` and `_` are wildcards inside a pattern, so a search for `100%` matches
- * everything beginning `100` unless they are escaped, and `_` silently matches any
- * character at all. The backslash is escaped first, or escaping the other two would
- * turn a literal backslash into an escape. Every query built from this says
- * `ESCAPE '\'`, which is what makes the escaping mean anything.
- *
- * The match is case-insensitive because SQLite's `LIKE` is, for ASCII, by default —
- * so `lower()` on both sides would buy nothing here and only hide where the
- * behaviour comes from.
- */
-function likeTerm(term: string): string {
-  return `%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
-}
 
 /** Named rather than `SELECT c.*`: a search read returns the published entity, not the table. */
 const CONVERSATION_COLUMNS = `c.id, c.contact_id, c.channel, c.subject, c.state, c.assignee,

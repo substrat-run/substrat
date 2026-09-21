@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { principalId, type CountedPage, type Page } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
+import { classifyError } from '@substrat-run/vertical-host';
 import { T0_PERM } from '../src/manifest.js';
 import { ASSISTANT_NAME, ATTACHMENTS_NOT_STORED } from '../src/module.js';
 import { buildHost, seed, signIdentity, type Desk, type World } from '../src/seed.js';
@@ -476,6 +477,95 @@ describe('search finds a thread, and a person', () => {
       q: '%%',
     })) as Page<Conversation>;
     expect(found.entries).toHaveLength(0);
+  });
+
+  /**
+   * A hosted desk's database refuses a `LIKE` pattern over 50 bytes (#1655), and node's
+   * allows 50 000 — so this is the one place the bound can be pinned outside workerd
+   * (`test/workerd/search-bound.test.ts` is the one that proves the runtime side).
+   *
+   * The pattern sent is `%` + the term with `\ % _` escaped + `%`, so 48 bytes of term is
+   * the most there is: an ASCII term of 48, or 24 two-byte characters, or 24 of the
+   * characters that cost an escape. Each is driven at the limit AND one over it, and
+   * the at-the-limit half FINDS its row, because a bound that refused everything would
+   * pass the over-the-limit half alone.
+   */
+  describe('a term the hosted database can run, and only that', () => {
+    /** The pattern sent for a term, in UTF-8 bytes — written out here, not taken from the model. */
+    const patternBytes = (term: string) =>
+      new TextEncoder().encode(`%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`).length;
+    const at48 = 'limit-'.padEnd(48, 'x');
+    const twoByte = 'å'.repeat(24);
+    const wildcards = '%'.repeat(24);
+    const cases = [
+      // [what it is, the term at the limit, the same kind one unit longer]
+      ['ASCII', at48, `${at48}x`],
+      // 24 characters, 48 bytes: the character count is under any `.max(48)` and the
+      // byte count is not one over.
+      ['two-byte characters', twoByte, `${twoByte}å`],
+      // 24 characters, 48 bytes once each is escaped.
+      ['characters that cost an escape', wildcards, `${wildcards}%`],
+    ] as const;
+
+    beforeAll(async () => {
+      const relay = await at(world.substrat, 'relay');
+      for (const [i, [, term]] of cases.entries()) {
+        await relay.invoke('ticket0/ingest-message', {
+          conversationId: null,
+          contactEmail: `bound-${i}@customer.example`,
+          contactName: term,
+          subject: term,
+          bodyText: 'Probing the search bound.',
+          emailMessageId: `<bound-${i}@mail.example>`,
+        });
+      }
+    });
+
+    it.each(cases)('%s — at the limit, the row is found (both searches)', async (_kind, term) => {
+      expect(patternBytes(term)).toBe(50);
+      const anna = await at(world.substrat, 'agent');
+      const conversations = (await anna.invoke('ticket0/search-conversations', {
+        q: term,
+      })) as Page<Conversation>;
+      expect(conversations.entries.map((c) => c.subject)).toEqual([term]);
+      const people = (await anna.invoke('ticket0/search-contacts', { q: term })) as Page<{
+        display_name: string | null;
+      }>;
+      expect(people.entries.map((c) => c.display_name)).toEqual([term]);
+    });
+
+    it.each(cases)('%s — one over the limit is refused as a 400 that names it (both searches)', async (_kind, _t, over) => {
+      expect(patternBytes(over)).toBeGreaterThan(50);
+      const anna = await at(world.substrat, 'agent');
+      for (const op of ['ticket0/search-conversations', 'ticket0/search-contacts']) {
+        // The host's own input parse, which the HTTP layer answers as a 400.
+        const refused = await anna.invoke(op, { q: over }).catch((e: unknown) => e);
+        expect(refused, `${op} accepted a term over the bound`).toMatchObject({ name: 'ZodError' });
+        expect((refused as Error).message).toMatch(/48 bytes/);
+        expect(classifyError(refused)).toMatchObject({ status: 400 });
+      }
+    });
+
+    it('the character count is not the bound — 25 characters can be over it, 48 can be under it', async () => {
+      const anna = await at(world.substrat, 'agent');
+      // 25 characters: far under a 48-character `.max()`, over the byte limit.
+      expect(`${twoByte}å`.length).toBe(25);
+      await expect(
+        anna.invoke('ticket0/search-conversations', { q: `${twoByte}å` }),
+      ).rejects.toMatchObject({ name: 'ZodError' });
+      // 48 characters is exactly what an ASCII term may be.
+      expect(at48.length).toBe(48);
+      await expect(
+        anna.invoke('ticket0/search-conversations', { q: at48 }),
+      ).resolves.toBeDefined();
+    });
+
+    it('the knowledge-base search builds no LIKE, so it takes a long question', async () => {
+      const assistant = await at(world.substrat, 'assistant');
+      await expect(
+        assistant.invoke('ticket0/search-kb', { q: 'how do I run a migration '.repeat(8) }),
+      ).resolves.toBeDefined();
+    });
   });
 
   /**

@@ -24,13 +24,23 @@
  * Time is not moved here: the DO host has no injectable clock (`clock?: never`), so the
  * due snooze is one set in the past — which `ticket0/snooze` accepts, as it must for a
  * snooze whose moment passed while the request was in flight.
+ *
+ * The second `describe` (#1655) is not about the sweeper: it holds the two search reads to
+ * the 50-byte pattern limit a Durable Object's SQLite enforces and Node's does not. It is in
+ * THIS file because the pool re-evaluates the worker's main module for every test file, and
+ * a Durable Object a previous file left alive answers its first call with "changed,
+ * invalidating this Durable Object" — measured, as a 400 from `/internal/provision`, whose
+ * roster note reaches the one sweeper DO both files share. One file, one module instance.
+ * The third (#1653) is here for the same reason: provisioning a desk twice must leave the
+ * state provisioning it once did.
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   principalId,
   scopeId,
   tenantId,
+  type Page,
   type PrincipalId,
   type ScopeId,
 } from '@substrat-run/contracts';
@@ -41,6 +51,7 @@ import {
   type ScopeSweepReport,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
+import { classifyError } from '@substrat-run/vertical-host';
 import { MODULES } from '../../src/provision.js';
 
 interface Conversation {
@@ -220,6 +231,110 @@ describe('ticket0 on workerd — the deployment sweeps its own desks (#1646)', (
     expect(res.status).toBe(200);
     expect(await roster()).toEqual([legacy]);
     expect((await sweep()).scopes).toBe(1);
+  });
+});
+
+/** What a Durable Object's SQLite refuses a `LIKE` pattern beyond — asked of the runtime below. */
+const LIKE_LIMIT = 50;
+
+/** The pattern sent for a term, in UTF-8 bytes — written out here, not taken from the model. */
+const patternBytes = (term: string) =>
+  new TextEncoder().encode(`%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`).length;
+
+/** Each is the longest term of its kind: the pattern sent is exactly 50 bytes. */
+const AT_THE_LIMIT = {
+  ascii: 'limit-'.padEnd(48, 'x'),
+  // 24 characters, 48 bytes — under any character count that would let ASCII through.
+  'two-byte letters': 'å'.repeat(24),
+  // 24 characters, 48 bytes once each carries its escape.
+  'escaped wildcards': '%'.repeat(24),
+} as const;
+
+/** The same kind of term, one character longer — 51, 52 and 73 bytes of pattern. */
+const ONE_OVER = {
+  ascii: `${AT_THE_LIMIT.ascii}x`,
+  'two-byte letters': `${AT_THE_LIMIT['two-byte letters']}å`,
+  'escaped wildcards': `${AT_THE_LIMIT['escaped wildcards']}%`,
+} as const;
+
+const KINDS = Object.keys(AT_THE_LIMIT) as (keyof typeof AT_THE_LIMIT)[];
+
+describe('ticket0 on workerd — a search term the desk\'s database can run (#1655)', () => {
+  /** Its own desk, provisioned and deleted inside this block. */
+  const searchDesk = scopeId.parse(ulid());
+
+  beforeAll(async () => {
+    const res = await platform('/internal/provision', { tenantId: t, scopeId: searchDesk, owner, entitlements });
+    expect(res.status).toBe(201);
+    const ingest = await host().getScope(await relayOf(searchDesk), t, searchDesk);
+    for (const [i, kind] of KINDS.entries()) {
+      const term = AT_THE_LIMIT[kind];
+      await ingest.invoke('ticket0/ingest-message', {
+        conversationId: null,
+        contactEmail: `bound-${i}@customer.example`,
+        contactName: term,
+        subject: term,
+        bodyText: 'Probing the search bound.',
+        emailMessageId: `<bound-${i}@mail.example>`,
+      });
+    }
+  });
+
+  // Off the roster again, so what the block above asserted about it stays true of the file.
+  afterAll(async () => {
+    expect((await platform('/internal/delete-scope', { scopeId: searchDesk })).status).toBe(200);
+  });
+
+  it('the runtime accepts a 50-byte pattern and refuses a 51-byte one', async () => {
+    const stub = env.SCOPE.get(env.SCOPE.idFromName(searchDesk));
+    const like = (pattern: string) =>
+      runInDurableObject(stub, (_i, state) =>
+        state.storage.sql.exec("SELECT 'a' LIKE ? ESCAPE '\\'", pattern).toArray(),
+      );
+    await expect(like('%'.padEnd(LIKE_LIMIT, 'a'))).resolves.toBeDefined();
+    await expect(like('%'.padEnd(LIKE_LIMIT + 1, 'a'))).rejects.toThrow(/too complex/);
+  });
+
+  it('the patterns under test are exactly at the limit, and one over it', () => {
+    for (const kind of KINDS) {
+      expect(patternBytes(AT_THE_LIMIT[kind])).toBe(LIKE_LIMIT);
+      expect(patternBytes(ONE_OVER[kind])).toBeGreaterThan(LIKE_LIMIT);
+    }
+    // The point of a byte bound: 24 letters against 48 is far from a character limit.
+    expect(AT_THE_LIMIT['two-byte letters'].length).toBe(24);
+  });
+
+  it.each(KINDS)('%s — a term at the limit is found by both searches', async (kind) => {
+    const term = AT_THE_LIMIT[kind];
+    const admin = await host().getScope(owner, t, searchDesk);
+    const conversations = await admin.invoke<Page<{ subject: string | null }>>('ticket0/search-conversations', {
+      q: term,
+    });
+    expect(conversations.entries.map((c) => c.subject)).toEqual([term]);
+    const people = await admin.invoke<Page<{ display_name: string | null }>>('ticket0/search-contacts', {
+      q: term,
+    });
+    expect(people.entries.map((c) => c.display_name)).toEqual([term]);
+  });
+
+  it.each(KINDS)('%s — a term one over is a 400 naming the limit, not a database error', async (kind) => {
+    const admin = await host().getScope(owner, t, searchDesk);
+    for (const op of ['ticket0/search-conversations', 'ticket0/search-contacts']) {
+      const refused = await admin.invoke(op, { q: ONE_OVER[kind] }).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(refused, `${op} accepted a term over the bound`).toBeInstanceOf(Error);
+      const message = (refused as Error).message;
+      // The refinement's own words — and not what the database says when it is the one
+      // to refuse: `LIKE or GLOB pattern too complex: SQLITE_ERROR`.
+      expect(message).toMatch(/48 bytes/);
+      expect(message).not.toMatch(/too complex|SQLITE/);
+      // What `mountOperations` would answer with, from the error as it crosses the
+      // Durable Object hop: the caller's mistake, not a fault of the runtime.
+      expect(classifyError(refused)).toMatchObject({ status: 400 });
+      expect(classifyError(refused)?.platformFault).toBeUndefined();
+    }
   });
 });
 
