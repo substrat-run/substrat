@@ -12,6 +12,7 @@ import {
   AUTO_ADMISSION_NOTE,
   permissionKey,
   platformActorId,
+  platformRequestId,
   principalId,
   scopeId,
   tenantId,
@@ -561,6 +562,166 @@ export function scopeHostContractSuite(
       expect(settled.status).toBe('failed');
       expect(settled.lastError).toMatch(/personal number field/);
       expect(settled.payload).toEqual({ contract: 'c1' });
+    });
+
+    /**
+     * #1588. Every read of the intent journal returns a LIST, and the row decode behind all
+     * three was strict — so ONE row whose JSON would not parse threw out of the map and took
+     * the scope's every other intent with it. The drain could not read its own queue, and the
+     * history read, which exists so a failed intent explains itself (#618), was switched off
+     * by exactly the row that failed.
+     *
+     * Nothing module code can do produces such a row (`ctx.sql` refuses `_substrat_*` writes,
+     * #954). A restore does: `importDump` replays rows verbatim, so a dump from another world
+     * or edited by hand is the whole reproduction — the lever #1587's run-driver test uses.
+     * The dump is the scope's OWN export with only the journal's rows replaced, so the rest of
+     * the spine comes back as it was and the in-scope read can still be invoked.
+     */
+    describe('one undecodable intent row (#1588)', () => {
+      /** Sorts before every ULID, so the pending read (ORDER BY id) meets it FIRST. */
+      const brokenPendingId = platformRequestId.parse('00000000000000000000000000');
+      const brokenSettledId = platformRequestId.parse('00000000000000000000000001');
+      const at = '2026-09-01T00:00:00.000Z';
+      const healthyPending = {
+        id: ulid(),
+        kind: 'connector:test',
+        payload: JSON.stringify({ doc: 1 }),
+        requested_by: JSON.stringify({ system: 'connector-dispatch' }),
+        status: 'pending',
+        attempts: 0,
+        requested_at: at,
+      };
+      const healthySettled = {
+        id: ulid(),
+        kind: 'connector:test',
+        payload: JSON.stringify({ doc: 2 }),
+        requested_by: JSON.stringify(alice),
+        status: 'failed',
+        attempts: 1,
+        last_error: 'HTTP 409 requires valid personal number field',
+        last_failure: JSON.stringify({ origin: 'provider', code: null, permission: null }),
+        result: JSON.stringify({ eventId: 'E1' }),
+        requested_at: at,
+        settled_at: at,
+      };
+      /** The queue's bad row: a payload nothing could act on. */
+      const brokenPending = { ...healthyPending, id: brokenPendingId, payload: 'not json at all' };
+      /** The journal's bad row: the failure is on record, beside two columns that are not. */
+      const brokenSettled = {
+        ...healthySettled,
+        id: brokenSettledId,
+        last_error: 'HTTP 422 the evidence an operator came here to read',
+        last_failure: 'nope',
+        result: '{"eventId":',
+      };
+
+      /** A fresh scope whose journal holds exactly `rows`, planted by a restore. */
+      const restoredWith = async (rows: Record<string, unknown>[]): Promise<ScopeId> => {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1,
+          scopeId: s,
+          jurisdiction: 'eu',
+          vertical: 'connector-vertical',
+        });
+        await host.admin.activateScope(staff, t1, s);
+        const backup = await host.admin.exportScope(staff, t1, s);
+        const journal = backup.tables.find((t) => t.name === '_substrat_platform_requests');
+        // Without the table in the export this test would plant nothing and pass vacuously.
+        expect(journal).toBeDefined();
+        await host.restoreScope(staff, t1, s, {
+          ...backup,
+          tables: backup.tables.map((t) =>
+            t === journal ? { ...t, rows: rows.map((r) => t.columns.map((c) => r[c] ?? null)) } : t,
+          ),
+        });
+        return s;
+      };
+
+      /** All three reads, so each of the three decode sites is on the hook. */
+      const readAll = async (s: ScopeId) => ({
+        pending: await host.listPlatformRequests(t1, s),
+        history: await host.listPlatformRequestHistory(t1, s),
+        inScope: await (await host.getScope(alice, t1, s)).invoke<PlatformRequest[]>('platform/intents'),
+      });
+      const byId = (rows: PlatformRequest[], id: string) => rows.find((r) => r.id === id);
+
+      it('a clean journal reads exactly as before — no decodeError anywhere (the positive twin)', async () => {
+        const s = await restoredWith([healthyPending, healthySettled]);
+        const { pending, history, inScope } = await readAll(s);
+        expect(pending.map((r) => r.id)).toEqual([healthyPending.id]);
+        expect(history.map((r) => r.id).sort()).toEqual([healthyPending.id, healthySettled.id].sort());
+        expect(inScope.map((r) => r.id).sort()).toEqual([healthyPending.id, healthySettled.id].sort());
+        for (const row of [...pending, ...history, ...inScope]) {
+          // ABSENT rather than null, so a healthy list is the shape it always was.
+          expect(row).not.toHaveProperty('decodeError');
+        }
+        expect(byId(history, healthySettled.id)).toMatchObject({
+          payload: { doc: 2 },
+          requestedBy: alice,
+          failure: { origin: 'provider', code: null, permission: null },
+          result: { eventId: 'E1' },
+        });
+      });
+
+      it('returns every other row beside the bad one, and the bad one says why', async () => {
+        const clean = await readAll(await restoredWith([healthyPending, healthySettled]));
+        const s = await restoredWith([brokenPending, healthyPending, brokenSettled, healthySettled]);
+        const { pending, history, inScope } = await readAll(s);
+
+        // The healthy rows are all there, and read EXACTLY as they do with no bad neighbour.
+        expect(byId(pending, healthyPending.id)).toEqual(byId(clean.pending, healthyPending.id));
+        for (const [read, twin] of [
+          [history, clean.history],
+          [inScope, clean.inScope],
+        ] as const) {
+          expect(read).toHaveLength(4);
+          expect(byId(read, healthyPending.id)).toEqual(byId(twin, healthyPending.id));
+          expect(byId(read, healthySettled.id)).toEqual(byId(twin, healthySettled.id));
+        }
+
+        // The drain's queue: the bad row is listed — it was listed first — and flagged, with
+        // an EMPTY payload rather than the raw text, which would read as a string payload.
+        expect(pending.map((r) => r.id)).toEqual([brokenPendingId, healthyPending.id]);
+        const queued = byId(pending, brokenPendingId)!;
+        expect(queued.decodeError).toMatch(/^payload: .*JSON/);
+        expect(queued.payload).toBeNull();
+        expect(queued.kind).toBe('connector:test');
+
+        // The journal: the failure the row records is READABLE, which is the whole point of
+        // the read — and every column that did not decode is named, not only the first.
+        for (const read of [history, inScope]) {
+          const settled = byId(read, brokenSettledId)!;
+          expect(settled.lastError).toBe('HTTP 422 the evidence an operator came here to read');
+          expect(settled.status).toBe('failed');
+          expect(settled.decodeError).toMatch(/^last_failure: .*; result: /);
+          // `null` beside a reason, never a silent `null` that reads as "unclassified".
+          expect(settled.failure).toBeNull();
+          expect(settled.result).toBeNull();
+        }
+      });
+
+      it('lets the drain settle the bad row failed — out of the queue, the evidence kept', async () => {
+        // The drain lives in control-plane-api and refuses any row carrying `decodeError`
+        // without running a handler (tested there, against this adapter's pure twin). What
+        // BOTH adapters owe it is that the refusal lands: a bad row can be settled like any
+        // other, leaves the queue, and still reads back with its reason.
+        const s = await restoredWith([brokenPending, healthyPending]);
+        const refusal = 'not executed: the intent row could not be decoded (payload: …)';
+        await host.settlePlatformRequest(t1, s, brokenPendingId, {
+          status: 'failed',
+          lastError: refusal,
+          failure: { origin: 'platform', code: 'validation_failed', permission: null },
+        });
+
+        expect((await host.listPlatformRequests(t1, s)).map((r) => r.id)).toEqual([healthyPending.id]);
+        const after = byId(await host.listPlatformRequestHistory(t1, s), brokenPendingId)!;
+        expect(after.status).toBe('failed');
+        expect(after.lastError).toBe(refusal);
+        expect(after.failure).toEqual({ origin: 'platform', code: 'validation_failed', permission: null });
+        // The stored payload is untouched by the settle, so the row still says it is not whole.
+        expect(after.decodeError).toMatch(/^payload: /);
+      });
     });
 
     it('isolates scope storage: a write in one scope is invisible in another', async () => {

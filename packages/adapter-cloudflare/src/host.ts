@@ -129,7 +129,6 @@ import {
   subjectShredReceipt,
   type SubjectShredReceipt,
   type ScopeId,
-  platformRequest,
   connectorDispatchKind,
   type ConnectorDispatchPayload,
   type PlatformRequest,
@@ -240,6 +239,8 @@ import {
   type SubjectRedactionCounts,
   globalFetch,
   assertRedrainWindow,
+  platformRequestOf,
+  type PlatformRequestRawRow,
 } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -718,40 +719,6 @@ interface AdminEntry {
   before: unknown;
   after: unknown;
   at: string;
-}
-
-/** A raw `_substrat_platform_requests` row over the DO RPC — snake_case, JSON columns as strings. */
-interface PlatformRequestRawRow {
-  id: string;
-  kind: string;
-  payload: string;
-  requested_by: string;
-  impersonation: string | null;
-  status: string;
-  attempts: number;
-  last_error: string | null;
-  last_failure: string | null;
-  result: string | null;
-  requested_at: string;
-  settled_at: string | null;
-}
-
-/** Map a stored platform-request row to the `PlatformRequest` contract shape (JSON columns parsed). */
-function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
-  return platformRequest.parse({
-    id: r.id,
-    kind: r.kind,
-    payload: JSON.parse(r.payload),
-    requestedBy: JSON.parse(r.requested_by),
-    impersonation: r.impersonation == null ? null : JSON.parse(r.impersonation),
-    status: r.status,
-    attempts: r.attempts,
-    lastError: r.last_error,
-    failure: r.last_failure == null ? null : JSON.parse(r.last_failure),
-    result: r.result === null ? null : JSON.parse(r.result),
-    requestedAt: r.requested_at,
-    settledAt: r.settled_at,
-  });
 }
 
 interface ScopeStubRpc {
@@ -1774,7 +1741,8 @@ export class CloudflareScopeHost implements ScopeHost {
   async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]> {
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    return (await this.scopeStub(scopeId).pendingPlatformRequests()).map(rowToPlatformRequest);
+    // Tolerant (#1588): one undecodable row comes back naming why, never throws for the list.
+    return (await this.scopeStub(scopeId).pendingPlatformRequests()).map(platformRequestOf);
   }
 
   async listPlatformRequestHistory(
@@ -1784,7 +1752,7 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<PlatformRequest[]> {
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    return (await this.scopeStub(scopeId).platformRequestHistory(filter)).map(rowToPlatformRequest);
+    return (await this.scopeStub(scopeId).platformRequestHistory(filter)).map(platformRequestOf);
   }
 
   async settlePlatformRequest(
