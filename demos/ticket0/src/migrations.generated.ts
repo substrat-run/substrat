@@ -308,4 +308,15 @@ export const ticket0Migrations: SqlMigration[] = [
       );
     `,
   },
+  {
+    // add-ticket0_conversations-first_assigned_at-and-2-more
+    version: '0011',
+    sql: `
+      ALTER TABLE ticket0_conversations ADD COLUMN first_assigned_at TEXT;
+
+      ALTER TABLE ticket0_desk_settings ADD COLUMN settings TEXT;
+
+      ALTER TABLE ticket0_desk_settings ADD COLUMN round_robin_last TEXT;
+    `,
+  },
 ];

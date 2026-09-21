@@ -794,6 +794,16 @@
                         }
                       ]
                     },
+                    "first_assigned_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "resolved_at": {
                       "anyOf": [
                         {
@@ -841,6 +851,7 @@
                     "priority",
                     "snoozed_until",
                     "first_public_reply_at",
+                    "first_assigned_at",
                     "resolved_at",
                     "merged_into",
                     "follows",
@@ -1192,6 +1203,16 @@
                         }
                       ]
                     },
+                    "first_assigned_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "resolved_at": {
                       "anyOf": [
                         {
@@ -1239,6 +1260,7 @@
                     "priority",
                     "snoozed_until",
                     "first_public_reply_at",
+                    "first_assigned_at",
                     "resolved_at",
                     "merged_into",
                     "follows",
@@ -1438,6 +1460,15 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "settings": {
+                    "type": "object",
+                    "properties": {
+                      "roundRobin": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 }
               }
@@ -1494,6 +1525,16 @@
                         }
                       ]
                     },
+                    "settings": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "created_at": {
                       "type": "string"
                     },
@@ -1509,6 +1550,7 @@
                     "business_hours",
                     "assistant_autonomous",
                     "abandoned_after_days",
+                    "settings",
                     "created_at",
                     "updated_at"
                   ],
@@ -1596,6 +1638,16 @@
                         }
                       ]
                     },
+                    "settings": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "created_at": {
                       "type": "string"
                     },
@@ -1611,6 +1663,7 @@
                     "business_hours",
                     "assistant_autonomous",
                     "abandoned_after_days",
+                    "settings",
                     "created_at",
                     "updated_at"
                   ],
@@ -2954,6 +3007,16 @@
                         }
                       ]
                     },
+                    "first_assigned_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "resolved_at": {
                       "anyOf": [
                         {
@@ -3001,6 +3064,7 @@
                     "priority",
                     "snoozed_until",
                     "first_public_reply_at",
+                    "first_assigned_at",
                     "resolved_at",
                     "merged_into",
                     "follows",
@@ -4247,6 +4311,16 @@
                           }
                         ]
                       },
+                      "first_assigned_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "resolved_at": {
                         "anyOf": [
                           {
@@ -4294,6 +4368,7 @@
                       "priority",
                       "snoozed_until",
                       "first_public_reply_at",
+                      "first_assigned_at",
                       "resolved_at",
                       "merged_into",
                       "follows",
@@ -4462,6 +4537,16 @@
                           }
                         ]
                       },
+                      "first_assigned_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "resolved_at": {
                         "anyOf": [
                           {
@@ -4509,6 +4594,7 @@
                       "priority",
                       "snoozed_until",
                       "first_public_reply_at",
+                      "first_assigned_at",
                       "resolved_at",
                       "merged_into",
                       "follows",
@@ -5620,6 +5706,16 @@
                         }
                       ]
                     },
+                    "first_assigned_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "resolved_at": {
                       "anyOf": [
                         {
@@ -5667,6 +5763,7 @@
                     "priority",
                     "snoozed_until",
                     "first_public_reply_at",
+                    "first_assigned_at",
                     "resolved_at",
                     "merged_into",
                     "follows",
@@ -6155,6 +6252,16 @@
                           }
                         ]
                       },
+                      "first_assigned_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "resolved_at": {
                         "anyOf": [
                           {
@@ -6202,6 +6309,7 @@
                       "priority",
                       "snoozed_until",
                       "first_public_reply_at",
+                      "first_assigned_at",
                       "resolved_at",
                       "merged_into",
                       "follows",
@@ -8796,6 +8904,16 @@
                         }
                       ]
                     },
+                    "first_assigned_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "resolved_at": {
                       "anyOf": [
                         {
@@ -8843,6 +8961,7 @@
                     "priority",
                     "snoozed_until",
                     "first_public_reply_at",
+                    "first_assigned_at",
                     "resolved_at",
                     "merged_into",
                     "follows",
@@ -9294,6 +9413,16 @@
                           }
                         ]
                       },
+                      "first_assigned_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "resolved_at": {
                         "anyOf": [
                           {
@@ -9341,6 +9470,7 @@
                       "priority",
                       "snoozed_until",
                       "first_public_reply_at",
+                      "first_assigned_at",
                       "resolved_at",
                       "merged_into",
                       "follows",
@@ -9775,6 +9905,16 @@
                         }
                       ]
                     },
+                    "first_assigned_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "resolved_at": {
                       "anyOf": [
                         {
@@ -9822,6 +9962,7 @@
                     "priority",
                     "snoozed_until",
                     "first_public_reply_at",
+                    "first_assigned_at",
                     "resolved_at",
                     "merged_into",
                     "follows",
@@ -10215,6 +10356,16 @@
                         }
                       ]
                     },
+                    "first_assigned_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "resolved_at": {
                       "anyOf": [
                         {
@@ -10262,6 +10413,7 @@
                     "priority",
                     "snoozed_until",
                     "first_public_reply_at",
+                    "first_assigned_at",
                     "resolved_at",
                     "merged_into",
                     "follows",
@@ -11116,6 +11268,16 @@
                         }
                       ]
                     },
+                    "first_assigned_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "resolved_at": {
                       "anyOf": [
                         {
@@ -11163,6 +11325,7 @@
                     "priority",
                     "snoozed_until",
                     "first_public_reply_at",
+                    "first_assigned_at",
                     "resolved_at",
                     "merged_into",
                     "follows",

@@ -239,6 +239,27 @@ export const ticket0Manifest = moduleManifest.parse({
       cadence: { everyMinutes: 60 },
       permissions: ['conversation:resolve'],
     },
+    /**
+     * Round-robin (#1083) — off unless the desk has switched it on, and then every
+     * conversation nobody has picked up gets the next person's name on it.
+     *
+     * It runs on every desk and does nothing on most of them. A desk that has not
+     * switched it on costs one read of the desk row per tick. The switch is data, and
+     * whether the timer may act at all is the grant; neither needs code to be off.
+     *
+     * Five minutes for `wake-snoozed`'s reason: it is the cadence a person reads as
+     * "it arrived and somebody had it". It is a floor rather than a promise, as every
+     * cadence here is — a hosted desk is swept when the platform sweeps.
+     *
+     * The key is `conversation:assign`, the one `wake-snoozed` already names, so a desk
+     * provisioned before this schedule existed already holds the tuple it needs and no
+     * re-provision stands between the deploy and the first tick.
+     */
+    {
+      operation: 'ticket0/assign-round-robin',
+      cadence: { everyMinutes: 5 },
+      permissions: ['conversation:assign'],
+    },
   ],
   entitlementKey: 'ticket0',
   envSpec: TICKET0_ENV,

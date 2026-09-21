@@ -585,6 +585,7 @@ function Desk() {
     allowed_origins: string;
     business_hours: string | null;
     abandoned_after_days: number | null;
+    settings: string | null;
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -613,6 +614,24 @@ function Desk() {
 
   const origins: string[] = JSON.parse(desk.allowed_origins || '[]');
   const setOrigins = (next: string[]) => setDesk({ ...desk, allowed_origins: JSON.stringify(next) });
+
+  /**
+   * The desk's switches, read the way the desk reads them: only an explicit `true` is
+   * on, and a value this screen cannot parse is off rather than a crash. Save sends
+   * only the keys this form knows about, and the desk merges them, so a switch a later
+   * version added is left alone rather than switched off by an older screen.
+   */
+  const switches = ((raw: string | null): Record<string, unknown> => {
+    try {
+      const parsed: unknown = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
+  })(desk.settings);
+  const roundRobin = switches.roundRobin === true;
 
   /**
    * An ORIGIN, not a URL. The browser sends `https://substrat.net` and the desk
@@ -672,6 +691,7 @@ function Desk() {
         // omitting the field would mean "leave whatever is there" — which is the one
         // way this form could refuse to clear a number somebody typed by mistake.
         abandonedAfterDays: desk.abandoned_after_days,
+        settings: { roundRobin },
       });
       setSaved(true);
     } catch (e) {
@@ -753,6 +773,21 @@ function Desk() {
             </span>
           ) : null}
         </div>
+      </Field>
+      <Field
+        label="Round-robin assignment"
+        hint="On the desk's next sweep (within about a quarter of an hour), each conversation nobody has picked up goes to the next person on the Team list, in turn. Turning it on hands out the conversations already waiting too. It never re-assigns a conversation somebody unassigned. On a desk where the assistant answers, a chat stays with the assistant until it hands the chat to a person. Everyone on the Team list is in the rotation, including anyone who has since left the desk."
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={roundRobin}
+            onChange={(e) =>
+              setDesk({ ...desk, settings: JSON.stringify({ ...switches, roundRobin: e.target.checked }) })
+            }
+          />
+          <span className="t-small">Hand out conversations in turn</span>
+        </span>
       </Field>
       <Field
         label="Widget origins"

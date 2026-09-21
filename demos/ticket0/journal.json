@@ -49,6 +49,11 @@
       "version": "0010",
       "slug": "add-ticket0_block_rules",
       "sql": "CREATE TABLE ticket0_block_rules (\n  id TEXT PRIMARY KEY NOT NULL,\n  kind TEXT NOT NULL CHECK (kind IN ('email','domain','contact')),\n  value TEXT NOT NULL,\n  reason TEXT,\n  created_by TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  UNIQUE (kind, value)\n);"
+    },
+    {
+      "version": "0011",
+      "slug": "add-ticket0_conversations-first_assigned_at-and-2-more",
+      "sql": "ALTER TABLE ticket0_conversations ADD COLUMN first_assigned_at TEXT;\n\nALTER TABLE ticket0_desk_settings ADD COLUMN settings TEXT;\n\nALTER TABLE ticket0_desk_settings ADD COLUMN round_robin_last TEXT;"
     }
   ]
 }

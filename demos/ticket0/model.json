@@ -350,6 +350,16 @@
               }
             ]
           },
+          "first_assigned_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "resolved_at": {
             "anyOf": [
               {
@@ -397,6 +407,7 @@
           "priority",
           "snoozed_until",
           "first_public_reply_at",
+          "first_assigned_at",
           "resolved_at",
           "merged_into",
           "follows",
@@ -526,6 +537,26 @@
               }
             ]
           },
+          "settings": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "round_robin_last": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at": {
             "type": "string"
           },
@@ -542,6 +573,8 @@
           "business_hours",
           "assistant_autonomous",
           "abandoned_after_days",
+          "settings",
+          "round_robin_last",
           "created_at",
           "updated_at"
         ],
