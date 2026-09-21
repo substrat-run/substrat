@@ -1797,9 +1797,11 @@ const SLA_PAUSED = 'snoozed_at IS NULL';
  * finished snooze pushes back (`endSnooze`), which ones a priority change re-aims past
  * the time already parked (`slaDue`), and which misses a snooze must record before it
  * stops the clock (`beginSnooze`). Flipping first response to `true` is the whole code
- * change for a desk that wants both paused. Its partial index in migration 0012 would
- * then need `AND snoozed_at IS NULL` as well — a migration — or the plan test below the
- * sweep goes red, which is the reminder.
+ * change for a desk that wants both paused, and it is correct on its own: the scan's WHERE
+ * still implies migration 0012's wider first-response index, so SQLite still uses it. That
+ * index would then also hold paused rows the scan skips, so narrowing it the way 0014
+ * narrowed the resolution one is the migration that should follow. `test/sla.test.ts`
+ * pins which index carries the term, so that test has to move with the flag.
  */
 const SLA_TARGETS = [
   {
@@ -1988,7 +1990,10 @@ function beginSnooze(ctx: OperationContext, id: string): void {
  * A due that fell INSIDE the snooze is never a breach: it is pushed past the moment of
  * waking before anything reads it. A conversation that was not late when it went to sleep
  * (`beginSnooze` recorded it otherwise) wakes with its due as far ahead of now as it was
- * ahead of the moment it slept, so nothing it wakes into can call it late.
+ * ahead of the moment it slept, so nothing it wakes into can call it late. The one way to
+ * wake late is a priority change made while it slept that re-aimed the due into the past:
+ * that is late exactly as the same change made awake would be, and the first sweep or
+ * `recordIfLate` after the wake records it.
  *
  * A row with no `snoozed_at` has nothing to give back and is left as it is: one that is
  * not snoozed, or one snoozed before the column existed, whose clock ran throughout.
@@ -2252,8 +2257,8 @@ function publicThread(
 
 /** Named rather than `SELECT c.*`: a search read returns the published entity, not the table. */
 const CONVERSATION_COLUMNS = `c.id, c.contact_id, c.channel, c.subject, c.state, c.assignee,
-  c.priority, c.snoozed_until, c.snoozed_at, c.snoozed_ms, c.first_public_reply_at, c.first_assigned_at, c.resolved_at,
-  c.first_response_due_at, c.resolution_due_at, c.first_response_breached_at,
+  c.priority, c.snoozed_until, c.snoozed_at, c.snoozed_ms, c.first_public_reply_at,
+  c.first_assigned_at, c.resolved_at, c.first_response_due_at, c.resolution_due_at, c.first_response_breached_at,
   c.resolution_breached_at, c.merged_into, c.follows, c.created_at, c.updated_at`;
 
 // ---------------------------------------------------------------------------

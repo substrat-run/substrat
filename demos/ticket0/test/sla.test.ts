@@ -936,6 +936,25 @@ describe('a snooze pauses the resolution clock, and waking gives the time back (
     expect((await read(desk, during.id)).resolution_due_at).toBe(plus(during.created_at, 240 + 100));
   });
 
+  it('a priority change made while it slept can wake it late — as the same change awake would', async () => {
+    const desk = await freshDesk({ agents: 1, sla: { resolutionMinutes: { normal: 600, urgent: 60 } } });
+    const c = await answered(desk);
+    advance(100);
+    await snooze(desk, c.id, 600);
+    advance(10);
+    // Urgent is 60 minutes from arrival, long gone. Asleep, the target is paused and
+    // nothing can call it late yet.
+    await (await agent(desk)).invoke('ticket0/set-priority', { conversationId: c.id, priority: 'urgent' });
+    expect(await sweep(desk)).toBe(0);
+    advance(10);
+    await wake(desk, c.id);
+    // Due = arrival + 60 + the 20 minutes it slept: still behind now, so it is late.
+    const woke = await read(desk, c.id);
+    expect(woke.resolution_due_at).toBe(plus(c.created_at, 60 + 20));
+    expect(await sweep(desk)).toBe(1);
+    expect((await read(desk, c.id)).resolution_breached_at).toBe(clock.now());
+  });
+
   it('closing a sleeping conversation ends its snooze too', async () => {
     const desk = await freshDesk({ agents: 1, sla: RES_60 });
     const before = await answered(desk);
