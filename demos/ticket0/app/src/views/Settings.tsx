@@ -548,7 +548,7 @@ function You({ session }: { session: Session }) {
     <>
       <Head
         title="You"
-        note="How colleagues find you in the assignee picker, and how you sign off on mail that leaves the desk."
+        note="How colleagues find you in the assignee picker, and how your saved replies sign off."
       />
       <Field label="Display name" hint="What the inbox, the rail and the picker call you.">
         <input
@@ -557,7 +557,19 @@ function You({ session }: { session: Session }) {
           onChange={(e) => setProfile({ ...profile, displayName: e.target.value })}
         />
       </Field>
-      <Field label="Signature" hint="Appended to outbound email. Left empty, nothing is added.">
+      {/*
+        What the signature DOES, said exactly (#1087). It fills a saved reply's
+        {{agent.signature}} placeholder, and nothing else reads it: a reply typed by hand
+        goes out without it. This hint used to promise it was appended to outbound email,
+        which no code has ever done. The honest fix was the hint rather than an append:
+        a public reply is also a chat message in the widget, where a sign-off block is
+        noise, and appending at send time would give every saved reply that already says
+        {{agent.signature}} two of them.
+      */}
+      <Field
+        label="Signature"
+        hint="Fills {{agent.signature}} in a saved reply. It is not added to replies you type yourself."
+      >
         <textarea
           className="textarea"
           rows={3}

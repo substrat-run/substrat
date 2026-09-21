@@ -345,4 +345,11 @@ export const ticket0Migrations: SqlMigration[] = [
         WHERE resolution_due_at IS NOT NULL AND resolution_breached_at IS NULL AND resolved_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL;
     `,
   },
+  {
+    // add-ticket0_saved_replies-actions
+    version: '0013',
+    sql: `
+      ALTER TABLE ticket0_saved_replies ADD COLUMN actions TEXT;
+    `,
+  },
 ];

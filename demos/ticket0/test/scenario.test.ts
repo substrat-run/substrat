@@ -2198,6 +2198,8 @@ describe('the audit spine', () => {
       body: 'We refund within 30 days.',
       created_by: reply.created_by,
       created_at: reply.created_at,
+      // The action bag joined the payload in #1087; a reply with none says so.
+      actions: [],
     });
   });
 
@@ -2299,6 +2301,8 @@ describe('the audit spine', () => {
       body: 'Three to five days.',
       created_by: reply.created_by,
       created_at: reply.created_at,
+      // The action bag joined the payload in #1087; a reply with none says so.
+      actions: [],
     });
 
     // Saving the same values again is not an edit, so the outbox still shows the

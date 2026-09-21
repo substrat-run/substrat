@@ -982,6 +982,16 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "actions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -989,7 +999,8 @@
           "title",
           "body",
           "created_by",
-          "created_at"
+          "created_at",
+          "actions"
         ],
         "additionalProperties": false
       },
