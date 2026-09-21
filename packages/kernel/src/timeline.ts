@@ -377,7 +377,7 @@ function deliveryOf(row: DeliveryRow): EventDelivery {
   const shape = eventDelivery.shape;
   const d = rowDecoder(
     `delivery row ${JSON.stringify(row.consumer_module)}`,
-    'EventDelivery',
+    'valid EventDelivery',
   );
   // From the STORED columns, and `!= null` rather than a truthiness test: an empty `error`
   // is a delivery that gave up with no message, not one that did not give up (#1643).

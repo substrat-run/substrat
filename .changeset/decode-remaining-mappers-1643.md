@@ -22,6 +22,6 @@ its schema throws with the column named, rather than being returned as though it
 
 Two additions to `@substrat-run/contracts`, both additive. `DeadLetter` had no schema and is now
 one (`deadLetter`); its type is unchanged. `deliveryConsumer` names what a delivery's consumer can
-be: a module id, or `executor:<id>` for an executor. The contract used to type it as a bare module
+be: a module id, or `executor:<id>` for an executor, with whatever id registration accepted (it takes any string). The contract used to type it as a bare module
 id, which an executor's delivery never was; `EventDelivery.consumer` accepts both now, and its
 inferred type is the same.

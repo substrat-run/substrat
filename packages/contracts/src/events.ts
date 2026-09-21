@@ -361,12 +361,19 @@ export type DeliveryState = z.infer<typeof deliveryState>;
  * The cast hid that; a decode against `moduleId` would have thrown on every healthy executor
  * row. So the schema names the two shapes the column holds. The inferred type is unchanged
  * (`ModuleId`), and every value the old one accepted is still accepted.
+ *
+ * The `executor:` branch matches the WRITER, not a tidier id. `registerExecutor` and
+ * `registerConnector` accept any string (`scope-host.ts`) and both adapters persist
+ * `executor:${id}`, so the kernel can itself write `executor:` with an empty id, or one with a
+ * newline. A reader that refused those would throw the whole dead-letter page or effects walk on
+ * a healthy delivery. It accepts whatever registration could have produced; tightening
+ * registration is a contract change, and #1645 carries it.
  */
 export const deliveryConsumer = z.union([
   moduleId,
   z
     .string()
-    .regex(/^executor:.+$/)
+    .startsWith('executor:')
     .brand<'ModuleId'>(),
 ]);
 

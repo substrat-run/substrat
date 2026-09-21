@@ -124,13 +124,31 @@ describe('deliveryOf — one delivery row, decoded (#1643)', () => {
     expect(deliveriesOf(sql, 1)).toMatchObject([{ consumer: 'executor:mailer', state: 'dead', attempts: 4 }]);
   });
 
+  it.each(['executor:', 'executor:line\nbreak', 'executor:a b/ç'])(
+    'reads an executor delivery registered under %j — the reader matches the writer, not a tidier id',
+    (consumer) => {
+      // `registerExecutor` accepts any string and the adapters persist `executor:${id}`, so the kernel
+      // can write these itself. Its well-formed twin (`executor:mailer`) is the test above.
+      const sql = world([event(1)], [delivery(1, { consumer_module: consumer })]);
+      expect(deliveriesOf(sql, 1)).toMatchObject([{ consumer, state: 'dead' }]);
+      expect(readDeadLetters({ sql }).entries).toMatchObject([{ consumer }]);
+    },
+  );
+
+  it('still refuses a consumer that is neither a module id nor an executor — the prefix is the rule', () => {
+    for (const consumer of ['executorx:mailer', 'Executor:mailer', '', 'Not A Module!']) {
+      const sql = world([event(1)], [delivery(1, { consumer_module: consumer })]);
+      expect(() => deliveriesOf(sql, 1)).toThrow(/consumer_module: /);
+    }
+  });
+
   it.each([
     ['a negative count', -1],
     ['a fractional count', 1.5],
     ['text INTEGER affinity could not convert', 'many'],
   ] as const)('throws naming `attempts` for %s — a required scalar, never returned typed as valid', (_l, attempts) => {
     const sql = world([event(1)], [delivery(1, { attempts })]);
-    expect(() => deliveriesOf(sql, 1)).toThrow(/delivery row "@test\/doomed" cannot be read as a EventDelivery — attempts: /);
+    expect(() => deliveriesOf(sql, 1)).toThrow(/delivery row "@test\/doomed" cannot be read as a valid EventDelivery — attempts: /);
   });
 
   it('throws naming every required column that broke, and never quotes the stored text', () => {

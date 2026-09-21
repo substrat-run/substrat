@@ -944,18 +944,46 @@ export function scopeHostContractSuite(
           expect(clean.effects).toMatchObject([{ consumer: 'executor:mailer', state: 'dead', attempts: 3 }]);
           expect(clean.effects[0]).not.toHaveProperty('decodeError');
 
-          // The same rows with one `attempts` a non-negative integer cannot be. It has no honest
-          // empty value, so the read names the column — on both reads, on both adapters.
+          // The same rows with one `attempts` that cannot be decoded as a non-negative integer (a
+          // negative number, or text). It has no honest empty value, so the read names the column —
+          // on both reads, on both adapters.
           for (const attempts of [-1, 'many']) {
             await restore(s, dump, { _substrat_deliveries: [delivery(first!), delivery(second!, { attempts })] });
             await expect(host.admin.deadLetters(staff, t1, s, {})).rejects.toThrow(/DeadLetter — attempts: /);
             await expect(
               host.admin.eventEffects(staff, t1, s, { eventId: eventId.parse(second!.id) }),
-            ).rejects.toThrow(/EventDelivery — attempts: /);
+            ).rejects.toThrow(/valid EventDelivery — attempts: /);
           }
           // …and the row that is fine is still fine once the bad one is repaired.
           await restore(s, dump, { _substrat_deliveries: [delivery(first!), delivery(second!, { attempts: 2 })] });
           expect((await readAll(second!)).letters.map((l) => l.attempts).sort()).toEqual([2, 3]);
+        });
+
+        it('an executor delivery is read whatever id registration let through — the reader matches the writer', async () => {
+          // `registerExecutor` accepts any string and both adapters persist `executor:${id}`, so the
+          // kernel can itself write an empty id or one with a newline. Refusing those would throw
+          // the whole page on a delivery the kernel wrote.
+          const { s, dump } = await seeded('connector-vertical', (stub) => stub.invoke('test/emit-event'));
+          const [event] = rowsOf(dump, '_substrat_outbox').filter((r) => r.type === 'test.happened');
+          const consumers = ['executor:mailer', 'executor:', 'executor:line\nbreak', 'executor:a b/ç'];
+          await restore(s, dump, {
+            _substrat_deliveries: consumers.map(
+              (consumer_module): Row => ({
+                event_id: event!.id,
+                consumer_module,
+                delivered_at: at,
+                error: 'gave up',
+                attempts: 3,
+                next_attempt_at: null,
+                invocation_id: null,
+              }),
+            ),
+          });
+          const letters = (await host.admin.deadLetters(staff, t1, s, {})).entries;
+          expect(letters.map((l) => l.consumer).sort()).toEqual([...consumers].sort());
+          const effects = (await host.admin.eventEffects(staff, t1, s, { eventId: eventId.parse(event!.id) })).root!.deliveries;
+          expect(effects.map((d) => d.consumer).sort()).toEqual([...consumers].sort());
+          for (const row of [...letters, ...effects]) expect(row).not.toHaveProperty('decodeError');
         });
 
         it('the operation summary: healthy buckets read whole; a broken time is refused naming its column', async () => {
