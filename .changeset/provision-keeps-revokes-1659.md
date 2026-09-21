@@ -23,9 +23,13 @@ adapters use it: `provisionScopeLocal` on Cloudflare, and `provisionScope` on bo
 - **Revoked** → left exactly as it is, including `revoked_at` and `expires_at`.
 
 **One exception, for the owner's seat.** If leaving the owner-of-record revoked would leave
-the scope with no live role grant at all, a reconcile re-seats the owner. A scope nobody can
-act in is the lockout a reconcile exists to repair. So revoke the owner **after** seating a
-successor, and the revoke holds. Two consequences of this rule:
+the scope with no effective role grant at all, a reconcile re-seats the owner. A scope nobody
+can act in is the lockout a reconcile exists to repair. So revoke the owner **after** seating a
+successor, and the revoke holds. "Effective" means what the permission check means: someone
+holding a role the vertical still defines. A grant of a role a later version removed passes no
+check, so it does not count as a holder, and it no longer keeps a scope from being repaired.
+The guard that decides whether a scope enforces its permissions locally reads the same rule.
+Two consequences of the owner exception:
 
 - Revoking the last role holder is undone at the next reconcile.
 - The owner it re-seats is the one `owner_of_record` names, and the first owner written there
