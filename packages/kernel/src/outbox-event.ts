@@ -1,5 +1,5 @@
-import { domainEvent, type DomainEvent, type DrainedEvent } from '@substrat-run/contracts';
-import { issueOf, NOT_JSON } from './row-decode.js';
+import { domainEvent, drainedEvent, type DomainEvent, type DrainedEvent } from '@substrat-run/contracts';
+import { issueOf, NOT_JSON, type Field } from './row-decode.js';
 
 /**
  * Decoding a stored `_substrat_outbox` row into the envelope work is done with (#1636).
@@ -52,7 +52,7 @@ export interface OutboxDrainRow extends OutboxEnvelopeRow {
   invocation_id?: string | null;
 }
 
-/** Envelope field → the column a message should name. */
+/** Contract field → the column a message should name, where the two differ. */
 const COLUMN_OF: Record<string, string> = {
   schemaVersion: 'schema_version',
   occurredAt: 'occurred_at',
@@ -60,30 +60,38 @@ const COLUMN_OF: Record<string, string> = {
   scopeId: 'scope_id',
   piiClass: 'pii_class',
   subjectId: 'subject_id',
+  causedBy: 'caused_by',
+  invocationId: 'invocation_id',
 };
 
+/** The failures one decode has collected, and the columns already named in them. */
+interface Collected {
+  failed: string[];
+  named: Set<string>;
+}
+
 /**
- * The stored row → the `DomainEvent` a consumer or executor is handed, or a throw naming
- * EVERY column that did not decode.
+ * The envelope candidate a schema parse is run over, JSON columns parsed.
  *
- * A row that decodes is decoded exactly as it always was — the same candidate object into
- * the same `domainEvent.parse` — so nothing that delivered before reads differently now. The
- * throw's message never quotes the stored text (see `rowDecoder`): it is written into a dead
- * letter, which is stored beside the event and survives an erasure of its payload.
+ * Every optional column is tested for PRESENCE (`!= null`), never for truthiness (#1641
+ * review). A truthiness test read a stored `''` as "absent" and skipped validating it, so a
+ * restored row carrying an empty `authorization`, `impersonation`, `subject_id` or
+ * `operation` was delivered, executed or drained as though the column were null, instead of
+ * contained. The kernel never writes `''` to any of them — each is written from a validated
+ * value or as NULL — so a present value is always one to validate. `undefined` still reads
+ * as absent: it is the column missing from a legacy row, never a stored value.
  */
-export function domainEventOf(row: OutboxEnvelopeRow): DomainEvent {
-  const failed: string[] = [];
-  const named = new Set<string>();
+function envelopeCandidate(row: OutboxEnvelopeRow, into: Collected): Record<string, unknown> {
   const json = (column: string, stored: string): unknown => {
     try {
       return JSON.parse(stored);
     } catch {
-      failed.push(`${column}: ${NOT_JSON}`);
-      named.add(column);
+      into.failed.push(`${column}: ${NOT_JSON}`);
+      into.named.add(column);
       return undefined;
     }
   };
-  const candidate = {
+  return {
     id: row.id,
     type: row.type,
     schemaVersion: row.schema_version,
@@ -93,18 +101,31 @@ export function domainEventOf(row: OutboxEnvelopeRow): DomainEvent {
     actor: json('actor', row.actor),
     entity: { entityType: row.entity_type, entityId: row.entity_id },
     piiClass: row.pii_class,
-    ...(row.subject_id ? { subjectId: row.subject_id } : {}),
-    ...(row.authorization ? { authorization: json('authorization', row.authorization) } : {}),
+    ...(row.subject_id != null ? { subjectId: row.subject_id } : {}),
+    ...(row.authorization != null ? { authorization: json('authorization', row.authorization) } : {}),
     // K-42: the stamp survives the read, so a consumer's event and an executor's
     // are the same fact the stored row is. Absent rather than null when nobody
     // was impersonating, because `DomainEvent.impersonation` is optional — the
     // shape module code never sees is also the shape it cannot branch on.
-    ...(row.impersonation ? { impersonation: json('impersonation', row.impersonation) } : {}),
+    ...(row.impersonation != null ? { impersonation: json('impersonation', row.impersonation) } : {}),
     // #1231: absent rather than null, the same shape rule as the stamp above.
-    ...(row.operation ? { operation: row.operation } : {}),
-    payload: row.payload === null ? undefined : json('payload', row.payload),
+    ...(row.operation != null ? { operation: row.operation } : {}),
+    payload: row.payload == null ? undefined : json('payload', row.payload),
   };
-  const parsed = domainEvent.safeParse(candidate);
+}
+
+/**
+ * `candidate` parsed by the PUBLISHED `schema`, returned only as that parse's own output — or
+ * a throw naming every column that did not decode. Nothing is copied onto the result after
+ * validation, so the value a caller gets is exactly what the schema accepted (#1641 review).
+ */
+function strictly<T>(
+  row: { id: unknown },
+  schema: Field<T>,
+  candidate: Record<string, unknown>,
+  { failed, named }: Collected,
+): T {
+  const parsed = schema.safeParse(candidate);
   if (parsed.success && failed.length === 0) return parsed.data;
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
@@ -122,25 +143,50 @@ export function domainEventOf(row: OutboxEnvelopeRow): DomainEvent {
 }
 
 /**
+ * The stored row → the `DomainEvent` a consumer or executor is handed, or a throw naming
+ * EVERY column that did not decode.
+ *
+ * A row the kernel wrote decodes exactly as it always did — the same candidate into the same
+ * `domainEvent.parse`. The throw's message never quotes the stored text (see `rowDecoder`):
+ * it is written into a dead letter, which is stored beside the event and survives an erasure
+ * of its payload.
+ */
+export function domainEventOf(row: OutboxEnvelopeRow): DomainEvent {
+  const collected: Collected = { failed: [], named: new Set() };
+  return strictly(row, domainEvent, envelopeCandidate(row, collected), collected);
+}
+
+/**
  * The stored row → the `DrainedEvent` the Tier-2 drain ships, or a throw (`domainEventOf`'s).
  *
- * The lifted columns are the ones the envelope does not carry — `domainEvent.parse` strips
- * anything it does not declare — read exactly as both adapters read them before this was
- * shared: the column as stored, or null.
+ * The WHOLE event is parsed by the published `drainedEvent` schema — the envelope and the
+ * columns lifted beside it (`operation`, `version`, `caused_by`, `invocation_id`), which the
+ * envelope does not carry. They used to be copied onto an already-validated envelope as
+ * stored, into a value merely TYPED as a `DrainedEvent` (#1641 review): a restored row with
+ * `version: ''` or a `caused_by` that is not an event id reached the lake, append-only, and
+ * was stamped as having left. Parsed here, it throws, and `readUndrainedOutbox` skips it and
+ * says so. A row the kernel wrote passes unchanged: each lifted column is written from a
+ * validated value or as NULL.
  */
 export function drainedEventOf(row: OutboxDrainRow): DrainedEvent {
-  return {
-    ...domainEventOf(row),
-    operation: row.operation ?? null,
-    version: row.version ?? null,
-    // #1237 — lifted like the two above, and for the same reason: the column
-    // exists on the outbox but not on the envelope `domainEventOf` returns.
-    causedBy: (row.caused_by ?? null) as DrainedEvent['causedBy'],
-    // …and the invocation, for the same reason again: a lake that kept cause and
-    // dropped the call could say what set an event off and never which request did
-    // it, which is the grouping a trace is built on.
-    invocationId: row.invocation_id ?? null,
-  };
+  const collected: Collected = { failed: [], named: new Set() };
+  return strictly(
+    row,
+    drainedEvent,
+    {
+      ...envelopeCandidate(row, collected),
+      operation: row.operation ?? null,
+      version: row.version ?? null,
+      // #1237 — lifted like the two above, and for the same reason: the column
+      // exists on the outbox but not on the envelope.
+      causedBy: row.caused_by ?? null,
+      // …and the invocation, for the same reason again: a lake that kept cause and
+      // dropped the call could say what set an event off and never which request did
+      // it, which is the grouping a trace is built on.
+      invocationId: row.invocation_id ?? null,
+    },
+    collected,
+  );
 }
 
 /**

@@ -22,6 +22,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   domainEventOf,
+  drainedEventOf,
   mapDenialBucketRow,
   mapDenialRow,
   readHistory,
@@ -444,6 +445,55 @@ describe('the executed decode — strict, naming every column (#1636)', () => {
     expect(message).not.toContain('anna');
   });
 
+  // #1641 review, finding 1: the optional columns were tested with TRUTHINESS, so a stored
+  // `''` read as absent and skipped validation — the row was delivered or drained as though
+  // the column were null. Each present value must reach validation; only null is absent.
+  it.each([
+    ['authorization', /authorization: not valid JSON/],
+    ['impersonation', /impersonation: not valid JSON/],
+    ['subject_id', /subject_id: /],
+    ['operation', /operation: /],
+  ])('contains a stored empty %s rather than reading it as absent', (column, reason) => {
+    const [row] = rawRows([eventRow(1, { pii_class: 'none', subject_id: null, [column]: '' })]);
+    expect(() => domainEventOf(row!)).toThrow(reason);
+    expect(() => drainedEventOf(row!)).toThrow(reason);
+  });
+
+  it.each(['authorization', 'impersonation', 'subject_id', 'operation'])(
+    'reads a NULL %s as absent — the twin of the empty one',
+    (column) => {
+      const [row] = rawRows([eventRow(1, { pii_class: 'none', subject_id: null, [column]: null })]);
+      const event = domainEventOf(row!);
+      expect(event).not.toHaveProperty(column === 'subject_id' ? 'subjectId' : column);
+      expect(() => drainedEventOf(row!)).not.toThrow();
+    },
+  );
+
+  // #1641 review, finding 2: the lifted columns were copied onto an already-validated
+  // envelope as stored, into a value merely typed as a DrainedEvent — so a corrupt one
+  // reached the lake. The whole event is parsed by the published schema now.
+  it('drains a healthy row exactly as the adapters’ lift did', () => {
+    const [row] = rawRows([eventRow(1, { caused_by: ULID(2), version: 'v-1', invocation_id: 'call-1' })]);
+    const r = row as RawOutboxRow;
+    expect(drainedEventOf(r)).toStrictEqual({
+      ...strictEventOf(r),
+      operation: r.operation ?? null,
+      version: r.version ?? null,
+      causedBy: r.caused_by ?? null,
+      invocationId: r.invocation_id ?? null,
+    });
+  });
+
+  it.each([
+    ['version', '', /version: /],
+    ['caused_by', 'not-an-event-id', /caused_by: /],
+    ['invocation_id', new Uint8Array([7]), /invocation_id: /],
+    ['operation', '', /operation: /],
+  ] as const)('refuses to drain a corrupt lifted %s', (column, value, reason) => {
+    const [row] = rawRows([eventRow(1, { [column]: value })]);
+    expect(() => drainedEventOf(row!)).toThrow(reason);
+  });
+
   it('refuses a row that parses but breaks the envelope’s own PII rule', () => {
     const [row] = rawRows([eventRow(1, { subject_id: null, pii_class: 'direct' })]);
     expect(() => domainEventOf(row!)).toThrow(/subject_id: subjectId is required/);
@@ -511,6 +561,23 @@ describe('readUndrainedOutbox — the Tier-2 read, contained per row (#1636)', (
     expect(stalled.events).toEqual([]);
     expect(stalled.skipped!.count).toBe(ceiling);
     expect(over.reads.reduce((n, [, count]) => n + count, 0)).toBe(ceiling);
+  });
+
+  it('skips and counts a row whose LIFTED column is corrupt, and ships its clean twin', () => {
+    const corrupt: Cells[] = [
+      { version: '' },
+      { caused_by: 'not-an-event-id' },
+      { invocation_id: new Uint8Array([7]) },
+      { operation: '' },
+      { authorization: '' },
+    ];
+    const { page } = pageOver([...corrupt.map((over, i) => eventRow(i + 1, { ...plain, ...over })), good(9)]);
+    const read = readUndrainedOutbox(page, 10);
+    // Nothing built from a column the schema refuses reaches the lake…
+    expect(read.events.map((e) => e.id)).toEqual([ULID(9)]);
+    expect(read.skipped).toEqual({ count: corrupt.length, eventIds: corrupt.map((_, i) => ULID(i + 1)) });
+    // …and what does is exactly what the published schema accepts.
+    for (const e of read.events) expect(drainedEvent.parse(e)).toEqual(e);
   });
 
   it('names at most UNDRAINED_SKIPPED_IDS ids, and keeps the count exact past it', () => {

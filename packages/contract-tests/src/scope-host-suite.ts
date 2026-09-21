@@ -1008,6 +1008,41 @@ export function scopeHostContractSuite(
           expect(after.skipped).toEqual({ count: 1, eventIds: [bad.id] });
         });
 
+        // #1641 review. Two shapes the first cut let through: an optional column stored as
+        // `''` was tested for truthiness and read as ABSENT, skipping validation; and the
+        // drain's lifted columns were copied onto a validated envelope unparsed. Both are
+        // values the published schema refuses, and both must be contained like any other.
+        it('an empty optional column, or a corrupt lifted one, is contained too', async () => {
+          const tag = `behind-${ulid()}`;
+          const { s, dump } = await seeded('connector-vertical', (stub) =>
+            stub.invoke('connector/request-effect', { tag: `seed-${ulid()}` }),
+          );
+          const template = rowsOf(dump, '_substrat_outbox').find((r) => r.type === 'effect.requested')!;
+          const behind = { ...template, id: ulid(), payload: JSON.stringify({ tag }) };
+          const planted = [
+            // Envelope columns — every path: delivery, dispatch and the drain.
+            { ...template, id: badId(0), impersonation: '' },
+            { ...template, id: badId(1), authorization: '' },
+            // Lifted columns — the drain's alone.
+            { ...template, id: badId(2), version: '' },
+            { ...template, id: badId(3), caused_by: 'not-an-event-id' },
+          ];
+          await restore(s, dump, { _substrat_deliveries: [], _substrat_outbox: [...planted, behind] });
+
+          // The drain: none of the four ships; the event behind them does; all four counted.
+          const read = await host.admin.readUndrainedEvents(staff, t1, s, 200);
+          expect(read.map((e) => e.id)).toEqual([behind.id]);
+          expect(read.skipped).toEqual({ count: 4, eventIds: planted.map((r) => r.id) });
+
+          // Dispatch: the two envelope-broken rows are dead at once and never handled; the
+          // lifted columns are not part of an executor's event, so those two deliver as before.
+          const report = await host.drainDue(t1, s);
+          expect(report).toMatchObject({ attempted: 5, delivered: 3, deadLettered: 2 });
+          expect(effected).toContain(tag);
+          const dead = (await host.admin.deadLetters(staff, t1, s, {})).entries.map((d) => d.eventId).sort();
+          expect(dead).toEqual([badId(0), badId(1)]);
+        });
+
         it('the Tier-2 read is bounded: past limit × 10 bad rows in a row, a pass ships nothing', async () => {
           const { s, dump } = await seeded('connector-vertical', (stub) => stub.invoke('test/emit-event'));
           const rows = rowsOf(dump, '_substrat_outbox');
