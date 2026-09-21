@@ -54,6 +54,11 @@
       "version": "0011",
       "slug": "add-ticket0_conversations-first_assigned_at-and-2-more",
       "sql": "ALTER TABLE ticket0_conversations ADD COLUMN first_assigned_at TEXT;\n\nALTER TABLE ticket0_desk_settings ADD COLUMN settings TEXT;\n\nALTER TABLE ticket0_desk_settings ADD COLUMN round_robin_last TEXT;\n\nCREATE INDEX ticket0_conversations_waiting ON ticket0_conversations (assignee, created_at, id)\n  WHERE assignee IS NULL AND first_assigned_at IS NULL AND state IN ('new', 'open') AND merged_into IS NULL;\n\nCREATE INDEX ticket0_ai_turns_by_conversation ON ticket0_ai_turns (conversation_id, created_at, id);\n\nCREATE INDEX ticket0_messages_public_by_conversation ON ticket0_messages (conversation_id, visibility, id);"
+    },
+    {
+      "version": "0012",
+      "slug": "add-ticket0_conversations-first_response_due_at-and-3-more",
+      "sql": "ALTER TABLE ticket0_conversations ADD COLUMN first_response_due_at TEXT;\n\nALTER TABLE ticket0_conversations ADD COLUMN resolution_due_at TEXT;\n\nALTER TABLE ticket0_conversations ADD COLUMN first_response_breached_at TEXT;\n\nALTER TABLE ticket0_conversations ADD COLUMN resolution_breached_at TEXT;\n\nCREATE INDEX ticket0_conversations_first_response_running ON ticket0_conversations (first_response_breached_at, first_response_due_at, id)\n  WHERE first_response_due_at IS NOT NULL AND first_response_breached_at IS NULL AND first_public_reply_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL;\n\nCREATE INDEX ticket0_conversations_resolution_running ON ticket0_conversations (resolution_breached_at, resolution_due_at, id)\n  WHERE resolution_due_at IS NOT NULL AND resolution_breached_at IS NULL AND resolved_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL;"
     }
   ]
 }

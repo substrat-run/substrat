@@ -814,6 +814,46 @@
                         }
                       ]
                     },
+                    "first_response_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -853,6 +893,10 @@
                     "first_public_reply_at",
                     "first_assigned_at",
                     "resolved_at",
+                    "first_response_due_at",
+                    "resolution_due_at",
+                    "first_response_breached_at",
+                    "resolution_breached_at",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -1223,6 +1267,46 @@
                         }
                       ]
                     },
+                    "first_response_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -1262,6 +1346,10 @@
                     "first_public_reply_at",
                     "first_assigned_at",
                     "resolved_at",
+                    "first_response_due_at",
+                    "resolution_due_at",
+                    "first_response_breached_at",
+                    "resolution_breached_at",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -1466,6 +1554,61 @@
                     "properties": {
                       "roundRobin": {
                         "type": "boolean"
+                      },
+                      "sla": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "firstResponseMinutes": {
+                                "type": "object",
+                                "properties": {
+                                  "low": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 525600
+                                  },
+                                  "normal": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 525600
+                                  },
+                                  "urgent": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 525600
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "resolutionMinutes": {
+                                "type": "object",
+                                "properties": {
+                                  "low": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 525600
+                                  },
+                                  "normal": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 525600
+                                  },
+                                  "urgent": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 525600
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "additionalProperties": false
@@ -3027,6 +3170,46 @@
                         }
                       ]
                     },
+                    "first_response_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -3066,6 +3249,10 @@
                     "first_public_reply_at",
                     "first_assigned_at",
                     "resolved_at",
+                    "first_response_due_at",
+                    "resolution_due_at",
+                    "first_response_breached_at",
+                    "resolution_breached_at",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -4331,6 +4518,46 @@
                           }
                         ]
                       },
+                      "first_response_due_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "resolution_due_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "first_response_breached_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "resolution_breached_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "merged_into": {
                         "anyOf": [
                           {
@@ -4370,6 +4597,10 @@
                       "first_public_reply_at",
                       "first_assigned_at",
                       "resolved_at",
+                      "first_response_due_at",
+                      "resolution_due_at",
+                      "first_response_breached_at",
+                      "resolution_breached_at",
                       "merged_into",
                       "follows",
                       "created_at",
@@ -4557,6 +4788,46 @@
                           }
                         ]
                       },
+                      "first_response_due_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "resolution_due_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "first_response_breached_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "resolution_breached_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "merged_into": {
                         "anyOf": [
                           {
@@ -4596,6 +4867,10 @@
                       "first_public_reply_at",
                       "first_assigned_at",
                       "resolved_at",
+                      "first_response_due_at",
+                      "resolution_due_at",
+                      "first_response_breached_at",
+                      "resolution_breached_at",
                       "merged_into",
                       "follows",
                       "created_at",
@@ -5726,6 +6001,46 @@
                         }
                       ]
                     },
+                    "first_response_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -5765,6 +6080,10 @@
                     "first_public_reply_at",
                     "first_assigned_at",
                     "resolved_at",
+                    "first_response_due_at",
+                    "resolution_due_at",
+                    "first_response_breached_at",
+                    "resolution_breached_at",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -6272,6 +6591,46 @@
                           }
                         ]
                       },
+                      "first_response_due_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "resolution_due_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "first_response_breached_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "resolution_breached_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "merged_into": {
                         "anyOf": [
                           {
@@ -6311,6 +6670,10 @@
                       "first_public_reply_at",
                       "first_assigned_at",
                       "resolved_at",
+                      "first_response_due_at",
+                      "resolution_due_at",
+                      "first_response_breached_at",
+                      "resolution_breached_at",
                       "merged_into",
                       "follows",
                       "created_at",
@@ -8924,6 +9287,46 @@
                         }
                       ]
                     },
+                    "first_response_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -8963,6 +9366,10 @@
                     "first_public_reply_at",
                     "first_assigned_at",
                     "resolved_at",
+                    "first_response_due_at",
+                    "resolution_due_at",
+                    "first_response_breached_at",
+                    "resolution_breached_at",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -9433,6 +9840,46 @@
                           }
                         ]
                       },
+                      "first_response_due_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "resolution_due_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "first_response_breached_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "resolution_breached_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "merged_into": {
                         "anyOf": [
                           {
@@ -9472,6 +9919,10 @@
                       "first_public_reply_at",
                       "first_assigned_at",
                       "resolved_at",
+                      "first_response_due_at",
+                      "resolution_due_at",
+                      "first_response_breached_at",
+                      "resolution_breached_at",
                       "merged_into",
                       "follows",
                       "created_at",
@@ -9925,6 +10376,46 @@
                         }
                       ]
                     },
+                    "first_response_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -9964,6 +10455,10 @@
                     "first_public_reply_at",
                     "first_assigned_at",
                     "resolved_at",
+                    "first_response_due_at",
+                    "resolution_due_at",
+                    "first_response_breached_at",
+                    "resolution_breached_at",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -10376,6 +10871,46 @@
                         }
                       ]
                     },
+                    "first_response_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -10415,6 +10950,10 @@
                     "first_public_reply_at",
                     "first_assigned_at",
                     "resolved_at",
+                    "first_response_due_at",
+                    "resolution_due_at",
+                    "first_response_breached_at",
+                    "resolution_breached_at",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -11288,6 +11827,46 @@
                         }
                       ]
                     },
+                    "first_response_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -11327,6 +11906,10 @@
                     "first_public_reply_at",
                     "first_assigned_at",
                     "resolved_at",
+                    "first_response_due_at",
+                    "resolution_due_at",
+                    "first_response_breached_at",
+                    "resolution_breached_at",
                     "merged_into",
                     "follows",
                     "created_at",

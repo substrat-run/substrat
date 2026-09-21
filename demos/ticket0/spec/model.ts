@@ -129,6 +129,16 @@ export const DESK_METRICS_WINDOW_DAYS = 30;
 export const DESK_METRICS_MAX_DAYS = 366;
 
 /**
+ * The longest service-level target a desk may set, in minutes: a year (#1082).
+ *
+ * A ceiling on a typo rather than an opinion about support. A promise measured in
+ * years is not a promise anybody escalates on, and a number past this is somebody who
+ * meant hours and typed minutes the other way round. The floor is one minute, stated
+ * where the schema is: a target of zero is breached by the conversation arriving.
+ */
+export const SLA_TARGET_MAX_MINUTES = 525_600;
+
+/**
  * Everything a saved reply may say about the conversation it is being pasted into.
  *
  * A CLOSED set, and that is the decision rather than an unfinished start. A template
@@ -191,6 +201,20 @@ const CLIENT_COLUMNS = {
 } as const;
 
 /**
+ * One service-level target per priority, in whole minutes (#1082). A priority left
+ * out has no target, so a desk can hold `urgent` to an hour and promise nothing about
+ * `low`.
+ */
+const slaTargetMinutes = z.number().int().min(1).max(SLA_TARGET_MAX_MINUTES);
+const slaTargetsByPriority = z
+  .object({
+    low: slaTargetMinutes.optional(),
+    normal: slaTargetMinutes.optional(),
+    urgent: slaTargetMinutes.optional(),
+  })
+  .strict();
+
+/**
  * Everything `desk_settings.settings` may say — the built-in behaviours a desk switches
  * on, one key each (#1083).
  *
@@ -216,6 +240,29 @@ export const deskSettingsBlob = z
      * "nobody has picked up" and who counts as "the next person".
      */
     roundRobin: z.boolean().optional(),
+    /**
+     * The desk's service levels (#1082): how long a conversation of each priority may
+     * wait for its first response, and for its resolution.
+     *
+     * Absent or `null` is a desk with no service levels, and nothing is ever breached
+     * on it. `null` is what switches them off again, because this key is set whole: a
+     * call that names `sla` replaces every target in it, and one that leaves `sla` out
+     * keeps them, as for every key here.
+     *
+     * A target is stamped onto the conversation as an instant (`first_response_due_at`,
+     * `resolution_due_at`) when the conversation arrives and again when its priority
+     * changes. So editing these numbers moves nothing that has already been promised.
+     * Swept by `ticket0/escalate-sla-breaches`; `src/module.ts` says what counts as a
+     * first response and what counts as resolved.
+     */
+    sla: z
+      .object({
+        firstResponseMinutes: slaTargetsByPriority.optional(),
+        resolutionMinutes: slaTargetsByPriority.optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -325,6 +372,43 @@ export const ticket0Entities = defineEntities({
        */
       first_assigned_at: z.string().nullable(),
       resolved_at: z.string().nullable(),
+      /**
+       * When this conversation's first response is owed, and when it will have been
+       * resolved late (#1082). Both are the desk's targets (`deskSettingsBlob.sla`),
+       * turned into instants counted from `created_at`.
+       *
+       * They are written onto the row, not worked out from the desk's settings each time
+       * they are needed, and that is a promise kept rather than a cache. The target a
+       * conversation is held to is the one in force when its priority was decided: when
+       * it arrived, and again when somebody changes its priority. An admin who tightens
+       * the targets on Tuesday does not make Monday's mail late after the fact.
+       *
+       * Null is NO target, and a conversation with no target is never breached. That
+       * covers a desk with no service levels, a priority the desk set no target for, and
+       * every row older than these columns: nothing is back-filled, so a desk's backlog
+       * does not breach all at once the day this ships.
+       */
+      first_response_due_at: z.string().nullable(),
+      resolution_due_at: z.string().nullable(),
+      /**
+       * When the desk recorded that the target was missed. Stamped ONCE and never
+       * cleared, by whichever notices first: `ticket0/escalate-sla-breaches` while the
+       * conversation is still waiting, or a priority change that would otherwise re-aim
+       * the missed target (both of these tell the desk), or the public reply or resolve
+       * that meets the target late (which tells nobody, because it is done). Every door
+       * reads one definition of late, strictly after the due instant, so a miss is on
+       * record whether or not a sweep ran in between.
+       *
+       * This is when the desk NOTICED. It is not when the conversation became late:
+       * that is the `_due_at` beside it. The stamp is also why a breach is announced
+       * exactly once. A conversation already carrying one is not in the sweep's scan, so
+       * a second run finds nothing to tell anybody.
+       *
+       * A breach is history. Answering afterwards does not clear it, and neither does a
+       * priority change: the promise was missed when it was missed.
+       */
+      first_response_breached_at: z.string().nullable(),
+      resolution_breached_at: z.string().nullable(),
       merged_into: z.string().nullable(),
       follows: z.string().nullable(),
       created_at: z.string(),
@@ -885,6 +969,18 @@ export const TICKET0_PERMISSIONS = [
   'conversation:resolve',
   'conversation:merge',
   'conversation:relay',
+  /**
+   * Record that a conversation has missed a service-level target, and tell the desk
+   * (#1082).
+   *
+   * Its own key rather than `conversation:assign`, which the two other sweeps hold,
+   * because the audit trail records the key a check passed. A breach recorded under
+   * `assign` would read as an assignment, and nothing about it is one. No person's role
+   * holds this key: only the desk's own schedule does, so the key is the whole of what
+   * that schedule may do, and revoking the one tuple turns SLA escalation off for one
+   * desk.
+   */
+  'conversation:escalate',
   'contact:read',
   'kb:read',
   'kb:manage',
@@ -1807,6 +1903,33 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   },
 
   /**
+   * Service levels (#1082): notice that a conversation has missed its first-response or
+   * resolution target, record it once, and tell the desk.
+   *
+   * A SCHEDULE for round-robin's reason. The system principal checks a real grant, and
+   * the trail names this operation on every breach it records. The key is
+   * `conversation:escalate`, held by this schedule and by no person's role. A person has
+   * nothing to call here: a breach is a fact about time passing, and nobody declares one
+   * by hand.
+   *
+   * It does not decide what a target IS. The desk's `sla` settings do that, and the
+   * conversation's own `first_response_due_at` / `resolution_due_at` carry the instant it
+   * was held to. This only compares those instants with now, for the conversations whose
+   * target is still running. `src/module.ts` says what "running" means for each.
+   *
+   * `output` is a count, so there are no `emits` here: it publishes
+   * `ticket0.sla-breached` once per target missed, and the notification it writes is the
+   * `escalated` kind the assistant's own hand-offs already use.
+   */
+  'ticket0/escalate-sla-breaches': {
+    // Not a tool: a schedule's entry point; nothing calls it by hand.
+    mcp: false,
+    summary: 'Record each conversation that missed a response or resolution target, and tell the desk once',
+    permission: 'conversation:escalate',
+    output: z.object({ breached: z.number().int() }),
+  },
+
+  /**
    * Priority is triage, not workflow: it moves the conversation nowhere and is legal
    * in every state the conversation is still alive in.
    *
@@ -1829,7 +1952,11 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       type: 'ticket0.conversation-priority-set',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['id', 'priority', 'state'],
+      // The two due instants joined in #1082, additively, so no schemaVersion bump. A
+      // priority change is what re-aims a conversation's service-level targets, and a
+      // consumer keeping score of them should not have to read the row to learn where
+      // they moved.
+      payload: ['id', 'priority', 'state', 'first_response_due_at', 'resolution_due_at'],
     },
   },
 
