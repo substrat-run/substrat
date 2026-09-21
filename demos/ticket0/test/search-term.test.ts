@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { LIKE_PATTERN_MAX_BYTES, likeTerm, searchTerm } from '../spec/model.js';
-import { LIKE_PATTERN_MAX_BYTES as APP_MAX, searchTermBytes, searchTermFits } from '../app/src/search.js';
+import { LIKE_PATTERN_MAX_BYTES as APP_MAX, searchRequestFor, searchTermBytes, searchTermFits } from '../app/src/search.js';
 
 const AT_THE_LIMIT = {
   ascii: 'limit-'.padEnd(48, 'x'),
@@ -42,5 +42,20 @@ describe('the app search ceiling', () => {
   it('counts bytes, not characters', () => {
     expect(AT_THE_LIMIT['two-byte letters'].length).toBe(24);
     expect(searchTermBytes('å')).toBe(4);
+  });
+
+  // The decision the box acts on: over the ceiling is 'none', never 'list' — falling back
+  // to the plain list would replace the user's results with the whole inbox.
+  it('over the ceiling asks for nothing, and only there', () => {
+    for (const kind of Object.keys(AT_THE_LIMIT) as (keyof typeof AT_THE_LIMIT)[]) {
+      expect(searchRequestFor(ONE_OVER[kind])).toBe('none');
+      expect(searchRequestFor(AT_THE_LIMIT[kind])).toBe('search');
+    }
+  });
+
+  it('below the floor is the plain list, at it is a search', () => {
+    expect(searchRequestFor('')).toBe('list');
+    expect(searchRequestFor('a')).toBe('list');
+    expect(searchRequestFor('ab')).toBe('search');
   });
 });

@@ -31,3 +31,21 @@ export const searchTermFits = (term: string): boolean =>
  * `%`, `_` or `\` counts twice, so an honest number is a byte number.
  */
 export const SEARCH_TOO_LONG_HINT = `Search is limited to ${LIKE_PATTERN_MAX_BYTES - 2} bytes — about ${LIKE_PATTERN_MAX_BYTES - 2} plain letters, fewer with accents, symbols or % _ \\`;
+
+/**
+ * What the box's settled term asks of the server: `'none'` for a term over the ceiling
+ * (nothing is sent and the screen is left as it is), `'search'` for one long enough to
+ * search on, `'list'` for the plain inbox. `SEARCH_MIN` is the floor `Inbox.tsx` holds.
+ */
+export type SearchRequest = 'none' | 'list' | 'search';
+
+/**
+ * The floor the two search operations declare (`q: z.string().min(2)`).
+ *
+ * Below it the box is a box and nothing is asked for, rather than a request that
+ * comes back 400 on every second keystroke.
+ */
+export const SEARCH_MIN = 2;
+
+export const searchRequestFor = (term: string): SearchRequest =>
+  !searchTermFits(term) ? 'none' : term.length >= SEARCH_MIN ? 'search' : 'list';

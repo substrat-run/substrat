@@ -47,7 +47,7 @@ import {
 import { agentName, agents, assignableStaff } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
-import { SEARCH_TOO_LONG_HINT, searchTermFits } from '../search.js';
+import { SEARCH_MIN, SEARCH_TOO_LONG_HINT, searchRequestFor, searchTermFits } from '../search.js';
 import { slaMissedLabel } from '../sla.js';
 import { Avatar, Empty, OwnerPicker, Priority, StateBadge, Unassigned, ago } from '../ui.js';
 
@@ -69,14 +69,6 @@ interface Filters {
   /** Not a chip — set by picking a person out of the search results (#1081). */
   contact_id: string;
 }
-
-/**
- * The floor the two search operations declare (`q: z.string().min(2)`).
- *
- * Below it the box is a box and nothing is asked for, rather than a request that
- * comes back 400 on every second keystroke.
- */
-const SEARCH_MIN = 2;
 
 /** How long the box waits for typing to stop. A request per keystroke is not a search. */
 const SEARCH_DEBOUNCE_MS = 200;
@@ -239,6 +231,10 @@ export function Inbox({
 
   const load = useCallback(
     (fromFilters = false) => {
+      // A term over the ceiling asks for nothing, and the list on screen stays as it is:
+      // falling through to the unfiltered read would replace the search with the whole
+      // inbox, and the search itself would come back a 400. The hint says why.
+      if (searchRequestFor(term) === 'none') return;
       if (fromFilters) {
         setPage(null);
         setMoreError(null);
@@ -372,10 +368,7 @@ export function Inbox({
   /** Typing settles into a term. Everything downstream hangs off `term`, never `q`. */
   useEffect(() => {
     const trimmed = q.trim();
-    // A term over the ceiling settles to nothing: every read below hangs off `term`, so
-    // none of them asks, and the hint under the box says why.
-    const settled = searchTermFits(trimmed) ? trimmed : '';
-    const id = setTimeout(() => setTerm(settled), SEARCH_DEBOUNCE_MS);
+    const id = setTimeout(() => setTerm(trimmed), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(id);
   }, [q]);
 
@@ -385,6 +378,8 @@ export function Inbox({
    * in two places is how a support agent ends up in the database.
    */
   useEffect(() => {
+    // Over the ceiling: no request, and the people already shown are left alone.
+    if (searchRequestFor(term) === 'none') return;
     if (term.length < SEARCH_MIN) {
       setMatches({ term: '', entries: [] });
       return;
