@@ -12,9 +12,12 @@
     "src",
     "harness",
     "test",
-    "tools"
+    "tools",
+    "vitest.workers.config.ts"
   ],
   "exclude": [
-    "src/worker.ts"
+    "src/worker.ts",
+    // Runs inside workerd, not node — its own project (tsconfig.workerd-test.json).
+    "test/workerd"
   ]
 }

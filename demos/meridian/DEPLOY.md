@@ -2,8 +2,10 @@
 
 Meridian is now a **sandbox-clean, control-plane-less vertical** (like Callout), so it can be
 pushed into the platform's Workers-for-Platforms **dispatch namespace** and provisioned by the
-shared control plane. Its only bindings are its own `SCOPE` Durable Object and `AUTH_DB`; the SPA
-is bundled into the worker (no `ASSETS` binding). This is what makes it pass `assertSandboxContract`
+shared control plane. Its only bindings are its own three Durable Object classes — `SCOPE` (one per
+scope), `AUTH` (the per-tenant `IdentityDO`) and `SWEEPER` (the deployment's own timer, which runs
+engine-absence's `absence/expire-stale`, #1646) — and the SPA is served as native assets (no
+`ASSETS` binding). This is what makes it pass `assertSandboxContract`
 (`packages/control-plane-api/src/deploy.ts`) — a `CONTROL_PLANE` binding or a service binding to a
 platform worker would be refused.
 
@@ -70,11 +72,21 @@ Smoke-tested locally end to end: `GET /` serves the SPA; `/internal/provision` i
 without `PLATFORM_SECRET`, 201 with it) and sets up the scope CP-lessly via `provisionScopeLocal`,
 seeding the owner seat; a real **sign-up → session cookie → `/api/invoke`** claims that seat (the
 installer becomes `hr-admin`) and the `hr/*` op succeeds on DO SQLite; `/api/me` returns the claimed
-principal. `wrangler deploy --dry-run` shows only the `SCOPE` + `AUTH` (IdentityDO) bindings — no D1,
-no service binding, so it passes `assertSandboxContract`.
+principal. `wrangler deploy --dry-run` shows exactly three bindings, all Durable Objects of the
+vertical's own classes — `SCOPE` (ScopeDO), `AUTH` (IdentityDO) and `SWEEPER` (SweeperDO) — and no
+D1 or service binding, so it passes `assertSandboxContract`. `pnpm test` runs the worker in workerd
+(`test/workerd/`): provision, a sweep pass and its effect, reconcile, a restored fork kept off the
+sweep roster, and delete.
 
 ## Known follow-ups (not blockers for provisioning, but for full hosted UX)
 
+- **Stale-leave expiry on a standard install (#1654).** The sweeper (#1646) runs engine-absence's
+  `absence/expire-stale`, but as the absence module's own operation, so it needs the `absence`
+  entitlement, which a standard install (`substrat.entitlements`: meridian, protocol) does not grant.
+  There every daily run is recorded `failed` and the leave stays `requested`.
+- **Installs that predate the sweeper (#1653).** Meridian is listed, so a promote does not
+  reconcile its installs: one joins the sweep roster when it is updated, or when somebody runs
+  **Re-run provisioning** on its scope in the console (or `substrat scope provision <scopeId>`).
 - **App data contract — done.** `/api/me` returns the SPA shape (`{ key, display, role, country,
   employeeId }`) via `hr/whoami`, and owner **login-linking is done** — the first sign-in claims the
   owner seat (`hr-admin`), so a real signed-up owner lands on the Admin/setup surface. (Reconciled

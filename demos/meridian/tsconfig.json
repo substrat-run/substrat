@@ -4,6 +4,7 @@
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["src", "test", "vitest.config.ts"],
-  "exclude": ["src/worker.ts", "src/assets.ts", "src/assets.generated.ts"]
+  "include": ["src", "test", "vitest.config.ts", "vitest.workers.config.ts"],
+  // test/workerd runs inside workerd, not node — its own project (tsconfig.workerd-test.json).
+  "exclude": ["src/worker.ts", "src/assets.ts", "src/assets.generated.ts", "test/workerd"]
 }

@@ -209,7 +209,9 @@ export const ticket0Manifest = moduleManifest.parse({
      *
      * Five minutes is the cadence a person perceives as "it came back when I said",
      * and it is a floor rather than a promise — a schedule can never fire more often
-     * than the platform's own sweep runs.
+     * than whatever sweeps the desk runs. On a hosted desk that is the deployment's own
+     * sweeper (`SweeperDO` in `src/worker.ts`, #1646): a pass two minutes after the last
+     * one ended, so a five-minute schedule fires on the third pass, about every six.
      */
     {
       operation: 'ticket0/wake-snoozed',
@@ -251,7 +253,7 @@ export const ticket0Manifest = moduleManifest.parse({
      *
      * Five minutes for `wake-snoozed`'s reason: it is the cadence a person reads as
      * "it arrived and somebody had it". It is a floor rather than a promise, as every
-     * cadence here is — a hosted desk is swept when the platform sweeps.
+     * cadence here is — a hosted desk is swept when its deployment's sweeper passes.
      *
      * The key is `conversation:assign`, the one `wake-snoozed` already names, so a desk
      * provisioned before this schedule existed already holds the tuple it needs and no
@@ -275,10 +277,12 @@ export const ticket0Manifest = moduleManifest.parse({
      * its due instant. So the lag between a target passing and the desk hearing of it is
      * one sweep interval at worst, never less than this.
      *
-     * On a HOSTED desk nothing sweeps this desk's schedules today. ticket0 wires no scope
-     * sweeper, and the control plane's host registers no modules, so none of the four
-     * schedules here fires there (#1646). Until that lands, a breach is recorded only
-     * where something runs the schedules: the tests, and any host that sweeps.
+     * On a HOSTED desk what sweeps is the deployment's own `SweeperDO` (`src/worker.ts`,
+     * #1646) — not the control plane, whose host registers no modules and so fires none
+     * of the four schedules here. The sweeper passes every two minutes over the desks it
+     * has been told about, and a desk is told about at provision, or at a reconcile for
+     * one provisioned before the sweeper existed. A desk that is on no roster runs none of
+     * these, and records a breach only when somebody acts on the late conversation.
      *
      * Its own key, `conversation:escalate`, rather than the `conversation:assign` the two
      * sweeps above share: the trail records the key a check passed, and an escalation

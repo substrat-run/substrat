@@ -152,11 +152,32 @@ locally knowable. The alarm lapses on an empty roster and re-arms on the next `n
 so an idle deployment costs nothing. Scopes provisioned before the sweeper shipped join on
 their next platform reconcile.
 
+"Next platform reconcile" is narrower than it reads, and #1646 found where. The one
+automatic reconcile is #1172's phase of the control plane's sweep, and it runs for a scope
+only when the version the scope is bound to has moved past the one its provision last ran
+against. A promote moves that pointer for a **private** vertical's own scopes
+(`adoptAndRebindOwnedScopes`); it does not move it for any install of a **listed**
+vertical, the owner's included, whose version changes when that install is updated. So such an install joins
+the roster on its Update, or when somebody re-runs its provisioning (the console's scope
+detail, or `substrat scope provision <scopeId>`), and until then its schedules do not run.
+Enrolling from request traffic would close the gap and open a worse one — a PR preview is
+a fork of production data, restored rather than provisioned and then routed — so the
+roster stays platform-fed, and the gap stays named (#1653).
+
 The split this leaves is clean: a CP-less deployment owns its **scope-local** recurring work
 (retries, schedules); the **directory-owned** phases — connector sweeps, snapshot GC, reaps,
 migration reconciliation — stay with the platform, which has the directory and the
 `/internal` surface to orchestrate them. The create-substrat template wires the sweeper by
-default (`SWEEPER` store + the three route calls).
+default (`SWEEPER` store + the three route calls), and so do the two hosted demos that declare
+schedules, `demos/ticket0` and `demos/meridian` (#1646). Each of those runs its deployed
+worker in workerd (`test/workerd/sweeper.test.ts`), and each suite holds the same five
+things for its own vertical: provision notes the scope, a real pass produces a due
+schedule's effect and leaves a not-yet-due twin alone, reconcile notes a scope provisioned
+before the sweeper, a copy restored from a scope's dump and then reached by routed traffic
+stays off the roster with its due work undone, and delete forgets the scope. meridian's also
+pins the one thing that still fails there, an engine schedule on a standard install
+(#1654). Both exist because no node-host suite reaches `src/worker.ts`, which is how both
+verticals came to declare schedules that nothing ran.
 
 ## 4. Design B — per-scope DO alarms (the scale target)
 

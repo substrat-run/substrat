@@ -315,9 +315,12 @@ once: by `ticket0/escalate-sla-breaches` (a declared schedule under its own
 send the `escalated` notification), or by the late reply or resolution itself (which
 notifies nobody, because it has just been dealt with). The inbox row says which target
 was missed. The schedule runs every 5 minutes at the soonest, so a breach is noticed up
-to one run late. **On a hosted desk that schedule does not fire yet (#1646)**, and none of
-ticket0's other schedules do either, so a hosted desk records a breach only when somebody acts on the late
-conversation: a reply, a resolution or a priority change. A snooze does not pause the clock yet (#1648).
+to one run late. On a hosted desk the schedules run on the deployment's own timer
+(`SweeperDO` in `src/worker.ts`, #1646), a pass every two minutes over every desk it has been
+told about. A desk is told about when it is provisioned, and a desk provisioned before the
+timer existed when the platform next reconciles it. A desk on no roster records a breach only
+when somebody acts on the late conversation: a reply, a resolution or a priority change. A
+snooze does not pause the clock yet (#1648).
 
 The inbox filters narrow the read **on the server**: `state`, `assignee`, `channel` and
 `priority` are declared inputs on `ticket0/list-conversations`, and the kernel composes
@@ -328,9 +331,11 @@ so they are wired rather than drawn. "Assigned to me" is the same mechanism.
 ## Deploying it
 
 ticket0 is a pushable vertical: `src/worker.ts` is the deploy entry (sandbox-clean,
-control-plane-less — one `ScopeDO` per desk plus the shared per-tenant `IdentityDO`),
-and `substrat.runtimeNeeds` in package.json is the whole deploy config. There is no
-wrangler.jsonc; the CLI derives one.
+control-plane-less — one `ScopeDO` per desk, the shared per-tenant `IdentityDO`, and one
+`SweeperDO` per deployment that runs every desk's schedules), and `substrat.runtimeNeeds`
+in package.json is the whole deploy config. There is no wrangler.jsonc; the CLI derives one.
+`test/workerd/` runs that worker in workerd; everything else in `test/` drives the module
+on the node host.
 
 ```sh
 substrat push                       # bundles the worker, builds app/ + widget.js as assets
