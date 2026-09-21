@@ -226,6 +226,33 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     expect(await audit()).toEqual([]);
   });
 
+  it("the DO's pre-#1666 `hasSystemGrant` answers the new question — a coordinator a deploy behind cannot run a switched-off scope", async () => {
+    // Not delegated: the switch is moved in THIS host's own DO, which is the one asked.
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `legacy-${t.slice(-10).toLowerCase()}`, name: 'Legacy' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    const raw = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as { hasSystemGrant(m: string): Promise<boolean> };
+    const node = { tenantId: t, scopeId: s };
+    expect(await raw.hasSystemGrant(SCHED)).toBe(true);
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+    expect(await raw.hasSystemGrant(SCHED)).toBe(false);
+    // A live grant beside the marker: exactly what the old predicate ("any live system:
+    // tuple") would have counted — and the marker itself is a live `system:` tuple too.
+    await host.admin.grantToSystem(staff, { moduleId: SCHED, permission: permissionKey.parse('sched:tick'), node, grantedBy: staff });
+    expect(await raw.hasSystemGrant(SCHED)).toBe(false);
+    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+    expect(await raw.hasSystemGrant(SCHED)).toBe(true);
+  });
+
   it('refuses a scope the directory does not have before reaching anything', async () => {
     const { host, t, calls } = await setup(() => ({ held: true, changed: true, permissions: [] }));
     const refused = await host.admin
