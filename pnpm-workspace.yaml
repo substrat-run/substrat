@@ -70,10 +70,10 @@ catalog:
   # wants workers-types ^5, pool-workers 0.9 wants ^4. It resolves itself with
   # the vitest 4 migration above.
   vitest: ^3.2.7
-  '@cloudflare/vitest-pool-workers': ^0.9.0
+  '@cloudflare/vitest-pool-workers': ^0.12.21
   '@cloudflare/workers-types': ^4.20250109.0
-  wrangler: ^4.110.0
-  '@types/node': ^22.0.0
+  wrangler: ^4.134.0
+  '@types/node': ^22.20.3
 
   # The compiler. Here for the same reason as the rest, and it had already
   # drifted: 55 members on ^7.0.0, two on ^7.0.2, and `apps/dashboard` still on

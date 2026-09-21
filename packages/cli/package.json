@@ -36,7 +36,7 @@
     "@substrat-run/boundary-lint": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/model-view": "workspace:^",
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.28.2"
   },
   "devDependencies": {
     "@types/node": "catalog:",

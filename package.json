@@ -66,7 +66,7 @@
     "lint:wrangler-config": "node tools/wrangler-config-check.mjs"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.31.0",
+    "@changesets/cli": "^2.31.1",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
