@@ -1,4 +1,6 @@
 import {
+  deadLetter,
+  eventDelivery,
   historyEntry,
   listLimitOf,
   pageOf,
@@ -372,20 +374,30 @@ interface DeliveryRow {
  * So: pending → retrying, else an error → dead, else delivered.
  */
 function deliveryOf(row: DeliveryRow): EventDelivery {
+  const shape = eventDelivery.shape;
+  const d = rowDecoder(
+    `delivery row ${JSON.stringify(row.consumer_module)}`,
+    'EventDelivery',
+  );
+  // From the STORED columns, and `!= null` rather than a truthiness test: an empty `error`
+  // is a delivery that gave up with no message, not one that did not give up (#1643).
   const state: DeliveryState =
-    row.next_attempt_at !== null ? 'retrying' : row.error !== null ? 'dead' : 'delivered';
-  return {
-    consumer: row.consumer_module as ModuleId,
+    row.next_attempt_at != null ? 'retrying' : row.error != null ? 'dead' : 'delivered';
+  return d.finish<EventDelivery>({
+    consumer: d.required('consumer_module', shape.consumer, row.consumer_module),
     state,
-    at: row.delivered_at as Instant,
-    error: row.error,
-    attempts: row.attempts,
+    at: d.required('delivered_at', shape.at, row.delivered_at),
+    error: d.nullable('error', shape.error, row.error ?? null),
+    // The one this fix is for (#1643): `attempts` was cast, so a stored `-1`, `1.5` or `'many'`
+    // (INTEGER affinity keeps text it cannot convert) reached a caller typed as a
+    // non-negative integer. A required scalar with no honest empty value, so it throws.
+    attempts: d.required('attempts', shape.attempts, row.attempts),
     // #1525: which CALL made the attempt `at` dates — the join the event's own
     // invocation cannot make, because a retry runs in a later call or in none.
     // `?? null` rather than a bare read, for the row a legacy store hands back
     // with the column absent.
-    invocationId: row.invocation_id ?? null,
-  };
+    invocationId: d.nullable('invocation_id', shape.invocationId, row.invocation_id ?? null),
+  });
 }
 
 /**
@@ -542,6 +554,48 @@ interface DeadLetterRow {
 }
 
 /**
+ * One dead-letter row, decoded against the published `deadLetter` schema (#1643).
+ *
+ * The four casts this replaces (`eventId`, `occurredAt`, `consumer`, `at`) plus the
+ * unchecked `attempts` typed the row as a `DeadLetter` without asking it. Now every field
+ * is parsed by its own contract field, on `rowDecoder`'s rules: the two invocation ids are
+ * nullable columns and read `null` beside a `decodeError`; every other column is a required
+ * scalar with no honest empty value, so a row that breaks one throws, naming them — rather
+ * than being returned typed as valid. The cursor is built from the decoded values, so a
+ * page can never hand out a cursor its own schema would refuse.
+ */
+function deadLetterOf(r: DeadLetterRow): DeadLetter {
+  const shape = deadLetter.shape;
+  const d = rowDecoder(
+    `dead-letter row ${JSON.stringify(r.event_id)}/${JSON.stringify(r.consumer_module)}`,
+    'DeadLetter',
+  );
+  return d.finish<DeadLetter>({
+    eventId: d.required('event_id', shape.eventId, r.event_id),
+    eventType: d.required('type', shape.eventType, r.type),
+    occurredAt: d.required('occurred_at', shape.occurredAt, r.occurred_at),
+    entity: d.required('entity_type/entity_id', shape.entity, {
+      entityType: r.entity_type,
+      entityId: r.entity_id,
+    }),
+    invocationId: d.nullable('invocation_id', shape.invocationId, r.invocation_id ?? null),
+    // #1525: the call the LAST attempt ran in, which for these rows is the one that
+    // gave up. Usually not the event's: an executor's first attempt runs in the emitting
+    // call's tail and every retry after it in a drain, so a delivery that exhausted its
+    // attempts most often names a later call or none at all.
+    attemptInvocationId: d.nullable(
+      'attempt_invocation_id',
+      shape.attemptInvocationId,
+      r.attempt_invocation_id ?? null,
+    ),
+    consumer: d.required('consumer_module', shape.consumer, r.consumer_module),
+    at: d.required('delivered_at', shape.at, r.delivered_at),
+    error: d.required('error', shape.error, r.error),
+    attempts: d.required('attempts', shape.attempts, r.attempts),
+  });
+}
+
+/**
  * Every delivery in the scope that gave up (#1525), newest event first.
  *
  * The question the two walks cannot answer, because they reach a delivery only through
@@ -587,24 +641,7 @@ export function readDeadLetters(ctx: TimelineReader, page?: Pick<ListPage, 'limi
       LIMIT ?`,
     params,
   );
-  const entries = rows.map(
-    (r): DeadLetter => ({
-      eventId: r.event_id as EventId,
-      eventType: r.type,
-      occurredAt: r.occurred_at as Instant,
-      entity: { entityType: r.entity_type, entityId: r.entity_id },
-      invocationId: r.invocation_id,
-      // #1525: the call the LAST attempt ran in, which for these rows is the one that
-      // gave up. Usually not the event's: an executor's first attempt runs in the
-      // emitting call's tail and every retry after it in a drain, so a delivery that
-      // exhausted its attempts most often names a later call or none at all.
-      attemptInvocationId: r.attempt_invocation_id ?? null,
-      consumer: r.consumer_module as ModuleId,
-      at: r.delivered_at as Instant,
-      error: r.error,
-      attempts: r.attempts,
-    }),
-  );
+  const entries = rows.map(deadLetterOf);
   return pageOf(entries, limit, (e) => `${e.eventId}${DEAD_LETTER_CURSOR_SEPARATOR}${e.consumer}`);
 }
 

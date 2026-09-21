@@ -2,6 +2,7 @@ import {
   DEFAULT_DENIAL_LIMIT,
   denialBucket,
   denialFilter,
+  denialOperationBucket,
   permissionDenial,
   type DenialActorSummary,
   type DenialBucket,
@@ -217,13 +218,27 @@ export interface DenialOperationBucketRow {
   last_at: string;
 }
 
+/**
+ * One operation bucket, tolerantly (#1643) — the sibling `mapDenialBucketRow` already was.
+ *
+ * `operation` is the only column with an empty value its schema accepts: one that is not
+ * text reads as `null`, and `decodeError` says so, which is what keeps it from reading as
+ * the bucket for a refusal that ran outside an operation. `count` and the two times are
+ * required scalars: a bucket that breaks one throws, naming them, rather than being
+ * returned typed as valid.
+ */
 export function mapDenialOperationBucketRow(row: DenialOperationBucketRow): DenialOperationBucket {
-  return {
-    operation: row.operation ?? null,
-    count: Number(row.count),
-    firstAt: row.first_at,
-    lastAt: row.last_at,
-  };
+  const shape = denialOperationBucket.shape;
+  const d = rowDecoder(
+    `denial operation bucket ${JSON.stringify(row.operation ?? null)}`,
+    'DenialOperationBucket',
+  );
+  return d.finish<DenialOperationBucket>({
+    operation: d.nullable('operation', shape.operation, row.operation ?? null),
+    count: d.required<number>('count', shape.count, Number(row.count)),
+    firstAt: d.required<string>('first_at', shape.firstAt, row.first_at),
+    lastAt: d.required<string>('last_at', shape.lastAt, row.last_at),
+  });
 }
 
 /** The half of a `DenialSummary` the grouped query answers; the facts are the other half. */
