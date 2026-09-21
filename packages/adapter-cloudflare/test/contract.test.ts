@@ -28,6 +28,7 @@ import {
   scheduleContractSuite,
   scheduleMod,
   jobRunContractSuite,
+  systemSwitchContractSuite,
   scopeHostContractSuite,
   searchContractSuite,
   entityVersionContractSuite,
@@ -126,6 +127,17 @@ jobRunContractSuite('adapter-cloudflare', async () => {
   return { host, cleanup: async () => host.close() };
 });
 
+// #1666: the schedule kill switch, on the adapter that is deployed — the gate and the
+// switch both run in the scope DO. The DEFAULT checker: what the switch stops is a system
+// principal's own `ctx.check`, which an allow-all would pass regardless.
+systemSwitchContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
 
 /**
  * The Cloudflare half of #32 — the same guarantee the pure adapter asserts, on the
