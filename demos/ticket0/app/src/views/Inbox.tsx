@@ -47,6 +47,7 @@ import {
 import { agentName, agents, assignableStaff } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
+import { SEARCH_TOO_LONG_HINT, searchTermFits } from '../search.js';
 import { slaMissedLabel } from '../sla.js';
 import { Avatar, Empty, OwnerPicker, Priority, StateBadge, Unassigned, ago } from '../ui.js';
 
@@ -371,7 +372,10 @@ export function Inbox({
   /** Typing settles into a term. Everything downstream hangs off `term`, never `q`. */
   useEffect(() => {
     const trimmed = q.trim();
-    const id = setTimeout(() => setTerm(trimmed), SEARCH_DEBOUNCE_MS);
+    // A term over the ceiling settles to nothing: every read below hangs off `term`, so
+    // none of them asks, and the hint under the box says why.
+    const settled = searchTermFits(trimmed) ? trimmed : '';
+    const id = setTimeout(() => setTerm(settled), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(id);
   }, [q]);
 
@@ -608,6 +612,11 @@ export function Inbox({
               outline: 'none',
             }}
           />
+          {!searchTermFits(q.trim()) ? (
+            <div role="status" style={{ flex: '1 1 100%', font: "400 12px 'Geist', sans-serif", color: 'var(--text-muted, var(--text))' }}>
+              {SEARCH_TOO_LONG_HINT}
+            </div>
+          ) : null}
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             {/* The agent's own queue. First, because it is the one most used. */}
