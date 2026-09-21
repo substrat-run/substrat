@@ -31,6 +31,7 @@
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
+  platformActorId,
   principalId,
   scopeId,
   sweepRunsPayload,
@@ -41,7 +42,8 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { runPlatformSweep, ulid, type ScopeHost } from '@substrat-run/kernel';
+import { VerticalClient } from '@substrat-run/control-plane-api';
 import {
   CloudflareScopeHost,
   SCOPE_SWEEPER_NAME,
@@ -316,5 +318,85 @@ describe('meridian provision is idempotent (#1653)', () => {
 
     expect(again).toEqual(once);
     expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+});
+
+/**
+ * The whole #1653 chain in one pass: a promote of this LISTED vertical reaches an existing
+ * install's `onProvision`.
+ *
+ * The directory here is a stand-in holding what the control plane's holds after that
+ * promote — the install and a restored copy of it, both on the serving script, both still
+ * pointed at v1 and provisioned at v1, with the script now serving v2 (the directory half
+ * is proven against the real control-plane Durable Object in `apps/control-plane`). Every
+ * other link is the real one: `runPlatformSweep` decides, the platform's own
+ * `VerticalClient` calls this deployed worker's `/internal/reconcile`, and the hook that
+ * runs is Meridian's. The install was provisioned before the sweeper existed, so the only
+ * way onto the roster is that hook running.
+ */
+describe("a listed vertical's promote reaches an install's onProvision (#1653)", () => {
+  it('the sweep reconciles the install through the platform client, its hook runs, and its restored copy is left alone', async () => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const copy = scopeId.parse(ulid());
+    expect((await platform('/internal/provision', { tenantId: t, scopeId: s, owner, entitlements: grants(INSTALLED) })).status).toBe(201);
+    // Provisioned before the sweeper existed: never noted.
+    await sweeper().forgetScope(s);
+    // The PR-preview path: dump the install, restore it under another id.
+    const dump = await (await platform(`/internal/export?scopeId=${s}`)).json();
+    expect((await platform('/internal/restore', { tenantId: t, scopeId: copy, tables: dump })).status).toBe(200);
+    expect(await roster()).not.toContain(s);
+
+    const row = (id: ScopeId, forkedFrom: ScopeId | null) => ({
+      id,
+      tenantId: t,
+      kind: 'app',
+      status: 'active',
+      vertical: 'meridian',
+      servingRef: 'meridian',
+      verticalVersionId: 'v1',
+      provisionedVersionId: 'v1',
+      forkedFrom,
+    });
+    const marked: { id: string; versionId: string }[] = [];
+    const directory = {
+      admin: {
+        listScopes: async () => [row(s, null), row(copy, s)],
+        listVerticals: async () => [{ slug: 'meridian', servingRef: 'meridian', servingVersionId: 'v2' }],
+        listConnections: async () => [],
+        markScopeProvisioned: async (_a: unknown, _t: unknown, id: string, versionId: string) => {
+          marked.push({ id, versionId });
+        },
+      },
+    } as unknown as ScopeHost;
+    const client = new VerticalClient({
+      fetch: ((input: RequestInfo, init?: RequestInit) => SELF.fetch(input, init)) as typeof fetch,
+      baseUrl: 'https://meridian.test',
+      platformSecret: env.PLATFORM_SECRET,
+    });
+    const reached: string[] = [];
+
+    const report = await runPlatformSweep(directory, {
+      actor: platformActorId.parse(ulid()),
+      fetch: (() => Promise.reject(new Error('unused'))) as never,
+      sweepers: {},
+      drainRetries: false,
+      runSchedules: false,
+      reconcileMigrations: false,
+      gcSnapshots: false,
+      reconcileScopeFn: async (tenant, id) => {
+        reached.push(id);
+        await client.reconcileInstance({ tenantId: tenant, scopeId: id, entitlements: grants(INSTALLED) } as never);
+      },
+    });
+
+    expect(report.errors).toEqual([]);
+    expect(reached).toEqual([s]);
+    expect(marked).toEqual([{ id: s, versionId: 'v2' }]);
+    // The hook ran: the install is on its deployment's roster now, and its copy is not.
+    expect(await roster()).toContain(s);
+    expect(await roster()).not.toContain(copy);
+
+    for (const id of [s, copy]) expect((await platform('/internal/delete-scope', { scopeId: id })).status).toBe(200);
   });
 });
