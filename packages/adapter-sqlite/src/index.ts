@@ -332,6 +332,10 @@ import {
   assertRedrainWindow,
   readInvocation,
   readDeadLetters,
+  domainEventOf,
+  readUndrainedOutbox,
+  undrainedEventsOf,
+  type UndrainedEvents,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -1056,6 +1060,13 @@ function modelUsageEntryOf(r: ModelUsageRow): ModelUsageEntry {
     elapsedMs: r.elapsed_ms,
   });
 }
+
+/**
+ * The policy an undecodable event's executor delivery is journaled under (#1636): one
+ * attempt, so the first failure is the dead letter. A decode is pure — retrying it cannot
+ * succeed — and the Cloudflare coordinator records the same row with no next attempt.
+ */
+const UNDECODABLE_RETRY: Required<ExecutorRetryPolicy> = { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 };
 
 interface OutboxRow {
   id: string;
@@ -3733,8 +3744,21 @@ export class SqliteScopeHost implements ScopeHost {
         .all(deliveryId, executor.eventType, now) as OutboxRow[];
 
       for (const row of rows) {
-        const event = this.parseOutboxRow(row);
         report.attempted += 1;
+        let event: DomainEvent;
+        try {
+          event = domainEventOf(row);
+        } catch (err) {
+          // #1636: an event that does not decode is dead-lettered for this executor at
+          // once, and the handler never sees it. The decode sat above this loop's `try`,
+          // so one bad row threw the executor's whole pending list on every pass. Terminal
+          // on the FIRST failure, unlike a handler's: the decode is pure, of text already
+          // in hand, so a retry cannot succeed — and only the decode is caught here, so a
+          // handler's transient failure keeps its backoff below.
+          this.recordExecutorDelivery(rt, row.id, deliveryId, String(err), UNDECODABLE_RETRY, invocationId);
+          report.deadLettered += 1;
+          continue;
+        }
         this.causedBy = event.id;
         try {
           if (executor.kind === 'connector') {
@@ -4266,7 +4290,25 @@ export class SqliteScopeHost implements ScopeHost {
             )
             .all(consumer.eventType, mod.id) as OutboxRow[];
           for (const row of rows) {
-            const event = this.parseOutboxRow(row);
+            let event: DomainEvent;
+            try {
+              event = domainEventOf(row);
+            } catch (err) {
+              // #1636: dead-letter an event that does not decode, exactly as a failed
+              // handler is — the decode sat ABOVE the `try` below, so one bad row halted
+              // every event of this type behind it, on every pass. The consumer is never
+              // handed it: an event built from stand-ins is not one it may act on. Only
+              // the decode is caught; the journal write is not, so a failure to record
+              // this still surfaces as it would for a handler's dead letter.
+              rt.db
+                .prepare(
+                  `INSERT INTO _substrat_deliveries
+                     (event_id, consumer_module, delivered_at, error, invocation_id)
+                   VALUES (?, ?, ?, ?, ?)`,
+                )
+                .run(row.id, mod.id, new Date().toISOString(), String(err), invocationId);
+              continue;
+            }
             const ctx = this.operationContext(rt, asPrincipal(this.systemPrincipal), {
               system: mod.id,
             });
@@ -4367,30 +4409,6 @@ export class SqliteScopeHost implements ScopeHost {
         invocationId,
         new Date().toISOString(),
       );
-  }
-
-  private parseOutboxRow(row: OutboxRow): DomainEvent {
-    return domainEvent.parse({
-      id: row.id,
-      type: row.type,
-      schemaVersion: row.schema_version,
-      occurredAt: row.occurred_at,
-      tenantId: row.tenant_id,
-      scopeId: row.scope_id,
-      actor: JSON.parse(row.actor),
-      entity: { entityType: row.entity_type, entityId: row.entity_id },
-      piiClass: row.pii_class,
-      ...(row.subject_id ? { subjectId: row.subject_id } : {}),
-      ...(row.authorization ? { authorization: JSON.parse(row.authorization) } : {}),
-      // K-42: the stamp survives the read, so a consumer's event and an executor's
-      // are the same fact the stored row is. Absent rather than null when nobody
-      // was impersonating, because `DomainEvent.impersonation` is optional — the
-      // shape module code never sees is also the shape it cannot branch on.
-      ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
-      // #1231: absent rather than null, the same shape rule as the stamp above.
-      ...(row.operation ? { operation: row.operation } : {}),
-      payload: row.payload === null ? undefined : JSON.parse(row.payload),
-    });
   }
 
   // -------------------------------------------------------------------------
@@ -6034,25 +6052,20 @@ export class SqliteScopeHost implements ScopeHost {
           { expiresAt },
         );
       },
-      readUndrainedEvents: async (actor, tenantId, scopeId, limit) => {
+      readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
         const db = this.scopeDbFor(tenantId, scopeId);
-        const rows = db
-          .prepare(`SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ?`)
-          .all(Math.min(Math.max(limit ?? 200, 1), 1000)) as Array<Record<string, unknown>>;
-        this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, rows.length);
-        return rows.map((r) => ({
-          ...this.parseOutboxRow(r as never),
-          operation: (r.operation as string | null) ?? null,
-          version: (r.version as string | null) ?? null,
-          // #1237 — lifted like the two above, and for the same reason: the column
-          // exists on the outbox but not on the envelope `parseOutboxRow` returns,
-          // whose `domainEvent.parse` strips anything it does not declare.
-          causedBy: (r.caused_by as string | null) ?? null,
-          // Same lift, same reason. `drainedEvent` requires this field, and the `as never`
-          // below is what let it be missed: without it a SQLite-backed lake loses the
-          // call grouping permanently, while a Cloudflare-backed one keeps it.
-          invocationId: (r.invocation_id as string | null) ?? null,
-        })) as never;
+        const page = db.prepare(
+          `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ? OFFSET ?`,
+        );
+        // The kernel's read, shared with the DO: the envelope and the columns lifted beside
+        // it (#1242, #1237) are decoded once, and a row that will not decode is stepped over
+        // rather than stalling the scope on it (#1636).
+        const read = readUndrainedOutbox(
+          (offset, count) => page.all(count, offset) as OutboxRow[],
+          Math.min(Math.max(limit ?? 200, 1), 1000),
+        );
+        this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, read.events.length);
+        return undrainedEventsOf(read);
       },
       markEventsDrained: async (actor, tenantId, scopeId, eventIds) => {
         // BEFORE the empty-batch shortcut, not after. "Nothing to mark" and "you may

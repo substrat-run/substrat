@@ -1,5 +1,4 @@
 import {
-  actor,
   DEFAULT_PLATFORM_REQUEST_HISTORY_LIMIT,
   platformRequest,
   platformRequestFilter,
@@ -7,6 +6,7 @@ import {
   type PlatformRequest,
   type PlatformRequestFilter,
 } from '@substrat-run/contracts';
+import { rowDecoder, UNDECODED_ACTOR } from './row-decode.js';
 
 /**
  * The one SELECT behind every read of a scope's intent journal (#618).
@@ -69,15 +69,9 @@ export interface PlatformRequestRawRow {
  * What `requestedBy` reads as when the stored actor did not decode. The field is required and
  * an actor has no empty value, so this is a marker that names itself rather than a plausible
  * requester: a guessed principal would be the one thing worse than admitting nobody can tell.
+ * The same marker every tolerant spine read uses (#1636), so it is one value, not four.
  */
-export const UNDECODED_REQUESTER: Actor = actor.parse({ system: 'undecodable' });
-
-type FieldParse<T> =
-  | { success: true; data: T }
-  | { success: false; error: { issues: ReadonlyArray<{ message: string; path: ReadonlyArray<PropertyKey> }> } };
-interface Field<T> {
-  safeParse(value: unknown): FieldParse<T>;
-}
+export const UNDECODED_REQUESTER: Actor = UNDECODED_ACTOR;
 
 /**
  * A stored row → the `PlatformRequest` contract shape — TOLERANTLY, and saying so (#1588).
@@ -110,67 +104,24 @@ interface Field<T> {
  * `decodeError` rather than run a handler on it.
  *
  * Reachable without a forge: `importDump` replays a dump's rows verbatim, so a dump from
- * another world, or one edited by hand, is enough.
+ * another world, or one edited by hand, is enough. The field-by-field mechanics are
+ * `rowDecoder`'s, shared with the history and denial reads (#1636).
  */
 export function platformRequestOf(row: PlatformRequestRawRow): PlatformRequest {
-  const undecoded: string[] = [];
-  const unreadable: string[] = [];
   const shape = platformRequest.shape;
-  const issueOf = (column: string, error: Extract<FieldParse<unknown>, { success: false }>['error']) => {
-    const issue = error.issues[0];
-    const at = issue && issue.path.length ? `.${issue.path.map(String).join('.')}` : '';
-    return `${column}${at}: ${issue?.message ?? 'does not match the contract'}`;
-  };
-  // A required scalar has no honest empty value: a failure is collected here and thrown once
-  // every field has been read, so the value below never escapes this function.
-  const required = <T>(column: string, field: Field<T>, stored: unknown): T => {
-    const r = field.safeParse(stored);
-    if (r.success) return r.data;
-    unreadable.push(issueOf(column, r.error));
-    return undefined as never;
-  };
-  const nullable = <T>(column: string, field: Field<T | null>, stored: unknown): T | null => {
-    const r = field.safeParse(stored);
-    if (r.success) return r.data;
-    undecoded.push(issueOf(column, r.error));
-    return null;
-  };
-  const json = <T>(column: string, field: Field<T>, stored: string | null, empty: T): T => {
-    let value: unknown = null;
-    if (stored !== null) {
-      try {
-        value = JSON.parse(stored);
-      } catch (err) {
-        undecoded.push(`${column}: ${err instanceof Error ? err.message : String(err)}`);
-        return empty;
-      }
-    }
-    const r = field.safeParse(value);
-    if (r.success) return r.data;
-    undecoded.push(issueOf(column, r.error));
-    return empty;
-  };
-  // Every field is decoded before either list is read, so each names every column that failed —
-  // not whichever one happened to be reached first.
-  const decoded: PlatformRequest = {
-    id: required<PlatformRequest['id']>('id', shape.id, row.id),
-    kind: required<string>('kind', shape.kind, row.kind),
-    payload: json<unknown>('payload', shape.payload, row.payload, null),
-    requestedBy: json<Actor>('requested_by', shape.requestedBy, row.requested_by, UNDECODED_REQUESTER),
-    impersonation: json<PlatformRequest['impersonation']>('impersonation', shape.impersonation, row.impersonation, null),
-    status: required<PlatformRequest['status']>('status', shape.status, row.status),
-    attempts: required<number>('attempts', shape.attempts, row.attempts),
-    lastError: nullable<string>('last_error', shape.lastError, row.last_error),
-    failure: json<PlatformRequest['failure']>('last_failure', shape.failure, row.last_failure, null),
-    result: json<unknown>('result', shape.result, row.result, null),
-    requestedAt: required<PlatformRequest['requestedAt']>('requested_at', shape.requestedAt, row.requested_at),
-    settledAt: nullable<PlatformRequest['requestedAt']>('settled_at', shape.settledAt, row.settled_at),
-  };
-  if (unreadable.length) {
-    throw new Error(
-      `platform request row ${JSON.stringify(row.id)} cannot be read as a PlatformRequest — ` +
-        `${[...unreadable, ...undecoded].join('; ')}`,
-    );
-  }
-  return undecoded.length ? { ...decoded, decodeError: undecoded.join('; ') } : decoded;
+  const d = rowDecoder(`platform request row ${JSON.stringify(row.id)}`, 'PlatformRequest');
+  return d.finish<PlatformRequest>({
+    id: d.required<PlatformRequest['id']>('id', shape.id, row.id),
+    kind: d.required<string>('kind', shape.kind, row.kind),
+    payload: d.json<unknown>('payload', shape.payload, row.payload, null),
+    requestedBy: d.json<Actor>('requested_by', shape.requestedBy, row.requested_by, UNDECODED_REQUESTER),
+    impersonation: d.json<PlatformRequest['impersonation']>('impersonation', shape.impersonation, row.impersonation, null),
+    status: d.required<PlatformRequest['status']>('status', shape.status, row.status),
+    attempts: d.required<number>('attempts', shape.attempts, row.attempts),
+    lastError: d.nullable<string>('last_error', shape.lastError, row.last_error),
+    failure: d.json<PlatformRequest['failure']>('last_failure', shape.failure, row.last_failure, null),
+    result: d.json<unknown>('result', shape.result, row.result, null),
+    requestedAt: d.required<PlatformRequest['requestedAt']>('requested_at', shape.requestedAt, row.requested_at),
+    settledAt: d.nullable<PlatformRequest['requestedAt']>('settled_at', shape.settledAt, row.settled_at),
+  });
 }

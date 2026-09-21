@@ -50,8 +50,8 @@ import {
   ownerSeat,
   ownerClaimLink,
 } from '@substrat-run/contracts';
-import type { OpenedAttachment } from '@substrat-run/kernel';
-import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
+import type { OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
+import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER, undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from './client.js';
 
 /**
@@ -713,11 +713,17 @@ export class VerticalClient {
    * The Tier-2 drain's read (#1334): the oldest not-yet-drained events of a scope this
    * deployment serves. Scope bytes cross, on their way to the lake; the control plane's
    * `readUndrainedEvents` is the audited door this stands behind.
+   *
+   * Asks for what the read stepped over too (#1636, `withSkipped=1`), and takes either
+   * answer: a vertical deployed before that parameter ignores it and sends the bare array,
+   * which reads as a read that said nothing about skips — never as one that skipped none.
    */
-  async undrainedEvents(scopeId: ScopeId, limit: number): Promise<DrainedEvent[]> {
-    return this.getInternal<DrainedEvent[]>(
-      `/internal/undrained-events?scopeId=${encodeURIComponent(scopeId)}&limit=${encodeURIComponent(String(limit))}`,
+  async undrainedEvents(scopeId: ScopeId, limit: number): Promise<UndrainedEvents> {
+    const answer = await this.getInternal<DrainedEvent[] | UndrainedRead>(
+      `/internal/undrained-events?scopeId=${encodeURIComponent(scopeId)}` +
+        `&limit=${encodeURIComponent(String(limit))}&withSkipped=1`,
     );
+    return Array.isArray(answer) ? answer : undrainedEventsOf(answer);
   }
 
   /**

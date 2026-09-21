@@ -61,7 +61,7 @@ function readerOver(rows: Row[]): { sql: Pick<ScopedSql, 'query'>; db: DatabaseS
       id(r.n),
       `test.step${r.n}`,
       `2026-05-0${r.n}T00:00:00.000Z`,
-      JSON.stringify('01JPRINCIPAL0000000000000'),
+      JSON.stringify('01JZPR1NC1PA1000000000000A'),
       JSON.stringify({ n: r.n }),
       'none',
       r.operation ?? null,
@@ -164,7 +164,7 @@ describe('walkEventCause (#1237)', () => {
     const { sql } = readerOver([{ n: 1, operation: 'op' }]);
     const [entry] = walkEventCause({ sql }, id(1)).chain;
     expect(entry!.payload).toEqual({ n: 1 });
-    expect(entry!.actor).toBe('01JPRINCIPAL0000000000000');
+    expect(entry!.actor).toBe('01JZPR1NC1PA1000000000000A');
     // And the nulls stay facts rather than becoming absent keys.
     expect(entry!.authorization).toBeNull();
     expect(entry!.impersonation).toBeNull();

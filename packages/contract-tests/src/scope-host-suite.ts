@@ -724,6 +724,355 @@ export function scopeHostContractSuite(
       });
     });
 
+    /**
+     * #1636 — #1588's shape everywhere else it lived. One outbox or denial row whose JSON
+     * would not parse still took a WHOLE list with it: an entity's history and its walks,
+     * the denial log and its summary — and, worse, the outbox's executed paths, where the
+     * decode sat above each loop's per-event containment, so one bad event halted every
+     * event behind it on every pass.
+     *
+     * Planted the #1588 way: a fresh scope's OWN export, restored with one table's rows
+     * rewritten, because `importDump` replays rows verbatim and nothing else can write a
+     * spine row that module code did not (#954). The bad row's id sorts before every ULID,
+     * so each read and each loop meets it FIRST — the position that used to halt it.
+     */
+    describe('one undecodable spine row (#1636)', () => {
+      type Row = Record<string, unknown>;
+      type Dump = Awaited<ReturnType<ScopeHost['admin']['exportScope']>>;
+      /** Sorts before every ULID; `n` keeps several of them distinct and in order. */
+      const badId = (n = 0) => `0000000000000000000000${String(n).padStart(4, '0')}`;
+      const UNDECODED = { system: 'undecodable' };
+
+      /** A fresh scope, seeded through real operations, and its export. */
+      const seeded = async (
+        vertical: string,
+        seed: (stub: Awaited<ReturnType<ScopeHost['getScope']>>) => Promise<unknown>,
+      ): Promise<{ s: ScopeId; dump: Dump }> => {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s, jurisdiction: 'eu', vertical });
+        await host.admin.activateScope(staff, t1, s);
+        await seed(await host.getScope(alice, t1, s));
+        return { s, dump: await host.admin.exportScope(staff, t1, s) };
+      };
+      const rowsOf = (dump: Dump, table: string): Row[] => {
+        const t = dump.tables.find((x) => x.name === table);
+        // Without the table in the export these tests would plant nothing and pass vacuously.
+        expect(t).toBeDefined();
+        return t!.rows.map((r) => Object.fromEntries(t!.columns.map((c, i) => [c, (r as unknown[])[i]])));
+      };
+      /** Restore `s` from `dump` with each named table's rows replaced by `replace[table]`. */
+      const restore = async (s: ScopeId, dump: Dump, replace: Record<string, Row[]>) => {
+        for (const name of Object.keys(replace)) expect(dump.tables.some((t) => t.name === name)).toBe(true);
+        await host.restoreScope(staff, t1, s, {
+          ...dump,
+          tables: dump.tables.map((t) =>
+            t.name in replace ? { ...t, rows: replace[t.name]!.map((r) => t.columns.map((c) => r[c] ?? null)) } : t,
+          ),
+        });
+      };
+
+      describe('pure reads: the bad row comes back beside its neighbours, saying why', () => {
+        it('history, timeline, both walks and an invocation read (the outbox)', async () => {
+          const call = ulid();
+          const { s, dump } = await seeded('connector-vertical', async (stub) => {
+            for (let i = 0; i < 3; i++) await stub.invoke('test/emit-event');
+          });
+          // One call's worth, so `invocationEvents` has something to read.
+          const outbox = rowsOf(dump, '_substrat_outbox').map((r) =>
+            r.type === 'test.happened' ? { ...r, invocation_id: call } : r,
+          );
+          const target = outbox.filter((r) => r.type === 'test.happened')[1]!;
+          const targetId = eventId.parse(target.id);
+          const readAll = async () => ({
+            history: (await host.admin.entityHistory(staff, t1, s, { entityType: 'test-thing', entityId: 'x1' })).entries,
+            timeline: (
+              await (await host.getScope(alice, t1, s)).invoke<{ entries: Row[] }>('test/timeline', {
+                entityType: 'test-thing',
+                entityId: 'x1',
+              })
+            ).entries,
+            cause: await host.admin.eventCause(staff, t1, s, { eventId: targetId }),
+            effects: await host.admin.eventEffects(staff, t1, s, { eventId: targetId }),
+            call: (await host.admin.invocationEvents(staff, t1, s, { invocationId: call })).events,
+          });
+
+          // The positive twin: the scope's own rows, untouched — nothing says it is not whole.
+          await restore(s, dump, { _substrat_outbox: outbox });
+          const clean = await readAll();
+          expect(clean.history).toHaveLength(3);
+          for (const entry of [...clean.history, ...clean.timeline, ...clean.cause.chain, ...clean.call]) {
+            expect(entry).not.toHaveProperty('decodeError');
+          }
+          expect(clean.effects.root!.event).not.toHaveProperty('decodeError');
+
+          // The same scope with ONE row's actor and payload unreadable.
+          await restore(s, dump, {
+            _substrat_outbox: outbox.map((r) => (r.id === target.id ? { ...r, actor: '{', payload: 'not json at all' } : r)),
+          });
+          const planted = await readAll();
+          const reason = 'actor: not valid JSON; payload: not valid JSON';
+
+          // Every row comes back, and every healthy one reads EXACTLY as with no bad neighbour.
+          expect(planted.history.map((e) => e.id)).toEqual(clean.history.map((e) => e.id));
+          planted.history.forEach((entry, i) => {
+            if (entry.id === target.id) return;
+            expect(entry).toEqual(clean.history[i]);
+          });
+          const bad = planted.history.find((e) => e.id === target.id)!;
+          expect(bad.decodeError).toBe(reason);
+          expect(bad.actor).toEqual(UNDECODED);
+          // Null beside a reason — the one thing that keeps it from reading as an erasure.
+          expect(bad.payload).toBeNull();
+          expect(bad.type).toBe('test.happened');
+
+          expect(planted.timeline).toHaveLength(3);
+          expect(planted.timeline.find((e) => e.id === target.id)).toMatchObject({
+            actor: UNDECODED,
+            decodeError: 'actor: not valid JSON',
+          });
+          // The walks read it rather than ending in an exception, and end where they did.
+          expect(planted.cause.chain[0]).toMatchObject({ id: target.id, decodeError: reason });
+          expect(planted.cause.terminal).toBe(clean.cause.terminal);
+          expect(planted.effects.root!.event.decodeError).toBe(reason);
+          expect(planted.call.map((e) => e.id)).toEqual(clean.call.map((e) => e.id));
+          expect(planted.call.find((e) => e.id === target.id)!.decodeError).toBe(reason);
+        });
+
+        it('the denial log and its summary', async () => {
+          const at = '2026-09-01T00:00:00.000Z';
+          const { s, dump } = await seeded('connector-vertical', async () => undefined);
+          const denial = (id: string, over: Row = {}): Row => ({
+            id,
+            actor: JSON.stringify(alice),
+            permission: 'test:read',
+            tenant_id: t1,
+            scope_id: s,
+            operation: 'test/read',
+            impersonation: null,
+            invocation_id: null,
+            at,
+            drained_at: null,
+            ...over,
+          });
+          const healthy = [
+            denial(ulid()),
+            denial(ulid(), { actor: JSON.stringify({ system: '@test/flow' }), permission: 'test:write' }),
+          ];
+          const readAll = async () => ({
+            rows: await host.admin.listDenials(staff, t1, s),
+            summary: await host.admin.summarizeDenials(staff, t1, s),
+          });
+
+          await restore(s, dump, { _substrat_denials: healthy });
+          const clean = await readAll();
+          expect(clean.rows).toHaveLength(2);
+          for (const row of clean.rows) expect(row).not.toHaveProperty('decodeError');
+          for (const bucket of clean.summary.buckets) expect(bucket).not.toHaveProperty('decodeError');
+
+          const bad = denial(badId(), { actor: '{', impersonation: 'nope' });
+          // A key a module CAST rather than declared — reachable from live code, since nothing
+          // validates a checked key at runtime. The key is the evidence, so it is kept.
+          const badKey = denial(ulid(), { permission: 'Workorder:Read' });
+          await restore(s, dump, { _substrat_denials: [bad, badKey, ...healthy] });
+          const planted = await readAll();
+
+          expect(planted.rows).toHaveLength(4);
+          for (const row of clean.rows) expect(planted.rows.find((r) => r.id === row.id)).toEqual(row);
+          const refused = planted.rows.find((r) => r.id === bad.id)!;
+          expect(refused.decodeError).toBe('actor: not valid JSON; impersonation: not valid JSON');
+          expect(refused.actor).toEqual(UNDECODED);
+          // Null beside a reason, never a silent null that reads as "nobody was impersonating".
+          expect(refused.impersonation).toBeNull();
+          expect(refused.permission).toBe('test:read');
+          // The malformed key is listed under the marker, the stored key quoted verbatim.
+          const castKey = planted.rows.find((r) => r.id === badKey.id)!;
+          expect(castKey.permission).toBe('undecodable:permission');
+          expect(castKey.decodeError).toMatch(/^permission: .* \(stored "Workorder:Read"\)$/);
+          expect(castKey.actor).toBe(alice);
+
+          // The summary — "the read a console opens first" — keeps both buckets, counted.
+          expect(planted.summary.total).toBe(4);
+          expect(planted.summary.groupBy).toBe('actor-permission');
+          const buckets = planted.summary.groupBy === 'actor-permission' ? planted.summary.buckets : [];
+          expect(buckets).toHaveLength(4);
+          expect(buckets.find((b) => b.decodeError === 'actor: not valid JSON')).toMatchObject({
+            actor: UNDECODED,
+            permission: 'test:read',
+            count: 1,
+          });
+          expect(buckets.find((b) => b.permission === 'undecodable:permission')).toMatchObject({
+            actor: alice,
+            count: 1,
+            decodeError: expect.stringContaining('(stored "Workorder:Read")'),
+          });
+          for (const bucket of clean.summary.buckets) expect(planted.summary.buckets).toContainEqual(bucket);
+        });
+      });
+
+      describe('executed rows: the bad event is dead-lettered, and the one behind it runs', () => {
+        it('consumer delivery', async () => {
+          const { s, dump } = await seeded('flow-vertical', (stub) => stub.invoke('flow/produce'));
+          const step1 = rowsOf(dump, '_substrat_outbox').find((r) => r.type === 'flow.step1')!;
+          const healthy = { ...step1, id: ulid() };
+          const deliveredIds = async () => {
+            const stub = await host.getScope(alice, t1, s);
+            // Any invoke drains the scope's consumers in its tail.
+            await stub.invoke('flow/produce');
+            return {
+              log: (await stub.invoke<{ event_id: string }[]>('flow/log')).map((r) => r.event_id),
+              deliveries: await stub.invoke<{ event_id: string; error: string | null }[]>('flow/deliveries'),
+            };
+          };
+          // Undelivered, the both of them: no deliveries and no consumer-side rows.
+          const fresh = { _substrat_deliveries: [], flow_log: [] };
+
+          await restore(s, dump, { ...fresh, _substrat_outbox: [healthy] });
+          const clean = await deliveredIds();
+          expect(clean.log).toContain(healthy.id);
+          expect(clean.deliveries.every((d) => d.error === null)).toBe(true);
+
+          await restore(s, dump, { ...fresh, _substrat_outbox: [{ ...step1, id: badId(), actor: '{' }, healthy] });
+          const planted = await deliveredIds();
+          // The event BEHIND the bad one is delivered — the handler ran on it — and the bad
+          // one never reached the handler at all.
+          expect(planted.log).toContain(healthy.id);
+          expect(planted.log).not.toContain(badId());
+          const dead = planted.deliveries.find((d) => d.event_id === badId())!;
+          expect(dead.error).toMatch(/cannot be decoded — actor: not valid JSON/);
+          expect(planted.deliveries.find((d) => d.event_id === healthy.id)!.error).toBeNull();
+          // …and it is a dead letter like any other, readable where operators look.
+          const letters = await host.admin.deadLetters(staff, t1, s, {});
+          expect(letters.entries.find((d) => d.eventId === badId())).toMatchObject({ consumer: '@test/flow' });
+        });
+
+        it('executor dispatch', async () => {
+          const tag = `after-bad-${ulid()}`;
+          const { s, dump } = await seeded('connector-vertical', (stub) =>
+            stub.invoke('connector/request-effect', { tag: `seed-${ulid()}` }),
+          );
+          const template = rowsOf(dump, '_substrat_outbox').find((r) => r.type === 'effect.requested')!;
+          const healthy = { ...template, id: ulid(), payload: JSON.stringify({ tag }) };
+          const fresh = { _substrat_deliveries: [] };
+
+          // The positive twin: one healthy event, delivered, nothing dead.
+          await restore(s, dump, { ...fresh, _substrat_outbox: [healthy] });
+          const cleanReport = await host.drainDue(t1, s);
+          expect(cleanReport).toMatchObject({ attempted: 1, delivered: 1, deadLettered: 0 });
+          expect(effected).toContain(tag);
+
+          const next = `after-bad-${ulid()}`;
+          const behind = { ...template, id: ulid(), payload: JSON.stringify({ tag: next }) };
+          await restore(s, dump, {
+            ...fresh,
+            _substrat_outbox: [{ ...template, id: badId(), payload: 'not json at all' }, behind],
+          });
+          const report = await host.drainDue(t1, s);
+          // Both attempted; the bad one dead at once — `flaky-effector` allows five attempts,
+          // and a decode that failed once can never succeed.
+          expect(report).toMatchObject({ attempted: 2, delivered: 1, deadLettered: 1, retrying: 0 });
+          expect(effected).toContain(next);
+          const dead = (await host.admin.deadLetters(staff, t1, s, {})).entries.find((d) => d.eventId === badId())!;
+          expect(dead).toMatchObject({ consumer: 'executor:flaky-effector', attempts: 1 });
+          expect(dead.error).toMatch(/cannot be decoded — payload: not valid JSON/);
+          // Terminal: the next pass does not attempt it again.
+          expect(await host.drainDue(t1, s)).toMatchObject({ attempted: 0 });
+        });
+
+        it('the Tier-2 read steps over it, ships nothing built from stand-ins, and says so', async () => {
+          const { s, dump } = await seeded('connector-vertical', async (stub) => {
+            await stub.invoke('test/emit-event');
+            await stub.invoke('test/emit-event');
+          });
+          const rows = rowsOf(dump, '_substrat_outbox');
+          const events = rows.filter((r) => r.type === 'test.happened');
+
+          // The positive twin: a clean read carries no `skipped` at all.
+          await restore(s, dump, { _substrat_outbox: rows });
+          const clean = await host.admin.readUndrainedEvents(staff, t1, s, 200);
+          expect(clean.map((e) => e.id)).toEqual(expect.arrayContaining(events.map((e) => e.id)));
+          expect(clean.skipped).toBeUndefined();
+
+          const bad = { ...events[0]!, id: badId(), actor: '{' };
+          await restore(s, dump, { _substrat_outbox: [bad, ...rows] });
+          const read = await host.admin.readUndrainedEvents(staff, t1, s, 200);
+          // Every healthy row, exactly as the clean read had it; the bad one nowhere in it.
+          expect(read.map((e) => e.id)).toEqual(clean.map((e) => e.id));
+          expect([...read]).toEqual([...clean]);
+          expect(read.skipped).toEqual({ count: 1, eventIds: [bad.id] });
+
+          // The cost of the skip, pinned: it is never stamped, so it is still undrained — and
+          // still reported — once everything behind it has shipped. The lake never has it.
+          await host.admin.markEventsDrained(staff, t1, s, read.map((e) => e.id));
+          const after = await host.admin.readUndrainedEvents(staff, t1, s, 200);
+          expect(after).toHaveLength(0);
+          expect(after.skipped).toEqual({ count: 1, eventIds: [bad.id] });
+        });
+
+        // #1641 review. Two shapes the first cut let through: an optional column stored as
+        // `''` was tested for truthiness and read as ABSENT, skipping validation; and the
+        // drain's lifted columns were copied onto a validated envelope unparsed. Both are
+        // values the published schema refuses, and both must be contained like any other.
+        it('an empty optional column, or a corrupt lifted one, is contained too', async () => {
+          const tag = `behind-${ulid()}`;
+          const { s, dump } = await seeded('connector-vertical', (stub) =>
+            stub.invoke('connector/request-effect', { tag: `seed-${ulid()}` }),
+          );
+          const template = rowsOf(dump, '_substrat_outbox').find((r) => r.type === 'effect.requested')!;
+          const behind = { ...template, id: ulid(), payload: JSON.stringify({ tag }) };
+          const planted = [
+            // Envelope columns — every path: delivery, dispatch and the drain.
+            { ...template, id: badId(0), impersonation: '' },
+            { ...template, id: badId(1), authorization: '' },
+            // Lifted columns — the drain's alone.
+            { ...template, id: badId(2), version: '' },
+            { ...template, id: badId(3), caused_by: 'not-an-event-id' },
+          ];
+          await restore(s, dump, { _substrat_deliveries: [], _substrat_outbox: [...planted, behind] });
+
+          // The drain: none of the four ships; the event behind them does; all four counted.
+          const read = await host.admin.readUndrainedEvents(staff, t1, s, 200);
+          expect(read.map((e) => e.id)).toEqual([behind.id]);
+          expect(read.skipped).toEqual({ count: 4, eventIds: planted.map((r) => r.id) });
+
+          // Dispatch: the two envelope-broken rows are dead at once and never handled; the
+          // lifted columns are not part of an executor's event, so those two deliver as before.
+          const report = await host.drainDue(t1, s);
+          expect(report).toMatchObject({ attempted: 5, delivered: 3, deadLettered: 2 });
+          expect(effected).toContain(tag);
+          const dead = (await host.admin.deadLetters(staff, t1, s, {})).entries.map((d) => d.eventId).sort();
+          expect(dead).toEqual([badId(0), badId(1)]);
+        });
+
+        it('the Tier-2 read is bounded: past limit × 10 bad rows in a row, a pass ships nothing', async () => {
+          const { s, dump } = await seeded('connector-vertical', (stub) => stub.invoke('test/emit-event'));
+          const rows = rowsOf(dump, '_substrat_outbox');
+          const event = rows.find((r) => r.type === 'test.happened')!;
+          const others = rows.filter((r) => r !== event);
+          const bad = (n: number) => Array.from({ length: n }, (_, i) => ({ ...event, id: badId(i), payload: '{' }));
+          // Already-drained, so the only undrained rows are the planted ones and `event`.
+          const drainedOthers = others.map((r) => ({ ...r, drained_at: '2026-09-01T00:00:00.000Z' }));
+
+          // One under the bound (limit 1 → ten rows looked at): the healthy row still ships.
+          await restore(s, dump, { _substrat_outbox: [...bad(9), event, ...drainedOthers] });
+          const under = await host.admin.readUndrainedEvents(staff, t1, s, 1);
+          expect(under.map((e) => e.id)).toEqual([event.id]);
+          expect(under.skipped?.count).toBe(9);
+
+          // At the bound: nothing ships, this pass or the next — the known limit. A spine
+          // this broken is a restore to repair; the count is what makes it visible.
+          await restore(s, dump, { _substrat_outbox: [...bad(10), event, ...drainedOthers] });
+          for (let pass = 0; pass < 2; pass++) {
+            const stalled = await host.admin.readUndrainedEvents(staff, t1, s, 1);
+            expect(stalled).toHaveLength(0);
+            expect(stalled.skipped?.count).toBe(10);
+          }
+          // A larger budget reaches past it.
+          const wider = await host.admin.readUndrainedEvents(staff, t1, s, 2);
+          expect(wider.map((e) => e.id)).toEqual([event.id]);
+        });
+      });
+    });
+
     it('isolates scope storage: a write in one scope is invisible in another', async () => {
       const stub1 = await host.getScope(alice, t1, s1);
       const stub2 = await host.getScope(alice, t2, s2);

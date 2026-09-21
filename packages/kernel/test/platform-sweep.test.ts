@@ -1236,3 +1236,141 @@ describe('runPlatformSweep — reap deleting tenants (§4.8)', () => {
     expect(rows).toHaveLength(0);
   });
 });
+
+/**
+ * The event drain's report of what a scope's read stepped over (#1636), and the parse it
+ * runs itself before anything reaches the lake (#1641).
+ *
+ * The read skips an outbox row that will not decode — never shipped, never stamped — so the
+ * rows behind it still reach the lake. What keeps that from being a SILENT gap is the report:
+ * a skip the read declared lands in `eventDrain.skipped`, and a clean read leaves the key
+ * absent. And because a hosted scope's events come from whatever adapter version its vertical
+ * was pushed with, the sweep parses every event with the published `drainedEvent` itself: an
+ * event an old vertical served unvalidated is refused here, never shipped, and counted.
+ */
+describe('runPlatformSweep · event drain skips (#1636, #1641)', () => {
+  type Skipped = { count: number; eventIds: string[] };
+  type Read = unknown[] & { skipped?: Skipped };
+
+  /** A DrainedEvent the published schema accepts — what a healthy read returns. */
+  const drained = (scope: string, over: Record<string, unknown> = {}) => ({
+    id: genId(),
+    type: 'test.happened',
+    schemaVersion: 1,
+    occurredAt: '2026-09-01T00:00:00.000Z',
+    tenantId: T,
+    scopeId: scope,
+    actor: genId(),
+    entity: { entityType: 'thing', entityId: 'x1' },
+    piiClass: 'none',
+    payload: { ok: true },
+    operation: null,
+    version: null,
+    causedBy: null,
+    invocationId: null,
+    ...over,
+  });
+
+  function eventHost(scope: ReturnType<typeof sid>, read: () => Read) {
+    const shipped: unknown[][] = [];
+    const marked: string[][] = [];
+    const admin = {
+      listScopes: async () => [{ id: scope, tenantId: T, status: 'active' }],
+      listConnections: async () => [],
+      readUndrainedEvents: async () => read(),
+      markEventsDrained: async (_a: unknown, _t: unknown, _s: unknown, ids: string[]) => {
+        marked.push(ids);
+        return ids.length;
+      },
+    };
+    const host = {
+      admin,
+      drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
+    } as unknown as ScopeHost;
+    const eventSink = {
+      ship: async (_scope: unknown, events: unknown[]) => {
+        shipped.push(events);
+        return { ref: 'lake' };
+      },
+    };
+    return { host, eventSink, shipped, marked };
+  }
+  const sweep = (h: ReturnType<typeof eventHost>) =>
+    runPlatformSweep(h.host, { actor: ACTOR, fetch: FETCH, sweepers: {}, eventSink: h.eventSink as never });
+
+  it('ships and stamps only what the read returned, and reports what it skipped', async () => {
+    const scope = sid();
+    const good = drained(scope);
+    const bad = genId();
+    const h = eventHost(scope, () => Object.assign([good], { skipped: { count: 1, eventIds: [bad] } }));
+    const report = await sweep(h);
+
+    expect(report.eventDrain).toEqual({
+      scopes: 1,
+      shipped: 1,
+      incomplete: 0,
+      skipped: [{ tenantId: T, scopeId: scope, count: 1, eventIds: [bad] }],
+    });
+    // The skipped row reaches neither the sink nor the stamp — it never left.
+    expect(h.shipped).toEqual([[good]]);
+    expect(h.marked).toEqual([[good.id]]);
+    // …and the sink is handed a plain array: the skip is the report's, not the lake's.
+    expect(Object.keys(h.shipped[0]!)).toEqual(['0']);
+    // Not an error: nothing about the pass failed, and the digest mails every error.
+    expect(report.errors).toEqual([]);
+  });
+
+  it('reports a skip even when nothing behind it could ship', async () => {
+    const scope = sid();
+    const bad = genId();
+    const h = eventHost(scope, () => Object.assign([], { skipped: { count: 10, eventIds: [bad] } }));
+    const report = await sweep(h);
+    expect(report.eventDrain).toEqual({
+      scopes: 0,
+      shipped: 0,
+      incomplete: 0,
+      skipped: [{ tenantId: T, scopeId: scope, count: 10, eventIds: [bad] }],
+    });
+    expect(h.shipped).toEqual([]);
+    expect(h.marked).toEqual([]);
+  });
+
+  it('refuses an event the published schema rejects — an old vertical’s — ships its clean twin, counts it', async () => {
+    // A vertical older than #1636 answers with the bare array (no `skipped`) and copies its
+    // lifted columns unvalidated: `version: ''` and a `caused_by` that is not an event id both
+    // reach this side typed as DrainedEvents. Neither may reach the lake, whatever its version.
+    const scope = sid();
+    const clean = drained(scope);
+    const emptyVersion = drained(scope, { version: '' });
+    const badCause = drained(scope, { causedBy: 'not-an-event-id' });
+    const h = eventHost(scope, () => [emptyVersion, clean, badCause]);
+    const report = await sweep(h);
+
+    expect(h.shipped).toEqual([[clean]]);
+    expect(h.marked).toEqual([[clean.id]]);
+    expect(report.eventDrain!.skipped).toEqual([
+      { tenantId: T, scopeId: scope, count: 2, eventIds: [emptyVersion.id, badCause.id] },
+    ]);
+  });
+
+  it('folds what it refuses into what the read already skipped — one count', async () => {
+    const scope = sid();
+    const [a, b] = [genId(), genId()];
+    const refused = drained(scope, { operation: '' });
+    const h = eventHost(scope, () =>
+      Object.assign([drained(scope), refused], { skipped: { count: 2, eventIds: [a, b] } }),
+    );
+    const report = await sweep(h);
+    expect(report.eventDrain!.skipped).toEqual([
+      { tenantId: T, scopeId: scope, count: 3, eventIds: [a, b, refused.id] },
+    ]);
+  });
+
+  it('a clean read leaves `skipped` ABSENT — the positive twin', async () => {
+    const scope = sid();
+    const h = eventHost(scope, () => [drained(scope)]);
+    const report = await sweep(h);
+    expect(report.eventDrain).toEqual({ scopes: 1, shipped: 1, incomplete: 0 });
+    expect(report.eventDrain).not.toHaveProperty('skipped');
+  });
+});

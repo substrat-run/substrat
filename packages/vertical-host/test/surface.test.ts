@@ -272,6 +272,28 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect(host.calls).toEqual(expect.arrayContaining(['undrainedEventsLocal', 'markEventsDrainedLocal']));
   });
 
+  // #1636: what the read stepped over has to CROSS this hop to reach the sweep's report, and a
+  // property on an array does not survive `c.json`. So a caller that asks (`withSkipped=1`)
+  // gets `{ events, skipped? }`, and one that does not — a platform deployed before this —
+  // gets the bare array it parses, exactly as before.
+  it('carries the drain read’s skip across the hop only to a caller that asks for it', async () => {
+    const events = [{ id: 'e2' }];
+    const skipped = { count: 1, eventIds: ['e1'] };
+    const host = fakeHost({
+      undrainedEventsLocal: async () => Object.assign([...events], { skipped }) as never,
+    });
+    const url = `/internal/undrained-events?scopeId=${SCOPE}&limit=50`;
+    const asked = await appWith(host).request(`${url}&withSkipped=1`, { headers: authed() }, ENV);
+    expect(await asked.json()).toEqual({ events, skipped });
+    const old = await appWith(host).request(url, { headers: authed() }, ENV);
+    expect(await old.json()).toEqual(events);
+
+    // The positive twin: a clean read that was asked says nothing about skips at all.
+    const clean = fakeHost({ undrainedEventsLocal: async () => [...events] as never });
+    const cleanAnswer = await appWith(clean).request(`${url}&withSkipped=1`, { headers: authed() }, ENV);
+    expect(await cleanAnswer.json()).toEqual({ events });
+  });
+
   // #1334: the stamp's inverse. The instant is the guard against reopening rows that already
   // reached a rebuilt table, so a body without one is refused HERE rather than reaching a
   // host that would reopen everything.

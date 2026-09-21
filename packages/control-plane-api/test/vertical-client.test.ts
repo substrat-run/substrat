@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { tenantId, scopeId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { platformActorId, tenantId, scopeId } from '@substrat-run/contracts';
+import { runPlatformSweep, ulid, type ScopeHost } from '@substrat-run/kernel';
 import { VerticalClient, ControlPlaneError } from '../src/index.js';
 
 /**
@@ -298,5 +298,120 @@ describe('VerticalClient — a redrain count never reaches the reopen (#1545)', 
     );
     await expect(client.redrainEvents(s, drainedBefore, true)).rejects.toThrow(/404/);
     expect(paths).toEqual(['/internal/redrain-count']);
+  });
+});
+
+/**
+ * #1636: the Tier-2 read asks the vertical for what it stepped over, and has to take either
+ * answer — a vertical deployed before `withSkipped` ignores the parameter and sends the bare
+ * array, which must read as "said nothing about skips", never as a failure.
+ */
+describe('VerticalClient — the drain read carries the skip across the hop (#1636)', () => {
+  const answering = (body: unknown, seen: string[] = []) =>
+    new VerticalClient({
+      fetch: (async (input: string) => {
+        seen.push(input);
+        return new Response(JSON.stringify(body), { status: 200 });
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('asks for the skip, and attaches it to the array it returns', async () => {
+    const seen: string[] = [];
+    const events = [{ id: 'e2' }];
+    const read = await answering({ events, skipped: { count: 1, eventIds: ['e1'] } }, seen).undrainedEvents(s, 50);
+    expect(seen[0]).toContain('withSkipped=1');
+    expect([...read]).toEqual(events);
+    expect(read.skipped).toEqual({ count: 1, eventIds: ['e1'] });
+  });
+
+  it('a clean read, and an older vertical’s bare array, both come back with no skip at all', async () => {
+    const events = [{ id: 'e2' }];
+    const clean = await answering({ events }).undrainedEvents(s, 50);
+    expect([...clean]).toEqual(events);
+    expect(clean.skipped).toBeUndefined();
+    const old = await answering(events).undrainedEvents(s, 50);
+    expect([...old]).toEqual(events);
+    expect(old.skipped).toBeUndefined();
+  });
+});
+
+/**
+ * #1641: the control plane is the last side before the append-only lake, and a hosted
+ * scope's events arrive from whatever adapter version its vertical was pushed with. A
+ * vertical older than #1636 answers with the bare array and copies its lifted columns
+ * unvalidated — so the sweep parses every event it received with the published schema, and
+ * one that fails never ships and is counted. Driven end to end: the real `VerticalClient`,
+ * answering as that old vertical would, behind the real `runPlatformSweep`.
+ */
+describe('VerticalClient → runPlatformSweep — an old vertical’s unvalidated event never reaches the lake (#1641)', () => {
+  const staff = platformActorId.parse(ulid());
+  const event = (over: Record<string, unknown> = {}) => ({
+    id: ulid(),
+    type: 'test.happened',
+    schemaVersion: 1,
+    occurredAt: '2026-09-01T00:00:00.000Z',
+    tenantId: t,
+    scopeId: s,
+    actor: ulid(),
+    entity: { entityType: 'thing', entityId: 'x1' },
+    piiClass: 'none',
+    payload: { ok: true },
+    operation: null,
+    version: null,
+    causedBy: null,
+    invocationId: null,
+    ...over,
+  });
+
+  async function sweepOver(served: unknown[]) {
+    // What a pre-#1636 vertical sends: the bare array, whatever `withSkipped` asked for.
+    const client = new VerticalClient({
+      fetch: (async () => new Response(JSON.stringify(served), { status: 200 })) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const shipped: { id: string }[] = [];
+    const marked: string[] = [];
+    const host = {
+      admin: {
+        listScopes: async () => [{ id: s, tenantId: t, status: 'active' }],
+        listConnections: async () => [],
+        readUndrainedEvents: async (_a: unknown, _t: unknown, scope: typeof s, limit: number) =>
+          client.undrainedEvents(scope, limit),
+        markEventsDrained: async (_a: unknown, _t: unknown, _s: unknown, ids: string[]) => {
+          marked.push(...ids);
+          return ids.length;
+        },
+      },
+      drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
+    } as unknown as ScopeHost;
+    const report = await runPlatformSweep(host, {
+      actor: staff,
+      fetch: (() => Promise.reject(new Error('unused'))) as never,
+      sweepers: {},
+      eventSink: {
+        ship: async (_scope, events) => {
+          shipped.push(...(events as { id: string }[]));
+          return { ref: 'lake' };
+        },
+      },
+    });
+    return { report, shipped: shipped.map((e) => e.id), marked };
+  }
+
+  it('refuses the corrupt event, ships its clean twin, and counts it in the report', async () => {
+    const clean = event();
+    const corrupt = event({ version: '' });
+    const { report, shipped, marked } = await sweepOver([corrupt, clean]);
+    expect(shipped).toEqual([clean.id]);
+    expect(marked).toEqual([clean.id]);
+    expect(report.eventDrain!.skipped).toEqual([{ tenantId: t, scopeId: s, count: 1, eventIds: [corrupt.id] }]);
+  });
+
+  it('an old vertical’s clean answer ships whole, with nothing reported skipped — the positive twin', async () => {
+    const both = [event(), event()];
+    const { report, shipped } = await sweepOver(both);
+    expect(shipped).toEqual(both.map((e) => e.id));
+    expect(report.eventDrain).not.toHaveProperty('skipped');
   });
 });

@@ -70,7 +70,7 @@ function readerOver(events: Ev[], deliveries: Del[] = []): Pick<ScopedSql, 'quer
       id(e.n),
       `test.step${e.n}`,
       `2026-05-01T00:00:0${e.n % 10}.000Z`,
-      JSON.stringify('01JPRINCIPAL0000000000000'),
+      JSON.stringify('01JZPR1NC1PA1000000000000A'),
       JSON.stringify({ n: e.n }),
       'none',
       e.operation ?? null,
@@ -225,7 +225,7 @@ describe('walkEventEffects (#1237)', () => {
     const sql = readerOver([{ n: 1, operation: 'op' }]);
     const root = walkEventEffects({ sql }, id(1)).root!;
     expect(root.event.payload).toEqual({ n: 1 });
-    expect(root.event.actor).toBe('01JPRINCIPAL0000000000000');
+    expect(root.event.actor).toBe('01JZPR1NC1PA1000000000000A');
     expect(root.event.causedBy).toBeNull();
   });
 
