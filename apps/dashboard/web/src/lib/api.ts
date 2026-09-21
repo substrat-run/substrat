@@ -1670,7 +1670,9 @@ export const api = {
     const p = new URLSearchParams();
     if (q.level) p.set('level', q.level);
     if (q.search) p.set('search', q.search);
-    if (q.invocationId) p.set('invocationId', q.invocationId);
+    // `!== undefined`, not truthiness like its neighbours: an EMPTY id is a caller bug the
+    // plane refuses with a 400, and dropping it here would answer it with the app's whole log.
+    if (q.invocationId !== undefined) p.set('invocationId', q.invocationId);
     if (q.hours) p.set('hours', String(q.hours));
     if (q.limit) p.set('limit', String(q.limit));
     if (q.since) p.set('since', q.since);

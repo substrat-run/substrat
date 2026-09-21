@@ -2812,6 +2812,7 @@ function EntityTimeline({
               setCallLogs((w) => (w === e.id ? null : e.id));
             }}
             aria-disabled={e.invocationId === null}
+            aria-expanded={callLogs === e.id}
             title={callLogsButtonTitle(e.invocationId)}
             aria-description={callLogsButtonTitle(e.invocationId)}
             style={{ ...pagerBtn(e.invocationId !== null), justifySelf: 'start', fontSize: 11.5, padding: '2px 8px' }}

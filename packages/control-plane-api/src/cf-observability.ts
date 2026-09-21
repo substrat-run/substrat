@@ -661,7 +661,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // filter — never a replacement for it. That is the whole tenant boundary: an id that
     // belongs to another tenant meets `tenantId = ours` and matches no line, and phase
     // two then has no request id to expand, so nothing of theirs can be reached.
-    if (input.invocationId) {
+    // `!== undefined`: this reader is a seam of its own, and an empty id that got past the
+    // route must narrow to nothing, not quietly read as "no filter".
+    if (input.invocationId !== undefined) {
       base.push({ key: 'invocationId', operation: 'eq', type: 'string', value: input.invocationId });
     }
 
@@ -703,7 +705,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // branch would admit OTHER invocations of this tenant through `ownsInvocation`, which
     // judges the tenant and not the call — a filter for one call answering with several.
     // The level narrows at the merge below instead.
-    const isErrorRead = input.level?.toLowerCase() === 'error' && !input.invocationId;
+    const isErrorRead = input.level?.toLowerCase() === 'error' && input.invocationId === undefined;
     // Over-fetched relative to `limit`, because each invocation may pull siblings in
     // phase two and the cap belongs on the merged answer.
     const phaseOneLimit = Math.min(input.limit * 2, 200);

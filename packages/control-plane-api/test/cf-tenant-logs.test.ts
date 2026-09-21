@@ -639,6 +639,13 @@ describe('cf tenant logs — filtered to one invocation', () => {
     expect(messages(events)).toEqual(['POST /api/orders → 500 (42 ms)']);
   });
 
+  it('treats an empty id as a filter that matches nothing, never as no filter', async () => {
+    const { reader, sent } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
+    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: '', hours: 24, limit: 50 });
+    expect(events).toEqual([]);
+    expect(keyed(sent[0]!, 'invocationId')).toMatchObject({ value: '' });
+  });
+
   it('with no id, is unfiltered as before — every call of the tenant, none of the other’s', async () => {
     const { reader, sent } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
     const events = await reader.tenantLogs!({ tenantId: OURS, hours: 24, limit: 50 });
