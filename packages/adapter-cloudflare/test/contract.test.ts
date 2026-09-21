@@ -140,6 +140,103 @@ systemSwitchContractSuite('adapter-cloudflare', async () => {
 });
 
 /**
+ * #1666 on the SHARED control plane's host: `systemSwitchDelegation` set, as
+ * `apps/control-plane` sets it. A hosted scope's grants live in its vertical's deployment,
+ * and this host's own `SCOPE` namespace is the placeholder — so the switch must be moved
+ * THERE and audited HERE. The far end is a recording fake; the real one (the VerticalClient
+ * against a deployed vertical's `/internal/system-switch`) is proven in `demos/meridian`.
+ *
+ * The placeholder is not empty in this test, deliberately: the scope is provisioned on
+ * this host, so its own DO holds a live grant. That is what makes "the placeholder was
+ * not switched" observable — its schedules still fire after the delegated revoke.
+ */
+describe('#1666 — the switch is moved in the serving deployment, and audited here', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+  type Call = { tenantId: string; scopeId: string; moduleId: string; to: 'on' | 'off' };
+
+  const setup = async (answer: (call: Call) => { held: boolean; changed: boolean; permissions: string[] }) => {
+    const calls: Call[] = [];
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      systemSwitchDelegation: {
+        switch: async (a) => {
+          calls.push({ ...a });
+          const out = answer(a);
+          return { ...out, permissions: out.permissions.map((p) => permissionKey.parse(p)) };
+        },
+      },
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `hosted-${t.slice(-10).toLowerCase()}`, name: 'Hosted' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    const audit = () => host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: ['revokeFromSystem', 'restoreToSystem'] });
+    return { host, t, s, calls, audit };
+  };
+
+  it('delegates the write, leaves the placeholder alone, and records the reason on this side', async () => {
+    const { host, t, s, calls, audit } = await setup(() => ({ held: true, changed: true, permissions: ['sched:tick'] }));
+    const result = await host.admin.revokeFromSystem(staff, {
+      moduleId: SCHED,
+      node: { tenantId: t, scopeId: s },
+      reason: 'incident 42',
+    });
+    expect(result).toEqual({ moduleId: SCHED, schedules: 'off', changed: true, permissions: ['sched:tick'] });
+    expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off' }]);
+    // The placeholder DO still holds its live grant and no marker: nothing was written here.
+    expect((await host.runDueSchedules(SCHED, t, s)).fired).toBe(2);
+    const log = await audit();
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({
+      action: 'revokeFromSystem',
+      actor: staff,
+      vertical: 'sched-vertical',
+      after: { moduleId: SCHED, schedules: 'off', permissions: ['sched:tick'], reason: 'incident 42' },
+    });
+
+    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'ok' });
+    expect(calls.at(-1)).toEqual({ tenantId: t, scopeId: s, moduleId: SCHED, to: 'on' });
+    expect((await audit()).map((e) => e.action)).toEqual(['revokeFromSystem', 'restoreToSystem']);
+  });
+
+  it("a far end that holds nothing is a 404, and a no-op is not audited", async () => {
+    let held = false;
+    const { host, t, s, audit } = await setup(() => ({ held, changed: false, permissions: [] }));
+    const input = { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' };
+    const refused = await host.admin.revokeFromSystem(staff, input).then(() => null, (e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('not_found');
+    held = true;
+    expect(await host.admin.revokeFromSystem(staff, input)).toMatchObject({ changed: false });
+    expect(await audit()).toEqual([]);
+  });
+
+  it('a far end that fails fails the verb, and nothing is audited', async () => {
+    const { host, t, s, audit } = await setup(() => {
+      throw new Error('the deployment serving this scope predates the schedule switch (#1666)');
+    });
+    await expect(
+      host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' }),
+    ).rejects.toThrow(/predates the schedule switch/);
+    expect(await audit()).toEqual([]);
+  });
+
+  it('refuses a scope the directory does not have before reaching anything', async () => {
+    const { host, t, calls } = await setup(() => ({ held: true, changed: true, permissions: [] }));
+    const refused = await host.admin
+      .revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: scopeId.parse(ulid()) }, reason: 'r' })
+      .then(() => null, (e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('not_found');
+    expect(calls).toEqual([]);
+  });
+});
+
+/**
  * The Cloudflare half of #32 — the same guarantee the pure adapter asserts, on the
  * adapter that is actually deployed. It matters more here: the projection is done
  * by the COORDINATOR after the ScopeDO reports, so a rejected `migrate()` used to

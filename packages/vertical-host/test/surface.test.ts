@@ -1080,6 +1080,69 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
 });
 
 /**
+ * The far end of the schedule kill switch (#1666). A module the scope holds nothing for is
+ * a 200 carrying `held: false`, never a 404 — the platform reads a 404 from this path as
+ * "the deployment predates the route", and those two must not be confusable.
+ */
+describe('mountPlatformSurface — the schedule switch (#1666)', () => {
+  const post = (host: VerticalScopeHost, body: unknown, headers = authed({ 'content-type': 'application/json' })) =>
+    appWith(host).request('/internal/system-switch', { method: 'POST', headers, body: JSON.stringify(body) }, ENV);
+  const body = { scopeId: SCOPE, moduleId: '@substrat-run/engine-absence', to: 'off' };
+
+  it('parses and hands the switch to the host, answering its outcome verbatim', async () => {
+    let got: unknown[] = [];
+    const host = fakeHost({
+      systemSwitchLocal: async (...args: unknown[]) => {
+        got = args;
+        return { held: true, changed: true, permissions: ['absence:expire-stale'] } as never;
+      },
+    });
+    const res = await post(host, body);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ held: true, changed: true, permissions: ['absence:expire-stale'] });
+    expect(got).toEqual([SCOPE, '@substrat-run/engine-absence', 'off']);
+  });
+
+  it('a module the scope never held is a 200 with held: false, not a 404', async () => {
+    const host = fakeHost({ systemSwitchLocal: async () => ({ held: false, changed: false, permissions: [] }) });
+    const res = await post(host, body);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ held: false, changed: false, permissions: [] });
+  });
+
+  it('a host without the method answers 501, and nothing is called', async () => {
+    const host = fakeHost();
+    const res = await post(host, body);
+    expect(res.status).toBe(501);
+    expect(JSON.stringify(await res.json())).toMatch(/redeploy/);
+  });
+
+  it('refuses a position that is neither on nor off', async () => {
+    let called = false;
+    const host = fakeHost({
+      systemSwitchLocal: async () => {
+        called = true;
+        return { held: true, changed: true, permissions: [] };
+      },
+    });
+    expect((await post(host, { ...body, to: 'paused' })).status).toBe(400);
+    expect(called).toBe(false);
+  });
+
+  it('sits behind the platform-secret gate like the rest of the surface', async () => {
+    let called = false;
+    const host = fakeHost({
+      systemSwitchLocal: async () => {
+        called = true;
+        return { held: true, changed: true, permissions: [] };
+      },
+    });
+    expect((await post(host, body, { 'content-type': 'application/json' })).status).toBe(403);
+    expect(called).toBe(false);
+  });
+});
+
+/**
  * #113 phase 4: the envelope is a problem document, served as one. `{ error }` survives
  * inside it for one deprecation window (§1) — which is why every assertion above this
  * block still reads.

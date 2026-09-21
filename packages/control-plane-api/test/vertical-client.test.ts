@@ -450,3 +450,52 @@ describe('VerticalClient — database size (#1524)', () => {
     await expect(answering(404, '404 Not Found').databaseSize(s)).rejects.toThrow();
   });
 });
+
+/**
+ * The schedule kill switch's hop (#1666). The caller is an operator pulling a kill
+ * switch, so every shape a deployment built BEFORE the far end existed can answer — the
+ * route's 404, a vertical-host over a scope host that lacks the method (501), an SPA shell
+ * (200, not JSON), a 200 of some other shape — must read as "redeploy, nothing switched",
+ * never as a success nor as a bug in the request. A refusal the far end means (the
+ * platform secret, 403) stays the vertical's own answer.
+ */
+describe('VerticalClient.systemSwitch (#1666)', () => {
+  const input = { scopeId: s, moduleId: '@test/sched' as never, to: 'off' as const };
+  const answering = (res: () => Response, seen: { path: string; body: unknown }[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string, init?: RequestInit) => {
+        seen.push({ path: new URL(u).pathname, body: JSON.parse(String(init?.body)) });
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('posts the switch and reads the outcome', async () => {
+    const seen: { path: string; body: unknown }[] = [];
+    const client = answering(
+      () => new Response(JSON.stringify({ held: true, changed: true, permissions: ['sched:tick'] }), { status: 200 }),
+      seen,
+    );
+    await expect(client.systemSwitch(input)).resolves.toEqual({ held: true, changed: true, permissions: ['sched:tick'] });
+    expect(seen).toEqual([{ path: '/internal/system-switch', body: { scopeId: s, moduleId: '@test/sched', to: 'off' } }]);
+  });
+
+  it.each([
+    ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
+    ['a host without the method (501)', () => new Response(JSON.stringify({ error: 'redeploy it' }), { status: 501 })],
+    ['an SPA shell (200, not JSON)', () => new Response('<!doctype html><html></html>', { status: 200 })],
+    ['a 200 of another shape', () => new Response(JSON.stringify({ ok: true }), { status: 200 })],
+  ])('%s is a 501 that says to redeploy', async (_name, res) => {
+    const err = await answering(res).systemSwitch(input).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect((err as ControlPlaneError).status).toBe(501);
+    expect((err as ControlPlaneError).message).toMatch(/predates the schedule switch.*redeploy the vertical.*Nothing was switched/);
+  });
+
+  it("a refusal the far end means is still the vertical's own answer", async () => {
+    const err = await answering(() => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }))
+      .systemSwitch(input)
+      .then(() => null, (e: unknown) => e);
+    expect((err as ControlPlaneError).status).toBe(403);
+  });
+});
