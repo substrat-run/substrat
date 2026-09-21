@@ -930,7 +930,15 @@ interface ScopeStubRpc {
   listConnectionGrants(
     now: string,
   ): Promise<{ subject: string; relation: string; expires_at: string | null }[]>;
+  /** The EXPLICIT grant: `INSERT OR REPLACE`, so it clears a tombstone. */
   writeTuple(
+    subject: string,
+    relation: string,
+    object: string,
+    expiresAt: string | null,
+  ): Promise<void>;
+  /** Provisioning's write (#1659): creates a missing tuple, never un-revokes one. */
+  seatTuple(
     subject: string,
     relation: string,
     object: string,
@@ -979,8 +987,15 @@ interface ScopeStubRpc {
     roles: { role_key: string; permissions: string; source: string }[],
     tuples: { subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[],
     entitlements?: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[],
-    /** Scope-level tuples (e.g. the owner grant) written in the same unit as the flip (#332). */
-    scopeTuples?: { subject: string; relation: string; object: string; expires_at: string | null }[],
+    /** Scope-level tuples (e.g. the owner grant) seated in the same unit as the flip (#332) —
+     *  never un-revoked, except a `lockout_reseat` one on a scope with no effective role grant (#1659). */
+    scopeTuples?: {
+      subject: string;
+      relation: string;
+      object: string;
+      expires_at: string | null;
+      lockout_reseat?: boolean;
+    }[],
     /** The tenant's identity links (#406) — same preserve-on-undefined convention as entitlements. */
     identities?: { provider: string; external_id: string; principal_id: string; scope_id: string | null }[],
     /** Live connections' PUBLIC sealing keys (#687) — same preserve-on-undefined convention. */
@@ -2166,12 +2181,15 @@ export class CloudflareScopeHost implements ScopeHost {
     // holds exactly the permissions its schedules declared, on this scope, so
     // `ctx.check` resolves for scheduled work (the gate stays the check). Written to
     // the scope's own tuples, where the checker reads them — the same place the owner
-    // grant and connection grants land. Idempotent, so a re-provision re-asserts them.
+    // grant and connection grants land. Idempotent, so a re-provision re-asserts them —
+    // SEATED (#1659): a missing grant is recreated, a revoked one stays revoked, since a
+    // revoke of this grant is the per-scope schedule kill switch. `grantToSystem` is the
+    // explicit way back, and it does clear the tombstone.
     for (const [moduleId, schedules] of this.moduleSchedules) {
       const perms = new Set<string>();
       for (const s of schedules) for (const p of s.permissions) perms.add(p);
       for (const perm of perms) {
-        await this.scopeStub(input.scopeId).writeTuple(
+        await this.scopeStub(input.scopeId).seatTuple(
           `system:${moduleId}`,
           `granted:${perm}`,
           `scope:${input.scopeId}`,
@@ -5963,15 +5981,22 @@ export class CloudflareScopeHost implements ScopeHost {
       // used to leave the scope "roles projected, source=local, zero tuples" — enforcing nothing
       // but denials, with no builder-facing lever to fix it. Atomic now: grant and flip land
       // together, and the empty-tuple guard in `applyProjection` refuses the flip if they don't.
+      //
+      // #1659: every tuple here is SEATED — created if missing, left alone if revoked — so a
+      // reconcile no longer undoes an operator's revoke. The owner's seat alone carries
+      // `lockout_reseat`: it comes back over a revoke only when the scope would otherwise hold
+      // no effective role grant — none whose role the vertical still defines — which is the
+      // #332 lockout a reconcile exists to repair.
       [
         {
           subject: `principal:${input.owner}`,
           relation: `role:${input.ownerRoleKey}`,
           object: `scope:${input.scopeId}`,
           expires_at: null,
+          lockout_reseat: true,
         },
         // #461: each registered module's SCHEDULE grants (#383) ride the same unit —
-        // the CP-less mirror of `provisionScope`'s writeTuple loop. Without them the
+        // the CP-less mirror of `provisionScope`'s seatTuple loop. Without them the
         // grant-is-the-switch check makes every schedule a silent no-op (`fired: 0`,
         // no error — the #49 unfalsifiable zero).
         ...[...this.moduleSchedules].flatMap(([modId, schedules]) => {
@@ -6064,16 +6089,23 @@ export class CloudflareScopeHost implements ScopeHost {
    * seat is the one that knows what to announce, and it emits from its own operation.
    * Guarded like `assignScopeRole`: at the harness route, not at this seam.
    *
-   * Two things a caller has to know, because the tombstone is only as durable as the next
-   * `INSERT OR REPLACE` on the same row:
-   * - Anything that re-projects the scope's tuples clears it — `provisionScopeLocal` on a
-   *   reconcile re-seats the owner and the `system:` grants, and a vertical's `onProvision`
-   *   hook that re-issues `assignScopeRole` re-seats whatever it names. A revoke of a role
-   *   such a path grants is undone on the next reconcile, silently. Revoke the seats your
-   *   own flow granted, not the ones provisioning did.
-   * - Revoking the LAST live role tuple in a scope leaves nobody who passes a check, and
-   *   the local checker has no way back in (#332 guards the flip to local on the way in
-   *   only). Seat the successor before unseating the last holder.
+   * What survives a reconcile (#1659), because the tombstone is only as durable as the next
+   * write that is allowed to replace it:
+   * - Provisioning does not clear it. `provisionScopeLocal` SEATS its tuples (the owner's
+   *   role, the `system:` grants, the connection grants): it recreates a missing one and
+   *   leaves a revoked one revoked, so a reconcile — every listed promote runs one — keeps
+   *   your revoke.
+   * - With ONE exception: the owner-of-record's seat is re-seated over a revoke when the
+   *   scope would otherwise hold no effective role grant at all — a holder of a role the
+   *   vertical no longer defines passes no check, so it does not count. A scope nobody can
+   *   act in is the #332 lockout the reconcile exists to repair, so revoking the LAST holder
+   *   is undone at the next reconcile. Seat the successor (in a role the vertical defines)
+   *   before unseating the owner, and the revoke stands. The owner re-seated is the one `owner_of_record` names, which is first-write-
+   *   wins — if a successor is later revoked too, the ORIGINAL owner comes back. To lock a
+   *   compromised owner out, suspend the scope; a seat revoke is not that lever.
+   * - An explicit grant does clear it: `assignScopeRole` is `INSERT OR REPLACE`, and so is
+   *   a vertical's `onProvision` hook that re-issues it — which re-seats whatever it names
+   *   on every reconcile. Revoke the seats your own flow granted and does not re-grant.
    * On a CP-less host this records no admin-log row (there is no control plane to hold
    * one), so the row's `revoked_at` is the only evidence, and a re-assign replaces it.
    */

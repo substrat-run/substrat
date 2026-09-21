@@ -211,6 +211,7 @@ import {
   platformRequestRedactionParams,
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
+  SEAT_SCOPE_TUPLE_SQL,
   type PlatformRequestRedactionCandidate,
   denialListQuery,
   denialSummaryQuery,
@@ -2268,18 +2269,18 @@ export class SqliteScopeHost implements ScopeHost {
     // Project each registered module's SCHEDULE grants (#383): a system principal
     // holds exactly the permissions its schedules declared, on this scope. This is
     // what makes `ctx.check` resolve for scheduled work — the gate stays the check,
-    // and revoking the tuple (console) is how scheduling is turned off per scope.
-    // Idempotent (INSERT OR REPLACE), so a re-provision re-asserts the same grants.
+    // and revoking the tuple is how scheduling is turned off per scope. Idempotent, so a
+    // re-provision re-asserts the same grants — SEATED (#1659), with the statement the
+    // Cloudflare adapter seats with: a missing grant is recreated, a revoked one stays
+    // revoked, so a re-provision cannot turn a scope's schedules back on. `grantToSystem`
+    // is the explicit way back, and it does clear the tombstone.
     for (const mod of this.modules.values()) {
       const perms = new Set<string>();
       for (const s of mod.schedules) for (const p of s.permissions) perms.add(p);
       for (const perm of perms) {
         rt.db
-          .prepare(
-            `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
-             VALUES (?, ?, ?, NULL)`,
-          )
-          .run(`system:${mod.id}`, `granted:${perm}`, `scope:${input.scopeId}`);
+          .prepare(SEAT_SCOPE_TUPLE_SQL)
+          .run(`system:${mod.id}`, `granted:${perm}`, `scope:${input.scopeId}`, null);
       }
     }
     // Audit a real provision only; an idempotent re-provision changed nothing.
@@ -4958,6 +4959,9 @@ export class SqliteScopeHost implements ScopeHost {
         )
         .run(tenantId, subject, relation, object, expiresAt ?? null);
 
+    // The EXPLICIT grant: `INSERT OR REPLACE` clears a tombstone, because a re-grant must
+    // grant. Provisioning seats with `SEAT_SCOPE_TUPLE_SQL` instead, which never un-revokes
+    // (#1659) — keep the two apart.
     const writeScopeTuple = (
       node: Node,
       subject: string,

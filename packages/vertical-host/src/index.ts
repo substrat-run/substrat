@@ -883,6 +883,8 @@ export function mountPlatformSurface<Env extends object>(
   // secret-gated /internal/provision, so the control plane calls this on their behalf
   // after checking ownership. It re-sources the owner from the vertical's durable
   // owner-of-record and re-runs the idempotent provision. No owner in the body.
+  // The kernel half SEATS its tuples (#1659): what is missing comes back, what an operator
+  // revoked stays revoked — except the owner's seat on a scope no one else can act in.
   app.post('/internal/reconcile', async (c) => {
     if (!deps.resolveOwner) {
       throw new HTTPException(501, { message: 'this vertical keeps no owner-of-record to reconcile from' });
