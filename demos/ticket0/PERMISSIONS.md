@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/demo-ticket0
 
-22 keys · 2 modules · 9 roles
+23 keys · 2 modules · 9 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -14,6 +14,7 @@
 | `contact:read` | See the people who have asked something | `@substrat-run/demo-ticket0` |
 | `conversation:assign` | Assign, snooze, wake and tag a conversation | `@substrat-run/demo-ticket0` |
 | `conversation:draft` | Write an internal note or record a drafted answer — never leaves the building | `@substrat-run/demo-ticket0` |
+| `conversation:escalate` | Record that a conversation missed a response or resolution target and tell the desk — the desk’s own timer only, no human role | `@substrat-run/demo-ticket0` |
 | `conversation:merge` | Fold one conversation into another | `@substrat-run/demo-ticket0` |
 | `conversation:read` | See every conversation in this desk, internal notes included | `@substrat-run/demo-ticket0` |
 | `conversation:read-own` | See a conversation that is yours, public messages only | `@substrat-run/demo-ticket0` |
@@ -57,6 +58,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `contact:read` | `agent`, `desk-admin` |
 | `conversation:assign` | `agent`, `desk-admin` |
 | `conversation:draft` | `agent`, `assistant`, `assistant-autonomous`, `desk-admin` |
+| `conversation:escalate` | — no role — |
 | `conversation:merge` | `desk-admin` |
 | `conversation:read` | `agent`, `assistant`, `assistant-autonomous`, `desk-admin` |
 | `conversation:read-own` | — no role — |
@@ -96,6 +98,7 @@ schedule can do exactly this and no more.
 | Operation | Cadence | System principal | Permissions |
 | --- | --- | --- | --- |
 | `ticket0/assign-round-robin` | every 5 min | `system:@substrat-run/demo-ticket0` | `conversation:assign` |
+| `ticket0/escalate-sla-breaches` | every 5 min | `system:@substrat-run/demo-ticket0` | `conversation:escalate` |
 | `ticket0/reap-abandoned` | every 60 min | `system:@substrat-run/demo-ticket0` | `conversation:resolve` |
 | `ticket0/wake-snoozed` | every 5 min | `system:@substrat-run/demo-ticket0` | `conversation:assign` |
 

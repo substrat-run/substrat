@@ -97,6 +97,10 @@ export interface Conversation {
   first_public_reply_at: string | null;
   first_assigned_at: string | null;
   resolved_at: string | null;
+  first_response_due_at: string | null;
+  resolution_due_at: string | null;
+  first_response_breached_at: string | null;
+  resolution_breached_at: string | null;
   merged_into: string | null;
   follows: string | null;
   created_at: string;
@@ -346,7 +350,7 @@ export interface Ticket0Client {
    *
    * `PATCH /desk` — `ticket0/configure-desk`
    */
-  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean; abandonedAfterDays?: number | null; settings?: { roundRobin?: boolean } }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; abandoned_after_days: number | null; settings: string | null; created_at: string; updated_at: string }>;
+  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean; abandonedAfterDays?: number | null; settings?: { roundRobin?: boolean; sla?: { firstResponseMinutes?: { low?: number; normal?: number; urgent?: number }; resolutionMinutes?: { low?: number; normal?: number; urgent?: number } } | null } }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; abandoned_after_days: number | null; settings: string | null; created_at: string; updated_at: string }>;
 
   /**
    * Confirm an address from the link in its email

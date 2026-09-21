@@ -30,6 +30,7 @@ export const T0_PERM = {
   conversationResolve: permissionKey.parse('conversation:resolve'),
   conversationMerge: permissionKey.parse('conversation:merge'),
   conversationRelay: permissionKey.parse('conversation:relay'),
+  conversationEscalate: permissionKey.parse('conversation:escalate'),
   contactRead: permissionKey.parse('contact:read'),
   kbRead: permissionKey.parse('kb:read'),
   kbManage: permissionKey.parse('kb:manage'),
@@ -165,6 +166,7 @@ export const ticket0Manifest = moduleManifest.parse({
       'conversation:resolve': 'Resolve and close a conversation',
       'conversation:merge': 'Fold one conversation into another',
       'conversation:relay': 'Bring messages in from email and read the ones going out — the relay only, no human role',
+      'conversation:escalate': 'Record that a conversation missed a response or resolution target and tell the desk — the desk’s own timer only, no human role',
       'contact:read': 'See the people who have asked something',
       'kb:read': 'Read and search the knowledge base',
       'kb:manage': 'Add a documentation source, and mint or revoke its refresh hook',
@@ -259,6 +261,36 @@ export const ticket0Manifest = moduleManifest.parse({
       operation: 'ticket0/assign-round-robin',
       cadence: { everyMinutes: 5 },
       permissions: ['conversation:assign'],
+    },
+    /**
+     * Service levels (#1082): a conversation whose first-response or resolution target
+     * has passed is marked breached, once, and the desk is told.
+     *
+     * Off on every desk that has set no targets. Such a desk costs one read of the desk
+     * row per tick, and the scan behind it is never run.
+     *
+     * Five minutes, because this cadence is the smallest part of how late a breach can
+     * be noticed. The declared cadence is a FLOOR: the schedule runs when whatever
+     * sweeps this desk's schedules runs, and a breach is recorded on the first run after
+     * its due instant. So the lag between a target passing and the desk hearing of it is
+     * one sweep interval at worst, never less than this.
+     *
+     * On a HOSTED desk nothing sweeps this desk's schedules today. ticket0 wires no scope
+     * sweeper, and the control plane's host registers no modules, so none of the four
+     * schedules here fires there (#1646). Until that lands, a breach is recorded only
+     * where something runs the schedules: the tests, and any host that sweeps.
+     *
+     * Its own key, `conversation:escalate`, rather than the `conversation:assign` the two
+     * sweeps above share: the trail records the key a check passed, and an escalation
+     * recorded as an assignment would be a false record. A desk provisioned before this
+     * schedule existed receives the new tuple from the platform's provision reconcile
+     * (#1172): the first platform sweep after a push re-runs provisioning once on every
+     * scope bound to an older version, and that projects every schedule's grants.
+     */
+    {
+      operation: 'ticket0/escalate-sla-breaches',
+      cadence: { everyMinutes: 5 },
+      permissions: ['conversation:escalate'],
     },
   ],
   entitlementKey: 'ticket0',

@@ -304,6 +304,21 @@ thread, who resolved and replied, CSAT, and the assistant's deflection, escalati
 failure rates. Constraint 2 above applies here too: signed in as Anna the nav item is
 absent, because the API refused.
 
+**Service levels** (#1082) are set in Settings → Desk: a first-response and a resolution
+target in minutes, per priority. A conversation is stamped with the instants it owes when
+it arrives and again when its priority changes, so editing the targets moves nothing
+already promised. "First response" is `first_public_reply_at`, the column the report's
+percentile reads: a public reply from a person or the assistant counts, while a note, a
+draft or the "a person will be with you" acknowledgement does not. A miss is recorded
+once: by `ticket0/escalate-sla-breaches` (a declared schedule under its own
+`conversation:escalate` key), or by a priority change made after the due instant (both
+send the `escalated` notification), or by the late reply or resolution itself (which
+notifies nobody, because it has just been dealt with). The inbox row says which target
+was missed. The schedule runs every 5 minutes at the soonest, so a breach is noticed up
+to one run late. **On a hosted desk that schedule does not fire yet (#1646)**, and none of
+ticket0's other schedules do either, so a hosted desk records a breach only when somebody acts on the late
+conversation: a reply, a resolution or a priority change. A snooze does not pause the clock yet (#1648).
+
 The inbox filters narrow the read **on the server**: `state`, `assignee`, `channel` and
 `priority` are declared inputs on `ticket0/list-conversations`, and the kernel composes
 the `WHERE` and provisions the indexes from the same operation's `filterable`. A chip
