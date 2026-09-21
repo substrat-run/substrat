@@ -214,9 +214,12 @@ import {
   platformRequestRedactionParams,
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
-  SEAT_SCOPE_TUPLE_SQL,
+  seatScopeTuple,
   switchSystemSchedules,
   systemScheduleState,
+  systemSwitchedOff,
+  systemSwitchedOffMessage,
+  type SwitchOutcome,
   type SwitchSql,
   type PlatformRequestRedactionCandidate,
   denialListQuery,
@@ -2292,9 +2295,9 @@ export class SqliteScopeHost implements ScopeHost {
       const perms = new Set<string>();
       for (const s of mod.schedules) for (const p of s.permissions) perms.add(p);
       for (const perm of perms) {
-        rt.db
-          .prepare(SEAT_SCOPE_TUPLE_SQL)
-          .run(`system:${mod.id}`, `granted:${perm}`, `scope:${input.scopeId}`, null);
+        // A module switched off (#1666) gets nothing seated — see `seatScopeTuple`.
+        const seat = seatScopeTuple(`system:${mod.id}`, `granted:${perm}`, `scope:${input.scopeId}`, null);
+        rt.db.prepare(seat.sql).run(...seat.params);
       }
     }
     // Audit a real provision only; an idempotent re-provision changed nothing.
@@ -4977,7 +4980,7 @@ export class SqliteScopeHost implements ScopeHost {
         .run(tenantId, subject, relation, object, expiresAt ?? null);
 
     // The EXPLICIT grant: `INSERT OR REPLACE` clears a tombstone, because a re-grant must
-    // grant. Provisioning seats with `SEAT_SCOPE_TUPLE_SQL` instead, which never un-revokes
+    // grant. Provisioning seats with `seatScopeTuple` instead, which never un-revokes
     // (#1659) — keep the two apart.
     const writeScopeTuple = (
       node: Node,
@@ -5038,15 +5041,44 @@ export class SqliteScopeHost implements ScopeHost {
       if (!scope || scope.tenant_id !== tenantId) {
         throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
       }
-      const rt = this.runtime(tenantId, scopeId);
-      const outcome = rt.db.transaction(() =>
-        switchSystemSchedules(switchSqlOf(rt.db), {
-          moduleId: input.moduleId,
-          scopeId,
-          to,
-          at: new Date().toISOString(),
-        }),
-      )();
+      // AUDIT FIRST (#1666 review), exactly as the Cloudflare adapter: the intent row before
+      // anything moves, the outcome row after, on every attempt. The directory and the
+      // scope's file are separate databases, so a crash between them leaves an intent with
+      // no recorded outcome — never a moved switch with no audit row.
+      const operationId = ulid();
+      const action = to === 'off' ? 'revokeFromSystem' : 'restoreToSystem';
+      const target = { tenantId, scopeId };
+      const base = { operationId, moduleId: input.moduleId, schedules: to };
+      this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
+      let outcome: SwitchOutcome;
+      try {
+        const rt = this.runtime(tenantId, scopeId);
+        outcome = rt.db.transaction(() =>
+          switchSystemSchedules(switchSqlOf(rt.db), {
+            moduleId: input.moduleId,
+            scopeId,
+            to,
+            at: new Date().toISOString(),
+          }),
+        )();
+      } catch (err) {
+        try {
+          this.recordAdmin(actor, action, target, null, {
+            ...base,
+            phase: 'failed',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        } catch {
+          // Best effort: the original error is what the caller must see.
+        }
+        throw err;
+      }
+      this.recordAdmin(actor, action, target, null, {
+        ...base,
+        phase: outcome.held ? 'applied' : 'refused',
+        changed: outcome.changed,
+        permissions: outcome.permissions,
+      });
       if (!outcome.held) {
         throw substratError(
           'not_found',
@@ -5054,24 +5086,13 @@ export class SqliteScopeHost implements ScopeHost {
             `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')`,
         );
       }
-      const result: SystemSwitchResult = {
+      return {
+        operationId,
         moduleId: input.moduleId,
         schedules: to,
         changed: outcome.changed,
         permissions: outcome.permissions as PermissionKey[],
       };
-      // Idempotent and, like `unassignRole`, a no-op is not audited: the row that moved
-      // the switch is already in the log, with its reason.
-      if (outcome.changed) {
-        this.recordAdmin(
-          actor,
-          to === 'off' ? 'revokeFromSystem' : 'restoreToSystem',
-          { tenantId, scopeId },
-          null,
-          { moduleId: input.moduleId, schedules: to, permissions: result.permissions, reason: input.reason },
-        );
-      }
-      return result;
     };
 
     return {
@@ -5295,6 +5316,15 @@ export class SqliteScopeHost implements ScopeHost {
         // principal is bound to the module, and a scope only ever runs the modules
         // its own host registered.
         const grant = systemGrant.parse(raw);
+        // #1666: refused while the module is switched off on this scope. The check and the
+        // write below share this synchronous turn, so no switch can move between them.
+        // Restore is the lever; a grant is not.
+        if (
+          grant.node.scopeId &&
+          systemSwitchedOff(switchSqlOf(this.runtime(grant.node.tenantId, grant.node.scopeId).db), grant.moduleId)
+        ) {
+          throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, grant.node.scopeId));
+        }
         writeGrant(
           subjectRef({ kind: 'system', id: grant.moduleId }),
           grant.permission,

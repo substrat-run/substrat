@@ -68,10 +68,11 @@ import {
   intentPayloadCarriesSubject,
   type PlatformRequestRedactionCandidate,
   type SubjectRedactionCounts,
-  SEAT_SCOPE_TUPLE_SQL,
+  seatScopeTuple,
   effectiveRoleGrantQuery,
   switchSystemSchedules,
   systemScheduleState,
+  systemSwitchedOff,
   type SwitchOutcome,
   type SwitchSql,
   type SystemScheduleState,
@@ -1391,8 +1392,9 @@ export function defineScopeDO(
     /**
      * Provisioning's scope-tuple write (#1659): create the row if it is missing, follow the
      * platform's expiry if it is live, and leave it alone if it was revoked — so a re-run
-     * provision cannot undo an operator's revoke. `SEAT_SCOPE_TUPLE_SQL` is the statement,
-     * shared with `applyProjection`'s `scopeTuples` and with the pure adapter.
+     * provision cannot undo an operator's revoke — and seat nothing at all for a module
+     * whose schedule kill switch is off (#1666). `seatScopeTuple` is the statement, shared
+     * with `applyProjection`'s `scopeTuples` and with the pure adapter.
      */
     async seatTuple(
       subject: string,
@@ -1401,7 +1403,8 @@ export function defineScopeDO(
       expiresAt: string | null,
     ): Promise<void> {
       await this.queue.enqueue(() => {
-        this.sql.exec(SEAT_SCOPE_TUPLE_SQL, subject, relation, object, expiresAt);
+        const seat = seatScopeTuple(subject, relation, object, expiresAt);
+        this.sql.exec(seat.sql, ...seat.params);
       });
     }
 
@@ -2483,6 +2486,32 @@ export function defineScopeDO(
      */
     async hasSystemGrant(moduleId: string): Promise<boolean> {
       return (await this.systemScheduleState(moduleId)) === 'on';
+    }
+
+    /**
+     * `grantToSystem`'s scope-level write (#1666): the explicit grant — `INSERT OR REPLACE`,
+     * as `writeTuple` — EXCEPT while the module's schedule kill switch is off, when it writes
+     * nothing and answers `false`. The check and the write are one queued unit, so no switch
+     * can move between them. Restore is the lever; a grant is not.
+     */
+    async writeSystemGrant(
+      moduleId: string,
+      relation: string,
+      object: string,
+      expiresAt: string | null,
+    ): Promise<boolean> {
+      return this.queue.enqueue(() => {
+        if (systemSwitchedOff(this.switchSql(), moduleId)) return false;
+        this.sql.exec(
+          `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
+           VALUES (?, ?, ?, ?)`,
+          `system:${moduleId}`,
+          relation,
+          object,
+          expiresAt,
+        );
+        return true;
+      });
     }
 
     /**
@@ -4601,9 +4630,11 @@ export function defineScopeDO(
         //
         // #1659: SEATED, so a reconcile creates what is missing and leaves a revoke alone. It
         // used to be `INSERT OR REPLACE … revoked_at = NULL`, which undid an operator's revoke
-        // of the owner seat or of a `system:` schedule grant on the next reconcile.
+        // of the owner seat or of a `system:` schedule grant on the next reconcile. And a
+        // module switched off (#1666) gets no `system:` grant seated, new or old.
         for (const st of scopeTuples ?? []) {
-          this.sql.exec(SEAT_SCOPE_TUPLE_SQL, st.subject, st.relation, st.object, st.expires_at);
+          const seat = seatScopeTuple(st.subject, st.relation, st.object, st.expires_at);
+          this.sql.exec(seat.sql, ...seat.params);
         }
         // #1659's one exception: the owner-of-record's seat comes back over a revoke when
         // NOTHING else would let anyone act here — roles projected, no effective role grant.

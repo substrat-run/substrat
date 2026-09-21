@@ -445,6 +445,7 @@ describe("the schedule kill switch reaches a hosted Meridian's timer (#1666)", (
     expect(position.rows.map((r) => [r[0], r[1] !== null])).toEqual([
       ['granted:absence:approve', true],
       ['switch:off', false],
+      ['switched:absence:approve', false], // what OFF took, and all ON may give back
     ]);
 
     let report = await sweep();

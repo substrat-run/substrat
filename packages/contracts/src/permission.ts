@@ -216,8 +216,13 @@ export const systemSwitchOutcome = z.object({
 });
 export type SystemSwitchOutcome = z.infer<typeof systemSwitchOutcome>;
 
-/** What `revokeFromSystem` / `restoreToSystem` answer (#1666) — the position the switch is now in. */
+/**
+ * What `revokeFromSystem` / `restoreToSystem` answer (#1666) — the position the switch is now
+ * in. `operationId` names this call's rows on the admin log (its intent, then its outcome),
+ * so an operator can tie what the route answered to what the log recorded.
+ */
 export const systemSwitchResult = z.object({
+  operationId: z.string().min(1),
   moduleId,
   schedules: z.enum(['on', 'off']),
   changed: z.boolean(),

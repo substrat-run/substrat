@@ -17,16 +17,28 @@
  *
  * So the OFF position is a tuple of its own: a live `system:<module>` / `switch:off` /
  * `scope:<id>` marker. The gate is OFF while that marker is live, whatever grants are
- * live beside it — so neither a reconcile nor a grant can reopen it. **Restore is the
- * lever; a grant is not.** The marker is an ordinary K-21 tuple: switching back on
- * tombstones it, so the row stays as evidence of when the switch was last pulled. The
- * permission walk reads only `role:` and `granted:` relations (`permission-eval.ts`), so
- * the marker authorizes nothing and denies nothing by itself.
+ * live beside it. **Restore is the lever; a grant is not.** The marker is an ordinary
+ * K-21 tuple: switching back on tombstones it, so the row stays as evidence of when the
+ * switch was last pulled. The permission walk reads only `role:` and `granted:` relations
+ * (`permission-eval.ts`), so the marker authorizes nothing and denies nothing by itself.
  *
  * Switching off ALSO tombstones every live `granted:` tuple the module holds on the scope.
  * That is what makes it a kill switch rather than a schedule pause: anything that acts
- * with the module's system authority — a resumable job run (#1577) included — is denied
- * by its own `ctx.check` while the switch is off. Switching on restores exactly those.
+ * with the module's system authority — a resumable job run (#1577), a `getSystemScope`
+ * invoke — is denied by its own `ctx.check` while the switch is off.
+ *
+ * **And nothing may write a new one while it is off**, which is what makes that denial
+ * hold. The checker is deliberately NOT marker-aware; the switch is closed on the WRITE
+ * side instead, at the only two writers of a scope-level `system:` grant:
+ * - `grantToSystem` refuses while the module is switched off on that scope (the adapters
+ *   ask `systemSwitchedOff` in the same unit as the write);
+ * - provisioning's seat (`seatScopeTuple`) seats nothing for a subject whose marker is
+ *   live, so a reconcile cannot create a grant a newer version declares.
+ *
+ * **Restore returns exactly what OFF took, never more.** Each grant OFF tombstones gets a
+ * `switched:<permission>` record, live for as long as the switch holds it. ON restores
+ * only grants with a live record, then tombstones the records — so a grant that was
+ * revoked independently BEFORE the switch was pulled stays revoked through OFF and ON.
  *
  * Params and results are plain SQL over `_substrat_tuples`, run through `SwitchSql`,
  * which each adapter implements over its own handle inside one transaction.
@@ -34,6 +46,9 @@
 
 /** The relation of the OFF marker. Not `granted:` and not `role:`, so no check reads it. */
 export const SYSTEM_SWITCH_OFF_RELATION = 'switch:off';
+
+/** `switched:<permission>` — "the switch revoked this grant, and ON gives it back". */
+const SWITCHED_PREFIX = 'switched:';
 
 /** The two statement shapes the switch needs, over either adapter's SQLite handle. */
 export interface SwitchSql {
@@ -57,6 +72,14 @@ export type SystemScheduleState = 'on' | 'off' | 'ungranted';
 const subjectOf = (moduleId: string): string => `system:${moduleId}`;
 
 /**
+ * "Is this subject's OFF marker live?", as a SQL predicate over ONE bound parameter (the
+ * subject). The one spelling the gate, the grant refusal and the provisioning seat share,
+ * so the three cannot disagree about what "switched off" means.
+ */
+export const SYSTEM_SWITCH_OFF_PREDICATE = `EXISTS (SELECT 1 FROM _substrat_tuples
+  WHERE subject = ? AND relation = '${SYSTEM_SWITCH_OFF_RELATION}' AND revoked_at IS NULL)`;
+
+/**
  * The gate, one statement: is the OFF marker live, and is any `granted:` tuple live?
  * `substr` rather than `LIKE`: `LIKE` is case-insensitive in SQLite and a Durable
  * Object caps its patterns (#1655); an exact prefix compare is neither.
@@ -65,18 +88,33 @@ export function systemScheduleState(db: SwitchSql, moduleId: string, now: string
   const subject = subjectOf(moduleId);
   const row = db.all(
     `SELECT
-       EXISTS (SELECT 1 FROM _substrat_tuples
-                WHERE subject = ? AND relation = ? AND revoked_at IS NULL) AS off,
+       ${SYSTEM_SWITCH_OFF_PREDICATE} AS off,
        EXISTS (SELECT 1 FROM _substrat_tuples
                 WHERE subject = ? AND substr(relation, 1, 8) = 'granted:'
                   AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)) AS granted`,
     subject,
-    SYSTEM_SWITCH_OFF_RELATION,
     subject,
     now,
   )[0] as { off: number; granted: number } | undefined;
   if (Number(row?.off) === 1) return 'off';
   return Number(row?.granted) === 1 ? 'on' : 'ungranted';
+}
+
+/** Is this module switched off on the scope `db` is? What `grantToSystem` refuses on. */
+export function systemSwitchedOff(db: SwitchSql, moduleId: string): boolean {
+  const row = db.all(`SELECT ${SYSTEM_SWITCH_OFF_PREDICATE} AS off`, subjectOf(moduleId))[0] as
+    | { off: number }
+    | undefined;
+  return Number(row?.off) === 1;
+}
+
+/** The refusal `grantToSystem` throws while the switch is off — one wording, both adapters. */
+export function systemSwitchedOffMessage(moduleId: string, scopeId: string): string {
+  return (
+    `module '${moduleId}' is switched off on scope ${scopeId} (#1666) — restore it first ` +
+    `(restoreToSystem). A grant is not the lever: granting while it is off would hand the ` +
+    `module's system authority back to anything but its schedules.`
+  );
 }
 
 /** What one switch call did in the scope's own storage — `SystemSwitchOutcome`'s shape. */
@@ -89,11 +127,11 @@ export interface SwitchOutcome {
 /**
  * Move one module's switch on one scope. Idempotent: a repeat changes nothing and says so.
  *
- * OFF tombstones every live `granted:` tuple the module holds at `scope:<id>` and makes
- * the marker live. ON clears every tombstone among those tuples and tombstones the marker.
- * A repeated OFF after something re-granted a tuple (a reconcile seating a new
- * permission, a stray `grantToSystem`) tombstones that tuple too — the switch re-asserts
- * the whole position, not only the marker.
+ * OFF tombstones every live `granted:` tuple the module holds at `scope:<id>`, records each
+ * as `switched:<permission>`, and makes the marker live. ON un-tombstones exactly the
+ * grants with a live `switched:` record, tombstones those records, and tombstones the
+ * marker. A repeated OFF re-asserts the whole position: a grant that became live meanwhile
+ * (only a raw write can do that now) is tombstoned and recorded too.
  *
  * `held: false`, with nothing written, when the scope holds neither a grant nor a marker
  * for the module: the caller named something this scope never ran, and turning "nothing"
@@ -124,14 +162,25 @@ export function switchSystemSchedules(
 
   const permissionOf = (relation: string): string => relation.slice('granted:'.length);
   if (input.to === 'off') {
-    const live = grants.filter((g) => g.revoked_at === null).map((g) => g.relation);
-    db.run(
-      `UPDATE _substrat_tuples SET revoked_at = ?
-        WHERE subject = ? AND object = ? AND substr(relation, 1, 8) = 'granted:' AND revoked_at IS NULL`,
-      input.at,
-      subject,
-      object,
-    );
+    const live = grants.filter((g) => g.revoked_at === null).map((g) => permissionOf(g.relation));
+    for (const permission of live) {
+      db.run(
+        `UPDATE _substrat_tuples SET revoked_at = ? WHERE subject = ? AND relation = ? AND object = ?`,
+        input.at,
+        subject,
+        `granted:${permission}`,
+        object,
+      );
+      // What ON may give back — and nothing else. INSERT OR REPLACE, so a record a past
+      // OFF/ON cycle left tombstoned is live again for this one.
+      db.run(
+        `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at, revoked_at)
+         VALUES (?, ?, ?, NULL, NULL)`,
+        subject,
+        `${SWITCHED_PREFIX}${permission}`,
+        object,
+      );
+    }
     const markerMoved = !marker || marker.revoked_at !== null;
     if (markerMoved) {
       db.run(
@@ -142,16 +191,38 @@ export function switchSystemSchedules(
         object,
       );
     }
-    return { held: true, changed: markerMoved || live.length > 0, permissions: live.map(permissionOf) };
+    return { held: true, changed: markerMoved || live.length > 0, permissions: live };
   }
 
-  const revoked = grants.filter((g) => g.revoked_at !== null).map((g) => g.relation);
-  db.run(
-    `UPDATE _substrat_tuples SET revoked_at = NULL
-      WHERE subject = ? AND object = ? AND substr(relation, 1, 8) = 'granted:' AND revoked_at IS NOT NULL`,
+  const records = db.all(
+    `SELECT relation FROM _substrat_tuples
+      WHERE subject = ? AND object = ? AND substr(relation, 1, 9) = ? AND revoked_at IS NULL
+      ORDER BY relation`,
     subject,
     object,
-  );
+    SWITCHED_PREFIX,
+  ) as { relation: string }[];
+  const restored: string[] = [];
+  for (const { relation } of records) {
+    const permission = relation.slice(SWITCHED_PREFIX.length);
+    const revoked = grants.find((g) => g.relation === `granted:${permission}` && g.revoked_at !== null);
+    if (revoked) {
+      db.run(
+        `UPDATE _substrat_tuples SET revoked_at = NULL WHERE subject = ? AND relation = ? AND object = ?`,
+        subject,
+        `granted:${permission}`,
+        object,
+      );
+      restored.push(permission);
+    }
+    db.run(
+      `UPDATE _substrat_tuples SET revoked_at = ? WHERE subject = ? AND relation = ? AND object = ?`,
+      input.at,
+      subject,
+      relation,
+      object,
+    );
+  }
   const markerMoved = marker !== undefined && marker.revoked_at === null;
   if (markerMoved) {
     db.run(
@@ -162,5 +233,5 @@ export function switchSystemSchedules(
       object,
     );
   }
-  return { held: true, changed: markerMoved || revoked.length > 0, permissions: revoked.map(permissionOf) };
+  return { held: true, changed: markerMoved || restored.length > 0, permissions: restored };
 }

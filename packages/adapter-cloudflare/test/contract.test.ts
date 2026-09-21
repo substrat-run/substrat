@@ -180,32 +180,44 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     return { host, t, s, calls, audit };
   };
 
-  it('delegates the write, leaves the placeholder alone, and records the reason on this side', async () => {
+  /** The admin-log rows for one scope, flattened: action + the `after` payload. */
+  const rows = async (audit: () => Promise<{ action: string; vertical: string | null; after: unknown }[]>) =>
+    (await audit()).map((e) => ({ action: e.action, vertical: e.vertical, ...(e.after as Record<string, unknown>) }));
+
+  it('delegates the write, leaves the placeholder alone, and audits intent then outcome here, with the reason', async () => {
     const { host, t, s, calls, audit } = await setup(() => ({ held: true, changed: true, permissions: ['sched:tick'] }));
     const result = await host.admin.revokeFromSystem(staff, {
       moduleId: SCHED,
       node: { tenantId: t, scopeId: s },
       reason: 'incident 42',
     });
-    expect(result).toEqual({ moduleId: SCHED, schedules: 'off', changed: true, permissions: ['sched:tick'] });
+    expect(result).toEqual({
+      operationId: expect.any(String),
+      moduleId: SCHED,
+      schedules: 'off',
+      changed: true,
+      permissions: ['sched:tick'],
+    });
     expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off' }]);
     // The placeholder DO still holds its live grant and no marker: nothing was written here.
     expect((await host.runDueSchedules(SCHED, t, s)).fired).toBe(2);
-    const log = await audit();
-    expect(log).toHaveLength(1);
-    expect(log[0]).toMatchObject({
-      action: 'revokeFromSystem',
-      actor: staff,
-      vertical: 'sched-vertical',
-      after: { moduleId: SCHED, schedules: 'off', permissions: ['sched:tick'], reason: 'incident 42' },
-    });
+    const common = { action: 'revokeFromSystem', vertical: 'sched-vertical', operationId: result.operationId, moduleId: SCHED, schedules: 'off' };
+    expect(await rows(audit)).toEqual([
+      { ...common, phase: 'intent', reason: 'incident 42' },
+      { ...common, phase: 'applied', changed: true, permissions: ['sched:tick'] },
+    ]);
 
     await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'ok' });
     expect(calls.at(-1)).toEqual({ tenantId: t, scopeId: s, moduleId: SCHED, to: 'on' });
-    expect((await audit()).map((e) => e.action)).toEqual(['revokeFromSystem', 'restoreToSystem']);
+    expect((await rows(audit)).map((r) => [r.action, r.phase])).toEqual([
+      ['revokeFromSystem', 'intent'],
+      ['revokeFromSystem', 'applied'],
+      ['restoreToSystem', 'intent'],
+      ['restoreToSystem', 'applied'],
+    ]);
   });
 
-  it("a far end that holds nothing is a 404, and a no-op is not audited", async () => {
+  it('a far end that holds nothing is a 404 audited as refused, and a no-op is still audited', async () => {
     let held = false;
     const { host, t, s, audit } = await setup(() => ({ held, changed: false, permissions: [] }));
     const input = { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' };
@@ -213,17 +225,48 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     expect(errorCodeOf(refused)).toBe('not_found');
     held = true;
     expect(await host.admin.revokeFromSystem(staff, input)).toMatchObject({ changed: false });
-    expect(await audit()).toEqual([]);
+    expect((await rows(audit)).map((r) => [r.phase, r.changed])).toEqual([
+      ['intent', undefined],
+      ['refused', false],
+      ['intent', undefined],
+      ['applied', false],
+    ]);
   });
 
-  it('a far end that fails fails the verb, and nothing is audited', async () => {
+  it('a far end that fails fails the verb, and the audit shows the intent and the failure', async () => {
     const { host, t, s, audit } = await setup(() => {
-      throw new Error('the deployment serving this scope predates the schedule switch (#1666)');
+      throw new Error('vertical unreachable during system-switch: Durable Object reset');
     });
     await expect(
       host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' }),
-    ).rejects.toThrow(/predates the schedule switch/);
-    expect(await audit()).toEqual([]);
+    ).rejects.toThrow(/unreachable/);
+    const log = await rows(audit);
+    expect(log.map((r) => r.phase)).toEqual(['intent', 'failed']);
+    expect(log[1]).toMatchObject({ operationId: log[0]!.operationId, error: expect.stringMatching(/unreachable/) });
+  });
+
+  it('a retry after the far end moved but the answer was lost is audited too — changed: false is no excuse', async () => {
+    // The far end applies the switch and THEN the answer is lost (a crash between the
+    // mutation and the outcome row looks the same from the log's side). The retry finds
+    // it already off and answers `changed: false` — and still leaves its own pair of rows.
+    let off = false;
+    let lose = true;
+    const { host, t, s, audit } = await setup(() => {
+      const changed = !off;
+      off = true;
+      if (lose) {
+        lose = false;
+        throw new Error('vertical unreachable during system-switch: connection reset after write');
+      }
+      return { held: true, changed, permissions: changed ? ['sched:tick'] : [] };
+    });
+    const input = { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'retry me' };
+    await expect(host.admin.revokeFromSystem(staff, input)).rejects.toThrow(/connection reset/);
+    expect(await host.admin.revokeFromSystem(staff, input)).toMatchObject({ changed: false });
+    const log = await rows(audit);
+    expect(log.map((r) => r.phase)).toEqual(['intent', 'failed', 'intent', 'applied']);
+    expect(log[0]!.operationId).not.toBe(log[2]!.operationId);
+    expect(log[3]).toMatchObject({ operationId: log[2]!.operationId, changed: false });
   });
 
   it("the DO's pre-#1666 `hasSystemGrant` answers the new question — a coordinator a deploy behind cannot run a switched-off scope", async () => {
@@ -244,10 +287,8 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     const node = { tenantId: t, scopeId: s };
     expect(await raw.hasSystemGrant(SCHED)).toBe(true);
     await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
-    expect(await raw.hasSystemGrant(SCHED)).toBe(false);
-    // A live grant beside the marker: exactly what the old predicate ("any live system:
-    // tuple") would have counted — and the marker itself is a live `system:` tuple too.
-    await host.admin.grantToSystem(staff, { moduleId: SCHED, permission: permissionKey.parse('sched:tick'), node, grantedBy: staff });
+    // The marker is itself a live `system:` tuple — exactly what the old predicate ("any
+    // live system: tuple") would have counted as a grant.
     expect(await raw.hasSystemGrant(SCHED)).toBe(false);
     await host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'r' });
     expect(await raw.hasSystemGrant(SCHED)).toBe(true);
@@ -260,6 +301,89 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
       .then(() => null, (e: unknown) => e);
     expect(errorCodeOf(refused)).toBe('not_found');
     expect(calls).toEqual([]);
+  });
+});
+
+/**
+ * #1666's two write-side guarantees on DO SQLite, each with the one lever a contract suite
+ * cannot hold: a newer VERSION of a module (a second facade registering a manifest that
+ * declares one more schedule permission — the coordinator's `provisionScope` seats from
+ * the facade's registrations), and a grant revoked independently of the switch (a raw
+ * K-21 tombstone, since no verb revokes one `system:` grant).
+ */
+describe('#1666 — OFF holds against a newer version, and ON gives back only what OFF took', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+  const hostWith = (mod: typeof scheduleMod) => {
+    const h = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    h.registerModule(mod);
+    return h;
+  };
+  /** The same module, one version on: its tick schedule now also declares `sched:admin`. */
+  const newer: typeof scheduleMod = {
+    ...scheduleMod,
+    manifest: {
+      ...scheduleMod.manifest,
+      schedules: scheduleMod.manifest.schedules!.map((sch, i) =>
+        i === 0 ? { ...sch, permissions: [...sch.permissions, permissionKey.parse('sched:admin')] } : sch,
+      ),
+    },
+  };
+  const raw = (s: string) =>
+    env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as {
+      revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
+      introspectQuery(sql: string): Promise<{ rows: unknown[][] }>;
+    };
+  const grants = async (s: string): Promise<[string, boolean][]> =>
+    (
+      await raw(s).introspectQuery(
+        `SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = 'system:${SCHED}' AND substr(relation, 1, 8) = 'granted:' ORDER BY relation`,
+      )
+    ).rows.map((r) => [String(r[0]), r[1] !== null]);
+  const newScope = async () => {
+    const host = hostWith(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `hold-${t.slice(-10).toLowerCase()}`, name: 'Hold' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    return { host, t, s, node: { tenantId: t, scopeId: s } };
+  };
+
+  it("a reconcile of a newer version seats none of its new permission while the switch is off — and does, once it is on", async () => {
+    const { host, t, s, node } = await newScope();
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+    await hostWith(newer).provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    expect(await grants(s)).toEqual([['granted:sched:tick', true]]); // no `sched:admin` at all
+
+    // The twin: restored, the same reconcile seats the new permission live.
+    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+    await hostWith(newer).provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    expect(await grants(s)).toEqual([
+      ['granted:sched:admin', false],
+      ['granted:sched:tick', false],
+    ]);
+  });
+
+  it('a grant revoked independently BEFORE the switch stays revoked through OFF and ON; the one OFF took comes back', async () => {
+    const { host, s, node } = await newScope();
+    await host.admin.grantToSystem(staff, { moduleId: SCHED, permission: permissionKey.parse('sched:admin'), node, grantedBy: staff });
+    await raw(s).revokeTuple(`system:${SCHED}`, 'granted:sched:admin', `scope:${s}`, '2026-09-01T00:00:00.000Z');
+    expect(await grants(s)).toEqual([
+      ['granted:sched:admin', true],
+      ['granted:sched:tick', false],
+    ]);
+    expect((await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' })).permissions).toEqual(['sched:tick']);
+    expect((await host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'r' })).permissions).toEqual(['sched:tick']);
+    expect(await grants(s)).toEqual([
+      ['granted:sched:admin', true], // still revoked — ON never widens the system principal
+      ['granted:sched:tick', false],
+    ]);
   });
 });
 

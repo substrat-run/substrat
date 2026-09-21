@@ -592,29 +592,50 @@ export class VerticalClient {
    * the far end of `revokeFromSystem` / `restoreToSystem` for a hosted scope, whose
    * `system:<module>` grants live there and nowhere the platform can reach.
    *
-   * A deployment built before the route answers 404 (the path does not exist), 501 (a
-   * vertical-host that has it, over a scope host that does not), or its SPA shell. Every
-   * one of those is reported as a 501 naming the fix, because the caller is an operator
-   * pulling a kill switch: an error that read as "done", or as a bug in their request,
-   * would leave the schedules running with nobody knowing. The route itself answers a
-   * module it holds nothing for with a 200 (`held: false`), so a 404 here is never that.
+   * ONE shape is normalized to "redeploy the vertical", and only because it is the
+   * deployment's own proof that it cannot have acted: a script built before the route
+   * answers a **404** (the path does not exist — the route itself answers a module it holds
+   * nothing for with a 200 `held: false`, never a 404) or its **SPA shell** (a 200 that is
+   * not JSON). "Nothing was switched" is true of exactly those.
+   *
+   * Everything else surfaces as the failure it is, and never claims that: a transport
+   * failure (`reach` → 502 "unreachable"), a genuine 5xx from the far end, and a 200 JSON of
+   * the wrong shape. The request may have landed and the switch may have moved before the
+   * answer was lost, so the only honest instruction is to confirm the position first.
    */
   async systemSwitch(input: { scopeId: ScopeId; moduleId: ModuleId; to: 'on' | 'off' }): Promise<SystemSwitchOutcome> {
+    const verb = 'system-switch';
     const predates = (): ControlPlaneError =>
       new ControlPlaneError(
         501,
         `the deployment serving scope ${input.scopeId} predates the schedule switch (#1666) — ` +
           `redeploy the vertical, then retry. Nothing was switched.`,
       );
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.reach(verb, () =>
+      this.options.fetch(`${base}/internal/system-switch`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(input),
+      }),
+    );
+    if (res.status === 404) throw predates();
+    if (!res.ok) throw await this.refusal(verb, res);
+    const text = await res.text();
     let raw: unknown;
     try {
-      raw = await this.postInternal<unknown>('/internal/system-switch', input, 'system-switch');
-    } catch (e) {
-      if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 501 || e.status === 502)) throw predates();
-      throw e;
+      raw = JSON.parse(text);
+    } catch {
+      throw predates();
     }
     const parsed = systemSwitchOutcome.safeParse(raw);
-    if (!parsed.success) throw predates();
+    if (!parsed.success) {
+      throw new ControlPlaneError(
+        502,
+        `vertical answered ${verb} with an unexpected shape — the switch on scope ${input.scopeId} may ` +
+          `or may not have moved. Confirm its position (the scope's SQL console) before retrying.`,
+      );
+    }
     return parsed.data;
   }
 

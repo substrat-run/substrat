@@ -482,14 +482,53 @@ describe('VerticalClient.systemSwitch (#1666)', () => {
 
   it.each([
     ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
-    ['a host without the method (501)', () => new Response(JSON.stringify({ error: 'redeploy it' }), { status: 501 })],
     ['an SPA shell (200, not JSON)', () => new Response('<!doctype html><html></html>', { status: 200 })],
-    ['a 200 of another shape', () => new Response(JSON.stringify({ ok: true }), { status: 200 })],
-  ])('%s is a 501 that says to redeploy', async (_name, res) => {
+  ])('%s — the explicit legacy signal — is a 501 that says to redeploy', async (_name, res) => {
     const err = await answering(res).systemSwitch(input).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(ControlPlaneError);
     expect((err as ControlPlaneError).status).toBe(501);
     expect((err as ControlPlaneError).message).toMatch(/predates the schedule switch.*redeploy the vertical.*Nothing was switched/);
+  });
+
+  /**
+   * Everything else is a FAILURE, and never claims "Nothing was switched": the request may
+   * have landed and moved the switch before the answer was lost.
+   */
+  it('a transport failure surfaces as the 502 it is, never as "nothing was switched"', async () => {
+    const client = new VerticalClient({
+      fetch: (() => Promise.reject(new Error('Network connection lost'))) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const err = (await client.systemSwitch(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/unreachable during system-switch: Network connection lost/);
+    expect(err.message).not.toMatch(/Nothing was switched/);
+  });
+
+  it("a genuine 502 from the far end is the vertical's own failure, not a legacy signal", async () => {
+    const err = (await answering(() => new Response(JSON.stringify({ error: 'upstream DO reset' }), { status: 502 }))
+      .systemSwitch(input)
+      .then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err.status).toBe(502);
+    expect(err.message).toBe('upstream DO reset');
+  });
+
+  it('a 200 JSON of the wrong shape is a failure that says to confirm the position first', async () => {
+    const err = (await answering(() => new Response(JSON.stringify({ ok: true }), { status: 200 }))
+      .systemSwitch(input)
+      .then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/may or may not have moved.*Confirm its position/);
+  });
+
+  it("the far end's own 501 (a host without the method) passes through verbatim", async () => {
+    const err = (await answering(
+      () => new Response(JSON.stringify({ error: 'this deployment cannot switch schedules (#1666) — redeploy it' }), { status: 501 }),
+    )
+      .systemSwitch(input)
+      .then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err.status).toBe(501);
+    expect(err.message).toMatch(/redeploy it/);
   });
 
   it("a refusal the far end means is still the vertical's own answer", async () => {

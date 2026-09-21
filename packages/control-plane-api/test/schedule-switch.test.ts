@@ -121,12 +121,26 @@ describe('the schedule switch routes (#1666)', () => {
     const s = await newScope();
     const down = await send('DELETE', route(s), asStaff, off);
     expect(down.status).toBe(200);
-    expect(await down.json()).toEqual({ moduleId: TICK, schedules: 'off', changed: true, permissions: ['tick:run'] });
+    const downBody = (await down.json()) as { operationId: string };
+    expect(downBody).toEqual({
+      operationId: expect.any(String),
+      moduleId: TICK,
+      schedules: 'off',
+      changed: true,
+      permissions: ['tick:run'],
+    });
     expect(await state(s)).toBe('off');
 
     const up = await send('POST', route(s), asStaff, on);
     expect(up.status).toBe(200);
-    expect(await up.json()).toEqual({ moduleId: TICK, schedules: 'on', changed: true, permissions: ['tick:run'] });
+    const upBody = (await up.json()) as { operationId: string };
+    expect(upBody).toEqual({
+      operationId: expect.any(String),
+      moduleId: TICK,
+      schedules: 'on',
+      changed: true,
+      permissions: ['tick:run'],
+    });
     expect(await state(s)).toBe('on');
 
     // Confirming it afterwards is a read of the same log an operator reads.
@@ -136,17 +150,15 @@ describe('the schedule switch routes (#1666)', () => {
     );
     expect(log.status).toBe(200);
     const entries = ((await log.json()) as { entries: { action: string; actor: string; after: unknown }[] }).entries;
-    expect(entries.map((e) => ({ action: e.action, actor: e.actor, after: e.after }))).toEqual([
-      {
-        action: 'revokeFromSystem',
-        actor: staff,
-        after: { moduleId: TICK, schedules: 'off', permissions: ['tick:run'], reason: 'incident: runaway tick' },
-      },
-      {
-        action: 'restoreToSystem',
-        actor: staff,
-        after: { moduleId: TICK, schedules: 'on', permissions: ['tick:run'], reason: 'resolved' },
-      },
+    // Audit first: each call's intent (with its reason), then its outcome, paired by the
+    // operation id the route answered with.
+    const off1 = { action: 'revokeFromSystem', actor: staff, operationId: downBody.operationId, moduleId: TICK, schedules: 'off' };
+    const on1 = { action: 'restoreToSystem', actor: staff, operationId: upBody.operationId, moduleId: TICK, schedules: 'on' };
+    expect(entries.map((e) => ({ action: e.action, actor: e.actor, ...(e.after as Record<string, unknown>) }))).toEqual([
+      { ...off1, phase: 'intent', reason: 'incident: runaway tick' },
+      { ...off1, phase: 'applied', changed: true, permissions: ['tick:run'] },
+      { ...on1, phase: 'intent', reason: 'resolved' },
+      { ...on1, phase: 'applied', changed: true, permissions: ['tick:run'] },
     ]);
   });
 
@@ -209,16 +221,18 @@ describe('the schedule switch routes (#1666)', () => {
     };
     expect(await confirm()).toEqual([{ relation: 'granted:tick:run', revoked: false }]);
     await send('DELETE', route(s), asStaff, off);
-    // OFF: the marker is live, the grant revoked.
+    // OFF: the marker is live, the grant revoked, and the record of what OFF took live.
     expect(await confirm()).toEqual([
       { relation: 'granted:tick:run', revoked: true },
       { relation: 'switch:off', revoked: false },
+      { relation: 'switched:tick:run', revoked: false },
     ]);
     await send('POST', route(s), asStaff, on);
-    // ON: the grant is live again, and the marker stays as evidence, revoked.
+    // ON: the grant is live again; the marker and the record stay as evidence, revoked.
     expect(await confirm()).toEqual([
       { relation: 'granted:tick:run', revoked: false },
       { relation: 'switch:off', revoked: true },
+      { relation: 'switched:tick:run', revoked: true },
     ]);
   });
 

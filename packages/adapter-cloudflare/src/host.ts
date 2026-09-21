@@ -250,6 +250,7 @@ import {
   type UndrainedRead,
   type SwitchOutcome,
   type SystemScheduleState,
+  systemSwitchedOffMessage,
 } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -869,6 +870,9 @@ interface ScopeStubRpc {
   /** Move a module's schedule switch on this scope (#1666) — the kernel's
    *  `switchSystemSchedules`, as one serialized unit. */
   switchSystemSchedules(moduleId: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome>;
+  /** `grantToSystem`'s scope-level write (#1666): `false`, and nothing written, while the
+   *  module's schedule kill switch is off on this scope. */
+  writeSystemGrant(moduleId: string, relation: string, object: string, expiresAt: string | null): Promise<boolean>;
   /** The last time a schedule's operation ran on this scope (#383), or null if never. */
   scheduleLastRun(operation: string): Promise<string | null>;
   /** #1232: the freshness evaluator's one-round-trip read — evidence + evaluator state per type. */
@@ -3334,9 +3338,37 @@ export class CloudflareScopeHost implements ScopeHost {
         if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
         vertical = rec.vertical;
       }
-      const outcome = this.systemSwitchDelegation
-        ? await this.systemSwitchDelegation.switch({ tenantId, scopeId, moduleId: input.moduleId, to })
-        : await this.scopeStub(scopeId).switchSystemSchedules(input.moduleId, scopeId, to, new Date().toISOString());
+      // AUDIT FIRST (#1666 review): the intent row lands before anything moves, and the
+      // outcome row after — every attempt, a repeat included. The scope's store and the
+      // admin log are separate, so no order makes the pair atomic; this one fails toward
+      // "an intent with no recorded outcome" and never toward "a switch that moved with no
+      // audit row". A retry after a crash re-audits even though it answers `changed: false`.
+      const operationId = ulid();
+      const action = to === 'off' ? 'revokeFromSystem' : 'restoreToSystem';
+      const target = { tenantId, scopeId, vertical };
+      const base = { operationId, moduleId: input.moduleId, schedules: to };
+      await this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
+      let outcome: SwitchOutcome;
+      try {
+        outcome = this.systemSwitchDelegation
+          ? await this.systemSwitchDelegation.switch({ tenantId, scopeId, moduleId: input.moduleId, to })
+          : await this.scopeStub(scopeId).switchSystemSchedules(input.moduleId, scopeId, to, new Date().toISOString());
+      } catch (err) {
+        // Best effort: the original error is what the caller must see, and the intent row
+        // already says an attempt was made.
+        await this.recordAdmin(actor, action, target, null, {
+          ...base,
+          phase: 'failed',
+          error: err instanceof Error ? err.message : String(err),
+        }).catch(() => undefined);
+        throw err;
+      }
+      await this.recordAdmin(actor, action, target, null, {
+        ...base,
+        phase: outcome.held ? 'applied' : 'refused',
+        changed: outcome.changed,
+        permissions: outcome.permissions,
+      });
       if (!outcome.held) {
         throw substratError(
           'not_found',
@@ -3344,24 +3376,13 @@ export class CloudflareScopeHost implements ScopeHost {
             `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')`,
         );
       }
-      const result: SystemSwitchResult = {
+      return {
+        operationId,
         moduleId: input.moduleId,
         schedules: to,
         changed: outcome.changed,
         permissions: outcome.permissions as PermissionKey[],
       };
-      // Idempotent and, like `unassignRole`, a no-op is not audited: the row that moved
-      // the switch is already in the log, with its reason.
-      if (outcome.changed) {
-        await this.recordAdmin(
-          actor,
-          to === 'off' ? 'revokeFromSystem' : 'restoreToSystem',
-          { tenantId, scopeId, vertical },
-          null,
-          { moduleId: input.moduleId, schedules: to, permissions: result.permissions, reason: input.reason },
-        );
-      }
-      return result;
     };
 
     return {
@@ -3550,13 +3571,27 @@ export class CloudflareScopeHost implements ScopeHost {
         // The scheduler's grant (#383) — mirror of grantToConnection. Narrow: one
         // module, one permission; tombstones on revoke; shows in the permission diff.
         const grant = systemGrant.parse(raw);
-        await writeGrant(
-          subjectRef({ kind: 'system', id: grant.moduleId }),
-          grant.permission,
-          grant.node,
-          undefined,
-          grant.expiresAt,
-        );
+        if (grant.node.scopeId) {
+          // #1666: refused while the module is switched off on this scope — checked and
+          // written in one DO unit. Restore is the lever; a grant is not.
+          const written = await this.scopeStub(grant.node.scopeId).writeSystemGrant(
+            grant.moduleId,
+            `granted:${grant.permission}`,
+            `scope:${grant.node.scopeId}`,
+            grant.expiresAt ?? null,
+          );
+          if (!written) {
+            throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, grant.node.scopeId));
+          }
+        } else {
+          await writeGrant(
+            subjectRef({ kind: 'system', id: grant.moduleId }),
+            grant.permission,
+            grant.node,
+            undefined,
+            grant.expiresAt,
+          );
+        }
         await this.recordAdmin(
           actor,
           'grantToSystem',

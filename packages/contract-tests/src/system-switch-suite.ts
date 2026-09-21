@@ -67,6 +67,14 @@ export function systemSwitchContractSuite(
         grantedBy: staff,
       });
 
+    /** What a switch call answers, less its permissions — the operation id is per call. */
+    const moved = (schedules: 'on' | 'off', changed: boolean) => ({
+      operationId: expect.any(String),
+      moduleId: SCHED,
+      schedules,
+      changed,
+    });
+
     /** The switched-off report: nothing ran, every schedule skipped, and it says why. */
     const switchedOff = {
       fired: 0,
@@ -107,7 +115,7 @@ export function systemSwitchContractSuite(
     it('a switched-off module fires nothing, reports skipped (never failed), and survives a reconcile', async () => {
       const s = await newScope();
       const result = await off(s);
-      expect(result).toEqual({ moduleId: SCHED, schedules: 'off', changed: true, permissions: ['sched:tick'] });
+      expect(result).toEqual({ ...moved('off', true), permissions: ['sched:tick'] });
 
       expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
       expect(await ticks(s)).toBe(0);
@@ -120,68 +128,88 @@ export function systemSwitchContractSuite(
 
       // Restore is the lever. The cadence clock was never touched, so the schedules are
       // due on the very next pass — not an hour after the switch was pulled.
-      expect(await on(s)).toEqual({ moduleId: SCHED, schedules: 'on', changed: true, permissions: ['sched:tick'] });
+      expect(await on(s)).toEqual({ ...moved('on', true), permissions: ['sched:tick'] });
       const report = await host.runDueSchedules(SCHED, t, s);
       expect(report).toMatchObject({ fired: SCHEDULES, skipped: 0, failed: 0, errors: [] });
       expect(report.switchedOff).toBeUndefined();
       expect(await ticks(s)).toBe(1);
     });
 
-    it('a grant is not the lever: neither re-granting the revoked permission nor a new one reopens it', async () => {
+    it('OFF holds: a regrant is refused, a reconcile seats nothing, and an invoke and a job with the authority are denied', async () => {
       const s = await newScope();
+      await grant(s, 'jobs:write', JOBS);
       await off(s);
+      await off(s, JOBS);
+      const refusedGrant = async (key: string, module = SCHED) => {
+        const e = await grant(s, key, module).then(() => null, (err: unknown) => err);
+        expect(errorCodeOf(e)).toBe('conflict');
+        expect(String(e)).toMatch(/switched off .* restore it first/);
+      };
 
-      // A stray `grantToSystem` of the very permission the switch revoked. #1659's
-      // guarantee still holds at the TUPLE — an explicit grant clears its tombstone —
-      // but the switch is the marker, and the grant does not touch it.
-      await grant(s, 'sched:tick');
+      // A grant is not the lever: a stray `grantToSystem` is REFUSED while the switch is
+      // off — the revoked permission, a permission the scope never held, and the job
+      // module's — rather than handing the system authority back to anything but the
+      // schedules. (#1659's re-grant guarantee still holds while the switch is on.)
+      await refusedGrant('sched:tick');
+      await refusedGrant('sched:admin');
+      await refusedGrant('jobs:write', JOBS);
+
+      // A reconcile seats nothing for a switched-off module (its seat checks the marker).
+      await provision(s);
       expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
 
-      // A permission the scope never held: the shape of a reconcile seating a schedule
-      // permission a NEWER version declares — created live, beside the marker.
-      await grant(s, 'sched:admin');
-      expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
+      // Nothing acting with the module's system authority gets through: a direct invoke
+      // through the system door, and a resumable job run.
+      await expect((await host.getSystemScope(SCHED, t, s)).invoke('sched/tick')).rejects.toThrow(/sched:tick/);
+      const run = await host.startJobRun(t, s, { moduleId: JOBS, job: 'record', instance: 'hold', payload: {} });
+      expect((await host.runDueJobs(t, s)).completed).toBe(0);
+      expect((await host.jobRuns(t, s)).find((r) => r.id === run.id)?.lastError).toMatch(/jobs:write/);
       expect(await ticks(s)).toBe(0);
 
-      // Pulling it again re-asserts the whole position: both live grants go.
-      expect(await off(s)).toEqual({
-        moduleId: SCHED,
-        schedules: 'off',
-        changed: true,
-        permissions: ['sched:admin', 'sched:tick'],
-      });
-
-      // The twin: restore turns it on, and it fires.
+      // The twin: restored, everything works again — the grant is accepted, the invoke
+      // and the job succeed, and the schedules fire.
       await on(s);
-      expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: SCHEDULES, failed: 0 });
+      await on(s, JOBS);
+      await grant(s, 'sched:admin');
+      await (await host.getSystemScope(SCHED, t, s)).invoke('sched/tick');
       expect(await ticks(s)).toBe(1);
+      expect((await host.runDueJobs(t, s)).completed).toBe(1);
+      expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: SCHEDULES, failed: 0 });
+      expect(await ticks(s)).toBe(2);
     });
 
-    it('is idempotent both ways, and only a move is audited — with its reason', async () => {
+    it('is idempotent both ways, and EVERY attempt is audited — intent first, then outcome — a repeat included', async () => {
       const s = await newScope();
-      expect(await on(s)).toEqual({ moduleId: SCHED, schedules: 'on', changed: false, permissions: [] });
-      await off(s);
-      expect(await off(s)).toEqual({ moduleId: SCHED, schedules: 'off', changed: false, permissions: [] });
-      await on(s);
-      expect(await on(s)).toEqual({ moduleId: SCHED, schedules: 'on', changed: false, permissions: [] });
+      const calls = [
+        await on(s), // a no-op: already on
+        await off(s),
+        await off(s), // a repeat — the retry after an audit-then-crash looks exactly like this
+        await on(s),
+      ];
+      expect(calls.map((r) => [r.schedules, r.changed])).toEqual([
+        ['on', false],
+        ['off', true],
+        ['off', false],
+        ['on', true],
+      ]);
 
       const log = await host.admin.auditLog(staff, {
         tenantId: t,
         scopeId: s,
         action: ['revokeFromSystem', 'restoreToSystem'],
       });
-      expect(log.map((e) => ({ action: e.action, actor: e.actor, after: e.after }))).toEqual([
-        {
-          action: 'revokeFromSystem',
-          actor: staff,
-          after: { moduleId: SCHED, schedules: 'off', permissions: ['sched:tick'], reason },
-        },
-        {
-          action: 'restoreToSystem',
-          actor: staff,
-          after: { moduleId: SCHED, schedules: 'on', permissions: ['sched:tick'], reason: 'resolved' },
-        },
-      ]);
+      const rows = log.map((e) => ({ action: e.action, actor: e.actor, ...(e.after as Record<string, unknown>) }));
+      // Two rows per call, paired by the operation id the call answered with.
+      expect(rows).toEqual(
+        calls.flatMap((r, i) => {
+          const action = r.schedules === 'off' ? 'revokeFromSystem' : 'restoreToSystem';
+          const common = { action, actor: staff, operationId: r.operationId, moduleId: SCHED, schedules: r.schedules };
+          return [
+            { ...common, phase: 'intent', reason: r.schedules === 'off' ? reason : 'resolved' },
+            { ...common, phase: 'applied', changed: r.changed, permissions: i === 1 || i === 3 ? ['sched:tick'] : [] },
+          ];
+        }),
+      );
     });
 
     it('refuses a module the scope never held — and writes nothing, so nothing is left switched off', async () => {
