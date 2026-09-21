@@ -3256,44 +3256,47 @@ export class SqliteScopeHost implements ScopeHost {
       }
     }
     if (windows.size === 0) return report;
-    const types = [...windows.keys()];
-    const observed = new Map<string, string>();
-    for (const row of rt.db
-      .prepare(
-        `SELECT type, MAX(occurred_at) AS at FROM _substrat_outbox
-          WHERE type IN (${types.map(() => '?').join(', ')}) GROUP BY type`,
-      )
-      .all(...types) as { type: string; at: string | null }[]) {
-      if (row.at !== null) observed.set(row.type, row.at);
-    }
-
-    const nowIso = this.clock();
-    const now = Date.parse(nowIso);
-    for (const [eventType, withinHours] of windows) {
-      const observedAt = observed.get(eventType) ?? null;
-      const outcome: FreshnessReport['checks'][number]['outcome'] =
-        observedAt === null
-          ? 'skipped' // never observed — the never-run analogue, not a failure
-          : now - Date.parse(observedAt) <= withinHours * 3_600_000
-            ? 'ok'
-            : 'failed';
-      const stateKey = `freshness:${eventType}`;
-      // #1288: the evaluator's own row, named by kind. Before the column, a module
-      // declaring a schedule called `freshness:<this type>` shared it — and the
-      // verdict read back here was whichever of the two wrote last.
-      const state = rt.db
+    // The WHOLE evaluation is one turn on the scope actor (#1678 review): the outbox probe,
+    // the previous verdict and the write that records the new one. Read outside the turn, the
+    // probe saw a suspended operation's UNCOMMITTED event on this shared connection, then
+    // waited here and persisted an `ok` for an event its rollback was about to remove.
+    await rt.actor.turn(() => {
+      const types = [...windows.keys()];
+      const observed = new Map<string, string>();
+      for (const row of rt.db
         .prepare(
-          `SELECT last_run_at, last_status FROM _substrat_schedule_state
-            WHERE kind = 'freshness' AND schedule_op = ?`,
+          `SELECT type, MAX(occurred_at) AS at FROM _substrat_outbox
+            WHERE type IN (${types.map(() => '?').join(', ')}) GROUP BY type`,
         )
-        .get(stateKey) as { last_run_at: string | null; last_status: string | null } | undefined;
-      const changed = state?.last_status !== outcome;
-      const heartbeatDue =
-        !state?.last_run_at ||
-        now - Date.parse(state.last_run_at) > FRESHNESS_HEARTBEAT_MINUTES * 60_000;
-      if (!changed && !heartbeatDue) continue;
-      // On the scope actor (#1678), as the schedule loop's cadence row is.
-      await rt.actor.turn(() =>
+        .all(...types) as { type: string; at: string | null }[]) {
+        if (row.at !== null) observed.set(row.type, row.at);
+      }
+
+      const nowIso = this.clock();
+      const now = Date.parse(nowIso);
+      for (const [eventType, withinHours] of windows) {
+        const observedAt = observed.get(eventType) ?? null;
+        const outcome: FreshnessReport['checks'][number]['outcome'] =
+          observedAt === null
+            ? 'skipped' // never observed — the never-run analogue, not a failure
+            : now - Date.parse(observedAt) <= withinHours * 3_600_000
+              ? 'ok'
+              : 'failed';
+        const stateKey = `freshness:${eventType}`;
+        // #1288: the evaluator's own row, named by kind. Before the column, a module
+        // declaring a schedule called `freshness:<this type>` shared it — and the
+        // verdict read back here was whichever of the two wrote last.
+        const state = rt.db
+          .prepare(
+            `SELECT last_run_at, last_status FROM _substrat_schedule_state
+              WHERE kind = 'freshness' AND schedule_op = ?`,
+          )
+          .get(stateKey) as { last_run_at: string | null; last_status: string | null } | undefined;
+        const changed = state?.last_status !== outcome;
+        const heartbeatDue =
+          !state?.last_run_at ||
+          now - Date.parse(state.last_run_at) > FRESHNESS_HEARTBEAT_MINUTES * 60_000;
+        if (!changed && !heartbeatDue) continue;
         rt.db
           .prepare(
             `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
@@ -3301,10 +3304,10 @@ export class SqliteScopeHost implements ScopeHost {
              ON CONFLICT(kind, schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
                                                           last_status = excluded.last_status`,
           )
-          .run(stateKey, nowIso, outcome),
-      );
-      report.checks.push({ eventType, outcome, observedAt, withinHours });
-    }
+          .run(stateKey, nowIso, outcome);
+        report.checks.push({ eventType, outcome, observedAt, withinHours });
+      }
+    });
     return report;
   }
 

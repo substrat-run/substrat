@@ -112,7 +112,7 @@ describe('scope-level admin writes survive a concurrent operation that rolls bac
     return s;
   };
   /** An operation in flight and suspended INSIDE its transaction, released by the test. */
-  const holdOpen = async (s: ScopeId) => {
+  const holdOpen = async (s: ScopeId, op = 'gate/hold') => {
     let release!: () => void;
     held = new Promise<void>((resolve) => {
       release = resolve;
@@ -120,7 +120,7 @@ describe('scope-level admin writes survive a concurrent operation that rolls bac
     const inside = new Promise<void>((resolve) => {
       entered = resolve;
     });
-    const blocked = (await host.getScope(alice, t, s)).invoke('gate/hold');
+    const blocked = (await host.getScope(alice, t, s)).invoke(op);
     await inside;
     return { blocked, release };
   };
@@ -129,8 +129,8 @@ describe('scope-level admin writes survive a concurrent operation that rolls bac
    * turn it cannot finish until the operation has, so awaiting it here would deadlock the
    * test rather than fail it), roll the operation back, then hand back the write's result.
    */
-  const underRollback = async <T>(s: ScopeId, write: () => Promise<T>): Promise<T> => {
-    const { blocked, release } = await holdOpen(s);
+  const underRollback = async <T>(s: ScopeId, write: () => Promise<T>, op = 'gate/hold'): Promise<T> => {
+    const { blocked, release } = await holdOpen(s, op);
     const writing = write();
     release();
     await expect(blocked).rejects.toThrow(/always rolls back/);
@@ -219,6 +219,20 @@ describe('scope-level admin writes survive a concurrent operation that rolls bac
       await held;
       throw new Error('this operation always rolls back');
     });
+    // Emits the event the freshness expectation watches, THEN suspends and rolls back — so
+    // the event exists only in an uncommitted transaction (#1678 review).
+    host.defineOperation('gate/hold-emit', (async (ctx) => {
+      ctx.emit({
+        type: 'lever.happened',
+        schemaVersion: 1,
+        entity: { entityType: 'lever', entityId: 'l1' },
+        piiClass: 'none',
+        payload: {},
+      });
+      entered();
+      await held;
+      throw new Error('this operation always rolls back');
+    }) as OperationHandler<never, unknown>);
     // One event carrying the data subject, so there is something to drain and to shred.
     host.defineOperation('gate/emit', ((ctx) => {
       ctx.emit({
@@ -360,6 +374,31 @@ describe('scope-level admin writes survive a concurrent operation that rolls bac
     const s = await newScope();
     await underRollback(s, () => host.checkFreshness(leverMod.manifest.id as never, t, s));
     expect(cadence(s, 'freshness', 'freshness:lever.happened')).toHaveLength(1);
+  });
+
+  const verdict = (s: ScopeId) =>
+    committed<{ last_status: string }>(
+      s,
+      "SELECT last_status FROM _substrat_schedule_state WHERE kind = 'freshness' AND schedule_op = ?",
+      'freshness:lever.happened',
+    ).map((r) => r.last_status);
+
+  it('checkFreshness: an event that rolls back is never judged `ok` — the probe runs inside the turn (#1678 review)', async () => {
+    const s = await newScope();
+    // The held operation has EMITTED the watched event and not committed it. Probed outside
+    // the turn, the evaluator saw it, waited, and persisted `ok` after the rollback removed it.
+    const report = await underRollback(s, () => host.checkFreshness(leverMod.manifest.id as never, t, s), 'gate/hold-emit');
+    expect(outbox(s)).toEqual([]);
+    expect(report.checks.map((c) => c.outcome)).toEqual(['skipped']);
+    expect(verdict(s)).toEqual(['skipped']);
+  });
+
+  it('twin: a COMMITTED event is judged `ok`', async () => {
+    const s = await newScope();
+    await emit(s);
+    const report = await host.checkFreshness(leverMod.manifest.id as never, t, s);
+    expect(report.checks.map((c) => c.outcome)).toEqual(['ok']);
+    expect(verdict(s)).toEqual(['ok']);
   });
 
   it('shredSubject: the redaction survives the rollback — the payload does NOT come back', async () => {
