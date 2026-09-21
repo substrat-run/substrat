@@ -75,6 +75,8 @@ interface Conversation {
   resolution_due_at: string | null;
   first_response_breached_at: string | null;
   resolution_breached_at: string | null;
+  snoozed_at: string | null;
+  snoozed_ms: number | null;
 }
 
 interface Sla {
@@ -673,27 +675,33 @@ describe('resolution: what meets it, and what never breaches', () => {
     expect(row.resolution_breached_at).toBeNull();
   });
 
-  it('a snooze does not stop the clock, in this slice — for either target', async () => {
+  // This pinned "a snooze does not stop the clock, for either target" until #1648, which
+  // changed that property on purpose: resolution pauses, first response does not. The
+  // pause itself is driven in its own block below.
+  it('a snooze stops the resolution clock and not the first-response one (#1648)', async () => {
     const desk = await freshDesk({ agents: 1, sla: { ...RES_60, ...FR_30 } });
     const a = await agent(desk);
     // Parked before anybody answered: the customer is still waiting for a first word.
     const unanswered = await mail(desk);
     await a.invoke('ticket0/assign', { conversationId: unanswered, assignee: desk.agents[0] });
     await a.invoke('ticket0/snooze', { conversationId: unanswered, until: plus(clock.now(), 180) });
-    // Answered, then parked: still waiting for a resolution.
+    // Answered, then parked: waiting on the customer, which is not the desk's time.
     const answered = await mail(desk);
     await reply(desk, answered);
     await a.invoke('ticket0/snooze', { conversationId: answered, until: plus(clock.now(), 180) });
 
     advance(61);
-    expect(await sweep(desk)).toBe(3);
+    // Only the unanswered one's first response. Before #1648 this was 3: both
+    // resolutions breached while parked.
+    expect(await sweep(desk)).toBe(1);
     const u = await read(desk, unanswered);
     const r = await read(desk, answered);
     expect(u.state).toBe('snoozed');
     expect(u.first_response_breached_at).not.toBeNull();
+    expect(u.resolution_breached_at).toBeNull();
     expect(r.state).toBe('snoozed');
     expect(r.first_response_breached_at).toBeNull();
-    expect(r.resolution_breached_at).not.toBeNull();
+    expect(r.resolution_breached_at).toBeNull();
   });
 
   it('the losing half of a merge is never breached; the survivor keeps its own targets', async () => {
@@ -705,6 +713,277 @@ describe('resolution: what meets it, and what never breaches', () => {
     expect(await sweep(desk)).toBe(1);
     expect((await read(desk, loser)).first_response_breached_at).toBeNull();
     expect((await read(desk, survivor)).first_response_breached_at).not.toBeNull();
+  });
+});
+
+/**
+ * A snooze pauses the resolution target (#1648). The time a conversation sleeps is given
+ * back to its resolution due when it wakes, by whichever door it wakes through, and a due
+ * that fell inside the snooze is never a breach.
+ */
+describe('a snooze pauses the resolution clock, and waking gives the time back (#1648)', () => {
+  const RES_60: Sla = { resolutionMinutes: { normal: 60 } };
+
+  /** The desk's timer behind `snooze`, as the platform sweep invokes it. */
+  async function timer(desk: Desk): Promise<number> {
+    const stub = await host.getSystemScope(TICKET0, desk.tenant, desk.scope);
+    return ((await stub.invoke('ticket0/wake-snoozed')) as { woke: number }).woke;
+  }
+
+  /** Arrived and answered: its resolution target is the one still running. */
+  async function answered(desk: Desk, opts: { from?: string } = {}): Promise<Conversation> {
+    const id = await mail(desk, opts);
+    await reply(desk, id);
+    return read(desk, id);
+  }
+
+  async function snooze(desk: Desk, id: string, minutes: number): Promise<void> {
+    await (await agent(desk)).invoke('ticket0/snooze', { conversationId: id, until: plus(clock.now(), minutes) });
+  }
+
+  async function wake(desk: Desk, id: string): Promise<void> {
+    await (await agent(desk)).invoke('ticket0/wake', { conversationId: id });
+  }
+
+  /**
+   * Stand in for a conversation snoozed before `snoozed_at` existed — every conversation
+   * asleep on a desk the moment this deploys. Harness code.
+   */
+  function forgetSnoozeStart(desk: Desk, id: string): void {
+    const db = new Database(join(dir, `${desk.tenant}__${desk.scope}.sqlite`));
+    try {
+      db.prepare('UPDATE ticket0_conversations SET snoozed_at = NULL WHERE id = ?').run(id);
+    } finally {
+      db.close();
+    }
+  }
+
+  it('the timer wakes it with the time it slept added, and a due that passed while it slept is no breach', async () => {
+    const desk = await freshDesk({ agents: 1, sla: RES_60 });
+    const before = await answered(desk);
+    advance(10);
+    await snooze(desk, before.id, 180);
+    expect((await read(desk, before.id)).snoozed_at).toBe(clock.now());
+
+    // The original due passes two hours into the snooze. Paused, it is not in the scan.
+    advance(180);
+    expect(clock.now() > before.resolution_due_at!).toBe(true);
+    expect(await sweep(desk)).toBe(0);
+
+    expect(await timer(desk)).toBe(1);
+    const woke = await read(desk, before.id);
+    expect(woke.state).toBe('open');
+    expect(woke.snoozed_at).toBeNull();
+    expect(woke.snoozed_ms).toBe(180 * MINUTE);
+    expect(woke.resolution_due_at).toBe(plus(before.resolution_due_at!, 180));
+    // Woken, it is recomputed before anything reads it: the sweep that follows finds
+    // nothing late.
+    expect(await sweep(desk)).toBe(0);
+    expect(woke.resolution_breached_at).toBeNull();
+
+    // …and the pushed-back due is a real one. At it, on time; one minute past, missed.
+    advance((Date.parse(woke.resolution_due_at!) - Date.parse(clock.now())) / MINUTE);
+    expect(await sweep(desk)).toBe(0);
+    advance(1);
+    expect(await sweep(desk)).toBe(1);
+    expect((await read(desk, before.id)).resolution_breached_at).toBe(clock.now());
+  });
+
+  it('a person waking it by hand gives back exactly what the timer does', async () => {
+    const desk = await freshDesk({ agents: 1, sla: RES_60 });
+    const byHand = await answered(desk);
+    const byTimer = await answered(desk);
+    advance(5);
+    await snooze(desk, byHand.id, 120);
+    await snooze(desk, byTimer.id, 120);
+    advance(120);
+    await wake(desk, byHand.id);
+    expect(await timer(desk)).toBe(1);
+
+    const h = await read(desk, byHand.id);
+    const t = await read(desk, byTimer.id);
+    expect(h.resolution_due_at).toBe(plus(byHand.resolution_due_at!, 120));
+    expect(t.resolution_due_at).toBe(plus(byTimer.resolution_due_at!, 120));
+    expect(h.snoozed_ms).toBe(t.snoozed_ms);
+  });
+
+  it('the customer writing into it wakes it the same way', async () => {
+    const desk = await freshDesk({ agents: 1, sla: RES_60 });
+    const from = 'back@customer.example';
+    const before = await answered(desk, { from });
+    await snooze(desk, before.id, 600);
+    advance(90);
+    await writeAgain(desk, before.id, from);
+    const after = await read(desk, before.id);
+    expect(after.state).toBe('open');
+    expect(after.snoozed_at).toBeNull();
+    expect(after.resolution_due_at).toBe(plus(before.resolution_due_at!, 90));
+  });
+
+  it('repeated snoozes add up', async () => {
+    const desk = await freshDesk({ agents: 1, sla: RES_60 });
+    const before = await answered(desk);
+    await snooze(desk, before.id, 600);
+    advance(100);
+    await wake(desk, before.id);
+    advance(5);
+    await snooze(desk, before.id, 600);
+    advance(50);
+    await wake(desk, before.id);
+    const after = await read(desk, before.id);
+    expect(after.snoozed_ms).toBe(150 * MINUTE);
+    expect(after.resolution_due_at).toBe(plus(before.resolution_due_at!, 150));
+  });
+
+  it('first response keeps running while it sleeps, and waking gives it nothing back', async () => {
+    const desk = await freshDesk({ agents: 1, sla: { ...RES_60, ...FR_30 } });
+    const id = await mail(desk);
+    const before = await read(desk, id);
+    await (await agent(desk)).invoke('ticket0/assign', { conversationId: id, assignee: desk.agents[0] });
+    await snooze(desk, id, 600);
+    advance(20);
+    await wake(desk, id);
+    const after = await read(desk, id);
+    expect(after.first_response_due_at).toBe(before.first_response_due_at);
+    expect(after.resolution_due_at).toBe(plus(before.resolution_due_at!, 20));
+  });
+
+  it('resolved while it sleeps is not late, though its original due passed during the snooze', async () => {
+    const desk = await freshDesk({ agents: 1, sla: RES_60 });
+    const before = await answered(desk);
+    await snooze(desk, before.id, 600);
+    advance(200);
+    await (await agent(desk)).invoke('ticket0/resolve', { conversationId: before.id });
+    const after = await read(desk, before.id);
+    expect(after.state).toBe('resolved');
+    expect(after.snoozed_at).toBeNull();
+    expect(after.resolution_breached_at).toBeNull();
+    expect(breachEvents(desk, before.id)).toEqual([]);
+    // The resolve ended the snooze before it judged lateness: the due it met is the one
+    // the snooze pushed back, and the time was counted once, not twice.
+    expect(after.resolution_due_at).toBe(plus(before.resolution_due_at!, 200));
+    expect(after.snoozed_ms).toBe(200 * MINUTE);
+  });
+
+  it('a late resolve or reply is judged against the pushed-back due — on either side of it', async () => {
+    const desk = await freshDesk({ agents: 1, sla: RES_60 });
+    const onTime = await answered(desk);
+    const late = await answered(desk);
+    advance(10);
+    await snooze(desk, onTime.id, 120);
+    await snooze(desk, late.id, 120);
+    advance(120);
+    expect(await timer(desk)).toBe(2);
+    // Past both original dues, and before both pushed-back ones. No sweep runs from here,
+    // so the resolve is the only thing that can record lateness.
+    const pushed = (await read(desk, onTime.id)).resolution_due_at!;
+    advance((Date.parse(pushed) - Date.parse(clock.now())) / MINUTE - 5);
+    expect(clock.now() > onTime.resolution_due_at!).toBe(true);
+    await (await agent(desk)).invoke('ticket0/resolve', { conversationId: onTime.id });
+    expect((await read(desk, onTime.id)).resolution_breached_at).toBeNull();
+
+    advance(10);
+    await (await agent(desk)).invoke('ticket0/resolve', { conversationId: late.id });
+    expect((await read(desk, late.id)).resolution_breached_at).toBe(clock.now());
+    expect(breachEvents(desk, late.id).map((e) => e.operation)).toEqual(['ticket0/resolve']);
+  });
+
+  it('snoozing a conversation already late records the miss first, and tells nobody', async () => {
+    const desk = await freshDesk({ agents: 1, sla: RES_60 });
+    const late = await answered(desk);
+    const onTime = await answered(desk);
+    await (await admin(desk)).invoke('ticket0/assign', { conversationId: late.id, assignee: desk.agents[0] });
+    // No sweep has run: only the snooze can notice.
+    advance(60);
+    await snooze(desk, onTime.id, 600);
+    await snooze(desk, late.id, 600);
+    expect((await read(desk, onTime.id)).resolution_breached_at).toBeNull();
+    const row = await read(desk, late.id);
+    expect(row.state).toBe('snoozed');
+    expect(row.resolution_breached_at).toBe(clock.now());
+    expect(breachEvents(desk, late.id).map((e) => e.operation)).toEqual(['ticket0/snooze']);
+    expect(await escalations(desk, desk.agents[0]!, late.id)).toBe(0);
+    // A miss is history: waking does not move its due or un-miss it.
+    advance(30);
+    await wake(desk, late.id);
+    const woke = await read(desk, late.id);
+    expect(woke.resolution_due_at).toBe(late.resolution_due_at);
+    expect(woke.resolution_breached_at).toBe(row.resolution_breached_at);
+  });
+
+  it('a priority change re-aims past the time already slept, and a snooze in progress is added when it ends', async () => {
+    const RES_BY_PRIORITY: Sla = { resolutionMinutes: { normal: 600, urgent: 240 } };
+    const desk = await freshDesk({ agents: 1, sla: RES_BY_PRIORITY });
+    const a = await agent(desk);
+    const slept = await answered(desk);
+    const never = await answered(desk);
+    const during = await answered(desk);
+
+    await snooze(desk, slept.id, 600);
+    advance(100);
+    await wake(desk, slept.id);
+    await a.invoke('ticket0/set-priority', { conversationId: slept.id, priority: 'urgent' });
+    await a.invoke('ticket0/set-priority', { conversationId: never.id, priority: 'urgent' });
+    expect((await read(desk, slept.id)).resolution_due_at).toBe(plus(slept.created_at, 240 + 100));
+    expect((await read(desk, never.id)).resolution_due_at).toBe(plus(never.created_at, 240));
+
+    await snooze(desk, during.id, 600);
+    advance(30);
+    await a.invoke('ticket0/set-priority', { conversationId: during.id, priority: 'urgent' });
+    expect((await read(desk, during.id)).resolution_due_at).toBe(plus(during.created_at, 240));
+    advance(70);
+    await wake(desk, during.id);
+    expect((await read(desk, during.id)).resolution_due_at).toBe(plus(during.created_at, 240 + 100));
+  });
+
+  it('closing a sleeping conversation ends its snooze too', async () => {
+    const desk = await freshDesk({ agents: 1, sla: RES_60 });
+    const before = await answered(desk);
+    await snooze(desk, before.id, 600);
+    advance(15);
+    await (await admin(desk)).invoke('ticket0/close', { conversationId: before.id });
+    const after = await read(desk, before.id);
+    expect(after.snoozed_at).toBeNull();
+    expect(after.snoozed_ms).toBe(15 * MINUTE);
+  });
+
+  it('one snoozed before the pause existed keeps its clock running until it wakes', async () => {
+    const desk = await freshDesk({ agents: 1, sla: RES_60 });
+    const legacy = await answered(desk);
+    const resolvedFromLegacy = await answered(desk);
+    for (const c of [legacy, resolvedFromLegacy]) {
+      await snooze(desk, c.id, 600);
+      forgetSnoozeStart(desk, c.id);
+    }
+
+    // Both stay asleep past their dues, with the clock running as it always did: a
+    // resolve straight out of the snooze records its own miss, and the sweep sees the other.
+    advance(70);
+    await (await agent(desk)).invoke('ticket0/resolve', { conversationId: resolvedFromLegacy.id });
+    expect((await read(desk, resolvedFromLegacy.id)).resolution_breached_at).toBe(clock.now());
+    expect(await sweep(desk)).toBe(1);
+    const l = await read(desk, legacy.id);
+    expect(l.state).toBe('snoozed');
+    expect(l.resolution_breached_at).toBe(clock.now());
+    // Nothing to give back when it wakes.
+    await wake(desk, legacy.id);
+    expect((await read(desk, legacy.id)).resolution_due_at).toBe(legacy.resolution_due_at);
+    expect((await read(desk, legacy.id)).snoozed_ms).toBeNull();
+  });
+
+  it('one snoozed before the pause existed wakes with nothing given back, and its next snooze pauses', async () => {
+    const desk = await freshDesk({ agents: 1, sla: RES_60 });
+    const c = await answered(desk);
+    await snooze(desk, c.id, 600);
+    forgetSnoozeStart(desk, c.id);
+    advance(10);
+    await wake(desk, c.id);
+    expect((await read(desk, c.id)).resolution_due_at).toBe(c.resolution_due_at);
+    await snooze(desk, c.id, 600);
+    advance(100);
+    expect(await sweep(desk)).toBe(0);
+    await wake(desk, c.id);
+    expect((await read(desk, c.id)).resolution_due_at).toBe(plus(c.resolution_due_at!, 100));
   });
 });
 
@@ -855,6 +1134,14 @@ describe('the scans are indexed, because they run on every tick', () => {
         expect(plan.filter((d) => /^SCAN\b/.test(d)), target).toEqual([]);
         expect(plan.filter((d) => /TEMP B-TREE/.test(d)), target).toEqual([]);
       }
+      // The plan alone would pass on 0012's index as well, since the scan's WHERE implies
+      // the older, wider one. Migration 0014 (#1648) narrows the resolution index to the
+      // conversations no snooze is holding, and that is a fact about the index itself.
+      const where = (index: string) =>
+        (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(index) as { sql: string })
+          .sql;
+      expect(where('ticket0_conversations_resolution_running')).toMatch(/AND snoozed_at IS NULL$/);
+      expect(where('ticket0_conversations_first_response_running')).not.toMatch(/snoozed_at/);
     } finally {
       db.close();
     }

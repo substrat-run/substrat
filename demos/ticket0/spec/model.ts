@@ -446,6 +446,25 @@ export const ticket0Entities = defineEntities({
       assignee: z.string().nullable(),
       priority: z.enum(['low', 'normal', 'urgent']),
       snoozed_until: z.string().nullable(),
+      /**
+       * When the snooze in progress began, and how long every finished snooze lasted in
+       * total, in milliseconds (#1648). Facts about the conversation, not about service
+       * levels: which target a snooze pauses is a rule in `src/module.ts` (today the
+       * resolution target, never first response), and these two are what that rule reads.
+       *
+       * `snoozed_at` is written by the one place that moves `state` (`moveTo`), on the way
+       * INTO `snoozed`, and cleared on every way out, where the length of the snooze is
+       * added to `snoozed_ms`. So it is non-null exactly while a snooze is in progress
+       * that began after this column existed. A conversation already snoozed when it was
+       * added has a null here, and its clock runs through that one snooze as it always
+       * did; its next snooze pauses.
+       *
+       * `snoozed_ms` is kept so a priority change, which re-aims a running target from
+       * `created_at`, re-aims it past the time already spent parked instead of throwing
+       * that time away. Null is zero.
+       */
+      snoozed_at: z.string().nullable(),
+      snoozed_ms: z.number().int().nullable(),
       first_public_reply_at: z.string().nullable(),
       /**
        * When somebody's name was first put on this conversation — and never cleared

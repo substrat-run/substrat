@@ -409,3 +409,96 @@ describe('ticket0 provision is idempotent (#1653)', () => {
     expect((await platform('/internal/delete-scope', { scopeId: fresh })).status).toBe(200);
   });
 });
+
+/**
+ * #1648 on the runtime a hosted desk runs: a snooze pauses the resolution target, and the
+ * sweep's two schedules — `wake-snoozed` and `escalate-sla-breaches` — read and write the
+ * pause through a Durable Object's SQLite, over migration 0014's narrowed partial index.
+ *
+ * The DO host has no clock to move, so the instants are written into the desk's own
+ * storage instead: a snooze that began, and a resolution due that fell, years ago. Two
+ * conversations differ in one column. The one whose snooze start is on record wakes with
+ * its due pushed past now and no breach; the one without — a conversation snoozed before
+ * the column existed — keeps the clock it was snoozed under, and the same pass records it.
+ */
+describe('ticket0 on workerd — a snooze pauses the resolution target (#1648)', () => {
+  const slaDesk = scopeId.parse(ulid());
+  const SNOOZED_AT = '2020-01-01T00:00:00.000Z';
+  /** Half an hour into that snooze: a due that fell while the conversation slept. */
+  const DUE = '2020-01-01T00:30:00.000Z';
+  const stub = () => env.SCOPE.get(env.SCOPE.idFromName(slaDesk));
+
+  interface SlaRow extends Conversation {
+    snoozed_at: string | null;
+    snoozed_ms: number | null;
+    resolution_due_at: string | null;
+    resolution_breached_at: string | null;
+  }
+
+  beforeAll(async () => {
+    expect((await platform('/internal/provision', { tenantId: t, scopeId: slaDesk, owner, entitlements })).status).toBe(201);
+    await (await host().getScope(owner, t, slaDesk)).invoke('ticket0/configure-desk', {
+      settings: { sla: { resolutionMinutes: { normal: 60 } } },
+    });
+  });
+
+  afterAll(async () => {
+    expect((await platform('/internal/delete-scope', { scopeId: slaDesk })).status).toBe(200);
+  });
+
+  /** Arrived, answered, snoozed until a moment already past — then placed in 2020. */
+  async function sleptSince(snoozedAt: string | null): Promise<string> {
+    const id = await snoozedUntil(slaDesk, PAST);
+    await runInDurableObject(stub(), (_i, state) => {
+      state.storage.sql.exec(
+        `UPDATE ticket0_conversations
+            SET first_public_reply_at = ?, resolution_due_at = ?, snoozed_at = ?
+          WHERE id = ?`,
+        SNOOZED_AT,
+        DUE,
+        snoozedAt,
+        id,
+      );
+    });
+    return id;
+  }
+
+  it('the migration narrowed the resolution index on the DO, and only that one', async () => {
+    const sql = await runInDurableObject(stub(), (_i, state) =>
+      Object.fromEntries(
+        [
+          ...state.storage.sql.exec(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND name LIKE 'ticket0_conversations_%_running'",
+          ),
+        ].map((r) => [String(r.name), String(r.sql)]),
+      ),
+    );
+    expect(sql['ticket0_conversations_resolution_running']).toMatch(/AND snoozed_at IS NULL$/);
+    expect(sql['ticket0_conversations_first_response_running']).not.toMatch(/snoozed_at/);
+  });
+
+  it('a pass wakes a paused conversation past its due with the time back and no breach; an unpaused one is recorded', async () => {
+    const paused = await sleptSince(SNOOZED_AT);
+    const legacy = await sleptSince(null);
+
+    const before = Date.now();
+    const report = await sweep();
+    const after = Date.now();
+    expect(report.errors).toEqual([]);
+    expect(report.schedules.failed).toBe(0);
+
+    const p = (await conversation(slaDesk, paused)) as SlaRow;
+    expect(p).toMatchObject({ state: 'open', snoozed_at: null, resolution_breached_at: null });
+    // Pushed back by exactly how long it slept, so it lands half an hour after the wake.
+    const pushed = Date.parse(p.resolution_due_at!);
+    expect(pushed).toBeGreaterThanOrEqual(before + 30 * 60_000);
+    expect(pushed).toBeLessThanOrEqual(after + 30 * 60_000);
+    expect(pushed - Date.parse(DUE)).toBe(p.snoozed_ms);
+
+    const l = (await conversation(slaDesk, legacy)) as SlaRow;
+    expect(l.state).toBe('open');
+    expect(l.resolution_due_at).toBe(DUE);
+    expect(l.snoozed_ms).toBeNull();
+    expect(l.resolution_breached_at).not.toBeNull();
+  });
+});

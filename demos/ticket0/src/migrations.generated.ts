@@ -352,4 +352,18 @@ export const ticket0Migrations: SqlMigration[] = [
       ALTER TABLE ticket0_saved_replies ADD COLUMN actions TEXT;
     `,
   },
+  {
+    // add-ticket0_conversations-snoozed_at-and-1-more
+    version: '0014',
+    sql: `
+      ALTER TABLE ticket0_conversations ADD COLUMN snoozed_at TEXT;
+
+      ALTER TABLE ticket0_conversations ADD COLUMN snoozed_ms INTEGER;
+
+      DROP INDEX ticket0_conversations_resolution_running;
+
+      CREATE INDEX ticket0_conversations_resolution_running ON ticket0_conversations (resolution_breached_at, resolution_due_at, id)
+        WHERE resolution_due_at IS NOT NULL AND resolution_breached_at IS NULL AND resolved_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL AND snoozed_at IS NULL;
+    `,
+  },
 ];
