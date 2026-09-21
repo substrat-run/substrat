@@ -101,9 +101,10 @@ const DEV_NODE: CompanyNode = {
 
 interface Env {
   // A sandbox-clean vertical (scope-local-permissions.md Phase 3): its ONLY durable stores
-  // are its OWN DO classes — SCOPE (business data, per scope) and AUTH (identity, per
-  // tenant). No shared D1 `AUTH_DB`, no CONTROL_PLANE binding, no service binding — all
-  // refused by assertSandboxContract. AUTH being an OWN class is what keeps it legal.
+  // are its OWN DO classes — SCOPE (business data, per scope), AUTH (identity, per tenant)
+  // and SWEEPER (the deployment's timer, one per deployment). No shared D1 `AUTH_DB`, no
+  // CONTROL_PLANE binding, no service binding — the last two refused by
+  // assertSandboxContract. Each being an OWN class is what keeps it legal.
   SCOPE: DurableObjectNamespace;
   AUTH: DurableObjectNamespace<IdentityDO>;
   /** The roster-keeping sweep singleton — the deployment's own timer (#461). Its own class too. */

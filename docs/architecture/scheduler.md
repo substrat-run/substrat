@@ -170,9 +170,14 @@ migration reconciliation — stay with the platform, which has the directory and
 `/internal` surface to orchestrate them. The create-substrat template wires the sweeper by
 default (`SWEEPER` store + the three route calls), and so do the two hosted demos that declare
 schedules, `demos/ticket0` and `demos/meridian` (#1646). Each of those runs its deployed
-worker in workerd (`test/workerd/`) — provision, a real pass, the effect of a due schedule,
-reconcile, a restored fork kept off the roster, delete — because no node-host suite reaches
-`src/worker.ts`, which is how both came to declare schedules that nothing ran.
+worker in workerd (`test/workerd/sweeper.test.ts`), and each suite holds the same five
+things for its own vertical: provision notes the scope, a real pass produces a due
+schedule's effect and leaves a not-yet-due twin alone, reconcile notes a scope provisioned
+before the sweeper, a copy restored from a scope's dump and then reached by routed traffic
+stays off the roster with its due work undone, and delete forgets the scope. meridian's also
+pins the one thing that still fails there, an engine schedule on a standard install
+(#1654). Both exist because no node-host suite reaches `src/worker.ts`, which is how both
+verticals came to declare schedules that nothing ran.
 
 ## 4. Design B — per-scope DO alarms (the scale target)
 

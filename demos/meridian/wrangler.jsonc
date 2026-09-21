@@ -36,19 +36,19 @@
 		"run_worker_first": ["/api/*", "/internal/*", "/openapi.json"]
 	},
 	// A SANDBOX-CLEAN, control-plane-less vertical (scope-local-permissions.md Phase 3):
-	// its ONLY bindings are its own SCOPE DO class and AUTH_DB. No CONTROL_PLANE binding,
-	// no service binding to a platform worker, no ASSETS binding — assertSandboxContract
-	// (control-plane-api/deploy.ts) refuses those, and the push would be rejected. The
-	// router asserts the node; permissions evaluate from each scope's own storage.
-	// Two OWN DO classes: SCOPE (business data, one per scope) and AUTH (identity —
-	// Better Auth over its own DO SQLite, one per tenant). No shared D1 `AUTH_DB`: a
-	// tenant's users/sessions/credentials are isolated in its AUTH DO, and there is no
-	// per-worker auth database to leak across tenants. Both are the vertical's OWN
-	// classes, so the sandbox contract permits the bindings.
-	//
-	// A third OWN class, SWEEPER (#1646): the deployment's own timer (#461). A DO alarm is the
-	// only timer a dispatch script can own, and without it engine-absence's declared
-	// `absence/expire-stale` never runs on a hosted deploy.
+	// its ONLY bindings are three Durable Object classes of its own, below, and no D1. No
+	// CONTROL_PLANE binding, no service binding to a platform worker, no ASSETS binding —
+	// assertSandboxContract (control-plane-api/deploy.ts) refuses those, and the push
+	// would be rejected. The router asserts the node; permissions evaluate from each
+	// scope's own storage.
+	//   - SCOPE (ScopeDO): business data, one per scope.
+	//   - AUTH (IdentityDO): the per-tenant identity directory and per-instance config
+	//     (@substrat-run/vertical-auth), so there is no per-worker auth database to leak
+	//     across tenants.
+	//   - SWEEPER (SweeperDO): the deployment's own timer (#461, #1646). A DO alarm is the
+	//     only timer a dispatch script can own; without it engine-absence's declared
+	//     `absence/expire-stale` never runs on a hosted deploy.
+	// All three are the vertical's OWN classes, which is what the sandbox contract permits.
 	"durable_objects": {
 		"bindings": [
 			{ "name": "SCOPE", "class_name": "ScopeDO" },

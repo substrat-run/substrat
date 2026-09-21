@@ -22,8 +22,10 @@
  *     install does not expire stale leave yet, and the run says why. The fix is a separate
  *     decision (#1654); when it lands, this case is the one that changes.
  *
- * The reconcile and delete cases hold the roster's other two doors, as ticket0's suite
- * does. No clock is moved: the DO host has none to inject, so the stale leave simply
+ * The reconcile and delete cases hold the roster's other two doors, and the last case the
+ * contract that keeps it platform-fed: a scope RESTORED from another's dump (the PR-preview
+ * path, a fork of production data) is never on the roster, even once routed traffic has
+ * reached it — as ticket0's suite holds for a desk. No clock is moved: the DO host has none to inject, so the stale leave simply
  * starts in 2020.
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
@@ -78,11 +80,12 @@ function host(): CloudflareScopeHost {
   return h;
 }
 
-function platform(path: string, body: unknown): Promise<Response> {
+/** A platform call, as the control plane makes it — a GET when there is no body. */
+function platform(path: string, body?: unknown): Promise<Response> {
   return SELF.fetch(`https://meridian.test${path}`, {
-    method: 'POST',
+    method: body === undefined ? 'GET' : 'POST',
     headers: { 'content-type': 'application/json', 'x-substrat-platform': env.PLATFORM_SECRET },
-    body: JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
 
@@ -209,5 +212,38 @@ describe('meridian on workerd — the deployment runs engine-absence\'s timer (#
     const res = await platform('/internal/delete-scope', { scopeId: standard.s });
     expect(res.status).toBe(200);
     expect(await roster()).toEqual([entitled.s]);
+  });
+
+  it('a restored copy is never swept, even once routed traffic has reached it', async () => {
+    // A source whose schedule has never run, holding a stale leave, entitled to run it —
+    // so a pass that reached its copy WOULD cancel the copy's leave. That is what makes
+    // the copy's leave staying `requested` evidence rather than a cadence skip.
+    const source = scopeId.parse(ulid());
+    const fork = scopeId.parse(ulid());
+    await provision(entitled.t, source, entitled.keys);
+    const stale = await leaveStarting(entitled.t, source, '2020-01-06', '2020-01-10');
+
+    // The PR-preview path: dump the scope, restore the dump into a new scope id. Nothing
+    // provisions a fork, so nothing notes it.
+    const dump = await (await platform(`/internal/export?scopeId=${source}`)).json();
+    expect((await platform('/internal/restore', { tenantId: entitled.t, scopeId: fork, tables: dump })).status).toBe(200);
+    // …and traffic reaches it, as a preview hostname sends it: a routed request through
+    // the worker, and a read served by the fork's own scope DO.
+    const routed = await SELF.fetch('https://preview.meridian.test/api/me', {
+      headers: { 'x-substrat-tenant': entitled.t, 'x-substrat-scope': fork, 'x-substrat-router': env.ROUTER_SECRET },
+    });
+    // The worker took the node from the assertion and answered as that instance — which,
+    // with no issuer delivered to it, is its own refusal to sign anybody in. Not the 400 of
+    // a bad assertion, nor the 503 of a missing one: the request reached the fork.
+    expect(await routed.json()).toMatchObject({ instance: '/api/me', detail: expect.stringMatching(/OIDC_ISSUER/) });
+    expect(await statusOf(entitled.t, fork, stale)).toBe('requested');
+
+    const report = await sweep();
+    expect(report.errors).toEqual([]);
+    // The source runs its schedule for the first time; the entitled scope ran it today.
+    expect(report.schedules).toEqual({ scopes: 1, fired: 1, skipped: 1, failed: 0 });
+    expect(await statusOf(entitled.t, source, stale)).toBe('cancelled');
+    expect(await roster()).not.toContain(fork);
+    expect(await statusOf(entitled.t, fork, stale)).toBe('requested');
   });
 });

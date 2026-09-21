@@ -72,10 +72,11 @@ Smoke-tested locally end to end: `GET /` serves the SPA; `/internal/provision` i
 without `PLATFORM_SECRET`, 201 with it) and sets up the scope CP-lessly via `provisionScopeLocal`,
 seeding the owner seat; a real **sign-up → session cookie → `/api/invoke`** claims that seat (the
 installer becomes `hr-admin`) and the `hr/*` op succeeds on DO SQLite; `/api/me` returns the claimed
-principal. `wrangler deploy --dry-run` shows only the `SCOPE` + `AUTH` (IdentityDO) bindings — no D1,
-no service binding, so it passes `assertSandboxContract`. (`SWEEPER` was added after this smoke test,
-#1646; `test/workerd/` now runs the worker in workerd as part of `pnpm test` and covers provision,
-the sweep, reconcile and delete.)
+principal. `wrangler deploy --dry-run` shows exactly three bindings, all Durable Objects of the
+vertical's own classes — `SCOPE` (ScopeDO), `AUTH` (IdentityDO) and `SWEEPER` (SweeperDO) — and no
+D1 or service binding, so it passes `assertSandboxContract`. `pnpm test` runs the worker in workerd
+(`test/workerd/`): provision, a sweep pass and its effect, reconcile, a restored fork kept off the
+sweep roster, and delete.
 
 ## Known follow-ups (not blockers for provisioning, but for full hosted UX)
 
