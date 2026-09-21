@@ -96,7 +96,7 @@ import {
   type PlatformRuntime,
   type DoNamespaceReader,
 } from '@substrat-run/control-plane-api';
-import { VerticalClient } from '@substrat-run/control-plane-api';
+import { ControlPlaneError, VerticalClient } from '@substrat-run/control-plane-api';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
@@ -226,6 +226,15 @@ interface Env extends StaffAuthEnv, ConnectorEnv {
    * "reap now" is unaffected. Parsed as an integer number of days.
    */
   TENANT_RETENTION_DAYS?: string;
+  /**
+   * The most scopes one sweep re-provisions (#1172, #1653) — the kernel's
+   * `provisionReconcileBatch`, default 50 per pass. A promote of a LISTED vertical puts
+   * every one of its installs behind at once, so this is what paces that rollout: the
+   * last install is reached after about behind ÷ batch passes of 15 minutes. Raise it
+   * to finish sooner; `0` pauses the phase (it still reports who is behind). A garbled
+   * value falls back to the default rather than to either extreme.
+   */
+  PROVISION_RECONCILE_BATCH?: string;
   /**
    * Days a reap's stored copy (`scopes/…` in SCOPE_BACKUPS, #493) is kept before the
    * sweep drops it (#557). UNSET keeps every copy forever — the platform never deletes
@@ -605,6 +614,20 @@ const CONNECTION_RELAY_ACTOR = platformActorId.parse('01JZ00000000000000000000CR
  * next sweep sees. `0` is honored (reap on the first pass) — an operator can ask for it.
  */
 function parseRetentionDays(raw: string | undefined): number | undefined {
+  return parseNonNegativeInteger(raw);
+}
+
+/**
+ * `PROVISION_RECONCILE_BATCH` → the sweep's `provisionReconcileBatch` (#1653), or
+ * `undefined` for the kernel's default. The same parse as the retention windows, for the
+ * same reason: `0` is honored (here, the pause), and anything garbled is the default — a
+ * typo must neither stop the rollout nor turn it into an unbounded one.
+ */
+export function parseReconcileBatch(raw: string | undefined): number | undefined {
+  return parseNonNegativeInteger(raw);
+}
+
+function parseNonNegativeInteger(raw: string | undefined): number | undefined {
   if (raw === undefined || raw.trim() === '') return undefined;
   const n = Number(raw);
   return Number.isInteger(n) && n >= 0 ? n : undefined;
@@ -870,7 +893,7 @@ function resolveVerticalForScopeFor(
  * unmarked, and retries it next pass. A silent success here would mark a scope
  * provisioned that never was.
  */
-async function reconcileOneScope(env: Env, t: TenantId, s: ScopeId): Promise<void> {
+async function reconcileOneScope(env: Env, t: TenantId, s: ScopeId): Promise<void | 'unsupported'> {
   const host = hostFor(env);
   const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
   /**
@@ -894,14 +917,33 @@ async function reconcileOneScope(env: Env, t: TenantId, s: ScopeId): Promise<voi
     SWEEP_ACTOR,
     { tenantId: t, id: s, vertical: rec.vertical },
   );
-  await client.reconcileInstance({
-    tenantId: t,
-    scopeId: s,
-    entitlements: payload.entitlements as never,
-    identityLinks: payload.identityLinks as never,
-    connectionGrants: payload.connectionGrants as never,
-    connectionKeys: payload.connectionKeys as never,
-  });
+  return reconcileOrUnsupported(() =>
+    client.reconcileInstance({
+      tenantId: t,
+      scopeId: s,
+      entitlements: payload.entitlements as never,
+      identityLinks: payload.identityLinks as never,
+      connectionGrants: payload.connectionGrants as never,
+      connectionKeys: payload.connectionKeys as never,
+    }),
+  );
+}
+
+/**
+ * A vertical's 501 from `/internal/reconcile` means "I implement no reconcile" — a vertical
+ * without the route answers it from its `/internal/*` catch-all, and one that keeps no
+ * owner-of-record answers it from `mountPlatformSurface` (#1653). The sweep counts that as
+ * `unsupported`, apart from its failures: every pass would otherwise report the same
+ * refusal for every such install, and bury the ones somebody has to act on. Every other
+ * refusal still throws, so it is still a failure.
+ */
+export async function reconcileOrUnsupported(call: () => Promise<unknown>): Promise<void | 'unsupported'> {
+  try {
+    await call();
+  } catch (e) {
+    if (e instanceof ControlPlaneError && e.status === 501) return 'unsupported';
+    throw e;
+  }
 }
 
 async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<PlatformDrainReport> {
@@ -1098,6 +1140,10 @@ export default {
       // install, so a scope serving code whose provision hook never ran against it is
       // missing whatever that hook mints, and nothing else would ever deliver it.
       reconcileScopeFn: (t, s) => reconcileOneScope(env, t, s),
+      // #1653 — and since the phase follows the version a scope RUNS, a listed
+      // vertical's promote puts every install of it behind at once. At most this many
+      // per pass; the rest on the passes after.
+      provisionReconcileBatch: parseReconcileBatch(env.PROVISION_RECONCILE_BATCH),
       // K-24 §4.4 — ship the staff access log to Tier 2, then prune what was shipped.
       // Rides the DIRECTORY backup bucket rather than a binding of its own: this is the
       // platform's own record (no tenant owns it), the `access-log/` prefix cannot collide

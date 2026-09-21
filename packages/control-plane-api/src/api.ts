@@ -83,7 +83,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
-import { migrationProgress, ulid } from '@substrat-run/kernel';
+import { migrationProgress, runningVersionOf, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
@@ -2305,6 +2305,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }),
       );
     }
+    // #1653: WHICH version the hook is about to run as — the served one, for a scope on its
+    // vertical's serving script, whatever its pointer says. Read BEFORE the call, as the
+    // sweep reads it, so a promote landing mid-call cannot have its version recorded by a
+    // hook that ran as the one before. Best-effort: without it the receipt falls back to
+    // the bound version, which is the pre-#1653 answer and costs at most one more reconcile.
+    const serving =
+      scope.vertical && scope.servingRef
+        ? await admin.verticalServing(actor, scope.vertical).catch(() => null)
+        : null;
+    const ranAs = runningVersionOf(scope, serving);
     try {
       const result = await vertical.reconcileInstance({
         tenantId,
@@ -2318,15 +2328,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // but unmigrated database fails as loudly as an absent one.
         ...(tenantStores.length ? { tenantStores } : {}),
       });
-      // The reconcile succeeded; a store that did not mint rides back as a diagnosis
-      // (`substrat scope provision` prints it, and `/health` keeps reporting the gap
       // #1172: the reconcile succeeded, so record WHICH version it ran against. Without
       // this the sweep would come back and do it again on the next pass — the console
       // button and the automatic phase have to write the same receipt, or pressing the
-      // button means nothing to the thing that watches.
-      if (scope.verticalVersionId) {
-        await admin.markScopeProvisioned(actor, tenantId, scopeId, scope.verticalVersionId);
+      // button means nothing to the thing that watches. Both name it with
+      // `runningVersionOf`, so they cannot disagree about what "the same" is.
+      if (ranAs) {
+        await admin.markScopeProvisioned(actor, tenantId, scopeId, ranAs);
       }
+      // The reconcile succeeded; a store that did not mint rides back as a diagnosis
+      // (`substrat scope provision` prints it, and `/health` keeps reporting the gap
       // until it closes). Absent when nothing failed, so the response is unchanged for
       // every scope that has no declared store or already has them all.
       return c.json(storeErrors.length ? { ...result, storeError: storeErrors.join('; ') } : result);
