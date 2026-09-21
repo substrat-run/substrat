@@ -164,7 +164,11 @@ predates the invocation log, or the log is mounted below some routes, or it has 
 
 **"Recurring work stopped."** Check the scope sweeper's roster. The alarm **lapses on an empty
 roster**, and the roster is maintained by `/internal/provision` and `/internal/delete-scope`
-rather than read from a directory. A scope that never called `noteScope` is not swept.
+rather than read from a directory. A scope that never called `noteScope` is not swept — which
+includes every scope provisioned before its vertical wired a sweeper, until a reconcile or a
+re-run provisioning notes it. And a scope on the roster can still record every run as
+`failed`: a schedule an **engine** declares runs as that engine's module, so the tenant must
+hold the engine's entitlement, not only the vertical's.
 
 **"Permission denied and I do not know why."** The denial log gives the key and the node.
 `explain` gives the chain. If the permission is tenant-level, remember it reaches the scope by
@@ -174,7 +178,11 @@ real cause.
 **"It works locally and fails deployed."** The adapters are contract-equivalent, so suspect the
 things that are not module code: the router secret, a binding, an unset platform secret, a
 grant that was never made. Both trust boundaries fail closed, which means the symptom of a
-missing secret is a blanket refusal rather than a subtle misbehaviour.
+missing secret is a blanket refusal rather than a subtle misbehaviour. One exception sits in
+module code, because it is the engine and not the adapter: a Durable Object's SQLite refuses a
+`LIKE` or `GLOB` pattern longer than 50 bytes ("pattern too complex"), and node's allows
+50 000. A long literal pattern, or one built from a caller's unbounded input, passes every
+node test and fails only on the deployed host.
 
 ## What is honestly not solved
 

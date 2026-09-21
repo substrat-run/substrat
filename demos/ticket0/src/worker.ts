@@ -3,10 +3,11 @@
  * the shape `substrat push` deploys into the platform's dispatch namespace.
  *
  * Its only durable stores are its OWN DO classes: `SCOPE` (kernel + metering + the
- * ticket0 module, bundled — one per desk) and `AUTH` (the shared per-tenant identity
+ * ticket0 module, bundled — one per desk), `AUTH` (the shared per-tenant identity
  * DO from @substrat-run/vertical-auth, which also holds the per-instance config the
- * dashboard's Env tab delivers). No CONTROL_PLANE binding, no service binding, no
- * ASSETS binding — `assertSandboxContract` refuses all three.
+ * dashboard's Env tab delivers) and `SWEEPER` (the deployment's own timer, #461 —
+ * what runs the desk's declared schedules). No CONTROL_PLANE binding, no service
+ * binding, no ASSETS binding — `assertSandboxContract` refuses all three.
  *
  * `substrat push` derives the deploy config from `substrat.runtimeNeeds` in
  * package.json (entry = this file, stores = the DO classes exported here); there is
@@ -49,7 +50,14 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { CloudflareScopeHost, cloudflareClientContext, defineScopeDO } from '@substrat-run/adapter-cloudflare';
+import {
+  CloudflareScopeHost,
+  cloudflareClientContext,
+  defineScopeDO,
+  defineScopeSweeperDO,
+  SCOPE_SWEEPER_NAME,
+  type ScopeSweeperDo,
+} from '@substrat-run/adapter-cloudflare';
 import {
   globalFetch,
   PLATFORM_REQUEST_HEADER,
@@ -113,6 +121,36 @@ export const ScopeDO = defineScopeDO(MODULES, {});
 /** The per-tenant identity DO (shared @substrat-run/vertical-auth) — bound as AUTH. */
 export { IdentityDO };
 
+/**
+ * The deployment's own timer (#461, #1646): a roster-keeping singleton whose alarm runs
+ * each provisioned desk's due recurring work — executor retries and the four schedules
+ * `src/manifest.ts` declares (wake-snoozed, reap-abandoned, assign-round-robin,
+ * escalate-sla-breaches).
+ *
+ * Nothing else fires them on a hosted desk. The control plane's cron runs the platform
+ * sweep against a host that registers no modules, so its schedule phase iterates an empty
+ * list; a dispatch script's own `triggers.crons` is not honoured. A DO alarm is the one
+ * timer this deployment can own (scheduler.md §3.3).
+ *
+ * The roster is kept by the platform hooks below: `/internal/provision` and
+ * `/internal/reconcile` note a desk, `/internal/delete-scope` forgets it. Nothing on the
+ * request path touches it, and that is the contract rather than an omission: a PR preview
+ * is a fork of a production desk restored into a per-version script and then ROUTED, and
+ * enrolling from traffic would run the reaper on that copy. `test/workerd/sweeper.test.ts`
+ * pins it.
+ */
+export const SweeperDO = defineScopeSweeperDO<Env>({
+  // #1232: the pass reports the version whose code actually ran (the deploy-injected binding).
+  versionId: (env) => env.SUBSTRAT_VERSION_ID ?? null,
+  intervalMs: 120_000,
+  host: hostFor,
+});
+
+/** The sweeper singleton's stub — one roster and one alarm per deployment. */
+function sweeper(env: Env): DurableObjectStub & ScopeSweeperDo {
+  return env.SWEEPER.get(env.SWEEPER.idFromName(SCOPE_SWEEPER_NAME)) as DurableObjectStub & ScopeSweeperDo;
+}
+
 /** The (tenant, scope) a request is addressed to — one desk. */
 interface DeskNode {
   tenantId: TenantId;
@@ -131,10 +169,14 @@ const DEV_NODE: DeskNode = {
 };
 
 interface Env {
+  /** Injected at deploy (#1242); absent locally — the sweep record then reads NULL. */
+  SUBSTRAT_VERSION_ID?: string;
   /** One DO per desk — business data. The vertical's own class (sandbox-clean). */
   SCOPE: DurableObjectNamespace;
   /** One DO per tenant — the sub→principal directory, invites, and per-scope config. */
   AUTH: DurableObjectNamespace<IdentityDO>;
+  /** The roster-keeping sweep singleton — the deployment's own timer (#461). */
+  SWEEPER: DurableObjectNamespace;
   /** Declared in TICKET0_ENV (src/manifest.ts). Read ONLY through `instanceConfig` —
    *  a bare `env.X` read sees the deployment-wide default every install shares (#374).
    *  Typed here so a binding or a `--var` override is a compile-checked name. */
@@ -1072,6 +1114,15 @@ mountPlatformSurface<Env>(app, {
     // than lazily on first use: a principal minted on a request path is a principal
     // minted by whoever got there first.
     await mintServices(env, node);
+    // Onto the sweep roster, so the desk's schedules run (#1646). Last, so only a desk
+    // whose provision got this far is swept. This hook also runs on `/internal/reconcile`,
+    // and that is how a desk provisioned before the sweeper existed joins: #1172's
+    // reconcile after a push, or "Re-run provisioning" in the console.
+    await sweeper(env).noteScope(b.tenantId, b.scopeId);
+  },
+  onDeleteScope: async (env, s) => {
+    // A reaped desk's alarm must never wake it again.
+    await sweeper(env).forgetScope(s);
   },
   resolveOwner: async (env, ref) => {
     const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);

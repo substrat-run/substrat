@@ -2,8 +2,10 @@
 
 Meridian is now a **sandbox-clean, control-plane-less vertical** (like Callout), so it can be
 pushed into the platform's Workers-for-Platforms **dispatch namespace** and provisioned by the
-shared control plane. Its only bindings are its own `SCOPE` Durable Object and `AUTH_DB`; the SPA
-is bundled into the worker (no `ASSETS` binding). This is what makes it pass `assertSandboxContract`
+shared control plane. Its only bindings are its own three Durable Object classes — `SCOPE` (one per
+scope), `AUTH` (the per-tenant `IdentityDO`) and `SWEEPER` (the deployment's own timer, which runs
+engine-absence's `absence/expire-stale`, #1646) — and the SPA is served as native assets (no
+`ASSETS` binding). This is what makes it pass `assertSandboxContract`
 (`packages/control-plane-api/src/deploy.ts`) — a `CONTROL_PLANE` binding or a service binding to a
 platform worker would be refused.
 
@@ -71,7 +73,9 @@ without `PLATFORM_SECRET`, 201 with it) and sets up the scope CP-lessly via `pro
 seeding the owner seat; a real **sign-up → session cookie → `/api/invoke`** claims that seat (the
 installer becomes `hr-admin`) and the `hr/*` op succeeds on DO SQLite; `/api/me` returns the claimed
 principal. `wrangler deploy --dry-run` shows only the `SCOPE` + `AUTH` (IdentityDO) bindings — no D1,
-no service binding, so it passes `assertSandboxContract`.
+no service binding, so it passes `assertSandboxContract`. (`SWEEPER` was added after this smoke test,
+#1646; `test/workerd/` now runs the worker in workerd as part of `pnpm test` and covers provision,
+the sweep, reconcile and delete.)
 
 ## Known follow-ups (not blockers for provisioning, but for full hosted UX)
 

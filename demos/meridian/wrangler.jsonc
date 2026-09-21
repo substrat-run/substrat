@@ -45,16 +45,31 @@
 	// tenant's users/sessions/credentials are isolated in its AUTH DO, and there is no
 	// per-worker auth database to leak across tenants. Both are the vertical's OWN
 	// classes, so the sandbox contract permits the bindings.
+	//
+	// A third OWN class, SWEEPER (#1646): the deployment's own timer (#461). A DO alarm is the
+	// only timer a dispatch script can own, and without it engine-absence's declared
+	// `absence/expire-stale` never runs on a hosted deploy.
 	"durable_objects": {
 		"bindings": [
 			{ "name": "SCOPE", "class_name": "ScopeDO" },
-			{ "name": "AUTH", "class_name": "IdentityDO" }
+			{ "name": "AUTH", "class_name": "IdentityDO" },
+			{ "name": "SWEEPER", "class_name": "SweeperDO" }
 		]
 	},
+	// Append-only: v1 has shipped, so the new class rides a NEW tag rather than an edited v1.
+	// A hosted push does not send these tags — `substrat push` flattens them into the class
+	// set, and the control plane's uploader derives the tag for the script it writes (a fresh
+	// script: `v1` with every class; the in-place serving script: the added class alone under
+	// the next tag). They matter to a local `wrangler dev` with persisted state, which is what
+	// an edited v1 would break.
 	"migrations": [
 		{
 			"tag": "v1",
 			"new_sqlite_classes": ["ScopeDO", "IdentityDO"]
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": ["SweeperDO"]
 		}
 	]
 	// Secrets on deploy (`wrangler secret put …` / injected by the platform on push):

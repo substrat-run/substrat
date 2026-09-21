@@ -826,13 +826,7 @@ function Desk() {
             clock. An overdue conversation is flagged and whoever holds it (everyone on the Team list, when nobody
             does) is told once, the next time the desk&apos;s timer runs: every 5 minutes at the soonest, so a
             breach can be noticed up to one timer run late. A reply or resolution sent late records the breach
-            itself, and so does changing the priority of a conversation that is already late. On a hosted desk
-            that timer does not run yet (
-            <a href="https://github.com/substrat-run/substrat/issues/1646" target="_blank" rel="noreferrer">
-              #1646
-            </a>
-            ), so there a breach is recorded only when somebody replies to, resolves or re-prioritises the late
-            conversation, and nobody is told before that.
+            itself, and so does changing the priority of a conversation that is already late.
           </>
         }
       >

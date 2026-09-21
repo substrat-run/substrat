@@ -7,8 +7,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
-    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.workerd-test.json --noEmit",
+    "test": "vitest run && vitest run -c vitest.workers.config.ts",
     "lint:boundaries": "substrat-boundary-lint",
     "emit:migrations": "tsx tools/emit-migrations.mts",
     "server": "tsx src/server.ts",
@@ -33,9 +33,12 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@substrat-run/boundary-lint": "workspace:^",
+    "@substrat-run/cli": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
+    "@substrat-run/control-plane-api": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "@substrat-run/oidc-rp": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
@@ -45,7 +48,8 @@
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   },
   "substrat": {
     "slug": "ticket0",
@@ -122,6 +126,10 @@
         {
           "binding": "AUTH",
           "class": "IdentityDO"
+        },
+        {
+          "binding": "SWEEPER",
+          "class": "SweeperDO"
         }
       ],
       "assets": {

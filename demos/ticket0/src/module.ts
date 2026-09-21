@@ -160,9 +160,28 @@ const OPEN_STATES = ['new', 'open', 'snoozed', 'resolved'] as const;
  * snoozed, exactly as it did before the timer existed, and `ticket0/wake` is still
  * the door out — a repair, not a silent misfire. This is a guard rather than a
  * migration on purpose: repairing shipped rows is a human checkpoint.
+ *
+ * Checked in three pieces rather than one pattern, and that is a runtime limit, not
+ * style. A Durable Object's SQLite refuses any LIKE or GLOB pattern longer than 50
+ * bytes ("LIKE or GLOB pattern too complex"), and the whole instant as one pattern is
+ * 92. Node's SQLite allows 50 000, so every suite on the node host passed while every
+ * hosted run of the timer failed on this line (#1646). The pieces are 42, 33 and 17
+ * bytes, and together with the length they accept exactly the strings the one pattern
+ * did: 24 characters, each piece in its place.
  */
-const CANONICAL_INSTANT =
-  '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z';
+export const CANONICAL_INSTANT_PARTS = [
+  '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]',
+  'T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]',
+  '.[0-9][0-9][0-9]Z',
+] as const;
+
+/** `column` holds a canonical instant — bind `CANONICAL_INSTANT_PARTS` for its three `?`. */
+export function canonicalInstant(column: string): string {
+  return `(length(${column}) = 24
+          AND substr(${column}, 1, 10) GLOB ?
+          AND substr(${column}, 11, 9) GLOB ?
+          AND substr(${column}, 20, 5) GLOB ?)`;
+}
 
 /**
  * The meters this desk records against.
@@ -1652,7 +1671,8 @@ const [SLA_FIRST_RESPONSE, SLA_RESOLUTION] = SLA_TARGETS;
  *     that re-aims it. Without this, a reply sent after the due instant but before the
  *     next sweep would meet the target, take the conversation out of the sweep's scan,
  *     and leave a late answer on record as an on-time one. On a host that runs no sweep
- *     at all (#1646), that would be every late answer.
+ *     at all — every hosted desk before #1646, and any desk still on no sweep roster —
+ *     that would be every late answer.
  */
 function slaOverdueSql(t: SlaTarget): string {
   return `${t.due} IS NOT NULL AND ${t.running} AND ${SLA_LIVE} AND ${t.due} < ?`;
@@ -3236,10 +3256,10 @@ const operations = {
     const due = ctx.sql.query<ConversationRow>(
       `SELECT * FROM ticket0_conversations
         WHERE state = 'snoozed'
-          AND snoozed_until GLOB ?
+          AND ${canonicalInstant('snoozed_until')}
           AND snoozed_until <= ?
         ORDER BY snoozed_until LIMIT ?`,
-      [CANONICAL_INSTANT, ctx.now(), WAKE_BATCH],
+      [...CANONICAL_INSTANT_PARTS, ctx.now(), WAKE_BATCH],
     );
     for (const conversation of due) {
       const next = step(conversation, 'ticket0/wake-snoozed');
@@ -3358,7 +3378,7 @@ const operations = {
    *     word" clause: a public reply from the desk moves a conversation to `open`, so
    *     one still in `new` cannot have had one.
    *
-   * No `CANONICAL_INSTANT` guard, unlike the snooze sweep, and the asymmetry is
+   * No `canonicalInstant` guard, unlike the snooze sweep, and the asymmetry is
    * deliberate rather than an omission: `snoozed_until` was a caller-supplied string
    * before it was an `instant`, so a desk may hold values that sort wrongly as text.
    * `updated_at` has only ever been written by `moveTo`/`touch` from `ctx.now()`, so

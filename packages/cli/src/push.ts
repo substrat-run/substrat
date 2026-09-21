@@ -1048,6 +1048,38 @@ export function resolveWranglerConfig(
 }
 
 /**
+ * A vertical's OWN stores, as the push declares them to the control plane: its DO
+ * bindings and D1 databases (e.g. a Better-Auth AUTH_DB), and the DO classes they bind.
+ * The control plane re-checks these against the §4 sandbox contract before the upload
+ * reaches the namespace.
+ *
+ * `doClasses` is every migration's `new_sqlite_classes`, flattened — the TAGS are
+ * dropped here, deliberately. Which tag a class rides is a fact about the script being
+ * written, which only the control plane knows: a fresh script takes every class under
+ * `v1`, and the in-place serving script takes only the classes it does not already hold,
+ * under its next tag (control-plane-api `createWfpUploader`). A vertical adding a store
+ * therefore appends a class; it never authors the tag a live script migrates under.
+ */
+export function declaredStoresOf(cfg: Record<string, unknown>): {
+  bindings: DeclaredBinding[];
+  doClasses: string[];
+} {
+  const doBindings = (cfg.durable_objects as { bindings?: { name: string; class_name: string; script_name?: string }[] } | undefined)?.bindings ?? [];
+  const d1 = (cfg.d1_databases as { binding: string; database_id: string }[] | undefined) ?? [];
+  const bindings: DeclaredBinding[] = [
+    ...doBindings.map((b) => ({
+      type: 'durable_object_namespace',
+      name: b.name,
+      class_name: b.class_name,
+      ...(b.script_name ? { script_name: b.script_name } : {}),
+    })),
+    ...d1.map((b) => ({ type: 'd1', name: b.binding, id: b.database_id })),
+  ];
+  const migrations = (cfg.migrations as { new_sqlite_classes?: string[] }[] | undefined) ?? [];
+  return { bindings, doClasses: migrations.flatMap((m) => m.new_sqlite_classes ?? []) };
+}
+
+/**
  * Where the derived wrangler config is written for the build.
  *
  * ABSOLUTE, and that is the whole point: `wrangler` is spawned with `cwd` set to this
@@ -1087,22 +1119,7 @@ export async function push(
   // of at the end of a wrangler build the vertical was going to ship broken anyway.
   assertUiIsServed(opts.dir, needs, readAssetsNeed(cfg, needs), opts.allowUnservedUi);
 
-  // A vertical's OWN stores travel with the bundle: its DO classes, and its D1 databases
-  // (e.g. a Better-Auth AUTH_DB). The control plane re-checks these against the §4 sandbox
-  // contract before the upload reaches the namespace.
-  const doBindings = (cfg.durable_objects as { bindings?: { name: string; class_name: string; script_name?: string }[] } | undefined)?.bindings ?? [];
-  const d1 = (cfg.d1_databases as { binding: string; database_id: string }[] | undefined) ?? [];
-  const bindings: DeclaredBinding[] = [
-    ...doBindings.map((b) => ({
-      type: 'durable_object_namespace',
-      name: b.name,
-      class_name: b.class_name,
-      ...(b.script_name ? { script_name: b.script_name } : {}),
-    })),
-    ...d1.map((b) => ({ type: 'd1', name: b.binding, id: b.database_id })),
-  ];
-  const migrations = (cfg.migrations as { new_sqlite_classes?: string[] }[] | undefined) ?? [];
-  const doClasses = migrations.flatMap((m) => m.new_sqlite_classes ?? []);
+  const { bindings, doClasses } = declaredStoresOf(cfg);
   // A hand-authored config that states no date gets the platform baseline, same as the
   // derived path — never a second hard-coded date drifting on its own (#636).
   const compatibilityDate = (cfg.compatibility_date as string | undefined) ?? RUNTIME_BASELINE;
