@@ -988,7 +988,7 @@ interface ScopeStubRpc {
     tuples: { subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[],
     entitlements?: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[],
     /** Scope-level tuples (e.g. the owner grant) seated in the same unit as the flip (#332) —
-     *  never un-revoked, except a `lockout_reseat` one on a scope with no live role grant (#1659). */
+     *  never un-revoked, except a `lockout_reseat` one on a scope with no effective role grant (#1659). */
     scopeTuples?: {
       subject: string;
       relation: string;
@@ -5985,7 +5985,8 @@ export class CloudflareScopeHost implements ScopeHost {
       // #1659: every tuple here is SEATED — created if missing, left alone if revoked — so a
       // reconcile no longer undoes an operator's revoke. The owner's seat alone carries
       // `lockout_reseat`: it comes back over a revoke only when the scope would otherwise hold
-      // no live role grant, which is the #332 lockout a reconcile exists to repair.
+      // no effective role grant — none whose role the vertical still defines — which is the
+      // #332 lockout a reconcile exists to repair.
       [
         {
           subject: `principal:${input.owner}`,
@@ -6095,10 +6096,11 @@ export class CloudflareScopeHost implements ScopeHost {
    *   leaves a revoked one revoked, so a reconcile — every listed promote runs one — keeps
    *   your revoke.
    * - With ONE exception: the owner-of-record's seat is re-seated over a revoke when the
-   *   scope would otherwise hold no live role grant at all. A scope nobody can act in is the
-   *   #332 lockout the reconcile exists to repair, so revoking the LAST holder is undone at
-   *   the next reconcile. Seat the successor before unseating the owner, and the revoke
-   *   stands. The owner re-seated is the one `owner_of_record` names, which is first-write-
+   *   scope would otherwise hold no effective role grant at all — a holder of a role the
+   *   vertical no longer defines passes no check, so it does not count. A scope nobody can
+   *   act in is the #332 lockout the reconcile exists to repair, so revoking the LAST holder
+   *   is undone at the next reconcile. Seat the successor (in a role the vertical defines)
+   *   before unseating the owner, and the revoke stands. The owner re-seated is the one `owner_of_record` names, which is first-write-
    *   wins — if a successor is later revoked too, the ORIGINAL owner comes back. To lock a
    *   compromised owner out, suspend the scope; a seat revoke is not that lever.
    * - An explicit grant does clear it: `assignScopeRole` is `INSERT OR REPLACE`, and so is

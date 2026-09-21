@@ -15,6 +15,7 @@ import {
   tenantId,
   type EntitlementGrant,
   type ProjectedConnectionGrant,
+  type RoleDefinition,
   type ScopeTable,
 } from '@substrat-run/contracts';
 import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
@@ -1201,7 +1202,8 @@ describe('#332 — recovery from a scope bricked to zero tuples (CP-less)', () =
  * rollout, silently.
  *
  * The one exception is the owner-of-record's seat on a scope that would otherwise hold no
- * live role grant: the #332 lockout, which a reconcile exists to repair — so the #332 block
+ * EFFECTIVE role grant (a live tuple whose role the vertical still defines): the #332
+ * lockout, which a reconcile exists to repair — so the #332 block
  * above stands exactly as it was written, and the twins here pin both sides of it.
  *
  * Every re-grant path stays a grant: `assignScopeRole` and `connectorGrantLocal` clear a
@@ -1218,15 +1220,19 @@ describe('#1659 — a reconcile keeps an operator’s revoke (CP-less)', () => {
   /** A fixed revoke instant, so "the tombstone was left alone" is an equality, not a guess. */
   const REVOKED_AT = '2026-09-01T00:00:00.000Z';
 
+  const OFFICE_ADMIN: RoleDefinition = { key: 'office-admin', permissions: [ADMIN, READ], source: 'vertical' };
+  /** A second role the vertical defines — until a later version drops it (the stale case). */
+  const READER: RoleDefinition = { key: 'reader', permissions: [READ], source: 'vertical' };
   const provision = (
     scope: string,
     connectionGrants?: ProjectedConnectionGrant[],
+    roles: RoleDefinition[] = [OFFICE_ADMIN],
   ): Promise<void> =>
     host.provisionScopeLocal({
       tenantId: t,
       scopeId: scopeId.parse(scope),
       owner,
-      roles: [{ key: 'office-admin', permissions: [ADMIN, READ], source: 'vertical' }],
+      roles,
       ownerRoleKey: 'office-admin',
       connectionGrants,
     });
@@ -1352,6 +1358,50 @@ describe('#1659 — a reconcile keeps an operator’s revoke (CP-less)', () => {
       expiresAt: null,
     });
     expect(await scheduleConsidered(s)).toBe(0); // the kill switch did NOT come back with it
+  });
+
+  it('a revoked owner whose only other holder has a role the vertical DROPPED is re-seated — a stale grant is no holder', async () => {
+    // Review finding on this PR: a live tuple for a role the vertical no longer defines passes
+    // no check (the checker expands a role only through its definition), so it must not count
+    // as "someone else holds a role" — or this scope stays locked out, which is the one case
+    // the owner re-seat exists for.
+    const s = ulid();
+    const member = principalId.parse(ulid());
+    await provision(s, undefined, [OFFICE_ADMIN, READER]); // this version defines `reader`
+    await host.assignScopeRole(scopeId.parse(s), member, 'reader');
+    expect(await probe(member, s, READ)).toBe(true); // positive control: `reader` is effective here
+    expect(await host.revokeScopeRole(scopeId.parse(s), owner, 'office-admin')).toBe(true);
+    expect(await probe(owner, s)).toBe(false);
+
+    await provision(s, undefined, [OFFICE_ADMIN]); // a later version dropped `reader`
+    expect(await probe(member, s, READ)).toBe(false); // the member's live tuple is now stale: it grants nothing
+    expect(await probe(owner, s)).toBe(true); // so nobody could act here, and the owner is re-seated
+  });
+
+  it('…and its twin: the other holder’s role is still defined, so the owner’s revoke stands', async () => {
+    const s = ulid();
+    const member = principalId.parse(ulid());
+    await provision(s, undefined, [OFFICE_ADMIN, READER]);
+    await host.assignScopeRole(scopeId.parse(s), member, 'reader');
+    expect(await host.revokeScopeRole(scopeId.parse(s), owner, 'office-admin')).toBe(true);
+
+    await provision(s, undefined, [OFFICE_ADMIN, READER]); // same roles: `reader` is still current
+    expect(await probe(member, s, READ)).toBe(true); // an effective holder…
+    expect(await probe(owner, s)).toBe(false); // …so the revoke holds
+  });
+
+  it('the #332 flip guard reads the same predicate: a STALE-only role tuple refuses the flip', async () => {
+    const s = ulid();
+    const holder = `principal:${principalId.parse(ulid())}`;
+    const roleDef = { role_key: 'office-admin', permissions: JSON.stringify([ADMIN]), source: 'vertical' };
+    await rawStub(s).seatTuple(holder, 'role:retired', `scope:${s}`, null); // live, but for no defined role
+    await rawStub(s).applyProjection(t, [roleDef], [], undefined, []);
+    expect(await permissionSource(s)).toBeUndefined(); // refused: nobody here passes a check
+
+    // The twin: the same holder in a role the projection defines, and the flip goes through.
+    await rawStub(s).seatTuple(holder, 'role:office-admin', `scope:${s}`, null);
+    await rawStub(s).applyProjection(t, [roleDef], [], undefined, []);
+    expect(await permissionSource(s)).toBe('local');
   });
 
   it('a wiped scope is recreated by a reconcile — a MISSING row is not a revoke (#332)', async () => {

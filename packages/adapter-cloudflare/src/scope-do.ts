@@ -69,6 +69,7 @@ import {
   type PlatformRequestRedactionCandidate,
   type SubjectRedactionCounts,
   SEAT_SCOPE_TUPLE_SQL,
+  effectiveRoleGrantQuery,
   denialListQuery,
   denialSummaryQuery,
   denialTotalsQuery,
@@ -4450,7 +4451,8 @@ export function defineScopeDO(
        *
        *  Seated, not replaced (#1659): a missing tuple is created, a revoked one stays revoked.
        *  `lockout_reseat` marks the one exception — the owner-of-record's seat, which is
-       *  re-seated even over a revoke when the scope would otherwise hold no live role grant. */
+       *  re-seated even over a revoke when the scope would otherwise hold no effective role
+       *  grant (`hasEffectiveRoleGrant`). */
       scopeTuples?: {
         subject: string;
         relation: string;
@@ -4576,12 +4578,14 @@ export function defineScopeDO(
           this.sql.exec(SEAT_SCOPE_TUPLE_SQL, st.subject, st.relation, st.object, st.expires_at);
         }
         // #1659's one exception: the owner-of-record's seat comes back over a revoke when
-        // NOTHING else would let anyone act here — roles projected, no live role grant. That
-        // is the #332 lockout this path exists to repair, and it is decided by the same
+        // NOTHING else would let anyone act here — roles projected, no effective role grant.
+        // That is the #332 lockout this path exists to repair, and it is decided by the same
         // predicate as the flip guard below, so "locked out" means one thing in this unit.
-        // With any other live holder, the revoke stands: a hand-over that seats a successor
-        // before unseating the owner is not undone by the next promote.
-        if (roles.length > 0 && !this.hasLiveRoleGrant(tenantId)) {
+        // With any other effective holder, the revoke stands: a hand-over that seats a
+        // successor before unseating the owner is not undone by the next promote. A holder of
+        // a role the vertical no longer defines is NOT one — it passes no check, so it must
+        // not stand in for the holder this repair exists to restore.
+        if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId)) {
           for (const st of scopeTuples ?? []) {
             if (!st.lockout_reseat) continue;
             this.sql.exec(
@@ -4595,13 +4599,13 @@ export function defineScopeDO(
           }
         }
         // #332: only switch on strict local enforcement when SOMEONE actually holds a role.
-        // A projection that leaves role definitions but no live principal→role grant would make
-        // every check fail closed — a scope serving nothing but denials, unfixable from inside.
-        // Leave `permission_source` as-is instead; a reconcile that restores the owner grant
-        // re-runs this and flips safely. (A CP-less vertical uses the local reader regardless of
-        // this flag, so the owner grant is written above in the same unit — this guard is the
-        // belt to that suspenders, and it protects the CP-backed flip outright.)
-        if (roles.length > 0 && !this.hasLiveRoleGrant(tenantId)) return;
+        // A projection that leaves role definitions but no effective principal→role grant would
+        // make every check fail closed — a scope serving nothing but denials, unfixable from
+        // inside. Leave `permission_source` as-is instead; a reconcile that restores the owner
+        // grant re-runs this and flips safely. (A CP-less vertical uses the local reader
+        // regardless of this flag, so the owner grant is written above in the same unit — this
+        // guard is the belt to that suspenders, and it protects the CP-backed flip outright.)
+        if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId)) return;
         this.sql.exec(
           `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('permission_source', 'local')`,
         );
@@ -4633,31 +4637,17 @@ export function defineScopeDO(
       return { principal: row.principal_id, scopeId: row.scope_id };
     }
 
-    /** True if any live (non-revoked, unexpired) principal→role grant exists for this tenant,
-     *  at scope OR tenant level — the precondition for switching on strict local enforcement so a
-     *  projection never enables fail-closed evaluation against an empty tuple table (#332). */
-    private hasLiveRoleGrant(tenantId: string): boolean {
-      const now = new Date().toISOString();
-      const scope = this.sql
-        .exec(
-          `SELECT 1 FROM _substrat_tuples
-           WHERE relation LIKE 'role:%' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
-           LIMIT 1`,
-          now,
-        )
-        .toArray();
-      if (scope.length > 0) return true;
-      return (
-        this.sql
-          .exec(
-            `SELECT 1 FROM _substrat_tenant_tuples
-             WHERE tenant_id = ? AND relation LIKE 'role:%' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
-             LIMIT 1`,
-            tenantId,
-            now,
-          )
-          .toArray().length > 0
-      );
+    /** True if some principal holds a role this scope can actually EXPAND — a live
+     *  (non-revoked, unexpired) `role:<key>` tuple, at scope OR tenant level, whose key names a
+     *  current, non-revoked role definition for this tenant. The one predicate behind both the
+     *  #332 flip guard and #1659's owner re-seat in `applyProjection`; the query is the
+     *  kernel's `effectiveRoleGrantQuery`, where it is tested against a real SQLite. A tuple
+     *  for a role the vertical no longer defines counts for nothing, exactly as in the local
+     *  checker, which expands a role only through its definition. */
+    private hasEffectiveRoleGrant(tenantId: string): boolean {
+      const q = effectiveRoleGrantQuery(tenantId, new Date().toISOString());
+      const row = this.sql.exec(q.sql, ...q.params).toArray()[0] as { effective: number } | undefined;
+      return row?.effective === 1;
     }
   };
 }
