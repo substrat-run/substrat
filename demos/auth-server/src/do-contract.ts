@@ -42,6 +42,11 @@ export type AuthServerStub = {
   issuerState(): Promise<IssuerState>;
   setupFirstAdmin(origin: string, creds: { email: string; password: string; name: string }): Promise<{ id: string }>;
   provisionInstance(meta: InstanceMeta, config?: ConfigEntry[]): Promise<void>;
+  /**
+   * Wake this issuer and report what `provisionInstance` recorded for it — `null` when it
+   * never was (#1660). Writes nothing: a reconcile carries no slug or name to record.
+   */
+  reconcileInstance(): Promise<InstanceMeta | null>;
   setInstanceConfig(entries: ConfigEntry[]): Promise<void>;
   /** §5.4 admin-query reads (the dashboard Data tab); secrets are redacted inside the DO. */
   introspectTables(): Promise<import('@substrat-run/contracts').ScopeTable[]>;

@@ -7,7 +7,7 @@
     "sourceMap": false,
     "rootDir": "."
   },
-  "include": ["src", "db", "test", "vitest.config.ts"],
+  "include": ["src", "db", "test", "vitest.config.ts", "vitest.workers.config.ts"],
   // Worker-shaped files typecheck under tsconfig.worker.json (workers-types' coherent
   // Request/Response); including them here collides undici's fetch types with hono's.
   // That covers app.ts + its test too — vitest still RUNS the test (vitest ignores tsconfig
@@ -19,6 +19,8 @@
     "src/auth-do.ts",
     "src/assets.ts",
     "src/assets.generated.ts",
-    "test/internal-surface.test.ts"
+    "test/internal-surface.test.ts",
+    // test/workerd runs inside workerd, not node — its own project (tsconfig.workerd-test.json).
+    "test/workerd"
   ]
 }

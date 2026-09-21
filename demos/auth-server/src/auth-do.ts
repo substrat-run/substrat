@@ -264,6 +264,22 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   }
 
   /**
+   * The provisioning reconcile's half (#1660, the sweep of #1172/#1653): what this issuer
+   * recorded at provision, or `null` if it never was. Writes NOTHING.
+   *
+   * Everything `provisionInstance` delivers is the instance metadata plus optional config,
+   * and a reconcile carries neither — its body names a tenant and a scope and nothing more.
+   * Re-running the provision would therefore overwrite `{slug, name}` with nothing, so this
+   * does the part of a reconcile that is true of this vertical instead: the DO is awake,
+   * which means its constructor has run against the CURRENT code — the schema brought to
+   * this version, the console client seeded — and the caller learns whether the install it
+   * is about to write a receipt for is one this issuer knows.
+   */
+  async reconcileInstance(): Promise<InstanceMeta | null> {
+    return this.instanceMeta() ?? null;
+  }
+
+  /**
    * Upsert per-instance config (vertical-auth-detach.md §2.2) — the delivery half of
    * the dashboard's Env tab, arriving via the platform-gated `/internal/configure`.
    * Stored under `cfg:<key>` in this DO's own config table and overlaid over worker env
