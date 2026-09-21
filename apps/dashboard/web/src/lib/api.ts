@@ -1,4 +1,5 @@
 import { problemDetail } from '@substrat-run/contracts';
+import { tenantLogsQuery } from './logs-query';
 import type { CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
@@ -1667,16 +1668,7 @@ export const api = {
       until?: string;
     },
   ) => {
-    const p = new URLSearchParams();
-    if (q.level) p.set('level', q.level);
-    if (q.search) p.set('search', q.search);
-    // `!== undefined`, not truthiness like its neighbours: an EMPTY id is a caller bug the
-    // plane refuses with a 400, and dropping it here would answer it with the app's whole log.
-    if (q.invocationId !== undefined) p.set('invocationId', q.invocationId);
-    if (q.hours) p.set('hours', String(q.hours));
-    if (q.limit) p.set('limit', String(q.limit));
-    if (q.since) p.set('since', q.since);
-    if (q.until) p.set('until', q.until);
+    const p = tenantLogsQuery(q);
     return call<ObservabilityLogEvent[]>(
       `/apps/${encodeURIComponent(scopeId)}/observability/logs?${p.toString()}`,
     );
