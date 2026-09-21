@@ -909,6 +909,121 @@ export function scopeHostContractSuite(
         });
       });
 
+      describe('the three mappers #1641 left casting (#1643): decoded, or thrown naming the column', () => {
+        const at = '2026-09-01T00:00:00.000Z';
+
+        it('dead letters and deliveries: a healthy row reads whole; a broken `attempts` is refused, never typed as valid', async () => {
+          const { s, dump } = await seeded('connector-vertical', async (stub) => {
+            for (let i = 0; i < 2; i++) await stub.invoke('test/emit-event');
+          });
+          const [first, second] = rowsOf(dump, '_substrat_outbox').filter((r) => r.type === 'test.happened');
+          const delivery = (event: Row, over: Row = {}): Row => ({
+            event_id: event!.id,
+            consumer_module: '@test/doomed',
+            delivered_at: at,
+            error: 'gave up',
+            attempts: 3,
+            next_attempt_at: null,
+            invocation_id: null,
+            ...over,
+          });
+          const readAll = async (event: Row) => ({
+            letters: (await host.admin.deadLetters(staff, t1, s, {})).entries,
+            effects: (await host.admin.eventEffects(staff, t1, s, { eventId: eventId.parse(event.id) })).root!.deliveries,
+          });
+
+          // The positive twin: two dead letters, one of them an EXECUTOR's — whose id is not a
+          // module id, and which a decode against a bare `moduleId` would have refused.
+          await restore(s, dump, {
+            _substrat_deliveries: [delivery(first!), delivery(second!, { consumer_module: 'executor:mailer' })],
+          });
+          const clean = await readAll(second!);
+          expect(clean.letters).toHaveLength(2);
+          expect(clean.letters.map((l) => l.consumer).sort()).toEqual(['@test/doomed', 'executor:mailer']);
+          for (const l of clean.letters) expect(l).not.toHaveProperty('decodeError');
+          expect(clean.effects).toMatchObject([{ consumer: 'executor:mailer', state: 'dead', attempts: 3 }]);
+          expect(clean.effects[0]).not.toHaveProperty('decodeError');
+
+          // The same rows with one `attempts` that cannot be decoded as a non-negative integer (a
+          // negative number, or text). It has no honest empty value, so the read names the column —
+          // on both reads, on both adapters.
+          for (const attempts of [-1, 'many']) {
+            await restore(s, dump, { _substrat_deliveries: [delivery(first!), delivery(second!, { attempts })] });
+            await expect(host.admin.deadLetters(staff, t1, s, {})).rejects.toThrow(/DeadLetter — attempts: /);
+            await expect(
+              host.admin.eventEffects(staff, t1, s, { eventId: eventId.parse(second!.id) }),
+            ).rejects.toThrow(/valid EventDelivery — attempts: /);
+          }
+          // …and the row that is fine is still fine once the bad one is repaired.
+          await restore(s, dump, { _substrat_deliveries: [delivery(first!), delivery(second!, { attempts: 2 })] });
+          expect((await readAll(second!)).letters.map((l) => l.attempts).sort()).toEqual([2, 3]);
+        });
+
+        it('an executor delivery is read whatever id registration let through — the reader matches the writer', async () => {
+          // `registerExecutor` accepts any string and both adapters persist `executor:${id}`, so the
+          // kernel can itself write an empty id or one with a newline. Refusing those would throw
+          // the whole page on a delivery the kernel wrote.
+          const { s, dump } = await seeded('connector-vertical', (stub) => stub.invoke('test/emit-event'));
+          const [event] = rowsOf(dump, '_substrat_outbox').filter((r) => r.type === 'test.happened');
+          const consumers = ['executor:mailer', 'executor:', 'executor:line\nbreak', 'executor:a b/ç'];
+          await restore(s, dump, {
+            _substrat_deliveries: consumers.map(
+              (consumer_module): Row => ({
+                event_id: event!.id,
+                consumer_module,
+                delivered_at: at,
+                error: 'gave up',
+                attempts: 3,
+                next_attempt_at: null,
+                invocation_id: null,
+              }),
+            ),
+          });
+          const letters = (await host.admin.deadLetters(staff, t1, s, {})).entries;
+          expect(letters.map((l) => l.consumer).sort()).toEqual([...consumers].sort());
+          const effects = (await host.admin.eventEffects(staff, t1, s, { eventId: eventId.parse(event!.id) })).root!.deliveries;
+          expect(effects.map((d) => d.consumer).sort()).toEqual([...consumers].sort());
+          for (const row of [...letters, ...effects]) expect(row).not.toHaveProperty('decodeError');
+        });
+
+        it('the operation summary: healthy buckets read whole; a broken time is refused naming its column', async () => {
+          const { s, dump } = await seeded('connector-vertical', async () => undefined);
+          const denial = (over: Row = {}): Row => ({
+            id: ulid(),
+            actor: JSON.stringify(alice),
+            permission: 'test:read',
+            tenant_id: t1,
+            scope_id: s,
+            operation: 'test/read',
+            impersonation: null,
+            invocation_id: null,
+            at,
+            drained_at: null,
+            ...over,
+          });
+          const summarize = () => host.admin.summarizeDenials(staff, t1, s, { groupBy: 'operation' });
+
+          await restore(s, dump, {
+            _substrat_denials: [denial(), denial(), denial({ operation: 'test/write' }), denial({ operation: null })],
+          });
+          const clean = await summarize();
+          expect(clean.groupBy).toBe('operation');
+          expect(clean.buckets).toHaveLength(3);
+          const byOp = (op: string | null) => (clean.buckets as { operation: string | null; count: number }[]).find((b) => b.operation === op);
+          expect(byOp('test/read')).toMatchObject({ count: 2, firstAt: at, lastAt: at });
+          expect(byOp('test/write')).toMatchObject({ count: 1 });
+          // The refusal outside any operation is a bucket of its own — and that null is a fact.
+          expect(byOp(null)).toMatchObject({ count: 1 });
+          for (const b of clean.buckets) expect(b).not.toHaveProperty('decodeError');
+
+          // One denial with an empty time: the bucket it lands in cannot state when it began.
+          await restore(s, dump, {
+            _substrat_denials: [denial({ operation: 'test/write', at: '' }), denial()],
+          });
+          await expect(summarize()).rejects.toThrow(/DenialOperationBucket — first_at: /);
+        });
+      });
+
       describe('executed rows: the bad event is dead-lettered, and the one behind it runs', () => {
         it('consumer delivery', async () => {
           const { s, dump } = await seeded('flow-vertical', (stub) => stub.invoke('flow/produce'));

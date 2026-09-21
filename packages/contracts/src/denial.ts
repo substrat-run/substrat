@@ -211,6 +211,13 @@ export const denialOperationBucket = z.object({
   /** ISO 8601 — the first occurrence still in the window (see `windowOldestAt`). */
   firstAt: z.string().min(1),
   lastAt: z.string().min(1),
+  /**
+   * Why this bucket's key could not be read (#1643), absent otherwise. `operation` is the
+   * only column a bucket can fall back on: one that is not text reads as `null` — the
+   * bucket for a refusal outside an operation — beside this reason, which is what keeps it
+   * from reading as one. A bucket whose count or times do not decode is never returned.
+   */
+  decodeError: z.string().min(1).optional(),
 });
 export type DenialOperationBucket = z.infer<typeof denialOperationBucket>;
 

@@ -353,9 +353,33 @@ export const deliveryState = z.enum([
 ]);
 export type DeliveryState = z.infer<typeof deliveryState>;
 
+/**
+ * Who a delivery row belongs to (#1643): a module id, or `executor:<id>` for an executor.
+ *
+ * `_substrat_deliveries.consumer_module` holds both, and the contract typed it as a bare
+ * `ModuleId` — which a decode cannot honour, since `executor:mailer` is not one (the colon).
+ * The cast hid that; a decode against `moduleId` would have thrown on every healthy executor
+ * row. So the schema names the two shapes the column holds. The inferred type is unchanged
+ * (`ModuleId`), and every value the old one accepted is still accepted.
+ *
+ * The `executor:` branch matches the WRITER, not a tidier id. `registerExecutor` and
+ * `registerConnector` accept any string (`scope-host.ts`) and both adapters persist
+ * `executor:${id}`, so the kernel can itself write `executor:` with an empty id, or one with a
+ * newline. A reader that refused those would throw the whole dead-letter page or effects walk on
+ * a healthy delivery. It accepts whatever registration could have produced; tightening
+ * registration is a contract change, and #1645 carries it.
+ */
+export const deliveryConsumer = z.union([
+  moduleId,
+  z
+    .string()
+    .startsWith('executor:')
+    .brand<'ModuleId'>(),
+]);
+
 export const eventDelivery = z.object({
-  /** The module whose consumer this row is about. */
-  consumer: moduleId,
+  /** The module whose consumer this row is about — or `executor:<id>`, see `deliveryConsumer`. */
+  consumer: deliveryConsumer,
   state: deliveryState,
   /** Delivered: when. Retrying or dead: when it was last attempted. */
   at: instant,
@@ -376,6 +400,14 @@ export const eventDelivery = z.object({
    * alarm, a seed, an attachment RPC), or the row predates the column.
    */
   invocationId: z.string().nullable(),
+  /**
+   * Why this delivery could not be read whole (#1643). ABSENT on every row the kernel
+   * wrote. A nullable column that broke its schema reads as `null` beside this reason;
+   * `state` is resolved from the stored `next_attempt_at` and `error`, so it stays the
+   * fact even when `error` itself did not decode. A row whose consumer, time or
+   * `attempts` does not decode is never returned as one of these at all.
+   */
+  decodeError: z.string().min(1).optional(),
 });
 export type EventDelivery = z.infer<typeof eventDelivery>;
 
@@ -455,12 +487,12 @@ export interface InvocationEvents {
  * No payload, deliberately. The envelope is enough to open the event's own reads, and a
  * list that decoded every payload would be a disclosure decision per row.
  */
-export interface DeadLetter {
-  eventId: EventId;
-  eventType: string;
-  occurredAt: Instant;
+export const deadLetter = z.object({
+  eventId,
+  eventType,
+  occurredAt: instant,
   /** The entity the event was about — what a reader opens next. */
-  entity: EntityRef;
+  entity: entityRef,
   /**
    * The call the EVENT came from (#1237). Null for a seed or internal call, or an
    * event older than the column.
@@ -470,7 +502,7 @@ export interface DeadLetter {
    * delivery's own id beside it, and the rows in this very list are where the two
    * come apart most often.
    */
-  invocationId: string | null;
+  invocationId: z.string().nullable(),
   /**
    * The call the LAST attempt ran in (#1525) — the one that gave up, since these rows
    * are terminal. Pairs with `at`, which is when that attempt happened.
@@ -484,14 +516,22 @@ export interface DeadLetter {
    * Null is two facts: the attempt carried no call (a drain, an alarm, a seed), or
    * the row predates the column.
    */
-  attemptInvocationId: string | null;
+  attemptInvocationId: z.string().nullable(),
   /** The consumer that gave up — a module id, or `executor:<id>` for an executor. */
-  consumer: ModuleId;
+  consumer: deliveryConsumer,
   /** When it was last attempted, which for a dead row is when it gave up. */
-  at: Instant;
-  error: string;
-  attempts: number;
-}
+  at: instant,
+  error: z.string(),
+  attempts: z.number().int().nonnegative(),
+  /**
+   * Why this row could not be read whole (#1643). ABSENT on every row the kernel wrote.
+   * Only the two invocation ids are nullable columns, so those are what can come back
+   * `null` beside this reason; a row whose event id, type, time, entity, consumer, error
+   * or `attempts` does not decode is never returned as one of these at all.
+   */
+  decodeError: z.string().min(1).optional(),
+});
+export type DeadLetter = z.infer<typeof deadLetter>;
 
 /**
  * One event as it leaves the scope for Tier 2 (#1334) — the exact-history lake
