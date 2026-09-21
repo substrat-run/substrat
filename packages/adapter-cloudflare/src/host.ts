@@ -35,6 +35,7 @@ import {
   connectionSecret,
   systemGrant,
   systemSwitch,
+  systemSwitchOutcome,
   entitlementGrant,
   entitlementGrantInput,
   instant,
@@ -68,6 +69,7 @@ import {
   type SystemGrant,
   type SystemSwitch,
   type SystemSwitchResult,
+  type SystemSwitchOutcome,
   type CreateConnectionInput,
   type AccessLogEntry,
   type AdminLogEntry,
@@ -6338,8 +6340,12 @@ export class CloudflareScopeHost implements ScopeHost {
    * admin log and writes the row once this returns. `held: false` is an answer, not a
    * throw — see `systemSwitchOutcome`.
    */
-  async systemSwitchLocal(scopeId: ScopeId, moduleId: ModuleId, to: 'on' | 'off'): Promise<SwitchOutcome> {
-    return this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, new Date().toISOString());
+  async systemSwitchLocal(scopeId: ScopeId, moduleId: ModuleId, to: 'on' | 'off'): Promise<SystemSwitchOutcome> {
+    // Parsed on the way out: this is the wire answer the platform reads, and the DO's
+    // plain strings become the published shape here rather than on trust.
+    return systemSwitchOutcome.parse(
+      await this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, new Date().toISOString()),
+    );
   }
 }
 

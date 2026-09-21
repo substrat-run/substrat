@@ -1085,7 +1085,7 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
  * "the deployment predates the route", and those two must not be confusable.
  */
 describe('mountPlatformSurface — the schedule switch (#1666)', () => {
-  const post = (host: VerticalScopeHost, body: unknown, headers = authed({ 'content-type': 'application/json' })) =>
+  const post = (host: VerticalScopeHost, body: unknown, headers: Record<string, string> = authed({ 'content-type': 'application/json' })) =>
     appWith(host).request('/internal/system-switch', { method: 'POST', headers, body: JSON.stringify(body) }, ENV);
   const body = { scopeId: SCOPE, moduleId: '@substrat-run/engine-absence', to: 'off' };
 
