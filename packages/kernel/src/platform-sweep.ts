@@ -481,6 +481,30 @@ export interface EventDrainReport {
    * it. Reported rather than looped, so one busy scope cannot starve the pass.
    */
   incomplete: number;
+  /**
+   * Undrained rows a scope's read stepped over because they would not decode (#1636),
+   * one entry per scope that had any — ABSENT when no scope did.
+   *
+   * These rows are never shipped and never stamped: the lake is append-only, so a row
+   * built from stand-ins could not be taken back, and the stamp is the only record of
+   * what left. So they are missing from the lake for as long as they stay undecodable,
+   * and every pass reads them again and reports them again. The event is still in
+   * Tier 1, where `readHistory` returns it with a `decodeError`.
+   *
+   * Not an `errors` entry: nothing about this pass failed, and the failure digest mails
+   * every error — a standing condition would be re-sent on every tick.
+   */
+  skipped?: EventDrainSkipped[];
+}
+
+/** One scope's share of `EventDrainReport.skipped`. */
+export interface EventDrainSkipped {
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  /** Exact. */
+  count: number;
+  /** The first of them, oldest first; capped (`UNDRAINED_SKIPPED_IDS`), so `count` may be larger. */
+  eventIds: string[];
 }
 
 export interface AccessLogSweepReport {
@@ -1029,11 +1053,14 @@ export async function runPlatformSweep(
     const drainable = await host.admin.listScopes(options.actor, { status: 'active' });
     await mapBounded(drainable, concurrency, async (s) => {
       try {
-        const shipped = await drainScopeEvents(host, options, sink, {
+        const { shipped, skipped } = await drainScopeEvents(host, options, sink, {
           tenantId: s.tenantId,
           scopeId: s.id,
           budget,
         });
+        if (skipped) {
+          (report.eventDrain!.skipped ??= []).push({ tenantId: s.tenantId, scopeId: s.id, ...skipped });
+        }
         if (shipped === 0) return;
         report.eventDrain!.scopes += 1;
         report.eventDrain!.shipped += shipped;
@@ -1086,20 +1113,27 @@ export async function runPlatformSweep(
  *
  * Nothing is pruned. The outbox is still read by consumers, replay and
  * `readHistory`; what the stamp buys today is knowing what has left.
+ *
+ * What the read stepped over (#1636) comes back beside the count, for the report —
+ * and ONLY for the report: those rows were never in `events`, so nothing here can
+ * ship or stamp them. A host too old to say leaves it undefined.
  */
 async function drainScopeEvents(
   host: ScopeHost,
   options: PlatformSweepOptions,
   sink: EventSink,
   input: { tenantId: TenantId; scopeId: ScopeId; budget: number },
-): Promise<number> {
-  const events = await host.admin.readUndrainedEvents(
+): Promise<{ shipped: number; skipped?: { count: number; eventIds: string[] } }> {
+  const read = await host.admin.readUndrainedEvents(
     options.actor,
     input.tenantId,
     input.scopeId,
     input.budget,
   );
-  if (events.length === 0) return 0;
+  const skipped = read.skipped && read.skipped.count > 0 ? read.skipped : undefined;
+  // A plain array to the sink: the skip is this function's to report, not the lake's.
+  const events: DrainedEvent[] = [...read];
+  if (events.length === 0) return { shipped: 0, skipped };
   await sink.ship({ tenantId: input.tenantId, scopeId: input.scopeId }, events);
   await host.admin.markEventsDrained(
     options.actor,
@@ -1107,7 +1141,7 @@ async function drainScopeEvents(
     input.scopeId,
     events.map((e) => e.id),
   );
-  return events.length;
+  return { shipped: events.length, skipped };
 }
 
 /**

@@ -1130,6 +1130,10 @@ export default {
     // never converges, and it should be visible in the tail rather than only in a report
     // nobody reads.
     const rc = report.provisionReconcile;
+    // #1636: outbox rows the event drain stepped over because they would not decode. They
+    // never reach the lake while they stay that way, so a pass that met any says so here —
+    // they are not `errors` (nothing about the pass failed), and would otherwise be silent.
+    const skipped = report.eventDrain?.skipped;
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
@@ -1139,7 +1143,8 @@ export default {
       pr.failed > 0 ||
       pr.pending > 0 ||
       (rc !== null && rc.behind > 0) ||
-      (al !== null && (al.shipped > 0 || al.pruned > 0))
+      (al !== null && (al.shipped > 0 || al.pruned > 0)) ||
+      skipped !== undefined
     ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
@@ -1150,6 +1155,7 @@ export default {
         // An egress leaves a trace in the tail as well as the admin log: `ref` is the
         // object the rows landed in, so a question about a pruned row has an address.
         ...(al ? { accessLog: al } : {}),
+        ...(skipped ? { eventDrainSkipped: skipped } : {}),
         errors: report.errors,
       });
     }

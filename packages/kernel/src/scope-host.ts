@@ -101,7 +101,6 @@ import type {
   Page,
   CountedPage,
   FreshnessSpec,
-  DrainedEvent,
   EntityHistoryInput,
   EventFacetInput,
   EventCauseInput,
@@ -125,6 +124,7 @@ import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './mode
 import type { SealedSecret } from './secret-box.js';
 import type { SearchHit, SearchOptions } from './search-index.js';
 import type { EntityVersion } from './entity-version.js';
+import type { UndrainedEvents } from './outbox-event.js';
 // Type-only, and the cycle it completes is therefore not one at runtime: `job-run.ts`
 // imports `backoffAt`/`resolveRetryPolicy` from here as VALUES, which is the same
 // direction `platform-sweep.ts` already goes.
@@ -2035,13 +2035,19 @@ export interface HostAdmin {
    * repeat is harmless — the lake is keyed by event id and every consumer in this
    * platform is already required-idempotent. At-least-once is the only one of the
    * two that cannot silently lose exact history, which is the point of the tier.
+   *
+   * A row that does not decode is SKIPPED (#1636): never returned, so no sink receives an
+   * event built from stand-ins, and never stamped, so the stamp stays exact. The read steps
+   * past it so the rows behind it still ship, and says what it stepped over in the answer's
+   * optional `skipped` — absent on a clean read, so every caller that reads an array reads
+   * the one it always did. See `readUndrainedOutbox` for the bound, and for the cost.
    */
   readUndrainedEvents(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     limit?: number,
-  ): Promise<DrainedEvent[]>;
+  ): Promise<UndrainedEvents>;
 
   /**
    * Stamp `drained_at` on events the sink accepted (#1334). Idempotent: marking a

@@ -30,6 +30,7 @@ import {
   assertPlatformCall,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   PlatformCallError,
+  type UndrainedEvents,
 } from '@substrat-run/kernel';
 import {
   z,
@@ -76,7 +77,6 @@ import {
   type EventFacetResult,
   type HistoryEntry,
   type Page,
-  type DrainedEvent,
   queryScopeInput,
   type ScopeId,
   type TenantId,
@@ -135,8 +135,10 @@ export interface VerticalScopeHost {
    * this deployment holds, and the stamp once the platform's sink confirmed them.
    * Two verbs on purpose — the platform reads, ships, and only then stamps — and the
    * instant is the platform's, carried through, so its admin receipt and the rows agree.
+   * The read's optional `skipped` says what it stepped over because it would not decode
+   * (#1636).
    */
-  undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<DrainedEvent[]>;
+  undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<UndrainedEvents>;
   markEventsDrainedLocal(scopeId: ScopeId, eventIds: readonly string[], drainedAt: string): Promise<number>;
   /** Reopen rows stamped before an instant so they ship again (#1334) — the stamp's inverse. */
   redrainEventsLocal(scopeId: ScopeId, drainedBefore: string): Promise<number>;
@@ -568,16 +570,22 @@ export function mountPlatformSurface<Env extends object>(
   // cross (event payloads), for the reason `/internal/history` gives: it is the tenant's
   // own data, on its way to the lake the platform keeps for that tenant, and the
   // platform's `readUndrainedEvents` / `markEventsDrained` are the audited door.
-  app.get('/internal/undrained-events', async (c) =>
-    c.json(
-      await deps
-        .hostFor(c.env)
-        .undrainedEventsLocal(
-          scopeIdOf.parse(c.req.query('scopeId')),
-          z.coerce.number().int().min(1).max(1000).default(200).parse(c.req.query('limit') ?? undefined),
-        ),
-    ),
-  );
+  //
+  // `withSkipped=1` (#1636) asks for `{ events, skipped? }` instead of the bare array, so the
+  // rows the read stepped over reach the sweep's report — a property on an array does not
+  // survive `c.json`. Opt-in by the CALLER, so a platform that predates it still gets the
+  // array it parses, and a platform that asks a vertical predating it gets the array too
+  // and reads it as "nothing said".
+  app.get('/internal/undrained-events', async (c) => {
+    const events = await deps
+      .hostFor(c.env)
+      .undrainedEventsLocal(
+        scopeIdOf.parse(c.req.query('scopeId')),
+        z.coerce.number().int().min(1).max(1000).default(200).parse(c.req.query('limit') ?? undefined),
+      );
+    if (c.req.query('withSkipped') !== '1') return c.json(events);
+    return c.json({ events: [...events], ...(events.skipped ? { skipped: events.skipped } : {}) });
+  });
   app.post('/internal/mark-drained', async (c) => {
     const body = markDrainedBody.parse(await c.req.json());
     const drained = await deps.hostFor(c.env).markEventsDrainedLocal(body.scopeId, body.eventIds, body.drainedAt);

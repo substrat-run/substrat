@@ -71,6 +71,19 @@ export const permissionDenial = z.object({
   /** ISO 8601. */
   at: z.string().min(1),
   drainedAt: z.string().nullable(),
+  /**
+   * Why this row could not be read whole (#1636). ABSENT on every row the kernel wrote,
+   * so a healthy page reads exactly as it did before.
+   *
+   * This log is the only witness to a refused check, and one row whose `actor` or
+   * `impersonation` would not parse used to make the whole read throw. So the read is
+   * tolerant and says so: each column that did not decode is named here and its field
+   * comes back EMPTY — `actor` as the self-naming `{ system: 'undecodable' }` marker,
+   * `impersonation` as `null` beside this reason, which is what keeps it from reading as
+   * "nobody was impersonating". A row whose id, permission, tenant or time does not
+   * decode is never returned as one of these at all.
+   */
+  decodeError: z.string().min(1).optional(),
 });
 export type PermissionDenial = z.infer<typeof permissionDenial>;
 
@@ -171,6 +184,13 @@ export const denialBucket = z.object({
   /** ISO 8601 — the first occurrence still in the window (see `windowOldestAt`). */
   firstAt: z.string().min(1),
   lastAt: z.string().min(1),
+  /**
+   * Why this bucket's key could not be read (#1636), absent otherwise. The buckets are
+   * `GROUP BY actor`, so one stored actor that would not parse used to throw the whole
+   * summary — "the read a console opens first". It now reads as the self-naming
+   * `{ system: 'undecodable' }` marker, with the count still counted and this saying why.
+   */
+  decodeError: z.string().min(1).optional(),
 });
 export type DenialBucket = z.infer<typeof denialBucket>;
 

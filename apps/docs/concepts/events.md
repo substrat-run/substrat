@@ -330,6 +330,14 @@ suppress them. Seven nullables there are facts rather than gaps, and they are se
 timeline is the envelope and nothing more, so there is still no disclosure decision to make
 there.
 
+**A row that will not decode still comes back.** The kernel writes every outbox row, so a row
+it cannot read is one a restored dump brought in. The timeline, history and both walks return
+it beside every other entry, with a `decodeError` naming each column that did not decode. Those
+fields read *empty*: `actor` as `{ system: 'undecodable' }`, a JSON field as `null`. That is what
+separates an unreadable `payload` from an erased one. Both are null, and only the unreadable one
+carries a `decodeError`. A walk whose cause did not decode ends as `missing` rather than as a
+complete chain. The denial log and its summary read the same way.
+
 Field-level "X → Y" comes from diffing consecutive payloads; nothing stores a
 before-state. For the few fields a history strip actually shows — status, owner, value —
 putting the previous value in the fat payload is more honest than making every reader

@@ -1,10 +1,9 @@
 import {
+  historyEntry,
   listLimitOf,
   pageOf,
-  type Actor,
-  type DataSubjectId,
+  timelineEntry,
   type EntityRef,
-  type EventAuthorization,
   type EventId,
   type HistoryEntry,
   type CauseChain,
@@ -16,15 +15,14 @@ import {
   type EventDelivery,
   type DeliveryState,
   type ModuleId,
-  type ImpersonationStamp,
   type Instant,
   type ListPage,
   type Page,
-  type PiiClass,
   type TimelineEntry,
   type EventFacetInput,
   type EventFacetResult,
 } from '@substrat-run/contracts';
+import { rowDecoder, UNDECODED_ACTOR, type RowDecoder } from './row-decode.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 
 /**
@@ -144,62 +142,78 @@ function timelineQuery(
 }
 
 /**
- * Decode the stored actor.
+ * The envelope fields, decoded — the part a timeline and a history entry share.
  *
- * Both adapters write `JSON.stringify(actor)` over a union whose first member is
- * a bare `PrincipalId` STRING, so a principal is stored as `"01J…"` — quotes
- * included — while a system or connector actor is stored as an object. That is the trap this whole helper exists to close: the
- * column reads as usable and is not, and a caller resolving a name against the
- * raw text misses every time.
+ * `actor` is the reason this layer exists at all (#800). Both adapters write
+ * `JSON.stringify(actor)` over a union whose first member is a bare `PrincipalId`
+ * STRING, so a principal is stored as `"01J…"` — quotes included — while a system or
+ * connector actor is stored as an object. The column reads as usable and is not, and a
+ * caller resolving a name against the raw text misses every time.
  *
- * Cast rather than re-parsed, the way `mapDenialRow` treats the same encoding:
- * the kernel is the only writer of this column, so a Zod pass per row would buy
- * nothing but cost the walk.
+ * Decoded against the contract rather than cast (#1636): a cast of text that would not
+ * parse threw out of the whole page, and a cast of text that parsed into something that
+ * is not an actor handed the caller a value typed as one. See `rowDecoder` for what
+ * comes back instead, and why a required scalar still throws.
  */
-function actorOf(stored: string): Actor {
-  return JSON.parse(stored) as Actor;
-}
-
-function mapTimelineRow(row: TimelineRow): TimelineEntry {
+function envelopeOf(d: RowDecoder, row: TimelineRow): Omit<TimelineEntry, 'decodeError'> {
+  const shape = timelineEntry.shape;
   return {
-    id: row.id as EventId,
-    type: row.type,
-    occurredAt: row.occurred_at as Instant,
-    actor: actorOf(row.actor),
+    id: d.required<EventId>('id', shape.id, row.id),
+    type: d.required<string>('type', shape.type, row.type),
+    occurredAt: d.required<Instant>('occurred_at', shape.occurredAt, row.occurred_at),
+    actor: d.json('actor', shape.actor, row.actor, UNDECODED_ACTOR),
   };
 }
 
-function mapHistoryRow(row: HistoryRow): HistoryEntry {
-  return {
-    ...mapTimelineRow(row),
+function mapTimelineRow(row: TimelineRow): TimelineEntry {
+  const d = rowDecoder(`outbox row ${JSON.stringify(row.id)}`, 'TimelineEntry');
+  return d.finish(envelopeOf(d, row));
+}
+
+/**
+ * A history row, decoded — and which of its columns did not decode, for the one caller
+ * whose logic reads a column rather than rendering it (`walkEventCause`, where an
+ * undecodable cause must not read as a null one).
+ */
+function decodeHistoryRow(row: HistoryRow): { entry: HistoryEntry; failed: ReadonlySet<string> } {
+  const shape = historyEntry.shape;
+  const d = rowDecoder(`outbox row ${JSON.stringify(row.id)}`, 'HistoryEntry');
+  const entry = d.finish<HistoryEntry>({
+    ...envelopeOf(d, row),
     // Null is a FACT here, twice over, and the two are different facts: a null
     // payload is an erasure (§5.3 kept the envelope and destroyed what was
-    // said), a null authorization is a row written before K-34 recorded it.
-    payload: row.payload === null ? null : (JSON.parse(row.payload) as unknown),
-    authorization:
-      row.authorization === null ? null : (JSON.parse(row.authorization) as EventAuthorization[]),
+    // said), a null authorization is a row written before K-34 recorded it. A
+    // column that did not DECODE also reads null — and `decodeError` names it,
+    // which is the only thing that keeps an unreadable payload from reading as an
+    // erased one (#1636).
+    payload: d.json('payload', shape.payload, row.payload, null),
+    authorization: d.json('authorization', shape.authorization, row.authorization, null),
     // K-42, and its null is a THIRD kind of fact: nobody was impersonating. The
     // ordinary case, not an absence of recording — the kernel stamps this on
     // every event raised under a session and on no other.
-    impersonation:
-      row.impersonation === null ? null : (JSON.parse(row.impersonation) as ImpersonationStamp),
-    piiClass: row.pii_class as PiiClass,
-    subjectId: row.subject_id as DataSubjectId | null,
+    impersonation: d.json('impersonation', shape.impersonation, row.impersonation, null),
+    piiClass: d.required('pii_class', shape.piiClass, row.pii_class),
+    subjectId: d.nullable('subject_id', shape.subjectId, row.subject_id ?? null),
     // #1231, and the one null that is honestly TWO facts at once: a consumer
     // emit ran on behalf of no operation, and a pre-column row is unrecorded.
     // historyEntry's doc owns that ambiguity; this mapper just carries it.
-    operation: row.operation,
+    operation: d.nullable('operation', shape.operation, row.operation ?? null),
     // #1242: from the column, never the envelope — historyEntry's doc owns why.
-    version: row.version,
+    version: d.nullable('version', shape.version, row.version ?? null),
     // #1237: the event this one reacted to. Null means nothing was being
     // delivered, or the row predates the column — historyEntry's doc owns the
     // distinction, and the pair (operation null + this set) is what finally
     // identifies a consumer emit, which neither field could do alone.
-    causedBy: row.caused_by as EventId | null,
+    causedBy: d.nullable('caused_by', shape.causedBy, row.caused_by ?? null),
     // #1237: which CALL this event belongs to — what groups an invocation's events,
     // and joins them to the log line that knows its duration.
-    invocationId: row.invocation_id,
-  };
+    invocationId: d.nullable('invocation_id', shape.invocationId, row.invocation_id ?? null),
+  });
+  return { entry, failed: d.failed };
+}
+
+function mapHistoryRow(row: HistoryRow): HistoryEntry {
+  return decodeHistoryRow(row).entry;
 }
 
 /**
@@ -313,8 +327,16 @@ export function walkEventCause(
       // pass either off as a complete chain.
       return { chain, terminal: 'missing' };
     }
-    const entry = mapHistoryRow(row);
+    const { entry, failed } = decodeHistoryRow(row);
     chain.push(entry);
+    // #1636: a cause that did not DECODE is not a null cause. Read as one, a row with an
+    // operation would end the walk as 'operation' — a complete chain — when the trail
+    // above it was simply unreadable. The same goes for an unreadable operation beside a
+    // null cause, which is exactly the column that decides between the two endings.
+    // Either way the honest ending is the one that says the trail cannot be followed.
+    if (failed.has('caused_by') || (entry.causedBy === null && failed.has('operation'))) {
+      return { chain, terminal: 'missing' };
+    }
     if (entry.causedBy === null) {
       // THE distinction. An operation emitted this: the chain is whole. Neither an
       // operation nor a cause: something emitted it before causes were recorded, and

@@ -300,3 +300,38 @@ describe('VerticalClient — a redrain count never reaches the reopen (#1545)', 
     expect(paths).toEqual(['/internal/redrain-count']);
   });
 });
+
+/**
+ * #1636: the Tier-2 read asks the vertical for what it stepped over, and has to take either
+ * answer — a vertical deployed before `withSkipped` ignores the parameter and sends the bare
+ * array, which must read as "said nothing about skips", never as a failure.
+ */
+describe('VerticalClient — the drain read carries the skip across the hop (#1636)', () => {
+  const answering = (body: unknown, seen: string[] = []) =>
+    new VerticalClient({
+      fetch: (async (input: string) => {
+        seen.push(input);
+        return new Response(JSON.stringify(body), { status: 200 });
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('asks for the skip, and attaches it to the array it returns', async () => {
+    const seen: string[] = [];
+    const events = [{ id: 'e2' }];
+    const read = await answering({ events, skipped: { count: 1, eventIds: ['e1'] } }, seen).undrainedEvents(s, 50);
+    expect(seen[0]).toContain('withSkipped=1');
+    expect([...read]).toEqual(events);
+    expect(read.skipped).toEqual({ count: 1, eventIds: ['e1'] });
+  });
+
+  it('a clean read, and an older vertical’s bare array, both come back with no skip at all', async () => {
+    const events = [{ id: 'e2' }];
+    const clean = await answering({ events }).undrainedEvents(s, 50);
+    expect([...clean]).toEqual(events);
+    expect(clean.skipped).toBeUndefined();
+    const old = await answering(events).undrainedEvents(s, 50);
+    expect([...old]).toEqual(events);
+    expect(old.skipped).toBeUndefined();
+  });
+});

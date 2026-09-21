@@ -168,6 +168,25 @@ export const timelineEntry = z.object({
   type: eventType,
   occurredAt: instant,
   actor,
+  /**
+   * Why this entry could not be read whole (#1636). ABSENT on every row the kernel
+   * wrote, which is what "decoded whole" looks like, so a healthy page reads exactly
+   * as it did before.
+   *
+   * An entity's history is a LIST, and a strict decode let one row whose JSON would
+   * not parse throw for the whole page — and end a cause walk in an exception rather
+   * than at the link it could not read. So the read is tolerant and SAYS SO: every
+   * column that did not decode is named here, and its field comes back EMPTY rather
+   * than guessed at — `actor` as the self-naming `{ system: 'undecodable' }` marker,
+   * a JSON field as `null`. Every field still satisfies this schema; a row whose id,
+   * type, time or PII class does not is never returned as one of these at all.
+   *
+   * On a history entry this is what separates an undecodable `payload` from an
+   * ERASED one: both read `null`, and only an erasure is a fact about the event.
+   *
+   * Reachable without a forge: `importDump` replays a dump's rows verbatim.
+   */
+  decodeError: z.string().min(1).optional(),
 });
 export type TimelineEntry = z.infer<typeof timelineEntry>;
 
@@ -284,6 +303,11 @@ export const causeTerminal = z.enum([
    * A cause named an event this scope's outbox does not hold. Should not happen —
    * the spine is append-only and never pruned — so it is reported rather than
    * smoothed over: silently stopping here would look exactly like a complete chain.
+   *
+   * Also the ending when the last entry's cause could not be DECODED (#1636 — its
+   * `decodeError` names `caused_by` or `operation`): the trail cannot be followed
+   * further, and reading the undecodable cause as a null one would call a fragment
+   * a complete chain.
    */
   'missing',
   /**

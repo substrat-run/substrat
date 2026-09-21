@@ -1236,3 +1236,90 @@ describe('runPlatformSweep — reap deleting tenants (§4.8)', () => {
     expect(rows).toHaveLength(0);
   });
 });
+
+/**
+ * The event drain's report of what a scope's read stepped over (#1636).
+ *
+ * The read skips an outbox row that will not decode — never shipped, never stamped — so the
+ * rows behind it still reach the lake. What keeps that from being a SILENT gap is the report:
+ * a skip the read declared lands in `eventDrain.skipped`, and a clean read leaves the key
+ * absent, so nothing reads "skipped none" into a host that said nothing.
+ */
+describe('runPlatformSweep · event drain skips (#1636)', () => {
+  type Read = { id: string }[] & { skipped?: { count: number; eventIds: string[] } };
+
+  function eventHost(scope: ReturnType<typeof sid>, read: () => Read) {
+    const shipped: unknown[][] = [];
+    const marked: string[][] = [];
+    const admin = {
+      listScopes: async () => [{ id: scope, tenantId: T, status: 'active' }],
+      listConnections: async () => [],
+      readUndrainedEvents: async () => read(),
+      markEventsDrained: async (_a: unknown, _t: unknown, _s: unknown, ids: string[]) => {
+        marked.push(ids);
+        return ids.length;
+      },
+    };
+    const host = {
+      admin,
+      drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
+    } as unknown as ScopeHost;
+    const eventSink = {
+      ship: async (_scope: unknown, events: unknown[]) => {
+        shipped.push(events);
+        return { ref: 'lake' };
+      },
+    };
+    return { host, eventSink, shipped, marked };
+  }
+
+  it('ships and stamps only what the read returned, and reports what it skipped', async () => {
+    const scope = sid();
+    const good = genId();
+    const bad = genId();
+    const { host, eventSink, shipped, marked } = eventHost(scope, () =>
+      Object.assign([{ id: good }], { skipped: { count: 1, eventIds: [bad] } }),
+    );
+    const report = await runPlatformSweep(host, { actor: ACTOR, fetch: FETCH, sweepers: {}, eventSink: eventSink as never });
+
+    expect(report.eventDrain).toEqual({
+      scopes: 1,
+      shipped: 1,
+      incomplete: 0,
+      skipped: [{ tenantId: T, scopeId: scope, count: 1, eventIds: [bad] }],
+    });
+    // The skipped row reaches neither the sink nor the stamp — it never left.
+    expect(shipped).toEqual([[{ id: good }]]);
+    expect(marked).toEqual([[good]]);
+    // …and the sink is handed a plain array: the skip is the report's, not the lake's.
+    expect(Object.keys(shipped[0]!)).toEqual(['0']);
+    // Not an error: nothing about the pass failed, and the digest mails every error.
+    expect(report.errors).toEqual([]);
+  });
+
+  it('reports a skip even when nothing behind it could ship', async () => {
+    const scope = sid();
+    const bad = genId();
+    const { host, eventSink, shipped, marked } = eventHost(scope, () =>
+      Object.assign([], { skipped: { count: 10, eventIds: [bad] } }),
+    );
+    const report = await runPlatformSweep(host, { actor: ACTOR, fetch: FETCH, sweepers: {}, eventSink: eventSink as never });
+    expect(report.eventDrain).toEqual({
+      scopes: 0,
+      shipped: 0,
+      incomplete: 0,
+      skipped: [{ tenantId: T, scopeId: scope, count: 10, eventIds: [bad] }],
+    });
+    expect(shipped).toEqual([]);
+    expect(marked).toEqual([]);
+  });
+
+  it('a clean read leaves `skipped` ABSENT — the positive twin', async () => {
+    const scope = sid();
+    const good = genId();
+    const { host, eventSink } = eventHost(scope, () => [{ id: good }]);
+    const report = await runPlatformSweep(host, { actor: ACTOR, fetch: FETCH, sweepers: {}, eventSink: eventSink as never });
+    expect(report.eventDrain).toEqual({ scopes: 1, shipped: 1, incomplete: 0 });
+    expect(report.eventDrain).not.toHaveProperty('skipped');
+  });
+});

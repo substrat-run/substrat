@@ -149,7 +149,17 @@ import {
 } from './live-reads.js';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql } from './sql.js';
-import { facetEvents, readDeadLetters, readHistory, readInvocation, walkEventCause, walkEventEffects } from '@substrat-run/kernel';
+import {
+  domainEventOf,
+  facetEvents,
+  readDeadLetters,
+  readHistory,
+  readInvocation,
+  readUndrainedOutbox,
+  walkEventCause,
+  walkEventEffects,
+  type UndrainedRead,
+} from '@substrat-run/kernel';
 import type {
   DrainedEvent,
   EventFacetInput,
@@ -1052,26 +1062,35 @@ export function defineScopeDO(
     }
 
     /**
-     * The events not yet shipped to Tier 2 (#1334), oldest first. `ORDER BY id`
-     * is chronological (ULID) and stable, so a drain resumes where it stopped.
+     * The events not yet shipped to Tier 2 (#1334), oldest first — and what the read
+     * stepped over (#1636). `ORDER BY id` is chronological (ULID) and stable, so a drain
+     * resumes where it stopped.
+     *
+     * The kernel's read, shared with the pure adapter: a row that will not decode is
+     * neither returned nor stamped, and the rows behind it still come back. An object
+     * rather than an array because it crosses the RPC — a property on an array would not.
+     */
+    undrainedEventsRead(limit: number): UndrainedRead {
+      return readUndrainedOutbox(
+        (offset, count) =>
+          this.sql
+            .exec(
+              `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ? OFFSET ?`,
+              count,
+              offset,
+            )
+            .toArray() as unknown as OutboxRow[],
+        limit,
+      );
+    }
+
+    /**
+     * The same read as a bare array, for a coordinator deployed before
+     * `undrainedEventsRead` (#1636) — kept so that pairing still drains, and still steps
+     * over a bad row rather than stalling on it. It just cannot say that it did.
      */
     undrainedEvents(limit: number): DrainedEvent[] {
-      const rows = this.sql
-        .exec(`SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ?`, limit)
-        .toArray() as unknown as OutboxRow[];
-      return rows.map((r) => ({
-        ...this.parseOutboxRow(r),
-        operation: r.operation ?? null,
-        version: r.version ?? null,
-        // #1237 — lifted like the two above, and for the same reason: the column
-        // exists on the outbox but not on the envelope `parseOutboxRow` returns,
-        // whose `domainEvent.parse` strips anything it does not declare.
-        causedBy: r.caused_by ?? null,
-        // …and the invocation, for the same reason again: a lake that kept cause and
-        // dropped the call could say what set an event off and never which request did
-        // it, which is the grouping a trace is built on.
-        invocationId: r.invocation_id ?? null,
-      })) as DrainedEvent[];
+      return this.undrainedEventsRead(limit).events;
     }
 
     /**
@@ -2847,8 +2866,18 @@ export function defineScopeDO(
      *
      * "Not yet consumed" means never attempted, or retrying and now due (#100).
      * Terminal rows — delivered or dead-lettered — are excluded by the join.
+     *
+     * Decoded per row (#1636). A row that will not decode comes back in `undecodable`,
+     * never as an event: the coordinator journals it as a dead letter, and its handler is
+     * never handed an event built from stand-ins. The whole list used to be one
+     * `rows.map(decode)`, so one bad row threw the executor's pending list on every pass.
+     * The journal write stays on the coordinator, beside every other attempt it records —
+     * this stays a read.
      */
-    pendingExecutorEvents(deliveryId: string, eventType: string): DomainEvent[] {
+    pendingExecutorDeliveries(
+      deliveryId: string,
+      eventType: string,
+    ): { events: DomainEvent[]; undecodable: { eventId: string; error: string }[] } {
       const rows = this.sql
         .exec(
           `SELECT o.* FROM _substrat_outbox o
@@ -2863,7 +2892,26 @@ export function defineScopeDO(
           new Date().toISOString(),
         )
         .toArray() as unknown as OutboxRow[];
-      return rows.map((r) => this.parseOutboxRow(r));
+      const events: DomainEvent[] = [];
+      const undecodable: { eventId: string; error: string }[] = [];
+      for (const r of rows) {
+        try {
+          events.push(domainEventOf(r));
+        } catch (err) {
+          undecodable.push({ eventId: r.id, error: String(err) });
+        }
+      }
+      return { events, undecodable };
+    }
+
+    /**
+     * The same read as a bare list of events, for a coordinator deployed before
+     * `pendingExecutorDeliveries` (#1636). An undecodable row is left out rather than
+     * thrown, so that pairing still delivers the rows behind it; the next coordinator
+     * dead-letters it.
+     */
+    pendingExecutorEvents(deliveryId: string, eventType: string): DomainEvent[] {
+      return this.pendingExecutorDeliveries(deliveryId, eventType).events;
     }
 
     /**
@@ -3708,7 +3756,27 @@ export function defineScopeDO(
               )
               .toArray() as unknown as OutboxRow[];
             for (const row of rows) {
-              const event = this.parseOutboxRow(row);
+              let event: DomainEvent;
+              try {
+                event = domainEventOf(row);
+              } catch (err) {
+                // #1636: dead-letter an event that does not decode, exactly as a failed
+                // handler is — the decode sat ABOVE the `try` below, so one bad row halted
+                // every event of this type behind it, on every pass. The consumer is never
+                // handed it: an event built from stand-ins is not one it may act on. Only
+                // the decode is caught; the journal write is not.
+                this.sql.exec(
+                  `INSERT INTO _substrat_deliveries
+                     (event_id, consumer_module, delivered_at, error, invocation_id)
+                   VALUES (?, ?, ?, ?, ?)`,
+                  row.id,
+                  mod.id,
+                  new Date().toISOString(),
+                  String(err),
+                  invocationId,
+                );
+                continue;
+              }
               // #1237: anything this consumer emits was emitted BECAUSE of this event
               // — the step a backwards walk used to stop dead at, since a consumer
               // emit records no operation either.
@@ -3817,30 +3885,6 @@ export function defineScopeDO(
         invocationId,
         new Date().toISOString(),
       );
-    }
-
-    private parseOutboxRow(row: OutboxRow): DomainEvent {
-      return domainEvent.parse({
-        id: row.id,
-        type: row.type,
-        schemaVersion: row.schema_version,
-        occurredAt: row.occurred_at,
-        tenantId: row.tenant_id,
-        scopeId: row.scope_id,
-        actor: JSON.parse(row.actor),
-        entity: { entityType: row.entity_type, entityId: row.entity_id },
-        piiClass: row.pii_class,
-        ...(row.subject_id ? { subjectId: row.subject_id } : {}),
-        ...(row.authorization ? { authorization: JSON.parse(row.authorization) } : {}),
-        // K-42: the stamp survives the read, so a consumer's event and an executor's
-        // are the same fact the stored row is. Absent rather than null when nobody
-        // was impersonating, because `DomainEvent.impersonation` is optional — the
-        // shape module code never sees is also the shape it cannot branch on.
-        ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
-        // #1231: absent rather than null, the same shape rule as the stamp above.
-        ...(row.operation ? { operation: row.operation } : {}),
-        payload: row.payload === null ? undefined : JSON.parse(row.payload),
-      });
     }
 
     // -- operation context (port of operationContext) -------------------------

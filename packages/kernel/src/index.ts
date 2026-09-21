@@ -241,6 +241,24 @@ export {
 } from './impersonation.js';
 export { readTimeline, readHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters } from './timeline.js';
 export type { TimelineReader } from './timeline.js';
+// #1636: one undecodable spine row no longer takes a list — or a delivery loop — with it.
+export { rowDecoder, UNDECODED_ACTOR } from './row-decode.js';
+export type { RowDecoder } from './row-decode.js';
+export {
+  domainEventOf,
+  drainedEventOf,
+  readUndrainedOutbox,
+  undrainedEventsOf,
+  UNDRAINED_SCAN_FACTOR,
+  UNDRAINED_SKIPPED_IDS,
+} from './outbox-event.js';
+export type {
+  OutboxEnvelopeRow,
+  OutboxDrainRow,
+  UndrainedEvents,
+  UndrainedRead,
+  UndrainedSkipped,
+} from './outbox-event.js';
 export {
   IDEMPOTENCY_DDL,
   assertIdempotencyKey,
@@ -300,6 +318,7 @@ export type {
   AccessLogSink,
   EventSink,
   EventDrainReport,
+  EventDrainSkipped,
   AccessLogSweepReport,
   ConnectorSweeper,
   MigrationSweepReport,

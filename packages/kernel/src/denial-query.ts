@@ -1,19 +1,17 @@
 import {
   DEFAULT_DENIAL_LIMIT,
+  denialBucket,
   denialFilter,
-  type Actor,
+  permissionDenial,
   type DenialActorSummary,
   type DenialBucket,
   type DenialFilter,
   type DenialGroupBy,
   type DenialOperationBucket,
   type DenialOperationSummary,
-  type ImpersonationStamp,
   type PermissionDenial,
-  type PermissionKey,
-  type ScopeId,
-  type TenantId,
 } from '@substrat-run/contracts';
+import { rowDecoder, UNDECODED_ACTOR } from './row-decode.js';
 
 /**
  * The SELECTs behind every read of a scope's denial log (#867, K-35's stated tail).
@@ -65,24 +63,34 @@ export function storedActor(input: string): string {
   }
 }
 
-/** Turn a stored row into the contract shape. */
+/**
+ * Turn a stored row into the contract shape — TOLERANTLY, and saying so (#1636).
+ *
+ * Every read of this log is a LIST, and the decode used to `JSON.parse` while mapping: one
+ * row whose `actor` or `impersonation` would not parse threw for the page, which for the
+ * only witness to a refused check is the worst read to lose. Each field is now decoded
+ * against its own contract field and whatever did not decode is named in `decodeError`,
+ * on `rowDecoder`'s rules — an undecodable actor reads as {@link UNDECODED_ACTOR}, and a
+ * row whose id, permission, tenant or time does not decode still throws, naming them.
+ */
 export function mapDenialRow(row: DenialRow): PermissionDenial {
-  return {
-    id: row.id,
-    actor: JSON.parse(row.actor) as Actor,
-    permission: row.permission as PermissionKey,
-    tenantId: row.tenant_id as TenantId,
-    scopeId: (row.scope_id ?? null) as ScopeId | null,
-    operation: row.operation ?? null,
-    impersonation:
-      row.impersonation == null ? null : (JSON.parse(row.impersonation) as ImpersonationStamp),
+  const shape = permissionDenial.shape;
+  const d = rowDecoder(`denial row ${JSON.stringify(row.id)}`, 'PermissionDenial');
+  return d.finish<PermissionDenial>({
+    id: d.required<string>('id', shape.id, row.id),
+    actor: d.json('actor', shape.actor, row.actor, UNDECODED_ACTOR),
+    permission: d.required('permission', shape.permission, row.permission),
+    tenantId: d.required('tenant_id', shape.tenantId, row.tenant_id),
+    scopeId: d.nullable('scope_id', shape.scopeId, row.scope_id ?? null),
+    operation: d.nullable('operation', shape.operation, row.operation ?? null),
+    impersonation: d.json('impersonation', shape.impersonation, row.impersonation ?? null, null),
     // #1525: which CALL was refused, not merely which operation — the join that lets
     // "same call" reach a request's refusals. `?? null` rather than a bare read, for
     // the row a legacy store hands back with the column absent.
-    invocationId: row.invocation_id ?? null,
-    at: row.at,
-    drainedAt: row.drained_at ?? null,
-  };
+    invocationId: d.nullable('invocation_id', shape.invocationId, row.invocation_id ?? null),
+    at: d.required<string>('at', shape.at, row.at),
+    drainedAt: d.nullable('drained_at', shape.drainedAt, row.drained_at ?? null),
+  });
 }
 
 /** The WHERE fragment shared by the row read and the summary. */
@@ -176,15 +184,23 @@ export interface DenialBucketRow {
   last_at: string;
 }
 
+/**
+ * One (actor, permission) bucket, tolerantly (#1636). The buckets are `GROUP BY actor`, so a
+ * stored actor that would not parse is its own bucket — and used to throw the whole summary,
+ * the read a console opens first. It reads as {@link UNDECODED_ACTOR} now, still counted,
+ * with `decodeError` saying why.
+ */
 export function mapDenialBucketRow(row: DenialBucketRow): DenialBucket {
-  return {
-    actor: JSON.parse(row.actor) as Actor,
-    permission: row.permission as PermissionKey,
-    count: Number(row.count),
-    operations: Number(row.operations),
-    firstAt: row.first_at,
-    lastAt: row.last_at,
-  };
+  const shape = denialBucket.shape;
+  const d = rowDecoder(`denial bucket for ${JSON.stringify(row.permission)}`, 'DenialBucket');
+  return d.finish<DenialBucket>({
+    actor: d.json('actor', shape.actor, row.actor, UNDECODED_ACTOR),
+    permission: d.required('permission', shape.permission, row.permission),
+    count: d.required<number>('count', shape.count, Number(row.count)),
+    operations: d.required<number>('operations', shape.operations, Number(row.operations)),
+    firstAt: d.required<string>('first_at', shape.firstAt, row.first_at),
+    lastAt: d.required<string>('last_at', shape.lastAt, row.last_at),
+  });
 }
 
 export interface DenialOperationBucketRow {

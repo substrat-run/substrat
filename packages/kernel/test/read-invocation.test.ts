@@ -48,7 +48,7 @@ function readerOver(events: Ev[]): Pick<ScopedSql, 'query'> {
       id(e.n),
       `test.step${e.n}`,
       `2026-09-15T00:00:0${e.n % 10}.000Z`,
-      JSON.stringify('01JPRINCIPAL0000000000000'),
+      JSON.stringify('01JZPR1NC1PA1000000000000A'),
       JSON.stringify({ n: e.n }),
       'none',
       e.causedBy == null ? null : id(e.causedBy),

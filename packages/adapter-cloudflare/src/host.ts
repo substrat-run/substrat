@@ -70,7 +70,6 @@ import {
   type AdminLogEntry,
   type OpsFailureEntry,
   type IssueEntry,
-  type DrainedEvent,
   type EntityHistoryInput,
   type EventCauseInput,
   delegatedReadRecord,
@@ -241,6 +240,9 @@ import {
   assertRedrainWindow,
   platformRequestOf,
   type PlatformRequestRawRow,
+  undrainedEventsOf,
+  type UndrainedEvents,
+  type UndrainedRead,
 } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -730,7 +732,14 @@ interface ScopeStubRpc {
    * Same return contract as `migrate()`.
    */
   retryMigrations(): Promise<number | null>;
-  pendingExecutorEvents(deliveryId: string, eventType: string): Promise<DomainEvent[]>;
+  /**
+   * The executor's due events, decoded per row (#1636): a row that will not decode is in
+   * `undecodable`, for the coordinator to dead-letter, and never in `events`.
+   */
+  pendingExecutorDeliveries(
+    deliveryId: string,
+    eventType: string,
+  ): Promise<{ events: DomainEvent[]; undecodable: { eventId: string; error: string }[] }>;
   recordExecutorAttempt(
     eventId: string,
     deliveryId: string,
@@ -1025,7 +1034,8 @@ interface ScopeStubRpc {
     limit?: number;
     cursor?: string;
   }): Promise<Page<HistoryEntry>>;
-  undrainedEvents(limit: number): Promise<DrainedEvent[]>;
+  /** The Tier-2 read, and what it stepped over (#1636) — an object, because it crosses the RPC. */
+  undrainedEventsRead(limit: number): Promise<UndrainedRead>;
   markEventsDrained(eventIds: readonly string[], at: string): Promise<number>;
   redrainEvents(drainedBefore: string): Promise<number>;
   /** How many rows that reopen WOULD touch, touching none of them (#1545). */
@@ -1123,13 +1133,17 @@ export interface ConnectorDelegation {
  * branch served them — K-24's rule that an auditor cannot tell from the row.
  */
 export interface EventDrainDelegation {
-  /** The oldest not-yet-drained events of one scope, from the deployment serving it. */
+  /**
+   * The oldest not-yet-drained events of one scope, from the deployment serving it — with
+   * what that deployment's read stepped over (#1636) as the array's optional `skipped`,
+   * when the deployment is new enough to say.
+   */
   readUndrained(args: {
     tenantId: TenantId;
     scopeId: ScopeId;
     vertical: string;
     limit: number;
-  }): Promise<DrainedEvent[]>;
+  }): Promise<UndrainedEvents>;
   /** Stamp `drained_at` on shipped events in the serving deployment; returns how many changed. */
   markDrained(args: {
     tenantId: TenantId;
@@ -1551,7 +1565,16 @@ export class CloudflareScopeHost implements ScopeHost {
     const stub = this.scopeStub(scopeId);
     for (const [id, executor] of this.executors) {
       const deliveryId = `executor:${id}`;
-      const events = await stub.pendingExecutorEvents(deliveryId, executor.eventType);
+      const { events, undecodable } = await stub.pendingExecutorDeliveries(deliveryId, executor.eventType);
+      // #1636: an event the DO could not decode is dead-lettered for this executor at once,
+      // and its handler never sees it. Terminal on the FIRST failure, unlike a handler's:
+      // the decode is pure, so a retry cannot succeed. The rows behind it are delivered
+      // below — the decode used to throw the whole list, on every pass.
+      for (const bad of undecodable) {
+        report.attempted += 1;
+        await stub.recordExecutorAttempt(bad.eventId, deliveryId, bad.error, null, invocationId);
+        report.deadLettered += 1;
+      }
       for (const event of events) {
         report.attempted += 1;
         this.causedBy = event.id;
@@ -1979,8 +2002,8 @@ export class CloudflareScopeHost implements ScopeHost {
    * the control plane's `EventDrainDelegation`. Bounded the same way the audited verb is,
    * so a caller cannot ask this side for more than the other would.
    */
-  async undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<DrainedEvent[]> {
-    return this.scopeStub(scopeId).undrainedEvents(Math.min(Math.max(limit, 1), 1000));
+  async undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<UndrainedEvents> {
+    return undrainedEventsOf(await this.scopeStub(scopeId).undrainedEventsRead(Math.min(Math.max(limit, 1), 1000)));
   }
 
   /**
@@ -4207,7 +4230,7 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'listScopeTables', { tenantId, scopeId }, null, tables.length);
         return tables;
       },
-      readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<DrainedEvent[]> => {
+      readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
         const record = await this.scopeRecordForRead(tenantId, scopeId);
         const bounded = Math.min(Math.max(limit ?? 200, 1), 1000);
         // #1334: on the shared control plane the scope's outbox is in its vertical's
@@ -4223,7 +4246,7 @@ export class CloudflareScopeHost implements ScopeHost {
                 vertical: record.vertical,
                 limit: bounded,
               })
-            : await this.scopeStub(scopeId).undrainedEvents(bounded);
+            : undrainedEventsOf(await this.scopeStub(scopeId).undrainedEventsRead(bounded));
         await this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, events.length);
         return events;
       },
