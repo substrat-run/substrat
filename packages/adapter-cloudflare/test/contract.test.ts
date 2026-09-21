@@ -181,7 +181,9 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
   };
 
   /** The admin-log rows for one scope, flattened: action + the `after` payload. */
-  const rows = async (audit: () => Promise<{ action: string; vertical: string | null; after: unknown }[]>) =>
+  const rows = async (
+    audit: () => Promise<{ action: string; vertical: string | null; after: unknown }[]>,
+  ): Promise<Record<string, unknown>[]> =>
     (await audit()).map((e) => ({ action: e.action, vertical: e.vertical, ...(e.after as Record<string, unknown>) }));
 
   it('delegates the write, leaves the placeholder alone, and audits intent then outcome here, with the reason', async () => {
