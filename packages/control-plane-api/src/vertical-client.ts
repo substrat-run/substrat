@@ -4,6 +4,7 @@ import type {
   DrainedEvent,
   EntityRef,
   EntitlementGrant,
+  ModuleId,
   PermissionKey,
   PlatformRequest,
   PlatformRequestFilter,
@@ -11,6 +12,7 @@ import type {
   PlatformRequestStatus,
   PlatformRequestFailure,
   PrincipalId,
+  SystemSwitchOutcome,
   ConnectionGrantRecord,
   ProjectedConnectionGrant,
   ProjectedConnectionKey,
@@ -49,6 +51,7 @@ import {
   denialFilterParams,
   ownerSeat,
   ownerClaimLink,
+  systemSwitchOutcome,
 } from '@substrat-run/contracts';
 import type { OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER, undrainedEventsOf } from '@substrat-run/kernel';
@@ -582,6 +585,58 @@ export class VerticalClient {
     expiresAt?: string;
   }): Promise<void> {
     await this.postInternal<unknown>('/internal/connector-grant', input, 'connector-grant');
+  }
+
+  /**
+   * Move one module's schedule kill switch in the deployment serving the scope (#1666) —
+   * the far end of `revokeFromSystem` / `restoreToSystem` for a hosted scope, whose
+   * `system:<module>` grants live there and nowhere the platform can reach.
+   *
+   * ONE shape is normalized to "redeploy the vertical", and only because it is the
+   * deployment's own proof that it cannot have acted: a script built before the route
+   * answers a **404** (the path does not exist — the route itself answers a module it holds
+   * nothing for with a 200 `held: false`, never a 404) or its **SPA shell** (a 200 that is
+   * not JSON). "Nothing was switched" is true of exactly those.
+   *
+   * Everything else surfaces as the failure it is, and never claims that: a transport
+   * failure (`reach` → 502 "unreachable"), a genuine 5xx from the far end, and a 200 JSON of
+   * the wrong shape. The request may have landed and the switch may have moved before the
+   * answer was lost, so the only honest instruction is to confirm the position first.
+   */
+  async systemSwitch(input: { scopeId: ScopeId; moduleId: ModuleId; to: 'on' | 'off' }): Promise<SystemSwitchOutcome> {
+    const verb = 'system-switch';
+    const predates = (): ControlPlaneError =>
+      new ControlPlaneError(
+        501,
+        `the deployment serving scope ${input.scopeId} predates the schedule switch (#1666) — ` +
+          `redeploy the vertical, then retry. Nothing was switched.`,
+      );
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.reach(verb, () =>
+      this.options.fetch(`${base}/internal/system-switch`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(input),
+      }),
+    );
+    if (res.status === 404) throw predates();
+    if (!res.ok) throw await this.refusal(verb, res);
+    const text = await res.text();
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      throw predates();
+    }
+    const parsed = systemSwitchOutcome.safeParse(raw);
+    if (!parsed.success) {
+      throw new ControlPlaneError(
+        502,
+        `vertical answered ${verb} with an unexpected shape — the switch on scope ${input.scopeId} may ` +
+          `or may not have moved. Confirm its position (the scope's SQL console) before retrying.`,
+      );
+    }
+    return parsed.data;
   }
 
   /** Journal a platform-request outcome back in the vertical after the platform ran it. */

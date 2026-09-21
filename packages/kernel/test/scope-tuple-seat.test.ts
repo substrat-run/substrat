@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { effectiveRoleGrantQuery, SEAT_SCOPE_TUPLE_SQL } from '../src/index.js';
+import { effectiveRoleGrantQuery, seatScopeTuple } from '../src/index.js';
 
 /**
  * #1659: the provisioning seat, executed against a real SQLite rather than read as a
@@ -9,7 +9,7 @@ import { effectiveRoleGrantQuery, SEAT_SCOPE_TUPLE_SQL } from '../src/index.js';
  * runs the statement against its own DDL (`provision-seat.test.ts` on the pure adapter, the
  * `#1659` blocks in the Cloudflare contract file on workerd).
  */
-describe('SEAT_SCOPE_TUPLE_SQL (#1659)', () => {
+describe('seatScopeTuple (#1659, #1666)', () => {
   const fresh = (): DatabaseSync => {
     const db = new DatabaseSync(':memory:');
     db.exec(`CREATE TABLE _substrat_tuples (
@@ -22,11 +22,46 @@ describe('SEAT_SCOPE_TUPLE_SQL (#1659)', () => {
     )`);
     return db;
   };
-  const seat = (db: DatabaseSync, expiresAt: string | null): void => {
-    db.prepare(SEAT_SCOPE_TUPLE_SQL).run('system:@m/x', 'granted:x:run', 'scope:s1', expiresAt);
+  const seat = (db: DatabaseSync, expiresAt: string | null, relation = 'granted:x:run'): void => {
+    const st = seatScopeTuple('system:@m/x', relation, 'scope:s1', expiresAt);
+    db.prepare(st.sql).run(...st.params);
+  };
+  /** The #1666 OFF marker for `system:@m/x`, live or tombstoned. */
+  const marker = (db: DatabaseSync, revokedAt: string | null): void => {
+    db.prepare(
+      `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at, revoked_at) VALUES (?, ?, ?, NULL, ?)`,
+    ).run('system:@m/x', 'switch:off', 'scope:s1', revokedAt);
   };
   const rows = (db: DatabaseSync): unknown[] =>
     db.prepare('SELECT subject, relation, object, expires_at, revoked_at FROM _substrat_tuples').all();
+
+  it('seats NOTHING for a subject whose schedule kill switch is off — neither a missing grant nor a live expiry (#1666)', () => {
+    const db = fresh();
+    seat(db, '2099-01-01T00:00:00.000Z');
+    marker(db, null);
+    // A reconcile carrying a permission a newer version declares, and a new expiry for
+    // the one already there: both are refused while the marker is live.
+    seat(db, null, 'granted:x:new');
+    seat(db, '2099-06-01T00:00:00.000Z');
+    expect(rows(db)).toEqual([
+      expect.objectContaining({ relation: 'granted:x:run', expires_at: '2099-01-01T00:00:00.000Z', revoked_at: null }),
+      expect.objectContaining({ relation: 'switch:off', revoked_at: null }),
+    ]);
+
+    // The twin: the switch back on (marker tombstoned), and the same seats land.
+    marker(db, '2026-09-21T00:00:00.000Z');
+    seat(db, null, 'granted:x:new');
+    expect(rows(db)).toContainEqual(expect.objectContaining({ relation: 'granted:x:new', revoked_at: null }));
+  });
+
+  it("another subject's marker does not stop this subject's seat", () => {
+    const db = fresh();
+    db.prepare(
+      `INSERT INTO _substrat_tuples (subject, relation, object, expires_at, revoked_at) VALUES (?, ?, ?, NULL, NULL)`,
+    ).run('system:@m/other', 'switch:off', 'scope:s1');
+    seat(db, null);
+    expect(rows(db)).toContainEqual(expect.objectContaining({ subject: 'system:@m/x', relation: 'granted:x:run' }));
+  });
 
   it('creates a missing tuple, live', () => {
     const db = fresh();

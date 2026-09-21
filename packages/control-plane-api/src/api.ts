@@ -43,6 +43,7 @@ import {
   delegatedReadParams,
   createOrgInput,
   roleKey as roleKeySchema,
+  systemSwitch,
   DEFAULT_DENIAL_LIMIT,
   DENIAL_LIMIT_MAX,
   denialGroupBy,
@@ -782,6 +783,13 @@ const tenantRoleAssignmentBody = z
     roleKey: roleKeySchema,
   })
   .strict();
+
+/**
+ * The schedule kill switch's body (#1666) — the module and the reason. The node comes
+ * from the PATH, after the K-3 cross-check, for the reason `tenantRoleAssignmentBody`
+ * spells out; `.strict()` so a body that tried to name one is refused, not stripped.
+ */
+const systemSwitchBody = systemSwitch.pick({ moduleId: true, reason: true }).strict();
 
 /** A new org under an addressed tenant (#1343) — `tenantId` comes from the path. */
 const tenantOrgBody = createOrgInput.omit({ tenantId: true });
@@ -5987,6 +5995,48 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
     return c.body(null, 204);
   });
+
+  // -- the schedule kill switch (#1666) --------------------------------------
+  //
+  // One module's scheduled work on ONE scope, off and back on — `revokeFromSystem` and
+  // `restoreToSystem`. Module-wide on the scope by design (the body schema says why a
+  // per-permission switch is either inexpressible or noisy), `reason` required, and both
+  // halves audited on the admin log — intent first, then outcome, on every attempt,
+  // paired by the `operationId` the route answers with. Idempotent: a repeat answers
+  // `changed: false`, and is audited all the same.
+  //
+  // **Restore is the lever; a grant is not.** While the switch is off, a `grantToSystem`
+  // for the module is refused (409) and a reconcile seats none of its system grants, not
+  // even a newly declared one — only the POST below turns it back on, and it gives back
+  // exactly what the DELETE took. A switch that the next deploy, or a stray grant,
+  // silently undid would not be a kill switch.
+  //
+  // For a HOSTED scope the grants live in the vertical's deployment, and the host's
+  // `systemSwitchDelegation` moves the switch there; a deployment built before the far
+  // end existed answers 501 "redeploy", nothing is switched, and the log shows the intent
+  // and its failure.
+  //
+  // **Staff and the platform service token ONLY.** Builders are refused by BUILDER_ROUTES
+  // (default-deny). A tenant-scoped credential (#977) would pass this path's `/tenants/<pin>`
+  // confinement, so the handler refuses it by `confinedTenant`: the switched party must
+  // not be able to switch itself back on, and the dashboard has no flow that pulls it.
+  const switchScheduleRoute = (to: 'on' | 'off') => async (c: Context<{ Variables: Vars }>) => {
+    if (confinedTenant(c.get('principal')) !== null) {
+      return c.json({ error: 'forbidden: the schedule switch is staff-only' }, 403);
+    }
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const body = systemSwitchBody.parse(await c.req.json());
+    const actor = c.get('actor');
+    // K-3 first, so a scope of another tenant reads as absent before anything is reached.
+    if (!(await admin.getScopeRecord(actor, tenantId, scopeId))) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    const input = { moduleId: body.moduleId, node: { tenantId, scopeId }, reason: body.reason };
+    return c.json(to === 'off' ? await admin.revokeFromSystem(actor, input) : await admin.restoreToSystem(actor, input));
+  };
+  app.delete('/tenants/:tenantId/scopes/:scopeId/system-grants', switchScheduleRoute('off'));
+  app.post('/tenants/:tenantId/scopes/:scopeId/system-grants', switchScheduleRoute('on'));
 
   // Orgs: the portal-customer grouping (§4.1). Creating one mints no permission —
   // members reach what the org was GRANTED, and granting stays off this surface.

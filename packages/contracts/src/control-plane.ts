@@ -140,6 +140,11 @@ export const adminAction = z.enum([
   // #383 — a module's system principal may hold a permission (for scheduled work),
   // so granting one is a named, audited mutation like every other grant.
   'grantToSystem',
+  // #1666 — the schedule kill switch, and its lever back. A pair of named actions rather
+  // than a grant and a revoke, because the switch is module-wide on one scope and carries
+  // a required `reason`: the row answers who turned a tenant's schedules off, and why.
+  'revokeFromSystem',
+  'restoreToSystem',
   // #40 — the directory's own disaster-recovery write: replace THE DIRECTORY (tenants,
   // scopes, hostnames, verticals, identities) with a stored dump. Carries no tenant,
   // because its blast radius is every tenant. The entry lands in the log it just

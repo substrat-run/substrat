@@ -15,7 +15,7 @@ back a revoked one. So a revoke of the owner's seat, of a connection grant, or o
 `system:<module>` schedule grant (the per-scope switch that turns its schedules off) lasted
 only until the next reconcile, and nothing said so.
 
-Provisioning now **seats** a tuple instead, with the kernel's new `SEAT_SCOPE_TUPLE_SQL`. Both
+Provisioning now **seats** a tuple instead, with the kernel's new `seatScopeTuple`. Both
 adapters use it: `provisionScopeLocal` on Cloudflare, and `provisionScope` on both.
 
 - **Missing** → created, live. A scope whose storage was recreated is still repaired (#332).

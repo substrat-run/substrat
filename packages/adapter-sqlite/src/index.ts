@@ -35,6 +35,7 @@ import {
   connectionGrantRecord,
   connectionSecret,
   systemGrant,
+  systemSwitch,
   subjectRef,
   requestFingerprint,
   createConnectionInput,
@@ -76,6 +77,8 @@ import {
   type ModuleId,
   type ScheduleSpec,
   type SystemGrant,
+  type SystemSwitch,
+  type SystemSwitchResult,
   type AdminLogEntry,
   type OpsFailureEntry,
   type IssueEntry,
@@ -211,7 +214,13 @@ import {
   platformRequestRedactionParams,
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
-  SEAT_SCOPE_TUPLE_SQL,
+  seatScopeTuple,
+  switchSystemSchedules,
+  systemScheduleState,
+  systemSwitchedOff,
+  systemSwitchedOffMessage,
+  type SwitchOutcome,
+  type SwitchSql,
   type PlatformRequestRedactionCandidate,
   denialListQuery,
   denialSummaryQuery,
@@ -341,6 +350,14 @@ import {
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
+
+/** The kernel's schedule-switch SQL (#1666), over one scope's database handle. */
+const switchSqlOf = (db: Database.Database): SwitchSql => ({
+  all: (sql, ...params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
+  run: (sql, ...params) => {
+    db.prepare(sql).run(...params);
+  },
+});
 
 interface ScopeRuntime {
   tenantId: TenantId;
@@ -2268,19 +2285,19 @@ export class SqliteScopeHost implements ScopeHost {
     await this.applyPendingMigrations(rt);
     // Project each registered module's SCHEDULE grants (#383): a system principal
     // holds exactly the permissions its schedules declared, on this scope. This is
-    // what makes `ctx.check` resolve for scheduled work — the gate stays the check,
-    // and revoking the tuple is how scheduling is turned off per scope. Idempotent, so a
-    // re-provision re-asserts the same grants — SEATED (#1659), with the statement the
-    // Cloudflare adapter seats with: a missing grant is recreated, a revoked one stays
-    // revoked, so a re-provision cannot turn a scope's schedules back on. `grantToSystem`
-    // is the explicit way back, and it does clear the tombstone.
+    // what makes `ctx.check` resolve for scheduled work — the gate stays the check.
+    // Idempotent, so a re-provision re-asserts the same grants — SEATED (#1659), with the
+    // statement the Cloudflare adapter seats with: a missing grant is recreated, a revoked
+    // one stays revoked. Turning a scope's schedules off is `revokeFromSystem` (#1666), and
+    // its OFF marker is not a grant, so no re-provision can seat it away; `restoreToSystem`
+    // is the only way back (`grantToSystem` clears a tuple's tombstone, not the switch).
     for (const mod of this.modules.values()) {
       const perms = new Set<string>();
       for (const s of mod.schedules) for (const p of s.permissions) perms.add(p);
       for (const perm of perms) {
-        rt.db
-          .prepare(SEAT_SCOPE_TUPLE_SQL)
-          .run(`system:${mod.id}`, `granted:${perm}`, `scope:${input.scopeId}`, null);
+        // A module switched off (#1666) gets nothing seated — see `seatScopeTuple`.
+        const seat = seatScopeTuple(`system:${mod.id}`, `granted:${perm}`, `scope:${input.scopeId}`, null);
+        rt.db.prepare(seat.sql).run(...seat.params);
       }
     }
     // Audit a real provision only; an idempotent re-provision changed nothing.
@@ -3298,19 +3315,22 @@ export class SqliteScopeHost implements ScopeHost {
 
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    // The grant IS the switch (#383): a scope runs a module's schedules only while it
-    // holds a live `system:<moduleId>` grant. This is what makes a foreign-vertical
-    // scope (one this module was never provisioned on) a quiet no-op, and what makes
-    // "disable scheduling for this tenant" a plain grant revoke — no error, no run.
+    // The grant IS the switch (#383), and the kill switch is its lever (#1666): the
+    // kernel's `systemScheduleState`, the one predicate both adapters run. A scope that
+    // never held the module's grant (a foreign vertical's) is a quiet no-op, exactly as
+    // before. A scope switched OFF reports every schedule `skipped`, never `failed`, and
+    // does not touch its cadence rows — so a restore fires a due schedule on the next pass.
     const nowIso = this.clock();
-    const hasGrant = rt.db
-      .prepare(
-        `SELECT 1 FROM _substrat_tuples
-          WHERE subject = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
-          LIMIT 1`,
-      )
-      .get(`system:${moduleId}`, nowIso);
-    if (!hasGrant) return report;
+    const state = systemScheduleState(switchSqlOf(rt.db), moduleId, nowIso);
+    if (state === 'ungranted') return report;
+    if (state === 'off') {
+      for (const schedule of mod.schedules) {
+        report.skipped += 1;
+        report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
+      }
+      report.switchedOff = true;
+      return report;
+    }
     // The spine state table is KERNEL_DDL's (#1288) — kernel-owned (`_substrat_*`),
     // never a module migration, and created by `runtime()` above rather than lazily
     // here. This loop's rows are `kind = 'schedule'`, keyed by the operation
@@ -4960,7 +4980,7 @@ export class SqliteScopeHost implements ScopeHost {
         .run(tenantId, subject, relation, object, expiresAt ?? null);
 
     // The EXPLICIT grant: `INSERT OR REPLACE` clears a tombstone, because a re-grant must
-    // grant. Provisioning seats with `SEAT_SCOPE_TUPLE_SQL` instead, which never un-revokes
+    // grant. Provisioning seats with `seatScopeTuple` instead, which never un-revokes
     // (#1659) — keep the two apart.
     const writeScopeTuple = (
       node: Node,
@@ -5005,6 +5025,81 @@ export class SqliteScopeHost implements ScopeHost {
           expiresAt,
         );
       }
+    };
+
+    /** #1666: move one module's schedule switch on one scope — see `HostAdmin.revokeFromSystem`. */
+    const switchSystem = async (
+      actor: PlatformActorId,
+      raw: SystemSwitch,
+      to: 'on' | 'off',
+    ): Promise<SystemSwitchResult> => {
+      const input = systemSwitch.parse(raw);
+      const { tenantId, scopeId } = input.node;
+      const scope = this.directory
+        .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+        .get(scopeId) as { tenant_id: string } | undefined;
+      if (!scope || scope.tenant_id !== tenantId) {
+        throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      }
+      // AUDIT FIRST (#1666 review), exactly as the Cloudflare adapter: the intent row before
+      // anything moves, the outcome row after, on every attempt. The directory and the
+      // scope's file are separate databases, so a crash between them leaves an intent with
+      // no recorded outcome — never a moved switch with no audit row.
+      const operationId = ulid();
+      const action = to === 'off' ? 'revokeFromSystem' : 'restoreToSystem';
+      const target = { tenantId, scopeId };
+      const base = { operationId, moduleId: input.moduleId, schedules: to };
+      this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
+      let outcome: SwitchOutcome;
+      try {
+        // A turn on the scope actor (#1666 review), exactly as the job store (#1577): `invoke`
+        // holds a raw `BEGIN IMMEDIATE` on this same connection across awaits, so a bare
+        // `db.transaction` issued mid-invoke became a SAVEPOINT inside it and rolled back
+        // with it — after this verb had already audited `applied`. `turn` is re-entrant, so a
+        // caller already inside one of this scope's tasks joins it rather than deadlocking.
+        const rt = this.runtime(tenantId, scopeId);
+        outcome = await rt.actor.turn(() =>
+          rt.db.transaction(() =>
+            switchSystemSchedules(switchSqlOf(rt.db), {
+              moduleId: input.moduleId,
+              scopeId,
+              to,
+              at: new Date().toISOString(),
+            }),
+          )(),
+        );
+      } catch (err) {
+        try {
+          this.recordAdmin(actor, action, target, null, {
+            ...base,
+            phase: 'failed',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        } catch {
+          // Best effort: the original error is what the caller must see.
+        }
+        throw err;
+      }
+      this.recordAdmin(actor, action, target, null, {
+        ...base,
+        phase: outcome.held ? 'applied' : 'refused',
+        changed: outcome.changed,
+        permissions: outcome.permissions,
+      });
+      if (!outcome.held) {
+        throw substratError(
+          'not_found',
+          `scope ${scopeId} holds no system grant for module '${input.moduleId}' — nothing to switch ${to} ` +
+            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')`,
+        );
+      }
+      return {
+        operationId,
+        moduleId: input.moduleId,
+        schedules: to,
+        changed: outcome.changed,
+        permissions: outcome.permissions as PermissionKey[],
+      };
     };
 
     return {
@@ -5228,13 +5323,33 @@ export class SqliteScopeHost implements ScopeHost {
         // principal is bound to the module, and a scope only ever runs the modules
         // its own host registered.
         const grant = systemGrant.parse(raw);
-        writeGrant(
-          subjectRef({ kind: 'system', id: grant.moduleId }),
-          grant.permission,
-          grant.node,
-          undefined,
-          grant.expiresAt,
-        );
+        const write = () =>
+          writeGrant(
+            subjectRef({ kind: 'system', id: grant.moduleId }),
+            grant.permission,
+            grant.node,
+            undefined,
+            grant.expiresAt,
+          );
+        const scope = grant.node.scopeId;
+        if (scope) {
+          // #1666: refused while the module is switched off on this scope. The check and the
+          // write share one synchronous body inside one turn on the scope actor, so no switch
+          // can move between them — and (#1666 review) neither can land inside an unrelated
+          // `invoke`'s open transaction and roll back with it after this verb returned. The
+          // turn is re-entrant: from inside one of this scope's tasks it joins that task.
+          // Restore is the lever; a grant is not.
+          const rt = this.runtime(grant.node.tenantId, scope);
+          await rt.actor.turn(() => {
+            if (systemSwitchedOff(switchSqlOf(rt.db), grant.moduleId)) {
+              throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, scope));
+            }
+            write();
+          });
+        } else {
+          // Tenant-level: a directory write, which no scope's transaction can hold.
+          write();
+        }
         this.recordAdmin(
           actor,
           'grantToSystem',
@@ -5243,6 +5358,12 @@ export class SqliteScopeHost implements ScopeHost {
           { moduleId: grant.moduleId, permission: grant.permission, node: grant.node },
         );
       },
+
+      // #1666: the schedule kill switch and its lever back — `system-switch.ts` is the
+      // whole rule, shared with the Cloudflare adapter; this is the directory check, the
+      // transaction and the audit row around it.
+      revokeFromSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'off'),
+      restoreToSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'on'),
 
       grantToOrg: async (actor, orgId, permission, node, entity) => {
         // The org must exist in the node's tenant. A grant to a phantom org is

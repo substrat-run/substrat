@@ -11,6 +11,7 @@ import {
   permissionContractSuite,
   scheduleContractSuite,
   jobRunContractSuite,
+  systemSwitchContractSuite,
   scopeHostContractSuite,
   searchContractSuite,
   entityVersionContractSuite,
@@ -81,6 +82,23 @@ scheduleContractSuite('adapter-sqlite', async () => {
 // `grantToSystem`, since this module declares no schedules to project one).
 jobRunContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-jobs-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1666: the schedule kill switch. The DEFAULT checker — what the switch stops is a
+// system principal's own `ctx.check`, which an allow-all would pass regardless.
+systemSwitchContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-switch-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),

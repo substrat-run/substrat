@@ -160,9 +160,10 @@ export type CapabilityGrant = z.infer<typeof capabilityGrant>;
  * Narrow by construction: it reaches only scopes of the module it names, and only
  * the one permission. It is projected from the module's declared `schedules`
  * (`scheduleSpec.permissions`) at scope provisioning, so what a schedule may do is
- * both readable in the permission diff (code) and revocable per scope (runtime — a
- * revoke fails the operation's own `ctx.check` closed, which is how scheduling is
- * disabled for a tenant without a special "off" code path).
+ * readable in the permission diff (code). Turning a scope's schedules OFF is not a
+ * revoke of one of these but the schedule kill switch, `systemSwitch` below (#1666):
+ * a per-permission revoke would leave the gate open and fail the schedule's own
+ * `ctx.check` on every pass, and a re-grant must not be able to turn it back on.
  */
 export const systemGrant = z.object({
   moduleId,
@@ -172,6 +173,62 @@ export const systemGrant = z.object({
   grantedBy: platformActorId,
 });
 export type SystemGrant = z.infer<typeof systemGrant>;
+
+/**
+ * The schedule kill switch (#1666) — one module's scheduled work on ONE scope, turned
+ * off by `HostAdmin.revokeFromSystem` and back on by `restoreToSystem`.
+ *
+ * **Module-wide, never per permission.** A grant is per permission and schedules share
+ * permissions, so "one schedule" is not expressible as a grant revoke without switching
+ * off its siblings too. And a per-permission revoke is worse than none: the gate would
+ * stay open on the module's other live grant, and the schedule's own `ctx.check` would
+ * then fail it on every pass — noise in place of silence.
+ *
+ * `reason` is required and lands in the admin log beside the actor, because "who turned
+ * a tenant's schedules off, and why" is the question the log exists to answer — a
+ * switch pulled in an incident has no other record of what the incident was.
+ *
+ * The scope is required: the switch is per scope. A tenant-wide form would be a
+ * different decision about blast radius, and it is not this one.
+ */
+export const systemSwitch = z.object({
+  moduleId,
+  node: z.object({ tenantId, scopeId }),
+  reason: z.string().trim().min(1).max(500),
+});
+export type SystemSwitch = z.infer<typeof systemSwitch>;
+
+/**
+ * What the far end of the switch did in the scope's own storage (#1666) — the wire
+ * shape `/internal/system-switch` answers with, and what a local host computes itself.
+ *
+ * `held: false` means the scope holds no `system:<module>` grant and no switch marker
+ * for that module at all — a typo'd module id, or a module this scope never ran. Nothing
+ * was written. It is an answer, not an error, so that a deployment which predates the
+ * route (and answers 404) can never be mistaken for one that simply held nothing.
+ */
+export const systemSwitchOutcome = z.object({
+  held: z.boolean(),
+  /** False on a repeat — the switch was already in that position (idempotent). */
+  changed: z.boolean(),
+  /** The grants this call tombstoned (off) or restored (on), by permission key. */
+  permissions: z.array(permissionKey),
+});
+export type SystemSwitchOutcome = z.infer<typeof systemSwitchOutcome>;
+
+/**
+ * What `revokeFromSystem` / `restoreToSystem` answer (#1666) — the position the switch is now
+ * in. `operationId` names this call's rows on the admin log (its intent, then its outcome),
+ * so an operator can tie what the route answered to what the log recorded.
+ */
+export const systemSwitchResult = z.object({
+  operationId: z.string().min(1),
+  moduleId,
+  schedules: z.enum(['on', 'off']),
+  changed: z.boolean(),
+  permissions: z.array(permissionKey),
+});
+export type SystemSwitchResult = z.infer<typeof systemSwitchResult>;
 
 // ============================================================================
 // Evaluation representation — relationship tuples (design doc §4.2, plan D-23).

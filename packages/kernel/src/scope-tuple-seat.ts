@@ -1,3 +1,5 @@
+import { SYSTEM_SWITCH_OFF_PREDICATE } from './system-switch.js';
+
 /**
  * How PROVISIONING writes a scope tuple (#1659), shared by both adapters so the two
  * cannot disagree about what a reconcile is allowed to change.
@@ -32,12 +34,31 @@
  * scope nobody can act in is the #332 lockout `/internal/reconcile` exists to repair.
  * "Effective" is `effectiveRoleGrantQuery`, below.
  *
- * Params, in order: subject, relation, object, expires_at.
+ * **And a subject whose schedule kill switch is OFF gets nothing seated at all** (#1666):
+ * while `system:<module>`'s `switch:off` marker is live, the seat writes no row for that
+ * subject — neither a missing grant nor a live one's expiry. Otherwise a reconcile would
+ * create the grant a newer version declares, live, and hand the module's system authority
+ * back to a job run or a `getSystemScope` invoke while its schedules stay off. The marker
+ * predicate is `SYSTEM_SWITCH_OFF_PREDICATE`, the one the gate and the grant refusal read.
+ * Only a `system:` subject can carry a marker, so for every other tuple the clause is inert.
+ *
+ * A function rather than a bare statement because the subject is bound twice; the helper
+ * owns the order, so no call site can bind five values in the wrong places.
  */
-export const SEAT_SCOPE_TUPLE_SQL = `INSERT INTO _substrat_tuples (subject, relation, object, expires_at, revoked_at)
-     VALUES (?, ?, ?, ?, NULL)
+export function seatScopeTuple(
+  subject: string,
+  relation: string,
+  object: string,
+  expiresAt: string | null,
+): { sql: string; params: [string, string, string, string | null, string] } {
+  return {
+    sql: `INSERT INTO _substrat_tuples (subject, relation, object, expires_at, revoked_at)
+     SELECT ?, ?, ?, ?, NULL WHERE NOT ${SYSTEM_SWITCH_OFF_PREDICATE}
      ON CONFLICT (subject, relation, object) DO UPDATE SET expires_at = excluded.expires_at
-     WHERE _substrat_tuples.revoked_at IS NULL`;
+     WHERE _substrat_tuples.revoked_at IS NULL`,
+    params: [subject, relation, object, expiresAt, subject],
+  };
+}
 
 /**
  * Does ANYONE hold a role this scope can actually expand? The one predicate behind both

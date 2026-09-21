@@ -73,7 +73,10 @@ on a timer, and it is not a person either; `host.admin.grantToSystem(...)` gives
 operation's own `ctx.check` resolves the same way it does for anyone — the gate stays the
 check, never a bypass — and the emitted events read as `{ system: '@your/module' }`. Like a
 connection it holds no memberships; its authority is exactly the grants written against
-`system:<moduleId>`, projected at provisioning and revocable per scope.
+`system:<moduleId>`, projected at provisioning. The schedule switch
+(`revokeFromSystem` / `restoreToSystem`) turns one module's scheduled work off on one scope
+and back on. While it is off, the module's system grants there are revoked, so a job acting
+with that authority is denied too, and a new grant to the module there is refused.
 
 Organizations are a real directory record, not a string you make up at the call site:
 

@@ -68,8 +68,14 @@ import {
   intentPayloadCarriesSubject,
   type PlatformRequestRedactionCandidate,
   type SubjectRedactionCounts,
-  SEAT_SCOPE_TUPLE_SQL,
+  seatScopeTuple,
   effectiveRoleGrantQuery,
+  switchSystemSchedules,
+  systemScheduleState,
+  systemSwitchedOff,
+  type SwitchOutcome,
+  type SwitchSql,
+  type SystemScheduleState,
   denialListQuery,
   denialSummaryQuery,
   denialTotalsQuery,
@@ -1386,8 +1392,9 @@ export function defineScopeDO(
     /**
      * Provisioning's scope-tuple write (#1659): create the row if it is missing, follow the
      * platform's expiry if it is live, and leave it alone if it was revoked — so a re-run
-     * provision cannot undo an operator's revoke. `SEAT_SCOPE_TUPLE_SQL` is the statement,
-     * shared with `applyProjection`'s `scopeTuples` and with the pure adapter.
+     * provision cannot undo an operator's revoke — and seat nothing at all for a module
+     * whose schedule kill switch is off (#1666). `seatScopeTuple` is the statement, shared
+     * with `applyProjection`'s `scopeTuples` and with the pure adapter.
      */
     async seatTuple(
       subject: string,
@@ -1396,7 +1403,8 @@ export function defineScopeDO(
       expiresAt: string | null,
     ): Promise<void> {
       await this.queue.enqueue(() => {
-        this.sql.exec(SEAT_SCOPE_TUPLE_SQL, subject, relation, object, expiresAt);
+        const seat = seatScopeTuple(subject, relation, object, expiresAt);
+        this.sql.exec(seat.sql, ...seat.params);
       });
     }
 
@@ -2449,23 +2457,72 @@ export function defineScopeDO(
       });
     }
 
+    /** The kernel's schedule-switch SQL (#1666), over this DO's storage. */
+    private switchSql(): SwitchSql {
+      return {
+        all: (sql, ...params) => this.sql.exec(sql, ...params).toArray() as Record<string, unknown>[],
+        run: (sql, ...params) => {
+          this.sql.exec(sql, ...params);
+        },
+      };
+    }
+
     /**
-     * Whether this scope holds a live `system:<moduleId>` grant (#383) — the switch
-     * that decides if a module's schedules run here at all. Absent on a foreign
-     * vertical's scope, or after a per-tenant revoke, so the sweep skips it quietly.
+     * Where a module's schedules stand on this scope (#383, #1666) — the kernel's
+     * `systemScheduleState`, the predicate the pure adapter runs too: `on` with a live
+     * `system:<moduleId>` grant, `off` while the kill switch's marker is live, whatever
+     * else is, and `ungranted` on a scope that never ran the module (a foreign vertical's,
+     * which the sweep skips quietly).
+     */
+    async systemScheduleState(moduleId: string): Promise<SystemScheduleState> {
+      return systemScheduleState(this.switchSql(), moduleId, new Date().toISOString());
+    }
+
+    /**
+     * The pre-#1666 read, kept for ONE reason: a coordinator a deploy behind this DO still
+     * calls it. It answers the new question, not the old one — the old predicate counted any
+     * live `system:` tuple, and the kill switch's OFF marker is one, so an old coordinator
+     * asking the old question would run a switched-off scope's schedules.
      */
     async hasSystemGrant(moduleId: string): Promise<boolean> {
-      const now = new Date().toISOString();
-      const row = this.sql
-        .exec(
-          `SELECT 1 FROM _substrat_tuples
-            WHERE subject = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
-            LIMIT 1`,
+      return (await this.systemScheduleState(moduleId)) === 'on';
+    }
+
+    /**
+     * `grantToSystem`'s scope-level write (#1666): the explicit grant — `INSERT OR REPLACE`,
+     * as `writeTuple` — EXCEPT while the module's schedule kill switch is off, when it writes
+     * nothing and answers `false`. The check and the write are one queued unit, so no switch
+     * can move between them. Restore is the lever; a grant is not.
+     */
+    async writeSystemGrant(
+      moduleId: string,
+      relation: string,
+      object: string,
+      expiresAt: string | null,
+    ): Promise<boolean> {
+      return this.queue.enqueue(() => {
+        if (systemSwitchedOff(this.switchSql(), moduleId)) return false;
+        this.sql.exec(
+          `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
+           VALUES (?, ?, ?, ?)`,
           `system:${moduleId}`,
-          now,
-        )
-        .toArray()[0];
-      return row !== undefined;
+          relation,
+          object,
+          expiresAt,
+        );
+        return true;
+      });
+    }
+
+    /**
+     * Move a module's schedule switch on this scope (#1666) — the kernel's
+     * `switchSystemSchedules`, serialized on the queue with every other tuple write and run
+     * as one `transactionSync`, so its reads and writes are one unit.
+     */
+    async switchSystemSchedules(moduleId: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome> {
+      return this.queue.enqueue(() =>
+        this.ctx.storage.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
+      );
     }
 
     /**
@@ -4573,9 +4630,11 @@ export function defineScopeDO(
         //
         // #1659: SEATED, so a reconcile creates what is missing and leaves a revoke alone. It
         // used to be `INSERT OR REPLACE … revoked_at = NULL`, which undid an operator's revoke
-        // of the owner seat or of a `system:` schedule grant on the next reconcile.
+        // of the owner seat or of a `system:` schedule grant on the next reconcile. And a
+        // module switched off (#1666) gets no `system:` grant seated, new or old.
         for (const st of scopeTuples ?? []) {
-          this.sql.exec(SEAT_SCOPE_TUPLE_SQL, st.subject, st.relation, st.object, st.expires_at);
+          const seat = seatScopeTuple(st.subject, st.relation, st.object, st.expires_at);
+          this.sql.exec(seat.sql, ...seat.params);
         }
         // #1659's one exception: the owner-of-record's seat comes back over a revoke when
         // NOTHING else would let anyone act here — roles projected, no effective role grant.

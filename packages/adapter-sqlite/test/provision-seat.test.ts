@@ -10,16 +10,17 @@ import { SqliteScopeHost } from '../src/index.js';
 
 /**
  * #1659 on the pure adapter: `provisionScope` SEATS each module's `system:` schedule grant
- * (#383) with the kernel's `SEAT_SCOPE_TUPLE_SQL` — the statement the Cloudflare adapter
+ * (#383) with the kernel's `seatScopeTuple` — the statement the Cloudflare adapter
  * seats with — so a re-provision recreates a missing grant and leaves a revoked one
- * revoked. Revoking that grant is the per-scope schedule kill switch; it used to be
- * `INSERT OR REPLACE`, which turned the schedules back on at the next re-provision.
+ * revoked. It used to be `INSERT OR REPLACE`, which un-revoked it at the next re-provision.
  *
- * `grantToSystem` is the explicit grant and still goes through `INSERT OR REPLACE`, so it is
- * the way back — a re-grant that kept the tombstone would be a silent no-op.
+ * `grantToSystem` is the explicit grant and still goes through `INSERT OR REPLACE`, so it
+ * clears the tuple's tombstone — a re-grant that kept the tombstone would be a silent no-op.
  *
- * The tombstone is written from a second connection to the scope file: no `HostAdmin` verb
- * revokes a `system:` grant today, so an operator's revoke is exactly that raw K-21 write.
+ * The tombstone is a raw K-21 write from a second connection to the scope file, of ONE
+ * tuple and with no OFF marker, so the gate reads grants alone and the re-grant turns these
+ * schedules back on. The operator's kill switch (#1666, `revokeFromSystem`) writes a marker
+ * a grant does not touch; `systemSwitchContractSuite` pins that a grant does NOT undo it.
  */
 describe('#1659: a re-provision keeps a revoked schedule grant (pure adapter)', () => {
   it('leaves the revoke, recreates a missing grant, and `grantToSystem` grants again', async () => {
@@ -97,6 +98,77 @@ describe('#1659: a re-provision keeps a revoked schedule grant (pure adapter)', 
       expect(await considered()).toBeGreaterThan(0);
     } finally {
       await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * #1666 on the pure adapter: while a module's schedule kill switch is off, a reconcile of a
+ * NEWER version — one declaring a schedule permission the scope never held — seats nothing
+ * for it, because the seat reads the switch's marker (`seatScopeTuple`). A second host over
+ * the same directory is the newer version: `provisionScope` seats from the host's own
+ * registrations.
+ */
+describe('#1666: a reconcile of a newer version seats nothing while the switch is off (pure adapter)', () => {
+  it('no new grant while off; the same reconcile seats it once restored', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-switch-seat-'));
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const SCHED = moduleId.parse('@test/sched');
+    const node = { tenantId: t, scopeId: s };
+    const newer: typeof scheduleMod = {
+      ...scheduleMod,
+      manifest: {
+        ...scheduleMod.manifest,
+        schedules: scheduleMod.manifest.schedules!.map((sch, i) =>
+          i === 0 ? { ...sch, permissions: [...sch.permissions, permissionKey.parse('sched:admin')] } : sch,
+        ),
+      },
+    };
+    const grants = (): [string, boolean][] => {
+      const db = new Database(join(dir, `${t}__${s}.sqlite`));
+      try {
+        return (
+          db
+            .prepare(
+              `SELECT relation, revoked_at FROM _substrat_tuples
+                WHERE subject = ? AND substr(relation, 1, 8) = 'granted:' ORDER BY relation`,
+            )
+            .all(`system:${SCHED}`) as { relation: string; revoked_at: string | null }[]
+        ).map((r) => [r.relation, r.revoked_at !== null]);
+      } finally {
+        db.close();
+      }
+    };
+
+    const v1 = new SqliteScopeHost({ dir });
+    v1.registerModule(scheduleMod);
+    try {
+      await v1.admin.createTenant(staff, { id: t, slug: 'switch-seat', name: 'Switch seat' });
+      await v1.admin.grantEntitlement(staff, t, 'sched');
+      await v1.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+      await v1.admin.activateScope(staff, t, s);
+      await v1.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+    } finally {
+      await v1.close();
+    }
+
+    const v2 = new SqliteScopeHost({ dir });
+    v2.registerModule(newer);
+    try {
+      await v2.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+      expect(grants()).toEqual([['granted:sched:tick', true]]); // no `sched:admin` at all
+
+      await v2.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+      await v2.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+      expect(grants()).toEqual([
+        ['granted:sched:admin', false],
+        ['granted:sched:tick', false],
+      ]);
+    } finally {
+      await v2.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
