@@ -327,6 +327,10 @@ export const permModManifest = moduleManifest.parse({
   permissions: [
     { key: 'perm:use', description: 'use the thing' },
     { key: 'perm:read', description: 'read the thing' },
+    // #1655: exactly PERMISSION_KEY_MAX_LENGTH (41) bytes, the longest key a manifest
+    // accepts — so both adapters run a real check of it, and the Durable-Object one
+    // builds `granted:<key>%` at the 50-byte LIKE limit it enforces and node does not.
+    { key: 'perm:long-key-at-the-like-pattern-limit01', description: 'the longest key' },
   ],
   events: {
     // #473: the attachment surface emits these on upload/remove; declaring them keeps the
@@ -334,8 +338,11 @@ export const permModManifest = moduleManifest.parse({
     emits: [
       { type: 'attachment.added', schemaVersion: 1 },
       { type: 'attachment.removed', schemaVersion: 1 },
+      { type: 'perm.check-requested', schemaVersion: 1 },
     ],
-    consumes: [],
+    // #1642: a consumer runs under a SYSTEM actor, whose check allows without asking
+    // the checker — the one path a malformed key could slip through unrefused.
+    consumes: [{ type: 'perm.check-requested', schemaVersion: 1 }],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
   // #473: an attachment target on `item`, gated read=perm:read / write=perm:use — reusing
@@ -739,6 +746,106 @@ const readOutboxOp: OperationHandler<undefined, unknown> = (ctx) =>
   ctx.sql.query(
     'SELECT id, type, authorization, impersonation, operation FROM _substrat_outbox ORDER BY id',
   );
+
+// #1642: a check whose throw is CAUGHT AND IGNORED — the careless caller a
+// fail-closed refusal has to survive. It reports what it was handed back, then emits
+// anyway, so a test can read what the event's K-34 `authorization` says passed.
+const swallowedCheckOp: OperationHandler<{ permission: PermissionKey }, unknown> = async (
+  ctx,
+  input,
+) => {
+  let allowed = false;
+  let threw: string | null = null;
+  try {
+    allowed = (await ctx.check(input.permission)).allowed;
+  } catch (err) {
+    threw = err instanceof Error ? err.message : String(err);
+  }
+  ctx.emit({
+    type: 'perm.acted',
+    schemaVersion: 1,
+    entity: { entityType: 'test-thing', entityId: 'swallowed' },
+    piiClass: 'none',
+    payload: {},
+  });
+  return { allowed, threw };
+};
+
+// #1642: hand a key to the system-actor path. The consumer below does the check.
+const requestCheckOp: OperationHandler<
+  { permission: string; swallow: boolean; principal: string },
+  void
+> = (ctx, input) => {
+  ctx.emit({
+    type: 'perm.check-requested',
+    schemaVersion: 1,
+    entity: { entityType: 'test-thing', entityId: ulid() },
+    piiClass: 'none',
+    payload: input,
+  });
+};
+
+const CHECK_LOG_DDL = `CREATE TABLE IF NOT EXISTS perm_check_log (
+  event_id TEXT PRIMARY KEY, permission TEXT NOT NULL, allowed INTEGER NOT NULL,
+  threw TEXT, grant_threw TEXT)`;
+
+/**
+ * Runs as the system actor, whose `ctx.check` is allowed by construction. With
+ * `swallow` it catches the check's throw — and a `ctx.grant` of the same key, which
+ * the system actor would otherwise write straight into `_substrat_tuples` — and logs
+ * the outcome; without it, the throw dead-letters the event.
+ */
+const checkRequestedConsumer: ConsumerHandler = async (ctx, event) => {
+  const p = event.payload as { permission: string; swallow: boolean; principal: string };
+  const permission = p.permission as PermissionKey; // the cast under test
+  if (!p.swallow) {
+    assertAllowed(await ctx.check(permission));
+    ctx.sql.exec(CHECK_LOG_DDL);
+    ctx.sql.exec('INSERT INTO perm_check_log (event_id, permission, allowed) VALUES (?, ?, 1)', [
+      event.id,
+      p.permission,
+    ]);
+    return;
+  }
+  let allowed = false;
+  let threw: string | null = null;
+  let grantThrew: string | null = null;
+  try {
+    allowed = (await ctx.check(permission)).allowed;
+  } catch (err) {
+    threw = err instanceof Error ? err.message : String(err);
+  }
+  try {
+    await ctx.grant(principalId.parse(p.principal), permission, {
+      entityType: 'item',
+      entityId: 'check-requested',
+    });
+  } catch (err) {
+    grantThrew = err instanceof Error ? err.message : String(err);
+  }
+  ctx.sql.exec(CHECK_LOG_DDL);
+  ctx.sql.exec(
+    'INSERT INTO perm_check_log (event_id, permission, allowed, threw, grant_threw) VALUES (?, ?, ?, ?, ?)',
+    [event.id, p.permission, allowed ? 1 : 0, threw, grantThrew],
+  );
+};
+
+const readCheckLogOp: OperationHandler<undefined, unknown> = (ctx) => {
+  ctx.sql.exec(CHECK_LOG_DDL);
+  return {
+    log: ctx.sql.query(
+      'SELECT event_id, permission, allowed, threw, grant_threw FROM perm_check_log ORDER BY event_id',
+    ),
+    deliveries: ctx.sql.query(
+      `SELECT d.event_id, d.error, json_extract(o.payload, '$.permission') AS permission
+         FROM _substrat_deliveries d JOIN _substrat_outbox o ON o.id = d.event_id
+        WHERE o.type = 'perm.check-requested' ORDER BY d.event_id`,
+    ),
+    tuples: ctx.sql.query(
+      `SELECT subject, relation, object FROM _substrat_tuples WHERE object = 'item:check-requested'`,
+    ),
+  };
+};
 
 const readDenialsOp: OperationHandler<undefined, unknown> = (ctx) =>
   ctx.sql.query(
@@ -1222,6 +1329,10 @@ export const permMod: ModuleRegistration = {
     'perm/authorized-read': authorizedReadOp as OperationHandler<never, unknown>,
     'perm/read-outbox': readOutboxOp as OperationHandler<never, unknown>,
     'perm/read-denials': readDenialsOp as OperationHandler<never, unknown>,
+    // #1642
+    'perm/swallowed-check': swallowedCheckOp as OperationHandler<never, unknown>,
+    'perm/request-check': requestCheckOp as OperationHandler<never, unknown>,
+    'perm/read-check-log': readCheckLogOp as OperationHandler<never, unknown>,
     // K-42 (#868)
     'perm/write-note': noteWriteOp as OperationHandler<never, unknown>,
     'perm/read-notes': noteReadOp as OperationHandler<never, unknown>,
@@ -1268,6 +1379,9 @@ export const permMod: ModuleRegistration = {
       );
       return { revoked: true };
     }) as OperationHandler<never, unknown>,
+  },
+  consumers: {
+    'perm.check-requested': checkRequestedConsumer,
   },
 };
 

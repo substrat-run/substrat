@@ -109,6 +109,7 @@ import {
   type SearchOptions,
   IDEMPOTENCY_DDL,
   assertIdempotencyKey,
+  assertPermissionKey,
   idempotencyLookupQuery,
   idempotencyPruneStatement,
   idempotencyRecordStatement,
@@ -3980,7 +3981,10 @@ export function defineScopeDO(
       // Lifted so `grant` reuses the SAME check the operation itself passes —
       // a delegation check that could differ from the operation's would be a
       // second opinion about what the caller holds.
-      const runCheck = async (permission: PermissionKey, entity?: EntityRef) => {
+      const runCheck = async (unparsed: PermissionKey, entity?: EntityRef) => {
+        // #1642: parsed before the system actor's early return, which never reaches
+        // the checker — a cast key would otherwise become that path's proof relation.
+        const permission = assertPermissionKey(unparsed);
         if (systemActor) {
           return {
             allowed: true as const,

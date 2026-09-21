@@ -96,10 +96,22 @@ export type Instant = z.infer<typeof instant>;
 export const calendarDate = z.iso.date();
 export type CalendarDate = z.infer<typeof calendarDate>;
 
+/**
+ * The longest permission key, in bytes (#1655). Not a style choice: the checker finds
+ * a subject's grants with `relation LIKE 'granted:<key>%'`, and a Durable Object's
+ * SQLite refuses any LIKE pattern over 50 bytes — node's allows 50 000, so no node
+ * suite can see it. `granted:` is 8 bytes and `%` is 1, leaving 41. A longer key would
+ * parse, deploy, and then make every check of it throw on a hosted scope. The key
+ * alphabet is ASCII, so characters are bytes; it has no `_` or `%`, so it needs no
+ * escaping inside the pattern either.
+ */
+export const PERMISSION_KEY_MAX_LENGTH = 41;
+
 // Module-namespaced permission key, e.g. 'workorder:create'
 export const permissionKey = z
   .string()
   .regex(/^[a-z0-9-]+:[a-z0-9-]+$/)
+  .max(PERMISSION_KEY_MAX_LENGTH)
   .brand<'PermissionKey'>();
 export type PermissionKey = z.infer<typeof permissionKey>;
 

@@ -14,10 +14,12 @@ import {
   type OrgId,
   type PrincipalId,
   delegatedReadParams,
+  moduleManifest,
+  PERMISSION_KEY_MAX_LENGTH,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { permMod } from './modules.js';
+import { permMod, permModManifest } from './modules.js';
 
 const PERM_USE = permissionKey.parse('perm:use');
 const PERM_READ = permissionKey.parse('perm:read');
@@ -350,6 +352,186 @@ export function permissionContractSuite(
       expect(mine).toBeDefined();
       expect(mine!.operation).toBe('perm/authorized-emit');
       expect(mine!.scope_id).toBe(s1);
+    });
+
+    // -- the key is parsed where it enters ctx.check (#1642, #1655 item 3) ----
+    //
+    // The `PermissionKey` brand is compile-time only, so a cast gets past it. Each
+    // malformed case below has a positive twin with a real key, through the same door
+    // and as the same principal — otherwise a refusal would pass just as happily if
+    // `ctx.check` were broken for everyone.
+    describe('a malformed permission key is a programming error, and fails closed (#1642)', () => {
+      const NOT_A_KEY = /not a permission key/;
+      // Held by alice under its real spelling — so a refusal of this one is about the
+      // SPELLING, never about what alice holds.
+      const CAST_KEY = 'Perm:Use' as PermissionKey;
+      const LONG_41 = permissionKey.parse('perm:long-key-at-the-like-pattern-limit01');
+      // Well-formed in every way but length, and cast past the parse that refuses it.
+      const LONG_42 = 'perm:long-key-at-the-like-pattern-limit012' as PermissionKey;
+      const lena: PrincipalId = principalId.parse(ulid()); // LONG_41 via a tenant-level role
+      const lars: PrincipalId = principalId.parse(ulid()); // LONG_41 via a direct scope grant
+      const grantee: PrincipalId = principalId.parse(ulid());
+
+      type DenialRow = { actor: string; permission: string };
+      const denialsFor = async (permission: string) => {
+        const stub = await host.getScope(alice, t1, s1);
+        const rows = await stub.invoke<DenialRow[]>('perm/read-denials');
+        return rows.filter((d) => d.permission === permission).length;
+      };
+      const actedCount = async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        const rows = await stub.invoke<AuthzRow[]>('perm/read-outbox');
+        return rows.filter((r) => r.type === 'perm.acted').length;
+      };
+
+      beforeAll(async () => {
+        await host.admin.defineRole(staff, t1, { key: 'long', permissions: [LONG_41], source: 'vertical' });
+        await host.admin.assignRole(staff, { principalId: lena, roleKey: 'long', node: { tenantId: t1, scopeId: null } });
+        await host.admin.grant(staff, {
+          principalId: lars,
+          permission: LONG_41,
+          node: { tenantId: t1, scopeId: s1 },
+          grantedBy: alice,
+        });
+      });
+
+      describe('the length bound (#1655): 41 bytes keeps `granted:<key>%` inside the DO’s 50', () => {
+        const manifestWith = (key: string) =>
+          moduleManifest.safeParse({
+            ...permModManifest,
+            permissions: [{ key, description: 'a key at the boundary' }],
+          });
+
+        it('a manifest declaring a 41-byte key parses', () => {
+          expect(LONG_41).toHaveLength(PERMISSION_KEY_MAX_LENGTH);
+          expect(manifestWith(LONG_41).success).toBe(true);
+        });
+
+        it('a manifest declaring a 42-byte key is refused at parse', () => {
+          expect(LONG_42).toHaveLength(PERMISSION_KEY_MAX_LENGTH + 1);
+          expect(permissionKey.safeParse(LONG_42).success).toBe(false);
+          expect(manifestWith(LONG_42).success).toBe(false);
+        });
+
+        // The half no parse can prove: the LIKE pattern at 50 bytes actually runs on
+        // this adapter's store. On a Durable Object that is the real 50-byte limit;
+        // one byte more and every read below throws `LIKE or GLOB pattern too complex`.
+        it('a 41-byte key is granted and checked, through a role and through a direct grant', async () => {
+          expect((await probe(lena, s1, LONG_41)).allowed).toBe(true); // role at the tenant
+          expect((await probe(lars, s1, LONG_41)).allowed).toBe(true); // tuple in the scope
+          expect((await probe(bob, s1, LONG_41)).allowed).toBe(false); // the door is not open to all
+        });
+
+        it('a 42-byte key cast past the parse is refused at ctx.check, before any LIKE runs', async () => {
+          await expect(probe(lena, s1, LONG_42)).rejects.toThrow(NOT_A_KEY);
+        });
+      });
+
+      describe('an operation (the principal’s own check)', () => {
+        it('uncaught: the operation fails with the key named — not as a denial — and writes nothing', async () => {
+          const deniedBefore = await denialsFor(CAST_KEY);
+          const actedBefore = await actedCount();
+          const stub = await host.getScope(alice, t1, s1);
+          const err = await stub
+            .invoke('perm/authorized-emit', { permission: CAST_KEY })
+            .then(() => null, (e: unknown) => e as Error);
+          expect(err).not.toBeNull();
+          expect(err!.message).toMatch(NOT_A_KEY);
+          expect(err!.message).toContain('"Perm:Use"');
+          expect(err!.message).not.toMatch(/permission denied/);
+          expect(await denialsFor(CAST_KEY)).toBe(deniedBefore);
+          expect(await actedCount()).toBe(actedBefore); // rolled back
+        });
+
+        it('...while a real key alice does not hold is still refused AND recorded', async () => {
+          const unheld = permissionKey.parse('perm:admin');
+          const deniedBefore = await denialsFor(unheld);
+          const stub = await host.getScope(alice, t1, s1);
+          await expect(stub.invoke('perm/authorized-emit', { permission: unheld })).rejects.toThrow(
+            /permission denied/,
+          );
+          expect(await denialsFor(unheld)).toBe(deniedBefore + 1);
+        });
+
+        it('caught and ignored: the caller is handed nothing, and its event claims no authorization', async () => {
+          const stub = await host.getScope(alice, t1, s1);
+          const out = await stub.invoke<{ allowed: boolean; threw: string | null }>(
+            'perm/swallowed-check',
+            { permission: CAST_KEY },
+          );
+          expect(out.allowed).toBe(false);
+          expect(out.threw).toMatch(NOT_A_KEY);
+          // The emit after the swallowed throw committed — with no K-34 entry, because
+          // no check passed. A caller that ignores the throw has skipped a check; it has
+          // not acquired one.
+          expect((await lastActed()).authorization).toBeNull();
+          expect(await denialsFor(CAST_KEY)).toBe(0);
+        });
+
+        it('...while the same op with the real key is allowed and stamped', async () => {
+          const stub = await host.getScope(alice, t1, s1);
+          const out = await stub.invoke<{ allowed: boolean; threw: string | null }>(
+            'perm/swallowed-check',
+            { permission: PERM_USE },
+          );
+          expect(out).toEqual({ allowed: true, threw: null });
+          expect(JSON.parse((await lastActed()).authorization!)).toEqual([{ permission: PERM_USE }]);
+        });
+      });
+
+      // A consumer runs as the system actor, whose check is allowed WITHOUT asking the
+      // checker. That early return is why the parse sits above it: below it, a cast key
+      // was allowed here, and `ctx.grant` wrote it into `_substrat_tuples`.
+      describe('the system-actor path (a consumer), which never reaches the checker', () => {
+        type CheckLog = {
+          log: { event_id: string; permission: string; allowed: number; threw: string | null; grant_threw: string | null }[];
+          deliveries: { event_id: string; error: string | null; permission: string }[];
+          tuples: { subject: string; relation: string; object: string }[];
+        };
+        const requestCheck = async (permission: string, swallow: boolean): Promise<CheckLog> => {
+          const stub = await host.getScope(alice, t1, s1);
+          await stub.invoke('perm/request-check', { permission, swallow, principal: grantee });
+          // Consumers drain in the invoke's tail; this read comes after it.
+          return stub.invoke<CheckLog>('perm/read-check-log');
+        };
+
+        it('uncaught: the delivery dead-letters naming the key, and the consumer’s write is gone', async () => {
+          const out = await requestCheck(CAST_KEY, false);
+          const mine = out.deliveries.filter((d) => d.permission === CAST_KEY);
+          expect(mine).toHaveLength(1);
+          expect(mine[0]!.error).toMatch(NOT_A_KEY);
+          expect(out.log.filter((r) => r.permission === CAST_KEY)).toEqual([]);
+        });
+
+        it('...while a real key is allowed, delivered, and written', async () => {
+          const out = await requestCheck(PERM_READ, false);
+          const mine = out.deliveries.filter((d) => d.permission === PERM_READ);
+          expect(mine).toHaveLength(1);
+          expect(mine[0]!.error).toBeNull();
+          expect(out.log.filter((r) => r.permission === PERM_READ).map((r) => r.allowed)).toEqual([1]);
+        });
+
+        it('caught and ignored: no allow, and ctx.grant writes no tuple under the cast key', async () => {
+          const out = await requestCheck(CAST_KEY, true);
+          const [row] = out.log.filter((r) => r.permission === CAST_KEY);
+          expect(row).toBeDefined();
+          expect(row!.allowed).toBe(0);
+          expect(row!.threw).toMatch(NOT_A_KEY);
+          expect(row!.grant_threw).toMatch(NOT_A_KEY);
+          expect(out.tuples.filter((t) => t.relation === `granted:${CAST_KEY}`)).toEqual([]);
+        });
+
+        it('...while the real key is allowed and its grant is written', async () => {
+          const out = await requestCheck(PERM_USE, true);
+          const [row] = out.log.filter((r) => r.permission === PERM_USE);
+          expect(row).toMatchObject({ allowed: 1, threw: null, grant_threw: null });
+          expect(out.tuples).toContainEqual({
+            subject: `principal:${grantee}`,
+            relation: `granted:${PERM_USE}`,
+            object: 'item:check-requested',
+          });
+        });
+      });
     });
 
     // -- the invocation a refusal belongs to (#1525) --------------------------
