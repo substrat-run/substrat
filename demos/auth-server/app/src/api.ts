@@ -265,7 +265,6 @@ export interface AdminSignInMethod {
   provider: string;
   /** The subject the upstream knows them by — what tells two Google accounts apart. */
   accountId: string;
-  issuer: string | null;
   createdAt: string | null;
   /**
    * Whether this row is actually a way in — the hash's existence, which is the only thing

@@ -31,9 +31,9 @@ import { buildAuth } from '../src/auth.js';
  *   1. Re-emitting produces exactly what is checked in (`--check`).
  *   2. The emitted DDL, executed against a REAL database, satisfies the library. A string
  *      comparison proves the file matches the generator; only running it proves the generator
- *      is right — this is the check that would have caught `account.issuer`, a column 1.7
- *      added to a table that already existed, which `CREATE TABLE IF NOT EXISTS` cannot add
- *      and a diff would not have flagged.
+ *      is right — this is the check that would have caught `account.issuer`, a column 1.7.0
+ *      added to a table that already existed (and 1.7.3 removed again), which
+ *      `CREATE TABLE IF NOT EXISTS` can neither add nor drop and a diff would not have flagged.
  */
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -92,14 +92,17 @@ describe('the generated schema', () => {
       allowSignup: true,
     });
 
-    // Sign-up writes `user`, `account` (including 1.7's `issuer`) and `session`; registering a
+    // Sign-up writes `user`, `account` and `session`; registering a
     // client writes `oauth_client`, whose `redirect_uris` is a `string[]` the adapter
     // serializes itself — SQLite is not a JSON provider, so a `mode: 'json'` column here would
     // double-encode and this is where that would show.
     const created = await auth.api.signUpEmail({ body: { email: 'ada@acme.test', password: 'password-1234', name: 'Ada' } });
     expect(created.user.id).toBeTruthy();
-    expect((db.prepare('SELECT issuer FROM account WHERE user_id = ?').get(created.user.id) as { issuer: string }).issuer)
-      .toBe('local:credential');
+    // Keyed `(provider_id, account_id)` — the row Better Auth 1.7.3+ writes, with no `issuer`.
+    expect(db.prepare('SELECT provider_id, account_id FROM account WHERE user_id = ?').get(created.user.id)).toEqual({
+      provider_id: 'credential',
+      account_id: created.user.id,
+    });
 
     const registered = await auth.handler(
       new Request('http://localhost:8877/api/auth/oauth2/register', {

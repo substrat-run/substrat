@@ -85,7 +85,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // BEFORE the DDL: `CREATE TABLE IF NOT EXISTS` cannot fix a table whose shape changed,
       // and `oauthProvider` reuses two of the old plugin's table names with new columns.
       const upgrade = upgradeLegacySchema(ctx.storage.sql);
-      if (upgrade.renamed.length || upgrade.added.length) {
+      if (upgrade.renamed.length || upgrade.added.length || upgrade.dropped.length) {
         console.log('auth-server: schema upgraded', JSON.stringify(upgrade));
       }
       for (const stmt of SCHEMA_STATEMENTS) ctx.storage.sql.exec(stmt);

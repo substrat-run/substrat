@@ -325,10 +325,11 @@ export function socialProvidersFrom(rows: ProviderRow[]): Record<string, Record<
  * observed; see `resolveIssuerEndpoints`, which is where discovery now happens, once, at
  * save time).
  *
- * `accountIssuer`/`accountSubject` are what discovery mode would have derived: the upstream's
- * self-declared issuer as the account namespace, and the id_token's `sub` as the subject
- * (`fetchUserInfo` maps it to `id`; the fallback order never switches fields for a given
- * provider, which is the stability the plugin's docs demand). The scopes are pinned to OIDC's
+ * `accountSubject` is what discovery mode would have derived: the id_token's `sub` as the
+ * subject (`fetchUserInfo` maps it to `id`; the fallback order never switches fields for a
+ * given provider, which is the stability the plugin's docs demand). The account key is
+ * `(providerId, accountId)` — the provider row's own id is its namespace, since Better Auth
+ * 1.7.3 removed `accountIssuer` along with `account.issuer`. The scopes are pinned to OIDC's
  * sign-in triple rather than asked for — this issuer federates IDENTITY, and an upstream's
  * API scopes are some other feature's problem — and `openid` in them is what guarantees the
  * id_token that `sub` rides in. `pkce` is stated even though it is the plugin's default,
@@ -340,7 +341,10 @@ export function socialProvidersFrom(rows: ProviderRow[]): Record<string, Record<
 export function genericProvidersFrom(rows: ProviderRow[]): GenericOAuthConfig[] | undefined {
   const enabled = live(rows).filter((row) => isGenericRow(row) && row.endpoints);
   if (!enabled.length) return undefined;
-  return enabled.map((row) => {
+  // The annotation is load-bearing: a literal built inside `.map` is not checked for unknown
+  // keys, and `accountIssuer` — removed in Better Auth 1.7.3 — went on compiling and silently
+  // doing nothing until this line said what the element is.
+  return enabled.map((row): GenericOAuthConfig => {
     const endpoints = JSON.parse(row.endpoints!) as ProviderEndpoints;
     return {
       providerId: row.provider_id,
@@ -349,7 +353,6 @@ export function genericProvidersFrom(rows: ProviderRow[]): GenericOAuthConfig[] 
       tokenUrl: endpoints.token_endpoint,
       ...(endpoints.userinfo_endpoint ? { userInfoUrl: endpoints.userinfo_endpoint } : {}),
       ...(endpoints.end_session_endpoint ? { endSessionEndpoint: endpoints.end_session_endpoint } : {}),
-      accountIssuer: endpoints.issuer,
       accountSubject: ({ profile }) => String(profile.sub ?? profile.id ?? ''),
       clientId: row.client_id,
       clientSecret: row.client_secret,

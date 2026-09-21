@@ -5,13 +5,14 @@ import { upgradeLegacySchema } from '../db/upgrade.js';
 import { introspectTable, REDACTED, type SqlExec } from '../src/introspect.js';
 
 /**
- * Booting the 1.7 issuer on a database the 1.6 one wrote.
+ * Booting the current issuer on a database an older one wrote.
  *
  * `CREATE TABLE IF NOT EXISTS` is this vertical's whole migration story, and it is silently
- * wrong across this move in two ways — a table that gained a required column, and two table
- * NAMES reused with different columns. Both failures land at runtime, in a Durable Object,
- * against a store that already has users in it. So the upgrade runs on every boot, and this
- * builds a genuine 1.6-shaped database to prove it.
+ * wrong across these moves in three ways — a table that carries a required column nothing
+ * writes any more, a table that gained a column, and two table NAMES reused with different
+ * columns. All three land at runtime, in a Durable Object, against a store that already has
+ * users in it. So the upgrade runs on every boot, and this builds genuine 1.6-shaped and
+ * 1.7.0–1.7.2-shaped databases to prove it.
  *
  * The fixture below is the OLD schema, verbatim from `db/ddl.ts` as it stood before the
  * migration. It is deliberately a frozen copy rather than an import: the point is to model a
@@ -25,7 +26,7 @@ const LEGACY_DDL = [
     email_verified INTEGER NOT NULL DEFAULT 0, image TEXT,
     created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0,
     role TEXT, banned INTEGER DEFAULT 0, ban_reason TEXT, ban_expires INTEGER)`,
-  // No `issuer` column — that is 1.7's addition.
+  // No `issuer` column — 1.7.0–1.7.2 added it and 1.7.3 took it back out (see `AS_1_7_0`).
   `CREATE TABLE account (
     id TEXT PRIMARY KEY NOT NULL, account_id TEXT NOT NULL, provider_id TEXT NOT NULL,
     user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
@@ -62,6 +63,38 @@ const LEGACY_DDL = [
     id TEXT PRIMARY KEY NOT NULL, public_key TEXT NOT NULL, private_key TEXT NOT NULL,
     created_at INTEGER NOT NULL DEFAULT 0, expires_at INTEGER)`,
 ];
+
+/**
+ * `account` as Better Auth 1.7.0–1.7.2 (and this issuer's earlier DDL) created it: a required
+ * `issuer` and a unique `(issuer, account_id)` index. Better Auth 1.7.3 stopped writing the
+ * column, so on a store shaped like this every sign-up and account link is a NOT NULL failure.
+ */
+const AS_1_7_0 = [
+  'DROP TABLE account',
+  `CREATE TABLE account (
+    id TEXT PRIMARY KEY NOT NULL, issuer TEXT NOT NULL, account_id TEXT NOT NULL, provider_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    access_token TEXT, refresh_token TEXT, id_token TEXT,
+    access_token_expires_at INTEGER, refresh_token_expires_at INTEGER, scope TEXT, password TEXT,
+    created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)`,
+  'CREATE INDEX account_user_id_idx ON account (user_id)',
+  'CREATE UNIQUE INDEX account_issuer_account_id_idx ON account (issuer, account_id)',
+];
+
+/** Turn the seeded 1.6 store into one that ran 1.7.0–1.7.2, keeping the two people in it. */
+function asRanBy172(database: Database.Database): void {
+  for (const stmt of AS_1_7_0) database.exec(stmt);
+  database
+    .prepare(
+      "INSERT INTO account (id, issuer, account_id, provider_id, user_id, password) VALUES ('a1', 'local:credential', 'ada@acme.test', 'credential', 'u1', 'scrypt$hash')",
+    )
+    .run();
+  database
+    .prepare(
+      "INSERT INTO account (id, issuer, account_id, provider_id, user_id, id_token) VALUES ('a2', 'https://accounts.google.com', 'google-sub-1', 'google', 'u1', 'idt')",
+    )
+    .run();
+}
 
 let db: Database.Database;
 let sql: SqlExec;
@@ -113,17 +146,13 @@ beforeEach(() => {
 });
 
 describe('upgrading a 1.6 store', () => {
-  it('adds account.issuer and backfills it, so existing passwords keep working', () => {
+  it('does not add account.issuer — 1.7.3 stopped writing it, so a column nothing fills would be a trap', () => {
     const upgrade = upgradeLegacySchema(sql);
 
-    expect(upgrade.added).toContain('account.issuer');
-    expect(columnsOf('account')).toContain('issuer');
-    // The value Better Auth writes for a provider with no issuer of its own. Wrong here and
-    // every existing password sign-in fails to find its account.
-    expect((db.prepare("SELECT issuer FROM account WHERE id = 'a1'").get() as { issuer: string }).issuer).toBe(
-      'local:credential',
-    );
-    // And the credential itself is untouched. This is user data, not OAuth state.
+    expect(upgrade.added).not.toContain('account.issuer');
+    expect(upgrade.dropped).toEqual([]);
+    expect(columnsOf('account')).not.toContain('issuer');
+    // The credential itself is untouched. This is user data, not OAuth state.
     expect((db.prepare("SELECT password FROM account WHERE id = 'a1'").get() as { password: string }).password).toBe(
       'scrypt$hash',
     );
@@ -178,7 +207,7 @@ describe('upgrading a 1.6 store', () => {
     for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
 
     const second = upgradeLegacySchema(sql);
-    expect(second).toEqual({ renamed: [], added: [] });
+    expect(second).toEqual({ renamed: [], added: [], dropped: [] });
     // Notably it does NOT rename the freshly created tables: they are matched by a column
     // only the old shape has, not by existence.
     expect(columnsOf('oauth_access_token')).toContain('token');
@@ -188,7 +217,7 @@ describe('upgrading a 1.6 store', () => {
   it('does nothing at all to a fresh store', () => {
     const fresh = new Database(':memory:');
     for (const stmt of SCHEMA_STATEMENTS) fresh.exec(stmt);
-    expect(upgradeLegacySchema(sqlExecOf(fresh))).toEqual({ renamed: [], added: [] });
+    expect(upgradeLegacySchema(sqlExecOf(fresh))).toEqual({ renamed: [], added: [], dropped: [] });
   });
 
   it('adds issuer and label to a pre-generic identity_provider, keeping its rows', () => {
@@ -221,7 +250,7 @@ describe('upgrading a 1.6 store', () => {
     // NULL is the backfill: every pre-existing row IS a catalogue row, and NULL is what marks one.
     expect(row).toEqual({ client_secret: 'entra-secret', issuer: null, label: null, endpoints: null });
     // Idempotent, like the rest of the upgrade.
-    expect(upgradeLegacySchema(sqlExecOf(store))).toEqual({ renamed: [], added: [] });
+    expect(upgradeLegacySchema(sqlExecOf(store))).toEqual({ renamed: [], added: [], dropped: [] });
   });
 
   it('finishes an interrupted identity_provider upgrade — each column is guarded on its own', () => {
@@ -296,15 +325,139 @@ describe('upgrading a 1.6 store', () => {
     expect(missing).toEqual([]);
   });
 
-  it('finishes an interrupted account upgrade — the issuer backfill reruns until no row is null', () => {
-    // The crash window on the other table: the ALTER landed, the fill did not. The fill is
-    // idempotent (`WHERE issuer IS NULL`, and the adapter always writes the column), so it
-    // runs on every boot rather than only beside its ALTER.
-    db.exec('ALTER TABLE account ADD COLUMN issuer TEXT');
+  it('leaves no surviving column the current schema does not declare and cannot be left empty', () => {
+    // The other direction of the test above, and the one that would have caught this whole
+    // class: a column the schema no longer has, that is NOT NULL with no default, is a store
+    // where the adapter's insert fails — which is `account.issuer` after Better Auth 1.7.3.
+    asRanBy172(db);
+    upgradeLegacySchema(sql);
+    for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
+
+    const fresh = new Database(':memory:');
+    for (const stmt of SCHEMA_STATEMENTS) fresh.exec(stmt);
+    const tables = (
+      fresh.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as {
+        name: string;
+      }[]
+    ).map((r) => r.name);
+
+    const stranded = tables.flatMap((table) => {
+      const declared = new Set((fresh.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[]).map((c) => c.name));
+      return (
+        db.prepare(`PRAGMA table_info("${table}")`).all() as { name: string; notnull: number; dflt_value: unknown }[]
+      )
+        .filter((c) => !declared.has(c.name) && c.notnull === 1 && c.dflt_value === null)
+        .map((c) => `${table}.${c.name}`);
+    });
+    expect(stranded).toEqual([]);
+  });
+});
+
+describe('upgrading a store that ran Better Auth 1.7.0–1.7.2', () => {
+  beforeEach(() => asRanBy172(db));
+
+  it('drops account.issuer and its index, keeping every row and credential', () => {
     const upgrade = upgradeLegacySchema(sql);
-    expect(upgrade.added).not.toContain('account.issuer');
-    expect((db.prepare("SELECT issuer FROM account WHERE id = 'a1'").get() as { issuer: string }).issuer).toBe(
-      'local:credential',
-    );
+
+    expect(upgrade.dropped).toEqual(['account.issuer']);
+    expect(columnsOf('account')).not.toContain('issuer');
+    expect(
+      (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'account_issuer_account_id_idx'").all() as unknown[])
+        .length,
+    ).toBe(0);
+    // People keep their ways in. Nothing about a row but the dropped column changed.
+    expect(
+      db.prepare('SELECT id, provider_id, account_id, password, id_token FROM account ORDER BY id').all(),
+    ).toEqual([
+      { id: 'a1', provider_id: 'credential', account_id: 'ada@acme.test', password: 'scrypt$hash', id_token: null },
+      { id: 'a2', provider_id: 'google', account_id: 'google-sub-1', password: null, id_token: 'idt' },
+    ]);
+  });
+
+  it('refuses to drop the column while two rows differ only by issuer, and changes nothing', () => {
+    // A provider id pointed at a second upstream: under the old `(issuer, account_id)` key these
+    // are two accounts, under 1.7.3's `(provider_id, account_id)` they are one key with two
+    // rows, and `issuer` is the only thing that tells them apart. Dropping it would make that
+    // permanent, so the upgrade must stop with the table exactly as it found it.
+    db.prepare(
+      "INSERT INTO account (id, issuer, account_id, provider_id, user_id) VALUES ('a3', 'https://old-upstream.test', 'shared-sub', 'acme', 'u1')",
+    ).run();
+    db.prepare(
+      "INSERT INTO account (id, issuer, account_id, provider_id, user_id) VALUES ('a4', 'https://new-upstream.test', 'shared-sub', 'acme', 'u1')",
+    ).run();
+    const before = db.prepare('SELECT * FROM account ORDER BY id').all();
+
+    expect(() => upgradeLegacySchema(sql)).toThrow(/cannot drop account\.issuer.*acme × 1/s);
+
+    expect(columnsOf('account')).toContain('issuer');
+    expect(db.prepare('SELECT * FROM account ORDER BY id').all()).toEqual(before);
+    expect(
+      (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'account_issuer_account_id_idx'").all() as unknown[])
+        .length,
+    ).toBe(1);
+    // Still refuses on the next boot, until an operator resolves it — never a silent drop.
+    expect(() => upgradeLegacySchema(sql)).toThrow(/cannot drop account\.issuer/);
+  });
+
+  it('names providers and counts in that refusal, never an account id', () => {
+    // A BankID `account_id` is a personal number, and this message goes to a log.
+    for (const [id, issuer] of [['b1', 'x'], ['b2', 'y']] as const) {
+      db.prepare('INSERT INTO account (id, issuer, account_id, provider_id, user_id) VALUES (?, ?, ?, ?, ?)').run(
+        id,
+        issuer,
+        '199001011234',
+        'bankid',
+        'u1',
+      );
+    }
+    let message = '';
+    try {
+      upgradeLegacySchema(sql);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('bankid × 1');
+    expect(message).not.toContain('199001011234');
+  });
+
+  it('does not mistake the same account id at two providers for a collision', () => {
+    // The pair is `(provider_id, account_id)`: one person holding the same id at two providers
+    // is the ordinary case, and the one the guide warns a compound key must still allow.
+    db.prepare("INSERT INTO account (id, issuer, account_id, provider_id, user_id) VALUES ('c1', 'https://a.test', 'same-id', 'acme', 'u1')").run();
+    db.prepare("INSERT INTO account (id, issuer, account_id, provider_id, user_id) VALUES ('c2', 'https://b.test', 'same-id', 'other', 'u1')").run();
+    expect(upgradeLegacySchema(sql).dropped).toEqual(['account.issuer']);
+  });
+
+  it('takes a write that names no issuer — the sign-up that failed before the drop', () => {
+    // What Better Auth 1.7.3+ does for a new sign-up: a row with no `issuer`. On the store as
+    // 1.7.0–1.7.2 left it this is a NOT NULL failure, for password sign-ups included.
+    expect(() =>
+      db
+        .prepare("INSERT INTO account (id, account_id, provider_id, user_id) VALUES ('a3', 'x', 'bankid', 'u1')")
+        .run(),
+    ).toThrow(/NOT NULL constraint failed: account\.issuer/);
+
+    upgradeLegacySchema(sql);
+    for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
+
+    db.prepare("INSERT INTO account (id, account_id, provider_id, user_id) VALUES ('a3', 'x', 'bankid', 'u1')").run();
+    expect((db.prepare("SELECT count(*) AS c FROM account").get() as { c: number }).c).toBe(3);
+  });
+
+  it('is idempotent, and does not bring the column back on the next boot', () => {
+    upgradeLegacySchema(sql);
+    for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
+    expect(upgradeLegacySchema(sql)).toEqual({ renamed: [], added: [], dropped: [] });
+    expect(columnsOf('account')).not.toContain('issuer');
+  });
+
+  it('finishes an interrupted drop — the index went, the column did not', () => {
+    // Nothing wraps these statements in a transaction on the Node runtime, so a boot can stop
+    // between them. Guarded per statement: the column drop must not depend on the index still
+    // being there to find.
+    db.exec('DROP INDEX account_issuer_account_id_idx');
+    const upgrade = upgradeLegacySchema(sql);
+    expect(upgrade.dropped).toEqual(['account.issuer']);
+    expect(columnsOf('account')).not.toContain('issuer');
   });
 });

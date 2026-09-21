@@ -311,7 +311,7 @@ console.log(`                                    redirect ${DEMO_CLIENT.redirect
 if (seededConsole) {
   console.log(`  admin console application         client_id=${CONSOLE_CLIENT_ID}  (theme + sign-in methods for THIS screen)`);
 }
-if (upgraded.renamed.length || upgraded.added.length) {
+if (upgraded.renamed.length || upgraded.added.length || upgraded.dropped.length) {
   console.log(`  schema upgraded                   ${JSON.stringify(upgraded)}`);
 }
 console.log(`  data                              ${dataDir}\n`);

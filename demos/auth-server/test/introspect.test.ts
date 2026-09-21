@@ -38,8 +38,8 @@ beforeEach(() => {
     "INSERT INTO user (id, name, email, updated_at) VALUES ('u1', 'Ada', 'ada@acme.test', 0)",
   ).run();
   db.prepare(
-    `INSERT INTO account (id, issuer, account_id, provider_id, user_id, password, access_token, updated_at)
-     VALUES ('a1', 'local:credential', 'ada@acme.test', 'credential', 'u1', 'scrypt$super-secret-hash', 'tok-123', 0)`,
+    `INSERT INTO account (id, account_id, provider_id, user_id, password, access_token, updated_at)
+     VALUES ('a1', 'ada@acme.test', 'credential', 'u1', 'scrypt$super-secret-hash', 'tok-123', 0)`,
   ).run();
   db.prepare(
     "INSERT INTO session (id, expires_at, token, updated_at, user_id) VALUES ('s1', 9999999999, 'sess-token-abc', 0, 'u1')",

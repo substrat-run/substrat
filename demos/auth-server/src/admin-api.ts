@@ -229,7 +229,6 @@ interface SignInMethodRow {
   id: string;
   provider_id: string;
   account_id: string;
-  issuer: string | null;
   created_at: number | null;
   usable: number;
 }
@@ -241,7 +240,7 @@ interface SignInMethodRow {
 function readSignInMethods(sql: SqlExec, userId: string): SignInMethodRow[] {
   return sql
     .exec(
-      `SELECT id, provider_id, account_id, issuer, created_at, ${METHOD_IS_USABLE} AS usable
+      `SELECT id, provider_id, account_id, created_at, ${METHOD_IS_USABLE} AS usable
          FROM account WHERE user_id = ? ORDER BY created_at ASC`,
       userId,
     )
@@ -546,7 +545,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
    * Remove an upstream — the credential goes with the row, and this issuer stops offering the
    * button. Accounts already linked to it are NOT touched: a `user`/`account` pair is the
    * person's identity here, not the provider's, and deleting people is the admin API's verb.
-   * Re-adding the provider later re-links them by `(issuer, account_id)`.
+   * Re-adding the provider under the same id later re-links them by `(provider_id, account_id)`.
    */
   app.delete('/providers/:providerId', (c) => {
     const providerId = c.req.param('providerId');
@@ -767,7 +766,6 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
         id: row.id,
         provider: row.provider_id,
         accountId: row.account_id,
-        issuer: row.issuer,
         createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
         usable: Boolean(row.usable),
       })),

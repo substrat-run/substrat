@@ -56,7 +56,6 @@ export const account = sqliteTable(
   'account',
   {
   id: text('id').primaryKey().notNull(),
-  issuer: text('issuer').notNull(),
   accountId: text('account_id').notNull(),
   providerId: text('provider_id').notNull(),
   userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }).notNull(),
@@ -70,7 +69,7 @@ export const account = sqliteTable(
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).default(nowMs).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   },
-  (table) => [index('account_user_id_idx').on(table.userId), uniqueIndex('account_issuer_account_id_idx').on(table.issuer, table.accountId)],
+  (table) => [index('account_user_id_idx').on(table.userId)],
 );
 
 export const verification = sqliteTable(

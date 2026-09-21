@@ -42,7 +42,6 @@ export const SCHEMA_STATEMENTS: string[] = [
     sign_in_provider TEXT)`,
   `CREATE TABLE IF NOT EXISTS account (
     id TEXT PRIMARY KEY NOT NULL,
-    issuer TEXT NOT NULL,
     account_id TEXT NOT NULL,
     provider_id TEXT NOT NULL,
     user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
@@ -179,7 +178,6 @@ export const SCHEMA_STATEMENTS: string[] = [
     expires_at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS session_user_id_idx ON session (user_id)`,
   `CREATE INDEX IF NOT EXISTS account_user_id_idx ON account (user_id)`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS account_issuer_account_id_idx ON account (issuer, account_id)`,
   `CREATE INDEX IF NOT EXISTS verification_identifier_idx ON verification (identifier)`,
   `CREATE INDEX IF NOT EXISTS oauth_client_user_id_idx ON oauth_client (user_id)`,
   `CREATE INDEX IF NOT EXISTS oauth_client_resource_client_id_idx ON oauth_client_resource (client_id)`,

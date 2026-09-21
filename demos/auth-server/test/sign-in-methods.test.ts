@@ -83,9 +83,9 @@ const removeMethod = (userId: string, accountId: string, cookie: string): Promis
 /** Write a connected upstream straight into `account` — no real provider round trip in a unit test. */
 function linkUpstream(userId: string, id: string, provider: string, subject: string): void {
   db.prepare(
-    `INSERT INTO account (id, issuer, account_id, provider_id, user_id, access_token, refresh_token, id_token, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, `https://${provider}.test`, subject, provider, userId, 'at-secret', 'rt-secret', 'idt-secret', Date.now());
+    `INSERT INTO account (id, account_id, provider_id, user_id, access_token, refresh_token, id_token, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, subject, provider, userId, 'at-secret', 'rt-secret', 'idt-secret', Date.now());
 }
 
 const accountIdsOf = (userId: string): string[] =>
@@ -95,7 +95,6 @@ interface WireMethod {
   id: string;
   provider: string;
   accountId: string;
-  issuer: string | null;
   createdAt: string | null;
   usable: boolean;
 }
@@ -189,7 +188,6 @@ describe("an administrator's read of another person's sign-in methods", () => {
       'id',
       'provider_id',
       'account_id',
-      'issuer',
       'created_at',
       "(provider_id <> 'credential' OR (password IS NOT NULL AND password <> '')) AS usable",
     ]);
@@ -214,14 +212,15 @@ describe("an administrator's read of another person's sign-in methods", () => {
     // Written straight into `account`, because a real Google round trip is not available in a
     // unit test and the shape of the row is what the screen reads.
     db.prepare(
-      `INSERT INTO account (id, issuer, account_id, provider_id, user_id, access_token, id_token, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run('acct-google', 'https://accounts.google.com', 'google-subject-42', 'google', memberId, 'at-secret', 'idt-secret', Date.now());
+      `INSERT INTO account (id, account_id, provider_id, user_id, access_token, id_token, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run('acct-google', 'google-subject-42', 'google', memberId, 'at-secret', 'idt-secret', Date.now());
 
     const methods = await methodsFor(memberId, await signInAs(ADMIN));
     const google = methods.find((m) => m.provider === 'google');
     expect(google?.accountId).toBe('google-subject-42');
-    expect(google?.issuer).toBe('https://accounts.google.com');
+    // The key is `(provider, accountId)` since Better Auth 1.7.3: there is no issuer to show.
+    expect(google).not.toHaveProperty('issuer');
     expect(JSON.stringify(methods)).not.toContain('at-secret');
     expect(JSON.stringify(methods)).not.toContain('idt-secret');
   });
