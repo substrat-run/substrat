@@ -55,33 +55,38 @@ microseconds. Nearly all interactive reads belong here.
 When a screen needs a shape the normalized tables don't serve cheaply — a dispatcher board
 joining jobs, customers, technicians and totals — don't reach for a cache or a replica.
 Keep a **projection table in the scope's own database**, maintained by an event consumer
-in the same transaction as the write it derives from:
+in the same serialized turn as the write it derives from:
 
 ```ts
 // The vertical's own module registration.
 export const fsmModule: ModuleRegistration = {
   manifest: {
     // ...
-    events: { emits: [], consumes: ['workorder.completed'] },
+    events: { emits: [], consumes: [{ type: 'workorder.completed', schemaVersion: 1 }] },
   },
   consumers: {
     // Fed by the engine's event. Own table, keyed by the engine's id —
-    // never a column added upstream, never a read into engine tables.
+    // never a column added upstream, never a read into engine tables. The
+    // payload is parsed by this consumer's own schema, not the engine's types.
     'workorder.completed': (ctx, event) => {
-      const { workOrderId, completedAt } = JobCompleted.parse(event.payload);
+      const { orderId } = JobCompleted.parse(event.payload);
       ctx.sql.exec(
         `UPDATE fsm_job_board SET status = ?, completed_at = ? WHERE job_id = ?`,
-        ['completed', completedAt, workOrderId],
+        ['completed', event.occurredAt, orderId],
       );
     },
   },
 };
 ```
 
-The read is then one indexed scan of one flat table. There is **no staleness**, because
-there is no second store — the projection commits with the write that caused it. This is
-the same [side-table pattern](/concepts/modules) verticals already use to extend engine
-entities, applied to read performance.
+The read is then one indexed scan of one flat table. There is **no staleness a reader can
+see**, because there is no second store. The consumer runs right after the write commits, in
+its own transaction, inside the same serialized turn and before the call returns. So neither
+the caller nor any other operation on the scope can read the gap between them. If the scope
+is interrupted inside that gap, the delivery journal hands the event over again. That is why
+consumers are written to be idempotent ([Events & audit](/concepts/events#delivery-semantics)).
+This is the same [side-table pattern](/concepts/modules) verticals already use to extend
+engine entities, applied to read performance.
 
 ### 2. External read model — the escape hatch
 
