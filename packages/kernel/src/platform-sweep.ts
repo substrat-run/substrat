@@ -164,7 +164,7 @@ export interface PlatformSweepOptions {
    * The behind scopes are ordered by id and the pass takes a contiguous window of
    * `provisionReconcileBatch` from a random starting point, wrapping. A FIXED start would
    * let installs that fail on every pass hold the same slots forever and starve every
-   * healthy one behind them; a random start gives each behind scope a chance of at least
+   * healthy one behind them; a random start gives each behind scope a chance of
    * batch/behind per pass however many of the others keep failing. Injectable so that
    * property is tested rather than hoped for.
    */
