@@ -351,6 +351,26 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect(older.calls).toHaveLength(0);
   });
 
+  // #1524: the size behind the on-demand storage reading. It sits behind the same
+  // platform-secret gate as every sibling, and a host that predates the method answers
+  // 501 rather than 0, because a 0 would be summed into a tenant's storage as a real scope.
+  it('serves a scope database size behind the gate, and 501s on a host that cannot read one', async () => {
+    const url = `/internal/database-size?scopeId=${SCOPE}`;
+    const host = fakeHost({ databaseSizeLocal: async (s) => (s === SCOPE ? 12_288 : -1) });
+    const ok = await appWith(host).request(url, { headers: authed() }, ENV);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ bytes: 12_288 });
+
+    expect((await appWith(host).request(url, {}, ENV)).status).toBe(403);
+    expect((await appWith(host).request(url, { headers: { [PLATFORM_SECRET_HEADER]: 'nope' } }, ENV)).status).toBe(403);
+    expect((await appWith(host).request('/internal/database-size?scopeId=nope', { headers: authed() }, ENV)).status).toBe(400);
+
+    const older = fakeHost();
+    const refused = await appWith(older).request(url, { headers: authed() }, ENV);
+    expect(refused.status).toBe(501);
+    expect((await refused.json()).error).toMatch(/database size/);
+  });
+
   // #618: the journal read is the platform's door to a settled intent's full `last_error`,
   // which lives in THIS deployment's DO. The query string is the filter — parsed here, not
   // trusted onward — so a console can ask for one provider's traffic.

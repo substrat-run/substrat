@@ -415,3 +415,38 @@ describe('VerticalClient → runPlatformSweep — an old vertical’s unvalidate
     expect(report.eventDrain).not.toHaveProperty('skipped');
   });
 });
+
+/**
+ * #1524: a scope's database size, read through the deployment that holds it. The answer
+ * lands in a sum, so anything that is not a size must throw here rather than read as 0,
+ * which would pass for a real, small scope.
+ */
+describe('VerticalClient — database size (#1524)', () => {
+  const answering = (status: number, body: string, seen: string[] = []) =>
+    new VerticalClient({
+      fetch: (async (input: string) => {
+        seen.push(input);
+        return new Response(body, { status });
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('asks the database-size route for the scope and reads `bytes`', async () => {
+    const seen: string[] = [];
+    await expect(answering(200, JSON.stringify({ bytes: 8192 }), seen).databaseSize(s)).resolves.toBe(8192);
+    expect(seen).toHaveLength(1);
+    expect(new URL(seen[0]!).pathname).toBe('/internal/database-size');
+    expect(new URL(seen[0]!).searchParams.get('scopeId')).toBe(s);
+  });
+
+  it('a 200 without a size is a wire disagreement, not a zero', async () => {
+    for (const body of [{}, { bytes: '8192' }, { bytes: -1 }, { bytes: 1.5 }]) {
+      await expect(answering(200, JSON.stringify(body)).databaseSize(s)).rejects.toThrow(/without a size/);
+    }
+  });
+
+  it('a deployment that predates the route refuses, and the refusal propagates', async () => {
+    await expect(answering(501, JSON.stringify({ error: 'cannot read a database size' })).databaseSize(s)).rejects.toThrow();
+    await expect(answering(404, '404 Not Found').databaseSize(s)).rejects.toThrow();
+  });
+});

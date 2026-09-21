@@ -6271,6 +6271,16 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'scopeMigrationBookmarks', { tenantId, scopeId }, null, 0);
         return [];
       },
+      scopeDatabaseSize: async (actor, tenantId, scopeId) => {
+        // #1524: the SQLite twin of a DO's `databaseSize`. It counts allocated pages,
+        // free ones included, which is what the file costs on disk, not the live row bytes.
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const pages = db.pragma('page_count', { simple: true }) as number;
+        const pageSize = db.pragma('page_size', { simple: true }) as number;
+        const bytes = pages * pageSize;
+        this.recordAccess(actor, 'scopeDatabaseSize', { tenantId, scopeId }, null, 1);
+        return bytes;
+      },
       rewindScope: async () => {
         throw new Error(
           'point-in-time rewind is not available on this host (PITR is a Durable-Object-plane mechanism) — use the backup restore path',

@@ -147,6 +147,7 @@ import type {
   ScopeBackupStore,
 } from './backups.js';
 import { backupDirectoryIfDue } from './directory-backup.js';
+import { STORAGE_PAGE_DEFAULT, STORAGE_PAGE_MAX, readStoragePage } from './storage-meter.js';
 import {
   isCustomHostname,
   validateBindableHostname,
@@ -1412,6 +1413,52 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const raw = c.req.query('tenantId');
     const tenantId = raw ? tenantIdSchema.parse(raw) : undefined;
     return c.json(await admin.readMeters(c.get('actor'), tenantId ? { tenantId } : undefined));
+  });
+
+  // Storage, read on demand (#1524): one tenant's scope-database sizes and their sum.
+  // Staff-only like `/meters` (on neither allowlist, so a builder or a tenant token is
+  // refused). `tenantId` is REQUIRED. A fleet-wide form would wake every DO in the fleet,
+  // the cost the decision rejected. Paged over the tenant's scopes, because every scope
+  // read is a DO wake. `readStoragePage` holds the page and concurrency bounds.
+  //
+  // A scope that names a vertical is read through that vertical's deployment, which
+  // holds its DO. When this plane delegates to verticals at all and none resolves, the
+  // read FAILS for that scope rather than falling back to the co-located host. On the
+  // hosted plane that host's namespace is a module-less placeholder, and waking it would
+  // create an empty database and report its size as the scope's.
+  const delegatesToVerticals = Boolean(
+    options.verticals || options.resolveVertical || options.resolveVerticalVersion || options.resolveVerticalRef,
+  );
+  app.get('/meters/storage', async (c) => {
+    const q = z
+      .object({
+        tenantId: tenantIdSchema,
+        cursor: scopeIdSchema.optional(),
+        limit: z.coerce.number().int().min(1).max(STORAGE_PAGE_MAX).default(STORAGE_PAGE_DEFAULT),
+      })
+      .parse({
+        tenantId: c.req.query('tenantId'),
+        cursor: c.req.query('cursor') || undefined,
+        limit: c.req.query('limit') || undefined,
+      });
+    const actor = c.get('actor');
+    const scopes = await admin.listScopes(actor, { tenantId: q.tenantId });
+    return c.json(
+      await readStoragePage({
+        tenantId: q.tenantId,
+        readAt: new Date().toISOString(),
+        scopes: scopes.map((s) => ({ ...s, scopeId: s.id })),
+        cursor: q.cursor,
+        limit: q.limit,
+        read: async (scope) => {
+          if (!scope.vertical) return admin.scopeDatabaseSize(actor, q.tenantId, scope.id);
+          const vertical = await verticalForScope(c, scope);
+          if (vertical) return vertical.databaseSize(scope.id);
+          if (delegatesToVerticals) throw new Error(`no deployment resolves for vertical ${scope.vertical}`);
+          return admin.scopeDatabaseSize(actor, q.tenantId, scope.id);
+        },
+      }),
+    );
   });
 
   // -- per-tenant stores (#301, #473) ----------------------------------------

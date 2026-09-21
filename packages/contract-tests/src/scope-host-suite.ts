@@ -1708,6 +1708,30 @@ export function scopeHostContractSuite(
         ).rejects.toThrow(/unknown table/);
       });
 
+      // #1524: the size behind the on-demand storage reading. The growth assertion is what
+      // separates a real size from a constant. A host that answered a fixed number, or
+      // the size of some other database, passes "positive integer" and fails this.
+      it('answers the scope database size in bytes, and it grows with what is written (#1524)', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        const before = await host.admin.scopeDatabaseSize(staff, t1, s1);
+        expect(Number.isInteger(before)).toBe(true);
+        expect(before).toBeGreaterThan(0);
+        // ~1 MiB of marker rows: far past any page-rounding or free-page slack.
+        const chunk = 'x'.repeat(64 * 1024);
+        for (let i = 0; i < 16; i += 1) await stub.invoke('test/write-marker', { v: `${i}-${chunk}` });
+        const after = await host.admin.scopeDatabaseSize(staff, t1, s1);
+        expect(after - before).toBeGreaterThanOrEqual(512 * 1024);
+        // A size of ANOTHER scope must not answer for this one.
+        const other = await host.admin.scopeDatabaseSize(staff, t2, s2);
+        expect(other).toBeLessThan(after);
+        const reads = await host.admin.accessLog(staff, { tenantId: t1, method: 'scopeDatabaseSize' });
+        expect(reads.some((r) => r.scopeId === s1)).toBe(true);
+      });
+
+      it('refuses a database size for a mismatched (tenantId, scopeId) pair (K-3, #1524)', async () => {
+        await expect(host.admin.scopeDatabaseSize(staff, t2, s1)).rejects.toThrow();
+      });
+
       it('fails closed on a mismatched (tenantId, scopeId) pair (K-3)', async () => {
         await expect(host.admin.listScopeTables(staff, t2, s1)).rejects.toThrow();
         await expect(

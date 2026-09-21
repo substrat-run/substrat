@@ -1028,6 +1028,8 @@ interface ScopeStubRpc {
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
   appliedMigrations(limit?: number): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
+  /** `SqlStorage.databaseSize` of this scope (#1524). */
+  databaseSize(): Promise<number>;
   entityHistory(input: {
     entityType: string;
     entityId: string;
@@ -1995,6 +1997,11 @@ export class CloudflareScopeHost implements ScopeHost {
   /** When this host's own scope applied each migration (#1236) — the vertical-host read. */
   async appliedMigrationsLocal(scopeId: ScopeId): Promise<AppliedMigration[]> {
     return this.scopeStub(scopeId).appliedMigrations();
+  }
+
+  /** This host's own scope's database size in bytes (#1524), the vertical-host read. */
+  async databaseSizeLocal(scopeId: ScopeId): Promise<number> {
+    return this.scopeStub(scopeId).databaseSize();
   }
 
   /**
@@ -4029,6 +4036,13 @@ export class CloudflareScopeHost implements ScopeHost {
         const bookmarks = await this.scopeStub(scopeId).migrationBookmarks();
         await this.recordAccess(actor, 'scopeMigrationBookmarks', { tenantId, scopeId }, null, bookmarks.length);
         return bookmarks;
+      },
+      scopeDatabaseSize: async (actor, tenantId, scopeId) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        const bytes = await this.scopeStub(scopeId).databaseSize();
+        await this.recordAccess(actor, 'scopeDatabaseSize', { tenantId, scopeId }, null, 1);
+        return bytes;
       },
       rewindScope: async (actor, tenantId, scopeId, bookmark, opts) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);

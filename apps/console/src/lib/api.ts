@@ -25,6 +25,7 @@ import type {
   ScopeBackup,
   ScopeId,
   ScopeStatus,
+  StorageMeterReading,
   Tenant,
   TenantId,
   TenantRole,
@@ -309,6 +310,12 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // belongs to one definition, not to whichever surface renders it. Omit `tenantId`
     // for the fleet reading.
     readMeters: (tenantId?: TenantId) => call<MeterReading>(`/meters${query({ tenantId })}`),
+
+    // Storage (#1524): one PAGE of a tenant's scope-database sizes, read on demand. Each
+    // scope read wakes its Durable Object, so the card calls this only when a person asks,
+    // and walks further pages with `cursor` one press at a time.
+    readStorage: (tenantId: TenantId, cursor?: ScopeId) =>
+      call<StorageMeterReading>(`/meters/storage${query({ tenantId, cursor })}`),
 
     // Meter 3 (#1054) — model usage, the one D-30 could not compute: the lines the
     // `model-usage` intents drained into the directory, folded per (tenant, vertical,

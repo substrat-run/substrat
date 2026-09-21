@@ -1,5 +1,5 @@
 ---
-description: "A vertical metering and invoicing its own customers, and the platform metering a tenant: what is counted, what is priced, and what (like storage) is not counted yet."
+description: "A vertical metering and invoicing its own customers, and the platform metering a tenant: what is counted, what is priced, and what (like storage) is only read on demand."
 ---
 
 # 12. Metering and billing
@@ -119,7 +119,8 @@ The commercial design names four meters. Here is the state of each:
 | **2. Engine licensing** | entitlements, grouped by key and plan, with expired ones counted apart | counted, live |
 | **3. Usage** | platform-provided model calls, with tokens and list price | **counted**, and priced when read |
 | | event history retained | measurable in the lake, and nothing reads it yet |
-| | storage, API calls | **not counted** |
+| | storage (scope databases) | **read on demand**, per tenant. Not stored, not priced |
+| | API calls | **not counted** |
 | **4. Network transactions** | orders flowing between tenants | not countable, because that flow does not exist |
 
 Meters 1 and 2 are folds over the directory, computed on read and never stored. Operators see
@@ -159,23 +160,30 @@ model host, and that call is not metered.
 
 ### Storage: the honest answer
 
-**Nothing measures storage used by a scope or a tenant today.**
+**Storage is read, not metered.** Staff can read one tenant's storage on demand from the
+tenant's page in the console. It is the sum of its scope databases, each one's size as the
+Durable Object SQL API reports it (`page_count × page_size` on SQLite). Nothing stores the
+reading, nothing sweeps for it, and there is no fleet-wide total.
 
-Here is what exists nearby, and why none of it is the answer:
+Asking only on demand is deliberate. Reading a scope's size wakes that scope, so a daily sweep
+would cost a Durable Object invocation per scope per day, including every scope nobody uses.
+A stored storage gauge waits until the on-demand number has been looked at for a while.
 
-- The Durable Object SQL API reports a database's size. Nothing collects it. Reading it means
-  waking each scope, and no sweep phase does that yet.
-- Attachment rows record their own byte size. Nothing sums them, and attachment bytes live in a
+What the reading leaves out, and says it leaves out:
+
+- **Attachment files.** Attachment rows record their own byte size, but the bytes live in a
   blob store rather than in the scope.
-- **The lake's `bytes` column** (chapter 11) records every event's serialized size as shipped.
-  Summed per tenant after dedupe, it is exact, and it is the only per-tenant volume measure the
-  platform has. But it measures **event history volume**, not database size. It excludes a
-  scope's current rows, its indexes, its attachments, and every row an update overwrote. It is a
-  defensible basis for billing history retention, and it is not a storage meter.
+- **Per-tenant D1 databases.** They are separate databases.
+- **The lake's `bytes` column** (chapter 11), which records every event's serialized size as
+  shipped. Summed per tenant after dedupe, it is exact, but it measures **event history
+  volume**, not database size. It excludes a scope's current rows, its indexes, its
+  attachments, and every row an update overwrote. It is a defensible basis for billing history
+  retention, and it is not a storage meter.
 
-So a storage line on an invoice needs one of two things built: a sweep phase that collects each
-scope's database size into the directory next to the other meters, or a decision that
-event-history bytes are the unit being sold.
+A reading covers at most one page of the tenant's scopes and says when it is partial: a page
+still to read, or a scope whose read failed. A sum is only called a total when every scope
+answered. So a storage line on an invoice still needs a decision: a stored gauge built on this
+reading, or event-history bytes as the unit being sold.
 
 ### Requests are not billable either
 

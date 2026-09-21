@@ -1787,6 +1787,16 @@ export interface HostAdmin {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
+
+  /**
+   * The size in bytes of a CO-LOCATED scope's database (#1524): `SqlStorage.databaseSize`
+   * on a Durable Object, `page_count × page_size` on SQLite. It covers the scope database
+   * only. Attachment blobs, per-tenant D1 stores and the lake are elsewhere and are not
+   * counted. It wakes the scope, so the one caller is an on-demand storage reading, never
+   * a sweep. For a dispatch vertical the route reads it through the vertical's
+   * `/internal/database-size` instead, and this is the co-located fallback. Access-logged.
+   */
+  scopeDatabaseSize(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
   /**
    * #286's backout: PITR-rewind a scope to a pre-migration bookmark — schema AND
    * data, discarding every write since. Audited (destructive by design). The scope
