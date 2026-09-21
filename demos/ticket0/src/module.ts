@@ -1793,10 +1793,10 @@ const SLA_PAUSED = 'snoozed_at IS NULL';
  *   - FIRST RESPONSE does not. A conversation parked before anybody answered it still
  *     has a customer waiting for a first word, and the snooze hides nothing from them.
  *
- * Everything else reads the flag: which rows are live (`live`), which due instants a
- * finished snooze pushes back (`endSnooze`), which ones a priority change re-aims past
- * the time already parked (`slaDue`), and which misses a snooze must record before it
- * stops the clock (`beginSnooze`). Flipping first response to `true` is the whole code
+ * Everything else reads the flag: which rows can be late (`slaOverdueSql`), which due
+ * instants a finished snooze pushes back (`endSnooze`), which ones a priority change
+ * re-aims past the time already parked (`slaDue`), and which misses a snooze must record
+ * before it stops the clock (`beginSnooze`). Flipping first response to `true` is the whole code
  * change for a desk that wants both paused, and it is correct on its own: the scan's WHERE
  * still implies migration 0012's wider first-response index, so SQLite still uses it. That
  * index would then also hold paused rows the scan skips, so narrowing it the way 0014
@@ -1810,7 +1810,6 @@ const SLA_TARGETS = [
     breached: 'first_response_breached_at',
     running: FIRST_RESPONSE_RUNNING,
     pausesOnSnooze: false,
-    live: SLA_LIVE,
   },
   {
     target: 'resolution',
@@ -1818,7 +1817,6 @@ const SLA_TARGETS = [
     breached: 'resolution_breached_at',
     running: RESOLUTION_RUNNING,
     pausesOnSnooze: true,
-    live: `${SLA_LIVE} AND ${SLA_PAUSED}`,
   },
 ] as const;
 type SlaTarget = (typeof SLA_TARGETS)[number];
@@ -1845,7 +1843,8 @@ const [SLA_FIRST_RESPONSE, SLA_RESOLUTION] = SLA_TARGETS;
  *     that would be every late answer.
  */
 function slaOverdueSql(t: SlaTarget): string {
-  return `${t.due} IS NOT NULL AND ${t.running} AND ${t.live} AND ${t.due} < ?`;
+  const live = t.pausesOnSnooze ? `${SLA_LIVE} AND ${SLA_PAUSED}` : SLA_LIVE;
+  return `${t.due} IS NOT NULL AND ${t.running} AND ${live} AND ${t.due} < ?`;
 }
 
 /**
