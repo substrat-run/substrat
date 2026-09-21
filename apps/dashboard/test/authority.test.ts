@@ -188,6 +188,37 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(urls[1]).toContain(`cursor=${pageA[199]!.id}`);
   });
 
+  it('deadLetters hands back both call ids untouched, null included (#1525)', async () => {
+    // The dashboard worker relays this page as-is, so the seam must not narrow a row to
+    // the fields it knew about: `attemptInvocationId` arrived after the list did, and a
+    // dropped one reads in the browser as "no call recorded" — a null that is a lie.
+    const row = (n: string, attemptInvocationId: string | null) => ({
+      eventId: `E${n}`,
+      eventType: 'order.completed',
+      occurredAt: '2026-09-20T10:00:00.000Z',
+      entity: { entityType: 'order', entityId: `O${n}` },
+      invocationId: 'inv_emit',
+      attemptInvocationId,
+      consumer: 'executor:x',
+      at: '2026-09-20T10:05:00.000Z',
+      error: 'boom',
+      attempts: 3,
+    });
+    const page = { entries: [row('1', 'inv_drain'), row('2', null)], nextCursor: null };
+    const fetch = (async () =>
+      new Response(JSON.stringify(page), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof globalThis.fetch;
+    const cp = new TenantNarrowedControlPlane({
+      baseUrl: 'https://cp/api',
+      actor: '01JZ000000000000000000TEST',
+      credential: 'secret-token',
+      tenantId: T,
+      fetch,
+    });
+    const got = await cp.deadLetters(scopeId.parse(ulid()));
+    expect(got).toEqual(page);
+    expect(got.entries.map((e) => e.attemptInvocationId)).toEqual(['inv_drain', null]);
+  });
+
   it('a bounded list read says whether it reached the end — the fact the rollup ranks on (#1238)', async () => {
     // `listOpsFailures`/`listSweepRuns` return rows and swallow a skew error, so zero
     // rows has three causes a caller cannot tell apart: an empty window, a window
