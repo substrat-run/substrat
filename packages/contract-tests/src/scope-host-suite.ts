@@ -2137,6 +2137,114 @@ export function scopeHostContractSuite(
         expect(tables.some((t) => t.name === '_substrat_migrations')).toBe(true);
       });
 
+      it('rebuilds a module table the dump did not carry — on a host that has ALREADY migrated (#1589)', async () => {
+        // A restore replays only what the dump carries and then re-asserts the spine,
+        // so a MODULE's own tables are dropped and not rebuilt by the restore itself.
+        // Both adapters lean on the next migration pass to recreate them, and this is
+        // the assertion that holds them to the same answer.
+        //
+        // ALREADY MIGRATED is the whole point, not scene-setting. The pure host reads
+        // its applied-migration set on every pass, so it re-applies by construction —
+        // but the Cloudflare ScopeDO memoises the pass itself in `migrationPromise`,
+        // and a WARM instance kept answering "migrations are done" over a scope whose
+        // tables the dump had just dropped. The next operation failed with a bare
+        // `no such table`, and kept failing until an eviction or `migrateScope` — so
+        // the restore reported success and the scope was broken (#1589). A cold host
+        // re-derives everything and would pass this vacuously; the operation below is
+        // what makes the host warm before the dump lands.
+        const memoScope = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1,
+          scopeId: memoScope,
+          jurisdiction: 'eu',
+          vertical: 'connector-vertical',
+        });
+        await host.admin.activateScope(staff, t1, memoScope);
+        const warm = await host.getScope(alice, t1, memoScope);
+        await warm.invoke('testmod/add', { id: 'before-restore', box: 'b1' });
+
+        // The dump of a targeted repair: the spine and every other module's tables,
+        // but neither `@test/mod`'s tables nor the journal rows claiming they exist.
+        // Stripping the journal row is what makes the dump self-consistent — a dump
+        // that dropped the table and KEPT the row would be asking for a schema no
+        // migration pass is allowed to rebuild.
+        const backup = await host.admin.exportScope(staff, t1, memoScope);
+        const journal = backup.tables.find((t) => t.name === '_substrat_migrations')!;
+        const moduleCol = journal.columns.indexOf('module_id');
+        expect(backup.tables.some((t) => t.name === 'testmod_items')).toBe(true);
+        expect(journal.rows.some((r) => r[moduleCol] === '@test/mod')).toBe(true);
+        const stripped = {
+          ...backup,
+          tables: backup.tables
+            // BOTH of the module's tables: its one migration creates the pair in a
+            // single statement list, so leaving `testmod_notes` behind would stop the
+            // re-apply on "table testmod_notes already exists" — a different failure
+            // wearing this one's clothes.
+            .filter((t) => t.name !== 'testmod_items' && t.name !== 'testmod_notes')
+            .map((t) =>
+              t.name === '_substrat_migrations'
+                ? { ...t, rows: t.rows.filter((r) => r[moduleCol] !== '@test/mod') }
+                : t,
+            ),
+        };
+        await host.restoreScope(staff, t1, memoScope, stripped);
+
+        // Both tables are back, and the module writes on them — this is the line that
+        // threw `no such table: testmod_items` on the hosted adapter.
+        const after = await host.getScope(alice, t1, memoScope);
+        await after.invoke('testmod/add', { id: 'after-restore', box: 'b1' });
+        expect(await after.invoke<{ id: string }[]>('testmod/read-items')).toEqual([
+          { id: 'after-restore' },
+        ]);
+        expect(await after.invoke<{ id: string }[]>('testmod/read-notes')).toEqual([]);
+        // The journal records the re-applied version exactly once, so the pass after
+        // this one has nothing to do.
+        const frontier = await after.invoke<{ module_id: string; version: string }[]>(
+          'testmod/read-journal',
+        );
+        expect(frontier.filter((r) => r.module_id === '@test/mod')).toEqual([
+          { module_id: '@test/mod', version: '0001-init' },
+        ]);
+      });
+
+      it('leaves a module table the dump DID carry exactly as the dump left it (#1589)', async () => {
+        // The twin of the test above, and what stops "rebuild what the dump dropped"
+        // from becoming "rebuild on every restore". A dump carrying the table and its
+        // journal row must come back as the dump left it: re-running the migration
+        // here would stop on "table testmod_items already exists" and fail the scope
+        // closed — the same outage, reached from the other side — and a restore that
+        // rebuilt the table empty would lose the rows it exists to bring back.
+        const keptScope = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1,
+          scopeId: keptScope,
+          jurisdiction: 'eu',
+          vertical: 'connector-vertical',
+        });
+        await host.admin.activateScope(staff, t1, keptScope);
+        const warm = await host.getScope(alice, t1, keptScope);
+        await warm.invoke('testmod/add', { id: 'kept', box: 'b1' });
+
+        const backup = await host.admin.exportScope(staff, t1, keptScope);
+        expect(backup.tables.some((t) => t.name === 'testmod_items')).toBe(true);
+        await warm.invoke('testmod/add', { id: 'zz-diverged', box: 'b1' });
+
+        await host.restoreScope(staff, t1, keptScope, backup);
+
+        // The dump's row, and only it — the divergence is gone and nothing was wiped.
+        const after = await host.getScope(alice, t1, keptScope);
+        expect(await after.invoke<{ id: string }[]>('testmod/read-items')).toEqual([
+          { id: 'kept' },
+        ]);
+        // …and the scope still writes: a re-applied migration would have failed the
+        // scope closed here rather than accepting this row.
+        await after.invoke('testmod/add', { id: 'post-restore', box: 'b1' });
+        expect(await after.invoke<{ id: string }[]>('testmod/read-items')).toEqual([
+          { id: 'kept' },
+          { id: 'post-restore' },
+        ]);
+      });
+
       it('loads a dump whose child table sorts before its parent — FK order is not alphabetical', async () => {
         // A dump is ordered by table NAME. A vertical whose child sorts first (a CRM's
         // `crm_bank_accounts` before `crm_vendors`) used to fail its first insert with a

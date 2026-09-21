@@ -219,6 +219,96 @@ describe('migration failure is recorded in the directory', () => {
 });
 
 /**
+ * The Cloudflare half of #1589 — and the half the shared contract suite cannot state.
+ *
+ * `scopeHostContractSuite` asserts the CONTRACT (a restore whose dump omits a module
+ * table leaves that table working afterwards), which is what makes the two adapters
+ * agree. What it cannot say is WHY this adapter used to break it: `ensureMigrations`
+ * memoises its pass in `migrationPromise`, so a WARM ScopeDO kept answering
+ * "migrations are done" over a scope whose tables the dump had just dropped — until
+ * an eviction or `migrateScope`, neither of which a restore triggers. Dev, CI and
+ * self-host are all green on the pure host, which re-reads its applied set on every
+ * pass, so nothing but a warm DO reproduces it.
+ *
+ * `migrationAttemptsOnInstance` is the observable that makes "warm" a fact rather
+ * than an assumption, exactly as it is for #49 above: it counts passes on THIS
+ * instance. A count that goes 1 → 2 across the restore can only be one instance
+ * running a second pass — a DO evicted and reconstructed in between would report 1,
+ * its own first.
+ *
+ * Lives in THIS file for the reason the block above gives: a second test file
+ * re-evaluates the worker mid-run and invalidates every live DO, which is the one
+ * thing a warm-instance test cannot survive.
+ */
+describe('a restore forgets the memoised migration pass (#1589)', () => {
+  interface MigrationProbe {
+    migrationAttemptsOnInstance(): Promise<number>;
+  }
+  let host: CloudflareScopeHost;
+  const staff = platformActorId.parse(ulid());
+  const alice = principalId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      checker: UNSAFE_allowAllChecker,
+    });
+    await host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+    // Default-deny (§4.3): without the grant `@test/mod` never loads, its migration
+    // never runs, and every assertion below would pass over an absent module.
+    await host.admin.grantEntitlement(staff, t, 'testmod');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, jurisdiction: 'eu' });
+    await host.admin.activateScope(staff, t, s);
+  });
+
+  afterAll(async () => {
+    await host.close();
+  });
+
+  it('re-runs the pass on the SAME instance, so the dump-dropped table comes back', async () => {
+    const probe = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as MigrationProbe;
+    // Warm it: one real operation, so the pass is memoised before the dump lands.
+    const warm = await host.getScope(alice, t, s);
+    await warm.invoke('testmod/add', { id: 'before-restore', box: 'b1' });
+    const passes = await probe.migrationAttemptsOnInstance();
+    expect(passes).toBe(1); // provisioning's pass, and nothing since
+
+    // A targeted repair dump: `@test/mod`'s tables and its journal rows removed,
+    // everything else as captured. Both tables go — one migration creates the pair.
+    const backup = await host.admin.exportScope(staff, t, s);
+    const journal = backup.tables.find((tbl) => tbl.name === '_substrat_migrations')!;
+    const moduleCol = journal.columns.indexOf('module_id');
+    expect(journal.rows.some((r) => r[moduleCol] === '@test/mod')).toBe(true);
+    await host.restoreScope(staff, t, s, {
+      ...backup,
+      tables: backup.tables
+        .filter((tbl) => tbl.name !== 'testmod_items' && tbl.name !== 'testmod_notes')
+        .map((tbl) =>
+          tbl.name === '_substrat_migrations'
+            ? { ...tbl, rows: tbl.rows.filter((r) => r[moduleCol] !== '@test/mod') }
+            : tbl,
+        ),
+    });
+    // The restore itself migrates nothing — it only forgets that a pass ever ran.
+    expect(await probe.migrationAttemptsOnInstance()).toBe(passes);
+
+    // The next operation is what re-runs it. Pre-fix this threw `no such table:
+    // testmod_items`, because the memoised promise answered before the set was read.
+    const after = await host.getScope(alice, t, s);
+    await after.invoke('testmod/add', { id: 'after-restore', box: 'b1' });
+    expect(await after.invoke<{ id: string }[]>('testmod/read-items')).toEqual([
+      { id: 'after-restore' },
+    ]);
+    // …on the instance that had already migrated. A cold one would read 1 here.
+    expect(await probe.migrationAttemptsOnInstance()).toBe(passes + 1);
+  });
+});
+
+/**
  * Scope-local permissions, Phase 1 (docs/architecture/scope-local-permissions.md): the
  * ScopeDO can evaluate a tenant-level role from its OWN projected storage instead
  * of the control-plane DO. This proves the local reader is parity with RPC, that a
