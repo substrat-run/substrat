@@ -3284,6 +3284,42 @@ export const OPS_FAILURE_RETENTION_DAYS = 90;
 export const SWEEP_RUN_RETENTION_DAYS = 14;
 
 /**
+ * The drained batch's dedupe key on the directory's `_substrat_sweep_runs` (#1232), as
+ * both adapters build it: `recordSweepRun` is an `INSERT OR IGNORE` against this index,
+ * which is what makes a replayed drain write nothing twice.
+ *
+ * `kind` is in it since #1572, and that is the fix rather than a tidy-up. Every entry of
+ * one drained batch shares its `request_id`, and `unit` is built from two namespaces that
+ * nothing keeps apart — `<scopeId>:<operation>` for a schedule, `<scopeId>:<eventType>`
+ * for a freshness verdict — while `scheduleSpec.operation` is `z.string().min(1)`. A
+ * schedule named exactly like an event type its scope expects freshness on collided on
+ * `(request_id, unit)`, and the ignore-on-conflict write discarded the second row with no
+ * error anywhere. Both rows are signals by their absence (a stopped evaluator, a missed
+ * run), so losing one read as the very thing it was meant to rule out. It is #1288's
+ * collision, in the record table beside the state table.
+ *
+ * Shared rather than spelled in each adapter because a directory that predates it
+ * re-creates it (`ensureSweepRunsIntentKind`, in both), and `lint:spine-ddl` sees only
+ * the created copy. One definition keeps the re-created shape and the created shape the
+ * same shape; the gate then holds each adapter's DDL to including it.
+ */
+export const SWEEP_RUNS_INTENT_INDEX =
+  'CREATE UNIQUE INDEX IF NOT EXISTS _substrat_sweep_runs_intent ON _substrat_sweep_runs (request_id, kind, unit);';
+
+/**
+ * Whether a directory's `_substrat_sweep_runs_intent` already has `kind` among its
+ * columns, read off the index's `sql` in `sqlite_master` — which DO SQLite serves and
+ * `PRAGMA` does not, so both adapters detect by one strategy. `false` means the index
+ * must be DROPPED and created again: `CREATE … IF NOT EXISTS` matches on the name alone,
+ * so on every existing directory the old `(request_id, unit)` index would otherwise
+ * stand for good, while a fresh one — and any test that starts from one — gets the new.
+ */
+export function sweepRunsIntentHasKind(indexSql: string): boolean {
+  const columns = /\(([^()]*)\)\s*;?\s*$/.exec(indexSql)?.[1];
+  return columns !== undefined && columns.split(',').some((c) => c.trim() === 'kind');
+}
+
+/**
  * How long an issue row outlives its last occurrence (#1233). Deliberately longer
  * than the 90-day evidence beneath it: an issue is the compressed memory of a
  * failure class, and "we saw this five months ago" is exactly what a regression
@@ -3325,10 +3361,12 @@ export interface SweepRunInput {
   at?: string | null;
   /**
    * The platform-intent id a drained batch arrived under — the dedupe key. The
-   * adapters enforce UNIQUE (requestId, unit) with an ignore-on-conflict write,
-   * so a replayed drain (a settle that failed in transport, a partial batch
-   * re-run) writes nothing twice. Unset (the direct sweep path) dedupes nothing:
-   * NULLs are distinct under the unique index, exactly as intended.
+   * adapters enforce UNIQUE (requestId, kind, unit) with an ignore-on-conflict
+   * write (`SWEEP_RUNS_INTENT_INDEX`), so a replayed drain (a settle that failed in
+   * transport, a partial batch re-run) writes nothing twice — while a schedule and
+   * a freshness entry of one batch that derive the same unit are two rows (#1572).
+   * Unset (the direct sweep path) dedupes nothing: NULLs are distinct under the
+   * unique index, exactly as intended.
    */
   requestId?: string | null;
 }
