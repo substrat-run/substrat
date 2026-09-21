@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type EffectsTree, type EffectsTerminal, type EventEffects, type EventDelivery, type InvocationEvents, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type TrafficSeries } from '../lib/api';
+import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type EffectsTree, type EffectsTerminal, type EventEffects, type EventDelivery, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type TrafficSeries } from '../lib/api';
 import { actorLabel, authorizationLabel, callButtonTitle, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
@@ -15,6 +15,7 @@ import { teamPath, navigate, obsPath } from '../lib/router';
 import { DnsRecords } from './Domains';
 import { ReleaseComparisonCard, SchemaHistoryCard } from './ReleaseCards';
 import { StatusBand } from './StatusBand';
+import { InvocationStrip } from './InvocationStrip';
 import { Sparkline } from '../components/Sparkline';
 
 /**
@@ -2535,85 +2536,6 @@ function EffectsTreeStrip({ scopeId, eventId }: { scopeId: string; eventId: stri
       <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
         Steps and when they happened. The platform records no duration for an operation, so there are
         no timings here.
-      </div>
-    </div>
-  );
-}
-
-/**
- * Everything the call behind one event emitted (#1237), oldest first.
- *
- * The third read beside `CauseChainStrip` and `EffectsTreeStrip`, and the one they
- * cannot make: both follow cause, so two events an operation raised side by side are
- * invisible from each other. This reads by the call instead, and includes what its
- * handlers raised in the same tail — so a sibling and a consequence can both appear, and
- * the row says which is which.
- *
- * Only what the call RECORDED is here. A read, or a check that changed nothing, emits no
- * event, and the footer says so rather than letting a short list pass for a quiet call.
- */
-function InvocationStrip({ scopeId, eventId, invocationId }: { scopeId: string; eventId: string; invocationId: string }) {
-  const [read, setRead] = useState<InvocationEvents | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    setRead(null);
-    setErr(null);
-    api
-      .appInvocationEvents(scopeId, invocationId)
-      .then((r) => live && setRead(r))
-      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
-    return () => {
-      live = false;
-    };
-  }, [scopeId, invocationId]);
-
-  if (err) return <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>;
-  if (!read) return <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Reading the call…</div>;
-
-  // A cause inside this same call reads as a consequence; one outside it (or none) as
-  // something the call did itself. Named by type, because an id means nothing here.
-  const typeById = new Map(read.events.map((e) => [e.id, e.type]));
-
-  return (
-    <div style={{ display: 'grid', gap: 6, paddingLeft: 10, borderLeft: '2px solid var(--border-default)' }}>
-      <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }} title={invocationId}>
-        call {shortId(invocationId)}
-      </div>
-      {read.events.length === 0 ? (
-        // The row this strip opened from carries the id, so an empty answer is not "no
-        // such call" — it is the record disagreeing with itself, and worth saying so.
-        <div style={{ fontSize: 12, color: 'var(--status-warning-fg)' }}>
-          No events recorded under this call, although this event names it.
-        </div>
-      ) : (
-        read.events.map((e) => {
-          const reactingTo = e.causedBy ? typeById.get(e.causedBy) : undefined;
-          return (
-            <div key={e.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12 }}>
-              <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', minWidth: 28 }}>
-                {e.id === eventId ? 'this' : ''}
-              </span>
-              <MonoTag>{e.type}</MonoTag>
-              <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>
-                {new Date(e.occurredAt).toLocaleString()}
-              </span>
-              <span style={{ color: 'var(--text-secondary)', fontSize: 11.5, fontFamily: 'var(--font-mono)' }}>
-                {reactingTo ? `handler, reacting to ${reactingTo}` : operationLabel(e.operation)}
-              </span>
-            </div>
-          );
-        })
-      )}
-      {read.truncated && (
-        <div style={{ fontSize: 12, color: 'var(--status-warning-fg)' }}>
-          This call recorded more events than one read shows.
-        </div>
-      )}
-      <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-        What the call recorded, in order. Reads and checks that changed nothing leave no event, so they are not
-        listed here.
       </div>
     </div>
   );

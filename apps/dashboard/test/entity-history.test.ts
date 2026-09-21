@@ -3,6 +3,7 @@ import type { EmittedEntity, HistoryEntry } from '@substrat-run/contracts';
 import {
   actorLabel,
   authorizationLabel,
+  deadLetterCalls,
   impersonationLabel,
   operationLabel,
   payloadText,
@@ -185,5 +186,44 @@ describe('operationLabel', () => {
   // copy must not pick one.
   it('does not guess which meaning a null carries', () => {
     expect(operationLabel(null)).toBe('no operation — a consumer, or unrecorded');
+  });
+});
+
+/**
+ * The way into the call behind a delivery that gave up (#1525). The spine now records
+ * the call an attempt ran in, and the list renders a control only where there is one:
+ * a null is a fact (a drain or an alarm carried no call, or the row predates the
+ * column), and a control on such a row would be a broken link.
+ */
+describe('deadLetterCalls', () => {
+  it('offers the attempt call when the row carries one', () => {
+    const calls = deadLetterCalls({ invocationId: null, attemptInvocationId: 'inv_attempt' });
+    expect(calls.map((c) => [c.kind, c.invocationId])).toEqual([['attempt', 'inv_attempt']]);
+  });
+
+  it('offers nothing when neither id is recorded — no control, not a disabled one', () => {
+    expect(deadLetterCalls({ invocationId: null, attemptInvocationId: null })).toEqual([]);
+  });
+
+  it('offers both, attempt first, when the event was emitted in a different call', () => {
+    // The executor case: attempt one ran in the emitting call's tail, the retry that gave
+    // up ran in a later drain. Two ids, and the reader must be able to tell them apart.
+    const calls = deadLetterCalls({ invocationId: 'inv_emit', attemptInvocationId: 'inv_drain' });
+    expect(calls.map((c) => [c.kind, c.invocationId])).toEqual([
+      ['attempt', 'inv_drain'],
+      ['emitted', 'inv_emit'],
+    ]);
+    expect(new Set(calls.map((c) => c.label)).size).toBe(2);
+  });
+
+  it('does not list the same call twice — an in-scope consumer attempts in the emitting call', () => {
+    const calls = deadLetterCalls({ invocationId: 'inv_same', attemptInvocationId: 'inv_same' });
+    expect(calls.map((c) => c.kind)).toEqual(['attempt']);
+  });
+
+  it('still offers the emitting call when only the attempt id is missing', () => {
+    // A row from before the deliveries column: the event's own id is all there is.
+    const calls = deadLetterCalls({ invocationId: 'inv_emit', attemptInvocationId: null });
+    expect(calls.map((c) => [c.kind, c.invocationId])).toEqual([['emitted', 'inv_emit']]);
   });
 });

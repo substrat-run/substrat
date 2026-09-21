@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import { type ConnectionSweepView, api, type AppRow, type DeadLetter, type FlowFindingsView, type FlowFinding, type FlowGraph, type FlowNode, type FlowView, type OperationHealthView } from '../lib/api';
 import { card } from '../components/ui';
+import { shortId } from '../lib/format';
 import { Button } from '@substrat-run/ui';
 import { navigate, obsPath, teamPath } from '../lib/router';
+import { deadLetterCalls } from '../lib/history';
+import { InvocationStrip } from './InvocationStrip';
 
 /**
  * The flow map and its declared-vs-observed findings (#1234), moved off the app page
@@ -443,6 +446,84 @@ function OperationHealth({ view }: { view: OperationHealthView }) {
 }
 
 /**
+ * One delivery that gave up, with the way into the call behind it (#1525).
+ *
+ * A call control appears only where the row carries an id. Null is common here — a drain
+ * or an alarm attempts with no call, and rows from before the columns existed have none —
+ * so the absence is left unmarked rather than shown as a shut button (`deadLetterCalls`).
+ * What "the call recorded nothing" means for an attempt is different from an event's, so
+ * the strip is told what to say.
+ */
+function DeadLetterRow({ scopeId, d }: { scopeId: string; d: DeadLetter }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const calls = deadLetterCalls(d);
+  const opened = calls.find((c) => c.invocationId === open);
+  const href = obsPath({ app: scopeId, view: 'events', type: d.eventType });
+  return (
+    <div style={{ display: 'grid', gap: 3 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12.5 }}>
+        <a
+          href={teamPath(href)}
+          onClick={(e) => {
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+            e.preventDefault();
+            navigate(href);
+          }}
+          style={{ fontFamily: 'var(--font-mono)' }}
+          title="open this event type in the event explorer"
+        >
+          {d.eventType}
+        </a>
+        <span style={{ color: 'var(--text-tertiary)' }}>
+          {d.entity.entityType} {d.entity.entityId}
+        </span>
+        <span style={{ fontFamily: 'var(--font-mono)', flex: '1 1 160px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          &rarr; {d.consumer}
+        </span>
+        <span style={{ color: 'var(--text-tertiary)', fontSize: 11.5 }}>
+          {d.attempts === 1 ? '1 attempt' : `${d.attempts} attempts`}, last {new Date(d.at).toLocaleString()}
+        </span>
+      </div>
+      <p
+        style={{ margin: 0, fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--status-danger-fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        title={d.error}
+      >
+        {d.error}
+      </p>
+      {calls.length > 0 && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 11.5 }}>
+          {calls.map((c) => (
+            <button
+              key={c.kind}
+              type="button"
+              onClick={() => setOpen((w) => (w === c.invocationId ? null : c.invocationId))}
+              aria-expanded={open === c.invocationId}
+              title={c.title}
+              style={{ border: 0, background: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-link)', textDecoration: 'underline', fontSize: 11.5 }}
+            >
+              {open === c.invocationId ? `Hide ${c.label.toLowerCase()}` : c.label}
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}> {shortId(c.invocationId)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {opened && (
+        <InvocationStrip
+          scopeId={scopeId}
+          eventId={d.eventId}
+          invocationId={opened.invocationId}
+          whenEmpty={
+            opened.kind === 'attempt'
+              ? 'This call recorded no events. That is ordinary for a retry — it ran the delivery and emitted nothing itself.'
+              : 'No events recorded under this call, although this delivery names it.'
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+/**
  * Deliveries that gave up (#1525) — "which deliveries in this app gave up?", the first
  * question in most incidents.
  *
@@ -514,42 +595,9 @@ function DeadLetters({ app }: { app: AppRow }) {
 
       {entries !== null && entries.length > 0 && (
         <div style={{ display: 'grid', gap: 8 }}>
-          {entries.map((d) => {
-            const href = obsPath({ app: app.app_scope_id, view: 'events', type: d.eventType });
-            return (
-              <div key={`${d.eventId}|${d.consumer}`} style={{ display: 'grid', gap: 3 }}>
-                <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12.5 }}>
-                  <a
-                    href={teamPath(href)}
-                    onClick={(e) => {
-                      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-                      e.preventDefault();
-                      navigate(href);
-                    }}
-                    style={{ fontFamily: 'var(--font-mono)' }}
-                    title="open this event type in the event explorer"
-                  >
-                    {d.eventType}
-                  </a>
-                  <span style={{ color: 'var(--text-tertiary)' }}>
-                    {d.entity.entityType} {d.entity.entityId}
-                  </span>
-                  <span style={{ fontFamily: 'var(--font-mono)', flex: '1 1 160px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    &rarr; {d.consumer}
-                  </span>
-                  <span style={{ color: 'var(--text-tertiary)', fontSize: 11.5 }}>
-                    {d.attempts === 1 ? '1 attempt' : `${d.attempts} attempts`}, last {new Date(d.at).toLocaleString()}
-                  </span>
-                </div>
-                <p
-                  style={{ margin: 0, fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--status-danger-fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                  title={d.error}
-                >
-                  {d.error}
-                </p>
-              </div>
-            );
-          })}
+          {entries.map((d) => (
+            <DeadLetterRow key={`${d.eventId}|${d.consumer}`} scopeId={app.app_scope_id} d={d} />
+          ))}
         </div>
       )}
 
