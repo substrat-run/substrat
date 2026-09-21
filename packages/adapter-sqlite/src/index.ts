@@ -5052,15 +5052,22 @@ export class SqliteScopeHost implements ScopeHost {
       this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
       let outcome: SwitchOutcome;
       try {
+        // A turn on the scope actor (#1666 review), exactly as the job store (#1577): `invoke`
+        // holds a raw `BEGIN IMMEDIATE` on this same connection across awaits, so a bare
+        // `db.transaction` issued mid-invoke became a SAVEPOINT inside it and rolled back
+        // with it — after this verb had already audited `applied`. `turn` is re-entrant, so a
+        // caller already inside one of this scope's tasks joins it rather than deadlocking.
         const rt = this.runtime(tenantId, scopeId);
-        outcome = rt.db.transaction(() =>
-          switchSystemSchedules(switchSqlOf(rt.db), {
-            moduleId: input.moduleId,
-            scopeId,
-            to,
-            at: new Date().toISOString(),
-          }),
-        )();
+        outcome = await rt.actor.turn(() =>
+          rt.db.transaction(() =>
+            switchSystemSchedules(switchSqlOf(rt.db), {
+              moduleId: input.moduleId,
+              scopeId,
+              to,
+              at: new Date().toISOString(),
+            }),
+          )(),
+        );
       } catch (err) {
         try {
           this.recordAdmin(actor, action, target, null, {
@@ -5316,22 +5323,33 @@ export class SqliteScopeHost implements ScopeHost {
         // principal is bound to the module, and a scope only ever runs the modules
         // its own host registered.
         const grant = systemGrant.parse(raw);
-        // #1666: refused while the module is switched off on this scope. The check and the
-        // write below share this synchronous turn, so no switch can move between them.
-        // Restore is the lever; a grant is not.
-        if (
-          grant.node.scopeId &&
-          systemSwitchedOff(switchSqlOf(this.runtime(grant.node.tenantId, grant.node.scopeId).db), grant.moduleId)
-        ) {
-          throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, grant.node.scopeId));
+        const write = () =>
+          writeGrant(
+            subjectRef({ kind: 'system', id: grant.moduleId }),
+            grant.permission,
+            grant.node,
+            undefined,
+            grant.expiresAt,
+          );
+        const scope = grant.node.scopeId;
+        if (scope) {
+          // #1666: refused while the module is switched off on this scope. The check and the
+          // write share one synchronous body inside one turn on the scope actor, so no switch
+          // can move between them — and (#1666 review) neither can land inside an unrelated
+          // `invoke`'s open transaction and roll back with it after this verb returned. The
+          // turn is re-entrant: from inside one of this scope's tasks it joins that task.
+          // Restore is the lever; a grant is not.
+          const rt = this.runtime(grant.node.tenantId, scope);
+          await rt.actor.turn(() => {
+            if (systemSwitchedOff(switchSqlOf(rt.db), grant.moduleId)) {
+              throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, scope));
+            }
+            write();
+          });
+        } else {
+          // Tenant-level: a directory write, which no scope's transaction can hold.
+          write();
         }
-        writeGrant(
-          subjectRef({ kind: 'system', id: grant.moduleId }),
-          grant.permission,
-          grant.node,
-          undefined,
-          grant.expiresAt,
-        );
         this.recordAdmin(
           actor,
           'grantToSystem',

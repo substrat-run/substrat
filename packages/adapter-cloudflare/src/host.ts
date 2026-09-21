@@ -3348,10 +3348,15 @@ export class CloudflareScopeHost implements ScopeHost {
       const target = { tenantId, scopeId, vertical };
       const base = { operationId, moduleId: input.moduleId, schedules: to };
       await this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
+      // A scope bound to no vertical (#1666 review) has no deployment to delegate to: its
+      // store is the DO here, so the switch moves (or answers `held: false`) here too.
+      // Delegating it would throw "no deployment serving scope" instead. A scope WITH a
+      // vertical still delegates, and still fails loudly when none serves it.
+      const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
       let outcome: SwitchOutcome;
       try {
-        outcome = this.systemSwitchDelegation
-          ? await this.systemSwitchDelegation.switch({ tenantId, scopeId, moduleId: input.moduleId, to })
+        outcome = delegation
+          ? await delegation.switch({ tenantId, scopeId, moduleId: input.moduleId, to })
           : await this.scopeStub(scopeId).switchSystemSchedules(input.moduleId, scopeId, to, new Date().toISOString());
       } catch (err) {
         // Best effort: the original error is what the caller must see, and the intent row

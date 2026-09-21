@@ -155,7 +155,11 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
   const SCHED = moduleId.parse('@test/sched');
   type Call = { tenantId: string; scopeId: string; moduleId: string; to: 'on' | 'off' };
 
-  const setup = async (answer: (call: Call) => { held: boolean; changed: boolean; permissions: string[] }) => {
+  const setup = async (
+    answer: (call: Call) => { held: boolean; changed: boolean; permissions: string[] },
+    /** `null` provisions a scope bound to no vertical. */
+    vertical: string | null = 'sched-vertical',
+  ) => {
     const calls: Call[] = [];
     const host = new CloudflareScopeHost({
       scope: env.SCOPE,
@@ -174,7 +178,7 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     const s = scopeId.parse(ulid());
     await host.admin.createTenant(staff, { id: t, slug: `hosted-${t.slice(-10).toLowerCase()}`, name: 'Hosted' });
     await host.admin.grantEntitlement(staff, t, 'sched');
-    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, ...(vertical ? { vertical } : {}) });
     await host.admin.activateScope(staff, t, s);
     const audit = () => host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: ['revokeFromSystem', 'restoreToSystem'] });
     return { host, t, s, calls, audit };
@@ -294,6 +298,47 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     expect(await raw.hasSystemGrant(SCHED)).toBe(false);
     await host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'r' });
     expect(await raw.hasSystemGrant(SCHED)).toBe(true);
+  });
+
+  it('a scope bound to no vertical is switched locally, never through the delegation (#1666 review)', async () => {
+    const { host, t, s, calls, audit } = await setup(() => {
+      throw new Error('no deployment serving scope (the delegation must not be reached)');
+    }, null);
+    const node = { tenantId: t, scopeId: s };
+    // A module it never held: the local no-grant outcome — `not_found` "holds no system
+    // grant" — rather than the delegation's "no deployment serving scope".
+    const refused = await host.admin
+      .revokeFromSystem(staff, { moduleId: moduleId.parse('@test/never-held'), node, reason: 'r' })
+      .then(() => null, (e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('not_found');
+    expect(String(refused)).toMatch(/holds no system grant/);
+    // A module it does hold (provisioning seats a registered module's schedule grant with
+    // or without a vertical): the switch moves in THIS host's DO, which is where the
+    // scope's store is, and its schedules stop.
+    expect(await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' })).toMatchObject({
+      schedules: 'off',
+      changed: true,
+      permissions: ['sched:tick'],
+    });
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(calls).toEqual([]);
+    expect((await rows(audit)).map((r) => [r.phase, r.vertical])).toEqual([
+      ['intent', null],
+      ['refused', null],
+      ['intent', null],
+      ['applied', null],
+    ]);
+  });
+
+  it('twin: a scope WITH a vertical and no serving deployment still reaches the delegation, and fails loudly', async () => {
+    const { host, t, s, calls, audit } = await setup(() => {
+      throw new Error("no deployment serving scope (vertical 'sched-vertical') — cannot switch its schedules off");
+    });
+    await expect(
+      host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' }),
+    ).rejects.toThrow(/no deployment serving scope/);
+    expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off' }]);
+    expect((await rows(audit)).map((r) => r.phase)).toEqual(['intent', 'failed']);
   });
 
   it('refuses a scope the directory does not have before reaching anything', async () => {
