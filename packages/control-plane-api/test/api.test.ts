@@ -5316,6 +5316,7 @@ describe('control-plane API — observability proxy', () => {
       it.each([
         ['too short', 'abc'],
         ['not Crockford base32 (contains U)', '01J8Z3KX0Q5R7T9V1W2Y4A6B8U'],
+        ['first character outside 0-7 (not a 48-bit timestamp)', 'Z000000000000000000000000A'],
         ['lower case', '01j8z3kx0q5r7t9v1w2y4a6b8c'],
         ['with a space', '01J8Z3KX0Q5R7T9V1W2Y4A6B8 '],
         ['a filter-shaped payload', "x' OR '1'='1"],

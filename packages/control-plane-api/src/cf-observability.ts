@@ -750,12 +750,20 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // budget, and the trusted ids spend it first: this tenant's own failures must not be
     // crowded out of the page by a noisy neighbour's error lines.
     const requestIds = [...trusted, ...candidates].slice(0, MAX_CORRELATED_INVOCATIONS);
+    //
+    // The per-invocation line cap is there because a page spans up to 40 invocations and
+    // the budget must be shared out. A read of ONE call has no one to share with: capping
+    // it at 20 while the caller asked for 100 hides the diagnostic line of a chatty
+    // request — the very line the view was opened to find — so it gets the caller's own
+    // `limit` (the route bounds that at 200).
+    const linesPerInvocation =
+      input.invocationId !== undefined ? Math.min(input.limit, 200) : MAX_LINES_PER_INVOCATION;
     const sibling = await Promise.all(
       requestIds.map(async (id) => {
         const events = await queryRaw(
           [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }],
           timeframe,
-          MAX_LINES_PER_INVOCATION,
+          linesPerInvocation,
         );
         // An account-wide candidate earns its place only by producing this tenant's
         // stamped line. No stamped line, or somebody else's, and the whole invocation is

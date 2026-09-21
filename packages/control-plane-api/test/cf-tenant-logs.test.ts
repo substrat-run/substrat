@@ -35,7 +35,7 @@ const ownLine = (level: string, message: string, requestId: string, id: string) 
   $metadata: { id, requestId, level, message, service: 'acme-widgets' },
 });
 
-function readerOver(handler: (filters: Array<Record<string, unknown>>) => unknown[]) {
+function readerOver(handler: (filters: Array<Record<string, unknown>>, limit: number) => unknown[]) {
   const sent: Array<Array<Record<string, unknown>>> = [];
   vi.stubGlobal(
     'fetch',
@@ -43,7 +43,7 @@ function readerOver(handler: (filters: Array<Record<string, unknown>>) => unknow
       const body = JSON.parse(init.body);
       const filters = body.parameters.filters as Array<Record<string, unknown>>;
       sent.push(filters);
-      return new Response(JSON.stringify({ success: true, result: { events: { events: handler(filters) } } }), {
+      return new Response(JSON.stringify({ success: true, result: { events: { events: handler(filters, body.limit as number) } } }), {
         status: 200,
       });
     }),
@@ -668,6 +668,44 @@ describe('cf tenant logs — filtered to one invocation', () => {
     const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A2, level: 'error', hours: 24, limit: 50 });
     expect(messages(events)).toEqual(['POST /api/orders → 500 (42 ms)']);
     expect(sent.some((f) => keyed(f, '$metadata.level'))).toBe(false);
+  });
+
+  // A chatty call must not hide its own diagnostic line behind the 20-line share a
+  // multi-call page gives each invocation. The fake honours the limit it is sent, as the
+  // backend does, so a capped query really does come back short.
+  describe('how many lines of one call it reads', () => {
+    const chatty = [
+      stamped(OURS, A1, 200, 'req-A1'),
+      ...Array.from({ length: 45 }, (_, i) => ownLine('log', `line ${i}`, 'req-A1', `chat-${i}`)),
+    ];
+    const over = () => {
+      const limits: number[] = [];
+      const made = readerOver((f, limit) => {
+        if (keyed(f, '$metadata.requestId')) limits.push(limit);
+        return chatty.filter((e) => matches(f, e)).slice(0, limit);
+      });
+      return { ...made, limits };
+    };
+
+    it('reads up to the caller’s limit, past the per-invocation share', async () => {
+      const { reader, limits } = over();
+      const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 100 });
+      expect(limits).toEqual([100]);
+      expect(events).toHaveLength(46); // the stamped line and all 45 of its own
+    });
+
+    it('still bounds the merged answer by the limit', async () => {
+      const { reader } = over();
+      const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 30 });
+      expect(events).toHaveLength(30);
+    });
+
+    // The twin: a read that names no call is many calls sharing one budget.
+    it('keeps the 20-line share per invocation when no call is named', async () => {
+      const { reader, limits } = over();
+      await reader.tenantLogs!({ tenantId: OURS, hours: 24, limit: 100 });
+      expect(limits).toEqual([20]);
+    });
   });
 
   it('applies the level to the lines of that one call', async () => {
