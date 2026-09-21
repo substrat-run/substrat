@@ -104,7 +104,8 @@ export interface PlatformDrainOptions {
 /**
  * Drain one scope's pending platform intents: list them from the vertical, dispatch each to the
  * handler for its `kind`, and settle the outcome back in the vertical. An unknown kind settles
- * `failed` (never silently dropped); a thrown handler settles `pending` (retried on the next drain).
+ * `failed` (never silently dropped); a thrown handler settles `pending` (retried on the next drain);
+ * a row that did not decode (`decodeError`, #1588) settles `failed` without reaching any handler.
  * The `VerticalClient` transport is narrowed so tests can pass a fake.
  */
 export async function drainScopePlatformRequests(
@@ -118,7 +119,18 @@ export async function drainScopePlatformRequests(
   for (const request of pending) {
     const handler = handlers[request.kind];
     let outcome: PlatformRequestOutcome;
-    if (!handler) {
+    if (request.decodeError !== undefined) {
+      // #1588: the read is tolerant so one malformed row cannot hide the queue; the WORK stays
+      // strict. A row that did not decode carries an empty stand-in wherever it failed — a
+      // `null` payload, a `null` two-phase result a retry would re-mint without — and nothing
+      // here may act on that with platform authority. Refused before any handler is looked at,
+      // and terminal: nothing rewrites the stored columns, so the next pass would read the same.
+      outcome = {
+        status: 'failed',
+        error: `not executed: the intent row could not be decoded (${request.decodeError})`,
+        failure: { origin: 'platform', code: 'validation_failed', permission: null },
+      };
+    } else if (!handler) {
       outcome = { status: 'failed', error: `no handler for platform-request kind '${request.kind}'` };
     } else {
       try {
@@ -179,6 +191,9 @@ export async function drainScopePlatformRequests(
         message: `platform intent ${request.id} failed: ${outcome.error ?? 'unknown'}`,
       });
     }
+    // No special case for a refused row: the tolerant read only ever hands back a row whose
+    // id satisfies the contract, so its settle is refused for the same reasons any settle
+    // is — transiently — and propagates the same way, surfacing the outage.
     await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, request.id, {
       status: outcome.status,
       result: outcome.result,

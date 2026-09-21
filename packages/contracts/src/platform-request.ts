@@ -91,6 +91,24 @@ export const platformRequest = z.object({
   result: z.unknown().nullable(),
   requestedAt: instant, // stamped kernel-side
   settledAt: instant.nullable(),
+  /**
+   * Why this row could not be read whole (#1588). ABSENT on every row the kernel wrote, which
+   * is what "decoded whole" looks like, so a healthy list reads exactly as it did before.
+   *
+   * A read returns a list, and a strict decode let one malformed row throw for all of them —
+   * including `listPlatformRequestHistory`, the read that exists to explain a failure (#618),
+   * disabled by the row that failed. So the read is tolerant and SAYS SO: every column that
+   * did not decode is named here, and its field comes back EMPTY (`null`, or a self-naming
+   * marker for `requestedBy`) rather than guessed at. Every other field still satisfies this
+   * schema — a row whose id, kind, status, attempts or `requestedAt` does not is never
+   * returned as one of these at all.
+   *
+   * The drain treats its presence as a refusal and never runs a handler on such a row: a
+   * payload it could not decode is not a payload it may act on with `HostAdmin` authority.
+   *
+   * Reachable without a forge: `importDump` replays a dump's rows verbatim.
+   */
+  decodeError: z.string().min(1).optional(),
 });
 export type PlatformRequest = z.infer<typeof platformRequest>;
 

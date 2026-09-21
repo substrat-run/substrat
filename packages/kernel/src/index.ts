@@ -180,7 +180,10 @@ export type { ConnectStateClaim } from './connect-state.js';
 export {
   PLATFORM_REQUEST_COLUMNS,
   platformRequestHistoryQuery,
+  platformRequestOf,
+  UNDECODED_REQUESTER,
 } from './platform-request-query.js';
+export type { PlatformRequestRawRow } from './platform-request-query.js';
 export {
   CANCELLED_INTENT_NOTE,
   intentPayloadCarriesSubject,

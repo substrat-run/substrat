@@ -130,7 +130,10 @@ journal — newest first, filterable by `kind` and `status` — returning the sa
 platform settled, with its `result` or `lastError`. That read exists for one concrete reason:
 a contract whose signature request settled `failed` can say so on its own screen, instead of
 showing a document that appears to be out for signature and is not. The kernel owns every
-write to the table, so a status is only ever the platform's answer.
+write to the table, so a status is only ever the platform's answer. The one row it did not
+write is one a restored dump brought in, and such a row may not decode: it is still returned
+beside every other intent, carrying a `decodeError` that names the columns that did not, and
+the drain settles it `failed` rather than act on what it could not read.
 
 ## Scheduled work {#scheduled-work}
 

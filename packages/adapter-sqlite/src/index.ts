@@ -25,7 +25,6 @@ import {
   meterReading,
   platformRequestInput,
   platformRequestId,
-  platformRequest,
   MAX_PENDING_PLATFORM_REQUESTS,
   identityLink,
   identityPool,
@@ -202,6 +201,8 @@ import {
   type ExecutorRetryPolicy,
   backoffAt,
   platformRequestHistoryQuery,
+  platformRequestOf,
+  type PlatformRequestRawRow,
   PLATFORM_REQUEST_COLUMNS,
   PLATFORM_REQUEST_REDACTION_SQL,
   platformRequestRedactionParams,
@@ -1082,40 +1083,6 @@ interface OutboxRow {
   /** #1237: the invocation this event was emitted during. NULL = none was carried. */
   invocation_id: string | null;
   payload: string | null;
-}
-
-/** A raw `_substrat_platform_requests` row as stored — snake_case, JSON columns as strings. */
-interface PlatformRequestRawRow {
-  id: string;
-  kind: string;
-  payload: string;
-  requested_by: string;
-  impersonation: string | null;
-  status: string;
-  attempts: number;
-  last_error: string | null;
-  last_failure: string | null;
-  result: string | null;
-  requested_at: string;
-  settled_at: string | null;
-}
-
-/** Map a stored platform-request row to the `PlatformRequest` contract shape (JSON columns parsed). */
-function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
-  return platformRequest.parse({
-    id: r.id,
-    kind: r.kind,
-    payload: JSON.parse(r.payload),
-    requestedBy: JSON.parse(r.requested_by),
-    impersonation: r.impersonation == null ? null : JSON.parse(r.impersonation),
-    status: r.status,
-    attempts: r.attempts,
-    lastError: r.last_error,
-    failure: r.last_failure == null ? null : JSON.parse(r.last_failure),
-    result: r.result === null ? null : JSON.parse(r.result),
-    requestedAt: r.requested_at,
-    settledAt: r.settled_at,
-  });
 }
 
 /**
@@ -4213,7 +4180,8 @@ export class SqliteScopeHost implements ScopeHost {
            FROM _substrat_platform_requests WHERE status = 'pending' ORDER BY id`,
       )
       .all() as PlatformRequestRawRow[];
-    return rows.map(rowToPlatformRequest);
+    // Tolerant (#1588): one undecodable row comes back naming why, never throws for the list.
+    return rows.map(platformRequestOf);
   }
 
   async listPlatformRequestHistory(
@@ -4225,7 +4193,7 @@ export class SqliteScopeHost implements ScopeHost {
     await this.applyPendingMigrations(rt);
     const q = platformRequestHistoryQuery(filter);
     return (rt.db.prepare(q.sql).all(...q.params) as PlatformRequestRawRow[]).map(
-      rowToPlatformRequest,
+      platformRequestOf,
     );
   }
 
@@ -8800,7 +8768,7 @@ export class SqliteScopeHost implements ScopeHost {
       platformRequests: (filter?: PlatformRequestFilter): PlatformRequest[] => {
         const q = platformRequestHistoryQuery(filter);
         return (rt.db.prepare(q.sql).all(...q.params) as PlatformRequestRawRow[]).map(
-          rowToPlatformRequest,
+          platformRequestOf,
         );
       },
       // #901. This scope's own spine, so no tenancy predicate is needed or

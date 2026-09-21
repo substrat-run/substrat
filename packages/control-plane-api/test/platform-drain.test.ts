@@ -158,6 +158,172 @@ describe('drainScopePlatformRequests — the kind→handler dispatcher', () => {
   });
 });
 
+/**
+ * #1588: the read is tolerant so one malformed row cannot hide the queue — which means the
+ * drain now RECEIVES that row, with empty stand-ins wherever it did not decode. Strict where
+ * work happens: a row carrying `decodeError` must never reach a handler.
+ */
+describe('drainScopePlatformRequests — an undecodable row is refused, never executed (#1588)', () => {
+  const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert' };
+
+  /** A handler that records every request it was handed — the thing that must stay clean. */
+  const recording = () => {
+    const seen: string[] = [];
+    const handler: PlatformRequestHandler = async (_ctx, request) => {
+      seen.push(request.id);
+      return { status: 'done' };
+    };
+    return { seen, handler };
+  };
+
+  it('settles the bad row failed without calling its handler, and drains the healthy one behind it', async () => {
+    const broken = intent('provision-sibling', { payload: null, decodeError: 'payload: Unexpected token' });
+    const healthy = intent('provision-sibling');
+    const { client, settled } = fakeTransport([broken, healthy]);
+    const { seen, handler } = recording();
+    const failures: Array<{ stage?: string | null; origin?: string | null; message: string }> = [];
+
+    const report = await drainScopePlatformRequests(
+      client,
+      ctx,
+      { 'provision-sibling': handler },
+      { recordFailure: (e) => failures.push(e) },
+    );
+
+    // The handler saw the healthy row and ONLY the healthy row.
+    expect(seen).toEqual([healthy.id]);
+    expect(report).toEqual({ drained: 2, done: 1, failed: 1, pending: 0 });
+    const refused = settled.find((s) => s.id === broken.id)!;
+    expect(refused.status).toBe('failed');
+    expect(refused.lastError).toBe('not executed: the intent row could not be decoded (payload: Unexpected token)');
+    // Ours, raised before anything reached a provider — never captioned as their answer (#841).
+    expect((refused as { failure?: unknown }).failure).toEqual({
+      origin: 'platform',
+      code: 'validation_failed',
+      permission: null,
+    });
+    // Terminal, so it is an operator's headline, not a row nobody reads.
+    expect(failures).toEqual([
+      expect.objectContaining({ stage: 'terminal', origin: 'platform', message: expect.stringMatching(broken.id) }),
+    ]);
+  });
+
+  it('refuses before the kind is looked at — an undecodable row of an unregistered kind is not "no handler"', async () => {
+    const broken = intent('mystery', { decodeError: 'result: Unexpected end of JSON input' });
+    const { client, settled } = fakeTransport([broken]);
+    await drainScopePlatformRequests(client, ctx, {});
+    expect(settled[0]!.lastError).toMatch(/could not be decoded \(result: /);
+  });
+
+  /**
+   * #1634 review: a refused row's settle is an ordinary settle. A transient failure — the
+   * vertical answering 503 — must surface exactly as it does for a healthy row, not be
+   * swallowed into a row that stays pending while each pass re-records a terminal failure
+   * and the outage goes unreported. The pair differs ONLY in whether the settle works.
+   */
+  describe("the refusal's settle is an ordinary settle", () => {
+    const outage = (client: ReturnType<typeof fakeTransport>['client']) => {
+      client.settlePlatformRequest = async () => {
+        throw new ControlPlaneError(503, 'vertical unreachable');
+      };
+    };
+
+    it('a transient settle failure on a refused row propagates — the outage is not swallowed', async () => {
+      const broken = intent('provision-sibling', { payload: null, decodeError: 'payload: Unexpected token' });
+      const { client } = fakeTransport([broken]);
+      outage(client);
+      const { seen, handler } = recording();
+      await expect(drainScopePlatformRequests(client, ctx, { 'provision-sibling': handler })).rejects.toThrow(
+        /vertical unreachable/,
+      );
+      // Still refused: an outage on the way back does not turn into running the handler.
+      expect(seen).toEqual([]);
+    });
+
+    it('…and a healthy row under the same outage propagates the same way', async () => {
+      const healthy = intent('provision-sibling');
+      const { client } = fakeTransport([healthy]);
+      outage(client);
+      const { handler } = recording();
+      await expect(drainScopePlatformRequests(client, ctx, { 'provision-sibling': handler })).rejects.toThrow(
+        /vertical unreachable/,
+      );
+    });
+
+    it('the positive twin: the same refused row with a working settle lands failed, and the pass completes', async () => {
+      const broken = intent('provision-sibling', { payload: null, decodeError: 'payload: Unexpected token' });
+      const { client, settled } = fakeTransport([broken]);
+      const { seen, handler } = recording();
+      const report = await drainScopePlatformRequests(client, ctx, { 'provision-sibling': handler });
+      expect(seen).toEqual([]);
+      expect(report).toEqual({ drained: 1, done: 0, failed: 1, pending: 0 });
+      expect(settled).toEqual([expect.objectContaining({ id: broken.id, status: 'failed' })]);
+    });
+  });
+
+  it('end to end on a real host: a restored bad row never reaches its handler, and lands failed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cp-drain-1588-'));
+    const host = new SqliteScopeHost({ dir });
+    try {
+      const staff = platformActorId.parse(ulid());
+      const t = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'demo-vert' });
+      await host.admin.activateScope(staff, t, s);
+
+      // Planted by a restore, the only road to such a row: `importDump` replays verbatim.
+      const brokenId = '00000000000000000000000000';
+      const healthyId = ulid();
+      const row = (id: string, payload: string) => ({
+        id,
+        kind: 'provision-sibling',
+        payload,
+        requested_by: JSON.stringify({ system: 'scope-sweeper' }),
+        status: 'pending',
+        attempts: 0,
+        requested_at: '2026-09-01T00:00:00.000Z',
+      });
+      const backup = await host.admin.exportScope(staff, t, s);
+      const journal = backup.tables.find((x) => x.name === '_substrat_platform_requests')!;
+      expect(journal).toBeDefined();
+      await host.restoreScope(staff, t, s, {
+        ...backup,
+        tables: backup.tables.map((x) =>
+          x === journal
+            ? {
+                ...x,
+                rows: [row(brokenId, '{"slug":'), row(healthyId, JSON.stringify({ slug: 'padel' }))].map(
+                  (r: Record<string, unknown>) => x.columns.map((c) => r[c] ?? null),
+                ),
+              }
+            : x,
+        ),
+      });
+
+      const { seen, handler } = recording();
+      // The host IS the drain's transport here: the same two calls `VerticalClient` makes.
+      const report = await drainScopePlatformRequests(
+        host as unknown as Pick<VerticalClient, 'listPlatformRequests' | 'settlePlatformRequest'>,
+        { tenantId: t, scopeId: s, vertical: 'demo-vert' },
+        { 'provision-sibling': handler },
+      );
+
+      expect(seen).toEqual([healthyId]);
+      expect(report).toEqual({ drained: 2, done: 1, failed: 1, pending: 0 });
+      expect(await host.listPlatformRequests(t, s)).toEqual([]);
+      const refused = (await host.listPlatformRequestHistory(t, s)).find((r) => r.id === brokenId)!;
+      expect(refused.status).toBe('failed');
+      expect(refused.lastError).toMatch(/^not executed: the intent row could not be decoded \(payload: /);
+      // The evidence survives the settle: the stored payload is untouched, so the row still says so.
+      expect(refused.decodeError).toMatch(/^payload: /);
+    } finally {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('connectorDispatchHandler — executes a routed connector delivery (#574 phase 3)', () => {
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());

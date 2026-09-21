@@ -26,7 +26,6 @@ import {
   type PlatformRequestId,
   type PlatformRequest,
   type PlatformRequestFilter,
-  platformRequest,
   type EntitlementView,
   type EntityRef,
   type EventAuthorization,
@@ -60,6 +59,8 @@ import {
   assertReadOnlyQuery,
   entitlementDenial,
   platformRequestHistoryQuery,
+  platformRequestOf,
+  type PlatformRequestRawRow,
   PLATFORM_REQUEST_COLUMNS,
   PLATFORM_REQUEST_REDACTION_SQL,
   platformRequestRedactionParams,
@@ -617,45 +618,6 @@ function attachSubject(principal: PrincipalId, connectionId?: string): CheckSubj
 /** The platform spine (`_substrat_*`) and SQLite internals — the UI groups these apart. */
 function isSystemTable(name: string): boolean {
   return name.startsWith('_substrat') || name.startsWith('sqlite_');
-}
-
-/** A raw `_substrat_platform_requests` row as stored — snake_case, JSON columns still strings.
- *  The coordinator maps it to the `PlatformRequest` contract shape. */
-export interface PlatformRequestRawRow {
-  id: string;
-  kind: string;
-  payload: string;
-  requested_by: string;
-  impersonation: string | null;
-  status: string;
-  attempts: number;
-  last_error: string | null;
-  last_failure: string | null;
-  result: string | null;
-  requested_at: string;
-  settled_at: string | null;
-}
-
-/**
- * A stored row → the `PlatformRequest` contract shape (JSON columns parsed). The coordinator
- * maps the RPC's raw rows the same way in `host.ts`; this copy exists because `ctx.platformRequests`
- * (#618) answers INSIDE the DO, where the row never crosses an RPC boundary at all.
- */
-function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
-  return platformRequest.parse({
-    id: r.id,
-    kind: r.kind,
-    payload: JSON.parse(r.payload),
-    requestedBy: JSON.parse(r.requested_by),
-    impersonation: r.impersonation == null ? null : JSON.parse(r.impersonation),
-    status: r.status,
-    attempts: r.attempts,
-    lastError: r.last_error,
-    failure: r.last_failure == null ? null : JSON.parse(r.last_failure),
-    result: r.result === null ? null : JSON.parse(r.result),
-    requestedAt: r.requested_at,
-    settledAt: r.settled_at,
-  });
 }
 
 /** SQLite cell → a JSON-safe value: bigints stringify, blobs (ArrayBuffer) read as null. */
@@ -4101,8 +4063,10 @@ export function defineScopeDO(
         // predicate is needed or possible: the DO IS the scope.
         platformRequests: (filter?: PlatformRequestFilter): PlatformRequest[] => {
           const q = platformRequestHistoryQuery(filter);
+          // The kernel's decoder, the one the coordinator maps the RPC's rows with (#1588):
+          // tolerant, so one undecodable row cannot hide this scope's other intents from it.
           return (sql.exec(q.sql, ...q.params).toArray() as unknown as PlatformRequestRawRow[]).map(
-            rowToPlatformRequest,
+            platformRequestOf,
           );
         },
         // #901. Mirror of the pure adapter, and the reason the contract suite
