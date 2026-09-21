@@ -2,7 +2,14 @@ import { useEffect, useState } from 'react';
 import type { ScopeId, TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, Stat } from '../components';
 import type { Api } from '../lib/api';
-import { EXCLUSION_LABEL, foldStoragePage, formatBytes, type StorageTally } from '../lib/storage';
+import {
+  EXCLUSION_LABEL,
+  foldStoragePage,
+  formatBytes,
+  partialNote,
+  scopesLeftOut,
+  type StorageTally,
+} from '../lib/storage';
 
 /**
  * One tenant's storage, read on demand (#1524).
@@ -42,6 +49,7 @@ export function StorageCard({
       .finally(() => setBusy(false));
   };
 
+  const left = tally ? scopesLeftOut(tally) : null;
   const excluded = (tally?.excluded ?? (['attachments', 'tenant-stores', 'lake'] as const))
     .map((k) => EXCLUSION_LABEL[k])
     .join(', ');
@@ -82,33 +90,28 @@ export function StorageCard({
               meta={
                 tally.complete
                   ? `across all ${tally.read} scope${tally.read === 1 ? '' : 's'}`
-                  : `${tally.read} of ${tally.total} scopes read · not the total`
+                  : `${tally.read} scope${tally.read === 1 ? '' : 's'} read over ${tally.pages} page${tally.pages === 1 ? '' : 's'} · not the total`
               }
             />
             <Stat
-              label="Not read"
-              value={Math.max(0, tally.total - tally.read)}
+              label="Not in the sum"
+              value={left === null ? 'unknown' : left}
               meta={
-                tally.failed > 0
-                  ? `${tally.failed} failed${tally.nextCursor ? ' · more pages left' : ''}`
-                  : tally.nextCursor
-                    ? 'more pages left'
-                    : 'none'
+                left === null
+                  ? 'the directory may have changed during the walk'
+                  : tally.failed > 0
+                    ? `${tally.failed} failed${tally.nextCursor ? ' · more pages left' : ''}`
+                    : tally.nextCursor
+                      ? 'more pages left'
+                      : 'none'
               }
             />
-            <Stat
-              label="Reaped"
-              value={tally.reaped}
-              meta="not read: their storage is gone"
-            />
+            <Stat label="Reaped" value={tally.reaped} meta="not read: their storage is gone" />
           </div>
           {!tally.complete && (
             <div>
               <Badge status="warning">Partial</Badge>{' '}
-              <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                This sum leaves out {tally.total - tally.read} scope{tally.total - tally.read === 1 ? '' : 's'}. It is not
-                this tenant's storage total.
-              </span>
+              <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{partialNote(tally)}</span>
             </div>
           )}
           {tally.failures.length > 0 && (

@@ -6031,6 +6031,9 @@ export function scopeHostContractSuite(
         host.admin.entityHistory(staff, t3, s, { entityType: 'test-thing', entityId: 'x1' }),
       ).rejects.toThrow(/reaped/);
       await expect(host.admin.listScopeTables(staff, t3, s)).rejects.toThrow(/reaped/);
+      // #1524: a size read is refused BEFORE it reaches the storage. Addressing a reaped
+      // DO to ask its size would recreate an empty database and report that as the scope.
+      await expect(host.admin.scopeDatabaseSize(staff, t3, s)).rejects.toThrow(/reaped/);
       // Audited as reapScope against the right scope + actor.
       const reapEntry = (await host.admin.auditLog(staff, { tenantId: t3 })).find(
         (r) => r.action === 'reapScope' && r.scopeId === s,

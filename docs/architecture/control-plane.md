@@ -1086,8 +1086,11 @@ nobody uses. So:
   page per press, and the card says how many scopes remain unread.
 - **A partial sum says so.** A scope whose read fails (its DO is unreachable, or its
   deployment predates the route and answers 501) is listed with the error and left out of
-  the sum, and the reading is `complete: false`. A sum is labelled a total only when every
-  non-reaped scope was read in the same walk and none failed. A scope naming a vertical that
+  the sum, and the reading is `complete: false`. A sum is labelled a total only when ONE
+  page, read from one directory listing, covered every non-reaped scope and none failed. A
+  walk over several pages is never a total. The directory has no revision to compare between
+  pages, so a scope reaped and another provisioned mid-walk can swap places with every count
+  still agreeing, and the card says the directory may have changed. A scope naming a vertical that
   no deployment resolves fails. It is never read from the control plane's own namespace,
   where it would wake an empty placeholder and report that size.
 - **Reaped scopes are counted, not read.** Their storage is gone.

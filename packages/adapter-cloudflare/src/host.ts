@@ -4038,8 +4038,8 @@ export class CloudflareScopeHost implements ScopeHost {
         return bookmarks;
       },
       scopeDatabaseSize: async (actor, tenantId, scopeId) => {
-        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        // Reaped is refused, not read: addressing the deleted DO would recreate it.
+        await this.scopeRecordForRead(tenantId, scopeId);
         const bytes = await this.scopeStub(scopeId).databaseSize();
         await this.recordAccess(actor, 'scopeDatabaseSize', { tenantId, scopeId }, null, 1);
         return bytes;

@@ -8,9 +8,12 @@ import type { StorageExclusion, StorageMeterReading } from '@substrat-run/contra
  * for them, and this fold decides the one thing the card must not get wrong: whether
  * the sum shown is the tenant's TOTAL, or only part of it.
  *
- * `complete` needs all three: no page is left, no read failed, and every scope the
- * directory counts was read. The last one catches a tenant that gained a scope between
- * two pages. That scope sorts before the cursor, so no later page will read it.
+ * `complete` is true only for a walk that fit in ONE page, which the platform itself
+ * marked complete: every non-reaped scope was read in a single directory listing and none
+ * failed. A walk over several pages is never complete. The directory has no revision to
+ * compare between pages, and scopes provisioned or reaped during the walk can substitute
+ * one scope for another with the counts still agreeing. So a multi-page sum is reported
+ * as what it is, the scopes that were read, with `directoryMayHaveChanged` set.
  */
 export interface StorageTally {
   readAt: string;
@@ -22,7 +25,14 @@ export interface StorageTally {
   nextCursor: string | null;
   failures: { scopeId: string; error: string }[];
   excluded: StorageExclusion[];
+  /** Pages folded into this tally. */
+  pages: number;
   complete: boolean;
+  /**
+   * The walk spanned more than one directory listing, so the scopes read may not be the
+   * scopes the tenant has now. Nothing can confirm it either way.
+   */
+  directoryMayHaveChanged: boolean;
 }
 
 export function foldStoragePage(prev: StorageTally | null, page: StorageMeterReading): StorageTally {
@@ -44,8 +54,35 @@ export function foldStoragePage(prev: StorageTally | null, page: StorageMeterRea
     nextCursor: page.nextCursor,
     failures,
     excluded: page.excluded,
-    complete: page.nextCursor === null && failed === 0 && read === page.total,
+    pages: (prev?.pages ?? 0) + 1,
+    complete: prev === null && page.complete,
+    directoryMayHaveChanged: prev !== null,
   };
+}
+
+/**
+ * How many scopes a sum leaves out, when that can be said, and `null` when it cannot. After
+ * a multi-page walk `total` comes from the last listing and `read` from several, so their
+ * difference compares two different sets of scopes. It can even come out negative, when a
+ * scope read on an earlier page was reaped before the last one.
+ */
+export function scopesLeftOut(t: StorageTally): number | null {
+  if (t.directoryMayHaveChanged) return null;
+  return Math.max(0, t.total - t.read);
+}
+
+/** Why a sum is not the total, in the one form the tally can support. */
+export function partialNote(t: StorageTally): string {
+  const left = scopesLeftOut(t);
+  if (left !== null) {
+    return `This sum leaves out ${left} scope${left === 1 ? '' : 's'}. It is not this tenant's storage total.`;
+  }
+  const more = t.nextCursor ? ' More pages are left.' : '';
+  return (
+    `Read ${t.read} scope${t.read === 1 ? '' : 's'} across ${t.pages} pages. The directory may have changed ` +
+    `during the walk, so this is not a total, and how many scopes it misses cannot be said.${more} ` +
+    'Re-read for a total if the tenant fits in one page.'
+  );
 }
 
 /** What each exclusion is, in the words the card and the doc both use. */

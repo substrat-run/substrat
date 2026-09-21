@@ -181,8 +181,9 @@ What the reading leaves out, and says it leaves out:
   retention, and it is not a storage meter.
 
 A reading covers at most one page of the tenant's scopes and says when it is partial: a page
-still to read, or a scope whose read failed. A sum is only called a total when every scope
-answered. So a storage line on an invoice still needs a decision: a stored gauge built on this
+still to read, or a scope whose read failed. A sum is only called a total when a single page
+covered every scope and every one answered. A walk over several pages never is, because the
+directory can change between pages. So a storage line on an invoice still needs a decision: a stored gauge built on this
 reading, or event-history bytes as the unit being sold.
 
 ### Requests are not billable either
