@@ -287,7 +287,11 @@ export interface OperationContext {
    * one to an untrusted caller does its own `assertAllowed` first.
    */
   versionOf(entity: EntityRef): EntityVersion | null;
-  /** Node-level check; pass `entity` for per-entity checks (portal access, §4.2 rule 3). */
+  /**
+   * Node-level check; pass `entity` for per-entity checks (portal access, §4.2 rule 3).
+   * A `permission` that is not a key (a cast past the brand) throws `internal` rather
+   * than returning a denial, and records none (#1642, `assertPermissionKey`).
+   */
   check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
   /**
    * Find entities of one type by what a person typed (#827) — the read a picker

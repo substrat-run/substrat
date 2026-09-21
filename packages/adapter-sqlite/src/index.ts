@@ -161,6 +161,7 @@ import {
 import {
   asPrincipal,
   assertAllowed,
+  assertPermissionKey,
   assertReadOnlyQuery,
   attachmentBlobKey,
   entitlementDenial,
@@ -8654,7 +8655,10 @@ export class SqliteScopeHost implements ScopeHost {
     // Lifted out of the object literal so `grant` can reuse it: a delegation
     // check has to be the SAME check the operation itself passes, or the two
     // could disagree about what the caller holds.
-    const runCheck: OperationContext['check'] = async (permission, entity?) => {
+    const runCheck: OperationContext['check'] = async (unparsed, entity?) => {
+      // #1642: parsed before the override actor's early return, which never reaches
+      // the checker — a cast key would otherwise become that path's proof relation.
+      const permission = assertPermissionKey(unparsed);
       if (overrideActor) {
         return {
           allowed: true as const,
