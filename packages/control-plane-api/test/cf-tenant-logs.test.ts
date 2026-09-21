@@ -550,3 +550,122 @@ describe('cf tenant metrics series', () => {
     );
   });
 });
+
+/**
+ * One call's lines (#1525).
+ *
+ * The backend here is a corpus that EVALUATES the filters it is sent, rather than a stub
+ * that answers by key: the property is "an id from another tenant returns nothing", and a
+ * stub that hands back a canned line whenever it sees `invocationId` would pass whether
+ * or not the tenant filter was there. Two tenants share the corpus, so a filter that
+ * dropped `tenantId` would visibly return the other one's line.
+ */
+describe('cf tenant logs — filtered to one invocation', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const OURS = '01TENANT';
+  const THEIRS = '01OTHERTENANT';
+  const A1 = '01AAAAAAAAAAAAAAAAAAAAAAA1'; // ours, answered 200 and logged an error on the way
+  const A2 = '01AAAAAAAAAAAAAAAAAAAAAAA2'; // ours, answered 500
+  const B1 = '01BBBBBBBBBBBBBBBBBBBBBBB1'; // THEIRS
+
+  const stamped = (tenant: string, invocationId: string, status: number, requestId: string) => ({
+    timestamp: 1000,
+    source: {
+      substrat: 'invocation',
+      tenantId: tenant,
+      scopeId: '01SCOPE',
+      vertical: 'acme/widgets',
+      method: 'POST',
+      path: '/api/orders',
+      invocationId,
+      status,
+      threw: false,
+      durationMs: 42,
+    },
+    $metadata: { id: `stamp-${invocationId}`, requestId, service: 'acme-widgets' },
+  });
+  const CORPUS = [
+    stamped(OURS, A1, 200, 'req-A1'),
+    ownLine('error', 'charge declined', 'req-A1', 'own-A1'),
+    stamped(OURS, A2, 500, 'req-A2'),
+    stamped(THEIRS, B1, 200, 'req-B1'),
+    ownLine('warn', 'their private detail', 'req-B1', 'own-B1'),
+  ];
+
+  /** Resolve a filter key the way the log platform does: `$metadata.x` is metadata, the rest is the JSON body. */
+  const valueAt = (e: Record<string, any>, key: string): unknown =>
+    key.startsWith('$metadata.') ? e['$metadata']?.[key.slice('$metadata.'.length)] : e['source']?.[key];
+  const matches = (filters: Array<Record<string, unknown>>, e: Record<string, any>) =>
+    filters.every((f) => {
+      const v = valueAt(e, f['key'] as string);
+      if (f['operation'] === 'eq') return v === f['value'];
+      if (f['operation'] === 'gte') return typeof v === 'number' && v >= (f['value'] as number);
+      return false;
+    });
+
+  const messages = (events: Array<{ message: string | null }>) => events.map((e) => e.message).sort();
+
+  it('returns a call of the caller’s own tenant, with the lines its handler wrote', async () => {
+    const { reader } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
+    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 50 });
+    expect(messages(events)).toEqual(['POST /api/orders → 200 (42 ms)', 'charge declined']);
+  });
+
+  // The boundary. Positive twin above; this is the leak it guards.
+  it('returns NOTHING for an invocation id that belongs to another tenant', async () => {
+    const { reader, sent } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
+    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: B1, hours: 24, limit: 50 });
+    expect(events).toEqual([]);
+    // Nothing of theirs was even fetched: with no stamped line of ours there is no
+    // request id to expand, so phase two never runs.
+    expect(sent.some((f) => keyed(f, '$metadata.requestId'))).toBe(false);
+    // …and every query that went out named OUR tenant.
+    for (const f of sent) expect(keyed(f, 'tenantId')).toMatchObject({ value: OURS });
+  });
+
+  it('sends the id as an equality beside the tenant’s, on the field the stamped line carries', async () => {
+    const { reader, sent } = readerOver(() => []);
+    await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 10 });
+    expect(sent).toHaveLength(1);
+    expect(keyed(sent[0]!, 'invocationId')).toEqual({ key: 'invocationId', operation: 'eq', type: 'string', value: A1 });
+    expect(keyed(sent[0]!, 'tenantId')).toMatchObject({ value: OURS });
+    expect(keyed(sent[0]!, 'substrat')).toMatchObject({ value: 'invocation' });
+  });
+
+  it('narrows to that one call, though the tenant has others', async () => {
+    const { reader } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
+    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A2, hours: 24, limit: 50 });
+    expect(messages(events)).toEqual(['POST /api/orders → 500 (42 ms)']);
+  });
+
+  it('with no id, is unfiltered as before — every call of the tenant, none of the other’s', async () => {
+    const { reader, sent } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
+    const events = await reader.tenantLogs!({ tenantId: OURS, hours: 24, limit: 50 });
+    expect(messages(events)).toEqual([
+      'POST /api/orders → 200 (42 ms)',
+      'POST /api/orders → 500 (42 ms)',
+      'charge declined',
+    ]);
+    expect(sent.some((f) => keyed(f, 'invocationId'))).toBe(false);
+  });
+
+  /**
+   * The error read selects invocations account-wide for its third shape (a `console.error`
+   * in a request that answered 200), admitting them by `ownsInvocation` — which judges the
+   * TENANT, not the call. Left in place under an id it would answer a one-call filter with
+   * every other call of the tenant that logged an error.
+   */
+  it('does not widen an error read past the one call, and never searches account-wide', async () => {
+    const { reader, sent } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
+    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A2, level: 'error', hours: 24, limit: 50 });
+    expect(messages(events)).toEqual(['POST /api/orders → 500 (42 ms)']);
+    expect(sent.some((f) => keyed(f, '$metadata.level'))).toBe(false);
+  });
+
+  it('applies the level to the lines of that one call', async () => {
+    const { reader } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
+    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, level: 'error', hours: 24, limit: 50 });
+    expect(messages(events)).toEqual(['charge declined']);
+  });
+});

@@ -4207,6 +4207,9 @@ app.get('/api/apps/:scopeId/observability/logs', async (c) => {
         scopeId: appRow.app_scope_id,
         level: c.req.query('level') || undefined,
         search: c.req.query('search') || undefined,
+        // Raw, so an empty value reaches the plane and is refused there rather than
+        // being read as "no filter" (#1525).
+        invocationId: c.req.query('invocationId'),
         hours: Number.isFinite(hours) ? hours : 24,
         // The chart's time cursor, passed on as the strings they arrived as: the plane
         // is what judges an instant (ISO, ordered, inside the same 72h ceiling `hours`

@@ -1275,6 +1275,8 @@ export class TenantNarrowedControlPlane {
     vertical?: string;
     level?: string;
     search?: string;
+    /** One call's lines (#1525). Narrows within this tenant and app; the plane judges its shape. */
+    invocationId?: string;
     hours: number;
     /** The chart's time cursor (#1447) — a window that ENDS in the past, which `hours`
      *  cannot name. Sent only when the caller has one; the plane defaults the rest. */
@@ -1306,6 +1308,9 @@ export class TenantNarrowedControlPlane {
     if (input.vertical) q.set('vertical', input.vertical);
     if (input.level) q.set('level', input.level);
     if (input.search) q.set('search', input.search);
+    // `!== undefined`, not truthiness like its neighbours: an EMPTY id is a caller bug the
+    // plane answers with a 400, and dropping it here would answer it with the whole log.
+    if (input.invocationId !== undefined) q.set('invocationId', input.invocationId);
     if (input.since) q.set('since', input.since);
     if (input.until) q.set('until', input.until);
     const events =

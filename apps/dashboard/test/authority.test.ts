@@ -818,6 +818,26 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     });
   });
 
+  // One call's lines (#1525). The route's half is in app-logs-by-invocation.test.ts.
+  describe('tenantLogs invocationId (#1525)', () => {
+    const CALL = '01J8Z3KX0Q5R7T9V1W2Y4A6B8C';
+
+    it('puts the id on the wire beside the pinned tenant', async () => {
+      const { cp, calls } = routedHarness({ '/observability/tenant-logs': [] });
+      await cp.tenantLogs({ scopeId: S, hours: 24, limit: 100, invocationId: CALL });
+      const ask = new URL(calls.find((u) => u.includes('/observability/tenant-logs'))!);
+      expect(ask.searchParams.get('invocationId')).toBe(CALL);
+      expect(ask.searchParams.get('tenantId')).toBe(T);
+    });
+
+    it('sends none when the caller has none', async () => {
+      const { cp, calls } = routedHarness({ '/observability/tenant-logs': [] });
+      await cp.tenantLogs({ scopeId: S, hours: 24, limit: 100 });
+      const ask = new URL(calls.find((u) => u.includes('/observability/tenant-logs'))!);
+      expect(ask.searchParams.has('invocationId')).toBe(false);
+    });
+  });
+
   // The permission-registry read (D-39, #336) the Permissions tab consumes.
   it('versionRegistry reads one version’s declared surface at the right route', async () => {
     const reg = {

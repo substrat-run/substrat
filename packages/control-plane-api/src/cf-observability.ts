@@ -633,6 +633,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     vertical?: string;
     level?: string;
     search?: string;
+    invocationId?: string;
     hours: number;
     since?: string;
     until?: string;
@@ -655,6 +656,14 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     ];
     if (input.scopeId) base.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
     if (input.vertical) base.push({ key: 'vertical', operation: 'eq', type: 'string', value: input.vertical });
+    // One call (#1525). The stamped line carries the id as a top-level `invocationId`
+    // (`InvocationLogLine`), so it is one more equality ANDed onto the tenant's own
+    // filter — never a replacement for it. That is the whole tenant boundary: an id that
+    // belongs to another tenant meets `tenantId = ours` and matches no line, and phase
+    // two then has no request id to expand, so nothing of theirs can be reached.
+    if (input.invocationId) {
+      base.push({ key: 'invocationId', operation: 'eq', type: 'string', value: input.invocationId });
+    }
 
     // Phase one. For every read but `error` this is one query: the tenant's stamped
     // lines, newest first.
@@ -687,7 +696,14 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // stamped line for THIS tenant on it — `ownsInvocation` below. Narrowing to (1)
     // alone, which is what this did first, silently dropped every crash that escaped the
     // envelope and every error logged by a request that went on to answer 200.
-    const isErrorRead = input.level?.toLowerCase() === 'error';
+    //
+    // A read of ONE call is never an error read in this sense, whatever its level: the
+    // tenant-filtered query already names the invocation, so there is nothing to select
+    // and nothing to search account-wide for. Taking the account-wide `console.error`
+    // branch would admit OTHER invocations of this tenant through `ownsInvocation`, which
+    // judges the tenant and not the call — a filter for one call answering with several.
+    // The level narrows at the merge below instead.
+    const isErrorRead = input.level?.toLowerCase() === 'error' && !input.invocationId;
     // Over-fetched relative to `limit`, because each invocation may pull siblings in
     // phase two and the cap belongs on the merged answer.
     const phaseOneLimit = Math.min(input.limit * 2, 200);
