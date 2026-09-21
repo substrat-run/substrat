@@ -83,11 +83,12 @@ import type {
 } from '@substrat-run/contracts';
 import type { OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
-import { migrationProgress, runningVersionOf, ulid } from '@substrat-run/kernel';
+import { migrationProgress, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
+import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
 import { ControlPlaneError } from './client.js';
@@ -1802,21 +1803,37 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const verticalForScope = async (
     c: { get: (k: 'actor') => PlatformActorId },
     scope: { tenantId?: TenantId; vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
-  ): Promise<VerticalClient | undefined> => {
+  ): Promise<VerticalClient | undefined> => (await deploymentForScope(c, scope))?.client;
+
+  /**
+   * `verticalForScope`, saying WHICH rung of the ladder chose the client (#1653).
+   *
+   * A reconcile's receipt must name the version whose hook actually ran, and that is a
+   * fact about the client chosen here — not about the scope's serving pointer read on the
+   * side. When the serving ref does not resolve, the ladder falls back to the bound
+   * version's deployment (or a slug's), and a receipt derived separately would claim the
+   * served version's hook ran when the bound one's did. `versionReachedAt(via, …)` turns
+   * this answer into the version, so the choice and the receipt have one source.
+   */
+  const deploymentForScope = async (
+    c: { get: (k: 'actor') => PlatformActorId },
+    scope: { tenantId?: TenantId; vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
+  ): Promise<ScopeDeployment | undefined> => {
     if (!scope.vertical) return undefined;
     const actor = c.get('actor');
     // A scope on the stable serving script (#286) is reached THERE — that script holds
     // its DOs regardless of what the bound version or the prod channel say.
     if (scope.servingRef && options.resolveVerticalRef) {
       const serving = await options.resolveVerticalRef(scope.servingRef);
-      if (serving) return serving;
+      if (serving) return { client: serving, via: 'serving-script' };
     }
-    const bySlug = async (slug: string): Promise<VerticalClient | undefined> => {
+    const bySlug = async (slug: string): Promise<ScopeDeployment | undefined> => {
       if (scope.verticalVersionId && options.resolveVerticalVersion) {
         const bound = await options.resolveVerticalVersion(slug, scope.verticalVersionId, actor);
-        if (bound) return bound;
+        if (bound) return { client: bound, via: 'bound-version' };
       }
-      return options.verticals?.[slug] ?? (await options.resolveVertical?.(slug, actor));
+      const bySlugClient = options.verticals?.[slug] ?? (await options.resolveVertical?.(slug, actor));
+      return bySlugClient ? { client: bySlugClient, via: 'slug' } : undefined;
     };
     const direct = await bySlug(scope.vertical);
     if (direct) return direct;
@@ -2193,8 +2210,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const v = scope.vertical ? await verticalOf(actor, scope.vertical) : undefined;
       if (!v || v.ownerTenant !== scopePin) return c.json({ error: 'forbidden' }, 403);
     }
-    const vertical = await verticalForScope(c, scope);
-    if (!vertical) return c.json({ error: await diagnoseUnboundScope(c.get('actor'), scope) }, 501);
+    const reached = await deploymentForScope(c, scope);
+    if (!reached) return c.json({ error: await diagnoseUnboundScope(c.get('actor'), scope) }, 501);
+    const vertical = reached.client;
     const entitlements = await admin.listEntitlements(actor, tenantId);
     // #406: re-gathered and re-delivered like entitlements, so a reconcile also repairs a
     // dropped identity-link delivery — and is the channel a link/unlink after provision rides.
@@ -2305,16 +2323,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }),
       );
     }
-    // #1653: WHICH version the hook is about to run as — the served one, for a scope on its
-    // vertical's serving script, whatever its pointer says. Read BEFORE the call, as the
-    // sweep reads it, so a promote landing mid-call cannot have its version recorded by a
-    // hook that ran as the one before. Best-effort: without it the receipt falls back to
-    // the bound version, which is the pre-#1653 answer and costs at most one more reconcile.
+    // #1653: WHICH version the hook is about to run as — the version of the deployment
+    // `reached` IS, never one read on the side: a serving ref that did not resolve fell back
+    // to the bound version's deployment, and it is that version's hook that runs. For the
+    // serving script, the pointer is read BEFORE the call, as the sweep reads it, so a
+    // promote landing mid-call cannot have its version recorded by a hook that ran as the
+    // one before. Best-effort: without it the receipt falls back to the bound version, the
+    // pre-#1653 answer, which costs at most one more reconcile.
     const serving =
-      scope.vertical && scope.servingRef
+      reached.via === 'serving-script' && scope.vertical
         ? await admin.verticalServing(actor, scope.vertical).catch(() => null)
         : null;
-    const ranAs = runningVersionOf(scope, serving);
+    const ranAs = versionReachedAt(reached.via, scope, serving);
     try {
       const result = await vertical.reconcileInstance({
         tenantId,
@@ -2332,7 +2352,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // this the sweep would come back and do it again on the next pass — the console
       // button and the automatic phase have to write the same receipt, or pressing the
       // button means nothing to the thing that watches. Both name it with
-      // `runningVersionOf`, so they cannot disagree about what "the same" is.
+      // `versionReachedAt`, from the deployment each actually reached.
       if (ranAs) {
         await admin.markScopeProvisioned(actor, tenantId, scopeId, ranAs);
       }

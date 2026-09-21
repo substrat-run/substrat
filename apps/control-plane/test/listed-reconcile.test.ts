@@ -4,7 +4,7 @@ import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ControlPlaneError, VerticalClient } from '@substrat-run/control-plane-api';
 import { platformActorId, principalId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid } from '@substrat-run/kernel';
-import { parseReconcileBatch, reconcileOrUnsupported } from '../src/worker.js';
+import { assertReconcileReaches, parseReconcileBatch, reconcileOrUnsupported } from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
@@ -228,6 +228,27 @@ describe('reconcileOrUnsupported (#1653)', () => {
       platformSecret: 'x',
     });
     await expect(reconcileOrUnsupported(call(unreachable))).rejects.toMatchObject({ status: 502 });
+  });
+});
+
+/**
+ * The sweep records the version it asked for (`expected`) when a reconcile resolves, so the
+ * deployment the scope's ladder reached must run exactly that (#1661 review). A serving ref
+ * that did not resolve falls back to the bound version's deployment; reconciling there and
+ * recording the served version would mark the scope repaired while the served version's
+ * hook never ran. The guard refuses before the call, so the sweep counts it `failed`,
+ * records nothing, and asks again next pass.
+ */
+describe('assertReconcileReaches (#1653)', () => {
+  const S = scopeId.parse(ulid());
+
+  it('lets a reconcile through when the reached deployment runs the expected version', () => {
+    expect(() => assertReconcileReaches(S, 'v2', 'v2')).not.toThrow();
+  });
+
+  it('refuses one whose deployment runs another version, or one the platform cannot name', () => {
+    expect(() => assertReconcileReaches(S, 'v2', 'v1')).toThrow(/runs v2, but the deployment it resolved to runs v1/);
+    expect(() => assertReconcileReaches(S, 'v2', null)).toThrow(/cannot name/);
   });
 });
 

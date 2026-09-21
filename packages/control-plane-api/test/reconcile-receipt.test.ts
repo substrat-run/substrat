@@ -5,7 +5,13 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { runPlatformSweep, ulid } from '@substrat-run/kernel';
 import { platformActorId, principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
-import { createControlPlaneApi, DEV_ACTOR_HEADER, UNSAFE_devPlatformActorAuth, type VerticalClient } from '../src/index.js';
+import {
+  createControlPlaneApi,
+  DEV_ACTOR_HEADER,
+  UNSAFE_devPlatformActorAuth,
+  versionReachedAt,
+  type VerticalClient,
+} from '../src/index.js';
 
 /**
  * The console's "Re-run provisioning" and the sweep's #1172 phase write ONE receipt, and
@@ -114,6 +120,76 @@ describe('scope reconcile receipt (#1653)', () => {
     });
     expect(report.errors.filter((e) => e.id === s)).toEqual([]);
     expect(report.provisionReconcile?.behind).toBe(0);
+  });
+
+  /**
+   * Copilot's finding on #1661. `verticalForScope` falls back from the serving ref to the
+   * bound version's deployment when the ref does not resolve. The receipt used to be read
+   * from the serving pointer on the side, so this reconcile — which ran v1's hook — was
+   * recorded as v2, and the scope looked repaired while v2's hook never ran. It now names
+   * the version of the deployment the ladder actually chose.
+   */
+  describe('when the serving ref does not resolve', () => {
+    const fellBackApp = (refResolves: boolean) =>
+      createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        resolveVerticalRef: async (ref) => (refResolves && ref === REF ? clientFor('serving') : undefined),
+        // The bound version's own deployment — the rung a missed serving ref falls to.
+        resolveVerticalVersion: async (_slug, versionId) => clientFor(`bound:${versionId}`),
+      });
+
+    const sweepReaches = async (): Promise<Map<string, string>> => {
+      const reached = new Map<string, string>();
+      await runPlatformSweep(host, {
+        actor: staff,
+        fetch: (() => Promise.reject(new Error('unused'))) as never,
+        sweepers: {},
+        drainRetries: false,
+        runSchedules: false,
+        reconcileMigrations: false,
+        gcSnapshots: false,
+        reconcileScopeFn: async (_t, id, expected) => {
+          reached.set(id, expected);
+          return 'unsupported'; // records nothing: this only asks who is behind
+        },
+      });
+      return reached;
+    };
+
+    it('reconciles through the bound deployment, records the BOUND version, and the scope stays behind', async () => {
+      const s = await scopeOn(REF);
+
+      const res = await fellBackApp(false).request(`/tenants/${T}/scopes/${s}/provision`, { method: 'POST', headers: auth });
+      expect(res.status).toBe(200);
+      expect(reconciledBy.get(s)).toBe(`bound:${v1}`);
+      // What ran was v1's hook, so that is what the receipt says…
+      expect((await host.admin.getScopeRecord(staff, T, s))?.provisionedVersionId).toBe(v1);
+      // …and the scope, which runs v2, is still behind: the next pass asks again for v2.
+      expect((await sweepReaches()).get(s)).toBe(v2);
+    });
+
+    it('the twin: when the serving ref resolves, it records the served version and nothing is left behind', async () => {
+      const s = await scopeOn(REF);
+
+      const res = await fellBackApp(true).request(`/tenants/${T}/scopes/${s}/provision`, { method: 'POST', headers: auth });
+      expect(res.status).toBe(200);
+      expect(reconciledBy.get(s)).toBe('serving');
+      expect((await host.admin.getScopeRecord(staff, T, s))?.provisionedVersionId).toBe(v2);
+      expect((await sweepReaches()).has(s)).toBe(false);
+    });
+  });
+
+  it('names the version by the rung that chose the deployment', () => {
+    const scope = { verticalVersionId: 'v1', servingRef: REF };
+    const served = { ref: REF, versionId: 'v2' };
+    expect(versionReachedAt('serving-script', scope, served)).toBe('v2');
+    // A serving ref that missed fell to one of these — whose code is the bound version's.
+    expect(versionReachedAt('bound-version', scope, served)).toBe('v1');
+    expect(versionReachedAt('slug', scope, served)).toBe('v1');
+    // The serving script, but a pointer naming another script, or none read: the bound one.
+    expect(versionReachedAt('serving-script', scope, { ref: 'elsewhere', versionId: 'v2' })).toBe('v1');
+    expect(versionReachedAt('serving-script', scope, null)).toBe('v1');
   });
 
   it('records the bound version for a scope still on per-version dispatch — its own script is what runs', async () => {

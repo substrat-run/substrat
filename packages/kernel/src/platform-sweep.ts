@@ -141,12 +141,19 @@ export interface PlatformSweepOptions {
    * code RUNS on the scope (`runningVersionOf`, #1653) against the one its provision last
    * ran against is how the platform sees that, and this fn is how it fixes it.
    *
+   * `expected` is the version the phase will record on success — the one running on the
+   * scope. A fn whose deployment for the scope runs a DIFFERENT version (its resolver fell
+   * back from the serving script to the bound version's, say) must throw rather than
+   * resolve: the receipt would otherwise name a hook that never ran, and the scope would
+   * read as repaired while the code it runs was never provisioned for. A throw leaves it
+   * unmarked and counted `failed`, which is where it belongs.
+   *
    * Resolves `'unsupported'` when the vertical answered that it implements no reconcile
    * (a 501 from `/internal/reconcile`). That is neither a success nor a failure: no
    * receipt is written, since nothing ran, and it is counted apart from `failed` so a
    * vertical that simply lacks the route does not drown the refusals somebody must read.
    */
-  reconcileScopeFn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<void | 'unsupported'>;
+  reconcileScopeFn?: (tenantId: TenantId, scopeId: ScopeId, expected: string) => Promise<void | 'unsupported'>;
   /**
    * The most scopes the #1172 phase reconciles in ONE pass (#1653). Default
    * {@link PROVISION_RECONCILE_BATCH}.
@@ -895,7 +902,7 @@ export async function runPlatformSweep(
     provisionReconcile.deferred = behind.length - window.length;
     await mapBounded(window, concurrency, async (s) => {
       try {
-        const outcome = await reconcile(s.tenantId, s.id);
+        const outcome = await reconcile(s.tenantId, s.id, s.target);
         if (outcome === 'unsupported') {
           // Nothing ran, so there is nothing true to record: left unmarked, like a
           // failure, and asked again next pass. Not an error — the vertical answered

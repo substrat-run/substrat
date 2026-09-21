@@ -111,7 +111,7 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
 
   const sweep = (
     host: ScopeHost,
-    fn: (t: unknown, s: unknown) => Promise<void | 'unsupported'>,
+    fn: (t: unknown, s: unknown, expected?: unknown) => Promise<void | 'unsupported'>,
     extra: Pick<PlatformSweepOptions, 'provisionReconcileBatch' | 'provisionReconcileRng' | 'concurrency'> = {},
   ) =>
     runPlatformSweep(host, {
@@ -337,6 +337,26 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
       expect(seen).toEqual([real.id]);
       expect(marked).toEqual([{ id: real.id, versionId: 'v2' }]);
       expect(report.provisionReconcile).toEqual(tally({ behind: 1, reconciled: 1, failed: 0 }));
+    });
+
+    /**
+     * The fn is told which version will be recorded, so a caller whose deployment for the
+     * scope runs something else can refuse rather than let a receipt name a hook that never
+     * ran (#1661 review). For a listed install that is the SERVED version; for a scope on
+     * per-version dispatch it is the bound one.
+     */
+    it('tells the fn the version it will record — the one that runs', async () => {
+      const listed = install();
+      const legacy = install({ servingRef: null, verticalVersionId: 'v3', provisionedVersionId: 'v1' });
+      const { host } = hostWithScopes([listed, legacy], PROMOTED);
+      const told = new Map<string, unknown>();
+
+      await sweep(host, async (_t, s, expected?: unknown) => {
+        told.set(s as string, expected);
+      });
+
+      expect(told.get(listed.id)).toBe('v2');
+      expect(told.get(legacy.id)).toBe('v3');
     });
 
     it('shares its fork test with every caller, and it takes both halves', () => {

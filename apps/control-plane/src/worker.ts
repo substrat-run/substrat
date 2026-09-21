@@ -96,7 +96,7 @@ import {
   type PlatformRuntime,
   type DoNamespaceReader,
 } from '@substrat-run/control-plane-api';
-import { ControlPlaneError, VerticalClient } from '@substrat-run/control-plane-api';
+import { ControlPlaneError, VerticalClient, versionReachedAt, type ScopeDeployment } from '@substrat-run/control-plane-api';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
@@ -853,6 +853,22 @@ function resolveVerticalForScopeFor(
   verticalVersionId: string | null;
   servingRef?: string | null;
 }) => Promise<VerticalClient | undefined> {
+  const pick = deploymentForScopeFor(env);
+  return async (scope) => (await pick(scope))?.client;
+}
+
+/**
+ * The same ladder, saying which rung chose the client (#1653) — so a reconcile can name the
+ * version it actually ran against with `versionReachedAt`, rather than assume the one the
+ * directory says the scope runs.
+ */
+function deploymentForScopeFor(
+  env: Env,
+): (scope: {
+  vertical: string | null;
+  verticalVersionId: string | null;
+  servingRef?: string | null;
+}) => Promise<ScopeDeployment | undefined> {
   const resolveVersion = resolveVerticalVersionFor(env);
   const resolveRef = resolveVerticalRefFor(env);
   const resolveSlug = resolveVerticalFor(env);
@@ -861,13 +877,14 @@ function resolveVerticalForScopeFor(
     if (!slug) return undefined;
     if (scope.servingRef && resolveRef) {
       const serving = await resolveRef(scope.servingRef);
-      if (serving) return serving;
+      if (serving) return { client: serving, via: 'serving-script' };
     }
     if (scope.verticalVersionId && resolveVersion) {
       const bound = await resolveVersion(slug, scope.verticalVersionId, SWEEP_ACTOR);
-      if (bound) return bound;
+      if (bound) return { client: bound, via: 'bound-version' };
     }
-    return resolveSlug ? resolveSlug(slug, SWEEP_ACTOR) : undefined;
+    const bySlug = resolveSlug ? await resolveSlug(slug, SWEEP_ACTOR) : undefined;
+    return bySlug ? { client: bySlug, via: 'slug' } : undefined;
   };
 }
 
@@ -893,7 +910,12 @@ function resolveVerticalForScopeFor(
  * unmarked, and retries it next pass. A silent success here would mark a scope
  * provisioned that never was.
  */
-async function reconcileOneScope(env: Env, t: TenantId, s: ScopeId): Promise<void | 'unsupported'> {
+async function reconcileOneScope(
+  env: Env,
+  t: TenantId,
+  s: ScopeId,
+  expected: string,
+): Promise<void | 'unsupported'> {
   const host = hostFor(env);
   const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
   /**
@@ -908,10 +930,19 @@ async function reconcileOneScope(env: Env, t: TenantId, s: ScopeId): Promise<voi
    * than noise.
    */
   if (!rec?.vertical) throw new Error(`scope ${s} is bound to no vertical — nothing to reconcile`);
-  const client = await resolveVerticalForScopeFor(env)(rec);
-  if (!client) {
+  const reached = await deploymentForScopeFor(env)(rec);
+  if (!reached) {
     throw new Error(`no deployment is bound for vertical '${rec.vertical}' — cannot reconcile`);
   }
+  // #1653: the sweep records `expected` when this resolves, so it must be the version of
+  // the deployment actually reached — refused BEFORE the call, so the wrong code's hook
+  // does not run either. Read the pointer only when the serving script was the rung.
+  const serving =
+    reached.via === 'serving-script'
+      ? await host.admin.verticalServing(SWEEP_ACTOR, rec.vertical).catch(() => null)
+      : null;
+  assertReconcileReaches(s, expected, versionReachedAt(reached.via, rec, serving));
+  const client = reached.client;
   const payload = await reconcilePayloadFor(
     host.admin as unknown as Parameters<typeof reconcilePayloadFor>[0],
     SWEEP_ACTOR,
@@ -927,6 +958,23 @@ async function reconcileOneScope(env: Env, t: TenantId, s: ScopeId): Promise<voi
       connectionKeys: payload.connectionKeys as never,
     }),
   );
+}
+
+/**
+ * The sweep's guard against recording a receipt for a hook that did not run (#1653): the
+ * deployment a scope's ladder reached must run the version the sweep will record. It can
+ * differ when the serving ref does not resolve and the ladder falls back to the bound
+ * version's deployment — whose hook, run and recorded as the served version's, would
+ * leave the scope looking repaired while the code it runs was never provisioned for.
+ * Throws, so the sweep counts it `failed`, writes nothing, and asks again next pass.
+ */
+export function assertReconcileReaches(scopeId: ScopeId, expected: string, reached: string | null): void {
+  if (reached !== expected) {
+    throw new Error(
+      `scope ${scopeId} runs ${expected}, but the deployment it resolved to runs ` +
+        `${reached ?? 'a version the platform cannot name'} — not reconciling it against other code`,
+    );
+  }
 }
 
 /**
@@ -1139,7 +1187,7 @@ export default {
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is
       // missing whatever that hook mints, and nothing else would ever deliver it.
-      reconcileScopeFn: (t, s) => reconcileOneScope(env, t, s),
+      reconcileScopeFn: (t, s, expected) => reconcileOneScope(env, t, s, expected),
       // #1653 — and since the phase follows the version a scope RUNS, a listed
       // vertical's promote puts every install of it behind at once. At most this many
       // per pass; the rest on the passes after.
