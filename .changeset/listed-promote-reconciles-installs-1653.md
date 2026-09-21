@@ -26,5 +26,10 @@ the script serves. Tenants' version pointers are not touched, so Update is still
 - **`unsupported` apart from `failed`.** A vertical with no `/internal/reconcile` answers
   501. `reconcileScopeFn` may resolve `'unsupported'` for it, which is counted, reported with
   up to 50 scope ids, not marked and not listed as an error.
-- **One receipt.** The console's **Re-run provisioning** records the same running version,
-  so after pressing it the sweep finds nothing to redo.
+- **The receipt names what ran.** A reconcile records the version of the deployment it
+  actually reached (`versionReachedAt`, from the rung of the resolution ladder that chose
+  it). The console's **Re-run provisioning** records that. The sweep passes
+  `reconcileScopeFn` the version it will record (`expected`), and the control plane refuses
+  to reconcile through a deployment that runs anything else. If the serving ref doesn't
+  resolve and the ladder falls back to the bound version's deployment, the scope never looks
+  repaired while the served version's hook has not run.
