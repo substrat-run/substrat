@@ -5995,7 +5995,7 @@ export class CloudflareScopeHost implements ScopeHost {
           lockout_reseat: true,
         },
         // #461: each registered module's SCHEDULE grants (#383) ride the same unit —
-        // the CP-less mirror of `provisionScope`'s writeTuple loop. Without them the
+        // the CP-less mirror of `provisionScope`'s seatTuple loop. Without them the
         // grant-is-the-switch check makes every schedule a silent no-op (`fired: 0`,
         // no error — the #49 unfalsifiable zero).
         ...[...this.moduleSchedules].flatMap(([modId, schedules]) => {
