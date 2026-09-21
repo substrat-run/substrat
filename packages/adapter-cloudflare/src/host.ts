@@ -34,6 +34,7 @@ import {
   connectionGrantRecord,
   connectionSecret,
   systemGrant,
+  systemSwitch,
   entitlementGrant,
   entitlementGrantInput,
   instant,
@@ -65,6 +66,8 @@ import {
   type ModuleId,
   type ScheduleSpec,
   type SystemGrant,
+  type SystemSwitch,
+  type SystemSwitchResult,
   type CreateConnectionInput,
   type AccessLogEntry,
   type AdminLogEntry,
@@ -243,6 +246,8 @@ import {
   undrainedEventsOf,
   type UndrainedEvents,
   type UndrainedRead,
+  type SwitchOutcome,
+  type SystemScheduleState,
 } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -856,8 +861,12 @@ interface ScopeStubRpc {
      */
     idempotency?: { keyHonoured: boolean; replayed: boolean };
   }>;
-  /** Whether this scope holds a live `system:<moduleId>` grant (#383) — the schedule switch. */
-  hasSystemGrant(moduleId: string): Promise<boolean>;
+  /** Where a module's schedules stand on this scope (#383, #1666) — the kernel's
+   *  `systemScheduleState`, run in the scope's own storage. */
+  systemScheduleState(moduleId: string): Promise<SystemScheduleState>;
+  /** Move a module's schedule switch on this scope (#1666) — the kernel's
+   *  `switchSystemSchedules`, as one serialized unit. */
+  switchSystemSchedules(moduleId: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome>;
   /** The last time a schedule's operation ran on this scope (#383), or null if never. */
   scheduleLastRun(operation: string): Promise<string | null>;
   /** #1232: the freshness evaluator's one-round-trip read — evidence + evaluator state per type. */
@@ -1137,6 +1146,24 @@ export interface ConnectorDelegation {
 }
 
 /**
+ * The schedule kill switch's reach into the deployment actually serving a scope (#1666).
+ *
+ * A hosted scope's `system:<module>` grants live in its vertical's dispatch deployment,
+ * and the shared control plane's own `SCOPE` namespace is the module-less placeholder: a
+ * switch written there tombstones nothing a sweep will ever read. So the write crosses the
+ * same platform-secret `/internal/*` seam the connector grant does (`/internal/system-switch`),
+ * and the audit row stays on this side. Set only on the shared control plane's host.
+ */
+export interface SystemSwitchDelegation {
+  switch(args: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    moduleId: ModuleId;
+    to: 'on' | 'off';
+  }): Promise<SwitchOutcome>;
+}
+
+/**
  * The Tier-2 drain's reach into the deployment actually serving a scope (#1334).
  *
  * The same problem `ConnectorDelegation` solves, for the other direction: on the shared
@@ -1261,6 +1288,13 @@ export interface CloudflareScopeHostOptions {
    */
   connectorDelegation?: ConnectorDelegation;
   /**
+   * #1666: route the schedule kill switch (`revokeFromSystem` / `restoreToSystem`) to the
+   * deployment actually serving the scope. Set only on the shared control plane's host,
+   * like `connectorDelegation` and for the same reason; a vertical's own host leaves it
+   * unset and switches in its own scope DO.
+   */
+  systemSwitchDelegation?: SystemSwitchDelegation;
+  /**
    * #1334: route the Tier-2 drain's read and stamp to the deployment actually serving
    * the scope. Set only on the shared control plane's host, exactly like
    * `connectorDelegation` and for the same reason — its own `SCOPE` namespace holds no
@@ -1283,7 +1317,7 @@ export interface CloudflareScopeHostOptions {
    *     in this class. A `clock` option would reach both.
    *   - **DO-local, and therefore not.** `ctx.now()` (`scope-do.ts`, the `at`
    *     read once per invocation), the permission checker's tuple expiry
-   *     (`checker.ts`, `now: () => new Date().toISOString()`), `hasSystemGrant`,
+   *     (`checker.ts`, `now: () => new Date().toISOString()`), `systemScheduleState`,
    *     and the projected-entitlement reads. The ScopeDO is constructed by
    *     **workerd**, not by this class, which only ever holds a stub.
    *
@@ -1396,6 +1430,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly connectorDelegation?: ConnectorDelegation;
   /** #1334: the Tier-2 drain's reach into the deployment serving a scope. */
   private readonly eventDrainDelegation?: EventDrainDelegation;
+  /** #1666: the schedule kill switch's reach into the deployment serving a scope. */
+  private readonly systemSwitchDelegation?: SystemSwitchDelegation;
 
   /**
    * MUST be constructed per request. Never cache an instance across requests.
@@ -1422,6 +1458,7 @@ export class CloudflareScopeHost implements ScopeHost {
       : nullControlPlane();
     this.connectorDelegation = options.connectorDelegation;
     this.eventDrainDelegation = options.eventDrainDelegation;
+    this.systemSwitchDelegation = options.systemSwitchDelegation;
     this.admin = this.buildAdmin();
   }
 
@@ -2903,10 +2940,21 @@ export class CloudflareScopeHost implements ScopeHost {
     }
 
     const stub = this.scopeStub(scopeId);
-    // The grant IS the switch (#383): run only where the scope holds a live
-    // `system:<moduleId>` grant. Skips a foreign-vertical scope and a per-tenant
-    // revoke quietly — no run, no error.
-    if (!(await stub.hasSystemGrant(moduleId))) return report;
+    // The grant IS the switch (#383), and the kill switch is its lever (#1666): the
+    // kernel's `systemScheduleState`, the one predicate both adapters run. A scope that
+    // never held the module's grant (a foreign vertical's) is a quiet no-op, exactly as
+    // before. A scope switched OFF reports every schedule `skipped`, never `failed`, and
+    // does not touch its cadence rows — so a restore fires a due schedule on the next pass.
+    const state = await stub.systemScheduleState(moduleId);
+    if (state === 'ungranted') return report;
+    if (state === 'off') {
+      for (const schedule of schedules) {
+        report.skipped += 1;
+        report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
+      }
+      report.switchedOff = true;
+      return report;
+    }
     const now = Date.now();
     for (const schedule of schedules) {
       const last = await stub.scheduleLastRun(schedule.operation);
@@ -3261,6 +3309,58 @@ export class CloudflareScopeHost implements ScopeHost {
       }
     };
 
+    /**
+     * #1666: move one module's schedule switch on one scope — see `HostAdmin.revokeFromSystem`.
+     *
+     * Where the write lands is the whole point of the delegation branch. The shared control
+     * plane's own `SCOPE` namespace is the module-less placeholder, so a hosted scope's
+     * switch has to be moved in the deployment serving it; writing it here would report a
+     * switch pulled while every schedule kept firing. The audit row is written HERE either
+     * way — the deployment's host is CP-less, and its `recordAdmin` is a no-op.
+     */
+    const switchSystem = async (
+      actor: PlatformActorId,
+      raw: SystemSwitch,
+      to: 'on' | 'off',
+    ): Promise<SystemSwitchResult> => {
+      const input = systemSwitch.parse(raw);
+      const { tenantId, scopeId } = input.node;
+      let vertical: string | null = null;
+      if (!this.cpLess) {
+        const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        vertical = rec.vertical;
+      }
+      const outcome = this.systemSwitchDelegation
+        ? await this.systemSwitchDelegation.switch({ tenantId, scopeId, moduleId: input.moduleId, to })
+        : await this.scopeStub(scopeId).switchSystemSchedules(input.moduleId, scopeId, to, new Date().toISOString());
+      if (!outcome.held) {
+        throw substratError(
+          'not_found',
+          `scope ${scopeId} holds no system grant for module '${input.moduleId}' — nothing to switch ${to} ` +
+            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')`,
+        );
+      }
+      const result: SystemSwitchResult = {
+        moduleId: input.moduleId,
+        schedules: to,
+        changed: outcome.changed,
+        permissions: outcome.permissions as PermissionKey[],
+      };
+      // Idempotent and, like `unassignRole`, a no-op is not audited: the row that moved
+      // the switch is already in the log, with its reason.
+      if (outcome.changed) {
+        await this.recordAdmin(
+          actor,
+          to === 'off' ? 'revokeFromSystem' : 'restoreToSystem',
+          { tenantId, scopeId, vertical },
+          null,
+          { moduleId: input.moduleId, schedules: to, permissions: result.permissions, reason: input.reason },
+        );
+      }
+      return result;
+    };
+
     return {
       // #603: fixed at construction — a worker deployed without SECRET_BOX_KEY can never
       // store a credential, and saying so is what lets a transport answer 503 instead of 500.
@@ -3463,6 +3563,12 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         if (!grant.node.scopeId) await this.fanOut(grant.node.tenantId);
       },
+
+      // #1666: the schedule kill switch and its lever back — `system-switch.ts` is the
+      // whole rule, shared with the pure adapter; this is the directory check, the reach
+      // into the scope's storage, and the audit row around it.
+      revokeFromSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'off'),
+      restoreToSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'on'),
 
       grantToOrg: async (actor, orgId, permission, node, entity) => {
         // The org must exist in the node's tenant. A grant to a phantom org looks
@@ -6222,6 +6328,18 @@ export class CloudflareScopeHost implements ScopeHost {
       `scope:${scopeId}`,
       expiresAt ?? null,
     );
+  }
+
+  /**
+   * The far end of the schedule kill switch for a scope served HERE (#1666):
+   * `/internal/system-switch` lands on this, from the shared control plane's
+   * `revokeFromSystem` / `restoreToSystem`. It moves the switch in the scope's own DO and
+   * answers what it did; it audits nothing, because the control plane that asked holds the
+   * admin log and writes the row once this returns. `held: false` is an answer, not a
+   * throw — see `systemSwitchOutcome`.
+   */
+  async systemSwitchLocal(scopeId: ScopeId, moduleId: ModuleId, to: 'on' | 'off'): Promise<SwitchOutcome> {
+    return this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, new Date().toISOString());
   }
 }
 

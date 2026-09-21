@@ -45,6 +45,8 @@ import type {
   ModuleManifest,
   ScheduleSpec,
   SystemGrant,
+  SystemSwitch,
+  SystemSwitchResult,
   CreateOrgInput,
   Node,
   Org,
@@ -785,11 +787,23 @@ export interface FreshnessReport {
  * What `runDueSchedules` did for one scope in one pass (#383). A schedule inside its
  * cadence window is `skipped`; a due one is `fired` (its operation ran) or `failed`
  * (the operation threw — recorded, never allowed to stop the others).
+ *
+ * A module switched off on the scope (#1666, `revokeFromSystem`) reports every schedule
+ * `skipped` with `switchedOff: true`, due or not: nothing ran, and that was decided, so
+ * it is neither a failure nor an absence. `skipped` rather than a new outcome because
+ * the durable sweep record parses outcomes on the platform side, and a vertical newer
+ * than its control plane must not emit a value that refuses the whole batch.
  */
 export interface ScheduleRunReport {
   fired: number;
   skipped: number;
   failed: number;
+  /**
+   * The module is switched off on this scope (#1666) — every `skipped` above is that,
+   * not a cadence window. Optional and absent otherwise, so a stored or pre-widening
+   * report stays valid.
+   */
+  switchedOff?: true;
   /** Per-schedule failures on this scope: the operation name and the error. */
   errors: { operation: string; error: string }[];
   /**
@@ -1432,10 +1446,45 @@ export interface HostAdmin {
    * reason: one grant mechanism, tuples tombstoned on revoke (K-21), visible to the
    * permission diff. It is what makes `ctx.check` resolve for a schedule — the gate
    * stays `ctx.check`, not a bypass. Projected at scope provisioning from the
-   * module's declared `schedules[].permissions`; a per-tenant "scheduling off" is a
-   * revoke of this grant, nothing more.
+   * module's declared `schedules[].permissions`.
+   *
+   * **Not the way to turn a scope's schedules back on** (#1666). Scheduling off is
+   * `revokeFromSystem`, and while that switch is off a grant here re-grants its one tuple
+   * and leaves the schedules off — only `restoreToSystem` moves the switch. A grant is not
+   * the lever: a stray one, or a reconcile seating a newly declared permission, must not
+   * silently undo an operator's decision.
    */
   grantToSystem(actor: PlatformActorId, grant: SystemGrant): Promise<void>;
+  /**
+   * The schedule kill switch (#1666): turn ONE module's scheduled work off on ONE scope.
+   *
+   * Module-wide on the scope, by design — see `systemSwitch` for why a per-permission or
+   * per-schedule switch is either inexpressible or noisy. It tombstones every live
+   * `system:<module>` grant the scope holds (K-21) and makes the scope's OFF marker live
+   * (`system-switch.ts`). While it is off:
+   *
+   * - `runDueSchedules` fires nothing for the module and reports each schedule `skipped`
+   *   with `switchedOff: true` — never `failed`, so a switched-off scope makes no noise,
+   *   and its cadence clock is untouched, so a due schedule fires on the first pass after
+   *   `restoreToSystem`;
+   * - anything acting with the module's system authority is denied by its own
+   *   `ctx.check` — a resumable job run (#1577) fails its step rather than proceeding;
+   * - a reconcile (#1659 seats, and creates only what is missing) and `grantToSystem`
+   *   both leave it off. `restoreToSystem` is the only way back.
+   *
+   * Idempotent: a repeat reports `changed: false` and is not audited, as `unassignRole`.
+   * Throws `not_found` when the scope holds no `system:<module>` grant at all — a typo in
+   * an emergency must not answer "done". On a host that delegates to the deployment
+   * serving the scope, the write happens THERE and the audit row HERE.
+   */
+  revokeFromSystem(actor: PlatformActorId, input: SystemSwitch): Promise<SystemSwitchResult>;
+  /**
+   * The inverse of `revokeFromSystem` (#1666), and the ONLY way to turn a switched-off
+   * module's schedules back on: tombstones the OFF marker and restores exactly the grants
+   * the scope holds tombstoned for the module. Same shape, same `reason`, same audit,
+   * same idempotence and `not_found`.
+   */
+  restoreToSystem(actor: PlatformActorId, input: SystemSwitch): Promise<SystemSwitchResult>;
 
   grantToOrg(
     actor: PlatformActorId,

@@ -40,6 +40,7 @@ import {
   principalId as principalIdOf,
   connectionId as connectionIdOf,
   permissionKey as permissionKeyOf,
+  moduleId as moduleIdOf,
   entityRef,
   visibility,
   instant,
@@ -99,6 +100,8 @@ import {
   type PlatformRequestId,
   type PlatformRequestStatus,
   type PlatformRequestFailure,
+  type ModuleId,
+  type SystemSwitchOutcome,
 } from '@substrat-run/contracts';
 
 /**
@@ -232,6 +235,13 @@ export interface VerticalScopeHost {
     permission: PermissionKey,
     expiresAt?: string,
   ): Promise<void>;
+  /**
+   * The far end of the schedule kill switch (#1666): move one module's switch in the
+   * scope's own storage. OPTIONAL for the reason `redrainCountLocal` is — a host built
+   * before it satisfies this interface without it — and the route answers 501, which the
+   * control plane reports as "redeploy", never as a switch that moved.
+   */
+  systemSwitchLocal?(scopeId: ScopeId, moduleId: ModuleId, to: 'on' | 'off'): Promise<SystemSwitchOutcome>;
 }
 
 /**
@@ -352,6 +362,13 @@ const connectorAttachmentMeta = z.object({
   filename: z.string().min(1),
   contentType: z.string().min(1),
   visibility,
+});
+
+/** `/internal/system-switch` body (#1666) — the far end of `revokeFromSystem` / `restoreToSystem`. */
+const systemSwitchBody = z.object({
+  scopeId: scopeIdOf,
+  moduleId: moduleIdOf,
+  to: z.enum(['on', 'off']),
 });
 
 /** `/internal/connector-grant` body (#574) — the delivery half of `grantToConnection`. */
@@ -843,6 +860,21 @@ export function mountPlatformSurface<Env extends object>(
       .hostFor(c.env)
       .connectorGrantLocal(body.connectionId, body.scopeId, body.permission, body.expiresAt);
     return c.json({ granted: body.permission, scopeId: body.scopeId });
+  });
+
+  // The schedule kill switch (#1666): the shared control plane's `revokeFromSystem` /
+  // `restoreToSystem` for a scope served HERE, whose `system:<module>` grants live in this
+  // deployment's scope DO and nowhere the platform can reach. The platform writes the audit
+  // row once this answers; nothing is recorded here. `held: false` is a 200 with that
+  // answer, never a 404 — a 404 from this path means the route does not exist, which is
+  // what a deployment built before it answers, and the platform reads it as exactly that.
+  app.post('/internal/system-switch', async (c) => {
+    const body = systemSwitchBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.systemSwitchLocal) {
+      return c.json({ error: 'this deployment cannot switch schedules (#1666) — redeploy it' }, 501);
+    }
+    return c.json(await host.systemSwitchLocal(body.scopeId, body.moduleId, body.to));
   });
 
   app.post('/internal/platform-requests/settle', async (c) => {

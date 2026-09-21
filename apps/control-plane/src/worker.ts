@@ -48,6 +48,7 @@ import {
   defineScopeDO,
   type ConnectorDelegation,
   type EventDrainDelegation,
+  type SystemSwitchDelegation,
 } from '@substrat-run/adapter-cloudflare';
 import {
   createControlPlaneApi,
@@ -741,6 +742,33 @@ function connectorDelegationFor(env: Env): ConnectorDelegation | undefined {
 }
 
 /**
+ * The schedule kill switch's platform half (#1666): `revokeFromSystem` / `restoreToSystem`
+ * land on the host below, whose own `SCOPE` namespace is the module-less placeholder — a
+ * hosted scope's `system:<module>` grants live in its vertical's dispatch deployment. This
+ * is the reach, over the same `/internal/*` seam and serving-ref → bound-version → prod
+ * ladder the connector write-back uses. Undefined without DISPATCH/PLATFORM_SECRET, and then
+ * the host switches in its own placeholder, finds nothing held, and answers 404 — never a
+ * switch reported pulled while the vertical's schedules keep firing.
+ */
+function systemSwitchDelegationFor(env: Env): SystemSwitchDelegation | undefined {
+  if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
+  return {
+    switch: async (a) => {
+      const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+      const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId);
+      const client = rec?.vertical ? await resolveVerticalForScopeFor(env)(rec) : undefined;
+      if (!client) {
+        throw new Error(
+          `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — ` +
+            `cannot switch its schedules ${a.to}`,
+        );
+      }
+      return client.systemSwitch({ scopeId: a.scopeId, moduleId: a.moduleId, to: a.to });
+    },
+  };
+}
+
+/**
  * The Tier-2 drain's platform half (#1334): the sweep's `readUndrainedEvents` and
  * `markEventsDrained` land on the host below, whose own `SCOPE` namespace is the
  * module-less placeholder — a hosted scope's outbox lives in its vertical's dispatch
@@ -827,6 +855,9 @@ function hostFor(env: Env): CloudflareScopeHost {
     // The Tier-2 drain (#1334): read and stamp in the deployment serving the scope, for
     // the same reason as the line above.
     eventDrainDelegation: eventDrainDelegationFor(env),
+    // The schedule kill switch (#1666): moved in the deployment serving the scope, for
+    // the same reason again — and audited here.
+    systemSwitchDelegation: systemSwitchDelegationFor(env),
   });
 }
 

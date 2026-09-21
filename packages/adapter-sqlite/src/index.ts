@@ -35,6 +35,7 @@ import {
   connectionGrantRecord,
   connectionSecret,
   systemGrant,
+  systemSwitch,
   subjectRef,
   requestFingerprint,
   createConnectionInput,
@@ -76,6 +77,8 @@ import {
   type ModuleId,
   type ScheduleSpec,
   type SystemGrant,
+  type SystemSwitch,
+  type SystemSwitchResult,
   type AdminLogEntry,
   type OpsFailureEntry,
   type IssueEntry,
@@ -212,6 +215,9 @@ import {
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
   SEAT_SCOPE_TUPLE_SQL,
+  switchSystemSchedules,
+  systemScheduleState,
+  type SwitchSql,
   type PlatformRequestRedactionCandidate,
   denialListQuery,
   denialSummaryQuery,
@@ -341,6 +347,14 @@ import {
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
+
+/** The kernel's schedule-switch SQL (#1666), over one scope's database handle. */
+const switchSqlOf = (db: Database.Database): SwitchSql => ({
+  all: (sql, ...params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
+  run: (sql, ...params) => {
+    db.prepare(sql).run(...params);
+  },
+});
 
 interface ScopeRuntime {
   tenantId: TenantId;
@@ -3298,19 +3312,22 @@ export class SqliteScopeHost implements ScopeHost {
 
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    // The grant IS the switch (#383): a scope runs a module's schedules only while it
-    // holds a live `system:<moduleId>` grant. This is what makes a foreign-vertical
-    // scope (one this module was never provisioned on) a quiet no-op, and what makes
-    // "disable scheduling for this tenant" a plain grant revoke — no error, no run.
+    // The grant IS the switch (#383), and the kill switch is its lever (#1666): the
+    // kernel's `systemScheduleState`, the one predicate both adapters run. A scope that
+    // never held the module's grant (a foreign vertical's) is a quiet no-op, exactly as
+    // before. A scope switched OFF reports every schedule `skipped`, never `failed`, and
+    // does not touch its cadence rows — so a restore fires a due schedule on the next pass.
     const nowIso = this.clock();
-    const hasGrant = rt.db
-      .prepare(
-        `SELECT 1 FROM _substrat_tuples
-          WHERE subject = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
-          LIMIT 1`,
-      )
-      .get(`system:${moduleId}`, nowIso);
-    if (!hasGrant) return report;
+    const state = systemScheduleState(switchSqlOf(rt.db), moduleId, nowIso);
+    if (state === 'ungranted') return report;
+    if (state === 'off') {
+      for (const schedule of mod.schedules) {
+        report.skipped += 1;
+        report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
+      }
+      report.switchedOff = true;
+      return report;
+    }
     // The spine state table is KERNEL_DDL's (#1288) — kernel-owned (`_substrat_*`),
     // never a module migration, and created by `runtime()` above rather than lazily
     // here. This loop's rows are `kind = 'schedule'`, keyed by the operation
@@ -5007,6 +5024,56 @@ export class SqliteScopeHost implements ScopeHost {
       }
     };
 
+    /** #1666: move one module's schedule switch on one scope — see `HostAdmin.revokeFromSystem`. */
+    const switchSystem = async (
+      actor: PlatformActorId,
+      raw: SystemSwitch,
+      to: 'on' | 'off',
+    ): Promise<SystemSwitchResult> => {
+      const input = systemSwitch.parse(raw);
+      const { tenantId, scopeId } = input.node;
+      const scope = this.directory
+        .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+        .get(scopeId) as { tenant_id: string } | undefined;
+      if (!scope || scope.tenant_id !== tenantId) {
+        throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      }
+      const rt = this.runtime(tenantId, scopeId);
+      const outcome = rt.db.transaction(() =>
+        switchSystemSchedules(switchSqlOf(rt.db), {
+          moduleId: input.moduleId,
+          scopeId,
+          to,
+          at: new Date().toISOString(),
+        }),
+      )();
+      if (!outcome.held) {
+        throw substratError(
+          'not_found',
+          `scope ${scopeId} holds no system grant for module '${input.moduleId}' — nothing to switch ${to} ` +
+            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')`,
+        );
+      }
+      const result: SystemSwitchResult = {
+        moduleId: input.moduleId,
+        schedules: to,
+        changed: outcome.changed,
+        permissions: outcome.permissions as PermissionKey[],
+      };
+      // Idempotent and, like `unassignRole`, a no-op is not audited: the row that moved
+      // the switch is already in the log, with its reason.
+      if (outcome.changed) {
+        this.recordAdmin(
+          actor,
+          to === 'off' ? 'revokeFromSystem' : 'restoreToSystem',
+          { tenantId, scopeId },
+          null,
+          { moduleId: input.moduleId, schedules: to, permissions: result.permissions, reason: input.reason },
+        );
+      }
+      return result;
+    };
+
     return {
       // #603: fixed at construction — a host built without a box can never store a
       // credential, and saying so is what lets a transport answer 503 instead of 500.
@@ -5243,6 +5310,12 @@ export class SqliteScopeHost implements ScopeHost {
           { moduleId: grant.moduleId, permission: grant.permission, node: grant.node },
         );
       },
+
+      // #1666: the schedule kill switch and its lever back — `system-switch.ts` is the
+      // whole rule, shared with the Cloudflare adapter; this is the directory check, the
+      // transaction and the audit row around it.
+      revokeFromSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'off'),
+      restoreToSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'on'),
 
       grantToOrg: async (actor, orgId, permission, node, entity) => {
         // The org must exist in the node's tenant. A grant to a phantom org is

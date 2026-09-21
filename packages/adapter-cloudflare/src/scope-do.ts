@@ -70,6 +70,11 @@ import {
   type SubjectRedactionCounts,
   SEAT_SCOPE_TUPLE_SQL,
   effectiveRoleGrantQuery,
+  switchSystemSchedules,
+  systemScheduleState,
+  type SwitchOutcome,
+  type SwitchSql,
+  type SystemScheduleState,
   denialListQuery,
   denialSummaryQuery,
   denialTotalsQuery,
@@ -2449,23 +2454,46 @@ export function defineScopeDO(
       });
     }
 
+    /** The kernel's schedule-switch SQL (#1666), over this DO's storage. */
+    private switchSql(): SwitchSql {
+      return {
+        all: (sql, ...params) => this.sql.exec(sql, ...params).toArray() as Record<string, unknown>[],
+        run: (sql, ...params) => {
+          this.sql.exec(sql, ...params);
+        },
+      };
+    }
+
     /**
-     * Whether this scope holds a live `system:<moduleId>` grant (#383) — the switch
-     * that decides if a module's schedules run here at all. Absent on a foreign
-     * vertical's scope, or after a per-tenant revoke, so the sweep skips it quietly.
+     * Where a module's schedules stand on this scope (#383, #1666) — the kernel's
+     * `systemScheduleState`, the predicate the pure adapter runs too: `on` with a live
+     * `system:<moduleId>` grant, `off` while the kill switch's marker is live, whatever
+     * else is, and `ungranted` on a scope that never ran the module (a foreign vertical's,
+     * which the sweep skips quietly).
+     */
+    async systemScheduleState(moduleId: string): Promise<SystemScheduleState> {
+      return systemScheduleState(this.switchSql(), moduleId, new Date().toISOString());
+    }
+
+    /**
+     * The pre-#1666 read, kept for ONE reason: a coordinator a deploy behind this DO still
+     * calls it. It answers the new question, not the old one — the old predicate counted any
+     * live `system:` tuple, and the kill switch's OFF marker is one, so an old coordinator
+     * asking the old question would run a switched-off scope's schedules.
      */
     async hasSystemGrant(moduleId: string): Promise<boolean> {
-      const now = new Date().toISOString();
-      const row = this.sql
-        .exec(
-          `SELECT 1 FROM _substrat_tuples
-            WHERE subject = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
-            LIMIT 1`,
-          `system:${moduleId}`,
-          now,
-        )
-        .toArray()[0];
-      return row !== undefined;
+      return (await this.systemScheduleState(moduleId)) === 'on';
+    }
+
+    /**
+     * Move a module's schedule switch on this scope (#1666) — the kernel's
+     * `switchSystemSchedules`, serialized on the queue with every other tuple write and run
+     * as one `transactionSync`, so its reads and writes are one unit.
+     */
+    async switchSystemSchedules(moduleId: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome> {
+      return this.queue.enqueue(() =>
+        this.ctx.storage.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
+      );
     }
 
     /**

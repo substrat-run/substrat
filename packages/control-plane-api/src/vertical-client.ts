@@ -4,6 +4,7 @@ import type {
   DrainedEvent,
   EntityRef,
   EntitlementGrant,
+  ModuleId,
   PermissionKey,
   PlatformRequest,
   PlatformRequestFilter,
@@ -11,6 +12,7 @@ import type {
   PlatformRequestStatus,
   PlatformRequestFailure,
   PrincipalId,
+  SystemSwitchOutcome,
   ConnectionGrantRecord,
   ProjectedConnectionGrant,
   ProjectedConnectionKey,
@@ -49,6 +51,7 @@ import {
   denialFilterParams,
   ownerSeat,
   ownerClaimLink,
+  systemSwitchOutcome,
 } from '@substrat-run/contracts';
 import type { OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER, undrainedEventsOf } from '@substrat-run/kernel';
@@ -582,6 +585,37 @@ export class VerticalClient {
     expiresAt?: string;
   }): Promise<void> {
     await this.postInternal<unknown>('/internal/connector-grant', input, 'connector-grant');
+  }
+
+  /**
+   * Move one module's schedule kill switch in the deployment serving the scope (#1666) —
+   * the far end of `revokeFromSystem` / `restoreToSystem` for a hosted scope, whose
+   * `system:<module>` grants live there and nowhere the platform can reach.
+   *
+   * A deployment built before the route answers 404 (the path does not exist), 501 (a
+   * vertical-host that has it, over a scope host that does not), or its SPA shell. Every
+   * one of those is reported as a 501 naming the fix, because the caller is an operator
+   * pulling a kill switch: an error that read as "done", or as a bug in their request,
+   * would leave the schedules running with nobody knowing. The route itself answers a
+   * module it holds nothing for with a 200 (`held: false`), so a 404 here is never that.
+   */
+  async systemSwitch(input: { scopeId: ScopeId; moduleId: ModuleId; to: 'on' | 'off' }): Promise<SystemSwitchOutcome> {
+    const predates = (): ControlPlaneError =>
+      new ControlPlaneError(
+        501,
+        `the deployment serving scope ${input.scopeId} predates the schedule switch (#1666) — ` +
+          `redeploy the vertical, then retry. Nothing was switched.`,
+      );
+    let raw: unknown;
+    try {
+      raw = await this.postInternal<unknown>('/internal/system-switch', input, 'system-switch');
+    } catch (e) {
+      if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 501 || e.status === 502)) throw predates();
+      throw e;
+    }
+    const parsed = systemSwitchOutcome.safeParse(raw);
+    if (!parsed.success) throw predates();
+    return parsed.data;
   }
 
   /** Journal a platform-request outcome back in the vertical after the platform ran it. */

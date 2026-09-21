@@ -203,6 +203,12 @@ export type {
 } from './subject-redaction.js';
 export { effectiveRoleGrantQuery, SEAT_SCOPE_TUPLE_SQL } from './scope-tuple-seat.js';
 export {
+  SYSTEM_SWITCH_OFF_RELATION,
+  switchSystemSchedules,
+  systemScheduleState,
+} from './system-switch.js';
+export type { SwitchOutcome, SwitchSql, SystemScheduleState } from './system-switch.js';
+export {
   DENIAL_COLUMNS,
   DENIAL_WINDOW_QUERY,
   denialListQuery,

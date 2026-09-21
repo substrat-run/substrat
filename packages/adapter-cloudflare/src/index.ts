@@ -14,7 +14,12 @@
  *                               driving `drainDue`/`runDueSchedules` per scope (#461)
  */
 export { CloudflareScopeHost } from './host.js';
-export type { CloudflareScopeHostOptions, ConnectorDelegation, EventDrainDelegation } from './host.js';
+export type {
+  CloudflareScopeHostOptions,
+  ConnectorDelegation,
+  EventDrainDelegation,
+  SystemSwitchDelegation,
+} from './host.js';
 export { defineScopeDO } from './scope-do.js';
 export { ControlPlaneDO } from './control-plane-do.js';
 export { OperationQueue } from './serialization.js';
