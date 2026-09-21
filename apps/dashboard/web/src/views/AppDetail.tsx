@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type EffectsTree, type EffectsTerminal, type EventEffects, type EventDelivery, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type TrafficSeries } from '../lib/api';
-import { diffRegistries } from '../lib/registry-diff';
+import { diffRegistries, hasRegistryChange } from '../lib/registry-diff';
 import { actorLabel, authorizationLabel, callButtonTitle, callLogsButtonTitle, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
@@ -1295,7 +1295,7 @@ function Permissions({ app }: { app: AppRow }) {
   const reg = view.running.registry;
   const update = view.update;
   const diff = update?.registry && reg ? diffRegistries(reg, update.registry) : null;
-  const diffChanged = !!diff && (diff.addedKeys.length > 0 || diff.removedKeys.length > 0 || diff.changedKeys.length > 0 || diff.roleChanges.length > 0);
+  const diffChanged = !!diff && hasRegistryChange(diff);
 
   // Group the keys by declaring engine (declaredBy) — the console's §1 grouping, so a reader
   // sees "what does workorder let this app do" without re-deriving ownership from prefixes.
@@ -1338,6 +1338,18 @@ function Permissions({ app }: { app: AppRow }) {
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {rc.added.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-info-fg)' }}>+{p}</span>)}
                   {rc.removed.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-danger-fg)' }}>−{p}</span>)}
+                </span>
+              </div>
+            ))}
+            {diff!.grantChanges.map((gc) => (
+              <div key={gc.entityType} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Pill kind={gc.isGone ? 'neutral' : gc.added.length > 0 || gc.isNew ? 'warning' : 'neutral'}>
+                  {gc.isNew ? 'new grant shape' : gc.isGone ? 'grant shape removed' : gc.added.length > 0 ? 'grant shape widened' : 'grant shape narrowed'}
+                </Pill>
+                <MonoTag>{gc.entityType}</MonoTag>
+                <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {gc.added.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-info-fg)' }}>+{p}</span>)}
+                  {gc.removed.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-danger-fg)' }}>−{p}</span>)}
                 </span>
               </div>
             ))}
