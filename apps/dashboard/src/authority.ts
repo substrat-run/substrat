@@ -41,6 +41,7 @@ import type {
   OwnerClaimLink,
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
+import { readPromotionReview, type PromotionReview } from './promotion-review.js';
 import { LIST_PAGE_MAX, denialQuery, problemDetail } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-api';
 
@@ -784,6 +785,42 @@ export class TenantNarrowedControlPlane {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * What a promote to `prod` would change in the permission surface (#1677): the version
+   * `prod` serves now, the version being promoted, and each one's declared registry.
+   *
+   * STRICT, where `versionRegistry` and `listChannels` above are lenient — and the two
+   * are not interchangeable. Both of those read a failed call as "nothing there", which is
+   * right for a tab that would rather render empty than not render. Here the same reading
+   * would be a person deciding "no permission change" off a plane that never answered. A
+   * failure of any read throws (a `ControlPlaneError`, so the worker answers with the
+   * plane's own status), and `null` means only what the plane said it means: the version
+   * declared no registry (pushed pre-D-39, or no surface).
+   */
+  async promotionReview(verticalSlug: string, versionId: string): Promise<PromotionReview> {
+    return readPromotionReview(
+      {
+        prodVersionId: async () => {
+          const channels = await this.listAll<{ channel: string; versionId: string }>(
+            `/verticals/${encodeURIComponent(verticalSlug)}/channels`,
+          );
+          return channels.find((c) => c.channel === 'prod')?.versionId ?? null;
+        },
+        registry: async (id) => {
+          const res = await this.call<{ registry?: PermissionRegistry | null } | undefined>(
+            `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(id)}/registry`,
+          );
+          // An OK answer with no readable body is not "no registry" — it is no answer.
+          if (!res || typeof res !== 'object' || !('registry' in res)) {
+            throw new ControlPlaneError(502, `the registry of version ${id} could not be read`);
+          }
+          return res.registry ?? null;
+        },
+      },
+      versionId,
+    );
   }
 
   /**
