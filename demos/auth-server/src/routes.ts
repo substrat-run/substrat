@@ -13,6 +13,7 @@
  *
  * The platform surface (K-31) is `/internal/*`, gated by `PLATFORM_SECRET`:
  * `/internal/provision` materializes an instance, `/internal/configure` delivers config,
+ * `/internal/reconcile` answers the sweep's re-provision (#1660), writing nothing,
  * `/internal/tables` answers the §5.4 introspection reads (secrets redacted in the DO),
  * `/internal/export` dumps an instance in full and `/internal/delete-scope` wipes one
  * (#590 — backed-up reap, wipe, and data-carrying rebind);
@@ -226,6 +227,39 @@ app.post('/internal/provision', async (c) => {
     body.config ? Object.entries(body.config).map(([key, value]) => ({ key, value })) : undefined,
   );
   return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
+});
+
+/**
+ * Reconcile ONE instance on the platform's instruction (#1660): the control plane's
+ * post-promote sweep (#1172, #1653) and the console's "Re-run provisioning" both ask, and
+ * both write a receipt on a 2xx. Without this route the catch-all below answered 501, so
+ * every install of this listed vertical was asked again on every pass.
+ *
+ * NOT a re-run of `/internal/provision`: a reconcile's body carries no `slug` or `name`
+ * (vertical-host's `reconcileBody`), so re-recording the instance would blank them. It
+ * wakes the scope's issuer — which is what brings its schema to the served version — and
+ * checks the install is one the issuer recorded. An install it never recorded is a 409,
+ * as vertical-host's reconcile answers one ("no owner of record … re-run the full install"):
+ * a 2xx would write a receipt for a provision that never happened. The tenant must match
+ * too, for the same reason.
+ *
+ * The owner is not echoed: this issuer keeps no owner-of-record (its admins live in its own
+ * user table), and the CLI prints `(unknown)` for an absent one. Entitlements, identity
+ * links and connection grants ride the body too and are ignored — `/internal/provision`
+ * ignores them as well.
+ */
+const reconcileInstanceBody = z.object({ tenantId, scopeId });
+
+app.post('/internal/reconcile', async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const body = reconcileInstanceBody.parse(await c.req.json());
+  const meta = await stubFor(c.env, body.scopeId).reconcileInstance();
+  if (!meta || meta.tenantId !== body.tenantId || meta.scopeId !== body.scopeId) {
+    throw new HTTPException(409, {
+      message: `no instance of record for scope ${body.scopeId} — cannot reconcile; re-run the full install`,
+    });
+  }
+  return c.json({ tenantId: body.tenantId, scopeId: body.scopeId });
 });
 
 /**
