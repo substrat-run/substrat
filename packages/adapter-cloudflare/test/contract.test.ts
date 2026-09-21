@@ -1190,6 +1190,313 @@ describe('#332 — recovery from a scope bricked to zero tuples (CP-less)', () =
   });
 });
 
+/**
+ * #1659: a reconcile keeps an operator's revoke. `provisionScopeLocal` SEATS its tuples —
+ * the owner's role, each `system:<module>` schedule grant, each connection grant — so a
+ * missing one is recreated (#332's repair) and a revoked one is left revoked. It used to
+ * `INSERT OR REPLACE … revoked_at = NULL`, and since #1653 every listed promote reconciles
+ * every install, so the schedule kill switch and a removed owner came back within one
+ * rollout, silently.
+ *
+ * The one exception is the owner-of-record's seat on a scope that would otherwise hold no
+ * live role grant: the #332 lockout, which a reconcile exists to repair — so the #332 block
+ * above stands exactly as it was written, and the twins here pin both sides of it.
+ *
+ * Every re-grant path stays a grant: `assignScopeRole` and `connectorGrantLocal` clear a
+ * tombstone, because a re-grant that silently kept one would lock out someone an admin just
+ * let back in.
+ */
+describe('#1659 — a reconcile keeps an operator’s revoke (CP-less)', () => {
+  let host: CloudflareScopeHost;
+  const t = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+  const ADMIN = permissionKey.parse('perm:admin');
+  const READ = permissionKey.parse('perm:read');
+  /** A fixed revoke instant, so "the tombstone was left alone" is an equality, not a guess. */
+  const REVOKED_AT = '2026-09-01T00:00:00.000Z';
+
+  const provision = (
+    scope: string,
+    connectionGrants?: { connectionId: string; permission: typeof READ; expiresAt?: string }[],
+  ): Promise<void> =>
+    host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: scopeId.parse(scope),
+      owner,
+      roles: [{ key: 'office-admin', permissions: [ADMIN, READ], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+      connectionGrants,
+    });
+  const probe = async (who: typeof owner, scope: string, perm: typeof ADMIN = ADMIN): Promise<boolean> =>
+    (
+      await (await host.getScope(who, t, scopeId.parse(scope))).invoke<{ allowed: boolean }>('perm/probe', {
+        permission: perm,
+      })
+    ).allowed;
+  /** Whether the schedule ran or was even considered — 0 ⇔ the grant-is-the-switch said no. */
+  const scheduleConsidered = async (scope: string): Promise<number> => {
+    const report = await host.runDueSchedules(SCHED, t, scopeId.parse(scope));
+    expect(report.errors).toEqual([]);
+    return report.fired + report.skipped;
+  };
+
+  type RawStub = {
+    revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
+    seatTuple(subject: string, relation: string, object: string, expiresAt: string | null): Promise<void>;
+    applyProjection(
+      tenantId: string,
+      roles: { role_key: string; permissions: string; source: string }[],
+      tuples: unknown[],
+      entitlements?: unknown[],
+      scopeTuples?: {
+        subject: string;
+        relation: string;
+        object: string;
+        expires_at: string | null;
+        lockout_reseat?: boolean;
+      }[],
+    ): Promise<void>;
+    importDump(tables: unknown[]): Promise<void>;
+    listConnectionGrants(now: string): Promise<{ subject: string; relation: string; expires_at: string | null }[]>;
+    introspectQuery(sql: string): Promise<{ rows: unknown[][] }>;
+  };
+  const rawStub = (scope: string): RawStub => env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as RawStub;
+  /** The tuple's row as stored — `undefined` when there is no row at all. */
+  const tupleRow = async (
+    scope: string,
+    subject: string,
+    relation: string,
+  ): Promise<{ revokedAt: unknown; expiresAt: unknown } | undefined> => {
+    const row = (
+      await rawStub(scope).introspectQuery(
+        `SELECT revoked_at, expires_at FROM _substrat_tuples
+          WHERE subject = '${subject}' AND relation = '${relation}' AND object = 'scope:${scope}'`,
+      )
+    ).rows[0];
+    return row ? { revokedAt: row[0], expiresAt: row[1] } : undefined;
+  };
+  const permissionSource = async (scope: string): Promise<string | undefined> =>
+    (
+      await rawStub(scope).introspectQuery("SELECT value FROM _substrat_meta WHERE key = 'permission_source'")
+    ).rows[0]?.[0] as string | undefined;
+
+  beforeAll(async () => {
+    // No control plane — the hosted-vertical shape `/internal/reconcile` runs on.
+    host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    // Its schedule is what puts a `system:@test/sched` grant into the provisioned tuples.
+    host.registerModule(scheduleMod);
+  });
+  afterAll(async () => host.close());
+
+  it('a revoked `system:` schedule grant stays revoked across a reconcile — the kill switch holds', async () => {
+    const s = ulid();
+    await provision(s);
+    expect(await scheduleConsidered(s)).toBeGreaterThan(0); // positive control: the grant is live
+    expect(await rawStub(s).revokeTuple(`system:${SCHED}`, 'granted:sched:tick', `scope:${s}`, REVOKED_AT)).toBe(
+      true,
+    );
+    expect(await scheduleConsidered(s)).toBe(0); // the switch is off…
+
+    await provision(s); // …what every listed promote now runs on every install (#1653)
+    expect(await scheduleConsidered(s)).toBe(0); // …and stays off
+    // The tombstone itself is untouched — same instant, not a fresh revoke over a re-grant.
+    expect(await tupleRow(s, `system:${SCHED}`, 'granted:sched:tick')).toEqual({
+      revokedAt: REVOKED_AT,
+      expiresAt: null,
+    });
+    // The rest of the reconcile still happened: the owner is seated and served.
+    expect(await probe(owner, s)).toBe(true);
+  });
+
+  it('a revoked owner stays revoked when another principal holds a live role — a hand-over holds', async () => {
+    const s = ulid();
+    const successor = principalId.parse(ulid());
+    await provision(s);
+    await host.assignScopeRole(scopeId.parse(s), successor, 'office-admin'); // successor seated FIRST
+    expect(await host.revokeScopeRole(scopeId.parse(s), owner, 'office-admin')).toBe(true);
+    const revoked = await tupleRow(s, `principal:${owner}`, 'role:office-admin');
+    expect(revoked?.revokedAt).toEqual(expect.any(String));
+    expect(await probe(owner, s)).toBe(false);
+
+    await provision(s); // the reconcile re-sources the SAME owner from owner_of_record
+    expect(await probe(owner, s)).toBe(false); // the revoke stands
+    expect(await probe(successor, s)).toBe(true); // and the successor is untouched
+    expect(await tupleRow(s, `principal:${owner}`, 'role:office-admin')).toEqual(revoked);
+
+    // The re-grant guarantee: an explicit assign is a grant, whatever the reconcile kept.
+    await host.assignScopeRole(scopeId.parse(s), owner, 'office-admin');
+    expect(await probe(owner, s)).toBe(true);
+    await provision(s); // and a later reconcile does not take a live seat away
+    expect(await probe(owner, s)).toBe(true);
+  });
+
+  it('a revoked owner with NO other live holder is re-seated — the #332 lockout is still repaired', async () => {
+    const s = ulid();
+    await provision(s);
+    // The schedule switch is turned off too, so the one reconcile below answers both halves:
+    // the lockout exception is the OWNER's seat, not a licence to re-seat everything.
+    await rawStub(s).revokeTuple(`system:${SCHED}`, 'granted:sched:tick', `scope:${s}`, REVOKED_AT);
+    expect(await host.revokeScopeRole(scopeId.parse(s), owner, 'office-admin')).toBe(true);
+    expect(await probe(owner, s)).toBe(false); // locked out: nobody here passes a check
+
+    await provision(s);
+    expect(await probe(owner, s)).toBe(true); // re-seated
+    expect(await tupleRow(s, `principal:${owner}`, 'role:office-admin')).toEqual({
+      revokedAt: null,
+      expiresAt: null,
+    });
+    expect(await scheduleConsidered(s)).toBe(0); // the kill switch did NOT come back with it
+  });
+
+  it('a wiped scope is recreated by a reconcile — a MISSING row is not a revoke (#332)', async () => {
+    const s = ulid();
+    await provision(s);
+    // Storage recreated empty (#321's shape): an empty dump drops every table, and the spine
+    // comes back with no rows. Not `destroyStorage`, which is a reap and fences writes off.
+    await rawStub(s).importDump([]);
+    expect(await tupleRow(s, `principal:${owner}`, 'role:office-admin')).toBeUndefined();
+    expect(await tupleRow(s, `system:${SCHED}`, 'granted:sched:tick')).toBeUndefined();
+    expect(await probe(owner, s)).toBe(false); // negative control: the wipe really took the seat
+
+    await provision(s);
+    expect(await probe(owner, s)).toBe(true);
+    expect(await scheduleConsidered(s)).toBeGreaterThan(0);
+    expect(await tupleRow(s, `system:${SCHED}`, 'granted:sched:tick')).toEqual({ revokedAt: null, expiresAt: null });
+  });
+
+  it('a revoked connection grant stays revoked on re-delivery; `connectorGrantLocal` grants it again', async () => {
+    const s = ulid();
+    const conn = connectionId.parse(ulid());
+    const LATER = '2099-01-01T00:00:00.000Z';
+    const LATEST = '2099-06-01T00:00:00.000Z';
+    const live = async (): Promise<string[]> =>
+      (await rawStub(s).listConnectionGrants(new Date().toISOString())).map((g) => `${g.subject} ${g.expires_at}`);
+
+    await provision(s, [{ connectionId: conn, permission: READ, expiresAt: LATER }]);
+    expect(await live()).toEqual([`connection:${conn} ${LATER}`]);
+    // A LIVE grant's expiry still follows the platform's on re-delivery (#592), as before.
+    await provision(s, [{ connectionId: conn, permission: READ, expiresAt: LATEST }]);
+    expect(await live()).toEqual([`connection:${conn} ${LATEST}`]);
+
+    await rawStub(s).revokeTuple(`connection:${conn}`, `granted:${READ}`, `scope:${s}`, REVOKED_AT);
+    await provision(s, [{ connectionId: conn, permission: READ, expiresAt: LATER }]);
+    expect(await live()).toEqual([]);
+    // Untouched, expiry included — the re-delivery's LATER did not land on the tombstone.
+    expect(await tupleRow(s, `connection:${conn}`, `granted:${READ}`)).toEqual({
+      revokedAt: REVOKED_AT,
+      expiresAt: LATEST,
+    });
+
+    await host.connectorGrantLocal(conn, scopeId.parse(s), READ, LATER); // the explicit grant
+    expect(await live()).toEqual([`connection:${conn} ${LATER}`]);
+  });
+
+  it('the invite-create rollback still holds: a revoked invitee seat stays revoked through a reconcile', async () => {
+    // `vertical-auth`'s invite route grants a freshly minted principal, and revokes it when
+    // the invite row cannot be written. Provisioning never seated that principal, so no
+    // reconcile brings it back — before this change or after it.
+    const s = ulid();
+    const invitee = principalId.parse(ulid());
+    await provision(s);
+    await host.assignScopeRole(scopeId.parse(s), invitee, 'office-admin');
+    expect(await host.revokeScopeRole(scopeId.parse(s), invitee, 'office-admin')).toBe(true);
+    await provision(s);
+    expect(await probe(invitee, s, READ)).toBe(false);
+    expect(await probe(owner, s)).toBe(true);
+  });
+
+  it('the #332 flip guard: a KEPT tombstone is no live grant, so the flip stays refused', async () => {
+    // Zero live grants, reached the #1659 way: the only role tuple is revoked, and the
+    // projection names it again. Seating keeps the tombstone, so the guard must still say no.
+    const s = ulid();
+    const roleDef = { role_key: 'office-admin', permissions: JSON.stringify([ADMIN]), source: 'vertical' };
+    const ownerSeat = { subject: `principal:${owner}`, relation: 'role:office-admin', object: `scope:${s}`, expires_at: null };
+    await rawStub(s).seatTuple(ownerSeat.subject, ownerSeat.relation, ownerSeat.object, null);
+    await rawStub(s).revokeTuple(ownerSeat.subject, ownerSeat.relation, ownerSeat.object, REVOKED_AT);
+
+    await rawStub(s).applyProjection(t, [roleDef], [], undefined, [ownerSeat]);
+    expect(await permissionSource(s)).toBeUndefined(); // refused
+    expect((await tupleRow(s, ownerSeat.subject, ownerSeat.relation))?.revokedAt).toBe(REVOKED_AT);
+
+    // The twin: the same projection marking it as the lockout seat re-seats it in the same
+    // unit, and the guard — reading the same predicate — now lets the flip through.
+    await rawStub(s).applyProjection(t, [roleDef], [], undefined, [{ ...ownerSeat, lockout_reseat: true }]);
+    expect(await permissionSource(s)).toBe('local');
+    expect((await tupleRow(s, ownerSeat.subject, ownerSeat.relation))?.revokedAt).toBeNull();
+  });
+});
+
+/**
+ * #1659 on the CP-FULL path: `provisionScope` seats each module's `system:` grant through
+ * the same statement, so a re-provision keeps the kill switch off — and `grantToSystem`,
+ * the explicit grant, is what turns it back on. The pure adapter asserts the same.
+ */
+describe('#1659 — a re-provision keeps a revoked schedule grant (CP-full)', () => {
+  it('re-provision leaves the revoke; `grantToSystem` re-grants; a wiped grant is recreated', async () => {
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const SCHED = moduleId.parse('@test/sched');
+    const REVOKED_AT = '2026-09-01T00:00:00.000Z';
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(scheduleMod);
+    const raw = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as {
+      revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
+      importDump(tables: unknown[]): Promise<void>;
+      introspectQuery(sql: string): Promise<{ rows: unknown[][] }>;
+    };
+    const revokedAt = async (): Promise<unknown> =>
+      (
+        await raw.introspectQuery(
+          `SELECT revoked_at FROM _substrat_tuples WHERE subject = 'system:${SCHED}' AND relation = 'granted:sched:tick'`,
+        )
+      ).rows[0]?.[0];
+    const considered = async (): Promise<number> => {
+      const report = await host.runDueSchedules(SCHED, t, s);
+      expect(report.errors).toEqual([]);
+      return report.fired + report.skipped;
+    };
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `seat-${t.toLowerCase()}`, name: 'Seat Co' });
+      await host.admin.grantEntitlement(staff, t, 'sched');
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, s);
+      expect(await considered()).toBeGreaterThan(0);
+
+      await raw.revokeTuple(`system:${SCHED}`, 'granted:sched:tick', `scope:${s}`, REVOKED_AT);
+      expect(await considered()).toBe(0);
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+      expect(await considered()).toBe(0); // the kill switch survived the re-provision
+      expect(await revokedAt()).toBe(REVOKED_AT);
+
+      await host.admin.grantToSystem(staff, {
+        moduleId: SCHED,
+        permission: permissionKey.parse('sched:tick'),
+        node: { tenantId: t, scopeId: s },
+        grantedBy: staff,
+      });
+      expect(await revokedAt()).toBeNull(); // the explicit grant cleared the tombstone
+      expect(await considered()).toBeGreaterThan(0);
+
+      await raw.importDump([]); // storage recreated: the row is gone, not revoked
+      expect(await revokedAt()).toBeUndefined();
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+      expect(await revokedAt()).toBeNull();
+      expect(await considered()).toBeGreaterThan(0);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Appended LAST on purpose. `runPlatformSweep` in the schedule suite above is
 // platform-WIDE, so a scope provisioned by any earlier-running file lands in its
