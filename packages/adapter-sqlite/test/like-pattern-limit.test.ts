@@ -94,6 +94,26 @@ describe('a connection refuses a LIKE/GLOB pattern over the Durable Object limit
     expect(run(`SELECT 'a' GLOB NULL`)).toBeNull();
   });
 
+  it('a call with the wrong number of arguments is still an error, limited or lifted', () => {
+    const lifted = liftLimit(new Database(':memory:'));
+    try {
+      // The override is registered per arity, so SQLite's own arity check still applies to
+      // every other count instead of the callback quietly ignoring the extras.
+      for (const [sql, fn] of [
+        [`SELECT like('a')`, 'like'],
+        [`SELECT like('a', 'b', 'c', 'd')`, 'like'],
+        [`SELECT glob('a')`, 'glob'],
+        [`SELECT glob('a', 'b', 'c')`, 'glob'],
+      ] as const) {
+        const wrong = new RegExp(`wrong number of arguments to function ${fn}\\(\\)`);
+        expect(() => run(sql)).toThrow(wrong);
+        expect(() => lifted.prepare(sql).pluck().get()).toThrow(wrong);
+      }
+    } finally {
+      lifted.close();
+    }
+  });
+
   it('liftLimit takes it off one connection and leaves the next one alone', () => {
     const lifted = liftLimit(new Database(':memory:'));
     try {

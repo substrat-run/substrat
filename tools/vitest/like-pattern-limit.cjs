@@ -47,9 +47,16 @@ const register = (db, limited) => {
   const guard = (pattern) => {
     if (limited && tooLong(pattern)) throw new Error(MESSAGE);
   };
-  db.function('like', { deterministic: true, varargs: true }, (pattern, value, escape) => {
+  // Two registrations, not one `varargs`: SQLite keys a function on its name AND arity, so a
+  // call with any other number of arguments still fails "wrong number of arguments" as it does
+  // on a real connection, instead of being answered by a callback that ignores the extras.
+  db.function('like', { deterministic: true }, (pattern, value) => {
     guard(pattern);
-    return escape === undefined ? pristine.like.get(pattern, value) : pristine.like3.get(pattern, value, escape);
+    return pristine.like.get(pattern, value);
+  });
+  db.function('like', { deterministic: true }, (pattern, value, escape) => {
+    guard(pattern);
+    return pristine.like3.get(pattern, value, escape);
   });
   db.function('glob', { deterministic: true }, (pattern, value) => {
     guard(pattern);
