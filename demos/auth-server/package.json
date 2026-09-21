@@ -36,8 +36,8 @@
   "scripts": {
     "gen:assets": "node scripts/gen-assets.mjs",
     "pretypecheck": "node scripts/gen-assets.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
-    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.workerd-test.json --noEmit",
+    "test": "vitest run && vitest run -c vitest.workers.config.ts",
     "server": "tsx src/server.ts",
     "dev": "concurrently -n api,app -c blue,green \"tsx src/server.ts\" \"pnpm --dir app dev\"",
     "cf:dev": "wrangler dev",
@@ -58,7 +58,9 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
+    "@substrat-run/cli": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",

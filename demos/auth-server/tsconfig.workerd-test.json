@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "rootDir": ".",
+    // The workerd suite (`vitest.workers.config.ts`): Workers types plus the pool's
+    // `cloudflare:test` module, and no node — the suite runs inside workerd.
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers"]
+  },
+  "include": ["test/workerd"]
+}

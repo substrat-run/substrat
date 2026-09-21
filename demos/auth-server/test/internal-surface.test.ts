@@ -25,6 +25,7 @@ const ROUTER_SECRET = 'test-router-secret';
 function fakeAuth() {
   const provisioned: Array<{ doName: string; meta: InstanceMeta; config?: ConfigEntry[] }> = [];
   const configured: Array<{ doName: string; entries: ConfigEntry[] }> = [];
+  const reconciled: string[] = [];
   const introspected: Array<{ doName: string; verb: string }> = [];
   const exported: string[] = [];
   const destroyed: string[] = [];
@@ -48,6 +49,11 @@ function fakeAuth() {
         provisionInstance: async (meta, config) => {
           provisioned.push({ doName, meta, ...(config ? { config } : {}) });
         },
+        // What the real DO answers: the metadata a provision recorded, or null if none was.
+        reconcileInstance: async () => {
+          reconciled.push(doName);
+          return provisioned.findLast((p) => p.doName === doName)?.meta ?? null;
+        },
         setInstanceConfig: async (entries) => {
           configured.push({ doName, entries });
         },
@@ -70,7 +76,7 @@ function fakeAuth() {
       };
     },
   };
-  return { namespace, provisioned, configured, introspected, exported, destroyed, touched, forwarded };
+  return { namespace, provisioned, configured, reconciled, introspected, exported, destroyed, touched, forwarded };
 }
 
 let auth: ReturnType<typeof fakeAuth>;
@@ -150,6 +156,45 @@ describe('/internal/provision (K-31)', () => {
       { key: 'ADMIN_EMAIL', value: 'root@acme.test' },
       { key: 'ADMIN_PASSWORD', value: 'super-secret-1' },
     ]);
+  });
+});
+
+describe('/internal/reconcile (#1660 — the sweep\'s re-provision)', () => {
+  const reconcile = (body: unknown, secret?: string) =>
+    Promise.resolve(app.request(
+      '/internal/reconcile',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(secret ? { 'x-substrat-platform': secret } : {}),
+        },
+        body: JSON.stringify(body),
+      },
+      env,
+    ));
+
+  it('reconciles the SCOPE-NAMED issuer DO of a provisioned install, and provisions nothing itself', async () => {
+    const body = provisionBody();
+    await provision(body, PLATFORM_SECRET);
+    // The body a sweep sends: a tenant and a scope, no slug or name.
+    const res = await reconcile({ tenantId: body.tenantId, scopeId: body.scopeId, entitlements: [] }, PLATFORM_SECRET);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ tenantId: body.tenantId, scopeId: body.scopeId });
+    expect(auth.reconciled).toEqual([body.scopeId]);
+    expect(auth.provisioned).toHaveLength(1);
+  });
+
+  it('answers 409 for an install its issuer never recorded, so the sweep writes no receipt for it', async () => {
+    const res = await reconcile({ tenantId: ulid(), scopeId: ulid() }, PLATFORM_SECRET);
+    expect(res.status).toBe(409);
+    expect(auth.provisioned).toHaveLength(0);
+  });
+
+  it('refuses a call without the platform secret, before touching any DO', async () => {
+    const res = await reconcile({ tenantId: ulid(), scopeId: ulid() });
+    expect(res.status).toBe(403);
+    expect(auth.reconciled).toHaveLength(0);
   });
 });
 
