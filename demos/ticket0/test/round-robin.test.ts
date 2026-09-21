@@ -32,9 +32,10 @@ import {
 } from '@substrat-run/contracts';
 import { manualClock, ulid, type ManualClock, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import { ticket0Manifest } from '../src/manifest.js';
-import { ASSISTANT_NAME } from '../src/module.js';
+import { ASSISTANT_NAME, HANDED_TO_A_PERSON, ROUND_ROBIN_WAITING } from '../src/module.js';
 import { ROLES } from '../src/provision.js';
 import { buildHost } from '../src/seed.js';
+import { assignableStaff, everyPage } from '../app/src/staff.js';
 
 let dir: string;
 let host: ScopeHost;
@@ -366,6 +367,46 @@ describe('the ring: in turn, by principal, with the assistant never in it', () =
   });
 });
 
+describe('the rotation is the roster an admin can see', () => {
+  it('reads every page of the directory, and the ring hands work to exactly that set', async () => {
+    // 23 people and the two assistants: 25 profiles, more than one page.
+    const desk = await freshDesk({ agents: 23 });
+    const admin = await as(desk, desk.admin);
+    // In process a page names its successor by `nextCursor`; over HTTP the client turns
+    // the `Link` header into `next`, a URL to `follow()`. This is the in-process half of
+    // that translation, so `everyPage` walks here exactly what it walks in the browser.
+    type Profile = { principal: string; display_name: string };
+    const list = async (cursor?: string) => {
+      const page = (await admin.invoke('ticket0/list-agents', cursor ? { cursor } : {})) as {
+        entries: Profile[];
+        nextCursor?: string;
+      };
+      return { entries: page.entries, next: page.nextCursor ?? null };
+    };
+
+    // One page is not the directory. A roster that read only this would stop short of
+    // people the rotation still hands work to.
+    const first = await list();
+    expect(first.entries).toHaveLength(20);
+    expect(typeof first.next).toBe('string');
+
+    // The walk the Team roster runs (`everyAgentProfile` → `everyPage`), through the
+    // same filter it shows the directory through.
+    const roster = assignableStaff(await everyPage(() => list(), (next) => list(next))).map(
+      (a) => a.principal,
+    );
+    expect([...roster].sort()).toEqual([...desk.agents].sort());
+
+    await switchRoundRobin(desk, true);
+    const waiting: string[] = [];
+    for (let i = 0; i < desk.agents.length; i++) waiting.push(await mail(desk));
+    expect(await sweep(desk)).toBe(desk.agents.length);
+    const handedTo = await Promise.all(waiting.map(async (id) => (await read(desk, id)).assignee));
+    // One conversation each, to exactly the people the roster shows.
+    expect([...handedTo].sort()).toEqual([...roster].sort());
+  });
+});
+
 describe('a desk with nobody to hand anything to', () => {
   it('assigns nothing, leaves the conversation in the inbox, and is not an error', async () => {
     // The directory holds the two assistants and nobody else.
@@ -610,6 +651,62 @@ describe('the assistant keeps what it is answering, until it hands it to a perso
     expect((await read(desk, chatting.conversationId)).assignee).not.toBeNull();
   });
 
+  it('a request for a person that has since been answered is not a hand-off; one still standing is', async () => {
+    const widget = await as(desk, desk.widget);
+    const answeredSince = await chat(desk);
+    await widget.invoke('ticket0/request-human', {
+      sessionId: answeredSince.sessionId,
+      token: answeredSince.token,
+    });
+    // The desk spoke in public after the acknowledgement, so the request no longer
+    // stands — the same reading `handoffStands` makes when it decides whether to
+    // notify the desk again.
+    clock.advance(60_000);
+    await (await as(desk, desk.assistantAutonomous)).invoke('ticket0/post-public-reply', {
+      conversationId: answeredSince.conversationId,
+      body: 'Found it after all: Settings, then API keys, then Rotate.',
+    });
+
+    const standing = await chat(desk);
+    await widget.invoke('ticket0/request-human', { sessionId: standing.sessionId, token: standing.token });
+
+    expect(await sweep(desk)).toBe(1);
+    expect((await read(desk, answeredSince.conversationId)).assignee).toBeNull();
+    expect((await read(desk, standing.conversationId)).assignee).not.toBeNull();
+  });
+
+  it('an escalation the assistant has since answered past is not a hand-off; a latest one is', async () => {
+    const assistant = await as(desk, desk.assistantAutonomous);
+    const turn = (conversationId: string, turnId: string, outcome: 'escalated' | 'drafted') =>
+      assistant.invoke('ticket0/record-answer', {
+        conversationId,
+        turnId,
+        model: 'test/none',
+        body: outcome === 'escalated' ? 'Nothing in the documentation.' : 'Here is how.',
+        inputTokens: 1,
+        outputTokens: 1,
+        citedArticleIds: [],
+        outcome,
+      });
+
+    const answeredSince = await chat(desk);
+    await turn(answeredSince.conversationId, 'past-escalation', 'escalated');
+    clock.advance(60_000);
+    await turn(answeredSince.conversationId, 'later-answer', 'drafted');
+    await assistant.invoke('ticket0/post-public-reply', {
+      conversationId: answeredSince.conversationId,
+      body: 'Here is how.',
+      turnId: 'later-answer',
+    });
+
+    const escalated = await chat(desk);
+    await turn(escalated.conversationId, 'latest-escalation', 'escalated');
+
+    expect(await sweep(desk)).toBe(1);
+    expect((await read(desk, answeredSince.conversationId)).assignee).toBeNull();
+    expect((await read(desk, escalated.conversationId)).assignee).not.toBeNull();
+  });
+
   it('on a supervised desk the assistant sends nothing, so every widget conversation is a person’s', async () => {
     const supervised = await freshDesk({ agents: 1, autonomous: false });
     await switchRoundRobin(supervised, true);
@@ -671,6 +768,38 @@ describe('the same permission and the same trail as a person’s assign', () => 
       db.close();
     }
     await expect(sweep(desk)).rejects.toThrow(/denied/i);
+  });
+});
+
+describe('the scan is indexed, because it runs on every tick', () => {
+  it('seeks the waiting set and both per-conversation lookups, and sorts nothing', async () => {
+    // A real scope's database, as the adapter built it: the module's migrations AND
+    // the kernel's own list indexes. Those are the competition. Without statistics,
+    // SQLite prefers them for this query unless migration 0011's indexes win outright,
+    // and that choice is exactly what this holds.
+    const desk = await freshDesk({ agents: 1, autonomous: true });
+    await mail(desk);
+    const db = new Database(join(dir, `${desk.tenant}__${desk.scope}.sqlite`), { readonly: true });
+    let plan: string[];
+    try {
+      plan = (
+        db.prepare(`EXPLAIN QUERY PLAN ${ROUND_ROBIN_WAITING}`).all(1, HANDED_TO_A_PERSON, 200) as {
+          detail: string;
+        }[]
+      ).map((r) => r.detail);
+    } finally {
+      db.close();
+    }
+
+    expect(plan).toContainEqual(expect.stringMatching(/^SEARCH c USING INDEX ticket0_conversations_waiting\b/));
+    expect(plan).toContainEqual(expect.stringMatching(/^SEARCH t USING INDEX ticket0_ai_turns_by_conversation\b/));
+    expect(plan).toContainEqual(
+      expect.stringMatching(/^SEARCH m USING INDEX ticket0_messages_public_by_conversation\b/),
+    );
+    // Nothing read end to end, and no sort: the partial index is already in
+    // `created_at, id` order, and each subquery's index is in its ORDER BY's order.
+    expect(plan.filter((d) => /^SCAN (c|t|m)\b/.test(d))).toEqual([]);
+    expect(plan.filter((d) => /TEMP B-TREE/.test(d))).toEqual([]);
   });
 });
 

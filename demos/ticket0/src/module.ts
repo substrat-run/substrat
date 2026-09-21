@@ -925,16 +925,63 @@ function lastCustomerMessage(ctx: OperationContext, conversationId: string): Mes
  * thinking out loud — the visitor has been told nothing, so their request is still the
  * one the desk was told about, and treating a note as a reply would ping everybody a
  * second time over an answer nobody has sent.
+ *
+ * `handoffStandsSql` is the rule; this is its reading for one conversation. Round-robin
+ * reads the same fragment inside its scan (#1083), so "handed to a person" cannot mean
+ * one thing when the desk decides whether to notify and another when it decides whether
+ * to assign.
  */
 function handoffStands(ctx: OperationContext, conversationId: string): boolean {
-  const last = ctx.sql.query<MessageRow>(
-    `SELECT * FROM ticket0_messages
-      WHERE conversation_id = ? AND visibility = 'public'
-        AND author_kind IN ('system', 'agent', 'assistant')
-      ORDER BY id DESC LIMIT 1`,
-    [conversationId],
-  )[0];
-  return last?.author_kind === 'system' && last.body_text === HANDED_TO_A_PERSON;
+  return (
+    ctx.sql.query<{ stands: number }>(`SELECT ${handoffStandsSql('?')} AS stands`, [
+      HANDED_TO_A_PERSON,
+      conversationId,
+    ])[0]?.stands === 1
+  );
+}
+
+/**
+ * "A request for a person still stands on this conversation", as SQL.
+ *
+ * The newest thing the desk said in public is the acknowledgement `request-human`
+ * wrote, so nobody has answered since. `handoffStands` above says why each word of that
+ * is what it is.
+ *
+ * `conversation` is the SQL expression that names the conversation: `?` for one named
+ * row, `c.id` inside a scan. The fragment binds ONE parameter of its own,
+ * `HANDED_TO_A_PERSON`, and it comes textually BEFORE the conversation's placeholder, so
+ * a caller passing `?` binds `[HANDED_TO_A_PERSON, conversationId]` in that order.
+ *
+ * Answers 1 or 0, never NULL: a conversation where the desk has said nothing in public
+ * has no newest word, and `IS 1` reads that as "no request stands" rather than as a
+ * third value.
+ */
+function handoffStandsSql(conversation: string): string {
+  return `(SELECT m.author_kind = 'system' AND m.body_text = ?
+             FROM ticket0_messages m
+            WHERE m.conversation_id = ${conversation}
+              AND m.visibility = 'public'
+              AND m.author_kind IN ('system', 'agent', 'assistant')
+            ORDER BY m.id DESC LIMIT 1) IS 1`;
+}
+
+/**
+ * "The assistant's latest turn on this conversation handed it to a person", as SQL
+ * (#1083).
+ *
+ * `escalated` (the documentation had nothing) and `failed` (the assistant did not run)
+ * are the two outcomes that already tell the whole desk. Only the LATEST turn counts,
+ * for the reason only the newest desk word counts in `handoffStandsSql`. A turn that
+ * escalated, followed by one the assistant answered, is a conversation the assistant is
+ * handling again, and a historical escalation must not hand it to somebody.
+ *
+ * Binds nothing. Same `conversation` contract as `handoffStandsSql`.
+ */
+function escalationStandsSql(conversation: string): string {
+  return `(SELECT t.outcome IN ('escalated', 'failed')
+             FROM ticket0_ai_turns t
+            WHERE t.conversation_id = ${conversation}
+            ORDER BY t.created_at DESC, t.id DESC LIMIT 1) IS 1`;
 }
 
 /** The one shape every message event carries. Bodies are erasable and never ride. */
@@ -1070,6 +1117,45 @@ function assignConversation(
  * the schedule comes back.
  */
 const ROUND_ROBIN_BATCH = 200;
+
+/**
+ * The conversations round-robin may hand out, oldest first: the sweep's whole scan, as
+ * one statement (#1083). `ticket0/assign-round-robin` says why each clause is there.
+ *
+ * It runs on every tick of every desk that has switched round-robin on, so it has
+ * indexes of its own in migration 0011, one per table it reads:
+ *
+ *   - `ticket0_conversations_waiting`, PARTIAL over exactly this WHERE's first four
+ *     terms, so it holds the waiting conversations and nothing else. A closed
+ *     conversation the reaper took, which is never assigned and accumulates for the
+ *     life of the desk, is not in it. It is led by `assignee`, although every row in it
+ *     has NULL there. SQLite has no statistics for these tables, and without the
+ *     equality on a leading column it prefers the kernel's own `(assignee, created_at,
+ *     id)` list index. That index holds every unassigned conversation ever, reaped ones
+ *     included.
+ *   - `ticket0_ai_turns_by_conversation` for `escalationStandsSql`: seek to the
+ *     conversation, newest turn first, no sort.
+ *   - `ticket0_messages_public_by_conversation` for `handoffStandsSql`. The kernel's
+ *     `(conversation_id, created_at, id)` list index exists, but with no statistics the
+ *     planner picks `(visibility, created_at, id)` for this subquery instead, which
+ *     reads every public message on the desk per candidate. Two equalities beat one.
+ *
+ * The four waiting terms must stay textually the same as the partial index's WHERE, or
+ * SQLite stops using it. `test/round-robin.test.ts` holds the PLAN to all three
+ * indexes, which is why this is exported.
+ *
+ * Binds `[autonomous ? 1 : 0, HANDED_TO_A_PERSON, limit]`.
+ */
+export const ROUND_ROBIN_WAITING = `SELECT * FROM ticket0_conversations c
+        WHERE c.assignee IS NULL
+          AND c.first_assigned_at IS NULL
+          AND c.state IN ('new', 'open')
+          AND c.merged_into IS NULL
+          AND (? = 0
+               OR c.channel != 'widget'
+               OR ${escalationStandsSql('c.id')}
+               OR ${handoffStandsSql('c.id')})
+        ORDER BY c.created_at, c.id LIMIT ?`;
 
 /**
  * Who is next, after `after` — or who is first, when nobody has been handed anything
@@ -2638,15 +2724,16 @@ const operations = {
    *   - `merged_into IS NULL` — the losing half of a merge is already folded into a
    *     survivor, and the survivor is the one to hand out.
    *   - the assistant's own conversations are left to it. On a desk that lets the
-   *     assistant answer, a widget conversation belongs to the assistant until it is
-   *     handed to a person: an `escalated` or `failed` turn — the two outcomes that
-   *     already tell the whole desk (`record-answer`, `record-assistant-failure`) — or
-   *     the visitor's own request for a person, recognised by the acknowledgement
-   *     `request-human` writes, the same test `handoffStands` makes. Without this clause,
-   *     every widget conversation the assistant was answering would get a human
-   *     assignee and a notification. The assistant never answers mail, and on a
-   *     supervised desk it cannot send at all, so both of those are a person's work
-   *     from the start.
+   *     assistant answer, a widget conversation belongs to the assistant until a
+   *     hand-off to a person STANDS. Either its latest turn is `escalated` or `failed`
+   *     (`escalationStandsSql`), or the newest thing the desk said in public is the
+   *     acknowledgement `request-human` writes (`handoffStandsSql`, the very fragment
+   *     `handoffStands` reads). "Stands", not "happened once": a hand-off the assistant
+   *     or an agent has since answered is not an open request for a person, and handing
+   *     that conversation to somebody would act on history. Without this clause, every
+   *     widget conversation the assistant was answering would get a human assignee and
+   *     a notification. The assistant never answers mail, and on a supervised desk it
+   *     cannot send at all, so both of those are a person's work from the start.
    *
    * Idempotent by construction rather than by bookkeeping: what it assigns no longer
    * matches the predicate, so a second run — a duplicate fire, a retried sweep — finds
@@ -2658,26 +2745,11 @@ const operations = {
     assertAllowed(await ctx.check(T0_PERM.conversationAssign));
     const settings = desk(ctx);
     if (!roundRobinOn(settings)) return { assigned: 0 };
-    const waiting = ctx.sql.query<ConversationRow>(
-      `SELECT * FROM ticket0_conversations c
-        WHERE c.assignee IS NULL
-          AND c.first_assigned_at IS NULL
-          AND c.state IN ('new', 'open')
-          AND c.merged_into IS NULL
-          AND (? = 0
-               OR c.channel != 'widget'
-               OR EXISTS (
-                    SELECT 1 FROM ticket0_ai_turns t
-                     WHERE t.conversation_id = c.id AND t.outcome IN ('escalated', 'failed')
-                  )
-               OR EXISTS (
-                    SELECT 1 FROM ticket0_messages m
-                     WHERE m.conversation_id = c.id AND m.author_kind = 'system'
-                       AND m.visibility = 'public' AND m.body_text = ?
-                  ))
-        ORDER BY c.created_at, c.id LIMIT ?`,
-      [isAutonomous(ctx) ? 1 : 0, HANDED_TO_A_PERSON, ROUND_ROBIN_BATCH],
-    );
+    const waiting = ctx.sql.query<ConversationRow>(ROUND_ROBIN_WAITING, [
+      isAutonomous(ctx) ? 1 : 0,
+      HANDED_TO_A_PERSON,
+      ROUND_ROBIN_BATCH,
+    ]);
     let last = settings.round_robin_last;
     let assigned = 0;
     for (const conversation of waiting) {

@@ -317,6 +317,13 @@ export const ticket0Migrations: SqlMigration[] = [
       ALTER TABLE ticket0_desk_settings ADD COLUMN settings TEXT;
 
       ALTER TABLE ticket0_desk_settings ADD COLUMN round_robin_last TEXT;
+
+      CREATE INDEX ticket0_conversations_waiting ON ticket0_conversations (assignee, created_at, id)
+        WHERE assignee IS NULL AND first_assigned_at IS NULL AND state IN ('new', 'open') AND merged_into IS NULL;
+
+      CREATE INDEX ticket0_ai_turns_by_conversation ON ticket0_ai_turns (conversation_id, created_at, id);
+
+      CREATE INDEX ticket0_messages_public_by_conversation ON ticket0_messages (conversation_id, visibility, id);
     `,
   },
 ];

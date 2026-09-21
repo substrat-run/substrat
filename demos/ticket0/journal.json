@@ -53,7 +53,7 @@
     {
       "version": "0011",
       "slug": "add-ticket0_conversations-first_assigned_at-and-2-more",
-      "sql": "ALTER TABLE ticket0_conversations ADD COLUMN first_assigned_at TEXT;\n\nALTER TABLE ticket0_desk_settings ADD COLUMN settings TEXT;\n\nALTER TABLE ticket0_desk_settings ADD COLUMN round_robin_last TEXT;"
+      "sql": "ALTER TABLE ticket0_conversations ADD COLUMN first_assigned_at TEXT;\n\nALTER TABLE ticket0_desk_settings ADD COLUMN settings TEXT;\n\nALTER TABLE ticket0_desk_settings ADD COLUMN round_robin_last TEXT;\n\nCREATE INDEX ticket0_conversations_waiting ON ticket0_conversations (assignee, created_at, id)\n  WHERE assignee IS NULL AND first_assigned_at IS NULL AND state IN ('new', 'open') AND merged_into IS NULL;\n\nCREATE INDEX ticket0_ai_turns_by_conversation ON ticket0_ai_turns (conversation_id, created_at, id);\n\nCREATE INDEX ticket0_messages_public_by_conversation ON ticket0_messages (conversation_id, visibility, id);"
     }
   ]
 }

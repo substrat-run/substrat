@@ -18,7 +18,7 @@ import {
   type PendingInvite,
   type Session,
 } from '../api.js';
-import { assignableStaff, forgetAgents } from '../agents.js';
+import { assignableStaff, everyAgentProfile, forgetAgents } from '../agents.js';
 import { contacts } from '../contacts.js';
 import { Avatar, Dot, Empty, UnitPrice, ago } from '../ui.js';
 
@@ -209,15 +209,16 @@ function Team({ session }: { session: Session }) {
   const load = useCallback(() => {
     // The directory is read fresh here, not through `agents()`: that cache exists so a
     // hundred rows in the inbox resolve one name each, and this is the screen where
-    // somebody has just changed who is in it.
-    void api
-      .listAgents()
-      .then((p) => {
+    // somebody has just changed who is in it. Every page of it, not the first: this
+    // roster is also who round-robin hands work to (#1083), and a list that stopped at
+    // twenty would hide people the rotation still reaches.
+    void everyAgentProfile()
+      .then((all) => {
         // "On the desk" means the people on it, so the assistant's profile — which
         // exists for its byline — is not one of them (#1154). Same filter the two
         // assignee pickers use, so the roster and the pickers cannot disagree about
         // who works here.
-        setStaff(assignableStaff(p.entries));
+        setStaff(assignableStaff(all));
         setStaffFailed(null);
       })
       .catch((e: Error) => setStaffFailed(e.message));
