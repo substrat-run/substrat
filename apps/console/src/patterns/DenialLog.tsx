@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Actor, DenialBucket, DenialSummary, PermissionDenial, Scope } from '@substrat-run/contracts';
 import { Badge, Button, Card, Table } from '../components';
 import type { Api } from '../lib/api';
+import { actorFilter, actorKind, actorLabel } from '../lib/actor';
 
 /**
  * The K-35 denial log, read (#867) — the third of the platform's three logs and the
@@ -16,23 +17,6 @@ import type { Api } from '../lib/api';
  * sanctionable, and the reason the count-ordered view is the default rather than a
  * refinement. Rows are the drill-down behind one bucket.
  */
-
-/** A denial's actor is a principal ULID, a `{ system }` module, or a `{ connection }`. */
-function actorLabel(a: Actor): string {
-  if (typeof a === 'string') return a;
-  if ('system' in a) return a.system;
-  return a.connection;
-}
-
-function actorKind(a: Actor): 'principal' | 'system' | 'connection' {
-  if (typeof a === 'string') return 'principal';
-  return 'system' in a ? 'system' : 'connection';
-}
-
-/** The filter value the API takes — the logical actor, not its stored JSON encoding. */
-function actorFilter(a: Actor): string {
-  return typeof a === 'string' ? a : JSON.stringify(a);
-}
 
 function ActorRef({ actor }: { actor: Actor }) {
   const kind = actorKind(actor);
