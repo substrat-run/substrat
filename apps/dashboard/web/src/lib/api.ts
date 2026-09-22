@@ -617,6 +617,14 @@ export interface TrafficBucket {
   start: string;
   requests: number;
   errors: number;
+  /**
+   * The chart's green and yellow segments (#1693): `green` is 2xx + 3xx traffic, `yellow`
+   * is 4xx — the red segment is `errors` above, unchanged. Both present or both absent:
+   * absent means the source carried no status-class split, and the chart falls back to
+   * its single-color bar.
+   */
+  green?: number;
+  yellow?: number;
 }
 
 /** A deploy moment drawn on the chart (#1236) — a registry fact, not telemetry. */

@@ -499,6 +499,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         blob3 AS surface,
         sum(_sample_interval) AS requests,
         sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors,
+        sum(if(blob4 = '2xx', _sample_interval, 0)) AS class2xx,
+        sum(if(blob4 = '3xx', _sample_interval, 0)) AS class3xx,
+        sum(if(blob4 = '4xx', _sample_interval, 0)) AS class4xx,
         quantileWeighted(0.5)(double1, _sample_interval) AS durationP50,
         quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
       FROM ${aeDataset(dataset)}
@@ -516,6 +519,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       surface: str(r['surface']),
       requests: aeNum(r['requests']),
       errors: aeNum(r['errors']),
+      class2xx: aeNum(r['class2xx']),
+      class3xx: aeNum(r['class3xx']),
+      class4xx: aeNum(r['class4xx']),
       durationP50: aeNum(r['durationP50']),
       durationP95: aeNum(r['durationP95']),
     }));
@@ -554,6 +560,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         toStartOfInterval(timestamp, INTERVAL '${bucketMinutes}' MINUTE) AS start,
         sum(_sample_interval) AS requests,
         sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors,
+        sum(if(blob4 = '2xx', _sample_interval, 0)) AS class2xx,
+        sum(if(blob4 = '3xx', _sample_interval, 0)) AS class3xx,
+        sum(if(blob4 = '4xx', _sample_interval, 0)) AS class4xx,
         quantileWeighted(0.5)(double1, _sample_interval) AS durationP50,
         quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
       FROM ${aeDataset(dataset)}
@@ -583,6 +592,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           bucketMinutes,
           requests: aeNum(r['requests']),
           errors: aeNum(r['errors']),
+          class2xx: aeNum(r['class2xx']),
+          class3xx: aeNum(r['class3xx']),
+          class4xx: aeNum(r['class4xx']),
           durationP50: aeNum(r['durationP50']),
           durationP95: aeNum(r['durationP95']),
         },

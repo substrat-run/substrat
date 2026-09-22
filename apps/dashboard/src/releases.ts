@@ -211,6 +211,11 @@ export interface TrafficBucketInput {
   bucketMinutes: number;
   requests: number;
   errors: number;
+  /** Additive status-class split (#1693) — see `TenantMetricsBucket`. Absent on a plane
+   *  that does not (yet) carry the status-class dimension. */
+  class2xx?: number;
+  class3xx?: number;
+  class4xx?: number;
 }
 
 /** One plotted bucket — zero-filled, so a gap in the data reads as a gap in traffic. */
@@ -218,6 +223,14 @@ export interface TrafficBucket {
   start: string;
   requests: number;
   errors: number;
+  /**
+   * The chart's green and yellow segments (#1693): `green` is 2xx + 3xx traffic, `yellow`
+   * is 4xx — the red segment is `errors` above, unchanged. Both present or both absent:
+   * absent means the source bucket carried no status-class split, and the chart falls
+   * back to today's single-color bar.
+   */
+  green?: number;
+  yellow?: number;
 }
 
 /** A moment worth drawing a line at: a push, or a go-live. */
@@ -267,12 +280,45 @@ export function bucketGrid(bucketMinutes: number, hours: number, now: Date): Buc
 }
 
 /**
+ * A bucket's raw class sums (already sampling-weighted upstream) → the chart's two
+ * stacked segments (#1693): green is "no complaint" (2xx + 3xx), yellow is "client got a
+ * no" (4xx) — never itself an alarm, per the issue's own note that a 401 or 404 is
+ * routine. The red segment is `errors` (5xx) and is computed nowhere else; this
+ * function only ever adds `green`/`yellow` to it.
+ *
+ * `null` is the fallback signal: a source that never reported the status-class split
+ * (an older plane, or a script-grain source that cannot carry it) must not be guessed
+ * at, so the chart renders today's single-color bar instead of inventing a split.
+ * The three fields travel together — one absent means all three are.
+ */
+export function stackedStatusClasses(b: {
+  class2xx?: number;
+  class3xx?: number;
+  class4xx?: number;
+}): { green: number; yellow: number } | null {
+  if (b.class2xx === undefined || b.class3xx === undefined || b.class4xx === undefined) return null;
+  return { green: b.class2xx + b.class3xx, yellow: b.class4xx };
+}
+
+/**
  * Rows → one bucket per slot of the grid, absent meaning explicitly zero. See the
  * zero-fill rule on `deriveTrafficSeries`: skipping an empty bucket lets its
  * neighbours join and draws an outage as a narrower peak.
  */
 function fillGrid(rows: TrafficBucketInput[], grid: BucketGrid): TrafficBucket[] {
-  const totals = new Map<number, { requests: number; errors: number }>();
+  // Decided ONCE, over every row this grid draws from — not per bucket: a source
+  // either carries the status-class dimension for its whole answer or not at all, and
+  // a bucket that merely had no traffic of a class must still stack a real (zero)
+  // green/yellow, not fall back to the no-split rendering.
+  //
+  // EVERY row must carry ALL three fields, not just some row carrying one of them —
+  // `some(class2xx !== undefined)` let a mixed or partial-version answer (one row
+  // missing `class4xx`, say) turn stacking on and then silently read its absent
+  // fields as zero, drawing an incomplete stack rather than falling back. A source
+  // is only "has the split" when nothing in it is guessing.
+  const hasClasses =
+    rows.length > 0 && rows.every((b) => b.class2xx !== undefined && b.class3xx !== undefined && b.class4xx !== undefined);
+  const totals = new Map<number, { requests: number; errors: number; class2xx: number; class3xx: number; class4xx: number }>();
   for (const b of rows) {
     const t = Date.parse(b.start);
     if (Number.isNaN(t)) continue;
@@ -280,16 +326,27 @@ function fillGrid(rows: TrafficBucketInput[], grid: BucketGrid): TrafficBucket[]
     // ours must agree, or a row lands between two columns and is lost.
     const slot = Math.floor(t / grid.widthMs) * grid.widthMs;
     if (slot < grid.start || slot > grid.end) continue;
-    const acc = totals.get(slot) ?? { requests: 0, errors: 0 };
+    const acc = totals.get(slot) ?? { requests: 0, errors: 0, class2xx: 0, class3xx: 0, class4xx: 0 };
     acc.requests += b.requests;
     acc.errors += b.errors;
+    acc.class2xx += b.class2xx ?? 0;
+    acc.class3xx += b.class3xx ?? 0;
+    acc.class4xx += b.class4xx ?? 0;
     totals.set(slot, acc);
   }
 
   const plotted: TrafficBucket[] = [];
   for (let t = grid.start; t <= grid.end; t += grid.widthMs) {
     const acc = totals.get(t);
-    plotted.push({ start: new Date(t).toISOString(), requests: acc?.requests ?? 0, errors: acc?.errors ?? 0 });
+    const classes = hasClasses
+      ? stackedStatusClasses({ class2xx: acc?.class2xx ?? 0, class3xx: acc?.class3xx ?? 0, class4xx: acc?.class4xx ?? 0 })
+      : null;
+    plotted.push({
+      start: new Date(t).toISOString(),
+      requests: acc?.requests ?? 0,
+      errors: acc?.errors ?? 0,
+      ...(classes ?? {}),
+    });
   }
   return plotted;
 }
