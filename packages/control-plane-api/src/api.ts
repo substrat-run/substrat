@@ -1675,6 +1675,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(body);
   });
 
+  // -- connector calls, fleet-wide, over time (#1691) ---------------------------
+  //
+  // The trend behind the health line above: calls and errors per provider, bucketed,
+  // from the connector-call dataset the host writes on every settled call (kernel
+  // `connector-calls.ts`). Staff/service only by the same construction as
+  // `/connections/health` — in neither BUILDER_ROUTES nor TENANT_ROUTES, so both
+  // credentials default-deny it. 501 when the reader has no dataset named: an empty
+  // series would draw as "no calls". Up to a week, because "is this provider getting
+  // worse this week" is the question it exists for.
+  app.get('/connections/calls', async (c) => {
+    if (!options.observability?.connectorCallsSeries) {
+      return c.json({ error: 'connector-call analytics are not configured on this control plane' }, 501);
+    }
+    const input = z
+      .object({
+        hours: z.coerce.number().int().min(1).max(168).default(24),
+        // A provider slug — and the character set the AE literal accepts, so a bad one is
+        // this route's 400 rather than the reader's 500.
+        provider: z.string().regex(/^[A-Za-z0-9_\-.]{1,64}$/).optional(),
+      })
+      .parse({ hours: c.req.query('hours'), provider: c.req.query('provider') || undefined });
+    const buckets = await options.observability.connectorCallsSeries(input);
+    return c.json({ hours: input.hours, buckets });
+  });
+
   // The same upsert semantics as `/internal/connections/upsert` (§3.5.2) — create under a
   // fresh id, or rotate the one live row in place so its grant tuples survive — behind
   // platform-actor auth instead of the vertical-harness PLATFORM_SECRET. The tenant is

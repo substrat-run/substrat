@@ -3,6 +3,7 @@ import type {
   ObservedEgressRow,
   RecentLogEvent,
   TenantMetricsBucket,
+  ConnectorCallsBucket,
   TenantMetricsRow,
 } from './observability.js';
 
@@ -164,6 +165,14 @@ export interface CfObservabilityOptions {
    * an empty array that reads as "your app served nothing".
    */
   routerDataset?: string;
+  /**
+   * #1691: the Analytics Engine dataset the control plane's connector-call recorder
+   * writes (`substrat_connector_calls` in production, `substrat_connector_calls_test` on
+   * TEST — `apps/control-plane/wrangler.jsonc`). Stated by the caller and defaulted
+   * nowhere, for `routerDataset`'s reason. Absent ⇒ `connectorCallsSeries` is not exposed
+   * and the route 501s.
+   */
+  connectorCallsDataset?: string;
 }
 
 const GRAPHQL_URL = 'https://api.cloudflare.com/client/v4/graphql';
@@ -396,6 +405,15 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         }
       : {}),
 
+    // #1691: the same switch for the connector-call dataset — present only when named.
+    ...(opts.connectorCallsDataset
+      ? {
+          connectorCallsSeries: (
+            input: Parameters<NonNullable<ObservabilityReader['connectorCallsSeries']>>[0],
+          ) => queryConnectorCallsSeries(opts.connectorCallsDataset!, input),
+        }
+      : {}),
+
     async tenantLogs(input) {
       return queryTenantLogs(input);
     },
@@ -491,7 +509,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // Blob/double positions are the router's published shape (`apps/router/src/worker.ts`
     // `record`): index1 tenant; blob1 vertical, blob2 scope, blob3 surface, blob4 status
     // class; double1 duration ms, double2 status. That shape only ever grows, never
-    // reorders — which is what lets these ordinals be written down here at all.
+    // reorders — which is what lets these ordinals be written down here at all. The
+    // connector-call dataset's ordinals are published beside these, on
+    // `queryConnectorCallsSeries` below (#1691) — a different dataset, never this one.
     const sql = `
       SELECT
         blob2 AS scopeId,
@@ -597,6 +617,112 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           class4xx: aeNum(r['class4xx']),
           durationP50: aeNum(r['durationP50']),
           durationP95: aeNum(r['durationP95']),
+        },
+      ];
+    });
+  }
+
+  /**
+   * Connector calls per provider, bucketed (#1691) — the connector-call dataset, read
+   * with the tenant grain's shape: sampling-weighted sums, weighted quantiles, the same
+   * two bucket widths, and the same refusal when a page saturates.
+   *
+   * ## The connector-call dataset's published ordinals
+   *
+   * Written by the kernel's `connectorCallDataPoint` from `CONNECTOR_CALL_DATA_POINT_LAYOUT`
+   * (`packages/kernel/src/connector-calls.ts`), through the control plane's
+   * `CONNECTOR_ANALYTICS` binding — its OWN dataset, never the router's, because the two
+   * shapes' ordinals mean different things. Each position carries an OpenTelemetry
+   * semantic-convention name (checked against `@opentelemetry/semantic-conventions` 1.43.0,
+   * where `error.type`, `http.response.status_code` and `http.client.request.duration` are
+   * all stable), so an OTLP exporter maps them 1:1, units included:
+   *
+   *   ordinal  OTel name                      unit  absent
+   *   index1   substrat.tenant.id             —     —
+   *   blob1    substrat.connection.provider   —     —
+   *   blob2    substrat.vertical (the slug)   —     —
+   *   blob3    error.type (closed enum)       —     ''  (success sets no error.type)
+   *   double1  http.client.request.duration   s     -1  (the call was not timed)
+   *   double2  http.response.status_code      —     0   (no status arrived)
+   *
+   * Like the router's, that shape only ever GROWS — a new field takes the next ordinal and
+   * no ordinal is ever reordered, renamed or reused — and so does the `error.type` enum:
+   * a stored point keeps the string it was written with. Nothing in it can carry a
+   * credential, URL or payload: every blob is a row identifier or an enum member, and there
+   * is deliberately no `server.address` or `url.*`.
+   *
+   * The JSON this read answers keeps its own readable field names (`calls`, `ok`,
+   * `class4xx`, `durationP50` in MILLISECONDS…) rather than the OTel names: it is a chart's
+   * API, not a telemetry record. The mapping: `ok` = blob3 `''`; `class4xx`/`class5xx`/
+   * `timeouts` = blob3 `4xx`/`5xx`/`timeout`; `failed` = everything else that is an error;
+   * `durationP50`/`P95` = the weighted quantiles of double1 × 1000.
+   *
+   * The quantiles weigh an untimed call (`double1 = -1`) at zero, so a caller that did not
+   * time its call cannot drag the latency line down to nothing — while every COUNT still
+   * includes it.
+   */
+  async function queryConnectorCallsSeries(
+    dataset: string,
+    input: { hours: number; provider?: string },
+  ): Promise<ConnectorCallsBucket[]> {
+    const hours = Math.max(1, Math.floor(input.hours));
+    const bucketMinutes = hours <= 6 ? 15 : 60;
+    const where = [`timestamp > now() - INTERVAL '${hours}' HOUR`];
+    if (input.provider) where.push(`blob1 = ${aeLiteral(input.provider)}`);
+    const timedWeight = `if(double1 >= 0, _sample_interval, 0)`;
+    const sql = `
+      SELECT
+        blob1 AS provider,
+        toStartOfInterval(timestamp, INTERVAL '${bucketMinutes}' MINUTE) AS start,
+        sum(_sample_interval) AS calls,
+        sum(if(blob3 = '', _sample_interval, 0)) AS ok,
+        sum(if(blob3 = '4xx', _sample_interval, 0)) AS class4xx,
+        sum(if(blob3 = '5xx', _sample_interval, 0)) AS class5xx,
+        sum(if(blob3 = 'timeout', _sample_interval, 0)) AS timeouts,
+        quantileWeighted(0.5)(double1, ${timedWeight}) AS durationP50,
+        quantileWeighted(0.95)(double1, ${timedWeight}) AS durationP95
+      FROM ${aeDataset(dataset)}
+      WHERE ${where.join(' AND ')}
+      GROUP BY provider, start
+      ORDER BY start ASC
+      LIMIT ${SERIES_ROW_LIMIT}
+      FORMAT JSON`;
+
+    const rows = await analyticsEngineSql(sql);
+    if (rows.length >= SERIES_ROW_LIMIT) {
+      throw new Error(
+        `Cloudflare Analytics Engine series query saturated at ${SERIES_ROW_LIMIT} rows: the answer would be a partial prefix, not a series`,
+      );
+    }
+    return rows.flatMap((r) => {
+      const start = aeInstant(r['start']);
+      if (start === null) return [];
+      const calls = aeNum(r['calls']);
+      const ok = aeNum(r['ok']);
+      const class4xx = aeNum(r['class4xx']);
+      const class5xx = aeNum(r['class5xx']);
+      const timeouts = aeNum(r['timeouts']);
+      const p50 = aeNum(r['durationP50']);
+      const p95 = aeNum(r['durationP95']);
+      return [
+        {
+          provider: String(r['provider'] ?? ''),
+          start,
+          bucketMinutes,
+          calls,
+          errors: Math.max(0, calls - ok),
+          ok,
+          class4xx,
+          class5xx,
+          timeouts,
+          // Everything that is neither ok nor one of the named classes — a throw before
+          // any status, an unclassed error, a non-4xx/5xx status. Derived, so the three
+          // chart segments always sum to `calls`.
+          failed: Math.max(0, calls - ok - class4xx - class5xx - timeouts),
+          // double1 is seconds (OTel's unit); the chart's API speaks ms. A bucket with no
+          // timed call has no latency — NaN would poison a chart's scale.
+          durationP50: Number.isFinite(p50) && p50 >= 0 ? p50 * 1000 : 0,
+          durationP95: Number.isFinite(p95) && p95 >= 0 ? p95 * 1000 : 0,
         },
       ];
     });
@@ -1016,7 +1142,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
  */
 function aeDataset(dataset: string): string {
   if (!/^[A-Za-z0-9_]{1,64}$/.test(dataset)) {
-    throw new Error('observability: refusing a router dataset name that is not a bare identifier');
+    // Shared by the router's dataset and the connector-call dataset (#1691), so it names
+    // neither setting — the value it refused says which one is wrong.
+    throw new Error(
+      `observability: refusing an Analytics Engine dataset name that is not a bare identifier: ${JSON.stringify(dataset)}`,
+    );
   }
   return dataset;
 }
