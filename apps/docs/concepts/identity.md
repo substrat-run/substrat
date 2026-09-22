@@ -247,9 +247,10 @@ for my users to log in" has a stock answer; it stops being special the moment yo
   platform registered for it, and the issuer keeps an addition only for an account it has
   itself signed in to that app. Removing someone from an app removes the entry, and a
   platform reconcile sends each app's whole membership, so a report that went missing is
-  repaired. An app on an external issuer (Supabase, Auth0, …) is not listed; that pool is
-  not one the platform keeps. Apps of another team that sign in at your auth server are not
-  listed yet either.
+  repaired. It is not available for external issuers (Supabase, Auth0, AuthHero, any OIDC
+  provider the platform does not host): the list lives with a pool the platform hosts, so an
+  app signing in elsewhere reports nothing and its users have no places page. Apps of
+  another team that sign in at your auth server are not listed yet either.
 
 ## Identity sync on first login
 
