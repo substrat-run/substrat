@@ -279,7 +279,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     permission: PermissionKey,
     node: Node,
     entity?: EntityRef,
-    ): Promise<Decision> {
+  ): Promise<Decision> {
     if (subject.kind === 'capability') {
       return checkCapability(subject.id, permission, node, entity);
     }
