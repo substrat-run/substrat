@@ -25,7 +25,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { tenantId, scopeId, principalId, readScopeTableInput } from '@substrat-run/contracts';
+import { tenantId, scopeId, principalId, readScopeTableInput, PLACES_DISCOVERY_PATH } from '@substrat-run/contracts';
 import {
   readRoutedNode,
   RouterAssertionError,
@@ -204,6 +204,41 @@ app.get('/api/client-options', async (c) => {
 app.get('/.well-known/:document{(openid-configuration|oauth-authorization-server)}', (c) =>
   issuerFor(c.env, c.req.raw).fetch(c.req.raw),
 );
+
+/**
+ * A login's PLACES (#1670, `src/places.ts`) — where it holds a principal, across every app
+ * that signs in at this issuer. Three routes, and none of them is Better Auth's:
+ *
+ *   - `GET /api/account/places` — the signed-in login's own entries. Forwarded to the DO as a
+ *     FRESH request carrying only the headers: no query string reaches it, so `?sub=` and the
+ *     like cannot even be read, let alone honoured.
+ *   - `POST /api/places/report` — a vertical's report that a `sub` is, or is no longer, bound
+ *     in its app. Authenticated as the OIDC client the platform registered for that app.
+ *   - `GET /.well-known/substrat-places` — where to report. A vertical reports only to an
+ *     issuer that answers this, so an external issuer never receives a report.
+ *
+ * All three MUST precede the SPA catch-all.
+ */
+app.get('/api/account/places', (c) =>
+  issuerFor(c.env, c.req.raw).fetch(
+    new Request(`${new URL(c.req.url).origin}/__places`, { headers: c.req.raw.headers }),
+  ),
+);
+
+app.post('/api/places/report', async (c) =>
+  issuerFor(c.env, c.req.raw).fetch(
+    new Request(`${new URL(c.req.url).origin}/__places/report`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: await c.req.text(),
+    }),
+  ),
+);
+
+app.get(PLACES_DISCOVERY_PATH, (c) => {
+  const origin = c.env.PUBLIC_ORIGIN ?? new URL(c.req.url).origin;
+  return c.json({ report_endpoint: `${origin}/api/places/report` });
+});
 
 // The whole Better Auth surface — sign-in/up, password reset, the OIDC endpoints
 // (authorize, token, userinfo, jwks, register, endsession), and the admin API — lives in the

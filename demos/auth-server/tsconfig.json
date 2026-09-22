@@ -17,6 +17,7 @@
     "src/routes.ts",
     "src/do-contract.ts",
     "src/auth-do.ts",
+    "src/places-http.ts",
     "src/assets.ts",
     "src/assets.generated.ts",
     "test/internal-surface.test.ts",
