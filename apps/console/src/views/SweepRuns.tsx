@@ -41,7 +41,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
   const [error, setError] = useState<string>();
 
   const [tenantFilter, setTenantFilter] = useState('all');
-  const [kindFilter, setKindFilter] = useState<'all' | 'connector' | 'schedule' | 'freshness'>('all');
+  const [kindFilter, setKindFilter] = useState<'all' | 'connector' | 'schedule' | 'freshness' | 'vertical-events'>('all');
   const [outcomeFilter, setOutcomeFilter] = useState<'all' | 'ok' | 'failed' | 'skipped'>('all');
   const [unitInput, setUnitInput] = useState('');
   // Server-side narrowing is EXACT match (the unit key) — debounced so typing
@@ -139,6 +139,8 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
             { value: 'connector', label: 'Connectors' },
             { value: 'schedule', label: 'Schedules' },
             { value: 'freshness', label: 'Freshness' },
+            // #1705: one cross-vertical edge per row — delivered, or paused / unresolved with why.
+            { value: 'vertical-events', label: 'Cross-app events' },
           ]}
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value as typeof kindFilter)}

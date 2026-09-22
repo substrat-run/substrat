@@ -138,6 +138,7 @@ How the platform works **today** — present tense. A document here may not open
 | [cms-content.md](architecture/cms-content.md) | `built` | Content types that compile to reviewed migrations. |
 | [connections.md](architecture/connections.md) | `built` | The integrations hub: connections, connectors, executor runtime. |
 | [control-plane.md](architecture/control-plane.md) | `built` | The shared platform layer N per-vertical deployments sit on. |
+| [cross-vertical-events.md](architecture/cross-vertical-events.md) | `building` | How one vertical receives another vertical's events in the same tenant — exports, imports, and a watermark the consumer keeps. |
 | [dashboard-teams.md](architecture/dashboard-teams.md) | `built` | One login, many teams; team = tenant. |
 | [dashboard.md](architecture/dashboard.md) | `built` | The tenant-facing self-service surface. apps/dashboard. |
 | [dependency-policy.md](architecture/dependency-policy.md) | `built` | Peer vs direct dependencies, and the declared-deps gate. |

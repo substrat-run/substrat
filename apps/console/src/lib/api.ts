@@ -180,7 +180,7 @@ export interface AuditLogQuery extends PageQuery {
  *  match, the `reference = <id>` a CI log hands the operator. */
 /** The sweep-record filter (#1232) — mirrors SweepRunFilter, minus the cursor triple PageQuery carries. */
 export interface SweepRunsQuery extends PageQuery {
-  kind?: 'connector' | 'schedule' | 'freshness';
+  kind?: 'connector' | 'schedule' | 'freshness' | 'vertical-events';
   unit?: string;
   outcome?: 'ok' | 'failed' | 'skipped';
   tenantId?: TenantId;
