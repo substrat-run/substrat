@@ -1,5 +1,166 @@
 # @substrat-run/control-plane-api
 
+## 0.119.0
+
+### Minor Changes
+
+- bb10d6d: Staff can read every tenant's connection health in one call.
+
+  `@substrat-run/contracts` adds `deriveConnectionHealth`, which turns a connection's recorded outcomes (`lastOkAt`, `lastErrorAt`, `status`) into one of `healthy`, `erroring`, `stale` or `never-used`. A connection with no recorded outcome is `never-used`, never `healthy`. It is `stale` once its last success is `CONNECTION_STALE_DAYS` (7) old. `deriveExpiryWarning` flags a known grant expiry within `CONNECTION_EXPIRY_WARNING_DAYS` (7). `toConnectionHealthEntry` projects a connection onto an explicit allow-list of fields (`connectionHealthEntry`, strict), so neither a credential nor `createdBy` or `scopes` can reach the row.
+
+  `@substrat-run/control-plane-api` adds `GET /connections/health`, a staff and service read. Tenant and builder credentials are refused. It filters by `status` (the derived state), `provider`, `tenantId` and free text (`q`, matched before paging so it finds rows on any page). It is cursor-paged, ascending by connection id only; `order=desc` is refused. The response carries the summary counts (`expiring` for a grant ending inside the window, `expired` for one already past it), the stale and expiry windows it used, and connector dead letters counted per provider over the last seven days from the ops-failure record. A count that reaches the read's bound is marked `capped`.
+
+- 84b5fe2: Every connector call now becomes one data point, so connection health has a trend and not only a last line.
+
+  `@substrat-run/kernel` adds `connector-calls.ts`: the `ConnectorCallRecorder` interface, a no-op default, and `analyticsEngineConnectorCallRecorder`, which writes one Analytics Engine point per call and counts the writes it drops. The record is keyed by OpenTelemetry semantic-convention names: `substrat.tenant.id`, `substrat.vertical` (the slug), `substrat.connection.provider`, `error.type`, `http.response.status_code` and `http.client.request.duration` (in seconds). `error.type` is absent on success and otherwise one of a closed enum (`4xx`, `5xx`, `other_status`, `timeout`, `network`, `_OTHER`), so no field can carry a credential, URL, body or error message. `CONNECTOR_CALL_DATA_POINT_LAYOUT` publishes which Analytics Engine position holds each name, and only grows. `recordConnectionUse` also accepts optional `durationMs`, `status` and `timedOut`, and `settleConnectionUse` builds that settlement from a response or a thrown error.
+
+  `@substrat-run/adapter-sqlite` and `@substrat-run/adapter-cloudflare` take an optional `connectorCalls` recorder, which defaults to the no-op. Each host records a call where it settles the health line, using the identity on the connection row. The call to the recorder is fire-and-forget: it is never awaited, and a throw is swallowed. The connection's `fetch` now times each call.
+
+  `@substrat-run/control-plane-api` adds `GET /connections/calls?hours=&provider=`, a staff and service read of calls and errors per provider, bucketed and sampling-weighted, for up to seven days. Tenant and builder credentials are refused, and the route answers 501 until `createCfObservabilityReader` is given a `connectorCallsDataset`.
+
+  The Scrive, Fortnox and Planima connectors time the calls they make on their own connections, so those calls carry a duration too.
+
+- a9cfc4a: The schedule kill switch (#1666) gets a status read: "is this module switched off on
+  this scope?", without the scope's own SQL console.
+
+  `GET /tenants/:t/scopes/:s/system-grants` (staff/service only) answers, per module the
+  scope holds or has ever held system authority for, `on` / `off` / `ungranted` — the
+  kernel's `systemScheduleState`, the SAME predicate `runDueSchedules` gates on, so the
+  read and the runner cannot disagree — and, while `off`, who switched it off, when, and
+  why, from the admin log's `intent` row for the `revokeFromSystem` still in force.
+
+  `@substrat-run/kernel` adds `HostAdmin.systemGrantsStatus` (a required member — every
+  `HostAdmin` implementation, in or out of tree, needs one) and exports the enumerator it
+  is built from, `systemGrantsStatus`, plus its `SystemGrantsEntry` shape. `@substrat-run/contracts`
+  adds the two wire schemas: `systemScheduleEntry` (the bare position, no audit join — what a
+  vertical's own deployment can honestly answer for itself) and `systemGrantsStatusEntry`
+  (that plus `switchedOff`, the control plane's own answer).
+
+  For a hosted scope the read is delegated to the deployment serving it, exactly the way
+  `revokeFromSystem`/`restoreToSystem` delegate the write: `SystemSwitchDelegation` gains a
+  `status` method (`@substrat-run/adapter-cloudflare`), and `@substrat-run/vertical-host`'s
+  `mountPlatformSurface` adds `GET /internal/system-grants` against a new OPTIONAL
+  `VerticalScopeHost.systemGrantsStatusLocal` — a deployment built before this ships still
+  satisfies the interface, and the route answers 501, which `@substrat-run/control-plane-api`'s
+  new `VerticalClient.systemGrantsStatus` reports as "redeploy the vertical", the same
+  skew handling `systemSwitch` already gives the write (a 404, an SPA shell, or a 200 of
+  the wrong shape are all read as "this deployment predates the route", never a wrong `on`).
+
+  The admin-log join (who/when/why) happens only on the control plane — a vertical's own
+  deployment holds no admin log to join against, so `/internal/system-grants` and
+  `systemGrantsStatusLocal` answer the bare position (`systemScheduleEntry`) only.
+
+- 8009cd1: A deployed vertical can now call another vertical of the same tenant. The platform says which app is calling, so the caller holds no credential (#1706, part 2: the hosted transport). Part 1 built the door; this is the path to it.
+
+  **What a vertical author writes.** The caller declares who it calls, in package.json:
+
+  ```json
+  { "substrat": { "calls": ["acme/crm"] } }
+  ```
+
+  and calls it from its harness:
+
+  ```ts
+  const result = await peerClient("acme/crm").invoke("customer/list", {
+    limit: 50,
+  });
+  ```
+
+  There is no address, no token and no outbound-allowlist entry. What the caller may then DO is the target's own `peers` declaration, which its permission diff reviews.
+
+  **How the platform knows who is calling.** The call goes to one reserved address, `peer.substrat.internal`, which is in no DNS zone:
+
+  - the **egress worker** — which every dispatched `fetch` passes through — recognises that address before its outbound policy and hands the call to the router, with the caller taken from the dispatch parameters the router set when it dispatched the caller. Nothing in the request contributes to it, and the body is strict, so it cannot carry one;
+  - the **router**'s `PeerCalls` entrypoint (reachable only through a service binding, never over its public `fetch`) resolves the target in the caller's own tenant and dispatches the target's `/internal/vertical-invoke`;
+  - a call made where egress cannot see it — from inside a Durable Object, which outbound workers do not intercept — **fails to resolve** instead of leaving the isolate. That is why the address is unroutable rather than real.
+
+  **Module code reaches a peer asynchronously.** An operation, a consumer or a schedule runs inside the scope's Durable Object, where module code has no network by rule. It enqueues a `peer-invoke` platform intent instead (`ctx.requestPlatform`), and the control plane's drain delivers it with the caller taken from the scope it found the row in. At-least-once, with the intent id as the idempotency key.
+
+  **The gates, on both legs:**
+
+  - the caller's declared `substrat.calls` (a version pushed before the declaration carries `null` and is unenforced, exactly as a pre-#303 `outbound` is);
+  - the caller is a live, primary instance of the vertical it claims — never a preview, and the refusal names the local broker as the way to test the edge;
+  - the target resolves to exactly one primary, active instance **in the caller's tenant**, never guessed when a tenant runs two;
+  - a synchronous chain is bounded by `PEER_CALL_DEPTH_MAX`, its own constant, deliberately not shared with #1705's event hop cap.
+
+  **Contract additions.** `@substrat-run/contracts` adds `peer-transport.ts` (`PEER_CALL_HOST`, `PEER_CALL_URL`, `isPeerCallHost`, `PEER_CALL_DEPTH_MAX`, `peerCallRequest`, `peerCaller`, `callsDeclares` and the refusal messages) and the `peer-invoke` intent kind with its payload. The deploy manifest, `RouteTarget` and the version record each gain `calls` beside `outbound`, lifted from the stored manifest by `callsOfManifestJson`. `@substrat-run/vertical-host` exports `peerClient`; `@substrat-run/control-plane-api` adds `VerticalClient.verticalInvoke` and `peerInvokeHandler`; the Cloudflare adapter adds `createPeerCallResolver` and the directory's `peerCallTarget` read.
+
+  **Operators:** the egress worker needs its new `PEER_CALLS` binding to the router's `PeerCalls` entrypoint, and the router now deploys from `src/index.ts` (which exports both the fetch handler and that entrypoint). Without the binding, peer calls are refused — never passed through.
+
+  The console scope page and dashboard app page now show incoming peer access and offer cut-off/restore controls with an audited reason. Hosted switch/status calls delegate to the deployment holding the grants. The dashboard also discloses outgoing targets after installation, keeping missing targets, refused access and unreadable status distinct. `peersDeclaredBy` derives peer permissions from the model's operations. The architecture guide includes an executable local call/cut-off/restore example and operator rollout steps.
+
+  Instance binding when a tenant runs multiple active targets remains excluded, tracked in #1720; ambiguous calls are refused.
+
+- b080e0f: A per-PR preview of an app that signs in at one of the team's auth servers now has a login
+  (#1704). A fork copies the app's data and none of its delivered config, and every push binds a
+  new version whose config store starts empty. The app's `substrat:auth` holds a client secret
+  the platform never stores or reads back, so it can't be copied. Instead, each `preview create`
+  (and each push to the preview) gives the preview **a client of its own** at that auth server
+  and delivers it as the preview's `substrat:auth`, along with the shared-issuer marker. The
+  app's own client is never changed and never learns a preview's callback. Reaping the preview,
+  by `preview delete`, `--refresh` or TTL expiry, deletes its client.
+
+  `@substrat-run/contracts` adds the protocol between the control plane and the auth server
+  (`preview-client.ts`): three platform-gated routes, `POST /internal/preview-client/check`,
+  `POST /internal/preview-client` and `DELETE /internal/preview-client`, with their request and
+  response schemas. Every redirect URI on that wire must be `https:`: loopback is refused, since
+  both ends are hosted and previews don't exist in local dev. It also adds `oidcCallbackUrl` / `OIDC_CALLBACK_PATH`, and `previewAuth`, the
+  `auth` field of `preview create`'s answer.
+
+  `@substrat-run/control-plane-api` adds `VerticalClient.checkPreviewClient` /
+  `mintPreviewClient` / `retirePreviewClients`. A deployment that predates the routes (a 404, the
+  auth server's JSON 501 fallback, or an SPA shell) reads as "redeploy the auth server", never as
+  "the app does not sign in there". It also adds `wirePreviewAuth`, `retireAllPreviewClients` and
+  `retireClientsOfReapedScope`. The previews routes answer `auth` and `notes` on create, and
+  `callbackUrl` on every listed row.
+
+  `@substrat-run/demo-auth-server` implements the three routes. An install claims an app only on
+  a binding **the platform** wrote there (a #1670 places row or a #1619 resource row), together
+  with a live client redirecting to the app's callback. Open DCR can forge a callback match on
+  its own, so a match alone is not enough. The route refuses a call for any tenant but its own.
+  The client is registered through the plugin's own dynamic registration and recorded in a new
+  `preview_client` table. Deletes select from that table only, so no delete can reach a client
+  it did not mint for that preview.
+
+  `@substrat-run/cli`'s `preview create` prints what happened to the login. For an app on an
+  external issuer it prints the preview's callback, and it says that no login config was
+  delivered. It also says that per-install Env settings are not carried over.
+
+- e7113ea: Staff get a fleet-wide read for "is the platform's own intent drain keeping up".
+
+  `@substrat-run/contracts` adds `platformRequestBacklog` / `PlatformRequestBacklog`: a count
+  of platform-intent deliveries the drain has given up on TERMINALLY, over a window — never a
+  queue depth. A still-`pending` intent lives in the vertical's own scope DO (K-31) and is not
+  observable fleet-wide.
+
+  `@substrat-run/control-plane-api` adds `GET /platform-requests/backlog` (staff/service
+  only, tenant and builder credentials refused). It sums the ops-failure record's
+  `intent.<kind>` rows — the same one `/connections/health`'s connector dead-letter count
+  already reads — across every intent kind the platform registers plus one
+  `connector:<provider>` kind per provider that has (or had) a live connection, over the same
+  7-day window and per-kind bound as that dead-letter count. A count that hits the bound is
+  marked `capped`.
+
+  This is the backend half of the console's new Health → Services page (#1690 §2), which
+  composes it alongside the existing connection-health summary, sweep-run record, service
+  metrics and version-registry reads. No other package changed.
+
+### Patch Changes
+
+- 29ec599: `GET /connections/health`'s free-text `q` filter no longer substring-matches a connection's or tenant's id. Ids are Crockford-base32 ULIDs — a short, common needle can land inside one by chance, and two ids minted in the same millisecond share a monotonic prefix, so one hit there matched every row born that millisecond (#1716). `q` now matches only the fields the console's search box promises — provider, vertical, label, account and last error — plus an exact, whole-id match (case-insensitive) so pasting a connection id still finds its row.
+- bb882cf: A push to an existing preview now brings the preview's data with it. Each pushed version of a hosted vertical is its own deployment with its own storage, and re-pointing a preview at the new version used to leave its data behind. From the second push on, the preview served the new code against an empty store. The control plane now copies the preview's data into the new version's deployment first, and re-points the preview only once the copy has landed. If the copy fails, the preview stays on the previous version with its data, and re-running the push tries again. `scope bind` does the same for a scope that runs on its bound version's own deployment, such as a long-lived test environment forked from prod. A write made to the preview while the push runs may be lost, and `preview create` says so in a `Data:` line when it moved data (#1710).
+- Updated dependencies [bc6a6bb]
+- Updated dependencies [bb10d6d]
+- Updated dependencies [84b5fe2]
+- Updated dependencies [929ec09]
+- Updated dependencies [a9cfc4a]
+- Updated dependencies [2c65b67]
+- Updated dependencies [8009cd1]
+- Updated dependencies [b080e0f]
+- Updated dependencies [e7113ea]
+  - @substrat-run/kernel@0.119.0
+  - @substrat-run/contracts@0.119.0
+
 ## 0.118.0
 
 ### Patch Changes
