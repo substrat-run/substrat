@@ -120,16 +120,15 @@ export const CAPABILITY_DDL = `
   -- #1672: what an exchange hands out instead of the secret — a session token, of which
   -- again only the hash is kept. Each session acts as its capability until the earlier of
   -- its own expiry and the capability's; the capability is re-read on every invoke, so
-  -- revoking it ends every session at once. Pruned on exchange (bounded work, on the only
-  -- path that adds a row). Bearer credentials, not evidence: a revoke deletes them.
+  -- revoking it ends every session at once — a revoke touches only the capability row,
+  -- and it is that per-invoke read, not a cascade here, that refuses the next call.
+  -- Expired rows are pruned on exchange (bounded work, on the only path that adds one).
   CREATE TABLE IF NOT EXISTS _substrat_capability_sessions (
     token_hash TEXT PRIMARY KEY,
     capability_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
   );
-  CREATE INDEX IF NOT EXISTS _substrat_capability_sessions_capability
-    ON _substrat_capability_sessions (capability_id);
   CREATE INDEX IF NOT EXISTS _substrat_capability_sessions_expiry
     ON _substrat_capability_sessions (expires_at);
 `;
@@ -530,7 +529,6 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
          WHERE id = ? AND revoked_at IS NULL`,
         [deps.now, JSON.stringify(revoker), id],
       );
-      deps.sql.exec('DELETE FROM _substrat_capability_sessions WHERE capability_id = ?', [id]);
       const payload: CapabilityRevokedPayload = {
         capabilityId: id,
         entity: grant.entity,
@@ -772,6 +770,5 @@ export function revokeCapabilityAsPlatform(
      WHERE id = ? AND revoked_at IS NULL`,
     [now, JSON.stringify(author), id],
   );
-  sql.exec('DELETE FROM _substrat_capability_sessions WHERE capability_id = ?', [id]);
   return capabilityRecordOf(row);
 }
