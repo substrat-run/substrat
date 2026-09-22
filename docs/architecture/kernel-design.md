@@ -807,6 +807,44 @@ Semantic commitments pinned now — free today, breaking changes once verticals 
 3. **The outbox is a per-database mechanism** — one per consistency domain, not "one per
    scope."
 
+**Module code has no tenant-level storage.** `OperationContext` gives a handler ambient
+tenancy and a scope-bound `ctx.sql` (§5.1) — nothing else. The scope is the only unit of
+storage a module ever writes, and there is no cross-scope table it can reach: the
+tenant-root DO exists (§3.2), but it is *"lightweight by rule — it holds control-plane
+state only,"* not a place a vertical's own tables live. So a per-user fact that is not
+per-scope — a preference, an app password, an installed connector, a notification setting
+— has no scope to belong to, and the two constructions a vertical author reaches for are
+both wrong in a way that only shows up later:
+
+- **A "home" scope holding the row.** Every other scope's read of it is then a cross-scope
+  read, and none of the kernel's read paths answer that for module code (§5.6): in-scope
+  reads don't reach another scope by definition, an outbox-fed read model loses
+  read-your-writes at the crossing, and Tier 2 is a history tier, never a UI list view
+  ([#1581](https://github.com/substrat-run/substrat/issues/1581)).
+- **A copy per scope.** This is the same move K-22 already rejected for membership, one
+  layer up: it turns one tenant-wide fact into N scope-local copies, which is a
+  revocation hazard — nothing keeps the copies in sync when the fact changes or the
+  principal loses it, because there is no cross-scope transaction to do it with (rule 2,
+  above).
+
+K-22 settled the shape for exactly this class of fact, for membership, and the answer
+generalizes: a tenant-wide fact lives in the directory, not a scope, and module code
+reaches it the way it reaches anything outside its own scope — never directly. The write
+is the transactional-outbox pattern rather than a synchronous one: the engine emits a fat
+event inside its own scope transaction, and a privileged executor outside module code
+effects the tenant-wide change afterwards, through the host admin surface
+([membership.md](membership.md) §4.2). That is atomic where it counts — a rollback leaves
+no event and no tenant-wide change — and eventually consistent everywhere else, which is
+the trade-off, not a defect. `HostAdmin`'s membership verbs (`defineRole`/`assignRole`/
+`grant`/`grantToOrg`/`revoke`) are that seam built for one fact; a vertical's own per-user,
+cross-scope fact needs the same seam under its own name, not a scope table pretending to
+be one.
+
+One adjacent question this is not: whether a fact is the same human across *tenants*, not
+across scopes within one. That is K-23's `identity_pools` — a `central` pool says two
+tenants' `externalId`s are one person, a `tenant-bound` pool says they collide — and no
+choice of where a preference table lives changes that answer.
+
 ### 7.4 UI composition model (K-15)
 
 **Microfrontend outcomes, monolithic build mechanics.** Each vertical is one React app,
