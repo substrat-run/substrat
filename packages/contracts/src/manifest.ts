@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { moduleId, permissionKey } from './ids.js';
 import { eventType } from './events.js';
+import { peerSpec } from './peer.js';
 
 // The manifest is what makes a module self-describing — to agents now, to
 // strangers buying it later (§5.6 of the plan, §7.1 of the design doc).
@@ -247,6 +248,16 @@ export const moduleManifest = z.object({
   //
   // Optional: additive-only surface (D-28) — every pre-#383 manifest still parses.
   schedules: z.array(scheduleSpec).optional(),
+  // PEERS (#1706): other verticals of the same tenant that may call this one's
+  // operations through the platform — each with the operations it may invoke (the
+  // door's allowlist, possibly empty for a receive-only peer) and the keys it holds
+  // while doing so. The keys are seated at provisioning as `vertical:<slug>` grants,
+  // the way `schedules` seat `system:<module>` ones, and PERMISSIONS.md renders them,
+  // so what another app may do here is part of the reviewed permission diff. See
+  // `peerSpec`.
+  //
+  // Optional: additive-only surface (D-28) — every earlier manifest still parses.
+  peers: z.array(peerSpec).optional(),
   // FRESHNESS EXPECTATIONS (#1232): event types this module expects to keep
   // arriving, and how stale is too stale. See freshnessSpec; evaluated scope-side
   // by the sweep, no permission needed — it is a read of the scope's own outbox.
@@ -358,6 +369,20 @@ export const moduleManifest = z.object({
     })
     .optional(),
 }).superRefine((m, ctx) => {
+  // #1706: one entry per peer vertical per module. Two entries for one slug would be
+  // read as their union at the door, and a reviewer reading the second would not see
+  // the first — so the declaration has to say it once.
+  const peers = new Set<string>();
+  for (const [i, p] of (m.peers ?? []).entries()) {
+    if (peers.has(p.vertical)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['peers', i, 'vertical'],
+        message: `module '${m.id}' declares peer '${p.vertical}' more than once — declare it once`,
+      });
+    }
+    peers.add(p.vertical);
+  }
   // #1232: a freshness expectation naming a type this module neither emits nor
   // consumes would read as permanently stale forever — a typo becoming a permanent
   // red pill. Refused at parse (push/registration), where the error is readable.

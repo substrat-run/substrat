@@ -30,6 +30,7 @@ import {
   assertPlatformCall,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   PlatformCallError,
+  type InvokeOptions,
   type UndrainedEvents,
 } from '@substrat-run/kernel';
 import {
@@ -103,6 +104,10 @@ import {
   type ModuleId,
   type SystemSwitchOutcome,
   type SystemScheduleEntry,
+  verticalCaller,
+  verticalSlug as verticalSlugOf,
+  type PeerSwitchOutcome,
+  type VerticalCaller,
 } from '@substrat-run/contracts';
 
 /**
@@ -251,6 +256,22 @@ export interface VerticalScopeHost {
    * never a wrong `on`.
    */
   systemGrantsStatusLocal?(scopeId: ScopeId): Promise<SystemScheduleEntry[]>;
+  /**
+   * The far end of a PEER call (#1706): invoke one operation in this deployment as another
+   * vertical of the same tenant, which the platform identified and resolved this scope for.
+   * Admission (declared, switched on, allowlisted) and every check run in the scope's own
+   * storage. OPTIONAL like the switch above — a host built before it answers 501.
+   */
+  verticalInvokeLocal?(
+    caller: VerticalCaller,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    operation: string,
+    input?: unknown,
+    options?: InvokeOptions,
+  ): Promise<unknown>;
+  /** The far end of the peer kill switch (#1706). Optional, 501 when absent, like the rest. */
+  peerSwitchLocal?(scopeId: ScopeId, vertical: string, to: 'on' | 'off'): Promise<PeerSwitchOutcome>;
 }
 
 /**
@@ -377,6 +398,31 @@ const connectorAttachmentMeta = z.object({
 const systemSwitchBody = z.object({
   scopeId: scopeIdOf,
   moduleId: moduleIdOf,
+  to: z.enum(['on', 'off']),
+});
+
+/**
+ * `/internal/vertical-invoke` body (#1706) — one operation, invoked as a PEER vertical.
+ *
+ * STRICT, and that is part of the contract rather than tidiness: the caller is `caller` and
+ * nothing else. A body that also names a principal, a session or a capability is refused,
+ * so no field a future caller adds can make a peer call act as a person.
+ */
+const verticalInvokeBody = z
+  .object({
+    caller: verticalCaller,
+    tenantId: tenantIdOf,
+    scopeId: scopeIdOf,
+    operation: z.string().min(1),
+    input: z.unknown().optional(),
+    idempotencyKey: z.string().min(1).optional(),
+  })
+  .strict();
+
+/** `/internal/peer-switch` body (#1706) — the far end of `revokeFromPeer` / `restoreToPeer`. */
+const peerSwitchBody = z.object({
+  scopeId: scopeIdOf,
+  vertical: verticalSlugOf,
   to: z.enum(['on', 'off']),
 });
 
@@ -898,6 +944,42 @@ export function mountPlatformSurface<Env extends object>(
       return c.json({ error: 'this deployment cannot read schedule switches (#1674) — redeploy it' }, 501);
     }
     return c.json(await host.systemGrantsStatusLocal(scopeId));
+  });
+
+  // The peer door's far end (#1706). The platform — the router, at the hop a calling
+  // deployment cannot forge — identified the caller and resolved THIS scope as the instance
+  // of this vertical in the caller's tenant; it reaches here behind the platform secret like
+  // every `/internal` verb, and a public request cannot (the router strips the header). The
+  // body names the caller and nothing that could act as a person (strict). Admission and every
+  // check then run in the scope's own storage, on every call. Enveloped for connector-invoke's
+  // reason: an operation may legitimately return undefined.
+  app.post('/internal/vertical-invoke', async (c) => {
+    const body = verticalInvokeBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.verticalInvokeLocal) {
+      return c.json({ error: 'this deployment cannot take peer calls (#1706) — redeploy it' }, 501);
+    }
+    const result = await host.verticalInvokeLocal(
+      body.caller,
+      body.tenantId,
+      body.scopeId,
+      body.operation,
+      body.input,
+      body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : undefined,
+    );
+    return c.json({ result: result ?? null });
+  });
+
+  // The peer kill switch's far end (#1706), for a scope served HERE — the mirror of
+  // `/internal/system-switch`: the platform writes the audit rows around this call, and a 404
+  // from this path means a deployment built before it, which the platform reads as exactly that.
+  app.post('/internal/peer-switch', async (c) => {
+    const body = peerSwitchBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.peerSwitchLocal) {
+      return c.json({ error: 'this deployment cannot switch peers (#1706) — redeploy it' }, 501);
+    }
+    return c.json(await host.peerSwitchLocal(body.scopeId, body.vertical, body.to));
   });
 
   app.post('/internal/platform-requests/settle', async (c) => {

@@ -1,7 +1,7 @@
 import { problemDetail } from '@substrat-run/contracts';
 import { tenantLogsQuery } from './logs-query';
 import type { PromoteReviewWire } from './promote-review';
-import type { CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PreviewAuth, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -333,6 +333,8 @@ export interface VerticalPreview {
   expiresAt: string | null;
   hostname: string | null;
   url: string | null;
+  /** The preview's OIDC callback — what an external issuer would need registered (#1704). */
+  callbackUrl?: string | null;
 }
 
 /** The result of creating (or reusing) a preview. `reused` ⇒ an existing tag was rebound. */
@@ -342,6 +344,9 @@ export interface PreviewCreated {
   url: string;
   versionId: string;
   reused: boolean;
+  /** What happened to the preview's login (#1704); absent from a plane that predates it. */
+  auth?: PreviewAuth;
+  notes?: string[];
 }
 
 /**

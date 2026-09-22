@@ -44,6 +44,10 @@ export { identityTenant, identityTenantsResponse } from './identity-tenants.js';
 export type { IdentityTenant } from './identity-tenants.js';
 export { VerticalClient } from './vertical-client.js';
 export { versionReachedAt } from './scope-deployment.js';
+// A preview's own sign-in client (#1704): the create's wiring, and the reap's half the
+// platform sweep also runs when it garbage-collects an expired preview.
+export { retireAllPreviewClients, retireClientsOfReapedScope, tenantIssuers, wirePreviewAuth } from './preview-auth.js';
+export type { PreviewAuthDeps, WirePreviewAuthInput } from './preview-auth.js';
 export type { ScopeDeployment, ScopeDeploymentVia } from './scope-deployment.js';
 export {
   drainScopePlatformRequests,

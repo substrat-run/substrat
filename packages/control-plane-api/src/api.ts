@@ -96,6 +96,7 @@ import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
+import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
@@ -5718,10 +5719,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     c: { get: (k: 'actor') => PlatformActorId },
     preview: Scope,
   ): Promise<void> => {
+    // A fork's own sign-in clients go FIRST (#1704): a failure here leaves the preview in
+    // place, so the retry a PR-close job makes still finds it — after the row is gone, nothing
+    // would name those clients again. A clean room never had one.
+    await retireClientsOfReapedScope(previewAuthDeps(c), preview);
     const vertical = await verticalForScope(c, preview);
     if (vertical) await vertical.deleteScope({ scopeId: preview.id });
     await options.host.deleteSnapshot(c.get('actor'), preview.tenantId, preview.id);
   };
+
+  /** The preview-login seam (#1704, `preview-auth.ts`): the directory, and each issuer's deployment. */
+  const previewAuthDeps = (c: { get: (k: 'actor') => PlatformActorId }): PreviewAuthDeps => ({
+    admin,
+    actor: c.get('actor'),
+    issuerClient: (scope) => verticalForScope(c, scope),
+  });
 
   /** Given a base hostname `<label>.<domain>`, mint (or find) the preview's `--<tag>`
    *  hostname `<label>--<tag>.<domain>` bound to `previewId`. Non-canonical, so it never
@@ -5810,7 +5822,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A FORK copies this scope's data; `null` provisions an empty clean-room scope (#509 (b)).
     source: Scope | null,
     opts: { tag: string; versionId: string; ttlHours?: number | null; surface?: string; refresh?: boolean },
-  ): Promise<{ scopeId: ScopeId; hostname: string; url: string; versionId: string; reused: boolean }> => {
+  ): Promise<{
+    scopeId: ScopeId;
+    hostname: string;
+    url: string;
+    versionId: string;
+    reused: boolean;
+    /** What happened to the preview's login (#1704) — never a secret. */
+    auth: Awaited<ReturnType<typeof wirePreviewAuth>>;
+    /** Lines for whoever reads the create's output: what a preview does NOT carry over. */
+    notes: string[];
+  }> => {
     const actor = c.get('actor');
     const surface = opts.surface ?? 'app';
     // #527 guard: a preview MUST serve the version it just bound. Routing resolves
@@ -5861,6 +5883,51 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       options.verticals?.[slug] ??
       (await options.resolveVertical?.(slug, actor));
 
+    // The preview's own login (#1704), once it serves this version. Delivered into `target` —
+    // THIS push's version deployment — and never "whatever the scope is bound to now", so an
+    // older push can never overwrite a newer push's config store. A failure lands an
+    // ops-failure row like a failed restore (#559): the preview exists and serves the PR, but
+    // has no working login. The message names no secret; none ever reaches it.
+    const wireLogin = async (previewId: ScopeId, hostname: string, parent: Scope | null) => {
+      try {
+        return await wirePreviewAuth(previewAuthDeps(c), {
+          tenantId,
+          versionId: opts.versionId,
+          previewId,
+          tag: opts.tag,
+          parent,
+          previewHostname: hostname,
+          appName: parent?.name ?? slug.split('/').at(-1)!,
+          deliver: async (entries) => {
+            if (!target) throw new ControlPlaneError(501, 'no deployment resolves for the PR version to deliver to');
+            await retryTransient(() => target.configureInstance({ tenantId, scopeId: previewId, entries }));
+          },
+        });
+      } catch (e) {
+        if (e instanceof ControlPlaneError) {
+          recordFailure({
+            actor,
+            operation: 'preview.create',
+            stage: 'login',
+            tenantId,
+            scopeId: previewId,
+            vertical: slug,
+            version: opts.versionId,
+            status: e.status,
+            message: e.message,
+          }, e);
+        }
+        throw e;
+      }
+    };
+    const notesFor = (parent: Scope | null): string[] =>
+      parent
+        ? [
+            "Settings: a preview does not carry over the app's per-install settings (the dashboard's Env tab); " +
+              "it runs on the deployment's defaults.",
+          ]
+        : [];
+
     // The `--<tag>` URL's base — the source's canonical hostname (fork) or the tenant-app
     // convention (clean-room). Computed once so reuse and fresh mint the same URL.
     const baseHostname = await previewBaseHostname(actor, source, tenantId, slug, surface);
@@ -5893,7 +5960,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await admin.setScopeExpiresAt(actor, tenantId, existing.id, expiresAt);
       const hostname = await bindPreviewHostname(actor, baseHostname, tenantId, existing.id, opts.tag, surface);
       await assertServesBoundVersion(existing.id);
-      return { scopeId: existing.id, hostname, url: `https://${hostname}`, versionId: opts.versionId, reused: true };
+      // The fork it was made from, not whichever prod scope this call picked: a reuse is the
+      // same preview. Every push is a new version with an EMPTY config store, so the login is
+      // wired again on every reuse, never assumed to have survived.
+      const parent = existing.forkedFrom
+        ? ((await admin.getScopeRecord(actor, tenantId, existing.forkedFrom)) ?? null)
+        : null;
+      const auth = await wireLogin(existing.id, hostname, parent);
+      return {
+        scopeId: existing.id,
+        hostname,
+        url: `https://${hostname}`,
+        versionId: opts.versionId,
+        reused: true,
+        auth,
+        notes: notesFor(parent),
+      };
     }
     // Free the tag: the slug is unique per tenant and the `--<tag>` hostname is still bound
     // to the old row, so the fresh fork below cannot be provisioned until this one is gone.
@@ -5980,7 +6062,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await admin.bindScopeVersion(actor, tenantId, previewId, opts.versionId);
     const hostname = await bindPreviewHostname(actor, baseHostname, tenantId, previewId, opts.tag, surface);
     await assertServesBoundVersion(previewId);
-    return { scopeId: previewId, hostname, url: `https://${hostname}`, versionId: opts.versionId, reused: false };
+    const auth = await wireLogin(previewId, hostname, source);
+    return {
+      scopeId: previewId,
+      hostname,
+      url: `https://${hostname}`,
+      versionId: opts.versionId,
+      reused: false,
+      auth,
+      notes: notesFor(source),
+    };
   };
 
   // The owning tenant of a builder's OWN vertical — the gate every preview route shares. A
@@ -6069,6 +6160,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         expiresAt: s.expiresAt,
         hostname: hosts[0]?.hostname ?? null,
         url: hosts[0]?.hostname ? `https://${hosts[0]!.hostname}` : null,
+        // What an EXTERNAL issuer would need registered for this preview to sign in (#1704).
+        callbackUrl: hosts[0]?.hostname ? oidcCallbackUrl(hosts[0]!.hostname) : null,
       });
     }
     return c.json(out);

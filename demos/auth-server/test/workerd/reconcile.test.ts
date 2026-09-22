@@ -688,3 +688,170 @@ describe("a login's places at the identity pool (#1670)", () => {
     expect(await res.json()).toEqual({ report_endpoint: 'https://auth.acme.test/api/places/report' });
   });
 });
+
+/**
+ * A preview's own client (#1704), on the real worker and the real `AuthServerDO`: the check,
+ * the mint through the plugin's own registration, and the tag-scoped delete, all against DO
+ * SQLite — where `json_each`, `AUTOINCREMENT` and the explicit dependent-row delete have to
+ * hold, and where node's better-sqlite3 proves nothing about them.
+ */
+describe('auth-server mints and retires a preview’s own client (#1704)', () => {
+  const parentHost = 'desk.acme.test';
+  const parentCallback = `https://${parentHost}/api/auth/callback`;
+
+  const previewCall = (method: string, path: string, body: unknown, headers: Record<string, string> = {}) =>
+    SELF.fetch(`https://auth-server.test${path}`, {
+      method,
+      headers: { 'content-type': 'application/json', 'x-substrat-platform': env.PLATFORM_SECRET, ...headers },
+      body: JSON.stringify(body),
+    });
+
+  /** One provisioned issuer holding prod's client for the parent, bound by the platform (#1670). */
+  async function issuerWithParent(tenant = t) {
+    const scope = scopeId.parse(ulid());
+    expect((await platform('/internal/provision', { ...install(scope), tenantId: tenant })).status).toBe(201);
+    const reg = await stubOf(scope).fetch('https://auth-server.test/api/auth/oauth2/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Acme Desk',
+        redirect_uris: [parentCallback],
+        token_endpoint_auth_method: 'client_secret_post',
+      }),
+    });
+    expect(reg.status).toBe(201);
+    const prod = ((await reg.json()) as { client_id: string }).client_id;
+    const parent = scopeId.parse(ulid());
+    const bound = await platform('/internal/configure', {
+      scopeId: scope,
+      entries: [
+        {
+          key: `substrat:places:${tenant}`,
+          value: JSON.stringify([{ appScopeId: parent, clientId: prod, hostname: parentHost, name: 'Acme Desk' }]),
+        },
+      ],
+    });
+    expect(bound.status).toBe(200);
+    return { scope, prod, parent, tenant };
+  }
+
+  const mintBody = (w: { scope: string; parent: string; tenant: string }, preview: string, tag = 'pr-7') => ({
+    tenantId: w.tenant,
+    scopeId: w.scope,
+    parentScopeId: w.parent,
+    parentRedirectUris: [parentCallback],
+    previewScopeId: preview,
+    redirectUri: `https://desk--${tag}.acme.test/api/auth/callback`,
+    postLogoutRedirectUri: `https://desk--${tag}.acme.test/`,
+    clientName: `Acme Desk (${tag})`,
+  });
+
+  const clientRow = (scope: string, clientId: string) =>
+    runInDurableObject(stubOf(scope), async (_i, state) => {
+      const row = [...state.storage.sql.exec('SELECT * FROM oauth_client WHERE client_id = ?', clientId)][0];
+      return row ? JSON.stringify(row) : null;
+    });
+
+  it('claims the platform-bound parent, mints exactly the preview’s URIs, and leaves prod’s client as it was', async () => {
+    const w = await issuerWithParent();
+    const prodBefore = await clientRow(w.scope, w.prod);
+    const check = await previewCall('POST', '/internal/preview-client/check', {
+      tenantId: t,
+      scopeId: w.scope,
+      parentScopeId: w.parent,
+      parentRedirectUris: [parentCallback],
+    });
+    expect(check.status).toBe(200);
+    expect(await check.json()).toEqual({ claimed: true });
+
+    const preview = scopeId.parse(ulid());
+    const res = await previewCall('POST', '/internal/preview-client', mintBody(w, preview));
+    expect(res.status).toBe(201);
+    const minted = (await res.json()) as { clientId: string; clientSecret: string; generation: number };
+    const row = JSON.parse((await clientRow(w.scope, minted.clientId))!) as Record<string, unknown>;
+    expect(JSON.parse(String(row.redirect_uris))).toEqual(['https://desk--pr-7.acme.test/api/auth/callback']);
+    expect(JSON.parse(String(row.post_logout_redirect_uris))).toEqual(['https://desk--pr-7.acme.test/']);
+    expect(await clientRow(w.scope, w.prod)).toBe(prodBefore);
+  });
+
+  it('a callback match alone is no claim on DO SQLite either — the binding is what counts', async () => {
+    const w = await issuerWithParent();
+    const res = await previewCall('POST', '/internal/preview-client/check', {
+      tenantId: t,
+      scopeId: w.scope,
+      parentScopeId: scopeId.parse(ulid()), // an app the platform never bound here
+      parentRedirectUris: [parentCallback],
+    });
+    expect(await res.json()).toEqual({ claimed: false });
+    const mint = await previewCall('POST', '/internal/preview-client', { ...mintBody(w, scopeId.parse(ulid())), parentScopeId: scopeId.parse(ulid()) });
+    expect(mint.status).toBe(409);
+  });
+
+  it("refuses another tenant's call, even when that issuer holds a matching binding and client", async () => {
+    const b = await issuerWithParent(tenantId.parse(ulid()));
+    const before = await dumpOf(b.scope);
+    // Tenant t's preview, aimed at tenant B's issuer: the platform secret is valid, the parent
+    // binding and callback match — and the issuer still refuses, because it is not t's.
+    for (const [method, path, body] of [
+      ['POST', '/internal/preview-client/check', { tenantId: t, scopeId: b.scope, parentScopeId: b.parent, parentRedirectUris: [parentCallback] }],
+      ['POST', '/internal/preview-client', { ...mintBody(b, scopeId.parse(ulid())), tenantId: t }],
+      ['DELETE', '/internal/preview-client', { tenantId: t, scopeId: b.scope, previewScopeId: scopeId.parse(ulid()) }],
+    ] as const) {
+      const res = await previewCall(method, path, body);
+      expect(res.status).toBe(403);
+    }
+    expect(await dumpOf(b.scope)).toEqual(before);
+  });
+
+  it('retires by tag and generation: older ones go, prod’s never, and the reap takes the rest', async () => {
+    const w = await issuerWithParent();
+    const preview = scopeId.parse(ulid());
+    const mint = async () =>
+      (await (await previewCall('POST', '/internal/preview-client', mintBody(w, preview))).json()) as {
+        clientId: string;
+        generation: number;
+      };
+    const a = await mint();
+    const b = await mint();
+    expect(b.generation).toBeGreaterThan(a.generation);
+    const keep = await previewCall('DELETE', '/internal/preview-client', { tenantId: t, scopeId: w.scope, previewScopeId: preview, keep: a.clientId });
+    expect(await keep.json()).toEqual({ deleted: [], kept: true, superseded: true });
+    const keepNewest = await previewCall('DELETE', '/internal/preview-client', { tenantId: t, scopeId: w.scope, previewScopeId: preview, keep: b.clientId });
+    expect(await keepNewest.json()).toEqual({ deleted: [a.clientId], kept: true, superseded: false });
+    expect(await clientRow(w.scope, a.clientId)).toBeNull();
+
+    // A delete for EVERY preview id there is — and prod's untagged client is still there.
+    const prodBefore = await clientRow(w.scope, w.prod);
+    for (const id of [preview, w.parent, w.scope]) {
+      await previewCall('DELETE', '/internal/preview-client', { tenantId: t, scopeId: w.scope, previewScopeId: id });
+      await previewCall('DELETE', '/internal/preview-client', { tenantId: t, scopeId: w.scope, previewScopeId: id, only: w.prod });
+    }
+    expect(await clientRow(w.scope, w.prod)).toBe(prodBefore);
+    expect(await clientRow(w.scope, b.clientId)).toBeNull();
+  });
+});
+
+/** The same pin on workerd's own URL implementation (#1704): brackets kept, loopback refused. */
+describe('preview-client redirect URIs on workerd (#1704)', () => {
+  it('an IPv6 loopback hostname keeps its brackets here too, and no loopback redirect is minted', async () => {
+    expect(new URL('http://[::1]:8080/cb').hostname).toBe('[::1]');
+    const scope = scopeId.parse(ulid());
+    for (const redirectUri of ['http://[::1]/api/auth/callback', 'http://localhost/api/auth/callback', 'http://127.0.0.1/api/auth/callback']) {
+      const res = await SELF.fetch('https://auth-server.test/internal/preview-client', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-substrat-platform': env.PLATFORM_SECRET },
+        body: JSON.stringify({
+          tenantId: t,
+          scopeId: scope,
+          parentScopeId: scopeId.parse(ulid()),
+          parentRedirectUris: ['https://desk.acme.test/api/auth/callback'],
+          previewScopeId: scopeId.parse(ulid()),
+          redirectUri,
+          postLogoutRedirectUri: 'https://desk--pr-7.acme.test/',
+          clientName: 'Desk (pr-7)',
+        }),
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+});

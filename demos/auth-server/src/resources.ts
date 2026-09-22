@@ -103,8 +103,12 @@ export function parseResourcesEntry(key: string, value: string): ResourcesDelive
   return { appScopeId, identifiers: [...new Set(parsed)] };
 }
 
-/** Which vertical a row's `metadata` says asked for it, or null for an operator's row. */
-function ownerOf(metadata: unknown): string | null {
+/**
+ * Which vertical a row's `metadata` says asked for it, or null for an operator's row. Also
+ * the proof a preview's mint leans on (#1704, `preview-clients.ts`): a marker only the
+ * platform's delivery writes.
+ */
+export function platformOwnerOf(metadata: unknown): string | null {
   if (typeof metadata !== 'string') return null;
   try {
     const app = (JSON.parse(metadata) as { substrat?: { app?: unknown } } | null)?.substrat?.app;
@@ -133,7 +137,7 @@ export function syncPlatformResources(
     identifier: string;
     metadata: unknown;
   }[];
-  const byIdentifier = new Map(rows.map((r) => [r.identifier, ownerOf(r.metadata)]));
+  const byIdentifier = new Map(rows.map((r) => [r.identifier, platformOwnerOf(r.metadata)]));
   const wanted = new Set(identifiers);
   const marker = JSON.stringify({ substrat: { app: appScopeId } });
   const result: ResourcesSync = { added: [], removed: [], operatorOwned: [] };

@@ -129,7 +129,12 @@ export function systemGrantsStatus(db: SwitchSql, now: string): SystemGrantsEntr
 
 /** Is this module switched off on the scope `db` is? What `grantToSystem` refuses on. */
 export function systemSwitchedOff(db: SwitchSql, moduleId: string): boolean {
-  const row = db.all(`SELECT ${SYSTEM_SWITCH_OFF_PREDICATE} AS off`, subjectOf(moduleId))[0] as
+  return subjectSwitchedOff(db, subjectOf(moduleId));
+}
+
+/** Is this subject's OFF marker live on the scope `db` is? Any subject — see `switchSubjectGrants`. */
+export function subjectSwitchedOff(db: SwitchSql, subject: string): boolean {
+  const row = db.all(`SELECT ${SYSTEM_SWITCH_OFF_PREDICATE} AS off`, subject)[0] as
     | { off: number }
     | undefined;
   return Number(row?.off) === 1;
@@ -170,7 +175,28 @@ export function switchSystemSchedules(
   db: SwitchSql,
   input: { moduleId: string; scopeId: string; to: 'on' | 'off'; at: string },
 ): SwitchOutcome {
-  const subject = subjectOf(input.moduleId);
+  return switchSubjectGrants(db, {
+    subject: subjectOf(input.moduleId),
+    scopeId: input.scopeId,
+    to: input.to,
+    at: input.at,
+  });
+}
+
+/**
+ * The switch itself, for ANY non-person subject's scope-level grants — `switchSystemSchedules`
+ * for a schedule (`system:<module>`), and the peer kill switch for another vertical
+ * (`vertical:<slug>`, #1706). One body, so the two levers cannot disagree about what OFF
+ * tombstones, what ON gives back, or when a call held nothing. Everything said above
+ * `switchSystemSchedules` holds for every subject: the marker is `SYSTEM_SWITCH_OFF_RELATION`,
+ * and `seatScopeTuple`'s predicate is already bound per subject, so a marker blocks the seat
+ * for exactly the subject it names.
+ */
+export function switchSubjectGrants(
+  db: SwitchSql,
+  input: { subject: string; scopeId: string; to: 'on' | 'off'; at: string },
+): SwitchOutcome {
+  const subject = input.subject;
   const object = `scope:${input.scopeId}`;
   const grants = db.all(
     `SELECT relation, revoked_at FROM _substrat_tuples

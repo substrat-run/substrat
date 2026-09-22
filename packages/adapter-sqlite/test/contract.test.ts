@@ -15,6 +15,8 @@ import {
   scheduleContractSuite,
   jobRunContractSuite,
   systemSwitchContractSuite,
+  peerContractSuite,
+  verticalResolutionContractSuite,
   scopeHostContractSuite,
   searchContractSuite,
   entityVersionContractSuite,
@@ -114,6 +116,26 @@ systemSwitchContractSuite('adapter-sqlite', async () => {
     },
   };
 });
+
+// #1706: the peer door and the instance resolution. The DEFAULT checker, for the capability
+// suite's reason: half of what the door pins is that a peer holds exactly its declared keys,
+// and an allow-all checker would make every refusal in it pass for the wrong reason.
+const peerFixture = (prefix: string) => async () => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+};
+peerContractSuite('adapter-sqlite', peerFixture('substrat-peer-'));
+verticalResolutionContractSuite('adapter-sqlite', peerFixture('substrat-resolve-'));
 
 // #770: sub-transactions. The DEFAULT checker — the K-34 assertion turns on a real
 // `ctx.check` recording an authorization, which an allow-all never does.

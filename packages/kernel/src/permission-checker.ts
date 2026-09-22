@@ -73,7 +73,7 @@ export const asPrincipal = (id: PrincipalId): CheckSubject => ({ kind: 'principa
  * The spine ACTOR a check subject is recorded as — on an event, a denial, a platform
  * intent. One mapping, so the four places that record "who" cannot disagree about it: a
  * principal is its bare id, and every subject that is not a person is the object form that
- * says what it is instead (#97, #383, #1672).
+ * says what it is instead (#97, #383, #1672, #1706).
  */
 export const actorOf = (subject: CheckSubject): Actor => {
   switch (subject.kind) {
@@ -85,6 +85,9 @@ export const actorOf = (subject: CheckSubject): Actor => {
       return { connection: subject.id };
     case 'capability':
       return { capability: subject.id };
+    case 'vertical':
+      // #1706: the caller's slug AND the instance that called — see `verticalActor`.
+      return { vertical: subject.id, scope: subject.scope };
   }
 };
 

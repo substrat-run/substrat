@@ -24,6 +24,7 @@ import {
 } from '../lib/cf-links';
 import { walkAll, type Api } from '../lib/api';
 import { DenialLog } from '../patterns/DenialLog';
+import { SchedulesCard } from '../patterns/SchedulesCard';
 
 export interface ScopeDetailProps {
   api: Api;
@@ -442,6 +443,10 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
           database of the scope whose operation was rolled back. Renders nothing when the
           log cannot be read (a scope with no reachable deployment has no log to show). */}
       <DenialLog api={api} scope={scope} />
+
+      {/* The #1666 kill switch (#1675): one module's scheduled work, on or off, on
+          THIS scope — pulled today by a curl on staff routes the console now fronts. */}
+      <SchedulesCard api={api} scope={scope} onToast={onToast} />
 
       {/* Reap confirmation — the type-to-arm gate (TenantDetail suspend precedent). Reap
           is the one scope action with no restore: it wipes the DO storage for good. The

@@ -16,16 +16,27 @@
  * `/internal/reconcile` answers the sweep's re-provision (#1660), writing nothing,
  * `/internal/tables` answers the §5.4 introspection reads (secrets redacted in the DO),
  * `/internal/export` dumps an instance in full and `/internal/delete-scope` wipes one
- * (#590 — backed-up reap, wipe, and data-carrying rebind);
+ * (#590 — backed-up reap, wipe, and data-carrying rebind), and `/internal/preview-client`
+ * mints and deletes a preview's own client (#1704);
  * every OTHER `/internal/*` path answers a JSON 501 — NEVER the SPA fallback. (A platform
  * call once fell through to the SPA catch-all, returned 200 text/html, and surfaced as
  * "Provisioning failed — internal error" in the dashboard. The fallback route and its
  * test pin the fix.)
  */
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { tenantId, scopeId, principalId, readScopeTableInput, PLACES_DISCOVERY_PATH } from '@substrat-run/contracts';
+import {
+  tenantId,
+  scopeId,
+  principalId,
+  readScopeTableInput,
+  PLACES_DISCOVERY_PATH,
+  PREVIEW_CLIENT_PATH,
+  previewClientCheck,
+  previewClientMint,
+  previewClientRetire,
+} from '@substrat-run/contracts';
 import {
   readRoutedNode,
   RouterAssertionError,
@@ -33,7 +44,7 @@ import {
   PlatformCallError,
   invocationLog,
 } from '@substrat-run/kernel';
-import type { AuthServerStub } from './do-contract.js';
+import type { AuthServerStub, PreviewClientOutcome } from './do-contract.js';
 import { serveAsset } from './assets.js';
 
 /**
@@ -375,6 +386,43 @@ app.post('/internal/delete-scope', async (c) => {
   const body = z.object({ scopeId }).parse(await c.req.json());
   await stubFor(c.env, body.scopeId).destroyStorage();
   return c.json({ deleted: body.scopeId });
+});
+
+/**
+ * A PREVIEW's own client (#1704, `src/preview-clients.ts`; the protocol is
+ * `@substrat-run/contracts`' `preview-client.ts`). Three verbs, platform-secret gated like
+ * every route here and addressed by the BODY's scope id — which must be this tenant's own
+ * instance, a check the DO makes against what `/internal/provision` recorded:
+ *
+ *   - `POST   /internal/preview-client/check` — does the parent app sign in here?
+ *   - `POST   /internal/preview-client`       — mint the preview's client; its secret, once.
+ *   - `DELETE /internal/preview-client`       — delete the preview's clients, and only those.
+ *
+ * A deployment built before these existed answers the 501 below, which the control plane
+ * reads as "redeploy the auth server" — never as "the parent does not sign in here".
+ */
+async function answerPreviewCall<T>(c: Context<{ Bindings: Env }>, outcome: Promise<PreviewClientOutcome<T>>, okStatus: 200 | 201) {
+  const out = await outcome;
+  if (!out.ok) throw new HTTPException(out.status, { message: out.error });
+  return c.json(out.value as object, okStatus);
+}
+
+app.post(`${PREVIEW_CLIENT_PATH}/check`, async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const body = previewClientCheck.parse(await c.req.json());
+  return answerPreviewCall(c, stubFor(c.env, body.scopeId).checkPreviewClient(body), 200);
+});
+
+app.post(PREVIEW_CLIENT_PATH, async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const body = previewClientMint.parse(await c.req.json());
+  return answerPreviewCall(c, stubFor(c.env, body.scopeId).mintPreviewClient(body), 201);
+});
+
+app.delete(PREVIEW_CLIENT_PATH, async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const body = previewClientRetire.parse(await c.req.json());
+  return answerPreviewCall(c, stubFor(c.env, body.scopeId).retirePreviewClients(body), 200);
 });
 
 /**
