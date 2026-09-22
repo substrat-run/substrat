@@ -38,7 +38,7 @@ import { deriveAppOverlays, overlayWindow } from './overlays.js';
 import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
-import { placesConverged, placesReconcile, reconcilePlaces } from './places.js';
+import { placesReconcile, reconcilePlaces } from './places.js';
 import { deriveOperationHealth } from './operation-health.js';
 import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './connection-sweep.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
@@ -1453,7 +1453,8 @@ app.get('/api/apps', async (c) => {
   const placesPass = placesReconcile.run(node.tenantId, apps, async (sent) => {
     const all = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
     const slugs = await oidcProviderSlugsFor(host, cp);
-    const outcome = await reconcilePlaces({
+    // `reconcilePlaces` logs a pass that left anything undone itself, skipped apps included.
+    return reconcilePlaces({
       tenantId: node.tenantId,
       apps: all,
       isIssuer: (a) => slugs.has(a.vertical_slug),
@@ -1462,10 +1463,6 @@ app.get('/api/apps', async (c) => {
       controlPlane: cp,
       sent,
     });
-    if (!placesConverged(outcome) || outcome.skipped.length) {
-      console.error('dashboard: places reconcile left work undone', JSON.stringify({ tenant: node.tenantId, ...outcome }));
-    }
-    return outcome;
   });
   if (placesPass) {
     c.executionCtx.waitUntil(

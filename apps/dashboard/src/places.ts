@@ -1,4 +1,10 @@
-import { PLACES_CONFIG_PREFIX, placeRegistration, scopeId as scopeIdSchema, type PlaceRegistration } from '@substrat-run/contracts';
+import {
+  MAX_PLACE_REGISTRATIONS,
+  PLACES_CONFIG_PREFIX,
+  placeRegistration,
+  scopeId as scopeIdSchema,
+  type PlaceRegistration,
+} from '@substrat-run/contracts';
 import type { TenantNarrowedControlPlane } from './authority.js';
 import { issuerFor, teamIssuers } from './mcp-resources.js';
 import type { DashboardAppRow } from './module.js';
@@ -97,14 +103,8 @@ export function placesConverged(outcome: PlacesReconcileOutcome): boolean {
   return !outcome.aborted && outcome.failed.length === 0;
 }
 
-/**
- * Tell every team auth-server exactly which of the team's apps sign in there. Each delivery
- * settles on its own, so an issuer that is down does not keep the others from converging.
- *
- * `sent` is this isolate's memory of the last value that LANDED per issuer. A value equal to
- * it is not sent again; a failed one is not remembered, so the next pass retries it.
- */
-export async function reconcilePlaces(deps: {
+/** What a places pass needs. */
+export interface PlacesReconcileDeps {
   tenantId: string;
   apps: readonly DashboardAppRow[];
   /** Is this app a team auth-server (a vertical that provides `oidc-issuer`)? */
@@ -113,7 +113,32 @@ export async function reconcilePlaces(deps: {
   authOf: (appScopeId: string) => Promise<PlacesAppAuth | null>;
   controlPlane: Pick<TenantNarrowedControlPlane, 'listHostnames' | 'configureInstance'>;
   sent?: Map<string, string>;
-}): Promise<PlacesReconcileOutcome> {
+  /** Where a pass that left anything undone says so. The worker's error log by default. */
+  log?: (line: string) => void;
+}
+
+/**
+ * Tell every team auth-server exactly which of the team's apps sign in there. Each delivery
+ * settles on its own, so an issuer that is down does not keep the others from converging.
+ *
+ * `sent` is this isolate's memory of the last value that LANDED per issuer. A value equal to
+ * it is not sent again; a failed one is not remembered, so the next pass retries it.
+ *
+ * A pass that left anything undone — a delivery that failed, a pass that aborted, or an app
+ * skipped, the over-the-cap ones included — says so on `log`, here rather than at the call
+ * site, so a pass that converged everything it delivered but left an app out is never silent.
+ */
+export async function reconcilePlaces(deps: PlacesReconcileDeps): Promise<PlacesReconcileOutcome> {
+  const outcome = await placesPass(deps);
+  if (!placesConverged(outcome) || outcome.skipped.length) {
+    (deps.log ?? ((line) => console.error(line)))(
+      `dashboard: places reconcile left work undone ${JSON.stringify({ tenant: deps.tenantId, ...outcome })}`,
+    );
+  }
+  return outcome;
+}
+
+async function placesPass(deps: PlacesReconcileDeps): Promise<PlacesReconcileOutcome> {
   const outcome: PlacesReconcileOutcome = { delivered: [], unchanged: [], failed: [], skipped: [] };
   const issuers = await teamIssuers(deps.apps, deps.isIssuer, deps.controlPlane);
   if (issuers.length === 0) return outcome;
@@ -154,8 +179,19 @@ export async function reconcilePlaces(deps: {
   const key = `${PLACES_CONFIG_PREFIX}${deps.tenantId}`;
   await Promise.all(
     [...byIssuer].map(async ([issuerScopeId, registrations]) => {
+      // At most `MAX_PLACE_REGISTRATIONS` per issuer, which is what the issuer's parse accepts:
+      // one more and the WHOLE delivery would be refused, leaving the issuer on a stale set and
+      // every later pass repeating the refused call. Sorted by scope id (a ULID, so oldest
+      // first), the cut is the same on every pass, and every app past it is a named skip.
       const sorted = [...registrations].sort((a, b) => a.appScopeId.localeCompare(b.appScopeId));
-      const value = valueOf(sorted);
+      const kept = sorted.slice(0, MAX_PLACE_REGISTRATIONS);
+      for (const over of sorted.slice(MAX_PLACE_REGISTRATIONS)) {
+        outcome.skipped.push({
+          appScopeId: over.appScopeId,
+          reason: `over the ${MAX_PLACE_REGISTRATIONS} places one issuer takes per team`,
+        });
+      }
+      const value = valueOf(kept);
       if (deps.sent?.get(issuerScopeId) === value) {
         outcome.unchanged.push(issuerScopeId);
         return;
@@ -163,7 +199,7 @@ export async function reconcilePlaces(deps: {
       try {
         await deps.controlPlane.configureInstance(scopeIdSchema.parse(issuerScopeId), [{ key, value }]);
         deps.sent?.set(issuerScopeId, value);
-        outcome.delivered.push({ issuerScopeId, apps: sorted.map((r) => r.appScopeId) });
+        outcome.delivered.push({ issuerScopeId, apps: kept.map((r) => r.appScopeId) });
       } catch (e) {
         outcome.failed.push({ issuerScopeId, reason: reasonOf(e) });
       }

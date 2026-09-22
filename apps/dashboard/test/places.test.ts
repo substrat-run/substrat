@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PLACES_CONFIG_PREFIX, placeRegistrations, scopeId } from '@substrat-run/contracts';
+import { MAX_PLACE_REGISTRATIONS, PLACES_CONFIG_PREFIX, placeRegistrations, scopeId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import {
   PlacesReconcileGate,
@@ -161,6 +161,57 @@ describe('reconcilePlaces', () => {
     expect(second.unchanged).toEqual([authA.app_scope_id]);
     expect(second.delivered.map((d) => d.issuerScopeId)).toEqual([authB.app_scope_id]);
     expect(placesConverged(second)).toBe(true);
+  });
+
+  describe(`at most ${MAX_PLACE_REGISTRATIONS} places per issuer, the rest named and logged`, () => {
+    /** `n` apps signing in at issuer A, each with its own client. */
+    function manyApps(n: number) {
+      const apps = Array.from({ length: n }, (_, i) => row({ name: `App ${i}`, hostname: `app-${i}.acme.test` }));
+      const auth = new Map(apps.map((a, i) => [a.app_scope_id, { issuer: 'https://auth-a.acme.test', clientId: `c-${i}` }]));
+      return { apps, authOf: async (s: string) => auth.get(s) ?? null };
+    }
+
+    it(`${MAX_PLACE_REGISTRATIONS + 1} apps: a delivery the issuer accepts, the one over the cap skipped, and a log line`, async () => {
+      const { apps, authOf: many } = manyApps(MAX_PLACE_REGISTRATIONS + 1);
+      const cp = controlPlane();
+      const logged: string[] = [];
+      const outcome = await reconcilePlaces({
+        tenantId: TEAM,
+        apps: [authA, ...apps],
+        isIssuer,
+        authOf: many,
+        controlPlane: cp,
+        log: (line) => logged.push(line),
+      });
+      // `lastTo` parses the delivery with the schema the issuer parses it with: it is valid.
+      const delivered = lastTo(cp, authA.app_scope_id)!;
+      expect(delivered).toHaveLength(MAX_PLACE_REGISTRATIONS);
+      // The cut is deterministic: by scope id, and the last one is the one left out.
+      const last = [...apps].map((a) => a.app_scope_id).sort().at(-1)!;
+      expect(delivered.some((r) => r.appScopeId === last)).toBe(false);
+      expect(outcome.skipped).toEqual([{ appScopeId: last, reason: expect.stringContaining(`${MAX_PLACE_REGISTRATIONS}`) }]);
+      // Converged — the delivery landed — and still not silent.
+      expect(placesConverged(outcome)).toBe(true);
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toContain(last);
+    });
+
+    it(`exactly ${MAX_PLACE_REGISTRATIONS} apps: all of them delivered, nothing skipped, nothing logged`, async () => {
+      const { apps, authOf: many } = manyApps(MAX_PLACE_REGISTRATIONS);
+      const cp = controlPlane();
+      const logged: string[] = [];
+      const outcome = await reconcilePlaces({
+        tenantId: TEAM,
+        apps: [authA, ...apps],
+        isIssuer,
+        authOf: many,
+        controlPlane: cp,
+        log: (line) => logged.push(line),
+      });
+      expect(lastTo(cp, authA.app_scope_id)).toHaveLength(MAX_PLACE_REGISTRATIONS);
+      expect(outcome.skipped).toEqual([]);
+      expect(logged).toEqual([]);
+    });
   });
 
   it('does nothing for a team with no auth-server', async () => {
