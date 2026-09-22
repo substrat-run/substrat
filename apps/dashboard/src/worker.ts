@@ -2016,11 +2016,11 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
     .catch((e: unknown) => ({ entries: null, error: e instanceof Error ? e.message : String(e) }));
 
   const { runningId } = await runningDeclarations(cp, scope, slug);
-  const declared = runningId ? await cp.versionCalls(slug, runningId).catch(() => null) : null;
+  const declared = runningId ? await cp.versionCalls(slug, runningId) : null;
   const targets = [...new Set(declared ?? [])];
   const calls = await Promise.all(
     targets.map(async (vertical) => {
-      const scopes = await cp.listScopes(vertical).catch(() => []);
+      const scopes = await cp.listScopes(vertical);
       const target = targetScopeOf(scopes ?? [], node.tenantId, vertical);
       if (target === null || 'ambiguous' in target) {
         return declaredCallState({ vertical, caller: slug, target, entries: [] });

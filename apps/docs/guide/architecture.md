@@ -120,10 +120,200 @@ system beside the kernel. Instead, the platform says which app is calling:
   removes everything the peer held there, and no re-provision gives it back. A caller that has
   been suspended or uninstalled is refused on its next call.
 
-Still to come:
-- The hosted transport: the router identifying the calling deployment at a point it cannot
-  forge, and a path for code that runs inside a scope.
-- The console and dashboard controls for the switch.
+### Writing one
+
+The **target** declares who may call it, in its module manifest. The keys are derived from the
+operations each peer may invoke, so the two halves cannot drift apart:
+
+```ts
+// spec/model.ts — the CRM's own operations, as any model-first vertical declares them
+export const crmOperations = defineOperations(crmEntities, CRM_PERMISSIONS)({
+  'customer/list': { summary: 'List customers', permission: 'customer:read', /* … */ },
+  'customer/get': { summary: 'One customer', permission: 'customer:read', /* … */ },
+  'customer/delete': { summary: 'Delete a customer', permission: 'customer:manage', /* … */ },
+});
+
+// src/manifest.ts
+export const crmManifest = moduleManifest.parse({
+  id: '@acme/crm',
+  // … the rest of the manifest
+  ...peersDeclaredBy(crmOperations, {
+    // The board-room app may list and read customers. `customer:read` is read off those
+    // two operations; `customer:manage` is not, so deleting stays out of reach.
+    'acme/board-room': ['customer/list', 'customer/get'],
+  }),
+});
+```
+
+That lands in the CRM's `PERMISSIONS.md`, so widening what another app may do is a reviewed
+permission diff rather than a quiet edit.
+
+The **caller** declares the verticals it calls, in its `package.json` — the same place
+`outbound` names the third-party hosts it may reach:
+
+```json
+{ "substrat": { "slug": "acme/board-room", "calls": ["acme/crm"] } }
+```
+
+Then it calls, with no address, no token and no allowlist entry of its own:
+
+```ts
+import { peerClient } from '@substrat-run/vertical-host';
+
+const { items } = await peerClient('acme/crm').invoke<{ items: { id: string; name: string }[] }>(
+  'customer/list', { limit: 50 },
+);
+```
+
+Module code — an operation, a consumer, a schedule — takes the other leg, because it runs
+inside the scope's Durable Object where there is no network at all. It enqueues the call and
+the platform delivers it, at-least-once:
+
+```ts
+import { PEER_INVOKE_KIND } from '@substrat-run/contracts';
+
+const requestId = ctx.requestPlatform({
+  kind: PEER_INVOKE_KIND,
+  payload: { vertical: 'acme/crm', operation: 'customer/list', input: { limit: 50 } },
+});
+```
+
+The request ID is an enqueue receipt, not the operation result. The drain uses it as the
+idempotency key; inspect the platform request for delivery status.
+
+Both hosted legs are gated by the same `calls` declaration, and the caller on both is the scope the
+platform found the work in — never anything the request or the payload said.
+
+### The refusals, and what each means
+
+| What you see | What happened |
+|---|---|
+| `this app declares it calls X, and you do not run one` | The tenant has no instance of the target. Not an error — the ordinary state of a fresh install. |
+| `403` naming `substrat.calls` | The caller did not declare this target. Add it and push. |
+| `403` naming the peer's slug | The target's `peers` does not name this caller, or names it without the operation. |
+| `403` "switched off" | A tenant pulled the kill switch on this peer. Only restoring it gives access back. |
+| `409` "runs N instances … bind the instance first" | The tenant runs two live instances of the target, so "the instance of X" has no single answer. Instance binding is not available yet ([#1720](https://github.com/substrat-run/substrat/issues/1720)); keep one active primary target. |
+| `403` from a preview | A preview never makes peer calls. Run the two locally against the pure host instead. |
+
+### A complete local example
+
+This Node harness runs two verticals in one tenant. It declares a read operation, derives the
+peer's permissions from that operation, makes a call, cuts access off, and restores it. There
+are no migrations or persisted domain rows: the CRM returns one fixed example customer.
+
+In an ESM project using the packages from this release, install the dependencies:
+
+```sh
+npm install @substrat-run/contracts @substrat-run/kernel @substrat-run/adapter-sqlite zod
+npm install --save-dev tsx
+```
+
+Save the following as `peer-example.mts`, then run `npx tsx peer-example.mts`:
+
+```ts
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { z } from 'zod';
+import {
+  defineEntities, defineOperations, errorCodeOf, manifestOperations, moduleManifest,
+  operationInputsOf, peersDeclaredBy, permissionKey, platformActorId, scopeId, tenantId,
+} from '@substrat-run/contracts';
+import { assertAllowed, ulid } from '@substrat-run/kernel';
+import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { createLocalVerticalBroker } from '@substrat-run/adapter-sqlite/vertical-broker';
+
+const operations = defineOperations(defineEntities({}), ['customer:read'] as const)({
+  'customer/list': {
+    summary: 'List customers',
+    permission: 'customer:read',
+    input: z.object({ limit: z.number().int().min(1).max(50) }),
+    output: z.object({ items: z.array(z.object({ id: z.string(), name: z.string() })) }),
+  },
+});
+const manifest = moduleManifest.parse({
+  id: '@acme/crm', version: '1.0.0', kernelContract: '^0.0.1',
+  entitlementKey: 'crm', attachmentTargets: [],
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  ...manifestOperations(operations, { permissions: { 'customer:read': 'Read customers' } }),
+  ...peersDeclaredBy(operations, { 'acme/board-room': ['customer/list'] }),
+});
+const dir = mkdtempSync(join(tmpdir(), 'substrat-peer-example-'));
+const crm = new SqliteScopeHost({ dir: join(dir, 'crm') });
+const board = new SqliteScopeHost({ dir: join(dir, 'board') });
+const staff = platformActorId.parse(ulid());
+const tenant = tenantId.parse(ulid());
+const crmScope = scopeId.parse(ulid());
+const boardScope = scopeId.parse(ulid());
+
+try {
+  crm.registerModule({
+    manifest, migrations: [], operationInputs: operationInputsOf(operations),
+    operations: {
+      'customer/list': async (ctx) => {
+        assertAllowed(await ctx.check(permissionKey.parse('customer:read')));
+        return { items: [{ id: 'example', name: 'Example company' }] };
+      },
+    },
+  });
+  for (const host of [crm, board]) {
+    await host.admin.createTenant(staff, { id: tenant, slug: 'example', name: 'Example' });
+  }
+  await crm.admin.grantEntitlement(staff, tenant, 'crm');
+  await crm.provisionScope(staff, { tenantId: tenant, scopeId: crmScope, vertical: 'acme/crm' });
+  await board.provisionScope(staff, { tenantId: tenant, scopeId: boardScope, vertical: 'acme/board-room' });
+  await crm.admin.activateScope(staff, tenant, crmScope);
+  await board.admin.activateScope(staff, tenant, boardScope);
+
+  const broker = createLocalVerticalBroker({ 'acme/crm': crm, 'acme/board-room': board });
+  const caller = broker.clientFor({ vertical: 'acme/board-room', tenantId: tenant, scopeId: boardScope });
+  const read = () => caller.invoke('acme/crm', 'customer/list', { limit: 50 });
+  const expected = { items: [{ id: 'example', name: 'Example company' }] };
+  assert.deepEqual(await read(), expected);
+
+  const peer = { vertical: 'acme/board-room', node: { tenantId: tenant, scopeId: crmScope } };
+  await crm.admin.revokeFromPeer(staff, { ...peer, reason: 'Exercise the switch' });
+  await assert.rejects(read, (error: unknown) => errorCodeOf(error) === 'forbidden');
+  await crm.admin.restoreToPeer(staff, { ...peer, reason: 'Exercise complete' });
+  assert.deepEqual(await read(), expected);
+  console.log('Peer call, refusal, and restore passed.');
+} finally {
+  await crm.close();
+  await board.close();
+  rmSync(dir, { recursive: true, force: true });
+}
+```
+
+The broker belongs only in a Node harness or test. It verifies the caller's live primary
+scope and uses the target's real peer door; it does not exercise hosted `substrat.calls`
+enforcement, egress, or service bindings. Never import it into module or Worker code.
+
+### Seeing and changing access
+
+After installation, the dashboard app page shows **App-to-app access**: declared outgoing
+targets and incoming peers. A target that is not installed is neutral. For an incoming peer,
+**Cut off** and **Let back in** require a reason; the status shows who switched access off,
+when, and why. The console's scope page offers the same controls in **Peers**. A failed
+status read is unknown, never permission to call. Re-provisioning does not restore access.
+
+### Hosted rollout (platform operators)
+
+Deploy the router with `apps/router/src/index.ts` as its entry module; it exports the public
+fetch handler and the named `PeerCalls` entrypoint. Then deploy the egress worker with this
+service binding in `apps/vertical-egress/wrangler.jsonc`:
+
+```json
+{ "binding": "PEER_CALLS", "service": "substrat-router", "entrypoint": "PeerCalls" }
+```
+
+The test environment binds `substrat-router-test` instead. Both declarations are checked in.
+Update the control plane for peer delegation and async delivery, and redeploy participating
+verticals with the peer routes and declarations from this release. Use the existing platform
+secret configuration. A missing `PEER_CALLS` binding fails closed with a refusal naming the
+binding and config file; it never falls through to an outbound fetch. An old target without
+the status/switch routes requires a redeploy. These are deployment steps, not actions an app
+author performs by adding `substrat.calls`.
 
 ## Composition: star topology
 

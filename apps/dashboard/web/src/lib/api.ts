@@ -1146,6 +1146,7 @@ export interface AppScheduleRow {
  */
 export type DeclaredCallRow =
   | { state: 'not-installed'; vertical: string }
+  | { state: 'ambiguous'; vertical: string; count: number }
   | { state: 'allowed'; vertical: string; scopeId: string }
   | {
       state: 'switched-off';

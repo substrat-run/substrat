@@ -1,5 +1,9 @@
 ---
 '@substrat-run/contracts': minor
+'@substrat-run/kernel': minor
+'@substrat-run/console': patch
+'@substrat-run/dashboard': patch
+'@substrat-run/dashboard-web': patch
 '@substrat-run/adapter-cloudflare': minor
 '@substrat-run/adapter-sqlite': minor
 '@substrat-run/control-plane-api': minor
@@ -21,7 +25,7 @@ A deployed vertical can now call another vertical of the same tenant. The platfo
 and calls it from its harness:
 
 ```ts
-const { items } = await peerClient('acme/crm').invoke('customer/list', { limit: 50 });
+const result = await peerClient('acme/crm').invoke('customer/list', { limit: 50 });
 ```
 
 There is no address, no token and no outbound-allowlist entry. What the caller may then DO is the target's own `peers` declaration, which its permission diff reviews.
@@ -44,4 +48,6 @@ There is no address, no token and no outbound-allowlist entry. What the caller m
 
 **Operators:** the egress worker needs its new `PEER_CALLS` binding to the router's `PeerCalls` entrypoint, and the router now deploys from `src/index.ts` (which exports both the fetch handler and that entrypoint). Without the binding, peer calls are refused — never passed through.
 
-Not in this release: the console and dashboard controls for the kill switch, a binding for a tenant that runs two instances of one vertical, and the model DSL for `peers`.
+The console scope page and dashboard app page now show incoming peer access and offer cut-off/restore controls with an audited reason. Hosted switch/status calls delegate to the deployment holding the grants. The dashboard also discloses outgoing targets after installation, keeping missing targets, refused access and unreadable status distinct. `peersDeclaredBy` derives peer permissions from the model's operations. The architecture guide includes an executable local call/cut-off/restore example and operator rollout steps.
+
+Instance binding when a tenant runs multiple active targets remains excluded, tracked in #1720; ambiguous calls are refused.

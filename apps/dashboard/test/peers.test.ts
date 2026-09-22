@@ -75,15 +75,16 @@ describe('declaredCallState', () => {
     expect(declaredCallNeedsAttention(state)).toBe(false);
   });
 
-  it('two live instances read as not installed too — no single target is addressable', () => {
+  it('two live instances are disclosed as ambiguous, never as absent', () => {
     const state = declaredCallState({
       vertical: 'acme/crm',
       caller: CALLER,
       target: { ambiguous: true, count: 2 },
       entries: [],
     });
-    expect(state.state).toBe('not-installed');
-    expect(declaredCallNeedsAttention(state)).toBe(false);
+    expect(state).toEqual({ state: 'ambiguous', vertical: 'acme/crm', count: 2 });
+    expect(declaredCallLine(state)).toMatch(/2 active instances/);
+    expect(declaredCallNeedsAttention(state)).toBe(true);
   });
 
   it('installed and admitted reads as allowed', () => {

@@ -21,6 +21,7 @@ import { resolveVerticalInstanceFrom, type VerticalInstanceCandidate } from '@su
 export type DeclaredCallState =
   /** The tenant runs no instance of that vertical. Nothing is wrong; nothing can be called. */
   | { state: 'not-installed'; vertical: string }
+  | { state: 'ambiguous'; vertical: string; count: number }
   /** Installed, and this app is admitted at its door right now. */
   | { state: 'allowed'; vertical: string; scopeId: string }
   /** Installed, and this app is switched off there — by someone, for a reason, at a time. */
@@ -43,8 +44,7 @@ export type DeclaredCallState =
  * The tenant's one instance of `vertical`, by the kernel's own rule — the SAME
  * `resolveVerticalInstanceFrom` a peer call resolves with, so the panel cannot claim a
  * target a call would not reach, or vice versa. A tenant running two live instances is
- * `ambiguous`, which a call refuses; here it reads as not-installed-for-this-purpose,
- * because the honest thing to show is that no single target is addressable.
+ * `ambiguous`, which a call refuses and the panel names explicitly.
  */
 export function targetScopeOf(
   scopes: readonly Scope[],
@@ -72,9 +72,8 @@ export function declaredCallState(input: {
   readError?: string | null;
 }): DeclaredCallState {
   const { vertical, caller, target } = input;
-  // Not installed, and two live instances, both read as "no single target here". They are
-  // the same answer to a tenant: nothing this app calls can land anywhere definite.
-  if (target === null || 'ambiguous' in target) return { state: 'not-installed', vertical };
+  if (target === null) return { state: 'not-installed', vertical };
+  if ('ambiguous' in target) return { state: 'ambiguous', vertical, count: target.count };
   const { scopeId } = target;
   if (input.readError) return { state: 'unreadable', vertical, scopeId, message: input.readError };
   if (input.entries === null) return { state: 'unreadable', vertical, scopeId, message: 'not read' };
@@ -92,6 +91,8 @@ export function declaredCallLine(entry: DeclaredCallState): string {
   switch (entry.state) {
     case 'not-installed':
       return `Not installed here — this app declares it calls ${entry.vertical}, and you do not run one.`;
+    case 'ambiguous':
+      return `${entry.count} active instances of ${entry.vertical} — calls are refused until one target can be resolved.`;
     case 'allowed':
       return `May call ${entry.vertical}, with the permissions that app's own manifest grants it.`;
     case 'switched-off':
@@ -104,11 +105,9 @@ export function declaredCallLine(entry: DeclaredCallState): string {
 }
 
 /**
- * Is this state a problem the tenant should act on? Only two are: a declared call the
- * target refuses outright (`no-grant`) reads as a misconfiguration worth surfacing, and a
- * position nobody could read is worth surfacing because it is unknown. `not-installed` is
- * emphatically NOT one — see the module comment.
+ * Ambiguous targets, missing grants and unreadable positions need attention. An absent
+ * target is an ordinary install state and does not — see the module comment.
  */
 export function declaredCallNeedsAttention(entry: DeclaredCallState): boolean {
-  return entry.state === 'no-grant' || entry.state === 'unreadable';
+  return entry.state === 'ambiguous' || entry.state === 'no-grant' || entry.state === 'unreadable';
 }

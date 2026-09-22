@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Button, Dialog, Input } from '@substrat-run/ui';
+import { changePeerAccess, validPeerReason } from '../lib/peer-switch';
 import { api, type AppPeersView, type DeclaredCallRow, type PeerCallerRow } from '../lib/api';
 import { Pill, card, type PillKind } from '../components/ui';
 import { relativeTime } from '../lib/format';
@@ -18,6 +20,7 @@ import { relativeTime } from '../lib/format';
  */
 
 const CALL_STATE: Record<DeclaredCallRow['state'], { kind: PillKind; label: string }> = {
+  ambiguous: { kind: 'warning', label: 'Multiple instances' },
   allowed: { kind: 'success', label: 'May call' },
   // Not a fault, and deliberately neutral rather than warning: declaring a call on an app
   // the tenant does not run is the ordinary state of a freshly installed vertical.
@@ -37,6 +40,8 @@ function callLine(row: DeclaredCallRow): string {
   switch (row.state) {
     case 'not-installed':
       return `You do not run ${row.vertical}. Nothing is wrong — this app simply has nowhere to call.`;
+    case 'ambiguous':
+      return `You run ${row.count} active instances of ${row.vertical}. Calls are refused; instance binding is not available yet.`;
     case 'allowed':
       return `Admitted at ${row.vertical}, with the permissions that app's own manifest grants it.`;
     case 'switched-off':
@@ -53,6 +58,46 @@ function callLine(row: DeclaredCallRow): string {
 export function AppPeers({ scopeId }: { scopeId: string }) {
   const [view, setView] = useState<AppPeersView | null>(null);
   const [failed, setFailed] = useState(false);
+  const [dialog, setDialog] = useState<{ vertical: string; to: 'on' | 'off' } | null>(null);
+  const [reason, setReason] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const switching = useRef(false);
+
+  async function confirmSwitch() {
+    if (!dialog || switching.current || !validPeerReason(reason)) return;
+    switching.current = true;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const outcome = await changePeerAccess(
+        () => api.switchAppPeer(scopeId, dialog.vertical, dialog.to, reason.trim()),
+        async () => {
+          const fresh = await api.appPeers(scopeId);
+          if (fresh.callersError !== null) throw new Error(fresh.callersError);
+          return fresh;
+        },
+      );
+      if (outcome.kind === 'write-failed') {
+        setNotice(`Could not confirm the change: ${String(outcome.error)}`);
+        return;
+      }
+      setDialog(null);
+      setReason('');
+      if (outcome.kind === 'unconfirmed') {
+        // The write succeeded. Invalidate the old position instead of offering it again.
+        setView(null);
+        setFailed(true);
+        setNotice(`Access changed, but its status could not be refreshed: ${String(outcome.error)}. Reload to read it again.`);
+        return;
+      }
+      setView(outcome.view);
+      setNotice('Access updated.');
+    } finally {
+      switching.current = false;
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -71,7 +116,8 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
     };
   }, [scopeId]);
 
-  if (failed || view === null) return null;
+  if (failed) return <section style={card} role="status">{notice ?? 'Could not read app-to-app access. Reload to try again.'}</section>;
+  if (view === null) return null;
   const callers = view.callers ?? [];
   // The whole panel is hidden only when there is genuinely nothing to say in EITHER
   // direction and no read failed. A failed mirror read is something to say.
@@ -79,6 +125,7 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
 
   return (
     <section style={card}>
+      {notice && <p role="status">{notice}</p>}
       <h2 style={{ margin: '0 0 4px', fontSize: 15 }}>App-to-app access</h2>
       <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: '19px' }}>
         Apps of this team can call each other's operations without an API key — the platform
@@ -122,6 +169,16 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
             <li key={row.vertical} style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <Pill kind={CALLER_STATE[row.calls].kind}>{CALLER_STATE[row.calls].label}</Pill>
               <code style={{ fontSize: 12.5 }}>{row.vertical}</code>
+              {row.calls !== 'ungranted' && (
+                <Button size="sm" variant={row.calls === 'on' ? 'danger' : 'secondary'} disabled={busy}
+                  onClick={() => {
+                    setDialog({ vertical: row.vertical, to: row.calls === 'on' ? 'off' : 'on' });
+                    setReason('');
+                    setNotice(null);
+                  }}>
+                  {row.calls === 'on' ? `Cut off ${row.vertical}` : `Let ${row.vertical} back in`}
+                </Button>
+              )}
               {row.calls === 'off' && row.switchedOff && (
                 <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: '18px' }}>
                   Cut off by {row.switchedOff.actor} {relativeTime(row.switchedOff.at)} — “{row.switchedOff.reason}”
@@ -131,6 +188,17 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
           ))}
         </ul>
       )}
+      <Dialog open={dialog !== null}
+        title={dialog ? `${dialog.to === 'off' ? 'Cut off' : 'Let back in'} ${dialog.vertical}?` : ''}
+        description={dialog?.to === 'off'
+          ? 'Refuses future calls into this app and removes the peer’s permissions here. Existing writes remain. Only restoring access turns it back on.'
+          : 'Restores the access removed by this switch. Permissions removed separately stay removed.'}
+        danger={dialog?.to === 'off'} confirmLabel={dialog?.to === 'off' ? 'Cut off' : 'Let back in'}
+        busy={busy} confirmDisabled={!validPeerReason(reason)} onConfirm={confirmSwitch}
+        onCancel={() => { if (!switching.current) setDialog(null); }}>
+        <Input label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} />
+        {notice && <p role="alert">{notice}</p>}
+      </Dialog>
     </section>
   );
 }
