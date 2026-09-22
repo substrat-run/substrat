@@ -32,7 +32,13 @@
       // #938: live reads. Its OWN class (only `liveMod` is registered, so only this
       // class declares a `liveTargets` entity) and its own namespace, for the same
       // isolation reason SWEEP_SCOPE has one.
-      { "name": "LIVE_SCOPE", "class_name": "LiveScopeDO" }
+      { "name": "LIVE_SCOPE", "class_name": "LiveScopeDO" },
+      // #1705: the cross-vertical suite's two deployments, one class per vertical, over a
+      // directory of their own (the sweep enumerates every active scope in its directory,
+      // and must not walk every other suite's).
+      { "name": "CRM_SCOPE", "class_name": "CrmScopeDO" },
+      { "name": "BOARD_SCOPE", "class_name": "BoardScopeDO" },
+      { "name": "VE_CONTROL_PLANE", "class_name": "ControlPlaneDO" }
     ]
   },
   "migrations": [
@@ -55,6 +61,10 @@
     {
       "tag": "v5",
       "new_sqlite_classes": ["LiveScopeDO"]
+    },
+    {
+      "tag": "v6",
+      "new_sqlite_classes": ["CrmScopeDO", "BoardScopeDO"]
     }
   ]
 }
