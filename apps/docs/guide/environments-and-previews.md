@@ -57,13 +57,30 @@ prod scope, binds the pushed version to the fork, and mints a non-canonical `--<
 properties do the heavy lifting:
 
 - **A preview is idempotent per tag.** Re-running the same `--tag` — what a new push to a PR does —
-  **rebinds the new version onto the same fork**. Successive pushes roll their migrations *forward*
-  on one copy, which is the rehearsal that actually de-risks a release: the fork accumulates schema
-  changes exactly the way prod will. `--refresh` starts over from a clean fork of prod.
+  **rebinds the new version onto the same fork, and moves the fork's data with it**. Successive
+  pushes roll their migrations *forward* on the same data, which is the rehearsal that actually
+  de-risks a release: the fork accumulates schema changes exactly the way prod will. `--refresh`
+  starts over from a clean fork of prod.
 - **A prerelease label never steals a release coordinate.** A default preview push is labelled
   `<pkg>-<tag>.<n>` (a semver *prerelease*), and the registry's `nextVersion` only counts anchored
   `x.y.z` releases — so preview pushes are free: they never collide with, and never advance, the
   version your repo owns. (Pass `--version` to pin an exact label.)
+
+::: warning Moving between deployments copies data; writes during the copy can be lost
+On a host with a per-version resolver, a push that moves an existing preview between distinct
+version deployments first copies its data, then switches the URL over. No copy is needed when
+routing stays on the same script or the incoming version is co-located. When a copy occurs:
+
+- **Anything written to the preview while the push runs may be lost.** The copy is taken before the
+  switch, so a change made in between stays behind on the previous version. `preview create` prints
+  a `Data:` line whenever it moved data, as a reminder.
+- **Each carry copies the whole preview.** A preview holding a lot of data makes that push slower,
+  and one too large to fork from prod is also too large to move.
+- **A failed copy changes nothing.** The preview stays on the previous version with its data, and
+  re-running the push tries again.
+
+The previous version keeps its copy of the data after the switch; nothing deletes it yet ([#1722](https://github.com/substrat-run/substrat/issues/1722)).
+:::
 
 Every preview carries a TTL (`--ttl 72h` by default) so an abandoned one is garbage-collected even
 if never deleted — and reuse **renews** the deadline, so an actively-pushed preview never dies under
@@ -81,8 +98,8 @@ preview their own pending code (#513). What a preview will not do is fork a scop
 A fork copies the app's **data** and nothing it was *configured* with. The per-install settings the
 platform delivers to an app, such as the dashboard's **Env** tab values and its **Identity** choice
 (`substrat:auth`), live with the app's own deployment, not in its database. A preview runs its own
-version, so it starts with none of them, and it starts empty again on every push. Unset settings fall
-back to the deployment's defaults.
+version, so those per-install settings start unset in each new deployment; the preview's database
+data is retained across pushes. Unset settings fall back to the deployment's defaults.
 
 The login is handled for you when the app signs in at one of **your team's auth servers**. Each create
 and each push registers a client **of the preview's own** at that auth server, delivers it to the
@@ -176,6 +193,9 @@ rebound on every merge**, fronted by a custom domain. Nothing new — three prim
    ```bash
    substrat scope bind <testScopeId> --version <justPushedId> --snapshot
    ```
+
+   The bind moves the test scope's data into the version it binds, the same way a push to a preview
+   does, with the same caveat: a write made to the test environment while the bind runs may be lost.
 
 That is the whole thing. `crm-test.ahero.se` always serves the head of `main`; migrations roll forward
 on its accumulated data, rehearsing every prod migration a merge earlier; and prod stays behind its

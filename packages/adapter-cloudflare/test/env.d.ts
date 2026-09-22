@@ -24,5 +24,10 @@ declare module 'cloudflare:test' {
     CRM_SCOPE: DurableObjectNamespace;
     BOARD_SCOPE: DurableObjectNamespace;
     VE_CONTROL_PLANE: DurableObjectNamespace;
+    /** #1710: three pushed versions' scripts, one namespace each, and their directory. */
+    PC_V1_SCOPE: DurableObjectNamespace;
+    PC_V2_SCOPE: DurableObjectNamespace;
+    PC_V3_SCOPE: DurableObjectNamespace;
+    PC_CONTROL_PLANE: DurableObjectNamespace;
   }
 }

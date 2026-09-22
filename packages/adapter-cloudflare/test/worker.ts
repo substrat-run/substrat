@@ -50,6 +50,16 @@ export const LiveScopeDO = defineScopeDO([liveMod], {});
 export const CrmScopeDO = defineScopeDO([crmExportMod], {});
 export const BoardScopeDO = defineScopeDO([boardImportMod], {});
 
+/**
+ * #1710: three pushed versions of ONE vertical. Hosted, every push is its own script, and a
+ * Durable Object namespace belongs to its script. The classes are identical, and that is
+ * the point: the only thing that separates them is the namespace, which is the fact a
+ * preview's second push used to lose its data to. See preview-carry.test.ts.
+ */
+export const PreviewV1ScopeDO = defineScopeDO([], {});
+export const PreviewV2ScopeDO = defineScopeDO([], {});
+export const PreviewV3ScopeDO = defineScopeDO([], {});
+
 export { ControlPlaneDO } from '../src/control-plane-do.js';
 
 // -- the platform-sweep trigger (platform-sweeper.test.ts) --------------------

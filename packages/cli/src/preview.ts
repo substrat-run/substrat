@@ -81,9 +81,10 @@ async function request<T>(action: string, url: string, header: Record<string, st
 
 /**
  * Create (or update) a preview. Idempotent on the tag: a second call with the same tag —
- * what a PR *synchronize* triggers — rebinds the new version onto the SAME fork so the
- * PR's successive pushes roll their migrations forward on one copy (§4). `refresh` forces
- * a clean fork from prod instead.
+ * what a PR *synchronize* triggers — rebinds the new version onto the SAME fork, and the
+ * control plane copies the fork's data into that version's deployment first (#1710), so the
+ * PR's successive pushes roll their migrations forward on the same data (§4). It says so in
+ * a `notes` line. `refresh` forces a clean fork from prod instead.
  */
 export async function createPreview(opts: {
   controlPlaneUrl: string;
