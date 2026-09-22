@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1935,7 +1935,7 @@ describe('control-plane API', () => {
       expect((await boundOf(preview)).verticalVersionId).toBe(v3);
     });
 
-    it('scope bind carries a forked test environment into the version it binds, after the snapshot', async () => {
+    it('scope bind carries a forked test environment into the version it binds, then snapshots before binding', async () => {
       // The long-lived test environment: a pinned preview that the merge job re-points with
       // `substrat scope bind <id> --version <pushed> --snapshot`.
       const env = await push('test', v1, { ttlHours: null });
@@ -1944,13 +1944,22 @@ describe('control-plane API', () => {
       storeOf(refOf.get(v1)!).set(testEnv, table('prod-row', 'qa-row'));
       const v5 = await pub('1.1.0', 'g2'); // crosses a migration, so --snapshot forks first
 
+      // A failed migration-crossing carry must not leave a permanent archive per retry.
+      failRestoreInto = refOf.get(v5)!;
+      calls.length = 0;
+      const failed = await dj(`/tenants/${tH}/scopes/${testEnv}/version`, 'POST', { versionId: v5, snapshot: true });
+      failRestoreInto = null;
+      expect(failed.status).toBe(503);
+      expect(calls.some((call) => call.startsWith('snapshot '))).toBe(false);
+      expect((await boundOf(testEnv)).verticalVersionId).toBe(v1);
+
       calls.length = 0;
       const res = await dj(`/tenants/${tH}/scopes/${testEnv}/version`, 'POST', { versionId: v5, snapshot: true });
       expect(res.status).toBe(200);
       expect(calls).toEqual([
-        `snapshot ${refOf.get(v1)} ${testEnv}`,
         `export ${refOf.get(v1)} ${testEnv}`,
         `restore ${refOf.get(v5)} ${testEnv}`,
+        `snapshot ${refOf.get(v1)} ${testEnv}`,
       ]);
       expect(rows(v5, testEnv)).toEqual([['prod-row'], ['qa-row']]);
       expect(((await res.json()) as { verticalVersionId: string }).verticalVersionId).toBe(v5);
@@ -1976,6 +1985,45 @@ describe('control-plane API', () => {
       expect(res.ok).toBe(false);
       expect(calls).toEqual([]);
       expect((await boundOf(prod)).verticalVersionId).toBe(v1);
+    });
+
+    it('refuses a foreign lineage before binding, even when no copy would occur', async () => {
+      const foreign = ulid();
+      await host.admin.registerVertical(staff, { slug: 'other-carry', name: 'Other', source: 'cli', ownerTenant: tH });
+      await host.admin.publishVersion(staff, {
+        id: foreign, verticalSlug: 'other-carry', version: '1.0.0',
+        manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+      });
+      for (const servingRef of [null, 'carry-vert']) {
+        await host.admin.setScopeServingRef(staff, tH, prod, servingRef);
+        calls.length = 0;
+        const res = await dj(`/tenants/${tH}/scopes/${prod}/version`, 'POST', { versionId: foreign });
+        expect(res.status).toBe(404);
+        expect(calls).toEqual([]);
+        expect(await host.admin.getScopeRecord(staff, tH, prod)).toMatchObject({ vertical: slug, verticalVersionId: v1 });
+      }
+      await host.admin.setScopeServingRef(staff, tH, prod, null);
+    });
+
+    it('does not bind after observing a pending version, even if it is admitted concurrently', async () => {
+      await host.admin.setVerticalListed(staff, slug, true);
+      const pending = await pub('2.0.0-rc.2');
+      await host.admin.setVerticalListed(staff, slug, false);
+      const getVersion = host.admin.getVersion.bind(host.admin);
+      const spy = vi.spyOn(host.admin, 'getVersion').mockImplementation(async (...args) => {
+        const observed = await getVersion(...args);
+        if (args[1] === pending) await host.admin.admitVersion(staff, pending);
+        return observed;
+      });
+      calls.length = 0;
+      try {
+        const res = await dj(`/tenants/${tH}/scopes/${prod}/version`, 'POST', { versionId: pending });
+        expect(res.status).toBe(409);
+        expect(calls).toEqual([]);
+        expect((await boundOf(prod)).verticalVersionId).toBe(v1);
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('a scope pinned to the serving script carries nothing: the version pointer does not move its route', async () => {

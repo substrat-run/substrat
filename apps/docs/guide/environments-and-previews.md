@@ -66,14 +66,15 @@ properties do the heavy lifting:
   `x.y.z` releases — so preview pushes are free: they never collide with, and never advance, the
   version your repo owns. (Pass `--version` to pin an exact label.)
 
-::: warning A push copies the preview's data, and writes made during it can be lost
-Each push is its own deployment with its own storage. So a push to an existing preview first copies
-the preview's data into the new version, then switches the URL over. Three things follow:
+::: warning Moving between deployments copies data; writes during the copy can be lost
+On a host with a per-version resolver, a push that moves an existing preview between distinct
+version deployments first copies its data, then switches the URL over. No copy is needed when
+routing stays on the same script or the incoming version is co-located. When a copy occurs:
 
 - **Anything written to the preview while the push runs may be lost.** The copy is taken before the
   switch, so a change made in between stays behind on the previous version. `preview create` prints
   a `Data:` line whenever it moved data, as a reminder.
-- **Every push copies the whole preview.** A preview holding a lot of data makes every push slower,
+- **Each carry copies the whole preview.** A preview holding a lot of data makes that push slower,
   and one too large to fork from prod is also too large to move.
 - **A failed copy changes nothing.** The preview stays on the previous version with its data, and
   re-running the push tries again.
@@ -97,8 +98,8 @@ preview their own pending code (#513). What a preview will not do is fork a scop
 A fork copies the app's **data** and nothing it was *configured* with. The per-install settings the
 platform delivers to an app, such as the dashboard's **Env** tab values and its **Identity** choice
 (`substrat:auth`), live with the app's own deployment, not in its database. A preview runs its own
-version, so it starts with none of them, and it starts empty again on every push. Unset settings fall
-back to the deployment's defaults.
+version, so those per-install settings start unset in each new deployment; the preview's database
+data is retained across pushes. Unset settings fall back to the deployment's defaults.
 
 The login is handled for you when the app signs in at one of **your team's auth servers**. Each create
 and each push registers a client **of the preview's own** at that auth server, delivers it to the

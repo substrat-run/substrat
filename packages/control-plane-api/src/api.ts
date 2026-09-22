@@ -2259,7 +2259,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * first, in adopt-serving's order: export from the script the router resolves the scope
    * to TODAY, then restore into the incoming version's script.
    *
-   * It reads nothing and carries nothing when the route does not move: the incoming
+   * After validating the incoming version, it reads no scope data and carries nothing
+   * when the route does not move: the incoming
    * version has no script of its own (co-located), the two refs are the same script, the
    * scope stays pinned to the serving script (the version pointer never touches its
    * route), or the scope's data is not in a named script. It also carries nothing on a
@@ -2288,15 +2289,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     opts: { dropServingRef?: boolean } = {},
   ): Promise<{ from: string; to: string; tables: number } | null> => {
     const resolveVersion = options.resolveVerticalVersion;
-    if (!resolveVersion || !scope.vertical) return null;
-    if (scope.servingRef && !opts.dropServingRef) return null;
+    if (!scope.vertical) return null;
     const actor = c.get('actor');
     const incoming = await admin.getVersion(actor, versionId, scope.vertical);
     // The bind refuses a version that is not admitted, except onto a preview. Check that
     // BEFORE the copy. Otherwise unreviewed code would receive the scope's data through its
     // own restore handler, only for the bind to refuse afterwards.
-    if (incoming && incoming.admission !== 'admitted' && scope.kind !== 'preview') return null;
-    const to = incoming?.deploymentRef ?? null;
+    if (!incoming) {
+      throw new ControlPlaneError(404, `unknown version ${versionId} for vertical '${scope.vertical}'`);
+    }
+    if (incoming.admission !== 'admitted' && scope.kind !== 'preview') {
+      throw new ControlPlaneError(409, `version ${versionId} is not admitted`);
+    }
+    if (!resolveVersion || (scope.servingRef && !opts.dropServingRef)) return null;
+    const to = incoming.deploymentRef ?? null;
     const bound = scope.verticalVersionId
       ? await admin.getVersion(actor, scope.verticalVersionId, scope.vertical)
       : undefined;
@@ -3938,8 +3944,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // A scope that routes by its bound version's own script (a fork, such as a forked test
   // environment `substrat scope bind` re-points on every merge) has its data carried into
   // the new version's script before the pointer moves (#1710). The snapshot is taken
-  // first, in the script the data is leaving. A scope on the serving script carries
-  // nothing, because its route does not follow the version pointer.
+  // after a successful carry, before binding, in the script the data is leaving. A scope
+  // on the serving script carries nothing, because its route does not follow the version pointer.
   app.post('/tenants/:tenantId/scopes/:scopeId/version', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -3960,16 +3966,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (vertical) {
         // Delegated path: the digest compare lives here (the in-process path does
         // it below the seam). Snapshot only a migration-crossing bind.
+        let migrationCrossing = false;
         if (scope.vertical && scope.verticalVersionId) {
           const [current, incoming] = await Promise.all([
             admin.getVersion(actor, scope.verticalVersionId, scope.vertical),
             admin.getVersion(actor, versionId, scope.vertical),
           ]);
-          if (current && incoming && current.migrationDigest !== incoming.migrationDigest) {
-            await orchestratedSnapshot(c, tenantId, scope, {});
-          }
+          migrationCrossing = Boolean(
+            current && incoming && current.migrationDigest !== incoming.migrationDigest,
+          );
         }
         await carry();
+        if (migrationCrossing) await orchestratedSnapshot(c, tenantId, scope, {});
         await admin.bindScopeVersion(actor, tenantId, scopeId, versionId);
       } else {
         await carry();
