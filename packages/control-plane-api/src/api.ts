@@ -1585,10 +1585,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // does not ride out to a browser.
   //
   // Cost: `listConnections` has no page of its own, so this loads the (filtered) fleet's
-  // connection rows on every request and pages in memory. That is one indexed SELECT over
-  // a table in the low hundreds today; past a few thousand rows it wants a keyset page
-  // pushed into the adapter, which the derived-status filter makes non-trivial (status is
-  // not a column). Filter-then-page is deliberate: paging first would hand back a short or
+  // connection rows on every request and pages in memory. Unfiltered that is a full scan
+  // of `_substrat_connections`, a table in the low hundreds today. Past ~2,000 live rows
+  // (a directory read and a response-time cost paid on every console load) it wants a
+  // keyset page pushed into the adapter, which the derived-status filter makes
+  // non-trivial, because health is not a column. No cache: a stale health view is the
+  // one thing this page must not show. Filter-then-page is deliberate: paging first would hand back a short or
   // empty page while a cursor still existed.
   app.get('/connections/health', async (c) => {
     const q = connectionHealthQuery.parse({
