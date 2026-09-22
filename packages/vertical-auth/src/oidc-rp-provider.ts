@@ -141,7 +141,8 @@ function redirectWith(location: string, cookies: string[]): Response {
 // share an issuer and must never share a verifier that admits the other's tokens.
 const bearerCache = new Map<string, AuthProvider>();
 function bearerVerifier(cfg: OidcRpConfig): AuthProvider {
-  const own = cfg.sharedIssuer && !cfg.audience ? cfg.clientId : undefined;
+  // A delivered `audience` still wins over it; `oidcAuthProvider` is where that is decided.
+  const own = cfg.sharedIssuer ? cfg.clientId : undefined;
   const key = `${cfg.issuer}|${cfg.audience ?? ''}|${own ?? ''}`;
   let p = bearerCache.get(key);
   if (!p) {
