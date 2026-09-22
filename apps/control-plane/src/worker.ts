@@ -25,6 +25,7 @@ import {
   emailRelayRequest,
   PROVISION_SIBLING_KIND,
   ARCHIVE_SCOPE_KIND,
+  PEER_INVOKE_KIND,
   PROVISION_TENANT_KIND,
   SET_ENTITLEMENTS_KIND,
   MODEL_USAGE_KIND,
@@ -50,6 +51,7 @@ import {
   defineScopeDO,
   type ConnectorDelegation,
   type EventDrainDelegation,
+  type PeerSwitchDelegation,
   type SystemSwitchDelegation,
 } from '@substrat-run/adapter-cloudflare';
 import {
@@ -84,6 +86,7 @@ import {
   ConnectUrlRelayError,
   provisionSiblingHandler,
   archiveScopeHandler,
+  peerInvokeHandler,
   provisionTenantHandler,
   setEntitlementsHandler,
   modelUsageHandler,
@@ -797,6 +800,46 @@ function systemSwitchDelegationFor(env: Env): SystemSwitchDelegation | undefined
 }
 
 /**
+ * The peer kill switch's platform half (#1706): `revokeFromPeer` / `restoreToPeer` land on
+ * the host below, whose own `SCOPE` namespace is the module-less placeholder — a hosted
+ * scope's `vertical:<slug>` grants, which decide what another of the tenant's apps may do
+ * here, live in its vertical's dispatch deployment. This is the reach, over the same
+ * `/internal/*` seam and the same serving-ref → bound-version → prod ladder the schedule
+ * switch uses. Undefined without DISPATCH/PLATFORM_SECRET, and then the host refuses a
+ * scope served elsewhere outright — never a peer reported cut off while its calls keep
+ * being admitted.
+ */
+function peerSwitchDelegationFor(env: Env): PeerSwitchDelegation | undefined {
+  if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
+  return {
+    switch: async (a) => {
+      const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+      const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId);
+      const client = rec?.vertical ? await resolveVerticalForScopeFor(env)(rec) : undefined;
+      if (!client) {
+        throw new Error(
+          `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — ` +
+            `cannot switch peer '${a.vertical}' ${a.to}`,
+        );
+      }
+      return client.peerSwitch({ scopeId: a.scopeId, vertical: a.vertical, to: a.to });
+    },
+    status: async (a) => {
+      const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+      const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId);
+      const client = rec?.vertical ? await resolveVerticalForScopeFor(env)(rec) : undefined;
+      if (!client) {
+        throw new Error(
+          `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — ` +
+            `cannot read which peers may call it`,
+        );
+      }
+      return client.peerGrantsStatus({ scopeId: a.scopeId });
+    },
+  };
+}
+
+/**
  * The Tier-2 drain's platform half (#1334): the sweep's `readUndrainedEvents` and
  * `markEventsDrained` land on the host below, whose own `SCOPE` namespace is the
  * module-less placeholder — a hosted scope's outbox lives in its vertical's dispatch
@@ -886,6 +929,9 @@ function hostFor(env: Env): CloudflareScopeHost {
     // The schedule kill switch (#1666): moved in the deployment serving the scope, for
     // the same reason again — and audited here.
     systemSwitchDelegation: systemSwitchDelegationFor(env),
+    // The peer kill switch (#1706): the same seam once more, for the grants that decide
+    // what another of the tenant's apps may do in this scope.
+    peerSwitchDelegation: peerSwitchDelegationFor(env),
     // #1691: one data point per connector call, beside the health line. Absent binding ⇒
     // the host's no-op default.
     ...(env.CONNECTOR_ANALYTICS
@@ -1095,6 +1141,11 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
         patchScriptBindings: patchScriptBindingsFor(env),
       }),
       [ARCHIVE_SCOPE_KIND]: archiveScopeHandler({ host, actor: SWEEP_ACTOR }),
+      // #1706: the asynchronous leg of a peer call. Module code runs inside the scope DO,
+      // where it has no network and no egress worker to name it, so a handler asks for the
+      // call instead and this delivers it — with the caller taken from the scope this drain
+      // found the row in, never from the payload.
+      [PEER_INVOKE_KIND]: peerInvokeHandler({ host, actor: SWEEP_ACTOR, resolveVerticalForScope }),
       [PROVISION_TENANT_KIND]: provisionTenantHandler(managedTenantDeps),
       [SET_ENTITLEMENTS_KIND]: setEntitlementsHandler(managedTenantDeps),
       // #1054: a vertical's model host produced a usage line; the platform's ledger (meter 3).

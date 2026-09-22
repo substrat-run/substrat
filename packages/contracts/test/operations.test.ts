@@ -13,7 +13,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { defineEntities } from '../src/model.js';
-import { defineOperations, eventsEmittedBy, permissionsUsedBy } from '../src/operations.js';
+import { defineOperations, eventsEmittedBy, peersDeclaredBy, permissionsUsedBy } from '../src/operations.js';
 
 const entities = defineEntities({
   customer: {
@@ -469,4 +469,115 @@ composed({
       payload: ['id', 'instance_ref'],
     },
   },
+});
+
+/**
+ * `peersDeclaredBy` (#1706) — the `peers` a module declares, derived from the operations
+ * each peer may invoke rather than written beside them.
+ *
+ * The failure it exists to prevent is silent in the worst direction: a peer allowlisted for
+ * an operation whose key it was not given is refused at that operation *every time*, and the
+ * refusal looks exactly like the door working. Reading the keys off the operations makes the
+ * two halves one fact; the throws below are what stop a hand-written list re-introducing the
+ * gap.
+ */
+describe('peersDeclaredBy (#1706)', () => {
+  const operations = ops({
+    'customer/create': {
+      summary: 'Register a customer',
+      permission: 'customer:manage',
+      input: z.object({ name: z.string() }),
+      output: z.object({ id: z.string() }),
+    },
+    'contract/open': {
+      summary: 'Open a contract',
+      permission: 'contract:write',
+      input: z.object({ customerId: z.string() }),
+      output: z.object({ contractId: z.string() }),
+    },
+    'customer/list': {
+      summary: 'List customers',
+      narrows: { reason: 'a salesperson sees their own', checks: ['customer:manage'] },
+      input: z.object({}),
+      output: z.object({ rows: z.array(z.string()) }),
+    },
+  });
+
+  it('derives each peer’s keys from the operations it may invoke', () => {
+    expect(
+      peersDeclaredBy(operations, {
+        'acme/board-room': ['customer/list', 'customer/create'],
+      }),
+    ).toEqual({
+      peers: [
+        {
+          vertical: 'acme/board-room',
+          // Sorted, so the artifact of record is deterministic.
+          operations: ['customer/create', 'customer/list'],
+          // Read off those two operations — an entity-narrowed check counts, exactly as it
+          // does for this module's own surface.
+          permissions: ['customer:manage'],
+        },
+      ],
+    });
+  });
+
+  it('is deterministic across peers, and derives each one independently', () => {
+    const { peers } = peersDeclaredBy(operations, {
+      'acme/ledger': ['contract/open'],
+      'acme/board-room': ['customer/list'],
+    });
+    expect(peers.map((p) => p.vertical)).toEqual(['acme/board-room', 'acme/ledger']);
+    expect(peers.map((p) => p.permissions)).toEqual([['customer:manage'], ['contract:write']]);
+  });
+
+  it('a receive-only peer (#1705) states its keys, since it has no operations to read them from', () => {
+    expect(peersDeclaredBy(operations, { 'acme/ledger': { permissions: ['customer:manage'] } })).toEqual({
+      peers: [{ vertical: 'acme/ledger', operations: [], permissions: ['customer:manage'] }],
+    });
+  });
+
+  it('refuses a receive-only peer that states nothing — the contract requires a key', () => {
+    expect(() => peersDeclaredBy(operations, { 'acme/ledger': [] })).toThrow(/names no operation and no permissions/);
+    expect(() => peersDeclaredBy(operations, { 'acme/ledger': {} })).toThrow(/names no operation and no permissions/);
+  });
+
+  it('refuses an operation this module does not declare', () => {
+    expect(() =>
+      // @ts-expect-error — not a key of this module's operations, which is the point
+      peersDeclaredBy(operations, { 'acme/board-room': ['customer/invent'] }),
+    ).toThrow(/does not declare/);
+  });
+
+  it('refuses a stated key set that omits one its own allowlisted operations check', () => {
+    // The whole reason the keys are derived: this peer may call `contract/open`, which checks
+    // `contract:write`, and would be refused there on every call while the declaration looked
+    // deliberate. An explicit list may add, never silently subtract.
+    expect(() =>
+      peersDeclaredBy(operations, {
+        'acme/board-room': { operations: ['contract/open'], permissions: ['customer:manage'] },
+      }),
+    ).toThrow(/would be refused at its own allowlisted calls/);
+  });
+
+  it('a stated key set may be WIDER than the operations need', () => {
+    // Legitimate: a peer that also receives events (#1705) needs the export's key, which no
+    // operation of its own checks.
+    expect(
+      peersDeclaredBy(operations, {
+        'acme/board-room': { operations: ['contract/open'], permissions: ['contract:write', 'customer:manage'] },
+      }).peers[0]!.permissions,
+    ).toEqual(['contract:write', 'customer:manage']);
+  });
+
+  it('refuses a peer that would hold nothing at all — the last line, below the compiler', () => {
+    // `defineOperations` already refuses an operation that checks nothing, so reaching this
+    // needs a cast. The guard stays because the artifact it protects (`peerSpec`) requires at
+    // least one key, and a peer holding none is a declaration that can only ever be refused —
+    // a clear message here beats a schema error two layers down. The cast is what pins it.
+    const noCheck = { 'ping/run': { summary: 'ping' } } as unknown as Record<string, object>;
+    expect(() => peersDeclaredBy(noCheck, { 'acme/board-room': ['ping/run'] })).toThrow(
+      /would hold no permission/,
+    );
+  });
 });

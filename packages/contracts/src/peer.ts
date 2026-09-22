@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { permissionKey, scopeId, tenantId, verticalSlug } from './ids.js';
+import { instant, permissionKey, platformActorId, scopeId, tenantId, verticalSlug } from './ids.js';
 
 /**
  * Peers (#1706): another vertical of the SAME tenant, calling this one's operations through the
@@ -140,3 +140,39 @@ export type PeerSwitchResult = z.infer<typeof peerSwitchResult>;
  */
 export const peerCoverage = z.object({ permission: permissionKey, held: z.boolean() });
 export type PeerCoverage = z.infer<typeof peerCoverage>;
+
+/**
+ * Where ONE peer stands on one scope (#1706) — the bare position, with no audit join: the
+ * honest answer a vertical's own deployment can give, since it holds no admin log.
+ *
+ * - `on`: a live grant and no OFF marker — its calls are admitted.
+ * - `off`: a live OFF marker. Every call is refused at the door until `restoreToPeer`.
+ * - `ungranted`: a row for this peer exists but nothing of it is live — its grants were
+ *   tombstoned by something other than the switch (a raw write, a reconcile that dropped it),
+ *   or the scope predates the manifest version that declares it. Quiet, not an error.
+ *
+ * A peer the scope holds no row for at all is simply absent from the list. "Not installed in
+ * this tenant" is a fact the DIRECTORY holds, not the scope's storage, and the surfaces that
+ * show a tenant its peers join the two.
+ */
+export const peerGrantsEntry = z.object({
+  vertical: verticalSlug,
+  calls: z.enum(['on', 'off', 'ungranted']),
+});
+export type PeerGrantsEntry = z.infer<typeof peerGrantsEntry>;
+
+/**
+ * The per-scope status read, as the control plane answers it: the position above, plus the
+ * one thing only the platform can add — while a peer is off, WHO switched it off, when and
+ * why, from the admin log's `revokeFromPeer` intent row still in force.
+ */
+export const peerGrantsStatusEntry = peerGrantsEntry.extend({
+  switchedOff: z
+    .object({
+      actor: platformActorId,
+      reason: z.string(),
+      at: instant,
+    })
+    .nullable(),
+});
+export type PeerGrantsStatusEntry = z.infer<typeof peerGrantsStatusEntry>;

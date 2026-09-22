@@ -18,6 +18,8 @@ import type {
   PreviewClientRetire,
   PrincipalId,
   RetiredPreviewClients,
+  PeerGrantsEntry,
+  PeerSwitchOutcome,
   SystemSwitchOutcome,
   SystemScheduleEntry,
   ConnectionGrantRecord,
@@ -62,6 +64,8 @@ import {
   ownerClaimLink,
   previewClientClaim,
   retiredPreviewClients,
+  peerGrantsEntry,
+  peerSwitchOutcome,
   systemSwitchOutcome,
   systemScheduleEntry,
 } from '@substrat-run/contracts';
@@ -697,6 +701,92 @@ export class VerticalClient {
   }
 
   /**
+   * The read half of the peer kill switch's status (#1706): every peer the deployment
+   * serving this scope holds or has held grants for, and where each stands. Mirrors
+   * `peerSwitch`'s seam and `systemGrantsStatus`'s skew rule exactly — a 404 or an SPA
+   * shell are the deployment's own proof it predates this read and become a 501 that says
+   * to redeploy; a wrong-shaped 200 is not that proof and surfaces as the 502 it is.
+   */
+  async peerGrantsStatus(input: { scopeId: ScopeId }): Promise<PeerGrantsEntry[]> {
+    const verb = 'peer-grants';
+    const predates = (): ControlPlaneError =>
+      new ControlPlaneError(
+        501,
+        `the deployment serving scope ${input.scopeId} predates the peer switch's status read (#1706) — ` +
+          `redeploy the vertical, then retry.`,
+      );
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.reach(verb, () =>
+      this.options.fetch(`${base}/internal/peer-grants?scopeId=${encodeURIComponent(input.scopeId)}`, {
+        method: 'GET',
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (res.status === 404) throw predates();
+    if (!res.ok) throw await this.refusal(verb, res);
+    const text = await res.text();
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      throw predates();
+    }
+    const parsed = peerGrantsEntry.array().safeParse(raw);
+    if (!parsed.success) {
+      throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`);
+    }
+    return parsed.data;
+  }
+
+  /**
+   * Move one PEER's kill switch in the deployment serving the scope (#1706) — the far end
+   * of `revokeFromPeer` / `restoreToPeer` for a hosted scope, whose `vertical:<slug>` grants
+   * live there and nowhere the shared control plane can reach.
+   *
+   * The seam, the skew rule and the honesty rule are `systemSwitch`'s, for the same reasons:
+   * a **404** (no such route) or an **SPA shell** (a 200 that is not JSON) are the
+   * deployment's own proof that it predates this route and therefore cannot have switched
+   * anything — the route itself answers a peer the scope holds nothing for with a 200
+   * `held: false`, never a 404. Everything else surfaces as the failure it is, because the
+   * request may have landed and the switch may have moved before the answer was lost.
+   */
+  async peerSwitch(input: { scopeId: ScopeId; vertical: string; to: 'on' | 'off' }): Promise<PeerSwitchOutcome> {
+    const verb = 'peer-switch';
+    const predates = (): ControlPlaneError =>
+      new ControlPlaneError(
+        501,
+        `the deployment serving scope ${input.scopeId} predates the peer kill switch (#1706) — ` +
+          `redeploy the vertical, then retry. Nothing was switched.`,
+      );
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.reach(verb, () =>
+      this.options.fetch(`${base}/internal/peer-switch`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(input),
+      }),
+    );
+    if (res.status === 404) throw predates();
+    if (!res.ok) throw await this.refusal(verb, res);
+    const text = await res.text();
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      throw predates();
+    }
+    const parsed = peerSwitchOutcome.safeParse(raw);
+    if (!parsed.success) {
+      throw new ControlPlaneError(
+        502,
+        `vertical answered ${verb} with an unexpected shape — the switch for peer '${input.vertical}' on ` +
+          `scope ${input.scopeId} may or may not have moved. Confirm its position before retrying.`,
+      );
+    }
+    return parsed.data;
+  }
+
+  /**
    * A preview's own client at a team auth-server (#1704, `@substrat-run/contracts`'
    * `preview-client.ts`): does the parent sign in at THIS issuer, mint the preview a client
    * here, delete the preview's clients. Addressed to the ISSUER's deployment (this client),
@@ -1079,6 +1169,35 @@ export class VerticalClient {
   }
 
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
+  /**
+   * Invoke ONE operation on this deployment as a PEER vertical (#1706) — the far end of an
+   * asynchronous peer call, whose caller the platform took from the scope it drained the
+   * intent from. The door at the other end admits it (declared peer, switch on, operation
+   * allowlisted) and every check inside runs as `{ vertical, scope }`.
+   */
+  async verticalInvoke(input: {
+    caller: { vertical: string; scope: ScopeId };
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    operation: string;
+    input?: unknown;
+    idempotencyKey?: string;
+  }): Promise<unknown> {
+    const { result } = await this.postInternal<{ result: unknown }>(
+      '/internal/vertical-invoke',
+      {
+        caller: input.caller,
+        tenantId: input.tenantId,
+        scopeId: input.scopeId,
+        operation: input.operation,
+        ...(input.input === undefined ? {} : { input: input.input }),
+        ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
+      },
+      'peer call',
+    );
+    return result;
+  }
+
   private async postInternal<T>(path: string, body: unknown, verb: string): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const res = await this.reach(verb, () =>

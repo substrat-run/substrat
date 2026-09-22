@@ -85,7 +85,16 @@ export const SYSTEM_SWITCH_OFF_PREDICATE = `EXISTS (SELECT 1 FROM _substrat_tupl
  * Object caps its patterns (#1655); an exact prefix compare is neither.
  */
 export function systemScheduleState(db: SwitchSql, moduleId: string, now: string): SystemScheduleState {
-  const subject = subjectOf(moduleId);
+  return subjectGrantState(db, subjectOf(moduleId), now);
+}
+
+/**
+ * The same gate for ANY switched subject (#1706) — `system:<module>` above, `vertical:<slug>`
+ * for a peer. One statement, one spelling: the peer switch's status read must not be able to
+ * disagree with the schedule switch's about what "off" and "ungranted" mean, and the surest
+ * way to hold that is for there to be one predicate rather than two that look alike.
+ */
+export function subjectGrantState(db: SwitchSql, subject: string, now: string): SystemScheduleState {
   const row = db.all(
     `SELECT
        ${SYSTEM_SWITCH_OFF_PREDICATE} AS off,

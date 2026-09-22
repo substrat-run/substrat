@@ -61,7 +61,13 @@
  * corollary in D-46.
  */
 
-import { isPlatformHost, matchesOutboundHost, parsePlatformBaseDomains } from '@substrat-run/contracts';
+import {
+  isPeerCallHost,
+  isPlatformHost,
+  matchesOutboundHost,
+  parsePlatformBaseDomains,
+  peerCallRequest,
+} from '@substrat-run/contracts';
 
 /** What the router passes per dispatch (its `OutboundPolicy` — one shape, two ends). */
 export interface OutboundPolicy {
@@ -72,9 +78,30 @@ export interface OutboundPolicy {
   /** The declared outbound surface of the version the script serves. `null` = a
    *  pre-#303 manifest: unenforced (metered only) until the vertical's next push. */
   hosts: string[] | null;
+  /**
+   * #1706: the rest of the caller's identity on a peer call — the scope this dispatch
+   * serves, the peer calls its code declared (`substrat.calls`; `null` = a version pushed
+   * before the declaration), and how deep a chain of peer calls it already sits in. Set by
+   * the router at dispatch, like everything else here, so a script cannot change who it is.
+   * Optional so an older router's dispatch still parses — a peer call then has no identity
+   * and is refused, which is the safe direction.
+   */
+  scope?: string;
+  calls?: string[] | null;
+  depth?: number;
 }
 
 export interface Env {
+  /**
+   * The router's PEER entrypoint (#1706) — `substrat-router`'s `PeerCalls` class, bound with
+   * `entrypoint`. A peer call is not an HTTP forward: what crosses is the CALLER, which the
+   * router set as this dispatch's parameters, plus the target and operation from the body.
+   * Absent (an older environment) ⇒ every peer call is refused, never passed through: an
+   * address nobody routes must not become a request to the internet.
+   */
+  // `unknown` on both arguments deliberately: the router PARSES them (`peerCaller`,
+  // `peerCallRequest`), so this worker cannot be the place that decides a caller is valid.
+  PEER_CALLS?: { invoke(caller: unknown, request: unknown): Promise<PeerCallOutcome> };
   /**
    * The environment-wide router, as a service binding (→ `substrat-router`). Platform-bound
    * egress is handed here as a direct in-process call; the router resolves the destination
@@ -139,8 +166,11 @@ function relayHost(env: Env): string | null {
   }
 }
 
-/** Where a subrequest ended up: the five verdicts the meter distinguishes. */
-type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused';
+/** What the router's peer entrypoint answers. */
+type PeerCallOutcome = { ok: true; result: unknown } | { ok: false; status: number; code: string; message: string };
+
+/** Where a subrequest ended up: the six verdicts the meter distinguishes. */
+type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused' | 'peer';
 
 /** One datapoint per decision — append-only shape, like the router's request meter:
  *  index [slug]; blobs [hostname, verdict, tenant]. */
@@ -155,9 +185,70 @@ function meter(env: Env, hostname: string, verdict: Verdict): void {
   }
 }
 
+/**
+ * Hand one peer call to the router's entrypoint (#1706).
+ *
+ * The caller is assembled from the DISPATCH PARAMETERS and nothing else. A dispatch that
+ * carries no identity — an older router, or a context that never went through one — is
+ * refused here rather than forwarded, because a peer call whose caller cannot be named is
+ * exactly what this whole mechanism exists to prevent.
+ */
+async function peerCall(request: Request, env: Env): Promise<Response> {
+  const problem = (status: number, error: string): Response =>
+    new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } });
+  const policy = env.OUTBOUND_POLICY;
+  if (!env.PEER_CALLS) {
+    // Name the binding and the worker it belongs on. A refusal that says only "not
+    // available" sends whoever reads it looking through a vertical's own code for a bug
+    // that is one line of deployment config in a different repo directory.
+    return problem(
+      503,
+      'peer calls are not available in this environment: the egress worker ' +
+        '(substrat-vertical-egress) has no PEER_CALLS binding to the router\'s PeerCalls ' +
+        'entrypoint. Add it to apps/vertical-egress/wrangler.jsonc and redeploy the egress ' +
+        'worker (#1706).',
+    );
+  }
+  if (!policy?.slug || !policy.tenant || !policy.scope) {
+    return problem(
+      403,
+      'peer call refused: this call carries no caller identity. A peer call is made from a ' +
+        "vertical's request handler, through the platform — not from inside a Durable Object, " +
+        'and not from a script the router did not dispatch (#1706).',
+    );
+  }
+  const parsed = peerCallRequest.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    return problem(400, 'peer call refused: the body names a target vertical and an operation (#1706)');
+  }
+  const outcome = await env.PEER_CALLS.invoke(
+    {
+      vertical: policy.slug,
+      tenantId: policy.tenant,
+      scopeId: policy.scope,
+      calls: policy.calls ?? null,
+      depth: policy.depth ?? 0,
+    },
+    parsed.data,
+  );
+  if (!outcome.ok) return problem(outcome.status, outcome.message);
+  return new Response(JSON.stringify({ result: outcome.result ?? null }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const hostname = new URL(request.url).hostname;
+    // #1706: a PEER call, checked before everything else. It is neither platform egress nor a
+    // third-party destination, and its address (`peer.substrat.internal`) is in no DNS zone —
+    // so a call made where this worker cannot see it (from inside a Durable Object, which
+    // outbound workers do not intercept) fails to resolve instead of leaving the isolate.
+    if (isPeerCallHost(hostname)) {
+      meter(env, hostname, 'peer');
+      return peerCall(request, env);
+    }
     if (isPlatformHost(hostname, baseDomains(env))) {
       // Same-zone: hand it to the router over the service binding so it re-enters
       // resolution+dispatch instead of dying at the edge (522). The router strips any

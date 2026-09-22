@@ -277,6 +277,11 @@ describe('router', () => {
       slug: 'fsm',
       tenant: T,
       hosts: ['api.scrive.com', '*.googleapis.com'],
+      // #1706: the rest of the caller's identity, for a peer call this dispatch might make.
+      // A request off the internet starts a chain, so its depth is 0.
+      scope: S,
+      calls: null,
+      depth: 0,
     });
   });
 

@@ -36,6 +36,7 @@ export * from './events.js';
 export * from './vertical-events.js';
 export * from './capability.js';
 export * from './peer.js';
+export * from './peer-transport.js';
 export * from './errors.js';
 export * from './platform-request.js';
 export * from './denial.js';

@@ -24,6 +24,7 @@ import {
 } from '../lib/cf-links';
 import { walkAll, type Api } from '../lib/api';
 import { DenialLog } from '../patterns/DenialLog';
+import { PeersCard } from '../patterns/PeersCard';
 import { SchedulesCard } from '../patterns/SchedulesCard';
 
 export interface ScopeDetailProps {
@@ -447,6 +448,7 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
       {/* The #1666 kill switch (#1675): one module's scheduled work, on or off, on
           THIS scope — pulled today by a curl on staff routes the console now fronts. */}
       <SchedulesCard api={api} scope={scope} onToast={onToast} />
+      <PeersCard api={api} scope={scope} onToast={onToast} />
 
       {/* Reap confirmation — the type-to-arm gate (TenantDetail suspend precedent). Reap
           is the one scope action with no restore: it wipes the DO storage for good. The

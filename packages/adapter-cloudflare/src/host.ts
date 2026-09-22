@@ -84,6 +84,8 @@ import {
   type SystemSwitchResult,
   type SystemSwitchOutcome,
   type SystemScheduleEntry,
+  type PeerGrantsEntry,
+  type PeerGrantsStatusEntry,
   type SystemGrantsStatusEntry,
   type CreateConnectionInput,
   type AccessLogEntry,
@@ -172,10 +174,12 @@ import {
   type TenantRole,
   type TenantStatus,
   type TenantStoreHandle,
+  callsOfManifestJson,
   outboundOfManifestJson,
   substratError,
   redrainEventsInput,
   peerCoverage,
+  peerGrantsEntry,
   peerSwitch,
   peerSwitchOutcome,
   verticalCaller,
@@ -287,6 +291,7 @@ import {
   type UndrainedRead,
   type SwitchOutcome,
   type SystemScheduleState,
+  type PeerGrantsRow,
   type SystemGrantsEntry,
   systemSwitchedOffMessage,
   CrossVerticalRegistry,
@@ -974,6 +979,9 @@ interface ScopeStubRpc {
   /** Every module this scope holds or has held system authority for, and where each
    *  stands (#1674) — the kernel's `systemGrantsStatus`, run in the scope's own storage. */
   systemGrantsStatus(): Promise<SystemGrantsEntry[]>;
+  /** Where every peer this scope holds or has held grants for stands (#1706) — the kernel's
+   *  `peerGrantsStatus`, run in the scope's own storage. */
+  peerGrantsStatus(): Promise<PeerGrantsRow[]>;
   /** `grantToSystem`'s scope-level write (#1666): `false`, and nothing written, while the
    *  module's schedule kill switch is off on this scope. */
   writeSystemGrant(moduleId: string, relation: string, object: string, expiresAt: string | null): Promise<boolean>;
@@ -1318,6 +1326,39 @@ export interface SystemSwitchDelegation {
 }
 
 /**
+ * The PEER kill switch's reach into the deployment actually serving a scope (#1706).
+ *
+ * `SystemSwitchDelegation` with the subject swapped, and it exists for the identical
+ * reason: a hosted scope's `vertical:<slug>` grants — what one vertical may do when it
+ * calls another's operations — live in its vertical's dispatch deployment, and the shared
+ * control plane's own `SCOPE` namespace is the module-less placeholder. A switch written
+ * there tombstones nothing a peer call will ever read, so the tenant would be told the peer
+ * was cut off while every call it makes keeps being admitted. That is the one failure this
+ * switch must never have.
+ *
+ * Separate from `SystemSwitchDelegation` rather than folded into it: they cross the same
+ * `/internal/*` seam but answer about different subjects, and a deployment old enough to
+ * serve one route and not the other must be able to say so per route. The audit rows for
+ * both stay on this side. Set only on the shared control plane's host.
+ */
+export interface PeerSwitchDelegation {
+  switch(args: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    vertical: string;
+    to: 'on' | 'off';
+  }): Promise<SwitchOutcome>;
+  /**
+   * The read half: where every peer this scope holds or has held grants for stands. Same
+   * reach as `switch` — the same seam, the same deployment, the same "who actually holds
+   * the grants" answer — so the two can never disagree about what a hosted scope shows.
+   * The bare position only: who switched a peer off, and why, is the admin log's, and the
+   * admin log is the control plane's own store.
+   */
+  status(args: { tenantId: TenantId; scopeId: ScopeId }): Promise<PeerGrantsEntry[]>;
+}
+
+/**
  * The Tier-2 drain's reach into the deployment actually serving a scope (#1334).
  *
  * The same problem `ConnectorDelegation` solves, for the other direction: on the shared
@@ -1455,6 +1496,13 @@ export interface CloudflareScopeHostOptions {
    * unset and switches in its own scope DO.
    */
   systemSwitchDelegation?: SystemSwitchDelegation;
+  /**
+   * #1706: route the peer kill switch (`revokeFromPeer` / `restoreToPeer`) to the deployment
+   * actually serving the scope. Set only on the shared control plane's host, exactly like
+   * `systemSwitchDelegation` and for the same reason; unset, a scope served elsewhere is
+   * refused `unavailable` rather than switched in the placeholder namespace.
+   */
+  peerSwitchDelegation?: PeerSwitchDelegation;
   /**
    * #1334: route the Tier-2 drain's read and stamp to the deployment actually serving
    * the scope. Set only on the shared control plane's host, exactly like
@@ -1603,6 +1651,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly eventDrainDelegation?: EventDrainDelegation;
   /** #1666: the schedule kill switch's reach into the deployment serving a scope. */
   private readonly systemSwitchDelegation?: SystemSwitchDelegation;
+  /** #1706: the peer kill switch's reach into the deployment serving a scope. */
+  private readonly peerSwitchDelegation?: PeerSwitchDelegation;
 
   /**
    * MUST be constructed per request. Never cache an instance across requests.
@@ -1631,6 +1681,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.connectorDelegation = options.connectorDelegation;
     this.eventDrainDelegation = options.eventDrainDelegation;
     this.systemSwitchDelegation = options.systemSwitchDelegation;
+    this.peerSwitchDelegation = options.peerSwitchDelegation;
     this.admin = this.buildAdmin();
   }
 
@@ -3259,7 +3310,9 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   private get servesScopesElsewhere(): boolean {
-    return Boolean(this.connectorDelegation || this.systemSwitchDelegation || this.eventDrainDelegation);
+    return Boolean(
+      this.connectorDelegation || this.systemSwitchDelegation || this.peerSwitchDelegation || this.eventDrainDelegation,
+    );
   }
 
   /**
@@ -3664,6 +3717,7 @@ export class CloudflareScopeHost implements ScopeHost {
         admissionNote: r.admission_note,
         origin: r.origin_json ? JSON.parse(r.origin_json) : null,
         outbound: outboundOfManifestJson(r.manifest_json),
+        calls: callsOfManifestJson(r.manifest_json),
         createdAt: r.created_at,
       });
 
@@ -3792,9 +3846,10 @@ export class CloudflareScopeHost implements ScopeHost {
      */
     /**
      * #1706: move one PEER's kill switch on one scope — see `HostAdmin.revokeFromPeer`. The
-     * schedule switch's audit discipline (intent first, outcome after, every attempt). Reaches
-     * the scope's own ScopeDO; on the SHARED control plane a scope served by a vertical's own
-     * deployment is refused `unavailable` (`peerScopeGate`) until the verb is delegated there.
+     * schedule switch's audit discipline (intent first, outcome after, every attempt) and,
+     * since part 3, its delegation: a scope served by a vertical's own deployment is switched
+     * THERE, over `PeerSwitchDelegation`. Without one configured the scope is still refused
+     * `unavailable` (`peerScopeGate`) rather than switched in the placeholder namespace.
      */
     const switchPeerAt = async (
       actor: PlatformActorId,
@@ -3809,15 +3864,32 @@ export class CloudflareScopeHost implements ScopeHost {
         if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
         vertical = rec.vertical;
       }
-      await this.peerScopeGate(tenantId, scopeId, to === 'off' ? 'revokeFromPeer' : 'restoreToPeer');
-      const operationId = ulid();
       const action = to === 'off' ? 'revokeFromPeer' : 'restoreToPeer';
+      // Where the write lands is the whole point of this branch (#1706 part 3, mirroring
+      // #1666). A scope bound to a vertical is served by that vertical's own deployment, and
+      // its `vertical:<slug>` grants live there; switching it in the shared control plane's
+      // placeholder namespace would tombstone nothing and report a peer cut off while every
+      // call it makes kept being admitted. A scope bound to NO vertical has its store here,
+      // so it switches here — delegating it would throw "no deployment serving scope".
+      // With no delegation configured the old refusal stands, loudly, rather than a write
+      // into the wrong namespace.
+      const delegation = this.cpLess || vertical !== null ? this.peerSwitchDelegation : undefined;
+      if (delegation) {
+        // The gate's lifecycle half still runs (a suspended tenant or scope cannot be
+        // switched); its `scopeStub` half is what the delegation replaces.
+        await this.cp.validateScopeAccess(tenantId, scopeId);
+      } else {
+        await this.peerScopeGate(tenantId, scopeId, action);
+      }
+      const operationId = ulid();
       const target = { tenantId, scopeId, vertical };
       const base = { operationId, vertical: input.vertical, calls: to };
       await this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
       let outcome: SwitchOutcome;
       try {
-        outcome = await this.scopeStub(scopeId).switchPeer(input.vertical, scopeId, to, new Date().toISOString());
+        outcome = delegation
+          ? await delegation.switch({ tenantId, scopeId, vertical: input.vertical, to })
+          : await this.scopeStub(scopeId).switchPeer(input.vertical, scopeId, to, new Date().toISOString());
       } catch (err) {
         await this.recordAdmin(actor, action, target, null, {
           ...base,
@@ -3921,14 +3993,18 @@ export class CloudflareScopeHost implements ScopeHost {
      * scope has never switched off before, so it can never be what a currently-off module
      * is explained by — this is belt-and-braces, not a case that is expected to fire).
      */
-    const lastSwitchedOff = async (
+    const lastSwitchedOffBy = async (
       tenantId: TenantId,
       scopeId: ScopeId,
-      moduleIds: Set<string>,
+      /** The revoking action, and the payload field naming its subject (#1706). */
+      action: 'revokeFromSystem' | 'revokeFromPeer',
+      key: 'moduleId' | 'vertical',
+      subjects: Set<string>,
     ): Promise<Map<string, { actor: PlatformActorId; reason: string; at: Instant }>> => {
+      const moduleIds = subjects;
       // `order: 'desc'` is load-bearing: the loop below takes the FIRST intent it sees per
       // module as the latest one, and `auditLog`'s own default is 'asc' (oldest first).
-      const rows = await this.cp.auditLog({ tenantId, scopeId, action: ['revokeFromSystem'], order: 'desc' });
+      const rows = await this.cp.auditLog({ tenantId, scopeId, action: [action], order: 'desc' });
       const appliedOps = new Set<string>();
       for (const row of rows) {
         const payload = row.after as { phase?: string; operationId?: string } | null;
@@ -3937,16 +4013,23 @@ export class CloudflareScopeHost implements ScopeHost {
       const result = new Map<string, { actor: PlatformActorId; reason: string; at: Instant }>();
       for (const row of rows) {
         if (result.size === moduleIds.size) break;
-        const payload = row.after as
-          | { phase?: string; operationId?: string; moduleId?: string; reason?: string }
-          | null;
-        if (!payload || payload.phase !== 'intent' || !payload.operationId || !payload.moduleId) continue;
-        if (!moduleIds.has(payload.moduleId) || result.has(payload.moduleId)) continue;
-        if (!appliedOps.has(payload.operationId) || typeof payload.reason !== 'string') continue;
-        result.set(payload.moduleId, { actor: row.actor, reason: payload.reason, at: row.at });
+        const payload = row.after as Record<string, unknown> | null;
+        const subject = payload?.[key];
+        if (!payload || payload.phase !== 'intent' || !payload.operationId || typeof subject !== 'string') continue;
+        if (!moduleIds.has(subject) || result.has(subject)) continue;
+        if (!appliedOps.has(String(payload.operationId)) || typeof payload.reason !== 'string') continue;
+        result.set(subject, { actor: row.actor, reason: payload.reason, at: row.at });
       }
       return result;
     };
+
+    /** #1674's join, bound to the schedule switch — the shape every caller here used. */
+    const lastSwitchedOff = async (
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      moduleIds: Set<string>,
+    ): Promise<Map<string, { actor: PlatformActorId; reason: string; at: Instant }>> =>
+      lastSwitchedOffBy(tenantId, scopeId, 'revokeFromSystem', 'moduleId', moduleIds);
 
     /**
      * The status read (#1674): every module this scope holds or has held system authority
@@ -3997,6 +4080,51 @@ export class CloudflareScopeHost implements ScopeHost {
       // K-24: reading the switch's position and any live incident reason is itself
       // access-logged, the same as every other HostAdmin read.
       await this.recordAccess(actor, 'systemGrantsStatus', { tenantId, scopeId }, null, result.length);
+      return result;
+    };
+
+    /**
+     * The peer switch's status read (#1706) — `systemGrantsStatusOf` with the subject
+     * swapped, and delegated for the same reason the write is: a hosted scope's
+     * `vertical:<slug>` grants live in the deployment serving it, and this host's own
+     * namespace holds a placeholder no peer call ever consults. Reading the placeholder
+     * would be confidently wrong rather than loudly unavailable, which on a kill switch's
+     * status is the worse of the two, so a hosted scope with no delegation configured is
+     * refused. The admin-log join happens HERE only — the deployment holds no admin log.
+     */
+    const peerGrantsStatusOf = async (
+      actor: PlatformActorId,
+      node: { tenantId: TenantId; scopeId: ScopeId },
+    ): Promise<PeerGrantsStatusEntry[]> => {
+      const { tenantId, scopeId } = node;
+      let vertical: string | null = null;
+      if (!this.cpLess) {
+        const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        vertical = rec.vertical;
+      }
+      if (!this.cpLess && vertical !== null && !this.peerSwitchDelegation) {
+        throw substratError(
+          'unavailable',
+          `no delegation configured for hosted scope ${scopeId} (vertical '${vertical}') — cannot read which ` +
+            `peers may call it`,
+        );
+      }
+      const delegation = this.cpLess || vertical !== null ? this.peerSwitchDelegation : undefined;
+      const states = delegation
+        ? await delegation.status({ tenantId, scopeId })
+        : peerGrantsEntry.array().parse(await this.scopeStub(scopeId).peerGrantsStatus());
+      const offPeers = new Set(states.filter((p) => p.calls === 'off').map((p) => p.vertical as string));
+      const explanations =
+        offPeers.size > 0
+          ? await lastSwitchedOffBy(tenantId, scopeId, 'revokeFromPeer', 'vertical', offPeers)
+          : new Map<string, { actor: PlatformActorId; reason: string; at: Instant }>();
+      const result = states.map((p) => ({
+        vertical: p.vertical,
+        calls: p.calls,
+        switchedOff: explanations.get(p.vertical) ?? null,
+      }));
+      await this.recordAccess(actor, 'peerGrantsStatus', { tenantId, scopeId }, null, result.length);
       return result;
     };
 
@@ -4220,6 +4348,7 @@ export class CloudflareScopeHost implements ScopeHost {
       // #1666: the schedule kill switch and its lever back — `system-switch.ts` is the
       // whole rule, shared with the pure adapter; this is the directory check, the reach
       // into the scope's storage, and the audit row around it.
+      peerGrantsStatus: peerGrantsStatusOf,
       revokeFromPeer: async (actor: PlatformActorId, raw: PeerSwitch) => switchPeerAt(actor, raw, 'off'),
       restoreToPeer: async (actor: PlatformActorId, raw: PeerSwitch) => switchPeerAt(actor, raw, 'on'),
       revokeFromSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'off'),
@@ -7115,6 +7244,16 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async systemGrantsStatusLocal(scopeId: ScopeId): Promise<SystemScheduleEntry[]> {
     return systemScheduleEntry.array().parse(await this.scopeStub(scopeId).systemGrantsStatus());
+  }
+
+  /**
+   * The far end of the peer switch's status read (#1706): `/internal/peer-grants` lands on
+   * this, from the shared control plane's `peerGrantsStatus`. The bare per-peer position
+   * only — who switched a peer off and why is the admin log's, and this deployment holds
+   * none — so the platform joins its own log onto this by slug once it returns.
+   */
+  async peerGrantsStatusLocal(scopeId: ScopeId): Promise<PeerGrantsEntry[]> {
+    return peerGrantsEntry.array().parse(await this.scopeStub(scopeId).peerGrantsStatus());
   }
 
   // -- the peer door's far end (#1706) ----------------------------------------

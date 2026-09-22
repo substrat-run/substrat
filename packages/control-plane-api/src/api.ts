@@ -55,6 +55,7 @@ import {
   delegatedReadParams,
   createOrgInput,
   roleKey as roleKeySchema,
+  peerSwitch,
   systemSwitch,
   DEFAULT_DENIAL_LIMIT,
   DENIAL_LIMIT_MAX,
@@ -834,6 +835,9 @@ const tenantRoleAssignmentBody = z
  * spells out; `.strict()` so a body that tried to name one is refused, not stripped.
  */
 const systemSwitchBody = systemSwitch.pick({ moduleId: true, reason: true }).strict();
+
+/** The peer kill switch's body (#1706) — the tenant and scope come from the path. */
+const peerSwitchBody = peerSwitch.pick({ vertical: true, reason: true }).strict();
 
 /** A new org under an addressed tenant (#1343) — `tenantId` comes from the path. */
 const tenantOrgBody = createOrgInput.omit({ tenantId: true });
@@ -4518,6 +4522,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // happen — while this one wants the declaration as a node.
       schedules: parsed?.schedules ?? [],
       outbound: parsed?.outbound ?? [],
+      // The peer verticals this version declares it calls (#1706) — `outbound`'s sibling
+      // one band over: the same kind of declared reach, at another of the tenant's apps
+      // rather than at a third-party host. `null` is a FACT, not missing data: a version
+      // pushed before the declaration existed is unenforced, which a reader must be able
+      // to tell from a version that declares it calls nothing.
+      calls: parsed?.calls ?? null,
     });
   });
 
@@ -6516,6 +6526,52 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     }
     return c.json(await admin.systemGrantsStatus(actor, { tenantId, scopeId }));
+  });
+
+  // -- the peer kill switch (#1706) ------------------------------------------
+  //
+  // One calling vertical's access to ONE scope, off and back on — `revokeFromPeer` and
+  // `restoreToPeer`. The schedule switch above with the subject swapped: `reason` required,
+  // both halves audited intent-then-outcome, idempotent, and no re-provision re-seats what
+  // OFF took, so the POST is the only way back. For a HOSTED scope the grants live in the
+  // vertical's deployment and `peerSwitchDelegation` moves the switch there; a deployment
+  // built before the far end existed answers 501 "redeploy" and nothing is switched.
+  //
+  // **Unlike the schedule switch, a tenant may pull this one**, and that is the point of it:
+  // "may this other app of mine still call into here" is the tenant's question about its own
+  // two apps, not a platform incident lever. A confined credential (#977) is held by the
+  // dashboard on a tenant's behalf and may act on THAT tenant only; no vertical holds one at
+  // all, since a vertical is CP-less, so the switched party cannot switch itself back on.
+  const switchPeerRoute = (to: 'on' | 'off') => async (c: Context<{ Variables: Vars }>) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const body = peerSwitchBody.parse(await c.req.json());
+    const actor = c.get('actor');
+    // K-3 first, so a scope of another tenant reads as absent before anything is reached.
+    if (!(await admin.getScopeRecord(actor, tenantId, scopeId))) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    const input = { vertical: body.vertical, node: { tenantId, scopeId }, reason: body.reason };
+    return c.json(to === 'off' ? await admin.revokeFromPeer(actor, input) : await admin.restoreToPeer(actor, input));
+  };
+  app.delete('/tenants/:tenantId/scopes/:scopeId/peer-grants', switchPeerRoute('off'));
+  app.post('/tenants/:tenantId/scopes/:scopeId/peer-grants', switchPeerRoute('on'));
+
+  // The status read (#1706): which of the tenant's other apps may call into this scope, and
+  // where each stands — the read the dashboard's install disclosure and the console's scope
+  // view are both built on. Same confinement as the switch, for the same reason.
+  app.get('/tenants/:tenantId/scopes/:scopeId/peer-grants', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const actor = c.get('actor');
+    if (!(await admin.getScopeRecord(actor, tenantId, scopeId))) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    return c.json(await admin.peerGrantsStatus(actor, { tenantId, scopeId }));
   });
 
   // Orgs: the portal-customer grouping (§4.1). Creating one mints no permission —

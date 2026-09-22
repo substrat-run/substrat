@@ -199,5 +199,14 @@ export const routeTarget = z.object({
    * Defaulted so a resolver that predates this field still parses.
    */
   outboundHosts: z.array(z.string()).nullable().default(null),
+  /**
+   * The declared outgoing PEER calls of the code this dispatch will run (#1706) — the
+   * `calls` list from the same manifest `outboundHosts` comes from, joined in the same
+   * directory read. The router hands it to the egress worker as a dispatch parameter and
+   * judges a peer call against it. `null` = a version pushed before the declaration existed,
+   * which is unenforced (as a pre-#303 `outbound` is). Defaulted, so a resolver that predates
+   * this field still parses.
+   */
+  calls: z.array(verticalSlug).nullable().default(null),
 });
 export type RouteTarget = z.infer<typeof routeTarget>;

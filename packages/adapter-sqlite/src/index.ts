@@ -99,6 +99,7 @@ import {
   type ModuleId,
   type ScheduleSpec,
   type SystemGrant,
+  type PeerGrantsStatusEntry,
   type SystemGrantsStatusEntry,
   type SystemSwitch,
   type SystemSwitchResult,
@@ -176,6 +177,7 @@ import {
   SCOPE_TABLE_PAGE_MAX,
   SCOPE_QUERY_ROW_MAX,
   verticalServingState,
+  callsOfManifestJson,
   outboundOfManifestJson,
   listLimitOf,
   substratError,
@@ -264,12 +266,14 @@ import {
   resolveVerticalInstanceFrom,
   switchPeer,
   type PeerDeclarations,
+  peerGrantsStatus,
   systemGrantsStatus,
   systemScheduleState,
   systemSwitchedOff,
   systemSwitchedOffMessage,
   type SwitchOutcome,
   type SwitchSql,
+  type PeerGrantsRow,
   type SystemGrantsEntry,
   type PlatformRequestRedactionCandidate,
   denialListQuery,
@@ -5420,6 +5424,7 @@ export class SqliteScopeHost implements ScopeHost {
         admissionNote: r.admission_note,
         origin: r.origin_json ? JSON.parse(r.origin_json) : null,
         outbound: outboundOfManifestJson(r.manifest_json),
+        calls: callsOfManifestJson(r.manifest_json),
         createdAt: r.created_at,
       });
     const readVersion = (id: string): VerticalVersion | undefined => {
@@ -5776,18 +5781,22 @@ export class SqliteScopeHost implements ScopeHost {
      * scope has never switched off before, per `switchSystemSchedules`'s `held` check, so
      * never the explanation for a module that is currently off) is never read as one.
      */
-    const lastSwitchedOff = (
+    const lastSwitchedOffBy = (
       tenantId: TenantId,
       scopeId: ScopeId,
-      moduleIds: Set<string>,
+      /** The revoking action, and the payload field naming its subject. */
+      action: 'revokeFromSystem' | 'revokeFromPeer',
+      key: 'moduleId' | 'vertical',
+      subjects: Set<string>,
     ): Map<string, { actor: PlatformActorId; reason: string; at: Instant }> => {
+      const moduleIds = subjects;
       const rows = this.directory
         .prepare(
           `SELECT actor, after, at FROM _substrat_admin_log
-            WHERE tenant_id = ? AND scope_id = ? AND action = 'revokeFromSystem'
+            WHERE tenant_id = ? AND scope_id = ? AND action = ?
             ORDER BY id DESC`,
         )
-        .all(tenantId, scopeId) as { actor: string; after: string | null; at: string }[];
+        .all(tenantId, scopeId, action) as { actor: string; after: string | null; at: string }[];
       const appliedOps = new Set<string>();
       for (const row of rows) {
         if (!row.after) continue;
@@ -5798,16 +5807,12 @@ export class SqliteScopeHost implements ScopeHost {
       for (const row of rows) {
         if (result.size === moduleIds.size) break;
         if (!row.after) continue;
-        const payload = JSON.parse(row.after) as {
-          phase?: string;
-          operationId?: string;
-          moduleId?: string;
-          reason?: string;
-        };
-        if (payload.phase !== 'intent' || !payload.operationId || !payload.moduleId) continue;
-        if (!moduleIds.has(payload.moduleId) || result.has(payload.moduleId)) continue;
-        if (!appliedOps.has(payload.operationId) || typeof payload.reason !== 'string') continue;
-        result.set(payload.moduleId, {
+        const payload = JSON.parse(row.after) as Record<string, unknown>;
+        const subject = payload[key];
+        if (payload.phase !== 'intent' || !payload.operationId || typeof subject !== 'string') continue;
+        if (!moduleIds.has(subject) || result.has(subject)) continue;
+        if (!appliedOps.has(String(payload.operationId)) || typeof payload.reason !== 'string') continue;
+        result.set(subject, {
           actor: row.actor as PlatformActorId,
           reason: payload.reason,
           at: row.at as Instant,
@@ -5815,6 +5820,14 @@ export class SqliteScopeHost implements ScopeHost {
       }
       return result;
     };
+
+    /** #1674's join, bound to the schedule switch — the shape every caller here used. */
+    const lastSwitchedOff = (
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      moduleIds: Set<string>,
+    ): Map<string, { actor: PlatformActorId; reason: string; at: Instant }> =>
+      lastSwitchedOffBy(tenantId, scopeId, 'revokeFromSystem', 'moduleId', moduleIds);
 
     /**
      * The status read (#1674): every module this scope holds or has held system authority
@@ -5847,6 +5860,40 @@ export class SqliteScopeHost implements ScopeHost {
       // K-24: reading the switch's position and any live incident reason is itself
       // access-logged, the same as every other HostAdmin read.
       this.recordAccess(actor, 'systemGrantsStatus', { tenantId, scopeId }, null, result.length);
+      return result;
+    };
+
+    /**
+     * The peer switch's status read (#1706) — `systemGrantsStatusOf` with the subject
+     * swapped: the kernel's `peerGrantsStatus` over the scope's own storage, which is the
+     * SAME predicate `admitPeer` refuses a call on, then the admin log's explanation for
+     * each peer that is off. The join belongs on this side because the admin log is the
+     * control plane's store; the position alone is all a vertical's own deployment can say.
+     */
+    const peerGrantsStatusOf = async (
+      actor: PlatformActorId,
+      node: { tenantId: TenantId; scopeId: ScopeId },
+    ): Promise<PeerGrantsStatusEntry[]> => {
+      const { tenantId, scopeId } = node;
+      const scope = this.directory
+        .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+        .get(scopeId) as { tenant_id: string } | undefined;
+      if (!scope || scope.tenant_id !== tenantId) {
+        throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      }
+      const rt = this.runtime(tenantId, scopeId);
+      const states: PeerGrantsRow[] = await rt.actor.turn(() =>
+        peerGrantsStatus(switchSqlOf(rt.db), new Date().toISOString()),
+      );
+      const offPeers = new Set(states.filter((p) => p.calls === 'off').map((p) => p.vertical));
+      const explanations =
+        offPeers.size > 0 ? lastSwitchedOffBy(tenantId, scopeId, 'revokeFromPeer', 'vertical', offPeers) : new Map();
+      const result = states.map((p) => ({
+        vertical: verticalSlugOf.parse(p.vertical),
+        calls: p.calls,
+        switchedOff: explanations.get(p.vertical) ?? null,
+      }));
+      this.recordAccess(actor, 'peerGrantsStatus', { tenantId, scopeId }, null, result.length);
       return result;
     };
 
@@ -6135,6 +6182,7 @@ export class SqliteScopeHost implements ScopeHost {
       // #1674: the switch's status read — same gate, the admin log to explain an `off`
       // entry. Nothing to delegate here: the pure adapter's scope storage IS the store.
       systemGrantsStatus: systemGrantsStatusOf,
+      peerGrantsStatus: peerGrantsStatusOf,
       // #1672 — the platform's two capability verbs, both a turn on the scope actor
       // (#1678: every scope-level admin write takes one, so none lands mid-invoke inside a
       // stranger's transaction) and both in the admin log without the secret or its hash.

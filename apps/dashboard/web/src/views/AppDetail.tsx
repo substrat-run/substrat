@@ -16,6 +16,7 @@ import { AppIntegrations } from './Integrations';
 import { teamPath, navigate, obsPath } from '../lib/router';
 import { DnsRecords } from './Domains';
 import { ReleaseComparisonCard, SchemaHistoryCard } from './ReleaseCards';
+import { AppPeers } from './AppPeers';
 import { StatusBand } from './StatusBand';
 import { InvocationStrip } from './InvocationStrip';
 import { InvocationLogsStrip } from './InvocationLogsStrip';
@@ -595,6 +596,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
           </div>
         </div>
         <OwnerSeatCard key={app.app_scope_id} scopeId={app.app_scope_id} seat={seat} onClaimed={readSeat} />
+        <AppPeers key={`peers:${app.app_scope_id}`} scopeId={app.app_scope_id} />
         {provisionResult && (
           <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
             <Eyebrow>Provision result</Eyebrow>

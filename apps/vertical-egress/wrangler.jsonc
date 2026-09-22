@@ -3,10 +3,19 @@
 	"main": "src/worker.ts",
 	"compatibility_date": "2025-01-01",
 
-	// The one binding: the router, as a service (a direct in-process call, not an edge
-	// subrequest). Platform-bound egress from any dispatched vertical loops back through
-	// here so it re-enters resolution+dispatch instead of 522-ing at the same-zone edge (#442).
-	"services": [{ "binding": "ROUTER", "service": "substrat-router" }],
+	// Two bindings, both to the router, as services (a direct in-process call, not an edge
+	// subrequest).
+	//
+	// ROUTER: platform-bound egress from any dispatched vertical loops back through here so it
+	// re-enters resolution+dispatch instead of 522-ing at the same-zone edge (#442).
+	// PEER_CALLS: the router's `PeerCalls` entrypoint (#1706) — a peer call is an RPC, not an
+	// HTTP forward, because what crosses is the CALLER the router set as this dispatch's
+	// parameters. A named entrypoint is reachable only through a binding like this one, which
+	// is what keeps a dispatched vertical from addressing it directly.
+	"services": [
+		{ "binding": "ROUTER", "service": "substrat-router" },
+		{ "binding": "PEER_CALLS", "service": "substrat-router", "entrypoint": "PeerCalls" }
+	],
 
 	// What counts as "our own zone" — same var + meaning as the control plane. Any host that
 	// is or ends in one of these goes to the router; everything else passes through to the
@@ -35,7 +44,10 @@
 	"env": {
 		"test": {
 			// The router's test deployment is `substrat-router-test` (wrangler suffixes the env).
-			"services": [{ "binding": "ROUTER", "service": "substrat-router-test" }], // differs
+			"services": [
+				{ "binding": "ROUTER", "service": "substrat-router-test" },
+				{ "binding": "PEER_CALLS", "service": "substrat-router-test", "entrypoint": "PeerCalls" }
+			], // differs
 			// Test hosts (`*.global.test.substrat.run`) still end in `substrat.run`, so the same
 			// base-domain match routes them; the differing ROUTER binding keeps test loops off prod.
 			// The relay origin DOES differ per environment — it is the test control plane's own

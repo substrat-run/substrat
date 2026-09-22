@@ -248,6 +248,53 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
       });
     });
 
+    /**
+     * The switch's READ half (#1706) — what a tenant is shown about "which of my other apps
+     * may call into here". It must answer from the same predicate the door refuses on, or a
+     * tenant reads `on` for a peer whose next call is refused; the ordering below runs the
+     * switch and the read against each other rather than asserting the read alone.
+     */
+    describe('the status read', () => {
+      const statusOf = async (vertical: string) =>
+        (await host.admin.peerGrantsStatus(staff, { tenantId: t, scopeId: s })).find((p) => p.vertical === vertical);
+
+      it('lists every declared peer as on, with no explanation to give', async () => {
+        const all = await host.admin.peerGrantsStatus(staff, { tenantId: t, scopeId: s });
+        expect(all).toEqual([
+          { vertical: PEER_CALLER, calls: 'on', switchedOff: null },
+          { vertical: PEER_LISTENER, calls: 'on', switchedOff: null },
+        ]);
+      });
+
+      it('a peer the scope holds no row for is absent, not reported', async () => {
+        expect(await statusOf('acme/stranger')).toBeUndefined();
+      });
+
+      it('OFF shows as off, and names who, when and why — while the peer keeps its row', async () => {
+        await off();
+        const entry = await statusOf(PEER_CALLER);
+        expect(entry).toMatchObject({ vertical: PEER_CALLER, calls: 'off' });
+        expect(entry?.switchedOff).toMatchObject({ actor: staff, reason: expect.any(String) });
+        expect(entry?.switchedOff?.at).toEqual(expect.any(String));
+        // The read and the door agree, which is the whole point of sharing the predicate.
+        expect(errorCodeOf(await refusal((await asPeer()).invoke('peer/list')))).toBe('forbidden');
+      });
+
+      it('is per peer: the other one is untouched and still explains nothing', async () => {
+        expect(await statusOf(PEER_LISTENER)).toEqual({
+          vertical: PEER_LISTENER,
+          calls: 'on',
+          switchedOff: null,
+        });
+      });
+
+      it('ON clears the explanation with the position — a stale reason is worse than none', async () => {
+        await on();
+        expect(await statusOf(PEER_CALLER)).toEqual({ vertical: PEER_CALLER, calls: 'on', switchedOff: null });
+        await expect((await asPeer()).invoke('peer/list')).resolves.toBeDefined();
+      });
+    });
+
     describe('tenant-bound', () => {
       it('the door fails closed on a scope of another tenant, named under this one', async () => {
         // K-3's pair check — the confinement this whole door rests on, so the test pins the

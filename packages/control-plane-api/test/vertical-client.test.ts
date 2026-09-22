@@ -698,3 +698,180 @@ describe('VerticalClient preview-client verbs (#1704)', () => {
     expect(err.message).not.toContain('TOP-SECRET-VALUE');
   });
 });
+
+/**
+ * The peer kill switch's hop (#1706) — `systemSwitch`'s contract with the subject swapped,
+ * and it is held to the same rules for the same reason: the caller is an operator cutting
+ * one of a tenant's apps off from another's data. A deployment built before the far end
+ * existed must read as "redeploy, nothing switched", and everything else must read as the
+ * failure it is — a peer reported cut off while its calls keep being admitted is the one
+ * answer this switch must never give.
+ */
+describe('VerticalClient.peerSwitch (#1706)', () => {
+  const input = { scopeId: s, vertical: 'acme/board-room', to: 'off' as const };
+  const answering = (res: () => Response, seen: { path: string; body: unknown }[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string, init?: RequestInit) => {
+        seen.push({ path: new URL(u).pathname, body: JSON.parse(String(init?.body)) });
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('posts the switch and reads the outcome', async () => {
+    const seen: { path: string; body: unknown }[] = [];
+    const client = answering(
+      () => new Response(JSON.stringify({ held: true, changed: true, permissions: ['crm:read'] }), { status: 200 }),
+      seen,
+    );
+    await expect(client.peerSwitch(input)).resolves.toEqual({ held: true, changed: true, permissions: ['crm:read'] });
+    expect(seen).toEqual([
+      { path: '/internal/peer-switch', body: { scopeId: s, vertical: 'acme/board-room', to: 'off' } },
+    ]);
+  });
+
+  it('a peer the scope holds nothing for is an answer, not a legacy signal', async () => {
+    // The route answers `held: false` with a 200; only a 404 means "no such route".
+    await expect(
+      answering(() => new Response(JSON.stringify({ held: false, changed: false, permissions: [] }), { status: 200 }))
+        .peerSwitch(input),
+    ).resolves.toEqual({ held: false, changed: false, permissions: [] });
+  });
+
+  it.each([
+    ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
+    ['an SPA shell (200, not JSON)', () => new Response('<!doctype html><html></html>', { status: 200 })],
+  ])('%s — the explicit legacy signal — is a 501 that says to redeploy', async (_name, res) => {
+    const err = await answering(res)
+      .peerSwitch(input)
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect((err as ControlPlaneError).status).toBe(501);
+    expect((err as ControlPlaneError).message).toMatch(
+      /predates the peer kill switch.*redeploy the vertical.*Nothing was switched/,
+    );
+  });
+
+  it('a transport failure surfaces as the 502 it is, never as "nothing was switched"', async () => {
+    const client = new VerticalClient({
+      fetch: (() => Promise.reject(new Error('Network connection lost'))) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const err = (await client.peerSwitch(input).then(
+      () => null,
+      (e: unknown) => e,
+    )) as ControlPlaneError;
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/unreachable during peer-switch: Network connection lost/);
+    expect(err.message).not.toMatch(/Nothing was switched/);
+  });
+
+  it('a 200 JSON of the wrong shape is a failure that names the peer and says to confirm', async () => {
+    const err = (await answering(() => new Response(JSON.stringify({ ok: true }), { status: 200 }))
+      .peerSwitch(input)
+      .then(
+        () => null,
+        (e: unknown) => e,
+      )) as ControlPlaneError;
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/peer 'acme\/board-room'.*may or may not have moved.*Confirm its position/);
+  });
+
+  it("the far end's own 501 (a host without the method) passes through verbatim", async () => {
+    const err = (await answering(
+      () =>
+        new Response(JSON.stringify({ error: 'this deployment cannot switch peers (#1706) — redeploy it' }), {
+          status: 501,
+        }),
+    )
+      .peerSwitch(input)
+      .then(
+        () => null,
+        (e: unknown) => e,
+      )) as ControlPlaneError;
+    expect(err.status).toBe(501);
+    expect(err.message).toMatch(/redeploy it/);
+  });
+
+  it("a refusal the far end means is still the vertical's own answer", async () => {
+    const err = await answering(() => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }))
+      .peerSwitch(input)
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect((err as ControlPlaneError).status).toBe(403);
+  });
+});
+
+/**
+ * The peer switch's READ hop (#1706) — `peerGrantsStatus`. The same skew contract as the
+ * write above and as #1674's read, for the same reason: a deployment that predates this
+ * route must answer "redeploy", never an empty list, which a control plane would otherwise
+ * show a tenant as "no other app may call in here".
+ */
+describe('VerticalClient.peerGrantsStatus (#1706)', () => {
+  const answering = (res: () => Response, seen: string[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string) => {
+        seen.push(new URL(u).pathname + new URL(u).search);
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('asks for the scope and reads the positions back', async () => {
+    const seen: string[] = [];
+    const client = answering(
+      () => new Response(JSON.stringify([{ vertical: 'acme/board-room', calls: 'off' }]), { status: 200 }),
+      seen,
+    );
+    await expect(client.peerGrantsStatus({ scopeId: s })).resolves.toEqual([
+      { vertical: 'acme/board-room', calls: 'off' },
+    ]);
+    expect(seen).toEqual([`/internal/peer-grants?scopeId=${s}`]);
+  });
+
+  it.each([
+    ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
+    ['an SPA shell (200, not JSON)', () => new Response('<!doctype html><html></html>', { status: 200 })],
+  ])('%s is a 501 that says to redeploy, never an empty list', async (_name, res) => {
+    const err = await answering(res)
+      .peerGrantsStatus({ scopeId: s })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect((err as ControlPlaneError).status).toBe(501);
+    expect((err as ControlPlaneError).message).toMatch(/predates the peer switch's status read/);
+  });
+
+  it('a 200 JSON of the wrong shape is a 502, not a legacy signal', async () => {
+    const err = await answering(() => new Response(JSON.stringify({ ok: true }), { status: 200 }))
+      .peerGrantsStatus({ scopeId: s })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect((err as ControlPlaneError).status).toBe(502);
+  });
+
+  it("the far end's own 501 passes through verbatim", async () => {
+    const err = await answering(
+      () =>
+        new Response(JSON.stringify({ error: 'this deployment cannot read peer switches (#1706) — redeploy it' }), {
+          status: 501,
+        }),
+    )
+      .peerGrantsStatus({ scopeId: s })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect((err as ControlPlaneError).status).toBe(501);
+    expect((err as ControlPlaneError).message).toMatch(/redeploy it/);
+  });
+});

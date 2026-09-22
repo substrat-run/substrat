@@ -3921,6 +3921,7 @@ describe('control-plane API — vertical registry', () => {
           // version is permitted to reach.
           schedules: [{ operation: 'fsm/sweep', cadence: { everyMinutes: 60 }, permissions: [], moduleId: 'fsm' }],
           outbound: ['api.example.com'],
+          calls: ['acme/crm'],
         }),
       }),
     );
@@ -3932,6 +3933,7 @@ describe('control-plane API — vertical registry', () => {
       requires: ['scrive'],
       schedules: [{ operation: 'fsm/sweep', cadence: { everyMinutes: 60 }, permissions: [], moduleId: 'fsm' }],
       outbound: ['api.example.com'],
+      calls: ['acme/crm'],
     });
 
     // EMPTY: the modules declare no events. `[]`, never null — the card renders, and its
@@ -3940,7 +3942,7 @@ describe('control-plane API — vertical registry', () => {
     await json(
       '/verticals/fsm/versions',
       'POST',
-      version(vEmpty, { manifestJson: manifest({ declaredEvents: [], requires: ['scrive'] }) }),
+      version(vEmpty, { manifestJson: manifest({ declaredEvents: [], requires: ['scrive'], calls: [] }) }),
     );
     expect(await (await get(`/verticals/fsm/versions/${vEmpty}/flow`)).json()).toEqual({
       declaredEvents: [],
@@ -3948,6 +3950,7 @@ describe('control-plane API — vertical registry', () => {
       requires: ['scrive'],
       schedules: [],
       outbound: [],
+      calls: [],
     });
 
     // TRUNCATED: a surface cut at the cap is a sample, and the flag is what stops the
@@ -3960,17 +3963,19 @@ describe('control-plane API — vertical registry', () => {
     );
     expect(await (await get(`/verticals/fsm/versions/${vCut}/flow`)).json()).toMatchObject({
       declaredEventsTruncated: true,
+      calls: null,
     });
 
     // ABSENT: v1 retained no manifest at all — null, never an invented empty list.
-    // Only `declaredEvents` goes null: it is the one field whose absence has to stop
-    // the reader drawing a graph. The rest are declarations that were simply not made.
+    // `declaredEvents` and `calls` keep absence distinct from an explicit empty list:
+    // no graph was declared, and legacy calls are unenforced (#1706).
     expect(await (await get(`/verticals/fsm/versions/${v1}/flow`)).json()).toEqual({
       declaredEvents: null,
       declaredEventsTruncated: false,
       requires: [],
       schedules: [],
       outbound: [],
+      calls: null,
     });
   });
 
