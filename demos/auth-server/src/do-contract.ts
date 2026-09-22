@@ -36,6 +36,13 @@ export interface IssuerState {
   providers: { id: string; label: string }[];
 }
 
+/**
+ * A preview-client verb's answer across the DO boundary (#1704). A refusal is a value, not a
+ * throw: an error crossing a Durable Object RPC keeps its message and loses everything else,
+ * and the route needs the status to answer with.
+ */
+export type PreviewClientOutcome<T> = { ok: true; value: T } | { ok: false; status: 400 | 403 | 409; error: string };
+
 /** The DO's callable surface (avoids leaking the full class type through the binding). */
 export type AuthServerStub = {
   fetch(request: Request): Promise<Response>;
@@ -59,6 +66,16 @@ export type AuthServerStub = {
   exportDump(): Promise<import('@substrat-run/contracts').ScopeDumpTable[]>;
   /** Wipe this issuer's storage irreversibly (#590) — the reap/rebind half. */
   destroyStorage(): Promise<void>;
+  /** A preview's own client (#1704) — check, mint, retire; each refuses another tenant's call. */
+  checkPreviewClient(
+    input: import('@substrat-run/contracts').PreviewClientCheck,
+  ): Promise<PreviewClientOutcome<import('@substrat-run/contracts').PreviewClientClaim>>;
+  mintPreviewClient(
+    input: import('@substrat-run/contracts').PreviewClientMint,
+  ): Promise<PreviewClientOutcome<import('@substrat-run/contracts').MintedPreviewClient>>;
+  retirePreviewClients(
+    input: import('@substrat-run/contracts').PreviewClientRetire,
+  ): Promise<PreviewClientOutcome<import('@substrat-run/contracts').RetiredPreviewClients>>;
 };
 
 /** The verified subject behind a session, as the `/__session` probe returns it. */
