@@ -147,6 +147,27 @@ attributable.
   schemaVersion bump. That rule applies to exports only, because there the reader is another
   team's deployed code.
 
+## Cost on a fleet-wide cron
+
+A per-scope call is a Durable Object wake, and on the hosted path an `/internal` hop too. So the
+phase never asks every scope whether it imports anything:
+
+- **One directory read per pass** (`listScopes`, active). The producer can be any primary scope,
+  so resolution needs the list, and this is the read every other phase already makes.
+- **Narrowed before any scope is called.** `CrossVerticalReach.candidates` keeps only the scopes
+  whose running code may import. The answer is a code fact (`consumes: [{ from }]`, carried in
+  a version's permission registry as `imports`), so it is read where the code is described,
+  never from the scope. The default is the host's own `registeredImports()`: a deployment that
+  imports nothing makes **zero** scope calls per pass, however large the fleet. The control
+  plane narrows per scope from the registry.
+- **Capped.** At most `maxConsumers` candidates per pass (default 100), in a window with a random
+  start (the provision reconcile's rule), so a consumer that fails every pass holds no slot
+  forever. The rest are `deferred`, not dropped, because watermarks hold.
+
+A pass is therefore bounded by `maxConsumers × (1 + 2 × sources)` scope calls: one
+`importState` per consumer, then per source one `readExportedEvents` and, only when something is
+new, one `deliverToPeer`. With no importer anywhere, it makes none.
+
 ## Where it is visible
 
 The sweep report lists every edge with its state (`delivered`, `idle`, `paused`, `unresolved`,
