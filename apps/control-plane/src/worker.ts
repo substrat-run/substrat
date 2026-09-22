@@ -97,7 +97,7 @@ import {
   type PlatformRuntime,
   type DoNamespaceReader,
 } from '@substrat-run/control-plane-api';
-import { ControlPlaneError, VerticalClient, versionReachedAt, type ScopeDeployment } from '@substrat-run/control-plane-api';
+import { ControlPlaneError, VerticalClient, retireAllPreviewClients, versionReachedAt, type ScopeDeployment } from '@substrat-run/control-plane-api';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
@@ -1194,6 +1194,16 @@ export default {
       drainRetries: false,
       deleteSnapshotFn: async (tenantId, scopeId) => {
         const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
+        // An expired PREVIEW's own sign-in clients go first (#1704), exactly as the
+        // interactive reap does: a failure here throws, the pass records it, and the next
+        // pass finds the preview again — after the row is gone nothing would name them.
+        if (rec?.kind === 'preview' && rec.forkedFrom) {
+          await retireAllPreviewClients(
+            { admin: host.admin, actor: SWEEP_ACTOR, issuerClient: resolveVerticalForScopeFor(env) },
+            tenantId,
+            scopeId,
+          );
+        }
         if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
           const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
           if (vertical) await vertical.deleteScope({ scopeId });

@@ -11,7 +11,13 @@ import type {
   PlatformRequestId,
   PlatformRequestStatus,
   PlatformRequestFailure,
+  MintedPreviewClient,
+  PreviewClientCheck,
+  PreviewClientClaim,
+  PreviewClientMint,
+  PreviewClientRetire,
   PrincipalId,
+  RetiredPreviewClients,
   SystemSwitchOutcome,
   SystemScheduleEntry,
   ConnectionGrantRecord,
@@ -48,10 +54,14 @@ import type {
   Visibility,
 } from '@substrat-run/contracts';
 import {
+  PREVIEW_CLIENT_PATH,
   attachmentRecord,
   denialFilterParams,
+  mintedPreviewClient,
   ownerSeat,
   ownerClaimLink,
+  previewClientClaim,
+  retiredPreviewClients,
   systemSwitchOutcome,
   systemScheduleEntry,
 } from '@substrat-run/contracts';
@@ -682,6 +692,74 @@ export class VerticalClient {
         502,
         `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`,
       );
+    }
+    return parsed.data;
+  }
+
+  /**
+   * A preview's own client at a team auth-server (#1704, `@substrat-run/contracts`'
+   * `preview-client.ts`): does the parent sign in at THIS issuer, mint the preview a client
+   * here, delete the preview's clients. Addressed to the ISSUER's deployment (this client),
+   * never the preview's.
+   *
+   * The skew rule is `systemSwitch`'s, widened by one status: a deployment built before these
+   * routes answers its `/internal/*` fallback — a JSON **501** on the auth-server — or a
+   * **404**, or an SPA shell (a 200 that is not JSON). All three are the deployment's own
+   * proof it cannot have acted, and become a 501 that says to redeploy the auth server. The
+   * caller must never read that as "the parent does not sign in here". A 200 of the wrong
+   * shape is not that proof and surfaces as a 502; a refusal (403 another tenant's issuer,
+   * 409 a parent it does not claim) passes through verbatim.
+   *
+   * The mint's answer carries a client SECRET. It is returned to the caller and nothing here
+   * keeps, logs or quotes it: no error message on this path includes a response body that
+   * could hold one.
+   */
+  async checkPreviewClient(input: PreviewClientCheck): Promise<PreviewClientClaim> {
+    return this.previewClientCall('POST', `${PREVIEW_CLIENT_PATH}/check`, input, previewClientClaim, 'preview-client check', input.scopeId);
+  }
+
+  async mintPreviewClient(input: PreviewClientMint): Promise<MintedPreviewClient> {
+    return this.previewClientCall('POST', PREVIEW_CLIENT_PATH, input, mintedPreviewClient, 'preview-client mint', input.scopeId);
+  }
+
+  async retirePreviewClients(input: PreviewClientRetire): Promise<RetiredPreviewClients> {
+    return this.previewClientCall('DELETE', PREVIEW_CLIENT_PATH, input, retiredPreviewClients, 'preview-client retire', input.scopeId);
+  }
+
+  private async previewClientCall<T>(
+    method: 'POST' | 'DELETE',
+    path: string,
+    body: unknown,
+    schema: { safeParse(v: unknown): { success: true; data: T } | { success: false } },
+    verb: string,
+    issuerScopeId: ScopeId,
+  ): Promise<T> {
+    const predates = (): ControlPlaneError =>
+      new ControlPlaneError(
+        501,
+        `the auth server serving scope ${issuerScopeId} predates preview clients (#1704) — redeploy it, ` +
+          `then re-run. Nothing was minted or deleted there.`,
+      );
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.reach(verb, () =>
+      this.options.fetch(`${base}${path}`, {
+        method,
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(body),
+      }),
+    );
+    if (res.status === 404 || res.status === 501) throw predates();
+    if (!res.ok) throw await this.refusal(verb, res);
+    const text = await res.text();
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      throw predates();
+    }
+    const parsed = schema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ControlPlaneError(502, `auth server answered ${verb} with an unexpected shape for scope ${issuerScopeId}.`);
     }
     return parsed.data;
   }

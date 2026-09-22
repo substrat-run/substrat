@@ -42,7 +42,7 @@ import { fetchWhoami } from './whoami.js';
 import { cliVersion, warnIfDistStale } from './version.js';
 import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope, rebindScopeVertical, bindScopeVersion, scopeStatus } from './scope.js';
 import { printInstalls } from './installs.js';
-import { createPreview, deletePreview, listPreviews, formatPreviews, parseTtlHours } from './preview.js';
+import { createPreview, deletePreview, listPreviews, formatPreviewLogin, formatPreviews, parseTtlHours } from './preview.js';
 import { writeCiWorkflow, detectDefaultBranch, nextStepsMessage } from './init.js';
 import { writeModelView } from './model.js';
 import {
@@ -882,6 +882,7 @@ async function cmdPreview(): Promise<void> {
     console.log(
       `  scope ${created.scopeId} runs version ${created.versionId} against ${empty ? 'an empty clean-room scope' : 'a fork of prod'}`,
     );
+    for (const line of formatPreviewLogin(created)) console.log(line);
     return;
   }
 
