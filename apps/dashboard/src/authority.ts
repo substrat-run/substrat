@@ -97,7 +97,7 @@ export interface OpsFailureRead {
 
 /** Filter for the sweep record (#1232). `since` is inclusive, `until` exclusive, on `at`. */
 export interface SweepRunRead {
-  kind?: 'connector' | 'schedule' | 'freshness';
+  kind?: 'connector' | 'schedule' | 'freshness' | 'vertical-events';
   connectionId?: string;
   scopeId?: string;
   unit?: string;

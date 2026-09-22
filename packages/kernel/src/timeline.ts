@@ -7,6 +7,7 @@ import {
   timelineEntry,
   type EntityRef,
   type EventId,
+  type ScopeId,
   type HistoryEntry,
   type CauseChain,
   type EffectsTree,
@@ -323,6 +324,24 @@ export function walkEventCause(
     );
     const row = rows[0];
     if (row === undefined) {
+      // #1705: not in the outbox, but RECEIVED: the cause is another vertical's exported
+      // event. The trail leaves this scope rather than breaking, so the walk says where it
+      // went and does not raise the integrity alarm that 'missing' is.
+      const imported = ctx.sql.query<{ source_vertical: string; source_scope_id: string }>(
+        'SELECT source_vertical, source_scope_id FROM _substrat_imports WHERE event_id = ? LIMIT 1',
+        [next],
+      )[0];
+      if (imported !== undefined) {
+        return {
+          chain,
+          terminal: 'imported',
+          imported: {
+            eventId: next as EventId,
+            vertical: imported.source_vertical,
+            scopeId: imported.source_scope_id as ScopeId,
+          },
+        };
+      }
       // The FIRST id missing means the caller named an event this scope does not
       // hold; a later one means the spine lost a row it should still have. Both are
       // 'missing' — the view says the trail cannot be followed further, and does not
@@ -630,13 +649,25 @@ export function readDeadLetters(ctx: TimelineReader, page?: Pick<ListPage, 'limi
     params.push(event, event, consumer);
   }
   params.push(limit);
+  // #1705: a delivery's event is in this scope's outbox, OR it was received from another
+  // vertical and its envelope is in `_substrat_imports`. An import that gave up, or one the
+  // producer withheld, is a dead letter this scope's operator must see, so the read takes
+  // both. Two LEFT JOINs rather than a UNION: each seeks its table's key, where a UNION ALL
+  // subquery in a join could be materialized over the whole outbox. An imported event
+  // carries no invocation of this scope, so that column reads null.
   const rows = ctx.sql.query<DeadLetterRow>(
     `SELECT d.event_id, d.consumer_module, d.delivered_at, d.error, d.attempts,
             d.invocation_id AS attempt_invocation_id,
-            o.type, o.occurred_at, o.entity_type, o.entity_id, o.invocation_id
+            COALESCE(o.type, i.type) AS type,
+            COALESCE(o.occurred_at, i.occurred_at) AS occurred_at,
+            COALESCE(o.entity_type, i.entity_type) AS entity_type,
+            COALESCE(o.entity_id, i.entity_id) AS entity_id,
+            o.invocation_id
        FROM _substrat_deliveries d
-       JOIN _substrat_outbox o ON o.id = d.event_id
-      WHERE d.error IS NOT NULL AND d.next_attempt_at IS NULL${after}
+       LEFT JOIN _substrat_outbox o ON o.id = d.event_id
+       LEFT JOIN _substrat_imports i ON i.event_id = d.event_id
+      WHERE d.error IS NOT NULL AND d.next_attempt_at IS NULL
+        AND (o.id IS NOT NULL OR i.event_id IS NOT NULL)${after}
       ORDER BY d.event_id DESC, d.consumer_module DESC
       LIMIT ?`,
     params,

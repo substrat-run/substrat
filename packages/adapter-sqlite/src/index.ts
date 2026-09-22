@@ -19,6 +19,14 @@ import {
   createTenantInput,
   domainEvent,
   domainEventInput,
+  exportReadInput,
+  importBatch,
+  type ExportedBatch,
+  type ExportReadInput,
+  type ImportBatch,
+  type ImportedEvent,
+  type ImportResult,
+  type ImportState,
   entitlementGrant,
   entitlementGrantInput,
   eventId,
@@ -349,6 +357,18 @@ import {
   SCHEDULE_STATE_DDL,
   SCHEDULE_STATE_REBUILD,
   scheduleStateHasKind,
+  VERTICAL_EVENTS_DDL,
+  EXPORT_HOPS_SQL,
+  IMPORT_CURSORS_SQL,
+  IMPORT_CURSOR_OF_SQL,
+  IMPORT_CURSOR_ADVANCE_SQL,
+  IMPORT_RECORD_SQL,
+  CrossVerticalRegistry,
+  exportReadPlan,
+  exportReadQuery,
+  planExportBatch,
+  withheldNote,
+  type ExportRow,
   JOB_RUN_DDL,
   jobRunListLimit,
   jobRunOf,
@@ -702,6 +722,10 @@ const KERNEL_DDL = `
   -- builds and the shape production builds cannot part company; the column
   -- comments, and the reason coalescing is NOT a unique index, are in there.
   ${JOB_RUN_DDL}
+  -- #1705: cross-vertical delivery. The consumer's journal of what it received (envelope
+  -- only) and its watermark per producer, plus the producer-side (type, id) outbox index the
+  -- export read seeks on. Shared with the DO adapter from @substrat-run/kernel.
+  ${VERTICAL_EVENTS_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
     module_id TEXT NOT NULL,
     version TEXT NOT NULL,
@@ -1290,6 +1314,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly tenantStoreDbs = new Map<string, Database.Database>();
   private readonly operations = new Map<string, OperationHandler<never, unknown>>();
   private readonly modules = new Map<string, RegisteredModule>();
+  /** #1705: what this deployment exports to other verticals and imports from them. */
+  private readonly crossVertical = new CrossVerticalRegistry();
   /** operation name → guards declared before it, in registration order (K-17). */
   private readonly guards = new Map<string, DeclaredGuard[]>();
   /** predicate name → the module-contributed implementation. Names are global. */
@@ -2109,7 +2135,12 @@ export class SqliteScopeHost implements ScopeHost {
       }
       seen.add(m.version);
     }
-    const declaredConsumes = new Set(manifest.events.consumes.map((c) => c.type));
+    // IN-SCOPE consumes only (#1705). A `from` entry names another vertical's export, and its
+    // handler lives in `imports`. Letting it satisfy this check would let a local consumer of
+    // the same type name register against a declaration that was reviewed as an import.
+    const declaredConsumes = new Set(
+      manifest.events.consumes.filter((c) => c.from === undefined).map((c) => c.type),
+    );
     const consumers = Object.entries(registration.consumers ?? {}).map(
       ([eventType, handler]) => {
         if (!declaredConsumes.has(eventType)) {
@@ -2188,6 +2219,8 @@ export class SqliteScopeHost implements ScopeHost {
       }
       this.listPlans.set(plan.entityType, plan);
     }
+    // #1705: validated whole and kept only if it passes, so a refused module leaves nothing.
+    this.crossVertical.register(manifest, registration.imports);
     this.modules.set(manifest.id, {
       id: manifest.id,
       migrations: [...migrations, ...searchMigrations, ...listMigrations],
@@ -3330,6 +3363,193 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
+   * #1705: the producer's release, decided by THIS deployment's own declarations. The admin
+   * verb wraps it with the directory gate and the access row.
+   *
+   * The order is the safety argument. What leaves is `exports ∩ wants`, computed from the
+   * modules registered here, and then only if the consumer's principal holds every key that
+   * intersection needs. Only then is a row read. A missing key reads nothing, so the
+   * watermark cannot move past events that authority would have released later.
+   */
+  private async readExports(tenantId: TenantId, scopeId: ScopeId, input: ExportReadInput): Promise<ExportedBatch> {
+    const plan = exportReadPlan(this.crossVertical.exports(), input.wants);
+    const quiet: ExportedBatch = {
+      events: [],
+      withheld: [],
+      unexported: plan.unexported,
+      paused: null,
+      next: input.after,
+      more: false,
+    };
+    if (plan.types.length === 0) return quiet;
+    const missing = await this.peerMissing(tenantId, scopeId, input.consumer, plan.keys);
+    if (missing.length > 0) return { ...quiet, paused: { missing } };
+    // The committed outbox (#1624): an in-flight operation's event must not reach another
+    // vertical before its transaction decides whether it exists.
+    const db = this.scopeReadDbFor(tenantId, scopeId);
+    const q = exportReadQuery(plan.types, input.after, input.limit);
+    const rows = db.prepare(q.sql).all(...q.params) as ExportRow[];
+    const hops = db.prepare(EXPORT_HOPS_SQL);
+    const batch = planExportBatch({
+      rows,
+      wanted: plan.wanted,
+      after: input.after,
+      limit: input.limit,
+      hopsBefore: (row) =>
+        row.caused_by ? ((hops.get(row.caused_by) as { hops: number } | undefined)?.hops ?? 0) : 0,
+    });
+    return { ...batch, unexported: plan.unexported, paused: null };
+  }
+
+  /**
+   * #1705: the read keys `consumer`'s principal does NOT hold at this scope — #1706's
+   * `peerCovers`, the checker's own `covers`. A peer whose kill switch is off holds nothing,
+   * so it pauses the edge here with no marker read of its own.
+   */
+  private async peerMissing(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    consumer: string,
+    keys: readonly string[],
+  ): Promise<PermissionKey[]> {
+    const coverage = await this.peerCovers(tenantId, scopeId, consumer, keys as PermissionKey[]);
+    return coverage.filter((c) => !c.held).map((c) => c.permission);
+  }
+
+  /** #1705: this scope's watermark per producer, oldest source first. */
+  private importCursors(db: Database.Database): ImportState['cursors'] {
+    return (
+      db.prepare(IMPORT_CURSORS_SQL).all() as {
+        source_scope_id: string;
+        source_vertical: string;
+        cursor: string;
+        updated_at: string;
+      }[]
+    ).map((r) => ({
+      source: r.source_scope_id,
+      vertical: r.source_vertical,
+      cursor: r.cursor,
+      updatedAt: r.updated_at,
+    })) as ImportState['cursors'];
+  }
+
+  async deliverToPeer(tenantId: TenantId, scopeId: ScopeId, raw: ImportBatch): Promise<ImportResult> {
+    // Parsed at the door, like an operation's input: HostAdmin callers are trusted to be the
+    // platform, not to have built a well-formed batch.
+    const batch = importBatch.parse(raw);
+    const source = batch.source;
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.enqueue(async () => {
+      const result: ImportResult = {
+        delivered: 0,
+        deadLettered: 0,
+        duplicates: 0,
+        withheld: 0,
+        cursor: batch.after,
+        stale: false,
+        paused: null,
+      };
+      // #1706's door, for a delivery (`operation: null`): the producer must be a declared peer
+      // of this vertical with its switch on. Admitted inside the actor task, before anything
+      // runs, so a switch pulled between two passes refuses the second. A refusal is a PAUSE:
+      // nothing ran, the watermark stays, and the producer's outbox keeps the backlog.
+      let subject: CheckSubject;
+      try {
+        subject = admitPeer(
+          switchSqlOf(rt.db),
+          this.peerDeclarations(),
+          { vertical: source.vertical, scope: source.scopeId },
+          null,
+        );
+      } catch (err) {
+        return { ...result, paused: { reason: err instanceof Error ? err.message : String(err) } };
+      }
+      // The compare-and-set. Inside the actor, so nothing moves the watermark between this
+      // read and the advance at the end.
+      const current =
+        (rt.db.prepare(IMPORT_CURSOR_OF_SQL).get(source.scopeId) as { cursor: string } | undefined)?.cursor ?? null;
+      if (current !== batch.after) return { ...result, cursor: current as ImportResult['cursor'], stale: true };
+
+      const at = new Date().toISOString();
+      const record = rt.db.prepare(IMPORT_RECORD_SQL);
+      const journaled = rt.db.prepare('SELECT 1 FROM _substrat_deliveries WHERE event_id = ? AND consumer_module = ?');
+      const deadLetter = rt.db.prepare(
+        `INSERT OR IGNORE INTO _substrat_deliveries
+           (event_id, consumer_module, delivered_at, error, invocation_id)
+         VALUES (?, ?, ?, ?, NULL)`,
+      );
+
+      // Named and not carried: a dead letter per importing module, so the operator who reads
+      // this scope's dead letters sees what the producer sent and why it did not arrive.
+      for (const w of batch.withheld) {
+        record.run(w.id, source.scopeId, source.vertical, w.type, w.schemaVersion, w.occurredAt,
+          w.entity.entityType, w.entity.entityId, 0, w.reason, at);
+        for (const moduleId of this.crossVertical.modulesImporting(source.vertical, w.type)) {
+          deadLetter.run(w.id, moduleId, at, withheldNote(w.reason, source.vertical));
+        }
+        result.withheld += 1;
+      }
+
+      for (const e of batch.events) {
+        record.run(e.id, source.scopeId, source.vertical, e.type, e.schemaVersion, e.occurredAt,
+          e.entity.entityType, e.entity.entityId, e.hops, null, at);
+        let ran = false;
+        for (const imp of this.crossVertical.handlersFor(source.vertical, e.type)) {
+          if (journaled.get(e.id, imp.moduleId)) continue;
+          ran = true;
+          if (imp.schemaVersion !== e.schemaVersion) {
+            // The producer released what the consumer's state asked for. A mismatch here means
+            // this scope's code changed between the two, so it is refused by version (K-39)
+            // exactly as the producer would have refused it.
+            deadLetter.run(e.id, imp.moduleId, at, withheldNote('version', source.vertical));
+            result.deadLettered += 1;
+            continue;
+          }
+          const { hops: _hops, ...fact } = e;
+          const event: ImportedEvent = structuredClone({ ...fact, source });
+          // What the handler emits was emitted BECAUSE of the producer's event (#1237). The id
+          // resolves through `_substrat_imports`, which the row above has just written.
+          rt.causedBy = e.id;
+          rt.db.exec('BEGIN IMMEDIATE');
+          try {
+            // As the producer's principal, admitted above: the handler's checks are real ones,
+            // against the grants this vertical's `peers` gave it, and its emits carry the actor
+            // `{ vertical, scope }` and the authorization they passed (K-34).
+            await imp.handler(this.operationContext(rt, subject), event);
+            rt.db
+              .prepare(
+                `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
+                 VALUES (?, ?, ?, NULL)`,
+              )
+              .run(e.id, imp.moduleId, new Date().toISOString());
+            rt.db.exec('COMMIT');
+            result.delivered += 1;
+          } catch (err) {
+            rt.db.exec('ROLLBACK');
+            // Dead-letter (v0), the consumer's rule: one failure is terminal, and the events
+            // behind it still arrive.
+            deadLetter.run(e.id, imp.moduleId, new Date().toISOString(), String(err));
+            result.deadLettered += 1;
+          } finally {
+            rt.causedBy = null;
+          }
+        }
+        if (!ran) result.duplicates += 1;
+      }
+
+      // LAST, in this scope's store: a crash before here redelivers the batch, and the journal
+      // rows above absorb it.
+      rt.db.prepare(IMPORT_CURSOR_ADVANCE_SQL).run(source.scopeId, source.vertical, batch.next, at);
+      result.cursor = batch.next;
+      // What the handlers emitted reaches this scope's own consumers and executors in the same
+      // tail, under the ordinary cascade cap.
+      await this.dispatch(rt, null);
+      await this.dispatchExecutors(rt, null);
+      return result;
+    });
+  }
+
+  /**
    * The lifecycle gate the capability doors share (#1672): the scope must exist in this
    * tenant, the tenant must be active, the scope must be active — K-3's fail-closed pair
    * check, worded as the principal door words it, so a scope in another tenant reads the
@@ -3498,6 +3718,11 @@ export class SqliteScopeHost implements ScopeHost {
     );
     const missing = new Set<string>(coverage.covered ? [] : coverage.missing);
     return permissions.map((permission) => ({ permission, held: !missing.has(permission) }));
+  }
+
+  /** #1705: what this deployment imports — the sweep's reason to call no scope when it is empty. */
+  registeredImports(): { from: string; type: string; schemaVersion: number }[] {
+    return this.crossVertical.consumes();
   }
 
   registeredSchedules(): ScheduleRegistration[] {
@@ -6873,6 +7098,31 @@ export class SqliteScopeHost implements ScopeHost {
           );
         }
         return drained;
+      },
+      readExportedEvents: async (actor, tenantId, scopeId, raw): Promise<ExportedBatch> => {
+        // #1705: the producer's half. Parsed here, since HostAdmin is public and the control
+        // plane is not the only caller: a limit or cursor nobody validated must not reach SQL.
+        const input = exportReadInput.parse(raw);
+        this.assertScopeReachable(tenantId, scopeId);
+        const batch = await this.readExports(tenantId, scopeId, input);
+        this.recordAccess(
+          actor,
+          'readExportedEvents',
+          { tenantId, scopeId },
+          { consumer: input.consumer, after: input.after, limit: input.limit },
+          batch.events.length,
+        );
+        return batch;
+      },
+      importState: async (actor, tenantId, scopeId): Promise<ImportState> => {
+        this.assertScopeReachable(tenantId, scopeId);
+        const consumes = this.crossVertical.consumes();
+        // A deployment that imports nothing answers without opening the scope. The sweep
+        // asks this of every active scope on every pass that has the phase on.
+        if (consumes.length === 0) return { consumes: [], cursors: [] };
+        const cursors = this.importCursors(this.scopeReadDbFor(tenantId, scopeId));
+        this.recordAccess(actor, 'importState', { tenantId, scopeId }, null, cursors.length);
+        return { consumes, cursors } as ImportState;
       },
       redrainEvents: async (actor, tenantId, scopeId, input) => {
         // Directory check first, on mark's reasoning: "nothing to reopen" and "you may not

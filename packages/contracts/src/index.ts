@@ -33,6 +33,7 @@ export * from './control-plane.js';
 export * from './permission.js';
 export * from './impersonation.js';
 export * from './events.js';
+export * from './vertical-events.js';
 export * from './capability.js';
 export * from './peer.js';
 export * from './errors.js';

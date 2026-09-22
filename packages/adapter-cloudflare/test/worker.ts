@@ -7,7 +7,16 @@
  */
 import { platformActorId } from '@substrat-run/contracts';
 import { runPlatformSweep, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
-import { brokenMod, contractTestModules, contractTestBareOps, freshnessMod, liveMod, scheduleMod } from '@substrat-run/contract-tests';
+import {
+  boardImportMod,
+  brokenMod,
+  contractTestModules,
+  contractTestBareOps,
+  crmExportMod,
+  freshnessMod,
+  liveMod,
+  scheduleMod,
+} from '@substrat-run/contract-tests';
 import { defineScopeDO } from '../src/scope-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
@@ -32,6 +41,14 @@ export const BrokenScopeDO = defineScopeDO([brokenMod], {});
  * what those suites exercise in order to test this one.
  */
 export const LiveScopeDO = defineScopeDO([liveMod], {});
+
+/**
+ * #1705: two verticals, two deployments. A DO closes over a code-time module set, so each
+ * vertical of the cross-vertical suite gets its own class, the way each is its own script
+ * when hosted. The coordinator that reaches each registers the same one module.
+ */
+export const CrmScopeDO = defineScopeDO([crmExportMod], {});
+export const BoardScopeDO = defineScopeDO([boardImportMod], {});
 
 export { ControlPlaneDO } from '../src/control-plane-do.js';
 

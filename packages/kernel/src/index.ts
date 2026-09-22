@@ -5,6 +5,7 @@ export type {
   BlobStoreProvisionInput,
   BlobStoreRecord,
   ConsumerHandler,
+  ImportHandler,
   ExecutorDeadLetter,
   ExecutorDrainReport,
   ExecutorHandler,
@@ -426,8 +427,16 @@ export {
   runningVersionOf,
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,
+  CROSS_VERTICAL_CONSUMERS_PER_PASS,
 } from './platform-sweep.js';
-export type { ProvisionReconcileReport, ServingPointer } from './platform-sweep.js';
+export type {
+  CrossVerticalEdge,
+  CrossVerticalOptions,
+  CrossVerticalReach,
+  CrossVerticalReport,
+  ProvisionReconcileReport,
+  ServingPointer,
+} from './platform-sweep.js';
 export {
   MIGRATION_FLAG_THRESHOLD,
   migrationFleet,
@@ -453,3 +462,20 @@ export type {
 
 export { invocationLog } from './invocation-log.js';
 export type { InvocationLogLine, InvocationLogContext } from './invocation-log.js';
+
+export {
+  VERTICAL_EVENTS_DDL,
+  EXPORT_HOPS_SQL,
+  IMPORT_CURSORS_SQL,
+  IMPORT_CURSOR_OF_SQL,
+  IMPORT_CURSOR_ADVANCE_SQL,
+  IMPORT_RECORD_SQL,
+  exportReadQuery,
+  exportReadPlan,
+  exportsOf,
+  planExportBatch,
+  withheldNote,
+  CrossVerticalRegistry,
+  type ExportRow,
+  type RegisteredImport,
+} from './vertical-events.js';
