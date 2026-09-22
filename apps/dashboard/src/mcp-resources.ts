@@ -30,8 +30,9 @@ import type { DashboardAppRow } from './module.js';
  *   - **Identity change**: registered at the new issuer, cleared at the old one.
  *   - **Delete**: cleared, before the scope goes offline.
  *   - **Everything that predates this**: `reconcileMcpResources`, run from the Apps list
- *     once per isolate. Existing installs converge the next time anyone on the team loads
- *     the dashboard, and no sooner. Nothing else knows which issuer an app chose: the
+ *     once per isolate per team, and again on each load until a pass converges
+ *     (`McpReconcileGate`). Existing installs converge the next time anyone on the team
+ *     loads the dashboard, and no sooner. Nothing else knows which issuer an app chose: the
  *     control plane's reconcile sweep reaches the vertical, and the vertical cannot reach
  *     the issuer.
  *
@@ -61,18 +62,52 @@ export function mcpResourcesFor(hostnames: ReadonlyArray<{ hostname: string; sta
   ].sort();
 }
 
+/** A team auth-server as the registration addresses it. */
+export interface TeamIssuer {
+  scopeId: ScopeId;
+  /** `https://<hostname>` for every hostname it answers on, stored or live. */
+  origins: ReadonlySet<string>;
+}
+
 /**
- * The team auth-server app a stored `substrat:auth` issuer names, if it names one.
+ * The team's auth-servers, hydrated from their LIVE bindings.
  *
- * Matched on the issuer URL, because that is all the stored choice records. The dashboard
- * writes a team auth-server's issuer as `https://<its hostname>` (`resolveAuthChoice`), so
- * the match is exact for everything it bound. An issuer typed in by hand that happens to BE
- * a team auth-server counts too, since the vertical signs in there either way.
+ * The stored `hostname` column is a snapshot taken at install, and it can be null while the
+ * router serves the app: a bind whose activation step threw leaves it that way, which is
+ * why the Apps list re-reads live bindings at all. An auth-server found only through that
+ * column would drop out of every registration, and no install bound to it would ever
+ * converge. So each one's live bindings are read too, and every hostname it answers on is
+ * an origin its issuer URL may carry (a custom domain included). A live read that fails
+ * falls back to the stored column, never to nothing.
  */
-export function issuerAppFor(
-  issuer: string | null | undefined,
-  issuers: readonly DashboardAppRow[],
-): DashboardAppRow | undefined {
+export async function teamIssuers(
+  apps: readonly DashboardAppRow[],
+  isIssuer: (app: DashboardAppRow) => boolean,
+  cp: Pick<TenantNarrowedControlPlane, 'listHostnames'>,
+): Promise<TeamIssuer[]> {
+  const issuers: TeamIssuer[] = [];
+  for (const app of apps) {
+    if (app.status !== 'active' || !isIssuer(app)) continue;
+    const scopeId = scopeIdSchema.parse(app.app_scope_id);
+    const live = await cp
+      .listHostnames(scopeId)
+      .then((rows) => rows.filter((h) => h.status === 'active').map((h) => h.hostname))
+      .catch(() => [] as string[]);
+    const hostnames = [...new Set([...(app.hostname ? [app.hostname] : []), ...live])];
+    if (hostnames.length > 0) issuers.push({ scopeId, origins: new Set(hostnames.map((h) => `https://${h}`)) });
+  }
+  return issuers;
+}
+
+/**
+ * The team auth-server a stored `substrat:auth` issuer names, if it names one.
+ *
+ * Matched on the issuer URL's origin, because that is all the stored choice records. The
+ * dashboard writes a team auth-server's issuer as `https://<its hostname>`
+ * (`resolveAuthChoice`). An issuer typed in by hand that happens to BE a team auth-server
+ * counts too, since the vertical signs in there either way.
+ */
+export function issuerFor(issuer: string | null | undefined, issuers: readonly TeamIssuer[]): TeamIssuer | undefined {
   if (!issuer) return undefined;
   let origin: string;
   try {
@@ -80,7 +115,7 @@ export function issuerAppFor(
   } catch {
     return undefined;
   }
-  return issuers.find((a) => a.hostname && `https://${a.hostname}` === origin);
+  return issuers.find((i) => i.origins.has(origin));
 }
 
 /** The value the auth-server reads: the set as JSON, or `""` for none. */
@@ -115,8 +150,23 @@ export async function clearAppMcpResources(
 
 /** One app's outcome in a reconcile pass, for a caller that logs it and a test that pins it. */
 export type McpReconcileOutcome =
-  | { appScopeId: string; registeredAt: string; resources: string[]; clearedAt: string[] }
+  | {
+      appScopeId: string;
+      /** The issuer it is registered at, or null when its identity names none of the team's. */
+      registeredAt: string | null;
+      resources: string[];
+      clearedAt: string[];
+      /** Deliveries that did not land, each on its own. Every other one still went out. */
+      failed: Array<{ issuerScopeId: string; reason: string }>;
+    }
   | { appScopeId: string; skipped: string };
+
+/** Did a pass converge everything it touched? A caller that did not must run it again. */
+export function reconcileConverged(outcomes: readonly McpReconcileOutcome[]): boolean {
+  return outcomes.every((o) => !('skipped' in o) && o.failed.length === 0);
+}
+
+const reasonOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /**
  * Converge every app of a team onto the right registrations: registered at the team
@@ -124,11 +174,14 @@ export type McpReconcileOutcome =
  * half is what repairs an Identity change whose clear did not land. A DELETED app is not in
  * the list, so a delete's clear is not repaired here: its row names a hostname that no
  * longer routes, and the next app bound to that hostname takes it over. Idempotent,
- * since each delivery is a whole set, so running it on every isolate costs deliveries and
- * never changes a registry that is already right.
+ * since each delivery is a whole set, so running it again costs deliveries and never
+ * changes a registry that is already right.
  *
- * Per app and best-effort: a caller who may not read an app's identity (a viewer) skips
- * that app, and it converges on an owner's visit instead, as the Apps list's other heals do.
+ * Every delivery for an app settles on its own. An auth-server that is down must not keep
+ * the app from being registered at the healthy one it actually signs in with. Otherwise a
+ * single unreachable issuer would stop every install on the team from converging, pass after
+ * pass. What failed is reported per issuer, and `reconcileConverged` says whether the pass
+ * has to run again.
  */
 export async function reconcileMcpResources(deps: {
   apps: readonly DashboardAppRow[];
@@ -138,35 +191,76 @@ export async function reconcileMcpResources(deps: {
   issuerOf: (appScopeId: string) => Promise<string | null>;
   controlPlane: ResourceControlPlane;
 }): Promise<McpReconcileOutcome[]> {
-  const issuers = deps.apps.filter((a) => a.status === 'active' && a.hostname && deps.isIssuer(a));
+  const issuers = await teamIssuers(deps.apps, deps.isIssuer, deps.controlPlane);
   if (issuers.length === 0) return [];
   const outcomes: McpReconcileOutcome[] = [];
   for (const app of deps.apps) {
     if (app.status !== 'active' || deps.isIssuer(app)) continue;
     const appScopeId = scopeIdSchema.parse(app.app_scope_id);
+    let named: string | null;
     try {
-      const current = issuerAppFor(await deps.issuerOf(app.app_scope_id), issuers);
-      const clearedAt: string[] = [];
-      for (const other of issuers) {
-        if (other === current) continue;
-        await clearAppMcpResources(deps.controlPlane, {
-          appScopeId,
-          issuerScopeId: scopeIdSchema.parse(other.app_scope_id),
-        });
-        clearedAt.push(other.app_scope_id);
-      }
-      if (!current) {
-        outcomes.push({ appScopeId: app.app_scope_id, skipped: 'no team auth-server' });
-        continue;
-      }
-      const resources = await registerAppMcpResources(deps.controlPlane, {
-        appScopeId,
-        issuerScopeId: scopeIdSchema.parse(current.app_scope_id),
-      });
-      outcomes.push({ appScopeId: app.app_scope_id, registeredAt: current.app_scope_id, resources, clearedAt });
+      named = await deps.issuerOf(app.app_scope_id);
     } catch (e) {
-      outcomes.push({ appScopeId: app.app_scope_id, skipped: e instanceof Error ? e.message : String(e) });
+      outcomes.push({ appScopeId: app.app_scope_id, skipped: reasonOf(e) });
+      continue;
     }
+    const current = issuerFor(named, issuers);
+    const others = issuers.filter((i) => i !== current);
+    const [registered, ...cleared] = await Promise.allSettled([
+      current
+        ? registerAppMcpResources(deps.controlPlane, { appScopeId, issuerScopeId: current.scopeId })
+        : Promise.resolve([] as string[]),
+      ...others.map((i) => clearAppMcpResources(deps.controlPlane, { appScopeId, issuerScopeId: i.scopeId })),
+    ]);
+    const failed: Array<{ issuerScopeId: string; reason: string }> = [];
+    if (current && registered!.status === 'rejected') {
+      failed.push({ issuerScopeId: current.scopeId, reason: reasonOf(registered!.reason) });
+    }
+    const clearedAt: string[] = [];
+    cleared.forEach((result, i) => {
+      if (result.status === 'fulfilled') clearedAt.push(others[i]!.scopeId);
+      else failed.push({ issuerScopeId: others[i]!.scopeId, reason: reasonOf(result.reason) });
+    });
+    outcomes.push({
+      appScopeId: app.app_scope_id,
+      registeredAt: current && registered!.status === 'fulfilled' ? current.scopeId : null,
+      resources: registered!.status === 'fulfilled' ? registered!.value : [],
+      clearedAt,
+      failed,
+    });
   }
   return outcomes;
+}
+
+/**
+ * The Apps list's once-per-isolate gate for the reconcile above, keyed by TEAM.
+ *
+ * Per team, not per principal. Every member role holds `dashboard:read`, which is all the
+ * pass needs, so gating by principal did not skip viewers. It only ran the whole pass once
+ * per member, multiplying the same deliveries by team size. Any member's load may trigger
+ * it, and that is not an escalation: the pass writes nothing the member asked for. It
+ * re-asserts registrations the team's own stored configuration already implies, through the
+ * platform's own channel, and it is idempotent. "Existing installs converge on the next
+ * load by anyone on the team" is the promise this keeps.
+ *
+ * Marked done only once a pass has CONVERGED, the way `account.ts` marks its self-heal only
+ * after it succeeds. A pass that threw, or that left a delivery undelivered, is run again
+ * by the next load instead of being skipped for the life of the isolate. A pass that is
+ * still running is not started twice.
+ */
+export class McpReconcileGate {
+  private readonly converged = new Set<string>();
+  private readonly running = new Map<string, Promise<void>>();
+
+  /** Start the pass for this team unless it converged here already or is running now. */
+  run(tenantId: string, pass: () => Promise<boolean>): Promise<void> | null {
+    if (this.converged.has(tenantId) || this.running.has(tenantId)) return null;
+    const started = pass()
+      .then((done) => {
+        if (done) this.converged.add(tenantId);
+      })
+      .finally(() => this.running.delete(tenantId));
+    this.running.set(tenantId, started);
+    return started;
+  }
 }

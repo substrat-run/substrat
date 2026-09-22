@@ -247,6 +247,39 @@ describe('auth-server registers the MCP resources the platform delivers (#1619)'
     expect(await dumpOf(scope)).toEqual(once);
   });
 
+  /**
+   * All-or-nothing on DO SQLite. Each `exec` commits on its own there unless it is wrapped,
+   * so a failure halfway through un-registering a multi-host app would leave part of its
+   * set removed, and a deleted app has no later reconcile to finish it. The failure is
+   * injected with a trigger that aborts the SECOND delete, once the first has gone through.
+   */
+  it('un-registers a multi-host set all-or-nothing: a failure halfway removes nothing', async () => {
+    const scope = scopeId.parse(ulid());
+    await platform('/internal/provision', install(scope));
+    await configure(scope, [{ key, value: JSON.stringify([resource, 'https://crm.acme.test/api/mcp']) }]);
+    const before = await dumpOf(scope);
+    expect(before['oauth_resource']).toHaveLength(2);
+
+    await runInDurableObject(stubOf(scope), async (_instance, state) => {
+      state.storage.sql.exec(
+        `CREATE TRIGGER fail_second_delete BEFORE DELETE ON oauth_resource
+         WHEN (SELECT COUNT(*) FROM oauth_resource) < 2
+         BEGIN SELECT RAISE(ABORT, 'injected: the second delete fails'); END`,
+      );
+    });
+    const failed = await configure(scope, [{ key, value: '' }]);
+    await runInDurableObject(stubOf(scope), async (_instance, state) => {
+      state.storage.sql.exec('DROP TRIGGER fail_second_delete');
+    });
+
+    expect(failed.status).toBe(400);
+    expect(await dumpOf(scope)).toEqual(before);
+
+    // The twin: the same delivery with nothing failing removes the whole set.
+    expect((await configure(scope, [{ key, value: '' }])).status).toBe(200);
+    expect((await dumpOf(scope))['oauth_resource']).toEqual([]);
+  });
+
   it('refuses a malformed delivery whole, writing none of it', async () => {
     const scope = scopeId.parse(ulid());
     await platform('/internal/provision', install(scope));

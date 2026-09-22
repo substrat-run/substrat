@@ -118,9 +118,10 @@ function ownerOf(metadata: unknown): string | null {
  * Make the platform-owned rows for `appScopeId` exactly `identifiers` (see the header for
  * what "owned" means and how the three cases are treated).
  *
- * Synchronous from first read to last write, with no `await` between them. In a Durable
- * Object that makes the whole sync one implicit transaction: writes with no intervening
- * `await` commit together, and no other request interleaves.
+ * Synchronous from first read to last write, so no other request interleaves with it. That
+ * is NOT atomicity: on DO SQLite each `exec` commits on its own, and a statement that
+ * throws halfway leaves the ones before it written. The caller owns the transaction. The DO
+ * runs this inside `storage.transactionSync`, together with the rest of the delivery.
  */
 export function syncPlatformResources(
   sql: SqlExec,
