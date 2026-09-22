@@ -207,13 +207,42 @@ describe('GET /connections/health (#1690)', () => {
       expect((await read(app, '/connections/health?q=nothing-matches')).body.entries).toEqual([]);
     });
 
+    // A hand-built row whose id and tenantId are FIXED — never `ulid()` — and whose
+    // human fields are fixed too, so a caller can pick exactly which substring sits
+    // where. That is what makes the tests below collision-proof BY CONSTRUCTION rather
+    // than by luck: a real minted id's last few characters can, by chance, equal a
+    // substring of a fixture's human text (a 4-char slice of a random ULID landing on
+    // `FRES` inside "fresh (fortnox)" is exactly this bug's shape, #1716), so nothing
+    // here is derived from `ulid()`.
+    const probeRow = (id: string, tenant: string): Connection => ({
+      id: connectionId.parse(id),
+      tenantId: tenantId.parse(tenant),
+      vertical: 'callout',
+      provider: 'scrive',
+      label: 'probe label',
+      status: 'active',
+      externalAccountRef: 'probe-ref',
+      scopes: [],
+      expiresAt: null,
+      lastOkAt: null,
+      lastError: null,
+      lastErrorAt: null,
+      createdBy: staff,
+      createdAt: new Date(0).toISOString(),
+      revokedAt: null,
+    });
+
     it('an id fragment finds nothing; the whole id, case-insensitively, finds exactly its row', async () => {
-      const fragment = ids.bad.slice(-4);
-      expect((await read(app, `/connections/health?q=${fragment}`)).body.entries).toEqual([]);
-      expect((await read(app, `/connections/health?q=${ids.bad}`)).body.entries.map((e) => e.id)).toEqual([ids.bad]);
-      expect((await read(app, `/connections/health?q=${ids.bad.toLowerCase()}`)).body.entries.map((e) => e.id)).toEqual([
-        ids.bad,
-      ]);
+      // The fragment is `FRAGMENT` — an 8-letter word chosen because it is not a
+      // substring of any field on `probeRow` ('probe label', 'probe-ref', 'scrive',
+      // 'callout'), sitting inside a FIXED id rather than a minted one.
+      const id = '01JZFRAGMENT00000000000000';
+      const fragment = id.slice(4, 12);
+      expect(fragment).toBe('FRAGMENT');
+      const a = apiFor(withListConnections(async () => [probeRow(id, acme)]));
+      expect((await read(a, `/connections/health?q=${fragment}`)).body.entries).toEqual([]);
+      expect((await read(a, `/connections/health?q=${id}`)).body.entries.map((e) => e.id)).toEqual([id]);
+      expect((await read(a, `/connections/health?q=${id.toLowerCase()}`)).body.entries.map((e) => e.id)).toEqual([id]);
     });
 
     it('#1716 regression: a needle that only occurs inside an id is never matched', async () => {
@@ -221,29 +250,27 @@ describe('GET /connections/health (#1690)', () => {
       // monotonic prefix, so a needle landing in that shared random part matched every
       // row born that millisecond, not just the one it was typed for. Reproduced here
       // without depending on real same-millisecond timing — a fixed id that CONTAINS the
-      // needle, with every human field deliberately clear of it. Put `e.id` back in the
-      // haystack (api.ts) and this fails.
+      // needle, with `probeRow`'s human fields deliberately clear of it. Put `e.id` back
+      // in the haystack (api.ts) and this fails.
       const needle = 'ab2cd';
-      const collidingId = connectionId.parse('01JZAB2CD00000000000000000');
-      const row: Connection = {
-        id: collidingId,
-        tenantId: acme,
-        vertical: 'callout',
-        provider: 'scrive',
-        label: 'unrelated label',
-        status: 'active',
-        externalAccountRef: 'unrelated-ref',
-        scopes: [],
-        expiresAt: null,
-        lastOkAt: null,
-        lastError: null,
-        lastErrorAt: null,
-        createdBy: staff,
-        createdAt: new Date(0).toISOString(),
-        revokedAt: null,
-      };
-      const { body } = await read(apiFor(withListConnections(async () => [row])), `/connections/health?q=${needle}`);
+      const id = '01JZAB2CD00000000000000000';
+      const { body } = await read(
+        apiFor(withListConnections(async () => [probeRow(id, acme)])),
+        `/connections/health?q=${needle}`,
+      );
       expect(body.entries).toEqual([]);
+    });
+
+    it('#1716 regression: a tenant id is never matched, not even exactly', async () => {
+      // A tenant already has the exact `?tenantId=` filter (api.ts), so `e.tenantId`
+      // gets no needle match at all — not a substring, and not the whole-id exception
+      // ids get. `ZX9WV` sits only inside the tenant id, never in a `probeRow` field.
+      const needle = 'zx9wv';
+      const tenant = '01JZZX9WV00000000000000000';
+      const a = apiFor(withListConnections(async () => [probeRow(ulid(), tenant)]));
+      expect((await read(a, `/connections/health?q=${needle}`)).body.entries).toEqual([]);
+      // Not even the whole tenant id, exactly — that exception is for connection ids only.
+      expect((await read(a, `/connections/health?q=${tenant}`)).body.entries).toEqual([]);
     });
   });
 
