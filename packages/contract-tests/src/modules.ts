@@ -2002,8 +2002,11 @@ export const capModManifest = moduleManifest.parse({
     { key: 'cap:admin', description: 'arrange the folder tree' },
   ],
   events: {
-    emits: [{ type: 'cap.commented', schemaVersion: 1 }],
-    consumes: [],
+    emits: [
+      { type: 'cap.commented', schemaVersion: 1 },
+      { type: 'cap.mint-requested', schemaVersion: 1 },
+    ],
+    consumes: [{ type: 'cap.mint-requested', schemaVersion: 1 }],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
   attachmentTargets: [],
@@ -2092,6 +2095,21 @@ export const capMod: ModuleRegistration = {
       return { commented: true };
     }) as OperationHandler<never, unknown>,
     'cap/whoami': whoAmIOp as OperationHandler<never, unknown>,
+    // Asks the CONSUMER below to mint. A consumer runs under an override actor whose
+    // checks allow unconditionally, so "the minter holds every key" would be vacuous
+    // there — the mint must be refused outright, whatever the check would have said.
+    'cap/request-mint': (async (ctx, input) => {
+      ctx.emit({
+        type: 'cap.mint-requested',
+        schemaVersion: 1,
+        entity: (input as { entity: EntityRef }).entity,
+        piiClass: 'none',
+        payload: { entity: (input as { entity: EntityRef }).entity },
+      });
+      return { requested: true };
+    }) as OperationHandler<never, unknown>,
+    'cap/notes': ((ctx) =>
+      ctx.sql.query('SELECT id, body FROM cap_notes ORDER BY id')) as OperationHandler<never, unknown>,
     'cap/outbox': ((ctx) =>
       ctx.sql.query(
         'SELECT id, type, actor, authorization, operation, entity_type, entity_id, payload FROM _substrat_outbox ORDER BY id',
@@ -2111,6 +2129,21 @@ export const capMod: ModuleRegistration = {
       }
       return out;
     }) as OperationHandler<never, unknown>,
+  },
+  consumers: {
+    // Records what the mint answered rather than letting the delivery fail, so the test
+    // reads an outcome instead of inferring one from a dead letter.
+    'cap.mint-requested': (async (ctx, event) => {
+      const entity = (event.payload as { entity: EntityRef }).entity;
+      let outcome: string;
+      try {
+        const minted = await ctx.capabilities.mint({ entity, permissions: [CAP_READ] });
+        outcome = `minted ${minted.id}`;
+      } catch (err) {
+        outcome = `refused ${(err as { code?: string }).code ?? (err as Error).message}`;
+      }
+      ctx.sql.exec('INSERT INTO cap_notes (id, body) VALUES (?, ?)', [event.id, outcome]);
+    }) as ConsumerHandler,
   },
 };
 

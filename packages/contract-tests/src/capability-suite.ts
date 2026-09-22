@@ -297,6 +297,13 @@ export function capabilityContractSuite(
         await expect(stub.invoke('cap/read', { entity: doc('d1') })).resolves.toBeTruthy();
       });
 
+      it('a consumer cannot mint: its checks allow unconditionally, so it is refused outright', async () => {
+        await (await as(alice)).invoke('cap/request-mint', { entity: folder('F') });
+        const notes = await (await as(alice)).invoke<{ body: string }[]>('cap/notes');
+        expect(notes.map((n) => n.body)).toContain('refused forbidden');
+        expect(notes.some((n) => n.body.startsWith('minted'))).toBe(false);
+      });
+
       it('a capability cannot mint a capability — no re-delegation', async () => {
         const minted = await share(alice, {
           entity: folder('F'),
