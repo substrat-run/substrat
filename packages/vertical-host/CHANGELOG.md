@@ -1,5 +1,199 @@
 # @substrat-run/vertical-host
 
+## 0.119.0
+
+### Minor Changes
+
+- bc6a6bb: A link share of a folder or a document can now deliver the files under it.
+
+  `ScopeHost.getCapabilityAttachments(sessionToken, tenantId, scopeId)` is the attachment surface for a capability session, the counterpart of `getConnectorAttachments`. It is optional, so an adapter built before it still satisfies the interface. Both adapters implement it:
+
+  - **Reads** (`list`, `open`) check the attachment target's `readPermission` on the file's entity, as `{ capability }`, through the same checker an invoke uses. That checks the capability's keys and its entity subtree, and re-checks that its minter can still read. The session is resolved again on every call, so a revoke or an expiry refuses the next download. A read never takes a use.
+  - **Writes** (`upload`, `remove`) are refused, even when the capability carries the write key, and the refusal is recorded in the denial log against the capability. No bytes reach the blob store. The refusal is the kernel's `capabilityAttachmentWriteRefused`.
+  - **A capability minted with `operations` can't read attachments.** No attachment verb is an operation it could have listed, so those reads are refused as `forbidden`.
+
+  `@substrat-run/vertical-host` adds `mountLinkShareDownload` (`GET /api/capability/attachments/:attachmentId`) and `linkShareAttachments`. Both use `linkShareStub`'s precedence: the `sb_capability` cookie first, then the signed-in visitor. A host without `getCapabilityAttachments` refuses a request carrying the cookie instead of answering as the visitor. The download is sent `Cache-Control: private, no-store`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff` and a `sandbox` content security policy, always as `Content-Disposition: attachment` (`attachmentDisposition`).
+
+  `@substrat-run/contract-tests` adds `capabilityAttachmentContractSuite`, and its capability fixture now declares attachment targets on `doc` and `folder`.
+
+- a9cfc4a: The schedule kill switch (#1666) gets a status read: "is this module switched off on
+  this scope?", without the scope's own SQL console.
+
+  `GET /tenants/:t/scopes/:s/system-grants` (staff/service only) answers, per module the
+  scope holds or has ever held system authority for, `on` / `off` / `ungranted` — the
+  kernel's `systemScheduleState`, the SAME predicate `runDueSchedules` gates on, so the
+  read and the runner cannot disagree — and, while `off`, who switched it off, when, and
+  why, from the admin log's `intent` row for the `revokeFromSystem` still in force.
+
+  `@substrat-run/kernel` adds `HostAdmin.systemGrantsStatus` (a required member — every
+  `HostAdmin` implementation, in or out of tree, needs one) and exports the enumerator it
+  is built from, `systemGrantsStatus`, plus its `SystemGrantsEntry` shape. `@substrat-run/contracts`
+  adds the two wire schemas: `systemScheduleEntry` (the bare position, no audit join — what a
+  vertical's own deployment can honestly answer for itself) and `systemGrantsStatusEntry`
+  (that plus `switchedOff`, the control plane's own answer).
+
+  For a hosted scope the read is delegated to the deployment serving it, exactly the way
+  `revokeFromSystem`/`restoreToSystem` delegate the write: `SystemSwitchDelegation` gains a
+  `status` method (`@substrat-run/adapter-cloudflare`), and `@substrat-run/vertical-host`'s
+  `mountPlatformSurface` adds `GET /internal/system-grants` against a new OPTIONAL
+  `VerticalScopeHost.systemGrantsStatusLocal` — a deployment built before this ships still
+  satisfies the interface, and the route answers 501, which `@substrat-run/control-plane-api`'s
+  new `VerticalClient.systemGrantsStatus` reports as "redeploy the vertical", the same
+  skew handling `systemSwitch` already gives the write (a 404, an SPA shell, or a 200 of
+  the wrong shape are all read as "this deployment predates the route", never a wrong `on`).
+
+  The admin-log join (who/when/why) happens only on the control plane — a vertical's own
+  deployment holds no admin log to join against, so `/internal/system-grants` and
+  `systemGrantsStatusLocal` answer the bare position (`systemScheduleEntry`) only.
+
+- bd5c543: One browser can now hold several link shares at once. Before, opening a second link replaced the first.
+
+  Each exchange sets its own cookie, `sb_capability_<capabilityId>`, with the same `HttpOnly`, `SameSite=Lax`, `Path=/` and `Secure` attributes as before. A page that holds several links names the one a call acts as with the `capabilityId` the exchange returned. It goes in the `X-Substrat-Capability` header (`CAPABILITY_HEADER`), or in `?capability=<id>` on a plain link such as a download. `linkShareStub`, `linkShareAttachments` and `mountLinkShareDownload` all use that selection, and a capability still wins over a signed-in visitor.
+
+  - A request naming a link the browser doesn't hold is refused as `unauthenticated`, the same as a revoked link. It never falls back to another link or to the signed-in visitor. The session behind a name always acts as its own capability, so a link to one entity can't act on another.
+  - A request naming no link acts as the most recently opened one, as the single cookie did. A `sb_capability` cookie set before this release keeps working until it expires. The next exchange deletes it.
+  - A browser holds at most `CAPABILITY_SESSIONS_MAX` (8) links. Opening one more evicts the one exchanged longest ago.
+  - `clearCapabilitySession(c, { capabilityId })` forgets one link and keeps the others. With no link named, it forgets them all. A string second argument is still read as the cookie name.
+  - New exports: `capabilitySessionsOf`, `namedCapabilityOf`, `CAPABILITY_HEADER`, `CAPABILITY_QUERY` and `CAPABILITY_SESSIONS_MAX`.
+
+- 2c65b67: One vertical can now call another vertical's operations in the same tenant. The platform identifies the calling app, so it holds no token and needs no pasted API key, hostname or outbound allowlist entry (#1706, part 1: the kernel half).
+
+  **The target declares who may call it.** A module manifest can declare `peers`: another vertical's registry slug, the operations that vertical may invoke, and the permissions it holds while doing so.
+
+  ```ts
+  peers: [
+    {
+      vertical: "acme/board-room",
+      operations: ["customer/list"],
+      permissions: ["customer:read"],
+    },
+  ];
+  ```
+
+  - **The keys are seated at provisioning** as `vertical:<slug>` grants, the way a schedule's `system:<module>` grants are.
+  - **`lint:permissions` renders them** in a new PERMISSIONS.md section, so widening what another app may do shows up in the reviewed permission diff. It also refuses a peer key or operation that no module declares.
+  - **`operations: []` declares a receive-only peer.** It holds its keys and can invoke nothing.
+  - **`permissions: []` is refused.** A peer entry that grants nothing declares nothing.
+
+  **The caller is an actor of its own.** `@substrat-run/contracts` adds `verticalActor` (`{ vertical, scope }`: the calling app and the instance that called) to the actor union, and a `{ kind: 'vertical' }` check subject. It also adds `peer.ts`, which holds `verticalCaller`, `peerSpec`, `verticalInstance`, `verticalResolution`, `peerSwitch` / `peerSwitchResult` / `peerSwitchOutcome`, `peerCoverage`, and the `VerticalSlug` type. `adminAction` gains `revokeFromPeer` / `restoreToPeer`.
+
+  **`@substrat-run/kernel` adds the peer door and its supporting verbs:**
+
+  - **`ScopeHost.getVerticalScope(caller, tenantId, scopeId)`**, the sixth door. Every invoke is admitted inside the scope (`admitPeer`): the caller must be a declared peer, its switch must be on, and the operation must be on its allowlist. A refusal is `forbidden`, and it is not a K-35 denial. Inside, the operation is ordinary: checks resolve the declared grants, and events and denials name `{ vertical, scope }`. No principal crosses, and a peer cannot mint a capability.
+  - **`ScopeHost.peerCovers`** reports whether a peer holds each key right now, using the checker's own answer.
+  - **`HostAdmin.resolveVerticalInstance(tenantId, vertical)`** finds "the instance of vertical Y in tenant T". It applies one rule, `resolveVerticalInstanceFrom`: a primary, active scope of that tenant, exactly one. Otherwise the answer is `not-installed` or `ambiguous`, never a guess.
+  - **`HostAdmin.revokeFromPeer` / `restoreToPeer`** are the per-(scope, peer) kill switch. It runs the schedule switch's own statement, now generalised as `switchSubjectGrants`. OFF tombstones the peer's grants and blocks the provisioning seat, so the next call is refused and nothing a re-provision does brings the grants back.
+
+  These are REQUIRED members of `ScopeHost` and `HostAdmin`, so every implementation in or out of tree needs them. The shared rules are exported from `peer.ts`.
+
+  **Both adapters enforce all of it.** On the Durable-Object path, the coordinator threads the caller to the ScopeDO, which admits it in its queue on every invoke and acknowledges it. The coordinator refuses a success the DO did not acknowledge, the capability session's skew pattern.
+
+  **What "enforced" does and does not mean on Cloudflare.** A deployment ENFORCES a peer call the platform forwards to it: the door, the declared grants, the allowlist and the switch all run there, on real Durable-Object SQLite. A hosted deployment cannot yet ORIGINATE one, because nothing on the hosted path says who is calling until the router hop lands in the next release. Locally, the broker below stands two verticals side by side today.
+
+  **`@substrat-run/vertical-host`** adds `/internal/vertical-invoke`, which takes a strict body naming the caller and nothing that could act as a person, and `/internal/peer-switch`. Both sit behind the platform secret, like every `/internal` verb. They use two OPTIONAL `VerticalScopeHost` methods, and a deployment built before them answers 501.
+
+  **`@substrat-run/adapter-sqlite/vertical-broker`** is the pure host's stand-in for the platform hop. It lets two verticals run side by side locally under the same model. It is a node-only subpath (the `workerd`/`worker`/`browser` conditions resolve to nothing).
+
+  **`@substrat-run/boundary-lint` R9** refuses importing that subpath anywhere but a test, `server.ts` or `seed.ts`.
+
+  **`@substrat-run/contract-tests`** adds `peerContractSuite`, `verticalResolutionContractSuite` and the `peerMod` fixture.
+
+  **The console's denial log and the dashboard's history strip** name a peer as the app it is.
+
+  Not in this release: the hosted transport (the router hop that identifies the calling deployment, and the caller's `calls` declaration), the dashboard controls for the switch, and a binding for a tenant that runs two instances of one vertical.
+
+- 8009cd1: A deployed vertical can now call another vertical of the same tenant. The platform says which app is calling, so the caller holds no credential (#1706, part 2: the hosted transport). Part 1 built the door; this is the path to it.
+
+  **What a vertical author writes.** The caller declares who it calls, in package.json:
+
+  ```json
+  { "substrat": { "calls": ["acme/crm"] } }
+  ```
+
+  and calls it from its harness:
+
+  ```ts
+  const result = await peerClient("acme/crm").invoke("customer/list", {
+    limit: 50,
+  });
+  ```
+
+  There is no address, no token and no outbound-allowlist entry. What the caller may then DO is the target's own `peers` declaration, which its permission diff reviews.
+
+  **How the platform knows who is calling.** The call goes to one reserved address, `peer.substrat.internal`, which is in no DNS zone:
+
+  - the **egress worker** — which every dispatched `fetch` passes through — recognises that address before its outbound policy and hands the call to the router, with the caller taken from the dispatch parameters the router set when it dispatched the caller. Nothing in the request contributes to it, and the body is strict, so it cannot carry one;
+  - the **router**'s `PeerCalls` entrypoint (reachable only through a service binding, never over its public `fetch`) resolves the target in the caller's own tenant and dispatches the target's `/internal/vertical-invoke`;
+  - a call made where egress cannot see it — from inside a Durable Object, which outbound workers do not intercept — **fails to resolve** instead of leaving the isolate. That is why the address is unroutable rather than real.
+
+  **Module code reaches a peer asynchronously.** An operation, a consumer or a schedule runs inside the scope's Durable Object, where module code has no network by rule. It enqueues a `peer-invoke` platform intent instead (`ctx.requestPlatform`), and the control plane's drain delivers it with the caller taken from the scope it found the row in. At-least-once, with the intent id as the idempotency key.
+
+  **The gates, on both legs:**
+
+  - the caller's declared `substrat.calls` (a version pushed before the declaration carries `null` and is unenforced, exactly as a pre-#303 `outbound` is);
+  - the caller is a live, primary instance of the vertical it claims — never a preview, and the refusal names the local broker as the way to test the edge;
+  - the target resolves to exactly one primary, active instance **in the caller's tenant**, never guessed when a tenant runs two;
+  - a synchronous chain is bounded by `PEER_CALL_DEPTH_MAX`, its own constant, deliberately not shared with #1705's event hop cap.
+
+  **Contract additions.** `@substrat-run/contracts` adds `peer-transport.ts` (`PEER_CALL_HOST`, `PEER_CALL_URL`, `isPeerCallHost`, `PEER_CALL_DEPTH_MAX`, `peerCallRequest`, `peerCaller`, `callsDeclares` and the refusal messages) and the `peer-invoke` intent kind with its payload. The deploy manifest, `RouteTarget` and the version record each gain `calls` beside `outbound`, lifted from the stored manifest by `callsOfManifestJson`. `@substrat-run/vertical-host` exports `peerClient`; `@substrat-run/control-plane-api` adds `VerticalClient.verticalInvoke` and `peerInvokeHandler`; the Cloudflare adapter adds `createPeerCallResolver` and the directory's `peerCallTarget` read.
+
+  **Operators:** the egress worker needs its new `PEER_CALLS` binding to the router's `PeerCalls` entrypoint, and the router now deploys from `src/index.ts` (which exports both the fetch handler and that entrypoint). Without the binding, peer calls are refused — never passed through.
+
+  The console scope page and dashboard app page now show incoming peer access and offer cut-off/restore controls with an audited reason. Hosted switch/status calls delegate to the deployment holding the grants. The dashboard also discloses outgoing targets after installation, keeping missing targets, refused access and unreadable status distinct. `peersDeclaredBy` derives peer permissions from the model's operations. The architecture guide includes an executable local call/cut-off/restore example and operator rollout steps.
+
+  Instance binding when a tenant runs multiple active targets remains excluded, tracked in #1720; ambiguous calls are refused.
+
+- b080e0f: A per-PR preview of an app that signs in at one of the team's auth servers now has a login
+  (#1704). A fork copies the app's data and none of its delivered config, and every push binds a
+  new version whose config store starts empty. The app's `substrat:auth` holds a client secret
+  the platform never stores or reads back, so it can't be copied. Instead, each `preview create`
+  (and each push to the preview) gives the preview **a client of its own** at that auth server
+  and delivers it as the preview's `substrat:auth`, along with the shared-issuer marker. The
+  app's own client is never changed and never learns a preview's callback. Reaping the preview,
+  by `preview delete`, `--refresh` or TTL expiry, deletes its client.
+
+  `@substrat-run/contracts` adds the protocol between the control plane and the auth server
+  (`preview-client.ts`): three platform-gated routes, `POST /internal/preview-client/check`,
+  `POST /internal/preview-client` and `DELETE /internal/preview-client`, with their request and
+  response schemas. Every redirect URI on that wire must be `https:`: loopback is refused, since
+  both ends are hosted and previews don't exist in local dev. It also adds `oidcCallbackUrl` / `OIDC_CALLBACK_PATH`, and `previewAuth`, the
+  `auth` field of `preview create`'s answer.
+
+  `@substrat-run/control-plane-api` adds `VerticalClient.checkPreviewClient` /
+  `mintPreviewClient` / `retirePreviewClients`. A deployment that predates the routes (a 404, the
+  auth server's JSON 501 fallback, or an SPA shell) reads as "redeploy the auth server", never as
+  "the app does not sign in there". It also adds `wirePreviewAuth`, `retireAllPreviewClients` and
+  `retireClientsOfReapedScope`. The previews routes answer `auth` and `notes` on create, and
+  `callbackUrl` on every listed row.
+
+  `@substrat-run/demo-auth-server` implements the three routes. An install claims an app only on
+  a binding **the platform** wrote there (a #1670 places row or a #1619 resource row), together
+  with a live client redirecting to the app's callback. Open DCR can forge a callback match on
+  its own, so a match alone is not enough. The route refuses a call for any tenant but its own.
+  The client is registered through the plugin's own dynamic registration and recorded in a new
+  `preview_client` table. Deletes select from that table only, so no delete can reach a client
+  it did not mint for that preview.
+
+  `@substrat-run/cli`'s `preview create` prints what happened to the login. For an app on an
+  external issuer it prints the preview's callback, and it says that no login config was
+  delivered. It also says that per-install Env settings are not carried over.
+
+### Patch Changes
+
+- b2cbdf8: The MCP endpoint no longer refuses `initialize` when the client proposes a protocol revision newer than the ones it speaks. On the handshake the `MCP-Protocol-Version` header is a proposal: the server answers with its own latest revision, and an unauthenticated client now gets the 401 challenge that starts sign-in instead of a 400. Every later request is still refused if it pins a revision the server does not speak.
+- Updated dependencies [bc6a6bb]
+- Updated dependencies [bb10d6d]
+- Updated dependencies [84b5fe2]
+- Updated dependencies [929ec09]
+- Updated dependencies [a9cfc4a]
+- Updated dependencies [2c65b67]
+- Updated dependencies [8009cd1]
+- Updated dependencies [b080e0f]
+- Updated dependencies [e7113ea]
+  - @substrat-run/kernel@0.119.0
+  - @substrat-run/contracts@0.119.0
+  - @substrat-run/model-providers@0.5.9
+
 ## 0.118.0
 
 ### Patch Changes
