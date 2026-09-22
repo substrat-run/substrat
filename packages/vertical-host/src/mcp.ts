@@ -49,7 +49,15 @@
  */
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { z, listPageQuery, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, LIST_SORT_PARAM } from '@substrat-run/contracts';
+import {
+  z,
+  listPageQuery,
+  LIST_PAGE_DEFAULT,
+  LIST_PAGE_MAX,
+  LIST_SORT_PARAM,
+  mcpEndpointPath,
+  mcpResourceOf,
+} from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 
@@ -297,7 +305,13 @@ export interface ProtectedResourceOptions {
     | ((c: Context) => readonly string[] | Promise<readonly string[]>);
   /** Advertised `scopes_supported`. Omit when the issuer does not scope by resource. */
   readonly scopesSupported?: readonly string[];
-  /** The canonical resource identifier. Defaults to this endpoint's own absolute URL. */
+  /**
+   * The canonical resource identifier. Defaults to this endpoint's own absolute URL
+   * (`mcpResourceOf` in `@substrat-run/contracts`). It is also the audience a presented
+   * token must name. The platform registers a resource at a team auth-server from the
+   * default alone, so a vertical that pins another value here, or mounts the endpoint
+   * off `/api/mcp`, is not covered by that registration (#1619).
+   */
   readonly resource?: string;
 }
 
@@ -348,6 +362,49 @@ function toolResult(value: unknown) {
   };
 }
 
+/**
+ * Why a presented bearer token was not minted for THIS endpoint, or `null` when there is
+ * nothing here to refuse (#1619).
+ *
+ * RFC 8707 and the MCP authorization spec both require a resource server to accept only
+ * tokens issued for it: `aud` must name its own resource identifier. Without the check, a
+ * token a client obtained for vertical B's endpoint works at vertical A's whenever the two
+ * share an issuer, as every vertical on one team auth-server does. That is a confused
+ * deputy. The same goes for an `id_token` presented as a bearer, whose `aud` is the client
+ * it was minted for rather than any resource.
+ *
+ * **It can only refuse.** The claim is read before the vertical's resolver runs and without
+ * checking the signature, because verification belongs to the resolver and this mount has
+ * no keys. That is safe because both have to pass. A forged token with the right `aud` gets
+ * through here and is refused by the resolver. A genuine token with the wrong `aud` is
+ * refused here. Nothing is ever admitted on this check alone.
+ *
+ * Two shapes get `null`, meaning they are the resolver's to judge. No bearer at all (a
+ * cookie session, or nobody, which the resolver answers with a 401). And a bearer that is
+ * not a JWS, which carries no readable `aud`: its verifier (introspection) is what must
+ * judge its audience. No resolver in this repo accepts an opaque token today.
+ */
+function audienceRefusal(authorization: string | undefined, resource: string): string | null {
+  if (!authorization?.toLowerCase().startsWith('bearer ')) return null;
+  const segments = authorization.slice(7).trim().split('.');
+  if (segments.length !== 3) return null;
+  let claims: unknown;
+  try {
+    const b64 = segments[1]!.replace(/-/g, '+').replace(/_/g, '/');
+    const bytes = Uint8Array.from(atob(b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), '=')), (ch) =>
+      ch.charCodeAt(0),
+    );
+    claims = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null; // not a JWS payload, so not a token whose audience can be read here
+  }
+  if (claims === null || typeof claims !== 'object') return null;
+  const aud = (claims as { aud?: unknown }).aud;
+  const audiences = typeof aud === 'string' ? [aud] : Array.isArray(aud) ? aud : [];
+  // The reason names only this endpoint. The token's own claims are never echoed back.
+  return audiences.includes(resource) ? null : `this token was not issued for ${resource}`;
+}
+
 /** A refusal the AGENT should read and adapt to, rather than a transport failure. */
 function toolError(message: string) {
   return { content: [{ type: 'text', text: message }], isError: true };
@@ -389,7 +446,7 @@ export function mountMcp(
   options: MountMcpOptions & { readonly basePath?: string } = {},
 ): { path: string; tools: number } {
   const tools = mcpToolsOf(operations);
-  const path = options.path ?? `${options.basePath ?? '/api'}/mcp`;
+  const path = options.path ?? mcpEndpointPath(options.basePath);
   const wellKnown = `/.well-known/oauth-protected-resource${path}`;
   const byName = new Map(tools.map((t) => [t.name, t]));
   const serverInfo = {
@@ -497,6 +554,15 @@ export function mountMcp(
   const pr = options.protectedResource;
 
   /**
+   * This endpoint's resource identifier, as a client reached it. It is ONE computation for
+   * the three places that need it: the document below publishes it, a client requests a
+   * token for exactly that string, and the audience check holds the token to it. It is
+   * computed per request because a vertical answering on several hostnames is a different
+   * resource on each.
+   */
+  const resourceFor = (c: Context): string => pr?.resource ?? mcpResourceOf(new URL(c.req.url).origin, path);
+
+  /**
    * The `WWW-Authenticate` challenge a 401 from this endpoint carries.
    *
    * Emitted whether or not metadata is configured: a bare `Bearer` still tells a client
@@ -504,10 +570,9 @@ export function mountMcp(
    * actually serve the document, because a challenge pointing at a 404 is worse than a
    * challenge pointing nowhere.
    */
-  const challengeFor = (c: Context): string => {
-    if (!pr) return 'Bearer';
-    const url = new URL(c.req.url);
-    return `Bearer resource_metadata="${url.origin}${wellKnown}"`;
+  const challengeFor = (c: Context, ...params: string[]): string => {
+    const all = [...(pr ? [`resource_metadata="${new URL(c.req.url).origin}${wellKnown}"`] : []), ...params];
+    return all.length > 0 ? `Bearer ${all.join(', ')}` : 'Bearer';
   };
 
   if (pr) {
@@ -516,9 +581,8 @@ export function mountMcp(
         typeof pr.authorizationServers === 'function'
           ? await pr.authorizationServers(c)
           : pr.authorizationServers;
-      const origin = new URL(c.req.url).origin;
       return c.json({
-        resource: pr.resource ?? `${origin}${path}`,
+        resource: resourceFor(c),
         // Omitted rather than empty when nothing is configured: a client reads an empty
         // list as "this resource has no issuer", which is a different claim from "this
         // install has not been configured yet" and sends it down a wrong path.
@@ -562,6 +626,24 @@ export function mountMcp(
     // and answering one is cheaper than explaining why we will not.
     const messages = Array.isArray(body) ? (body as Req[]) : [body as Req];
     if (messages.length === 0) return c.json(rpcError(null, -32600, 'Invalid Request'), 400);
+
+    /**
+     * A token minted for some other audience is refused BEFORE the resolver, so a
+     * resolver that verifies only the signature and the issuer cannot let it through. See
+     * `audienceRefusal` for why this can only refuse. It is the RFC 6750 `invalid_token`
+     * answer: the client holds a token, just not one for this endpoint, and the challenge
+     * it gets names the document that says which resource to ask for.
+     */
+    const refusal = audienceRefusal(c.req.header('authorization'), resourceFor(c));
+    if (refusal) {
+      const res = problemResponse(c, new HTTPException(401, { message: refusal }));
+      const challenged = new Response(res.body, res);
+      challenged.headers.set(
+        'WWW-Authenticate',
+        challengeFor(c, 'error="invalid_token"', `error_description="${refusal}"`),
+      );
+      return challenged;
+    }
 
     const replies: object[] = [];
     try {

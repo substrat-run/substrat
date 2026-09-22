@@ -10,12 +10,18 @@
  * copy-paste.
  */
 
+import type { ScopeId } from '@substrat-run/contracts';
+
 export type AppAuthChoice =
   /** An issuer the user configured by hand — Supabase, Auth0, Keycloak, …; the client
    *  must already be registered THERE with `https://<app>/api/auth/callback`. */
   | { source: 'external'; issuer: string; clientId: string; clientSecret?: string; audience?: string }
-  /** One of the team's own Auth Server apps — the client is auto-registered at install. */
-  | { source: 'auth-server'; issuer: string };
+  /**
+   * One of the team's own Auth Server apps — the client is auto-registered at install, and
+   * so is the app's MCP endpoint (#1619, `mcp-resources.ts`), which is what `issuerScopeId`
+   * addresses. Absent, the endpoint is left for the Apps list's reconcile to register.
+   */
+  | { source: 'auth-server'; issuer: string; issuerScopeId?: ScopeId };
 
 export interface RegisteredClient {
   clientId: string;

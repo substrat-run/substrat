@@ -49,3 +49,4 @@ export * from './client-context.js';
 export * from './model-usage.js';
 export * from './seam.js';
 export * from './signals.js';
+export * from './mcp.js';

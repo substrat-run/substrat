@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
+  mcpResourceOf,
   platformActorId,
   principalId,
   scopeId,
@@ -406,6 +407,119 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(rows.find((a) => a.app_scope_id === failScope)?.status).toBe('failed');
     const events = await dash.invoke<Array<{ kind: string; detail: string | null }>>('dashboard/app-events', { appScopeId: failScope });
     expect(events.find((e) => e.kind === 'failed')?.detail).toContain('client registration');
+  });
+
+  /**
+   * The app's MCP endpoint, registered at the team auth-server it signs in with (#1619), so
+   * that issuer mints for the `resource` an MCP client asks for instead of answering
+   * `invalid_target` before any login page.
+   */
+  it('registers the MCP endpoint at a team auth-server once identity is delivered — best-effort (#1619)', async () => {
+    const acme = await bootstrap('acme-mcp-resources');
+    const issuerScope = scopeId.parse(ulid());
+    const configured: Array<{ scopeId: string; entries: Array<{ key: string; value: string }> }> = [];
+    const cp = (opts: { refuseIssuer?: boolean } = {}) =>
+      ({
+        tenantId: acme.tenantId,
+        ensureTenant: async () => {},
+        grantEntitlement: async () => {},
+        provisionScope: async () => {},
+        provisionInstance: async () => {},
+        activateScope: async () => {},
+        listChannels: async () => [],
+        bindHostname: async () => {},
+        setHostnameStatus: async () => {},
+        // Every hostname the app answers on is its own resource; a pending custom domain
+        // does not answer yet, so it is not one.
+        listHostnames: async () => [
+          { hostname: 'people-acme.global.substrat.run', status: 'active' },
+          { hostname: 'people.acme.example', status: 'active' },
+          { hostname: 'pending.acme.example', status: 'pending' },
+        ],
+        configureInstance: async (sid: string, entries: Array<{ key: string; value: string }>) => {
+          if (opts.refuseIssuer && sid === issuerScope) throw new Error('issuer unreachable');
+          configured.push({ scopeId: sid, entries });
+        },
+      }) as unknown as Parameters<typeof createApp>[1]['controlPlane'];
+    const install = (appScopeId: string, controlPlane: Parameters<typeof createApp>[1]['controlPlane'], auth: Parameters<typeof createApp>[1]['appAuth']) =>
+      createApp(host, {
+        node: acme, appScopeId: scopeId.parse(appScopeId), verticalSlug: 'meridian', name: `App ${appScopeId.slice(-4)}`,
+        appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+        controlPlane, appAuth: auth,
+        registerOidcClient: async () => ({ clientId: 'minted-id', clientSecret: 'minted-secret' }),
+      });
+
+    const appScope = ulid();
+    const app = await install(appScope, cp(), {
+      source: 'auth-server', issuer: 'https://auth-acme.global.substrat.run', issuerScopeId: issuerScope,
+    });
+    expect(app.status).toBe('active');
+    // First the vertical learns its issuer, THEN the issuer learns the vertical's endpoints —
+    // to the issuer's own scope, as the whole set, one per live hostname.
+    expect(configured.map((c) => c.scopeId)).toEqual([appScope, issuerScope]);
+    expect(configured[1]!.entries).toEqual([
+      {
+        key: `substrat:resources:${appScope}`,
+        value: JSON.stringify([
+          mcpResourceOf('https://people-acme.global.substrat.run'),
+          mcpResourceOf('https://people.acme.example'),
+        ]),
+      },
+    ]);
+
+    // An EXTERNAL issuer is not ours to register anything at.
+    configured.length = 0;
+    const extScope = ulid();
+    await install(extScope, cp(), { source: 'external', issuer: 'https://auth.example.com', clientId: 'cid' });
+    expect(configured.map((c) => c.scopeId)).toEqual([extScope]);
+
+    // The login this install promised works whether or not the issuer heard about the MCP
+    // endpoint, so an issuer that cannot be reached does not fail the install.
+    configured.length = 0;
+    const refusedScope = ulid();
+    const refused = await install(refusedScope, cp({ refuseIssuer: true }), {
+      source: 'auth-server', issuer: 'https://auth-acme.global.substrat.run', issuerScopeId: issuerScope,
+    });
+    expect(refused.status).toBe('active');
+    expect(configured.map((c) => c.scopeId)).toEqual([refusedScope]);
+  });
+
+  it('deleting an app un-registers its MCP endpoint at its issuer, and a refusal does not stop the delete (#1619)', async () => {
+    const acme = await bootstrap('acme-mcp-delete');
+    const issuerScope = scopeId.parse(ulid());
+    const appScopeId = scopeId.parse(ulid());
+    await createApp(host, {
+      node: acme, appScopeId, verticalSlug: 'meridian', name: 'People',
+      appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+    });
+    const configured: Array<{ scopeId: string; entries: Array<{ key: string; value: string }> }> = [];
+    const archived: string[] = [];
+    const cp = (refuse = false) =>
+      ({
+        tenantId: acme.tenantId,
+        scopeStatus: async () => ({ status: 'active' }),
+        archiveScope: async (sid: string) => void archived.push(sid),
+        unbindScopeHostnames: async () => {},
+        configureInstance: async (sid: string, entries: Array<{ key: string; value: string }>) => {
+          if (refuse) throw new Error('issuer unreachable');
+          configured.push({ scopeId: sid, entries });
+        },
+      }) as unknown as Parameters<typeof deprovisionApp>[1]['controlPlane'];
+
+    await deprovisionApp(host, { node: acme, appScopeId, controlPlane: cp(), mcpIssuerScopeId: issuerScope });
+    expect(configured).toEqual([{ scopeId: issuerScope, entries: [{ key: `substrat:resources:${appScopeId}`, value: '' }] }]);
+    expect(archived).toEqual([appScopeId]);
+
+    // The twin: the issuer is down, and the app is still deleted.
+    const second = scopeId.parse(ulid());
+    await createApp(host, {
+      node: acme, appScopeId: second, verticalSlug: 'meridian', name: 'People Two',
+      appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+    });
+    await expect(
+      deprovisionApp(host, { node: acme, appScopeId: second, controlPlane: cp(true), mcpIssuerScopeId: issuerScope }),
+    ).resolves.toBeUndefined();
+    expect(archived).toEqual([appScopeId, second]);
   });
 
   it('#426: install-form config is authored AND delivered with provisioning; the provision result is persisted', async () => {

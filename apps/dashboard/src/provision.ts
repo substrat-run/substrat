@@ -22,6 +22,7 @@ import { invitesModule } from '@substrat-run/engine-invites';
 import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js';
 import { ControlPlaneError, TenantNarrowedControlPlane, type DnsRecordRow, type SnapshotRecord } from './authority.js';
 import { authConfigFor, type AppAuthChoice, type RegisterOidcClientFn } from './auth-wiring.js';
+import { clearAppMcpResources, registerAppMcpResources } from './mcp-resources.js';
 
 /** This vertical's slug and the DO/entitlement key it registers under. */
 export const VERTICAL = 'dashboard';
@@ -358,6 +359,21 @@ export async function createApp(
     // so the Settings tab can show and update it later — delivery alone would leave the
     // issuer invisible everywhere but inside the app's deployment.
     await scope.invoke('dashboard/set-app-auth', { appScopeId: input.appScopeId, config: config! });
+    // Tell a TEAM auth-server about the app's MCP endpoint, so it mints for it (#1619). After
+    // the hostnames bound, because each one is its own resource. Best-effort, and outside
+    // the recorded step: the login this install promised already works, and the Apps list's
+    // reconcile re-asserts the registration if this one did not land.
+    if (input.appAuth.source === 'auth-server' && input.appAuth.issuerScopeId) {
+      await registerAppMcpResources(input.controlPlane, {
+        appScopeId: input.appScopeId,
+        issuerScopeId: input.appAuth.issuerScopeId,
+      }).catch((e: unknown) =>
+        console.error('dashboard: MCP resource registration failed', {
+          appScopeId: input.appScopeId,
+          reason: e instanceof Error ? e.message : String(e),
+        }),
+      );
+    }
   }
 
   // 4. Flip the account's record to active, recording the hostname if one bound and the
@@ -508,12 +524,37 @@ export async function deprovisionApp(
     node: DashboardNode;
     appScopeId: ScopeId;
     controlPlane?: TenantNarrowedControlPlane;
+    /**
+     * The team auth-server this app's MCP endpoint is registered at (#1619), which the
+     * delete un-registers so the issuer stops minting for it. The caller resolves it (it
+     * holds the issuer list). Absent, nothing is cleared: the Apps list's reconcile only
+     * walks apps that still exist, so it cannot clear this one afterwards.
+     */
+    mcpIssuerScopeId?: ScopeId;
   },
 ): Promise<void> {
   // 1. Authorize + record, in the caller's own dashboard scope — the "can they?" half,
   //    exactly as createApp does, before any platform effect.
   const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
   await scope.invoke('dashboard/delete-app', { appScopeId: input.appScopeId });
+
+  // 1.5. Un-register the app's MCP endpoint at its issuer, BEFORE its hostnames are
+  //      released: from the next authorize on, the issuer refuses to mint for it, and a
+  //      refresh of an older grant is refused too. Best-effort: a delete must not stall on
+  //      an issuer that is down. A row left behind names a hostname that is about to stop
+  //      routing, so nothing serves the audience it mints for, and the next app bound to
+  //      that hostname takes the row over when it registers.
+  if (input.controlPlane && input.mcpIssuerScopeId) {
+    await clearAppMcpResources(input.controlPlane, {
+      appScopeId: input.appScopeId,
+      issuerScopeId: input.mcpIssuerScopeId,
+    }).catch((e: unknown) =>
+      console.error('dashboard: MCP resource un-registration failed', {
+        appScopeId: input.appScopeId,
+        reason: e instanceof Error ? e.message : String(e),
+      }),
+    );
+  }
 
   // 2. Take the app scope offline in the caller's own tenant (ambient, never a request arg).
   //    Idempotent against a scope that has already LEFT the archivable states — a delete
