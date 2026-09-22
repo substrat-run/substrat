@@ -393,6 +393,32 @@ It returns the same surface with the same precedence. The host method under it,
 `getCapabilityAttachments`, is optional on `ScopeHost`. On a host without it, a request that
 carries the cookie is refused rather than answered as the signed-in visitor.
 
+### Several links in one browser
+
+Each exchange sets a cookie of its own, `sb_capability_<capabilityId>`, so opening a second
+link keeps the first. The exchange answers with the `capabilityId`; a page that holds several
+links sends it back to say which one a call acts as, in the `X-Substrat-Capability` header, or
+as `?capability=<id>` on a plain download link, which cannot carry a header.
+
+```ts
+const { capabilityId } = await (await fetch('/api/capability/exchange', { … })).json();
+await fetch('/api/folder', { headers: { 'x-substrat-capability': capabilityId } });
+const href = `/api/capability/attachments/${fileId}?capability=${capabilityId}`;
+```
+
+- **A name selects; it never searches.** A request naming a link this browser does not hold
+  (never opened here, evicted or cleared) is refused as a revoked link is. It is never
+  answered by another link the browser holds, nor by the signed-in visitor. The session
+  behind the name acts as its own capability, so a link to one folder can never act on
+  another, whatever it is called.
+- **Naming nothing acts as the link opened last**, which is what the single cookie did. A
+  page that only ever holds one link needs no change, and a cookie set before this change
+  keeps working until it expires.
+- **At most eight links.** Opening a ninth evicts the one exchanged longest ago. Opening it
+  again brings it back, if it has uses left.
+- **Forgetting is per link.** `clearCapabilitySession(c, { capabilityId })` forgets one link
+  and keeps the rest. With no link named, it forgets them all.
+
 ## Assigning a role: `ctx.canAssign`
 
 Reviewing role *definitions* protects nothing on its own. Nothing in a checkpoint over

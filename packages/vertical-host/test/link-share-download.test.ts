@@ -91,12 +91,12 @@ describe('mountLinkShareDownload — files through a link share, over HTTP', () 
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ secret }),
     });
-    const m = (res.headers.get('set-cookie') ?? '').match(new RegExp(`${CAPABILITY_COOKIE}=([^;]+)`));
+    const m = (res.headers.get('set-cookie') ?? '').match(new RegExp(`(${CAPABILITY_COOKIE}_[0-9A-Z]{26}=[^;]+)`));
     if (!m) throw new Error(`no cookie (status ${res.status})`);
     return m[1]!;
   };
   const headers = (cookie: string | null, signedInAs?: string) => ({
-    ...(cookie ? { cookie: `${CAPABILITY_COOKIE}=${cookie}` } : {}),
+    ...(cookie ? { cookie } : {}),
     ...(signedInAs ? { 'x-test-principal': signedInAs } : {}),
   });
   const download = (id: string, cookie: string | null, signedInAs?: string) =>
@@ -300,6 +300,29 @@ describe('mountLinkShareDownload — files through a link share, over HTTP', () 
         expect(res.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
         expect(res.headers.get('content-disposition')).toBe('attachment');
       }
+    });
+
+    it('two links in one browser: `?capability=` picks which one a plain download link acts as, and never tries the other', async () => {
+      const onF = await mint({ entity: folder('F'), permissions: [CAP_READ] });
+      const onG = await mint({ entity: folder('G'), permissions: [CAP_READ] });
+      const both = `${await cookieFor(onF.secret)}; ${await cookieFor(onG.secret)}`;
+      const get = (id: string, capability: string, cookie = both) =>
+        app.request(`http://docs.test/api/capability/attachments/${id}?capability=${capability}`, {
+          headers: { cookie },
+        });
+      expect((await get(files.d1.id, onF.id)).status).toBe(200);
+      expect((await get(files.d3.id, onF.id)).status).toBe(403);
+      expect((await get(files.d3.id, onG.id)).status).toBe(200);
+      expect((await get(files.d1.id, onG.id)).status).toBe(403);
+      // Named G, holding only F's session: refused as a revoked link is, F is not tried.
+      const onlyF = await cookieFor(onF.secret);
+      expect((await get(files.d1.id, onG.id, onlyF)).status).toBe(401);
+      // …and not the signed-in owner either, who could read it as themselves.
+      const signedIn = await app.request(
+        `http://docs.test/api/capability/attachments/${files.d3.id}?capability=${onG.id}`,
+        { headers: headers(onlyF, alice) },
+      );
+      expect(signedIn.status).toBe(401);
     });
 
     it('with neither, 401; an unknown id through a live link, 404', async () => {
