@@ -1,5 +1,135 @@
 # @substrat-run/control-plane
 
+## 0.13.35
+
+### Patch Changes
+
+- 4ef164c: A promote of a listed vertical now re-runs provisioning on its installs, so what a new
+  version's `onProvision` sets up reaches the installs that already existed.
+
+  The sweep's provision reconcile (#1172) compared a scope's receipt with its bound version. A
+  listed vertical's promote re-serves every install in place but moves none of their version
+  pointers, which belong to each tenant and move when that tenant presses Update. So the phase
+  never saw those installs: a new service principal, a site registration or a place on the
+  sweeper roster never reached them. The phase now compares against the version that RUNS on
+  the scope (`runningVersionOf`): for a scope on its vertical's serving script, the version
+  the script serves. Tenants' version pointers are not touched, so Update is still offered.
+
+  - **Paced.** At most `provisionReconcileBatch` scopes per pass, default 50, set on the
+    control plane as `PROVISION_RECONCILE_BATCH` (`0` pauses the phase). The rest are reported
+    as `deferred` and reached on later passes. Each pass starts its window at a random point
+    in the behind set (`provisionReconcileRng` injects it), so installs that fail every time
+    cannot keep healthy ones waiting.
+  - **Forks never.** The phase keeps only primary scopes, via the now-exported
+    `isPrimaryScope`: no `forkedFrom`, and not `kind: 'preview'`. A PR preview is a restored
+    copy of production data.
+  - **`unsupported` apart from `failed`.** A vertical with no `/internal/reconcile` answers 501. `reconcileScopeFn` may resolve `'unsupported'` for it, which is counted, reported with
+    up to 50 scope ids, not marked and not listed as an error.
+  - **The receipt names what ran.** A reconcile records the version of the deployment it
+    actually reached (`versionReachedAt`, from the rung of the resolution ladder that chose
+    it). The console's **Re-run provisioning** records that. The sweep passes
+    `reconcileScopeFn` the version it will record (`expected`), and the control plane refuses
+    to reconcile through a deployment that runs anything else. If the serving ref doesn't
+    resolve and the ladder falls back to the bound version's deployment, the scope never looks
+    repaired while the served version's hook has not run.
+
+- 105a4c3: A scope's schedules now have an off switch that holds. `HostAdmin.revokeFromSystem` turns
+  one module's scheduled work off on one scope, and `restoreToSystem` turns it back on. Both
+  take a required `reason`. Each call writes two admin-log rows, its intent first and then
+  its outcome, paired by the `operationId` the call answers with. A repeat call is logged
+  too. Staff reach them over HTTP as `DELETE` and `POST` on
+  `/tenants/:tenantId/scopes/:scopeId/system-grants`, with the body `{ moduleId, reason }`.
+
+  - **Module-wide, on one scope.** Schedules share permissions, so switching off one schedule
+    or one permission would either switch off its siblings too or make it fail on every pass.
+  - **Nothing fires while it is off.** `runDueSchedules` reports each schedule as `skipped`,
+    with `switchedOff: true` on the report. It is never `failed`, and the cadence clock is left
+    alone, so a due schedule fires on the first pass after the restore.
+  - **It is a kill switch, not a pause.** The module's `system:` grants on the scope are
+    revoked too, so a job run acting with that authority is denied by its own check.
+  - **Restore is the lever; a grant is not.** The off position is its own marker tuple. While
+    it is off, `grantToSystem` for the module on that scope is refused (409 `conflict`), and a
+    reconcile seats none of the module's system grants, not even one a newer version declares.
+    A restore gives back exactly what the switch took. A grant revoked separately before the
+    switch was pulled stays revoked.
+  - **Provisioning's seat is now `seatScopeTuple`**, which replaces the `SEAT_SCOPE_TUPLE_SQL`
+    constant (unreleased) because it binds the subject twice.
+  - **Hosted scopes.** The switch is moved in the vertical's own deployment, over the new
+    platform-secret `/internal/system-switch` route. A deployment built before that route
+    answers with a 501 that says to redeploy, and nothing is switched. A transport failure or a
+    5xx from the vertical is reported as a failure, because the switch may have moved.
+
+- 224c9f6: The dashboard now holds a credential that can only reach your own team, and the platform refuses anything else.
+
+  Until now the dashboard presented one platform-wide credential to the control plane and narrowed itself to your team in its own code. The narrowing was real, and it was a promise the dashboard made about itself: nothing on the other side checked it, so it held exactly as long as every one of the dashboard's ninety-odd calls named the right team.
+
+  It is now a property of the credential. The control plane mints a **tenant token** per team, the dashboard presents that, and the plane refuses a request that names another team — in the path, in a query, in a body, or in the tenant header a caller sends alongside. Routes the dashboard does not use are refused outright rather than reachable, and routes whose answer is a fact about a vertical or a hostname are narrowed by who owns it. The reads that used to return the whole fleet and get filtered in the dashboard — invocation metrics, log lines — are narrowed before they leave the plane, so another team's numbers no longer cross the seam at all.
+
+  The platform credential stays for exactly one thing: asking the plane to mint that per-team token. Minting is refused to a tenant token itself, so a credential can never widen its own reach.
+
+  What has **not** changed is who an action is recorded as: the admin log still names the dashboard rather than the person who clicked. The tenant token carries no actor at all, so nothing about it can change that; naming your own admin is a separate change to what an audit row may hold.
+
+  **Operators:** set `TENANT_TOKEN_SECRET` on the control plane (a dedicated value — not the push-token secret, not the platform secret) and deploy it **before** the dashboard. A dashboard pointed at a plane that cannot mint says so rather than falling back to the old credential.
+
+- 1f223f5: One malformed event or denial row no longer hides a whole list, or stops the work queued behind it.
+
+  A row whose JSON would not parse used to throw out of every list it appeared in. That covered an
+  entity's history and timeline, the walks that explain why something happened, the denial log and
+  its summary. Worse, it covered the event deliveries themselves, where one bad event halted every
+  event of its type behind it on every pass. Module code cannot write such a row, but a restore
+  replays a dump's rows verbatim, so a dump from another world or one edited by hand was enough.
+
+  **The reads return it, and say so.** A history, timeline, cause-walk, invocation, denial-log or
+  denial-summary row that does not decode now comes back beside all the others. It carries a new
+  optional `decodeError` naming every column that failed, and those fields come back empty: the
+  actor as `{ system: 'undecodable' }`, a JSON field as `null`. That is what tells an unreadable
+  payload from an erased one. Every value still satisfies the published schema. A row whose own id,
+  type or time is corrupt has no honest empty value and is still refused, as before.
+
+  A denial whose permission key is malformed is listed, not refused. That row can come from a
+  module that cast a bad key into a permission check, not only from a dump, and the log is where
+  you go to find out why. Its permission reads as `undecodable:permission`, and `decodeError` quotes
+  the key it actually checked. A healthy row carries no `decodeError` at all, so a clean list reads
+  exactly as it did.
+
+  **The work skips it, and keeps going.** An event that does not decode is dead-lettered for each
+  consumer and executor it was due for, with the columns that failed as the error. Its handlers are
+  never called with it, and the events behind it are delivered. An executor gives up on such an event
+  on the first attempt, since decoding the same stored text again cannot succeed. The Tier-2 drain
+  steps over the row too. It is never shipped in a guessed-at form, because the lake cannot take a
+  row back, and it is never stamped as drained, because it never left. The events behind it still
+  ship. The sweep reports the skipped event ids on every pass, and `readHistory` still returns the
+  event with its `decodeError`. That event is missing from the lake until the row is repaired.
+
+  The platform also checks every event against the published schema itself, just before it
+  ships to the lake. An app deployed on an older version sends its events unchecked, so this is
+  what keeps a malformed one out of the lake whichever version the app runs. An event that fails
+  is treated exactly like a skipped row: not shipped, not stamped, and counted in the report.
+
+- Updated dependencies [6504a99]
+- Updated dependencies [aabc227]
+- Updated dependencies [fb37a3e]
+- Updated dependencies [df5bf46]
+- Updated dependencies [44299a1]
+- Updated dependencies [4ef164c]
+- Updated dependencies [d7eb089]
+- Updated dependencies [269fa7a]
+- Updated dependencies [1df078d]
+- Updated dependencies [105a4c3]
+- Updated dependencies [a8c2c64]
+- Updated dependencies [02c181a]
+- Updated dependencies [0f13c41]
+- Updated dependencies [224c9f6]
+- Updated dependencies [2fa5147]
+- Updated dependencies [1f223f5]
+  - @substrat-run/contracts@0.117.0
+  - @substrat-run/kernel@0.117.0
+  - @substrat-run/adapter-cloudflare@0.117.0
+  - @substrat-run/control-plane-api@0.117.0
+  - @substrat-run/connector-fortnox@0.4.19
+  - @substrat-run/connector-planima@0.2.14
+  - @substrat-run/connector-scrive@0.14.22
+
 ## 0.13.34
 
 ### Patch Changes
