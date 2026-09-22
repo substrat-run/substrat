@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { instant, platformRequestId, scopeId } from './ids.js';
+import { instant, platformRequestId, scopeId, verticalSlug } from './ids.js';
 import { actor, domainEvent } from './events.js';
 import { impersonationStamp } from './impersonation.js';
 import { errorCode } from './errors.js';
@@ -181,8 +181,13 @@ export const ARCHIVE_SCOPE_KIND = 'archive-scope';
  * different transport — `peer-transport.ts`.
  */
 export const peerInvokePayload = z.object({
-  /** The target vertical's registry slug. Resolved in the ENQUEUING scope's tenant, only. */
-  vertical: z.string().min(1),
+  /**
+   * The target vertical's registry slug, held to the slug grammar here rather than at
+   * delivery (#1719 review): a malformed target would otherwise pass the enqueue, sit in the
+   * outbox and fail a drain pass later, where the author who wrote it is no longer looking.
+   * The synchronous leg's `peerCallRequest` parses the same way.
+   */
+  vertical: verticalSlug,
   operation: z.string().min(1),
   input: z.unknown().optional(),
 });

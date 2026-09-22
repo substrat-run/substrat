@@ -440,9 +440,33 @@ export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler 
     }
     // 1. The caller's own declaration, from the version bound to the scope at drain time.
     if (ctx.versionId) {
-      const version = await admin.getVersion(deps.actor, ctx.versionId).catch(() => undefined);
-      const declared = version?.calls ?? null;
-      if (!callsDeclares(declared ?? null, payload.vertical)) {
+      // A declaration that cannot be READ is not an absent declaration (#1719 review). The
+      // `null` that means "pushed before `calls` existed" is unenforced by design, so
+      // swallowing a lookup failure into `null` would turn a storage blip into "every target
+      // is declared" — the gate off, silently, on exactly the path it guards. A throw is
+      // transient, so the intent stays `pending` and the drain retries it (and settles it
+      // `failed` at the attempt ceiling); a version the directory does not have is not
+      // transient and fails now. Only a version that was READ may be unenforced.
+      let version: Awaited<ReturnType<typeof admin.getVersion>>;
+      try {
+        version = await admin.getVersion(deps.actor, ctx.versionId);
+      } catch (e) {
+        return {
+          status: 'pending',
+          error:
+            `could not read version ${ctx.versionId} to check whether '${ctx.vertical}' declares ` +
+            `'${payload.vertical}': ${e instanceof Error ? e.message : String(e)}`,
+        };
+      }
+      if (!version) {
+        return {
+          status: 'failed',
+          error:
+            `version ${ctx.versionId} is not in the directory, so what '${ctx.vertical}' declares ` +
+            `cannot be established — the call is refused rather than allowed unchecked`,
+        };
+      }
+      if (!callsDeclares(version.calls ?? null, payload.vertical)) {
         return { status: 'failed', error: undeclaredCallMessage(ctx.vertical, payload.vertical) };
       }
     }

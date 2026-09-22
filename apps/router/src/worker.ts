@@ -455,7 +455,8 @@ export async function handlePeerCall(
     depth: decision.depth,
   };
   const target = env.DISPATCH.get(decision.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
-  const response = await target.fetch(
+  // A fresh Request per attempt: a POST body is a stream and is consumed by the first one.
+  const invocation = (): Request =>
     new Request('https://vertical/internal/vertical-invoke', {
       method: 'POST',
       headers: {
@@ -473,8 +474,37 @@ export async function handlePeerCall(
         ...(request.input === undefined ? {} : { input: request.input }),
         ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
       }),
-    }),
-  );
+    });
+  // The same bounded retry the public path takes, and for the same K-29 propagation gap
+  // (#1719 review). Two differences, both in this path's favour: a peer call is always
+  // replayable, because `Worker not found` is raised by the dispatch before the target's
+  // code runs — nothing happened to repeat — and a redelivery would meet the idempotency
+  // key besides. And an escape here is worse than a 502: this is an RPC entrypoint, so an
+  // exception crosses to egress as an opaque failure with no code for the caller to read,
+  // which is why the last resort is a structured `unavailable` rather than a throw.
+  let response: Response;
+  try {
+    response = await target.fetch(invocation());
+  } catch (e) {
+    if (!isTransientDispatchFailure(e)) throw e;
+    try {
+      response = await target.fetch(invocation());
+    } catch (retryError) {
+      if (!isTransientDispatchFailure(retryError)) throw retryError;
+      console.error(
+        `router: peer call target '${decision.vertical}' not found on retry ` +
+          `(scope ${decision.scopeId}, caller '${caller.vertical}')`,
+      );
+      return {
+        ok: false,
+        status: 503,
+        code: 'unavailable',
+        message:
+          `vertical '${decision.vertical}' is installed in this tenant but its deployment did not ` +
+          `answer — this is usually a deploy still propagating. Nothing ran; retry.`,
+      };
+    }
+  }
   const body = (await response.json().catch(() => null)) as { result?: unknown; error?: unknown } | null;
   if (!response.ok) {
     return {

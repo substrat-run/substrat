@@ -84,6 +84,26 @@ function dispatch(status = 200, body: unknown = { result: { listed: 3 } }) {
   return Object.assign(ns, { seen: () => seen });
 }
 
+/**
+ * A dispatch namespace that throws `Worker not found.` for its first `throwTimes` fetches —
+ * the K-29 propagation gap, which is raised BEFORE the target's code runs.
+ */
+function flakyDispatch(throwTimes: number, body: unknown = { result: { listed: 3 } }) {
+  const bodies: string[] = [];
+  let attempts = 0;
+  const ns = {
+    get: () => ({
+      fetch: async (request: Request) => {
+        attempts += 1;
+        bodies.push(await request.text());
+        if (attempts <= throwTimes) throw new Error('Worker not found.');
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      },
+    }) as unknown as Fetcher,
+  };
+  return Object.assign(ns, { attempts: () => attempts, bodies: () => bodies });
+}
+
 const caller = (over: Record<string, unknown> = {}) => ({
   vertical: 'acme/board-room',
   tenantId: TENANT,
@@ -277,5 +297,54 @@ describe('the router’s peer entrypoint (#1706)', () => {
     const e = entrypoint({ CONTROL_PLANE: directory(), DISPATCH: dispatch() as never });
     await expect(e.invoke(caller({ vertical: 'NOT A SLUG' }), request())).rejects.toThrow();
     await expect(e.invoke(caller(), { vertical: 'acme/crm' })).rejects.toThrow();
+  });
+});
+
+/**
+ * The K-29 propagation gap on the peer path (#1719 review). A freshly-deployed script is not
+ * instantly reachable everywhere, and `Worker not found.` is raised by the dispatch before the
+ * target runs — so nothing happened, and a retry is safe. This is an RPC entrypoint, so an
+ * escaping exception reaches egress with no code to render: the last resort must be a
+ * structured refusal, not a throw.
+ */
+describe('a target still propagating (#1706)', () => {
+  it('retries once, on a FRESH request, and the target sees the whole body', async () => {
+    const d = flakyDispatch(1);
+    const outcome = await entrypoint({ CONTROL_PLANE: directory(), DISPATCH: d as never }).invoke(
+      caller(),
+      request({ input: { limit: 50 } }),
+    );
+    expect(outcome).toEqual({ ok: true, result: { listed: 3 } });
+    expect(d.attempts()).toBe(2);
+    // The retry's body is not empty: a POST body is a stream, and reusing one Request would
+    // have sent the second attempt with nothing in it.
+    expect(d.bodies()).toHaveLength(2);
+    expect(JSON.parse(d.bodies()[1]!)).toMatchObject({ operation: 'customer/list', input: { limit: 50 } });
+    expect(JSON.parse(d.bodies()[1]!)).toEqual(JSON.parse(d.bodies()[0]!));
+  });
+
+  it('a target that never answers is a structured 503 that says nothing ran, never an exception', async () => {
+    const d = flakyDispatch(99);
+    const outcome = await entrypoint({ CONTROL_PLANE: directory(), DISPATCH: d as never }).invoke(
+      caller(),
+      request(),
+    );
+    expect(outcome).toEqual({
+      ok: false,
+      status: 503,
+      code: 'unavailable',
+      message: expect.stringMatching(/Nothing ran; retry/),
+    });
+    // Bounded: twice is enough to tell a propagation gap from a script that is not there.
+    expect(d.attempts()).toBe(2);
+  });
+
+  it('twin: a failure that is NOT the propagation gap is not retried and not swallowed', async () => {
+    const boom = {
+      get: () => ({ fetch: async () => { throw new Error('script exceeded CPU'); } }) as unknown as Fetcher,
+    };
+    await expect(
+      entrypoint({ CONTROL_PLANE: directory(), DISPATCH: boom as never }).invoke(caller(), request()),
+    ).rejects.toThrow(/exceeded CPU/);
   });
 });

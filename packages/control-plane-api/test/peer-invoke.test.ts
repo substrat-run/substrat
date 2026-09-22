@@ -221,6 +221,62 @@ describe('peerInvokeHandler (#1706)', () => {
       expect(outcome.status).toBe('done');
       expect(calls).toHaveLength(1);
     });
+
+    /**
+     * A declaration that cannot be READ is not an absent declaration (#1719 review). `null`
+     * means "pushed before `calls` existed" and is unenforced by design, so swallowing a
+     * lookup failure into `null` would turn a storage blip into "every target is declared" —
+     * the gate off, silently, on exactly the path it guards.
+     */
+    it('a version lookup that THROWS leaves the intent pending — it never falls through as undeclared', async () => {
+      calls.length = 0;
+      const versionId = await publish(['acme/somebody-else']);
+      const broken = peerInvokeHandler({
+        host: {
+          ...host,
+          admin: {
+            ...host.admin,
+            getVersion: async () => {
+              throw new Error('directory unavailable');
+            },
+          },
+        } as unknown as typeof host,
+        actor: staff,
+        resolveVerticalForScope: async () => client,
+      });
+      const outcome = await broken(
+        { ...ctx, versionId },
+        intent({ payload: { vertical: 'acme/crm', operation: 'customer/list' } }),
+      );
+      // Pending, not failed: a storage fault is transient, and the drain retries it to its
+      // attempt ceiling before settling it. What must never happen is the call going through.
+      expect(outcome.status).toBe('pending');
+      expect(String(outcome.error)).toMatch(/directory unavailable/);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('a version the directory does not have fails — an unreadable declaration is not a blank one', async () => {
+      calls.length = 0;
+      const outcome = await handler()(
+        { ...ctx, versionId: ulid() },
+        intent({ payload: { vertical: 'acme/crm', operation: 'customer/list' } }),
+      );
+      expect(outcome.status).toBe('failed');
+      expect(String(outcome.error)).toMatch(/not in the directory/);
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  it('a malformed target slug is refused where it is WRITTEN, not two drain passes later', async () => {
+    // The payload's `vertical` is held to the slug grammar by the schema the handler parses
+    // first (#1719 review). Before that it was any non-empty string, so a typo passed the
+    // enqueue, sat in the outbox, and failed at delivery — where the author who wrote it is
+    // no longer looking.
+    calls.length = 0;
+    await expect(
+      handler()(ctx, intent({ payload: { vertical: 'Acme CRM', operation: 'customer/list' } })),
+    ).rejects.toThrow();
+    expect(calls).toHaveLength(0);
   });
 
   it('is ambiguous, never a guess, when the tenant runs two instances of the target', async () => {
