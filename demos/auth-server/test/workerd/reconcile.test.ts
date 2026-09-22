@@ -630,6 +630,30 @@ describe("a login's places at the identity pool (#1670)", () => {
     expect((await report(w.p, { ...w.as.desk, op: 'present', sub: w.ann.sub })).status).toBe(403);
   });
 
+  it('an app dropped and registered again starts empty: its old entries do not come back', async () => {
+    const w = await world();
+    await report(w.p, { ...w.as.desk, op: 'present', sub: w.ann.sub });
+    // Moved to another issuer and back (an Identity change, undone), under a fresh client as a
+    // re-install registers one. The entries were admitted on evidence for the OLD client, so
+    // they must not resurface under the new one without being earned again.
+    await register(w.p, t, [{ appScopeId: w.crmApp, clientId: w.crm.clientId, hostname: 'crm.acme.test', name: 'Acme CRM' }]);
+    const again = await client(w.p, 'Desk, re-registered');
+    await register(w.p, t, [
+      { appScopeId: w.deskApp, clientId: again.clientId, hostname: 'desk.acme.test', name: 'Acme Desk' },
+      { appScopeId: w.crmApp, clientId: w.crm.clientId, hostname: 'crm.acme.test', name: 'Acme CRM' },
+    ]);
+    expect((await placesOf(w.p, w.ann.cookie)).body).toEqual({ places: [] });
+    // The twin: the same holds for a client change in place, with no drop in between.
+    await signInTo(w.p, w.ann, again);
+    await report(w.p, { client_id: again.clientId, client_secret: again.clientSecret, scope_id: w.deskApp, op: 'present', sub: w.ann.sub });
+    expect((await placesOf(w.p, w.ann.cookie)).body).toEqual({ places: [deskEntry(w.deskApp)] });
+    await register(w.p, t, [
+      { appScopeId: w.deskApp, clientId: w.desk.clientId, hostname: 'desk.acme.test', name: 'Acme Desk' },
+      { appScopeId: w.crmApp, clientId: w.crm.clientId, hostname: 'crm.acme.test', name: 'Acme CRM' },
+    ]);
+    expect((await placesOf(w.p, w.ann.cookie)).body).toEqual({ places: [] });
+  });
+
   it("one team's delivery never touches another team's registrations", async () => {
     const w = await world();
     await report(w.p, { ...w.as.desk, op: 'present', sub: w.ann.sub });
