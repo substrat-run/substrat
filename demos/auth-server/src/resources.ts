@@ -1,4 +1,4 @@
-import { scopeId as scopeIdSchema } from '@substrat-run/contracts';
+import { MCP_RESOURCES_CONFIG_PREFIX, scopeId as scopeIdSchema } from '@substrat-run/contracts';
 import type { SqlExec } from './introspect.js';
 
 /**
@@ -41,8 +41,12 @@ import type { SqlExec } from './introspect.js';
  *     it keeps it disabled, and a repeat delivery writes nothing at all.
  */
 
-/** The delivered-config key prefix; the rest of the key is the vertical's scope id. */
-export const RESOURCES_KEY_PREFIX = 'substrat:resources:';
+/**
+ * The delivered-config key prefix; the rest of the key is the vertical's scope id. Defined
+ * once, in `@substrat-run/contracts`, beside the resource computation, because the
+ * dashboard writes what this reads.
+ */
+export const RESOURCES_KEY_PREFIX = MCP_RESOURCES_CONFIG_PREFIX;
 
 /** More than any vertical has hostnames for; a bound on what one delivery may write. */
 const MAX_RESOURCES_PER_APP = 32;

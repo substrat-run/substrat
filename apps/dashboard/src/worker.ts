@@ -29,6 +29,7 @@ import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, ty
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
+import { clearAppMcpResources, issuerAppFor, reconcileMcpResources, registerAppMcpResources } from './mcp-resources.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
@@ -699,8 +700,42 @@ function resolveAuthChoice(
   if (issuerApp.status !== 'active' || !issuerApp.hostname) {
     throw new HTTPException(400, { message: `auth server '${issuerApp.name}' is not active yet — wait for it to provision` });
   }
-  return { source: 'auth-server', issuer: `https://${issuerApp.hostname}` };
+  return {
+    source: 'auth-server',
+    issuer: `https://${issuerApp.hostname}`,
+    issuerScopeId: scopeId.parse(issuerApp.app_scope_id),
+  };
 }
+
+/**
+ * The team auth-servers among a team's apps: the issuers an app's MCP endpoint can be
+ * registered at (#1619). The same `oidc-issuer` test `resolveAuthChoice` applies, on apps
+ * that are active and addressable.
+ */
+function teamIssuersOf(apps: readonly DashboardAppRow[], providerSlugs: ReadonlySet<string>): DashboardAppRow[] {
+  return apps.filter((a) => a.status === 'active' && a.hostname && providerSlugs.has(a.vertical_slug));
+}
+
+/** The team auth-server an app's STORED identity names, if it names one. */
+async function mcpIssuerOf(
+  dash: { invoke(op: string, input: unknown): Promise<unknown> },
+  appScopeId: string,
+  issuers: readonly DashboardAppRow[],
+): Promise<ScopeId | undefined> {
+  const auth = (await dash.invoke('dashboard/get-app-auth', { appScopeId }).catch(() => null)) as {
+    issuer?: string;
+  } | null;
+  const issuer = issuerAppFor(auth?.issuer, issuers);
+  return issuer ? scopeId.parse(issuer.app_scope_id) : undefined;
+}
+
+/**
+ * The tenants (per principal) whose apps' MCP registrations this isolate has already
+ * reconciled (#1619) — the same once-per-isolate gate `reconcileRoles` rides on, keyed by
+ * principal too so a viewer's pass (which cannot read identities) does not spend an
+ * owner's.
+ */
+const mcpReconciled = new Set<string>();
 
 /**
  * The slugs whose instances count as `oidc-issuer` providers for this caller (#427):
@@ -981,12 +1016,16 @@ app.post('/api/teams/delete', async (c) => {
   // one stuck app must not leave the rest running.
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const cp = controlPlaneFor(c.env, node.tenantId);
+  // Every app's issuer, resolved while the auth-servers are still among the apps (#1619).
+  const issuers = teamIssuersOf(apps, await oidcProviderSlugsFor(host, cp).catch(() => new Set<string>()));
   for (const a of apps) {
     try {
+      const mcpIssuerScopeId = await mcpIssuerOf(dash, a.app_scope_id, issuers);
       await deprovisionApp(host, {
         node,
         appScopeId: scopeId.parse(a.app_scope_id),
         controlPlane: cp,
+        ...(mcpIssuerScopeId ? { mcpIssuerScopeId } : {}),
       });
     } catch {
       // recorded on the app's own trail; the org delete proceeds
@@ -1377,6 +1416,32 @@ app.get('/api/apps', async (c) => {
       .find((h) => h.status === 'active');
     if (live) a.hostname = live.hostname;
   }));
+  // Converge every app's MCP registration at the team auth-servers (#1619) — the path
+  // existing installs take, since nothing registered them when they were made. Once per
+  // isolate per caller, after the response: the team's apps are walked UNPAGED (an app's
+  // issuer can be on another page), and a whole pass is several deliveries per app, which
+  // is not the Apps list's to wait on.
+  const gate = `${node.tenantId}:${node.principal}`;
+  if (!mcpReconciled.has(gate)) {
+    mcpReconciled.add(gate);
+    c.executionCtx.waitUntil(
+      (async () => {
+        const all = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+        const slugs = await oidcProviderSlugsFor(host, cp);
+        const outcomes = await reconcileMcpResources({
+          apps: all,
+          isIssuer: (a) => slugs.has(a.vertical_slug),
+          issuerOf: async (appScopeId) =>
+            ((await dash.invoke('dashboard/get-app-auth', { appScopeId })) as { issuer?: string } | null)?.issuer ?? null,
+          controlPlane: cp,
+        });
+        const registered = outcomes.filter((o) => 'registeredAt' in o).length;
+        if (registered) console.log('dashboard: MCP resources reconciled', JSON.stringify({ tenant: node.tenantId, registered }));
+      })().catch((e: unknown) =>
+        console.error('dashboard: MCP resource reconcile failed', e instanceof Error ? e.message : String(e)),
+      ),
+    );
+  }
   return c.json(pageOf(apps, page.limit, (a) => a.id));
 });
 
@@ -3790,7 +3855,8 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const choice = resolveAuthChoice(appAuthChoiceBody.parse(await c.req.json()), apps, await oidcProviderSlugsFor(host, cp));
+  const providerSlugs = await oidcProviderSlugsFor(host, cp);
+  const choice = resolveAuthChoice(appAuthChoiceBody.parse(await c.req.json()), apps, providerSlugs);
   // Prefer the stored column, but fall back to the live router bindings: an app can be
   // fully reachable while its dashboard column is null (a bind whose activation step threw
   // during provisioning), and refusing the save on that stale bookkeeping is the #294 bug.
@@ -3807,6 +3873,10 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
     appName: appRow.name,
     redirectUri: `https://${hostname}/api/auth/callback`,
   });
+  // Which team auth-server the app's MCP endpoint is registered at NOW, read before the
+  // new choice overwrites it (#1619): an Identity change clears it there.
+  const issuers = teamIssuersOf(apps, providerSlugs);
+  const previousIssuer = await mcpIssuerOf(dash, appRow.app_scope_id, issuers);
   // Author first — the merged config (stored secret filled in) is what gets delivered.
   const merged = (await dash.invoke('dashboard/set-app-auth', {
     appScopeId: appRow.app_scope_id,
@@ -3824,6 +3894,27 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
       e instanceof ControlPlaneError && e.status === 501
         ? `Saved, but not applied: this app's deployment cannot receive auth settings while running (no live-config support). It applies once the vertical adds /internal/configure.`
         : `Saved, but not applied: ${e instanceof Error ? e.message : String(e)}`;
+  }
+  // Move the MCP registration with the identity (#1619): registered at the issuer the app
+  // now signs in with, if that is a team auth-server, and cleared at the one it left.
+  // Best-effort, like the install's: the save above is what the caller asked for, and the
+  // Apps list's reconcile converges whatever this did not.
+  const appScope = scopeId.parse(appRow.app_scope_id);
+  const nextIssuer =
+    choice.source === 'auth-server' && choice.issuerScopeId
+      ? choice.issuerScopeId
+      : (() => {
+          const found = issuerAppFor(merged.issuer, issuers);
+          return found ? scopeId.parse(found.app_scope_id) : undefined;
+        })();
+  // Independent of each other: a register that failed must not leave the old issuer minting.
+  const settle = (work: Promise<unknown>) =>
+    work.catch((e: unknown) =>
+      console.error('dashboard: MCP resource registration failed', e instanceof Error ? e.message : String(e)),
+    );
+  if (nextIssuer) await settle(registerAppMcpResources(cp, { appScopeId: appScope, issuerScopeId: nextIssuer }));
+  if (previousIssuer && previousIssuer !== nextIssuer) {
+    await settle(clearAppMcpResources(cp, { appScopeId: appScope, issuerScopeId: previousIssuer }));
   }
   return c.json({ delivered, ...(note ? { note } : {}) });
 });
@@ -3895,10 +3986,19 @@ app.delete('/api/apps/:id', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appRow = apps.find((a) => a.id === c.req.param('id'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  // Where its MCP endpoint is registered, so the delete can un-register it (#1619).
+  // Resolved before the delete, while the app's stored identity is still readable.
+  const mcpIssuerScopeId = await mcpIssuerOf(
+    dash,
+    appRow.app_scope_id,
+    teamIssuersOf(apps, await oidcProviderSlugsFor(host, cp).catch(() => new Set<string>())),
+  );
   await deprovisionApp(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
-    controlPlane: controlPlaneFor(c.env, node.tenantId),
+    controlPlane: cp,
+    ...(mcpIssuerScopeId ? { mcpIssuerScopeId } : {}),
   });
   return c.body(null, 204);
 });

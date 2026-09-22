@@ -36,3 +36,11 @@ export const MCP_ENDPOINT_PATH = mcpEndpointPath();
 export function mcpResourceOf(origin: string, path: string = MCP_ENDPOINT_PATH): string {
   return `${origin}${path}`;
 }
+
+/**
+ * The delivered-config key through which the platform tells a team auth-server which MCP
+ * endpoints it may mint for: `${MCP_RESOURCES_CONFIG_PREFIX}<app scope id>`, whose value is
+ * that app's whole set as a JSON array of `mcpResourceOf` identifiers, or `""` for none.
+ * The dashboard writes it. `demos/auth-server/src/resources.ts` turns it into rows.
+ */
+export const MCP_RESOURCES_CONFIG_PREFIX = 'substrat:resources:';
