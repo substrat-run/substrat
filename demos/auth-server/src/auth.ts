@@ -249,9 +249,16 @@ async function advertiseResourceParameter(request: Request, response: Response):
   if (!DISCOVERY_PATH.test(new URL(request.url).pathname)) return response;
   if (!response.headers.get('content-type')?.includes('json')) return response;
   const document = (await response.json()) as Record<string, unknown>;
+  // Built with the constructor of the response Better Auth handed back, not the global
+  // `Response`. This module is runtime-agnostic and typechecks under node too, where the
+  // global is undici's and the handler's declared type is the lib's (the reason
+  // `tsconfig.json` excludes every file that constructs one). The runtime class is the
+  // same either way.
+  const Rebuilt = response.constructor as new (body: string, init: { status: number; headers: Headers }) => Response;
+  // A copy: the handler's own headers may be immutable, as a fetched response's are.
   const headers = new Headers(response.headers);
   headers.delete('content-length');
-  return new Response(JSON.stringify({ ...document, resource_parameter_supported: true }), {
+  return new Rebuilt(JSON.stringify({ ...document, resource_parameter_supported: true }), {
     status: response.status,
     headers,
   });
