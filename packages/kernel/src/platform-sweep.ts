@@ -652,6 +652,22 @@ export interface EventDrainSkipped {
 
 /** How the cross-vertical phase reaches the two scopes of an edge (#1705). */
 export interface CrossVerticalReach {
+  /**
+   * The listed scopes whose RUNNING code may import anything, found WITHOUT opening one.
+   *
+   * This is what keeps the phase off the fleet. It runs on a cron over every active scope,
+   * and each per-scope call is a Durable Object wake (plus an `/internal` hop on the hosted
+   * path). Asking every scope "do you import?" would be O(fleet) calls per tick even with no
+   * edge anywhere. The answer is a code fact: a module declares `consumes: [{ from }]`, and a
+   * push carries it in the version's permission registry (`imports`). So it is read where the
+   * code is described, never from the scope. A scope this drops is never called.
+   *
+   * Optional. Absent, the default applies: this host's own registered modules
+   * (`ScopeHost.registeredImports`). A host that imports nothing gets no candidates; one that
+   * does gets every listed scope, which is right where one host is the deployment for all of
+   * them (a self-host). The control plane passes the registry's answer per scope.
+   */
+  candidates?(scopes: readonly Scope[]): Promise<readonly Scope[]> | readonly Scope[];
   /** The consumer's running imports and its watermark per producer. */
   importState(tenantId: TenantId, scopeId: ScopeId): Promise<ImportState>;
   /** The producer's release after a watermark, decided by the producer's own code. */
@@ -670,7 +686,28 @@ export interface CrossVerticalOptions {
   reach?: CrossVerticalReach;
   /** Events one edge moves per pass, at most. Default 200. */
   budget?: number;
+  /**
+   * Consumer scopes one pass visits, at most. Default {@link CROSS_VERTICAL_CONSUMERS_PER_PASS}.
+   * The rest are `deferred` to the next pass, not dropped: their watermarks hold, and their
+   * producers' outboxes keep the backlog. The window starts at a random point and wraps, the
+   * provision reconcile's rule (#1653), so consumers that fail on every pass cannot hold the
+   * same slots forever. `0` visits none, which makes it the pause switch.
+   */
+  maxConsumers?: number;
+  /** Where the window starts, in [0, 1). `Math.random` unless given, and injectable to test fairness. */
+  rng?: () => number;
 }
+
+/**
+ * How many consumer scopes one pass of the cross-vertical phase visits, by default (#1705).
+ *
+ * Per visited consumer a pass costs one `importState` call, then per source it imports from,
+ * one `readExportedEvents` on the producer and, only when something is new, one `deliverToPeer`.
+ * Each call is one Durable Object round trip, plus an `/internal` hop when hosted. So a pass
+ * is bounded by `maxConsumers × (1 + 2 × sources)` scope calls, and with no candidates it
+ * makes none.
+ */
+export const CROSS_VERTICAL_CONSUMERS_PER_PASS = 100;
 
 /**
  * One edge's pass (#1705).
@@ -707,6 +744,10 @@ export interface CrossVerticalReport {
   withheld: number;
   paused: number;
   unresolved: number;
+  /** Scopes whose running code may import, per `candidates`: the only ones any pass calls. */
+  candidates: number;
+  /** Candidates past this pass's `maxConsumers`, left for the next pass. */
+  deferred: number;
 }
 
 export interface AccessLogSweepReport {
@@ -1346,12 +1387,25 @@ async function sweepCrossVertical(
   failedThisPass: ReadonlySet<string>,
   report: PlatformSweepReport,
 ): Promise<CrossVerticalReport> {
-  const out: CrossVerticalReport = { edges: [], delivered: 0, withheld: 0, paused: 0, unresolved: 0 };
+  const out: CrossVerticalReport = {
+    edges: [],
+    delivered: 0,
+    withheld: 0,
+    paused: 0,
+    unresolved: 0,
+    candidates: 0,
+    deferred: 0,
+  };
   const reach: CrossVerticalReach = cv.reach ?? {
     importState: (t, s) => host.admin.importState(options.actor, t, s),
     readExports: (t, s, input) => host.admin.readExportedEvents(options.actor, t, s, input),
     deliver: (t, s, batch) => host.deliverToPeer(t, s, batch),
   };
+  // The default narrowing: this host's own code. A host that predates `registeredImports`
+  // imports nothing it could name, and is treated as importing nothing.
+  const candidatesOf =
+    reach.candidates?.bind(reach) ??
+    ((scopes: readonly Scope[]) => ((host.registeredImports?.() ?? []).length > 0 ? scopes : []));
   // Normalized for the eventDrainBatch reason: a fractional or NaN budget would reach a SQL
   // LIMIT, and every edge would fail every tick as though the fleet were broken.
   const configured = cv.budget ?? EVENT_DRAIN_BATCH;
@@ -1396,7 +1450,16 @@ async function sweepCrossVertical(
     });
   };
 
-  await mapBounded(scopes, options.concurrency ?? 8, async (consumer) => {
+  // Narrowed BEFORE any scope is called, then capped. The resolution below still needs every
+  // primary scope (a producer is any of them), and that is the one directory read above.
+  const candidates = await candidatesOf(scopes);
+  out.candidates = candidates.length;
+  const configuredCap = cv.maxConsumers ?? CROSS_VERTICAL_CONSUMERS_PER_PASS;
+  const cap = Number.isFinite(configuredCap) && configuredCap >= 0 ? Math.floor(configuredCap) : CROSS_VERTICAL_CONSUMERS_PER_PASS;
+  const visiting = reconcileWindow(candidates, cap, cv.rng ?? Math.random);
+  out.deferred = candidates.length - visiting.length;
+
+  await mapBounded(visiting, options.concurrency ?? 8, async (consumer) => {
     if (failedThisPass.has(consumer.id)) return;
     let state: ImportState;
     try {

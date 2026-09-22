@@ -427,6 +427,7 @@ export {
   runningVersionOf,
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,
+  CROSS_VERTICAL_CONSUMERS_PER_PASS,
 } from './platform-sweep.js';
 export type {
   CrossVerticalEdge,

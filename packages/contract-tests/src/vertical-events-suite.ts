@@ -318,16 +318,17 @@ export function verticalEventsContractSuite(
     // deployment serving it, resolved from the directory. The control plane does the same
     // over `/internal`.
     //
-    // Scoped to the tenants THIS test created. The sweep walks every active scope in the shared
-    // directory, so without this a test's passes would also move every earlier test's edges.
-    // Worse, a test that timed out keeps sweeping in the background (vitest does not cancel it),
-    // and would deliver the next test's events before that test's own pass could. An edge that
-    // has no consumer state is invisible to the phase, which is exactly what this returns.
+    // Scoped to the tenants THIS test created. The directory is shared, so without this a
+    // test's passes would also move every earlier test's edges. Worse, a test that timed out
+    // keeps sweeping in the background (vitest does not cancel it), and would deliver the next
+    // test's events before that test's own pass could.
+    // The scoping is the phase's own narrowing hook (`candidates`), the one the control plane
+    // fills from the registry, so the suite also proves that a scope it drops is never called.
     const current = new Set<string>();
     beforeEach(() => current.clear());
     const reach: CrossVerticalReach = {
-      importState: async (t, s) =>
-        current.has(t) ? (await hostOf(t, s)).admin.importState(staff, t, s) : { consumes: [], cursors: [] },
+      candidates: (scopes) => scopes.filter((s) => current.has(s.tenantId)),
+      importState: async (t, s) => (await hostOf(t, s)).admin.importState(staff, t, s),
       readExports: async (t, s, input) => (await hostOf(t, s)).admin.readExportedEvents(staff, t, s, input),
       deliver: async (t, s, batch) => (await hostOf(t, s)).deliverToPeer(t, s, batch),
     };

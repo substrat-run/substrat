@@ -3716,6 +3716,11 @@ export class SqliteScopeHost implements ScopeHost {
     return permissions.map((permission) => ({ permission, held: !missing.has(permission) }));
   }
 
+  /** #1705: what this deployment imports — the sweep's reason to call no scope when it is empty. */
+  registeredImports(): { from: string; type: string; schemaVersion: number }[] {
+    return this.crossVertical.consumes();
+  }
+
   registeredSchedules(): ScheduleRegistration[] {
     const out: ScheduleRegistration[] = [];
     for (const mod of this.modules.values()) {

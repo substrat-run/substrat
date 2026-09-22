@@ -4241,6 +4241,15 @@ export interface ScopeHost {
   registeredSchedules(): ScheduleRegistration[];
 
   /**
+   * What the modules registered on this host import from other verticals (#1705): one row per
+   * (source vertical, event type), from their `consumes: [{ from }]`. Code-time bookkeeping, like
+   * `registeredSchedules`. The cross-vertical phase reads it to call NO scope on a host that
+   * imports nothing. Optional, and feature-detected: a host without it is read as importing
+   * nothing.
+   */
+  registeredImports?(): { from: string; type: string; schemaVersion: number }[];
+
+  /**
    * Run every schedule that is DUE for this scope (#383) — the recurring-work
    * driver, the fleet-maintenance sibling of `drainDue`.
    *

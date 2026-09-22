@@ -3258,6 +3258,11 @@ export class CloudflareScopeHost implements ScopeHost {
     return { stub: this.scopeStub(scopeId), vertical: rec.vertical };
   }
 
+  /** #1705: what this deployment imports — the sweep's reason to call no scope when it is empty. */
+  registeredImports(): { from: string; type: string; schemaVersion: number }[] {
+    return this.crossVertical.consumes();
+  }
+
   registeredSchedules(): ScheduleRegistration[] {
     const out: ScheduleRegistration[] = [];
     for (const [moduleId, schedules] of this.moduleSchedules) {
@@ -5059,10 +5064,11 @@ export class CloudflareScopeHost implements ScopeHost {
         return batch;
       },
       importState: async (actor, tenantId, scopeId): Promise<ImportState> => {
-        await this.scopeRecordForRead(tenantId, scopeId);
-        // Answered without waking the DO when this deployment imports nothing, which on a
-        // sweep with the phase on is most scopes on most passes.
+        // Answered with no call at all when this deployment imports nothing: not the directory,
+        // not the DO. "Imports nothing" is a fact about this code, and it names no scope, so it
+        // tells a caller nothing about a (tenant, scope) pair it may not address.
         if (this.crossVertical.consumes().length === 0) return { consumes: [], cursors: [] };
+        await this.scopeRecordForRead(tenantId, scopeId);
         const state = importState.parse(await this.scopeStub(scopeId).importStateRead());
         await this.recordAccess(actor, 'importState', { tenantId, scopeId }, null, state.cursors.length);
         return state;
