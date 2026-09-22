@@ -183,6 +183,32 @@ export function resolvePrincipal(sql: RegistrySql, scopeId: string, sub: string,
 }
 
 /**
+ * Unbind a subject from a scope (#1670) — the removal every "remove this member" path shares,
+ * and the one write that takes a binding away. True when there was one to take.
+ *
+ * It removes only the binding. A role the principal holds at scope level is the vertical's to
+ * revoke through the kernel; without a binding no login resolves to that principal, so the
+ * grant authorizes nobody. It never re-opens the owner seat: unbinding the owner leaves the
+ * seat claimed and the owner of record intact, and getting back in is a claim link's job.
+ */
+export function unbindSubject(sql: RegistrySql, scopeId: string, sub: string): boolean {
+  const had = [...sql.exec('SELECT 1 FROM identity WHERE scope_id = ? AND sub = ?', scopeId, sub)].length > 0;
+  sql.exec('DELETE FROM identity WHERE scope_id = ? AND sub = ?', scopeId, sub);
+  return had;
+}
+
+/**
+ * The subjects bound in a scope, at most `limit`, in a stable order — the whole set a places
+ * repair reports (#1670). The caller asks for one more than it will send, so it can tell a
+ * scope that fits from one it must refuse rather than truncate.
+ */
+export function subjectsOf(sql: RegistrySql, scopeId: string, limit: number): string[] {
+  return [...sql.exec('SELECT sub FROM identity WHERE scope_id = ? ORDER BY sub LIMIT ?', scopeId, limit)].map(
+    (r) => r.sub as string,
+  );
+}
+
+/**
  * Mint a claim link for a pending seat: store the token's hash with an expiry, replacing any
  * earlier link (so minting again is also how one is revoked). Null ⇒ the seat is not pending
  * — already claimed, or never provisioned here — and there is nothing to mint for.

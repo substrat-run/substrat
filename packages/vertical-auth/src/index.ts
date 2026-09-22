@@ -22,3 +22,13 @@ export {
   type AuthChoice,
   type InstanceAuth,
 } from './instance-auth.js';
+// A login's places (#1670): what a vertical tells the identity pool about its own scope.
+export {
+  observePlace,
+  placesReporter,
+  reportScopeMembers,
+  resetPlacesMemo,
+  unbindMember,
+  type PlaceReportResult,
+  type PlacesReporter,
+} from './places.js';
