@@ -1710,13 +1710,19 @@ describe('control-plane API', () => {
     expect(list.find((p) => p.tag === 'pr-7')?.scopeId).toBe(c.scopeId);
 
     // Re-run with the SAME tag (a PR synchronize): rebinds the new version onto the SAME
-    // fork — no second export — and comes back reused.
+    // fork and comes back reused. No second export, and no carry, because this vertical is
+    // co-located: both versions have `deploymentRef: null`, so they run in ONE deployment
+    // and the fork's data is already where v2 will read it. A hosted vertical's versions
+    // are separate scripts, and there the reuse carries the data. The test after this one
+    // pins that (#1710).
     const again = await dj('/verticals/prev-vert/previews', 'POST', { tag: 'pr-7', versionId: v2 });
     expect(again.status).toBe(200);
-    const a = (await again.json()) as { scopeId: string; reused: boolean };
+    const a = (await again.json()) as { scopeId: string; reused: boolean; notes: string[] };
     expect(a.reused).toBe(true);
     expect(a.scopeId).toBe(c.scopeId);
-    expect(exports).toBe(1); // still one — the fork was reused
+    expect(exports).toBe(1); // still one: same deployment, nothing to carry
+    expect(restores).toHaveLength(1);
+    expect(a.notes.some((n) => n.startsWith('Data:'))).toBe(false);
     expect(((await (await dj(`/tenants/${t1}/scopes/${c.scopeId}`, 'GET')).json()) as { verticalVersionId: string }).verticalVersionId).toBe(v2);
 
     // Reuse must RENEW the GC deadline, not leave it at first-creation (#509 ask (a)) —
@@ -1749,6 +1755,237 @@ describe('control-plane API', () => {
     const hosts = ((await (await dj(`/hostnames?scopeId=${c.scopeId}`, 'GET')).json()) as { entries: unknown[] }).entries;
     expect(hosts).toHaveLength(0);
     expect((await (await dj('/verticals/prev-vert/previews/pr-7', 'DELETE')).json() as { deleted: string | null }).deleted).toBeNull();
+  });
+
+  describe('a hosted scope keeps its data when a bind moves it to another script (#1710)', () => {
+    // A hosted vertical's versions are separate scripts, and a DO namespace belongs to its
+    // script. Each fake deployment below keeps its OWN scope → dump map, so a bind that
+    // left the data behind reads back empty, which is what the second push to a real
+    // preview served. The workerd twin (adapter-cloudflare `preview-carry.test.ts`) proves
+    // the same with real Durable Object namespaces.
+    const tH = tenantId.parse(ulid());
+    const slug = 'carry-vert';
+    const prod = scopeId.parse(ulid());
+    const refOf = new Map<string, string>(); // versionId → its script
+    const scripts = new Map<string, Map<string, ScopeDumpTable[]>>(); // script → scope → dump
+    const calls: string[] = [];
+    let unreachable: string | null = null; // a script neither resolver can reach
+    let failRestoreInto: string | null = null;
+    const storeOf = (ref: string): Map<string, ScopeDumpTable[]> => {
+      if (!scripts.has(ref)) scripts.set(ref, new Map());
+      return scripts.get(ref)!;
+    };
+    const deployment = (ref: string): VerticalClient =>
+      ({
+        exportScope: async (sid: string) => {
+          calls.push(`export ${ref} ${sid}`);
+          return storeOf(ref).get(sid) ?? [];
+        },
+        restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[]) => {
+          calls.push(`restore ${ref} ${sid}`);
+          if (failRestoreInto === ref) throw new ControlPlaneError(503, `storage blip in ${ref}`);
+          storeOf(ref).set(sid, tables);
+          return { tables: tables.length };
+        },
+        snapshotScope: async (input: { sourceScopeId: string; newScopeId: string }) => {
+          calls.push(`snapshot ${ref} ${input.sourceScopeId}`);
+          storeOf(ref).set(input.newScopeId, storeOf(ref).get(input.sourceScopeId) ?? []);
+          return { tables: 1 };
+        },
+        deleteScope: async (input: { scopeId: string }) => {
+          calls.push(`delete ${ref} ${input.scopeId}`);
+          storeOf(ref).delete(input.scopeId);
+        },
+      }) as unknown as VerticalClient;
+    let dapp: ReturnType<typeof createControlPlaneApi>;
+    const dj = (path: string, method: string, body?: unknown) =>
+      dapp.request(path, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
+    const pub = async (version: string, migrationDigest = 'g'): Promise<string> => {
+      const id = ulid();
+      const ref = `carry-vert-${id.toLowerCase()}`;
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: slug, version,
+        manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest, deploymentRef: ref,
+      });
+      refOf.set(id, ref);
+      return id;
+    };
+    const rows = (versionId: string, sid: string) => storeOf(refOf.get(versionId)!).get(sid)?.[0]?.rows;
+    const table = (...ids: string[]): ScopeDumpTable[] => [
+      { name: 't', ddl: 'CREATE TABLE t(id TEXT)', columns: ['id'], rows: ids.map((id) => [id]) },
+    ];
+    const boundOf = async (sid: string) =>
+      ((await (await dj(`/tenants/${tH}/scopes/${sid}`, 'GET')).json()) as { verticalVersionId: string; servingRef?: string | null });
+    type Created = { scopeId: string; reused: boolean; notes: string[]; error?: string };
+    const push = async (tag: string, versionId: string, extra: object = {}) => {
+      const res = await dj(`/verticals/${slug}/previews`, 'POST', { tag, versionId, ...extra });
+      return { status: res.status, body: (await res.json()) as Created };
+    };
+
+    let v1: string;
+    let v2: string;
+    let v3: string;
+    let preview: string;
+
+    beforeAll(async () => {
+      dapp = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        platformBaseDomains: ['global.substrat.run'],
+        provisionRetryDelaysMs: [1],
+        resolveVerticalVersion: async (s, versionId) => {
+          const ref = s === slug ? refOf.get(versionId) : undefined;
+          return ref && ref !== unreachable ? deployment(ref) : undefined;
+        },
+        resolveVerticalRef: async (ref) => (ref === unreachable ? undefined : deployment(ref)),
+      });
+      await host.admin.createTenant(staff, { id: tH, slug: 'carry-co', name: 'Carry Co' });
+      // PRIVATE (owned, unlisted), so every push self-admits, as a builder's does.
+      await host.admin.registerVertical(staff, { slug, name: 'Carry Vert', source: 'cli', ownerTenant: tH });
+      v1 = await pub('1.0.0');
+      v2 = await pub('1.0.1');
+      v3 = await pub('1.0.2');
+      await host.provisionScope(staff, { tenantId: tH, scopeId: prod, vertical: slug });
+      await host.admin.activateScope(staff, tH, prod);
+      await host.admin.bindScopeVersion(staff, tH, prod, v1);
+      await host.admin.bindHostname(staff, {
+        hostname: 'carry-acme.global.substrat.run',
+        tenantId: tH, scopeId: prod, surface: 'app', region: null, canonical: true,
+      });
+      storeOf(refOf.get(v1)!).set(prod, table('prod-row'));
+    });
+
+    it("the second push carries the preview's data into its own script before re-pointing it", async () => {
+      const created = await push('pr-1', v1);
+      expect(created.status).toBe(201);
+      preview = created.body.scopeId;
+      expect(rows(v1, preview)).toEqual([['prod-row']]);
+      // A reviewer's write on the preview, which the next push must not lose.
+      storeOf(refOf.get(v1)!).set(preview, table('prod-row', 'review-row'));
+
+      calls.length = 0;
+      const second = await push('pr-1', v2);
+      expect(second.status).toBe(200);
+      expect(second.body).toMatchObject({ scopeId: preview, reused: true });
+      // Out of the script the router resolved it to, into v2's own, and bound only then.
+      expect(calls).toEqual([`export ${refOf.get(v1)} ${preview}`, `restore ${refOf.get(v2)} ${preview}`]);
+      expect(rows(v2, preview)).toEqual([['prod-row'], ['review-row']]);
+      expect((await boundOf(preview)).verticalVersionId).toBe(v2);
+      // The loss window is said where the person pushing reads it.
+      expect(second.body.notes.find((n) => n.startsWith('Data:'))).toMatch(/may be lost/);
+      // The old copy is left where it was: reaping it is #1710's remaining work.
+      expect(rows(v1, preview)).toEqual([['prod-row'], ['review-row']]);
+    });
+
+    it('a retried push of the same version carries nothing, so it cannot clobber the copy', async () => {
+      storeOf(refOf.get(v2)!).set(preview, table('prod-row', 'review-row', 'after-push'));
+      calls.length = 0;
+      const retry = await push('pr-1', v2);
+      expect(retry.status).toBe(200);
+      expect(calls).toEqual([]);
+      expect(rows(v2, preview)).toEqual([['prod-row'], ['review-row'], ['after-push']]);
+      expect(retry.body.notes.some((n) => n.startsWith('Data:'))).toBe(false);
+    });
+
+    it('a failed carry leaves the preview bound to its old script with its data, and records why', async () => {
+      failRestoreInto = refOf.get(v3)!;
+      calls.length = 0;
+      const failed = await push('pr-1', v3);
+      failRestoreInto = null;
+      expect(failed.status).toBe(503);
+      // Retried in-request (one delay configured), and never bound.
+      expect(calls).toEqual([
+        `export ${refOf.get(v2)} ${preview}`,
+        `restore ${refOf.get(v3)} ${preview}`,
+        `restore ${refOf.get(v3)} ${preview}`,
+      ]);
+      const still = await boundOf(preview);
+      expect(still.verticalVersionId).toBe(v2);
+      expect(still.servingRef ?? null).toBeNull();
+      expect(rows(v2, preview)).toEqual([['prod-row'], ['review-row'], ['after-push']]);
+      expect(rows(v3, preview)).toBeUndefined();
+      await new Promise((r) => setTimeout(r, 20)); // the recorder is fire-and-forget
+      const recorded = (await host.admin.listOpsFailures(staff, { scopeId: scopeId.parse(preview) })).find(
+        (f) => f.stage === 'carry',
+      );
+      expect(recorded).toMatchObject({ operation: 'preview.create', vertical: slug, version: v3, status: 503 });
+
+      // CI's retry of the same version then lands the carry from where the data still is.
+      calls.length = 0;
+      const retried = await push('pr-1', v3);
+      expect(retried.status).toBe(200);
+      expect(calls).toEqual([`export ${refOf.get(v2)} ${preview}`, `restore ${refOf.get(v3)} ${preview}`]);
+      expect(rows(v3, preview)).toEqual([['prod-row'], ['review-row'], ['after-push']]);
+      expect((await boundOf(preview)).verticalVersionId).toBe(v3);
+    });
+
+    it('refuses with a 502 naming the script it cannot reach, and binds nothing', async () => {
+      const v4 = await pub('1.0.3');
+      unreachable = refOf.get(v4)!;
+      const noTarget = await push('pr-1', v4);
+      expect(noTarget.status).toBe(502);
+      expect(noTarget.body.error).toContain(`version ${v4}'s script ('${refOf.get(v4)}')`);
+      expect((await boundOf(preview)).verticalVersionId).toBe(v3);
+
+      unreachable = refOf.get(v3)!; // now the end holding the data
+      const noSource = await push('pr-1', v4);
+      unreachable = null;
+      expect(noSource.status).toBe(502);
+      expect(noSource.body.error).toContain(`the script holding its data ('${refOf.get(v3)}')`);
+      expect((await boundOf(preview)).verticalVersionId).toBe(v3);
+    });
+
+    it('scope bind carries a forked test environment into the version it binds, after the snapshot', async () => {
+      // The long-lived test environment: a pinned preview that the merge job re-points with
+      // `substrat scope bind <id> --version <pushed> --snapshot`.
+      const env = await push('test', v1, { ttlHours: null });
+      expect(env.status).toBe(201);
+      const testEnv = env.body.scopeId;
+      storeOf(refOf.get(v1)!).set(testEnv, table('prod-row', 'qa-row'));
+      const v5 = await pub('1.1.0', 'g2'); // crosses a migration, so --snapshot forks first
+
+      calls.length = 0;
+      const res = await dj(`/tenants/${tH}/scopes/${testEnv}/version`, 'POST', { versionId: v5, snapshot: true });
+      expect(res.status).toBe(200);
+      expect(calls).toEqual([
+        `snapshot ${refOf.get(v1)} ${testEnv}`,
+        `export ${refOf.get(v1)} ${testEnv}`,
+        `restore ${refOf.get(v5)} ${testEnv}`,
+      ]);
+      expect(rows(v5, testEnv)).toEqual([['prod-row'], ['qa-row']]);
+      expect(((await res.json()) as { verticalVersionId: string }).verticalVersionId).toBe(v5);
+
+      // Its failure twin: an unreachable script refuses the bind, through the app's error
+      // boundary, and leaves the pointer where the data is.
+      const v6 = await pub('1.1.1', 'g2');
+      unreachable = refOf.get(v6)!;
+      const refused = await dj(`/tenants/${tH}/scopes/${testEnv}/version`, 'POST', { versionId: v6 });
+      unreachable = null;
+      expect(refused.status).toBe(502);
+      expect((await boundOf(testEnv)).verticalVersionId).toBe(v5);
+    });
+
+    it('scope bind copies nothing into a version the bind will refuse', async () => {
+      // A version that is not admitted may not be bound to anything but a preview, so its
+      // code must not receive a copy of the scope either (its restore handler would).
+      await host.admin.setVerticalListed(staff, slug, true);
+      const pending = await pub('2.0.0-rc.1');
+      await host.admin.setVerticalListed(staff, slug, false);
+      calls.length = 0;
+      const res = await dj(`/tenants/${tH}/scopes/${prod}/version`, 'POST', { versionId: pending });
+      expect(res.ok).toBe(false);
+      expect(calls).toEqual([]);
+      expect((await boundOf(prod)).verticalVersionId).toBe(v1);
+    });
+
+    it('a scope pinned to the serving script carries nothing: the version pointer does not move its route', async () => {
+      await host.admin.setScopeServingRef(staff, tH, prod, 'carry-vert');
+      calls.length = 0;
+      const res = await dj(`/tenants/${tH}/scopes/${prod}/version`, 'POST', { versionId: v2 });
+      expect(res.status).toBe(200);
+      expect(calls).toEqual([]);
+      expect(await boundOf(prod)).toMatchObject({ verticalVersionId: v2, servingRef: 'carry-vert' });
+    });
   });
 
   it('re-forks after a create died mid-fork, instead of adopting the empty leftover', async () => {
