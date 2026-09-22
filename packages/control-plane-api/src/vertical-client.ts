@@ -13,6 +13,7 @@ import type {
   PlatformRequestFailure,
   PrincipalId,
   SystemSwitchOutcome,
+  SystemScheduleEntry,
   ConnectionGrantRecord,
   ProjectedConnectionGrant,
   ProjectedConnectionKey,
@@ -52,6 +53,7 @@ import {
   ownerSeat,
   ownerClaimLink,
   systemSwitchOutcome,
+  systemScheduleEntry,
 } from '@substrat-run/contracts';
 import type { OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER, undrainedEventsOf } from '@substrat-run/kernel';
@@ -634,6 +636,51 @@ export class VerticalClient {
         502,
         `vertical answered ${verb} with an unexpected shape — the switch on scope ${input.scopeId} may ` +
           `or may not have moved. Confirm its position (the scope's SQL console) before retrying.`,
+      );
+    }
+    return parsed.data;
+  }
+
+  /**
+   * The read half of the schedule kill switch's status (#1674): every module the
+   * deployment serving this scope holds or has held system authority for, and where each
+   * stands. Mirrors `systemSwitch`'s seam and its skew rule exactly (#1666's "only the
+   * explicit legacy signal reads as redeploy"): a 404 (the route does not exist) or an SPA
+   * shell (a 200 that is not JSON) are the deployment's own proof it predates this read,
+   * and become a 501 that says so. A 200 of the wrong-shaped JSON is NOT that proof — it
+   * is a failure this client cannot explain, so it surfaces as the 502 it is rather than a
+   * guess at "redeploy". The far end's own 501 (the route exists, the method doesn't)
+   * passes through `refusal` verbatim, unchanged either way.
+   */
+  async systemGrantsStatus(input: { scopeId: ScopeId }): Promise<SystemScheduleEntry[]> {
+    const verb = 'system-grants';
+    const predates = (): ControlPlaneError =>
+      new ControlPlaneError(
+        501,
+        `the deployment serving scope ${input.scopeId} predates the schedule switch's status read (#1674) — ` +
+          `redeploy the vertical, then retry.`,
+      );
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.reach(verb, () =>
+      this.options.fetch(`${base}/internal/system-grants?scopeId=${encodeURIComponent(input.scopeId)}`, {
+        method: 'GET',
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (res.status === 404) throw predates();
+    if (!res.ok) throw await this.refusal(verb, res);
+    const text = await res.text();
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      throw predates();
+    }
+    const parsed = systemScheduleEntry.array().safeParse(raw);
+    if (!parsed.success) {
+      throw new ControlPlaneError(
+        502,
+        `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`,
       );
     }
     return parsed.data;

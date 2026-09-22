@@ -49,6 +49,7 @@ import type {
   ModuleManifest,
   ScheduleSpec,
   SystemGrant,
+  SystemGrantsStatusEntry,
   SystemSwitch,
   SystemSwitchResult,
   CreateOrgInput,
@@ -1536,6 +1537,26 @@ export interface HostAdmin {
    * audit-first rows, same idempotence and `not_found`.
    */
   restoreToSystem(actor: PlatformActorId, input: SystemSwitch): Promise<SystemSwitchResult>;
+  /**
+   * The status read (#1674): every module this scope holds or has ever held system
+   * authority for, and where each stands — `on`, `off`, or `ungranted`, from the SAME
+   * `systemScheduleState` predicate `runDueSchedules` gates on and `revokeFromSystem`
+   * writes against, so the read and the runner cannot disagree.
+   *
+   * While a module is `off`, the entry names who switched it off, when, and why — the
+   * admin log's `intent` row for the `revokeFromSystem` that is still in force, joined by
+   * moduleId. That join happens HERE, never on the deployment serving a hosted scope: the
+   * admin log is the control plane's own store, and a vertical's own deployment holds
+   * none of it — see `SystemSwitchDelegation.status`, which answers the bare position only.
+   *
+   * Delegated for a hosted scope exactly as `revokeFromSystem`/`restoreToSystem` are: a
+   * deployment built before #1666's route answers the same "redeploy the vertical", never
+   * a wrong `on`.
+   */
+  systemGrantsStatus(
+    actor: PlatformActorId,
+    node: { tenantId: TenantId; scopeId: ScopeId },
+  ): Promise<SystemGrantsStatusEntry[]>;
 
   /**
    * Mint a `become` capability on a scope (#1672): whoever exchanges its secret yields

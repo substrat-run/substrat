@@ -240,6 +240,36 @@ export const systemSwitchResult = z.object({
 });
 export type SystemSwitchResult = z.infer<typeof systemSwitchResult>;
 
+/**
+ * One module's schedule-switch position on a scope (#1674) — bare, with no audit join.
+ * The wire shape of `/internal/system-grants`, the vertical's own honest answer: it holds
+ * no admin log, so it cannot say who switched a module off or why, only where it stands —
+ * the kernel's `systemScheduleState`, the SAME predicate the runner gates on.
+ */
+export const systemScheduleEntry = z.object({
+  moduleId,
+  schedules: z.enum(['on', 'off', 'ungranted']),
+});
+export type SystemScheduleEntry = z.infer<typeof systemScheduleEntry>;
+
+/**
+ * The per-scope status read (#1674) — `GET /tenants/:t/scopes/:s/system-grants`, one entry
+ * per module the scope holds or has ever held system authority for. Adds the one thing a
+ * hosted deployment cannot answer for itself: while off, who switched it off, when, and
+ * why — the control plane's own admin log, joined by moduleId to the `intent` row of the
+ * `revokeFromSystem` that put it there.
+ */
+export const systemGrantsStatusEntry = systemScheduleEntry.extend({
+  switchedOff: z
+    .object({
+      actor: platformActorId,
+      reason: z.string(),
+      at: instant,
+    })
+    .nullable(),
+});
+export type SystemGrantsStatusEntry = z.infer<typeof systemGrantsStatusEntry>;
+
 // ============================================================================
 // Evaluation representation — relationship tuples (design doc §4.2, plan D-23).
 // Internal to the checker; verticals never author these. The fixed derivation
