@@ -3340,7 +3340,11 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
       .get(scopeId) as { tenant_id: string; status: string } | undefined;
     if (!scope || scope.tenant_id !== tenantId) {
-      throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      // TYPED (#1714 review): K-3's pair check is the confinement the capability and peer
+      // doors rest on, so its refusal carries a code rather than being one more untyped
+      // throw a test could pass on by accident. `not_found`, in the same words either way:
+      // a scope of another tenant reads exactly as one that does not exist.
+      throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
     const tenant = this.directory
       .prepare('SELECT status FROM tenants WHERE tenant_id = ?')

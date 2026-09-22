@@ -3141,12 +3141,21 @@ export class CloudflareScopeHost implements ScopeHost {
    * peer reaches the target deployment itself, through the platform, never through this host.
    */
   private async peerScopeGate(tenantId: TenantId, scopeId: ScopeId, verb: string): Promise<void> {
-    if (this.servesScopesElsewhere) {
-      const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-      if (rec && rec.vertical !== null) {
+    // K-3's pair check runs HERE, not only inside the ControlPlaneDO (#1714 review). An error
+    // thrown in a Durable Object arrives at the coordinator FLATTENED — its code and
+    // extensions gone — so a typed refusal thrown there reaches a caller untyped, which this
+    // door's own tenant-confinement test proved. A RECORD crosses intact, so the coordinator
+    // reads the record and types the refusal itself. `validateScopeAccess` still runs below
+    // and still owns the lifecycle half (a suspended tenant or scope).
+    if (!this.cpLess) {
+      const record = await this.cp.getScopeRecord(tenantId, scopeId);
+      if (!record) {
+        throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      }
+      if (this.servesScopesElsewhere && record.vertical !== null) {
         throw substratError(
           'unavailable',
-          `${verb} cannot reach scope ${scopeId}: it is served by the '${rec.vertical}' deployment, ` +
+          `${verb} cannot reach scope ${scopeId}: it is served by the '${record.vertical}' deployment, ` +
             'which a peer reaches through the platform, not through the shared control plane',
         );
       }
