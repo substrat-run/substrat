@@ -1333,8 +1333,11 @@ in every export, backup and PITR window taken from the scope afterwards. Both ar
 in one pass. The intent's `payload TEXT NOT NULL` cannot take the outbox's `NULL`, so it is
 **replaced** by an obviously-redacted tombstone (`{"_substratRedacted": {reason, subjectId,
 at}}`) that no drain handler's schema will parse; `last_error` goes with it, being free text a
-provider wrote about this person; and a still-`pending` intent is settled `failed` in the same
-statement, so nothing is ever handed a tombstone to execute. Which intents are selected is the
+provider wrote about this person; so does a non-NULL `result`, which is the handler's return and
+so, for a connector, the provider's answer about this person (#1632) — replaced by the same
+tombstone — while `last_failure` is nulled, because it is `last_error`'s attribution and would
+otherwise caption the redaction note as the provider's words; and a still-`pending` intent is
+settled `failed` in the same statement, so nothing is ever handed a tombstone to execute. Which intents are selected is the
 outbox's own predicate — `subject_id = ? AND pii_class != 'none'` — applied to whatever spine
 envelope the payload embeds, so a copy is never judged more harshly than its original. The
 drain race splits in two, and only one half is open. A drain that had already **read** a
@@ -1344,6 +1347,21 @@ drain hop. Its **writeback** is a different matter and is closed: settling an in
 compare-and-set on `status = 'pending'`, so a stale pass cannot overwrite the redaction or
 write a provider's reply — which can quote the person — back into `last_error`. Nothing
 legitimate is refused by that, because the drain only ever reads pending rows.
+
+**The job-run tables are reached by the same link (#1632).** A resumable run (#1577) keeps its
+payload, its cursor and — for the pass in flight, or a failed run's last pass — a memo of each
+completed step in `_substrat_job_runs` / `_substrat_job_steps`, and those are whatever a host
+handler got back from an external system. None of it carries a `subject_id`, so the erasure uses
+the only link it can read: the one above, a copy of a classified envelope at any depth. Each
+column that holds one becomes the tombstone, the row's `last_error` becomes a note, and a run
+still `running` is settled `failed` in the same statement — a tombstoned memo is otherwise handed
+to the next pass as the step's answer. The pass the erasure overtook is held off the same way the
+drain is: a run's patch and a step's record are compare-and-sets on `status = 'running'`, so a
+stale pass cannot write its cursor or a fresh memo back over the redaction. What it does not
+reach is limit 8. And a failed delivery's `_substrat_deliveries.error` — a consumer's or
+executor's throw, which can quote the payload it choked on — becomes a note for every event the
+erasure redacts; it is keyed by `event_id`, so the outbox predicate names those rows exactly and
+no walk is needed.
 
 **A platform-retained copy is not mutable, so erasure there is cryptographic.** Reap
 backups and stored dumps are full-fidelity on purpose — a backup that cannot restore is a
@@ -1358,8 +1376,9 @@ store's independence"*).
 The mechanism is staff-triggered and audited in **both** logs — the admin log because it is
 a mutation, the access log because it destroys evidence.
 
-**Seven limits, stated so nobody has to discover them** (the sixth added once the lake existed,
-the seventh once the spine's second copy was reached — #1600):
+**Eight limits, stated so nobody has to discover them** (the sixth added once the lake existed,
+the seventh once the spine's second copy was reached — #1600 — and the eighth once the job-run
+tables were — #1632):
 
 1. **One subject per event.** The spine keys erasure on a single `subjectId`; a transcript
    naming a dozen people is keyed to one of them. *"I cannot do 'erase Jens Palmgren from
@@ -1394,6 +1413,15 @@ the seventh once the spine's second copy was reached — #1600):
    which is the one that embeds an event. A kind that started carrying a name directly would
    be inventing an unclassified PII store inside the spine, and the right answer there is the
    classification, not a wider erasure heuristic.
+8. **Job-run output that names a person without a classified envelope is not reached.** Limit 7's
+   shape in the job-run tables, and unlike limit 7 it is not hypothetical: a job is a walk of an
+   external system, so a step's result is that system's record — a contact, an address — and a
+   failed pass's `last_error` is that system's sentence. Nothing in such a row says whose it is,
+   and a substring match on the subject id would erase on coincidence while still missing the
+   name. The contract suite pins this rather than leaving it to be mistaken for coverage. The
+   design that would close it is a **declared subject on the run** (`startJobRun({ subject })`
+   and a `subject_id` column, a spine migration) so an erasure can find the run by key rather
+   than by content; it is open on #1632.
 
 ## 14. Design log
 

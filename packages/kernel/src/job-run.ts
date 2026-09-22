@@ -164,6 +164,45 @@ export const JOB_RUN_DDL = `
   );
 `;
 
+/**
+ * The write every pass outcome lands through, on both adapters — a compare-and-set on
+ * `status = 'running'` (#1632).
+ *
+ * A pass runs for as long as its handler takes, outside any lock, so a subject erasure
+ * can settle the run `failed` and tombstone its payload, cursor and step memos while the
+ * pass is still working. Patching by `id` alone let that stale pass write its cursor —
+ * which may carry the person — and `running` straight back over the redaction. Nothing
+ * legitimate is refused: `runJobPass` only ever drives a run it read as `running`, and
+ * nothing else in the kernel moves a run out of that state except the pass itself and
+ * the erasure. Same shape, same reason, as `settlePlatformRequest`'s CAS on `pending`.
+ *
+ * Params: status, cursor, counters, attempts, last_error, updated_at, next_attempt_at,
+ * ended_at, id.
+ */
+export const JOB_RUN_PATCH_SQL = `UPDATE _substrat_job_runs
+     SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
+         updated_at = ?, next_attempt_at = ?, ended_at = ?
+   WHERE id = ? AND status = 'running'`;
+
+/**
+ * Record one step attempt — only while its run is still `running` (#1632).
+ *
+ * The step half of `JOB_RUN_PATCH_SQL`'s CAS: a stale pass's step, finishing after an
+ * erasure settled the run, would otherwise write a fresh result carrying the person
+ * into the ledger the erasure just emptied. `INSERT … SELECT … WHERE` rather than
+ * `VALUES` so the guard and the write are one statement; the `WHERE` also resolves
+ * SQLite's parse ambiguity between a SELECT's trailing clause and `ON CONFLICT`.
+ *
+ * Params: run_id, step, result, attempts, last_error, recorded_at, run_id.
+ */
+export const JOB_STEP_RECORD_SQL = `INSERT INTO _substrat_job_steps (run_id, step, result, attempts, last_error, recorded_at)
+     SELECT ?, ?, ?, ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM _substrat_job_runs WHERE id = ? AND status = 'running')
+   ON CONFLICT (run_id, step) DO UPDATE SET result = excluded.result,
+                                            attempts = excluded.attempts,
+                                            last_error = excluded.last_error,
+                                            recorded_at = excluded.recorded_at`;
+
 /** Where a run is. A killed run is `running` — that is what makes it resumable. */
 export type JobRunStatus = 'running' | 'done' | 'failed';
 

@@ -28,6 +28,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   isSearchIndexTable,
+  REDACTED_DELIVERY_NOTE,
   REDACTED_INTENT_MARKER,
   runPlatformSweep,
   ulid,
@@ -2133,6 +2134,68 @@ export function scopeHostContractSuite(
         ).rejects.toThrow();
       });
 
+      it('redacts a failed delivery\'s error about the subject\'s event, and only that (#1632)', async () => {
+        // A consumer's or executor's throw can quote the payload it choked on, and it lands
+        // in `_substrat_deliveries.error` beside the event's id. Keyed by event id, so the
+        // outbox's own predicate names exactly the rows to rewrite. Planted through a
+        // restore because making a real consumer fail on a chosen event is a different
+        // suite's business; the rows are the adapter's own export, plus two deliveries.
+        const alicia = dataSubjectId.parse(ulid());
+        const bruno = dataSubjectId.parse(ulid());
+        const src = await host.getScope(alice, t1, s1);
+        await src.invoke('test/emit-event', { subject: alicia, secret: 'alicia-was-here' });
+        await src.invoke('test/emit-event', { subject: bruno, secret: 'bruno-was-here' });
+        const rows = (await src.invoke('test/read-outbox', undefined)) as { id: string; subject_id: string | null }[];
+        const eventOf = (subject: string) => rows.find((r) => r.subject_id === subject)!.id;
+
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s, jurisdiction: 'eu', vertical: 'connector-vertical' });
+        await host.admin.activateScope(staff, t1, s);
+        const backup = await host.admin.exportScope(staff, t1, s1);
+        const deliveries = backup.tables.find((t) => t.name === '_substrat_deliveries');
+        expect(deliveries).toBeDefined();
+        const plant = (eventId: string, error: string | null, consumer: string) =>
+          deliveries!.columns.map((c) =>
+            ({
+              event_id: eventId,
+              consumer_module: consumer,
+              delivered_at: '2026-09-20T00:00:00.000Z',
+              error,
+              attempts: 1,
+            })[c] ?? null,
+          );
+        await host.restoreScope(staff, t1, s, {
+          ...backup,
+          scopeId: s,
+          tables: backup.tables.map((t) =>
+            t === deliveries
+              ? {
+                  ...t,
+                  rows: [
+                    ...t.rows,
+                    plant(eventOf(alicia), 'consumer choked on alicia-was-here', '@test/dead-a'),
+                    plant(eventOf(alicia), null, '@test/delivered-a'),
+                    plant(eventOf(bruno), 'consumer choked on bruno-was-here', '@test/dead-b'),
+                  ],
+                }
+              : t,
+          ),
+        });
+
+        await host.admin.shredSubject(staff, t1, s, alicia);
+
+        const dump = await host.admin.exportScope(staff, t1, s);
+        const table = dump.tables.find((t) => t.name === '_substrat_deliveries')!;
+        const col = (row: unknown[], c: string) => row[table.columns.indexOf(c)];
+        const by = (consumer: string) => table.rows.find((r) => col(r, 'consumer_module') === consumer)!;
+        expect(JSON.stringify(table.rows)).not.toContain('alicia-was-here');
+        expect(col(by('@test/dead-a'), 'error')).toBe(REDACTED_DELIVERY_NOTE);
+        // A delivered row stays delivered — a note there would read as dead-lettered.
+        expect(col(by('@test/delivered-a'), 'error')).toBeNull();
+        // The other subject's failure still says what it said.
+        expect(col(by('@test/dead-b'), 'error')).toBe('consumer choked on bruno-was-here');
+      });
+
       // -- the spine's OTHER copy of an event (#1600) -------------------------
       //
       // `_substrat_platform_requests` holds whole `DomainEvent`s. A CP-less host cannot
@@ -2275,33 +2338,70 @@ export function scopeHostContractSuite(
           expect(after.status).toBe('failed');
         });
 
-        it('keeps `result`, which is envelope — what the intent DID, not what it said', async () => {
-          // The redaction spares `result` on purpose, and until now nothing held it to
-          // that: for a routed dispatch it is `{ eventId }`, which names the event the
-          // outbox already keeps a redacted row for, so it is the same class of fact as
-          // `kind` and `requestedAt`. Asserted beside the two columns that DO go, so the
-          // line between them is a test rather than a sentence in the PR.
+        it('redacts `result` and `last_failure` too — the provider\'s answer is content (#1632)', async () => {
+          // #1600 spared `result` as envelope, reasoning from a routed dispatch whose result
+          // is `{ eventId }`. But `result` is whatever the drain's handler returned, and a
+          // connector's return is the provider's answer about delivering THIS person's data
+          // — `last_error`'s reason, one column over. `last_failure` carries no text, and
+          // goes because it is `last_error`'s attribution: kept, `origin: 'provider'` would
+          // caption the platform's redaction note as the provider's words.
           const kind = `connector:erasure-${ulid()}`;
           const erased = dataSubjectId.parse(ulid());
           const id = await routeIntent(kind, erased, 'Anna Ek');
           await host.settlePlatformRequest(t1, s1, id, {
             status: 'failed',
-            result: { eventId: 'evt-01', deliveredAt: '2026-09-20T00:00:00.000Z' },
+            result: { documentId: 'doc-1', signer: 'Anna Ek' },
             lastError: 'HTTP 409: Anna Ek requires a valid personal number field',
+            failure: { origin: 'provider', code: null, permission: null },
           });
+          const before = (await journal(kind)).find((r) => r.id === id)!;
+          expect(JSON.stringify(before.result)).toContain('Anna Ek');
+          expect(before.failure?.origin).toBe('provider');
 
           await host.admin.shredSubject(staff, t1, s1, erased);
 
           const after = (await journal(kind)).find((r) => r.id === id)!;
-          // What was said goes — both columns that could carry it.
-          expect(JSON.stringify(after.payload)).not.toContain('Anna Ek');
-          expect(after.lastError).not.toContain('Anna Ek');
-          expect(after.lastError).toContain('subject erasure');
-          // What happened stays, unchanged and whole.
+          // THE property: no trace of the name anywhere in the row.
+          expect(JSON.stringify(after)).not.toContain('Anna Ek');
+          // What replaced it says what happened, in the payload's own convention.
           expect(after.result).toEqual({
-            eventId: 'evt-01',
-            deliveredAt: '2026-09-20T00:00:00.000Z',
+            [REDACTED_INTENT_MARKER]: expect.objectContaining({
+              reason: 'subject-erasure',
+              subjectId: erased,
+            }),
           });
+          expect(after.lastError).toContain('subject erasure');
+          expect(after.failure).toBeNull();
+          // Envelope survives: still failed, still dated, still decodes whole.
+          expect(after.status).toBe('failed');
+          expect(after.settledAt).toBe(before.settledAt);
+          expect(after.decodeError).toBeUndefined();
+        });
+
+        it('leaves a NULL `result` NULL, and a neighbour\'s result and attribution intact', async () => {
+          // A tombstone where there was no result would claim an answer nobody gave. And
+          // the twin that stops a redact-every-result bug passing the test above.
+          const kind = `connector:erasure-${ulid()}`;
+          const erased = dataSubjectId.parse(ulid());
+          const spared = dataSubjectId.parse(ulid());
+          const mine = await routeIntent(kind, erased, 'Anna Ek');
+          const theirs = await routeIntent(kind, spared, 'Bo Lund');
+          await host.settlePlatformRequest(t1, s1, mine, { status: 'failed', lastError: 'no answer' });
+          await host.settlePlatformRequest(t1, s1, theirs, {
+            status: 'failed',
+            result: { signer: 'Bo Lund' },
+            lastError: 'HTTP 409: Bo Lund requires a valid personal number field',
+            failure: { origin: 'provider', code: null, permission: null },
+          });
+
+          await host.admin.shredSubject(staff, t1, s1, erased);
+
+          const after = await journal(kind);
+          expect(after.find((r) => r.id === mine)!.result).toBeNull();
+          const other = after.find((r) => r.id === theirs)!;
+          expect(other.result).toEqual({ signer: 'Bo Lund' });
+          expect(other.lastError).toContain('Bo Lund');
+          expect(other.failure).toEqual({ origin: 'provider', code: null, permission: null });
         });
 
         it('refuses a stale drain settling a row the erasure already redacted', async () => {
