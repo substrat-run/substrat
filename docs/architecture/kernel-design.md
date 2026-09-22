@@ -869,6 +869,13 @@ entirely, keeping the headless layer.
 component gives isolated islands in other frameworks (one legacy widget, not a polyglot
 architecture). Additive — designed for, not built.
 
+K-15 governs how the platform composes a vertical's own UI at build time; a runtime-installed,
+sandboxed extension that a vertical's *end users* install is outside that scope — neither
+banned nor governed here, and the vertical's own business. Browser-side egress from such an
+extension's sandboxed iframe is a CSP concern for the vertical, sitting outside D-40/D-46. A
+kernel-owned bridge contract for narrowed authority is planned, built on the capability actor
+(#1672), and tracked on #1671.
+
 ### 7.5 Engine extension model (K-17, K-18; plan decision 26)
 
 The plan promises verticals "vocabulary, extra states, form fields" (§3) while engines
