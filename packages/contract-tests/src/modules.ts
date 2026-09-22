@@ -1980,6 +1980,140 @@ export const idempotencyMod: ModuleRegistration = {
   operationIdempotencyOptOuts: operationIdempotencyOptOutsOf(idempotencyDeclaration),
 };
 
+// -- capabilities (#1672) ------------------------------------------------------
+
+/**
+ * The fixture for the capability suite: a folder tree (`doc` → `folder`, `folder` →
+ * `folder`), three keys, and operations shaped the way a document vertical's would be —
+ * a read and a write that check ONE entity, so what a capability can reach is decided by
+ * the checker's walk and nothing else.
+ *
+ * The minting operations are deliberately UNGUARDED, like `perm/share`: the guardrails
+ * under test live inside `ctx.capabilities`, and an operation-level check in front of
+ * them would only prove the check.
+ */
+export const capModManifest = moduleManifest.parse({
+  id: '@cap/mod',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [
+    { key: 'cap:read', description: 'read a folder or a document' },
+    { key: 'cap:write', description: 'comment on a document' },
+    { key: 'cap:admin', description: 'arrange the folder tree' },
+  ],
+  events: {
+    emits: [{ type: 'cap.commented', schemaVersion: 1 }],
+    consumes: [],
+  },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entityRelations: [
+    { entityType: 'doc', parentType: 'folder' },
+    { entityType: 'folder', parentType: 'folder' },
+  ],
+  entitlementKey: 'cap',
+});
+
+const CAP_READ = permissionKey.parse('cap:read');
+const CAP_WRITE = permissionKey.parse('cap:write');
+
+type CapShareInput = Parameters<OperationContext['capabilities']['mint']>[0];
+
+export const capMod: ModuleRegistration = {
+  manifest: capModManifest,
+  migrations: [
+    { version: '0001-init', sql: 'CREATE TABLE cap_notes (id TEXT PRIMARY KEY, body TEXT NOT NULL)' },
+  ],
+  operations: {
+    'cap/link': linkOp as OperationHandler<never, unknown>,
+    'cap/share': ((ctx, input) => ctx.capabilities.mint(input as CapShareInput)) as OperationHandler<
+      never,
+      unknown
+    >,
+    // The link a vertical would hand back — the secret spliced into a URL fragment, so the
+    // idempotency redaction has to find it INSIDE a string, not only as a whole value.
+    'cap/share-link': (async (ctx, input) => {
+      const minted = await ctx.capabilities.mint(input as CapShareInput);
+      return { id: minted.id, link: `https://docs.example/#share=${minted.secret}` };
+    }) as OperationHandler<never, unknown>,
+    // A module that mints and then mishandles the secret — each channel a stored row could
+    // take. Every one must be refused, and the refusal must roll the mint back with it.
+    'cap/share-and-leak': (async (ctx, input) => {
+      const i = input as CapShareInput & { via: 'emit' | 'sql' | 'intent' };
+      const { via, ...spec } = i;
+      const minted = await ctx.capabilities.mint(spec);
+      if (via === 'emit') {
+        ctx.emit({
+          type: 'cap.commented',
+          schemaVersion: 1,
+          entity: spec.entity,
+          piiClass: 'none',
+          payload: { note: `share it: ${minted.secret}` },
+        });
+      } else if (via === 'sql') {
+        ctx.sql.exec('INSERT INTO cap_notes (id, body) VALUES (?, ?)', [ulid(), minted.secret]);
+      } else {
+        ctx.requestPlatform({ kind: 'cap-note', payload: { body: minted.secret } });
+      }
+      return { id: minted.id };
+    }) as OperationHandler<never, unknown>,
+    'cap/unshare': (async (ctx, input) => {
+      await ctx.capabilities.revoke((input as { id: string }).id as never);
+      return { revoked: true };
+    }) as OperationHandler<never, unknown>,
+    'cap/list': ((ctx, input) =>
+      ctx.capabilities.list(input as Parameters<OperationContext['capabilities']['list']>[0])) as OperationHandler<
+      never,
+      unknown
+    >,
+    // A read of ONE entity — the proof comes back so a test can see what authorized it.
+    'cap/read': (async (ctx, input) => {
+      const entity = (input as { entity: EntityRef }).entity;
+      const decision = await ctx.check(CAP_READ, entity);
+      assertAllowed(decision);
+      return { read: entity, proof: decision.proof };
+    }) as OperationHandler<never, unknown>,
+    // A node-level read: a capability holds no node-level authority, so this refuses it.
+    'cap/read-all': (async (ctx) => {
+      assertAllowed(await ctx.check(CAP_READ));
+      return { all: true };
+    }) as OperationHandler<never, unknown>,
+    // A write of ONE entity, which emits — K-34 authorization and the actor land on it.
+    'cap/comment': (async (ctx, input) => {
+      const i = input as { doc: EntityRef; body: string };
+      assertAllowed(await ctx.check(CAP_WRITE, i.doc));
+      ctx.emit({
+        type: 'cap.commented',
+        schemaVersion: 1,
+        entity: i.doc,
+        piiClass: 'none',
+        payload: { body: i.body },
+      });
+      return { commented: true };
+    }) as OperationHandler<never, unknown>,
+    'cap/whoami': whoAmIOp as OperationHandler<never, unknown>,
+    'cap/outbox': ((ctx) =>
+      ctx.sql.query(
+        'SELECT id, type, actor, authorization, operation, entity_type, entity_id, payload FROM _substrat_outbox ORDER BY id',
+      )) as OperationHandler<never, unknown>,
+    'cap/denials': readDenialsOp as OperationHandler<never, unknown>,
+    // Every table in this scope, every row, as text — what "the secret appears in no stored
+    // row" is checked against. Read through module-facing `ctx.sql` on purpose: this is
+    // what a vertical (or a dump of the scope) can see.
+    'cap/dump': ((ctx) => {
+      const tables = ctx.sql.query<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' " +
+          "AND substr(name, 1, 4) <> '_cf_' AND substr(name, 1, 7) <> 'sqlite_'",
+      );
+      const out: Record<string, string> = {};
+      for (const { name } of tables) {
+        out[name] = JSON.stringify(ctx.sql.query(`SELECT * FROM "${name}"`));
+      }
+      return out;
+    }) as OperationHandler<never, unknown>,
+  },
+};
+
 export const contractTestModules: ModuleRegistration[] = [
   ...contractTestInitialModules,
   lateMod,
@@ -2000,6 +2134,9 @@ export const contractTestModules: ModuleRegistration[] = [
   parseMod,
   concurrencyMod,
   idempotencyMod,
+  // #1672: the capability suite's folder tree. Inert for every other suite — nothing else
+  // reads `cap_notes` or invokes a `cap/*` operation.
+  capMod,
 ];
 
 // -- live reads (#938) -------------------------------------------------------

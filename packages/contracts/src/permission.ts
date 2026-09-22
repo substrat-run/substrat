@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  capabilityId,
   instant,
   moduleId,
   permissionKey,
@@ -79,10 +80,19 @@ export const checkSubject = z.union([
   // `{ system: <moduleId> }` on events, so scheduled work reads as the schedule, not
   // as a human who happened to sit down at 03:00.
   z.object({ kind: z.literal('system'), id: moduleId }),
+  // WHOEVER HOLDS A CAPABILITY'S SECRET (#1672) — a link share. Resolved against the
+  // capability's own directory row rather than against tuples: the row IS the grant
+  // (one entity and its declared descendants, specific keys), no `capability:` tuple is
+  // ever written, and the minter's own authority is re-checked on every use — so a
+  // capability can never hold more than the principal who minted it holds right now.
+  z.object({ kind: z.literal('capability'), id: capabilityId }),
 ]);
 export type CheckSubject = z.infer<typeof checkSubject>;
 
-/** The tuple-store ref for a subject: `principal:01J…` / `connection:01J…` / `system:@scope/mod`. */
+/**
+ * The tuple-store ref for a subject: `principal:01J…` / `connection:01J…` /
+ * `system:@scope/mod` / `capability:01J…`.
+ */
 export const subjectRef = (subject: CheckSubject): string => `${subject.kind}:${subject.id}`;
 
 /**

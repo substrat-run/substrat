@@ -1,6 +1,7 @@
 import {
   objectRef,
   SubstratError,
+  type Actor,
   type Coverage,
   type Decision,
   type EntityRef,
@@ -67,6 +68,25 @@ export interface PermissionChecker {
 
 /** Convenience for the overwhelmingly common case. */
 export const asPrincipal = (id: PrincipalId): CheckSubject => ({ kind: 'principal', id });
+
+/**
+ * The spine ACTOR a check subject is recorded as — on an event, a denial, a platform
+ * intent. One mapping, so the four places that record "who" cannot disagree about it: a
+ * principal is its bare id, and every subject that is not a person is the object form that
+ * says what it is instead (#97, #383, #1672).
+ */
+export const actorOf = (subject: CheckSubject): Actor => {
+  switch (subject.kind) {
+    case 'principal':
+      return subject.id;
+    case 'system':
+      return { system: subject.id };
+    case 'connection':
+      return { connection: subject.id };
+    case 'capability':
+      return { capability: subject.id };
+  }
+};
 
 /**
  * A refused check. The message constructor stays the public surface modules use

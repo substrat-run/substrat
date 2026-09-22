@@ -11,6 +11,7 @@ import {
   type RoleDefinition,
 } from '@substrat-run/contracts';
 import type { PermissionChecker } from './permission-checker.js';
+import { capabilityGrantOf, capabilityLive, type CapabilityRow } from './capability.js';
 
 /**
  * The built-in constrained relationship-tuple evaluator (design doc §4.2, plan D-23),
@@ -66,6 +67,13 @@ export interface ScopeTupleReader {
   ): MaybePromise<PermissionTupleRow | undefined>;
   /** The declared `parent` edges out of `object`. */
   parents(object: string): MaybePromise<PermissionTupleRow[]>;
+  /**
+   * The capability row a `{ kind: 'capability' }` subject names (#1672), read with
+   * `capabilityByIdQuery` — capabilities live in the scope's own spine beside the entities
+   * they reach. Optional so a reader written before capabilities still compiles; ABSENT
+   * means every capability check DENIES, never that one is waved through.
+   */
+  capability?(id: string): MaybePromise<CapabilityRow | undefined>;
 }
 
 /**
@@ -117,6 +125,49 @@ const nodeObjectsOf = (node: Node): { obj: string; scoped: boolean }[] =>
     : [{ obj: `tenant:${node.tenantId}`, scoped: false }];
 
 /**
+ * Rule 3's walk, as ONE function: from `start`, look for a hit at each frontier object, then
+ * expand one level of declared `parent` edges, to `ENTITY_WALK_DEPTH`. `probe` decides what a
+ * hit is — a live entity-narrowed grant for a principal, the capability's own root for a
+ * capability subject — so both subjects travel exactly the same edges, to exactly the same
+ * depth, skipping exactly the same revoked edges. A capability that reached further than an
+ * entity grant (or less far) would be a second algebra.
+ */
+async function walkParents<R>(
+  scope: ScopeTupleReader,
+  start: string,
+  now: string,
+  probe: (ref: string, chain: RelationTuple[]) => Promise<R | undefined>,
+): Promise<R | undefined> {
+  type Frontier = { ref: string; chain: RelationTuple[] };
+  let frontier: Frontier[] = [{ ref: start, chain: [] }];
+  for (let depth = 0; depth <= ENTITY_WALK_DEPTH && frontier.length > 0; depth++) {
+    for (const candidate of frontier) {
+      const hit = await probe(candidate.ref, candidate.chain);
+      if (hit !== undefined) return hit;
+    }
+    // Nothing consults the frontier past the last depth, so expanding it there is a
+    // read per candidate for an answer no one asks for.
+    if (depth === ENTITY_WALK_DEPTH) break;
+    const next: Frontier[] = [];
+    for (const candidate of frontier) {
+      for (const p of await scope.parents(candidate.ref)) {
+        // A revoked parent edge stops expanding. Without this the tombstone would work
+        // for grants and membership but silently NOT for entity edges — which is the
+        // case open question 15 is actually about (a facility moving management
+        // company must stop being reachable).
+        if (!live(p, now)) continue;
+        next.push({
+          ref: p.object,
+          chain: [...candidate.chain, t(p.subject, 'parent', p.object)],
+        });
+      }
+    }
+    frontier = next;
+  }
+  return undefined;
+}
+
+/**
  * Build the evaluator over one adapter's reader. Stateless per call: everything it knows it
  * reads at check time, which is what makes check-after-write consistent (the "no zookies"
  * property) and what lets `reader.now()` decide expiry rather than the wall clock.
@@ -166,6 +217,156 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     return out;
   };
 
+  /**
+   * A CAPABILITY subject (#1672). Resolved against the capability's own directory row —
+   * never against tuples, so no `capability:` tuple anywhere could widen it — in four steps,
+   * each of which denies on its own:
+   *
+   * 1. **Usable.** The row exists, can act (`mode: 'act'`), and is neither revoked nor
+   *    expired — `capabilityLive`, the predicate the session door and the exchange share.
+   * 2. **The key.** `permission` is one the capability carries.
+   * 3. **The subtree.** An entity is named, and it is the capability's root or lies beneath
+   *    it along declared parent edges — `walkParents`, the walk entity grants take. A
+   *    capability holds NO node-level authority: a check without an entity denies.
+   * 4. **The minter, now.** The principal who minted it must hold `permission` on this
+   *    entity at this moment, by the ordinary check. This is what makes "a capability never
+   *    grants more than its minter holds" true on every use rather than only at mint time:
+   *    revoke the minter's access and their links stop granting it.
+   *
+   * The proof is the minter's own chain, a `minted-by` link, the parent chain, and last the
+   * capability's grant on its root — last so K-34's `grantRefFromProof` names the root.
+   */
+  async function checkCapability(
+    id: string,
+    permission: PermissionKey,
+    node: Node,
+    entity: EntityRef | undefined,
+  ): Promise<Decision> {
+    const deny: Decision = { allowed: false, checked: permission, node };
+    if (!entity || !node.scopeId) return deny;
+    const scope = reader.scopeFor(node);
+    if (!scope?.capability) return deny;
+    const now = reader.now();
+    const row = await scope.capability(id);
+    if (!row || !capabilityLive(row, now)) return deny;
+    const grant = capabilityGrantOf(row);
+    if (!grant || !grant.mintedBy || !grant.permissions.includes(permission)) return deny;
+    const root = `${grant.entity.entityType}:${grant.entity.entityId}`;
+    const self = `capability:${id}`;
+    const chain = await walkParents(
+      scope,
+      `${entity.entityType}:${entity.entityId}`,
+      now,
+      async (ref, walked) =>
+        ref === root ? [...walked, t(self, `granted:${permission}`, root)] : undefined,
+    );
+    if (!chain) return deny;
+    const minter = await check(
+      { kind: 'principal', id: grant.mintedBy },
+      permission,
+      node,
+      entity,
+    );
+    if (!minter.allowed) return deny;
+    return {
+      allowed: true,
+      proof: [...minter.proof, t(self, 'minted-by', `principal:${grant.mintedBy}`), ...chain],
+    };
+  }
+
+  async function check(
+    subject: CheckSubject,
+    permission: PermissionKey,
+    node: Node,
+    entity?: EntityRef,
+    ): Promise<Decision> {
+    if (subject.kind === 'capability') {
+      return checkCapability(subject.id, permission, node, entity);
+    }
+    const now = reader.now();
+    const deny: Decision = { allowed: false, checked: permission, node };
+    const scope = reader.scopeFor(node);
+    const getRole = roleReaderFor(node.tenantId);
+
+    // Rule 4 — membership: the subject set is the caller plus its orgs. Shared with
+    // `covers` (§ `subjectsOf`).
+    const subjects = await subjectsOf(subject, node, now);
+
+    const tuplesFor = async (
+      subjectRefValue: string,
+      prefix: string,
+      scoped: boolean,
+    ): Promise<PermissionTupleRow[]> =>
+      scoped
+        ? scope
+          ? scope.tuples(subjectRefValue, prefix)
+          : []
+        : reader.tenantTuples(node.tenantId, subjectRefValue, prefix);
+
+    for (const nodeObj of nodeObjectsOf(node)) {
+      for (const s of subjects) {
+        // Rule 1 — role expansion.
+        for (const row of await tuplesFor(s.ref, 'role:', nodeObj.scoped)) {
+          if (row.object !== nodeObj.obj || !live(row, now)) continue;
+          const roleKey = row.relation.slice('role:'.length);
+          const role = await getRole(roleKey);
+          if (role?.permissions.includes(permission)) {
+            return {
+              allowed: true,
+              proof: [
+                ...(s.via ? [s.via] : []),
+                t(row.subject, row.relation, row.object),
+                t(`role:${roleKey}`, `granted:${permission}`, nodeObj.obj),
+              ],
+            };
+          }
+        }
+        // Direct grants at the node.
+        for (const row of await tuplesFor(s.ref, `granted:${permission}`, nodeObj.scoped)) {
+          if (
+            row.object === nodeObj.obj &&
+            row.relation === `granted:${permission}` &&
+            live(row, now)
+          ) {
+            return {
+              allowed: true,
+              proof: [...(s.via ? [s.via] : []), t(row.subject, row.relation, row.object)],
+            };
+          }
+        }
+      }
+    }
+
+    // Rule 3 — entity walk along declared parent edges (entity grants are scope-local by
+    // construction, so no scope store means no walk).
+    if (entity && scope) {
+      const found = await walkParents(
+        scope,
+        `${entity.entityType}:${entity.entityId}`,
+        now,
+        async (ref, chain): Promise<Decision | undefined> => {
+          for (const s of subjects) {
+            const grant = await scope.grant(s.ref, `granted:${permission}`, ref);
+            if (grant && live(grant, now)) {
+              return {
+                allowed: true,
+                proof: [
+                  ...(s.via ? [s.via] : []),
+                  ...chain,
+                  t(grant.subject, grant.relation, grant.object),
+                ],
+              };
+            }
+          }
+          return undefined;
+        },
+      );
+      if (found) return found;
+    }
+
+    return deny;
+  }
+
   return {
     /**
      * The subject's effective permission set at the node, compared against `required`
@@ -187,6 +388,11 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
       // Nothing required is trivially covered — and asking the database would be a walk to
       // prove the empty set is a subset of anything.
       if (required.length === 0) return { covered: true, missing: [] };
+      // A capability holds no node-level authority by construction (#1672) — everything it
+      // carries is narrowed onto one entity — so it covers nothing and can confer nothing.
+      if (subject.kind === 'capability') {
+        return { covered: false, missing: [...new Set(required)] as [PermissionKey, ...PermissionKey[]] };
+      }
 
       const now = reader.now();
       const scope = reader.scopeFor(node);
@@ -222,111 +428,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
       return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing };
     },
 
-    async check(
-      subject: CheckSubject,
-      permission: PermissionKey,
-      node: Node,
-      entity?: EntityRef,
-    ): Promise<Decision> {
-      const now = reader.now();
-      const deny: Decision = { allowed: false, checked: permission, node };
-      const scope = reader.scopeFor(node);
-      const getRole = roleReaderFor(node.tenantId);
-
-      // Rule 4 — membership: the subject set is the caller plus its orgs. Shared with
-      // `covers` (§ `subjectsOf`).
-      const subjects = await subjectsOf(subject, node, now);
-
-      const tuplesFor = async (
-        subjectRefValue: string,
-        prefix: string,
-        scoped: boolean,
-      ): Promise<PermissionTupleRow[]> =>
-        scoped
-          ? scope
-            ? scope.tuples(subjectRefValue, prefix)
-            : []
-          : reader.tenantTuples(node.tenantId, subjectRefValue, prefix);
-
-      for (const nodeObj of nodeObjectsOf(node)) {
-        for (const s of subjects) {
-          // Rule 1 — role expansion.
-          for (const row of await tuplesFor(s.ref, 'role:', nodeObj.scoped)) {
-            if (row.object !== nodeObj.obj || !live(row, now)) continue;
-            const roleKey = row.relation.slice('role:'.length);
-            const role = await getRole(roleKey);
-            if (role?.permissions.includes(permission)) {
-              return {
-                allowed: true,
-                proof: [
-                  ...(s.via ? [s.via] : []),
-                  t(row.subject, row.relation, row.object),
-                  t(`role:${roleKey}`, `granted:${permission}`, nodeObj.obj),
-                ],
-              };
-            }
-          }
-          // Direct grants at the node.
-          for (const row of await tuplesFor(s.ref, `granted:${permission}`, nodeObj.scoped)) {
-            if (
-              row.object === nodeObj.obj &&
-              row.relation === `granted:${permission}` &&
-              live(row, now)
-            ) {
-              return {
-                allowed: true,
-                proof: [...(s.via ? [s.via] : []), t(row.subject, row.relation, row.object)],
-              };
-            }
-          }
-        }
-      }
-
-      // Rule 3 — entity walk along declared parent edges (entity grants are scope-local by
-      // construction, so no scope store means no walk).
-      if (entity && scope) {
-        type Frontier = { ref: string; chain: RelationTuple[] };
-        let frontier: Frontier[] = [{ ref: `${entity.entityType}:${entity.entityId}`, chain: [] }];
-        for (let depth = 0; depth <= ENTITY_WALK_DEPTH && frontier.length > 0; depth++) {
-          // grant lookup at current frontier objects
-          for (const candidate of frontier) {
-            for (const s of subjects) {
-              const grant = await scope.grant(s.ref, `granted:${permission}`, candidate.ref);
-              if (grant && live(grant, now)) {
-                return {
-                  allowed: true,
-                  proof: [
-                    ...(s.via ? [s.via] : []),
-                    ...candidate.chain,
-                    t(grant.subject, grant.relation, grant.object),
-                  ],
-                };
-              }
-            }
-          }
-          // Nothing consults the frontier past the last depth, so expanding it there is a
-          // read per candidate for an answer no one asks for.
-          if (depth === ENTITY_WALK_DEPTH) break;
-          // expand one level of parents
-          const next: Frontier[] = [];
-          for (const candidate of frontier) {
-            for (const p of await scope.parents(candidate.ref)) {
-              // A revoked parent edge stops expanding. Without this the tombstone would work
-              // for grants and membership but silently NOT for entity edges — which is the
-              // case open question 15 is actually about (a facility moving management
-              // company must stop being reachable).
-              if (!live(p, now)) continue;
-              next.push({
-                ref: p.object,
-                chain: [...candidate.chain, t(p.subject, 'parent', p.object)],
-              });
-            }
-          }
-          frontier = next;
-        }
-      }
-
-      return deny;
-    },
+    check,
   };
+
 }
