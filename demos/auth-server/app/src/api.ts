@@ -1,6 +1,9 @@
 import { createAuthClient } from 'better-auth/client';
 import { adminClient } from 'better-auth/client/plugins';
 import { isIssuerState, isSessionOrNull, readIssuerJson } from './wire';
+import { isPlacesAnswer, placesOf, type Place } from './places';
+
+export type { Place } from './places';
 
 /**
  * The Better Auth browser client, pointed at THIS issuer (same origin, `/api/auth`). The
@@ -556,6 +559,18 @@ export function socialErrorFrom(url: URL): string | null {
 export function linkErrorFrom(url: URL): string | null {
   if (!url.searchParams.has('link_error')) return null;
   return refusalText(url, 'the provider was not connected');
+}
+
+/* ---- your places (#1670) ---- */
+
+/**
+ * Where the SIGNED-IN account holds a principal, across every app that signs in at this issuer.
+ * The server takes the account from the session and from nothing this sends, so there is no
+ * parameter to pass — asking about anyone else is not a request this client can even make.
+ */
+export async function myPlaces(): Promise<Place[]> {
+  const res = await fetch('/api/account/places', { credentials: 'same-origin' });
+  return placesOf(await readIssuerJson(res, 'Your places', isPlacesAnswer));
 }
 
 /* ---- the sign-in methods on your own account ---- */

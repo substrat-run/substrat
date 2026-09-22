@@ -35,7 +35,7 @@
  * state provisioning it once did. So is the fourth (#1648): a snooze pausing the resolution
  * target, read and written by the sweep's own schedules on a Durable Object's SQLite.
  */
-import { SELF, env, runInDurableObject } from 'cloudflare:test';
+import { SELF, env, fetchMock, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   principalId,
@@ -518,5 +518,96 @@ describe('ticket0 on workerd — a snooze pauses the resolution target (#1648)',
     const sl = (await conversation(slaDesk, stillLegacy)) as SlaRow;
     expect(sl.state).toBe('snoozed');
     expect(sl.resolution_breached_at).not.toBeNull();
+  });
+});
+
+/**
+ * #1670 on the runtime a hosted desk runs: the platform's reconcile repairs the desk's entries
+ * in a login's PLACES at the identity pool it signs in with. `onProvision` runs on
+ * `/internal/reconcile`, and it sends the WHOLE set of subjects bound in the desk's directory
+ * (the per-tenant `IdentityDO`), so an addition or a removal whose own report was lost is right
+ * again after the next promote. The pool's half — what it keeps of such a report and why no one
+ * else's list can be written — is pinned in `demos/auth-server/test/workerd/reconcile.test.ts`.
+ *
+ * The issuer is `fetchMock`: it answers where to report, and records the report.
+ */
+describe("ticket0 on workerd — a reconcile repairs the desk's places at its identity pool (#1670)", () => {
+  const tenant = tenantId.parse(ulid());
+  const desk = scopeId.parse(ulid());
+  const ISSUER = 'https://auth.places.test';
+  const directory = () => env.AUTH.get(env.AUTH.idFromName(tenant));
+
+  beforeAll(() => {
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+  });
+  afterAll(() => fetchMock.deactivate());
+
+  /** The next report the issuer receives, captured. */
+  function nextReport(): { body: () => unknown } {
+    let captured: unknown;
+    fetchMock
+      .get(ISSUER)
+      .intercept({
+        method: 'POST',
+        path: '/api/places/report',
+        body: (raw: string) => {
+          captured = JSON.parse(raw);
+          return true;
+        },
+      })
+      .reply(204);
+    return { body: () => captured };
+  }
+
+  it('sends the whole set bound in the desk, and a member unbound drops out of the next one', async () => {
+    const install = { tenantId: tenant, scopeId: desk, owner, entitlements };
+    expect((await platform('/internal/provision', install)).status).toBe(201);
+    expect(
+      (
+        await platform('/internal/configure', {
+          tenantId: tenant,
+          scopeId: desk,
+          entries: [
+            {
+              key: 'substrat:auth',
+              value: JSON.stringify({ mode: 'oidc', issuer: ISSUER, clientId: 'desk-client', clientSecret: 'desk-secret' }),
+            },
+          ],
+        })
+      ).status,
+    ).toBe(200);
+
+    // Two bindings, made the two ordinary ways: the owner's first sign-in inside the window,
+    // and an accepted invite.
+    expect(await directory().resolvePrincipal(desk, 'sub-owner')).toBe(owner);
+    const member = principalId.parse(ulid());
+    await directory().createInvite(desk, member, 'agent', null, 'invite-hash');
+    expect(await directory().claimInvite(desk, 'sub-ann', 'invite-hash')).toBe(member);
+
+    fetchMock
+      .get(ISSUER)
+      .intercept({ method: 'GET', path: '/.well-known/substrat-places' })
+      .reply(200, { report_endpoint: `${ISSUER}/api/places/report` });
+    const first = nextReport();
+    const { owner: _owner, ...reconcile } = install;
+    expect((await platform('/internal/reconcile', reconcile)).status).toBe(200);
+    fetchMock.assertNoPendingInterceptors();
+    expect(first.body()).toEqual({
+      client_id: 'desk-client',
+      client_secret: 'desk-secret',
+      scope_id: desk,
+      op: 'replace',
+      subs: ['sub-ann', 'sub-owner'],
+    });
+
+    // Ann is removed from the desk; say that report was lost. The next reconcile repairs it.
+    expect(await directory().unbind(desk, 'sub-ann')).toBe(true);
+    const second = nextReport();
+    expect((await platform('/internal/reconcile', reconcile)).status).toBe(200);
+    fetchMock.assertNoPendingInterceptors();
+    expect(second.body()).toMatchObject({ op: 'replace', subs: ['sub-owner'] });
+
+    expect((await platform('/internal/delete-scope', { scopeId: desk })).status).toBe(200);
   });
 });

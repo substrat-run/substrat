@@ -33,6 +33,8 @@ import { PlatformRelayEmailTransport } from '@substrat-run/adapter-email';
 import { transportFor, senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
 import { isResourcesEntry, parseResourcesEntry, syncPlatformResources } from './resources.js';
+import { isPlacesEntry, parsePlacesEntry, syncPlaceRegistrations } from './places.js';
+import { servePlaces, serveReport } from './places-http.js';
 import type { ConfigEntry, InstanceMeta, IssuerState, SessionSubject } from './do-contract.js';
 
 /**
@@ -297,7 +299,11 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     // source of truth, so the two cannot disagree. Every such entry is parsed before
     // anything is written, so a malformed one refuses the whole delivery.
     const resources = entries.filter((e) => isResourcesEntry(e.key)).map((e) => parseResourcesEntry(e.key, e.value));
-    const config = entries.filter((e) => !isResourcesEntry(e.key));
+    // `substrat:places:<tenant>` is the same kind of entry for a login's places (#1670,
+    // `places.ts`): the platform's registration of which of a team's apps sign in here. Rows
+    // in `place_app`, never a `cfg:` row, and parsed up front for the same reason.
+    const places = entries.filter((e) => isPlacesEntry(e.key)).map((e) => parsePlacesEntry(e.key, e.value));
+    const config = entries.filter((e) => !isResourcesEntry(e.key) && !isPlacesEntry(e.key));
     // ONE transaction for the whole delivery. DO SQLite commits each `exec` on its own
     // unless it is wrapped, so a statement that fails halfway through a multi-host
     // un-registration would leave part of the set removed, and a deleted app has no later
@@ -309,13 +315,22 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         app: delivery.appScopeId,
         ...syncPlatformResources(this.ctx.storage.sql, delivery, now),
       }));
+      const placeResults = places.map((delivery) => ({
+        tenant: delivery.tenantId,
+        ...syncPlaceRegistrations(this.ctx.storage.sql, delivery, now),
+      }));
       if (config.length) putDeliveredConfig(this.ctx.storage.sql, config);
-      return results;
+      return { results, placeResults };
     });
     // Logged only once committed, so a line never describes writes that rolled back.
-    for (const sync of synced) {
+    for (const sync of synced.results) {
       if (sync.added.length || sync.removed.length || sync.operatorOwned.length) {
         console.log('auth-server: platform resources synced', JSON.stringify(sync));
+      }
+    }
+    for (const sync of synced.placeResults) {
+      if (sync.registered.length || sync.updated.length || sync.cleared.length) {
+        console.log('auth-server: place registrations synced', JSON.stringify(sync));
       }
     }
     await this.seedEnvAdmin();
@@ -438,6 +453,21 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         return u ? { sub: u.id, email: u.email ?? null, name: u.name ?? null, role: u.role ?? null } : null;
       });
     if (url.pathname === '/__session') return Response.json(await session(request.headers));
+    // A login's places (#1670, `places.ts`). The read takes its subject from the session and
+    // nothing else; the report is a vertical's, held to the checks `places.ts` describes.
+    if (url.pathname === '/__places' && request.method === 'GET') {
+      return servePlaces(this.ctx.storage.sql, session, request.headers);
+    }
+    if (url.pathname === '/__places/report' && request.method === 'POST') {
+      return serveReport({
+        sql: this.ctx.storage.sql,
+        handler: (r) => auth.handler(r),
+        origin: url.origin,
+        body: await request.json().catch(() => null),
+        transaction: (fn) => this.ctx.storage.transactionSync(fn),
+        log: (line) => console.log(line),
+      });
+    }
     if (url.pathname === '/__client-options') {
       // No `client_id` is the console asking about ITSELF — the one caller with no relying
       // party to name. `clientIdOrConsole` is where that resolution lives, so this route and

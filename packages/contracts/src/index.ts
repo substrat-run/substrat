@@ -51,3 +51,4 @@ export * from './seam.js';
 export * from './signals.js';
 export * from './mcp.js';
 export * from './auth-delivery.js';
+export * from './places.js';

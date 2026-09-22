@@ -235,6 +235,22 @@ for my users to log in" has a stock answer; it stops being special the moment yo
   Documents** (CIMD, under the MCP profile) — the mechanism [MCP clients](/concepts/mcp)
   use: a client identifies itself by an HTTPS URL that *is* its metadata document, so
   nothing is registered, stored or rotated per client until one actually arrives.
+- **Your places.** Every signed-in account, administrator or not, has a **Your account**
+  page on the issuer that lists the apps it is a member of, across every team whose apps
+  sign in here, each with a link into it. No app can answer "where else am I": a login is a
+  different principal in every scope, and no vertical sees another tenant. So the issuer
+  keeps the list, keyed on the `sub` it minted, and shows it only to the account it belongs
+  to. It never names a tenant the account is not in, and it has no parameter through which
+  one account could ask about another. Which apps are places, and under what name and
+  hostname, is the platform's to say: the dashboard registers each app that signs in with a
+  team auth server. The app itself only reports who is bound in its scope, as the client the
+  platform registered for it, and the issuer keeps an addition only for an account it has
+  itself signed in to that app. Removing someone from an app removes the entry, and a
+  platform reconcile sends each app's whole membership, so a report that went missing is
+  repaired. It is not available for external issuers (Supabase, Auth0, AuthHero, any OIDC
+  provider the platform does not host): the list lives with a pool the platform hosts, so an
+  app signing in elsewhere reports nothing and its users have no places page. Apps of
+  another team that sign in at your auth server are not listed yet either.
 
 ### Bearer tokens: whose token it is
 

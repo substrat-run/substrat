@@ -3,29 +3,86 @@ import {
   connectProvider,
   disconnectProvider,
   linkErrorFrom,
+  myPlaces,
   setupState,
   signInMethods,
+  type Place,
   type PublicProvider,
   type SignInMethod,
 } from '../api';
+import { placeHref } from '../places';
 
 /**
  * `/account` — the one screen everybody who can sign into this issuer reaches, administrator
- * or not. For a non-administrator it is the whole console, which is why the nav still renders
+ * or not. It carries the account's places (#1670) and its sign-in methods. For a non-administrator it is the whole console, which is why the nav still renders
  * around it with this single item in it: a person here is not locked out of anything they
  * were meant to see, and a lone card floating on a page said otherwise.
  */
 export function AccountView({ admin }: { admin: boolean }) {
   return (
+    <>
+      <YourPlaces />
+      <section className="panel">
+        <div className="panel-head"><h2>Your sign-in methods</h2></div>
+        {!admin && (
+          <p className="muted">
+            This account does not hold the<code> admin</code> role, so the issuer's own settings
+            are not yours to change — but its sign-in methods are.
+          </p>
+        )}
+        <SignInMethods />
+      </section>
+    </>
+  );
+}
+
+/* ---- your places ---- */
+
+/**
+ * Where this account holds a principal, across every app that signs in at this issuer (#1670),
+ * with a link into each. It is the platform's answer to "where else am I": no app can say it,
+ * because none of them sees another tenant — this issuer keeps the list, and shows it only to
+ * the account it belongs to. An app appears once the platform has registered it here and the
+ * app has seen this account signed in; it disappears when the account is removed from it.
+ */
+export function YourPlaces() {
+  const [places, setPlaces] = useState<Place[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    myPlaces().then(setPlaces, (e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  return (
     <section className="panel">
-      <div className="panel-head"><h2>Your sign-in methods</h2></div>
-      {!admin && (
-        <p className="muted">
-          This account does not hold the<code> admin</code> role, so the issuer's own settings
-          are not yours to change — but its sign-in methods are.
-        </p>
-      )}
-      <SignInMethods />
+      <div className="panel-head"><h2>Your places</h2></div>
+      <p className="muted">
+        Every app you are a member of that signs in with this account. Each is its own space —
+        nothing in one of them can see the others.
+      </p>
+      {err && <p className="error">{err}</p>}
+      {!places && !err ? (
+        <p className="muted">Loading your places…</p>
+      ) : places && places.length === 0 ? (
+        <p className="muted">You are not a member of any app yet.</p>
+      ) : places ? (
+        <table className="grid">
+          <thead>
+            <tr><th>App</th><th>Address</th></tr>
+          </thead>
+          <tbody>
+            {places.map((place) => {
+              const href = placeHref(place);
+              return (
+                <tr key={`${place.tenantId}/${place.scopeId}`}>
+                  <td>{href ? <a href={href} rel="noreferrer">{place.name}</a> : place.name}</td>
+                  <td className="muted">{place.hostname}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      ) : null}
     </section>
   );
 }

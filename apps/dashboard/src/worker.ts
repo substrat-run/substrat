@@ -38,6 +38,7 @@ import { deriveAppOverlays, overlayWindow } from './overlays.js';
 import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
+import { placesReconcile, reconcilePlaces } from './places.js';
 import { deriveOperationHealth } from './operation-health.js';
 import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './connection-sweep.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
@@ -1439,6 +1440,31 @@ app.get('/api/apps', async (c) => {
     c.executionCtx.waitUntil(
       pass.catch((e: unknown) =>
         console.error('dashboard: MCP resource reconcile failed', e instanceof Error ? e.message : String(e)),
+      ),
+    );
+  }
+  // Register the team's apps as PLACES at the team auth-servers they sign in with (#1670,
+  // `places.ts`), so a login's places page on that issuer can list them. Its own gate: once per
+  // isolate per team, again when this first page changed (a fresh install is at its top), and
+  // every few minutes otherwise. After the response, over the unpaged list, like the pass above.
+  const placesPass = placesReconcile.run(node.tenantId, apps, async (sent) => {
+    const all = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+    const slugs = await oidcProviderSlugsFor(host, cp);
+    // `reconcilePlaces` logs a pass that left anything undone itself, skipped apps included.
+    return reconcilePlaces({
+      tenantId: node.tenantId,
+      apps: all,
+      isIssuer: (a) => slugs.has(a.vertical_slug),
+      authOf: async (appScopeId) =>
+        (await dash.invoke('dashboard/get-app-auth', { appScopeId })) as { issuer?: string; clientId?: string } | null,
+      controlPlane: cp,
+      sent,
+    });
+  });
+  if (placesPass) {
+    c.executionCtx.waitUntil(
+      placesPass.catch((e: unknown) =>
+        console.error('dashboard: places reconcile failed', e instanceof Error ? e.message : String(e)),
       ),
     );
   }

@@ -24,6 +24,8 @@ import {
   resolvePrincipal as resolvePrincipalRow,
   mintOwnerClaim as mintOwnerClaimRow,
   claimOwner as claimOwnerRow,
+  unbindSubject as unbindSubjectRow,
+  subjectsOf as subjectsOfRows,
   type OwnerSeat,
 } from './owner-seat.js';
 
@@ -322,6 +324,19 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     return inv.principal;
   }
 
+  /**
+   * Unbind a subject from this scope — the removal half of the directory (#1670). True when a
+   * binding was there. `unbindMember` in `places.ts` pairs it with telling the identity pool.
+   */
+  async unbind(scopeId: string, sub: string): Promise<boolean> {
+    return unbindSubjectRow(this.registrySql, scopeId, sub);
+  }
+
+  /** The subjects bound in this scope, at most `limit` — the whole set a places repair sends. */
+  async subjectsOf(scopeId: string, limit: number): Promise<string[]> {
+    return subjectsOfRows(this.registrySql, scopeId, limit);
+  }
+
   /** A Better Auth instance over THIS DO's SQLite, trusting the caller's origin. */
   private auth(origin: string, cookieDomain?: string | null) {
     const db = drizzle(this.ctx.storage, { schema });
@@ -395,6 +410,8 @@ export type IdentityStub = {
   inviteExists(scopeId: string, tokenHash: string): Promise<boolean>;
   revokeInvite(scopeId: string, principal: string): Promise<void>;
   claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
+  unbind(scopeId: string, sub: string): Promise<boolean>;
+  subjectsOf(scopeId: string, limit: number): Promise<string[]>;
 };
 
 /**

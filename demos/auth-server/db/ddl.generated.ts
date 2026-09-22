@@ -240,4 +240,25 @@ export const SCHEMA_STATEMENTS: string[] = [
   // produce two `started` rows and one answer, and nothing says which of them is still
   // missing — which is the single inference the table exists to support.
   `CREATE INDEX IF NOT EXISTS sign_in_attempt_correlation_idx ON sign_in_attempt (correlation)`,
+  // A login's PLACES (#1670, `src/places.ts`): which apps signing in here are places, and
+  // which `sub` is bound in which. Not Better Auth tables — the pool's own index. `place_app`
+  // is written ONLY by the platform's delivery (`substrat:places:<tenant>`), one row per app
+  // with the client the platform registered for it; `place_member` only by that client's
+  // authenticated reports. An entry is their join, so neither writer supplies the other's half.
+  `CREATE TABLE IF NOT EXISTS place_app (
+    app_scope_id TEXT PRIMARY KEY NOT NULL,
+    tenant_id TEXT NOT NULL,
+    client_id TEXT NOT NULL UNIQUE,
+    hostname TEXT NOT NULL,
+    name TEXT NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
+  // A team's delivery replaces that team's rows and nobody else's.
+  `CREATE INDEX IF NOT EXISTS place_app_tenant_idx ON place_app (tenant_id)`,
+  `CREATE TABLE IF NOT EXISTS place_member (
+    sub TEXT NOT NULL,
+    app_scope_id TEXT NOT NULL,
+    PRIMARY KEY (sub, app_scope_id))`,
+  // The primary key serves the login's own read (`WHERE sub = ?`); this serves an app's
+  // whole-set repair and the drop of an app's entries.
+  `CREATE INDEX IF NOT EXISTS place_member_app_idx ON place_member (app_scope_id)`,
 ];

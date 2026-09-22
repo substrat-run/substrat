@@ -76,8 +76,12 @@ import {
   authorizationServersOf,
   instanceAuthFor,
   mintOwnerClaimLink,
+  observePlace,
+  placesReporter,
+  reportScopeMembers,
   sha256Hex,
   type AuthProvider,
+  type InstanceAuth,
 } from '@substrat-run/vertical-auth';
 import { API_DOCUMENT } from './api.js';
 import { T0_PERM, TICKET0_ENV, ticket0Manifest } from './manifest.js';
@@ -427,7 +431,11 @@ async function serviceStub(
  * ⇒ fail closed. The app never learns which; it only ever holds an `AuthProvider`.
  */
 async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
-  const instance = await instanceConfig(env, nodeFor(req, env));
+  return providerOf(await instanceConfig(env, nodeFor(req, env)));
+}
+
+/** The provider an instance's configuration selects, with its refusal as an HTTP status. */
+function providerOf(instance: InstanceAuth): AuthProvider {
   try {
     return instance.provider();
   } catch (err) {
@@ -508,10 +516,21 @@ app.get('/api/me', async (c) => {
   // one for the display name — and building a provider reads the delivered config, so
   // the cost of the convenience is a whole extra identity-DO round trip on the request
   // every screen makes first.
-  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
+  const instance = await instanceConfig(c.env, node);
+  const subject = await providerOf(instance).resolve(c.req.raw.headers);
   const principal = subject
     ? await identityDo(c.env, node).resolvePrincipal(node.scopeId, subject.sub)
     : null;
+  // Tell the identity pool what this resolve established (#1670), after the response: a
+  // login's places list, on the issuer's own origin, shows this desk while the login is bound
+  // here and stops once it is not. Every screen asks `/api/me` first, so this is the one line
+  // that catches every way a binding is made — the owner's first sign-in, a claim link, an
+  // accepted invite. Once per login per isolate, and it never throws.
+  if (subject) {
+    c.executionCtx.waitUntil(
+      observePlace(placesReporter({ identity: instance.identity }), node.scopeId, subject.sub, principal),
+    );
+  }
   if (!principal) {
     // An unclaimed seat says HOW it can be claimed (#925): by signing in, while the
     // first-sign-in window is open; by a claim link from the dashboard once it has closed.
@@ -1119,6 +1138,12 @@ mountPlatformSurface<Env>(app, {
     // and that is how a desk provisioned before the sweeper existed joins: #1172's
     // reconcile after a push, or "Re-run provisioning" in the console.
     await sweeper(env).noteScope(b.tenantId, b.scopeId);
+    // The places repair (#1670): the WHOLE set bound in this desk, sent to the identity pool
+    // it signs in at, so an entry a lost report left wrong — an addition or a removal — is
+    // right again after every reconcile. A no-op before the desk has an issuer, and for an
+    // issuer that keeps no index. It never throws.
+    const identity = (await instanceConfig(env, node)).identity;
+    await reportScopeMembers(identityDo(env, node), placesReporter({ identity }), b.scopeId);
   },
   onDeleteScope: async (env, s) => {
     // A reaped desk's alarm must never wake it again.
