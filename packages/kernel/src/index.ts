@@ -124,6 +124,7 @@ export {
   capabilityRecordOf,
   capabilityTokenHash,
   carriesSecret,
+  checkBecomeInput,
   createCapabilityVerbs,
   exchangeCapability,
   guardSecrets,

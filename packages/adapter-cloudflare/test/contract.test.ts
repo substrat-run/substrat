@@ -21,6 +21,7 @@ import {
 import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
+  capabilityContractSuite,
   impersonationContractSuite,
   billedMod,
   connectorTestFetch,
@@ -94,6 +95,22 @@ atomicContractSuite('adapter-cloudflare', async () => {
 // test that proves it (a session against a principal who holds nothing) pass for
 // the wrong reason.
 impersonationContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #1672: capabilities, on the DO path — the ScopeDO's own SQLite holds the capability row,
+// resolves the session inside its queue, and runs the kernel's checker branch; the
+// coordinator hashes the session token and refuses a success the DO did not acknowledge.
+// The DEFAULT tuple checker, for the impersonation suite's reason. `capMod` is in
+// `contractTestModules`, so the ScopeDO carries it at code time. The expiry TRANSITIONS are
+// asserted on the pure host only (the DO takes no clock, #956) — both hosts call one
+// `capabilityLive` predicate, which the kernel's evaluator tests pin directly.
+capabilityContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

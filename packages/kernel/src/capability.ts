@@ -714,12 +714,13 @@ export const plausibleSessionToken = (token: unknown): token is string =>
  * `becomeCapabilityInput`). No spine event: a platform actor's act is the admin log's to
  * record, and the adapter records it there.
  */
-export async function mintBecomeCapability(
-  sql: ScopedSql,
-  raw: BecomeCapabilityInput,
-  actor: PlatformActorId,
-  now: Instant,
-): Promise<MintedCapability> {
+/**
+ * A platform mint's input, parsed and held to its one rule beyond the shape: an expiry in
+ * the future. Its own function so a host whose storage sits across an RPC boundary can run
+ * it on the near side, where a typed refusal still reaches the caller as one — the same
+ * check `mintBecomeCapability` makes, not a second copy of it.
+ */
+export function checkBecomeInput(raw: BecomeCapabilityInput, now: Instant): BecomeCapabilityInput {
   const input = becomeCapabilityInput.parse(raw);
   if (input.expiresAt <= now) {
     throw substratError(
@@ -727,6 +728,16 @@ export async function mintBecomeCapability(
       `mintCapability: expiresAt ${input.expiresAt} is not in the future`,
     );
   }
+  return input;
+}
+
+export async function mintBecomeCapability(
+  sql: ScopedSql,
+  raw: BecomeCapabilityInput,
+  actor: PlatformActorId,
+  now: Instant,
+): Promise<MintedCapability> {
+  const input = checkBecomeInput(raw, now);
   const id = capabilityIdSchema.parse(ulid());
   const secret = mintCapabilitySecret();
   const author: CapabilityAuthor = { platform: actor };

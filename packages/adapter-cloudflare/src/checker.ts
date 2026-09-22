@@ -1,6 +1,8 @@
 import type { EntitlementView, RoleDefinition } from '@substrat-run/contracts';
 import {
+  capabilityByIdQuery,
   createTupleEvaluator,
+  type CapabilityRow,
   type PermissionChecker,
   type PermissionTupleReader,
   type PermissionTupleRow,
@@ -141,6 +143,12 @@ const scopeReader = (sql: SqlStorage): ScopeTupleReader => ({
         object,
       )
       .toArray() as unknown as TupleRow[],
+  // #1672: a capability subject is resolved against its own directory row, which lives in
+  // this ScopeDO's spine beside the entities it reaches — read synchronously, like the rest.
+  capability: (id) => {
+    const q = capabilityByIdQuery(id);
+    return sql.exec(q.sql, ...q.params).toArray()[0] as unknown as CapabilityRow | undefined;
+  },
 });
 
 export function createDoTupleChecker(deps: DoCheckerDeps): PermissionChecker {

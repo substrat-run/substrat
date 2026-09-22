@@ -29,3 +29,19 @@ export function doScopedSql(sql: SqlStorage): ScopedSql {
     },
   });
 }
+
+/**
+ * The kernel's OWN spine access (#1672) — `doScopedSql` without `guardSpine`, because these
+ * are the kernel's writes to `_substrat_capabilities`, which module code may never make.
+ * Never handed to module code.
+ */
+export function doSpineSql(sql: SqlStorage): ScopedSql {
+  return {
+    query: <T = Record<string, SqlValue>>(q: string, params: readonly SqlValue[] = []): T[] =>
+      sql.exec(q, ...(params as SqlValue[])).toArray() as T[],
+    exec: (q: string, params: readonly SqlValue[] = []) => {
+      const cursor = sql.exec(q, ...(params as SqlValue[]));
+      return { changes: cursor.rowsWritten };
+    },
+  };
+}
