@@ -38,6 +38,7 @@
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@substrat-run/contract-tests": "workspace:^",
+    "@substrat-run/control-plane-api": "workspace:^",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"
