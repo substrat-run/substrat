@@ -1125,7 +1125,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
  */
 function aeDataset(dataset: string): string {
   if (!/^[A-Za-z0-9_]{1,64}$/.test(dataset)) {
-    throw new Error('observability: refusing a router dataset name that is not a bare identifier');
+    // Shared by the router's dataset and the connector-call dataset (#1691), so it names
+    // neither setting — the value it refused says which one is wrong.
+    throw new Error(
+      `observability: refusing an Analytics Engine dataset name that is not a bare identifier: ${JSON.stringify(dataset)}`,
+    );
   }
   return dataset;
 }

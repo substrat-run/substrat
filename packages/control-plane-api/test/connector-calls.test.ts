@@ -70,6 +70,15 @@ describe('cf observability connectorCallsSeries (#1691)', () => {
     expect(sql).toContain(`INTERVAL '60' MINUTE`);
   });
 
+  it('a malformed dataset name is refused naming the value, not "the router" (CodeRabbit on #1708)', async () => {
+    const asked = stubSql([]);
+    const reader = createCfObservabilityReader({ accountId: 'a', apiToken: 't', connectorCallsDataset: 'bad-name!' });
+    const refused = reader.connectorCallsSeries!({ hours: 24 });
+    await expect(refused).rejects.toThrow(/Analytics Engine dataset name .*"bad-name!"/);
+    await expect(refused).rejects.not.toThrow(/router/);
+    expect(asked).toHaveLength(0); // refused before any query is sent
+  });
+
   it('splits each bucket into segments that sum to its calls', async () => {
     stubSql([
       {

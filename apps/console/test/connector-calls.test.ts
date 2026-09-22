@@ -24,15 +24,27 @@ const bucket = (provider: string, start: string, over: Partial<ConnectorCallsBuc
 });
 
 describe('connectorCallsSeries (#1691)', () => {
-  it('zero-fills the whole window, ending with the bucket now falls in', () => {
+  it('zero-fills the whole window, from the bucket now − hours falls in through the one now falls in', () => {
     const [s] = connectorCallsSeries([bucket('scrive', '2026-09-22T10:00:00Z')], 24, NOW);
-    expect(s!.cells).toHaveLength(24);
+    // 12:34 minus 24h is 12:34 yesterday, inside yesterday's 12:00 bucket: 25 hourly cells.
+    expect(s!.cells).toHaveLength(25);
     expect(s!.cells.at(-1)!.start).toBe('2026-09-22T12:00:00.000Z');
-    expect(s!.cells[0]!.start).toBe(new Date(Date.parse('2026-09-22T12:00:00Z') - 23 * HOUR).toISOString());
+    expect(s!.cells[0]!.start).toBe(new Date(Date.parse('2026-09-22T12:00:00Z') - 24 * HOUR).toISOString());
     // The silent hours around the one busy hour are drawn as zeros, not joined over.
     const busy = s!.cells.findIndex((c) => c.calls > 0);
     expect(s!.cells[busy]!.start).toBe('2026-09-22T10:00:00.000Z');
-    expect(s!.cells.filter((c) => c.calls === 0)).toHaveLength(23);
+    expect(s!.cells.filter((c) => c.calls === 0)).toHaveLength(24);
+  });
+
+  it('keeps the calls in the leading partial bucket — the read returns them, so the grid must hold them', () => {
+    const [s] = connectorCallsSeries([bucket('scrive', '2026-09-21T12:00:00Z', { calls: 7, ok: 7 })], 24, NOW);
+    expect(s!.cells[0]).toMatchObject({ start: '2026-09-21T12:00:00.000Z', calls: 7 });
+    expect(s!.totals.calls).toBe(7);
+  });
+
+  it('a now on a bucket boundary still spans both edge buckets', () => {
+    const [s] = connectorCallsSeries([bucket('scrive', '2026-09-22T10:00:00Z')], 24, Date.parse('2026-09-22T12:00:00Z'));
+    expect(s!.cells).toHaveLength(25); // [12:00 yesterday, 12:00 today] — both edges touched
   });
 
   it('colours each bucket so green + yellow + red is its calls — timeouts and throws are red', () => {

@@ -28,7 +28,8 @@ export const bucketMinutesFor = (hours: number): number => (hours <= 6 ? 15 : 60
  *
  * The server omits an empty bucket; a chart that drew only what arrived would join two
  * busy hours across a silent one and hide the outage between them. So every provider
- * gets every bucket of the window, ending with the one `now` falls in, and a provider is
+ * gets every bucket the window touches — from the one `now − hours` falls in through the
+ * one `now` falls in — and a provider is
  * listed when it has any call at all. Sorted by red count, worst first, so the provider
  * a reader came for is at the top.
  */
@@ -38,9 +39,12 @@ export function connectorCallsSeries(
   now: number,
 ): ConnectorCallsSeries[] {
   const width = (buckets[0]?.bucketMinutes ?? bucketMinutesFor(hours)) * 60_000;
-  const count = Math.max(1, Math.ceil((hours * 60 * 60_000) / width));
+  // The read's window is `timestamp > now − hours`, so its oldest instant falls INSIDE a
+  // bucket whenever `now` does — and that leading partial bucket holds real calls. The
+  // grid runs from the bucket containing `now − hours` through the one containing `now`.
+  const first = Math.floor((now - hours * 3_600_000) / width) * width;
   const last = Math.floor(now / width) * width;
-  const grid = Array.from({ length: count }, (_, i) => last - (count - 1 - i) * width);
+  const grid = Array.from({ length: (last - first) / width + 1 }, (_, i) => first + i * width);
 
   const byProvider = new Map<string, Map<number, ConnectorCallsBucket>>();
   for (const b of buckets) {
