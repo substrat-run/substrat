@@ -1151,6 +1151,95 @@ export function eventsExportedBy(
  * narrower is not a conflict. (Two *modules* claiming one entity type IS refused;
  * that check belongs to the kernel, which is the only thing that sees them all.)
  */
+/**
+ * The `peers` a module declares, derived from the operations each peer may invoke (#1706).
+ *
+ * A `peers` entry has two halves that must agree: the operations a calling vertical is
+ * allowlisted for, and the permission keys it holds while doing so. Written by hand they
+ * drift, and drift is silent in the worst direction — a peer allowlisted for an operation
+ * whose key it was not given is refused at that operation every time, and the refusal looks
+ * like the door working rather than like the declaration being wrong. So the keys are READ
+ * off the operations, by the same rule `permissionsUsedBy` reads this module's own surface.
+ *
+ * ```ts
+ * ...peersDeclaredBy(crmOperations, {
+ *   'acme/board-room': ['customer/list', 'customer/get'],
+ *   // Receive-only (#1705): no operation, so the keys are named — a delivery meets no
+ *   // allowlist, and there is nothing to derive them from.
+ *   'acme/ledger': { permissions: ['customer:read'] },
+ * })
+ * ```
+ *
+ * The operation names are `keyof Ops`, so naming one this module does not declare is a
+ * compile error — and a runtime one too, because a cast can dodge the compiler and the
+ * artifact of record must not carry a peer pointed at nothing.
+ */
+export function peersDeclaredBy<const Ops extends Record<string, object>>(
+  operations: Ops,
+  peers: Readonly<
+    Record<
+      string,
+      | readonly (keyof Ops & string)[]
+      | {
+          readonly operations?: readonly (keyof Ops & string)[];
+          /**
+           * The keys this peer holds, when they are not the ones its operations check —
+           * required for a receive-only peer, which has no operations to read them from.
+           *
+           * Naming them does not widen: a key one of its own allowlisted operations checks
+           * may not be left out, because the peer would then be allowlisted for a call it is
+           * always refused at.
+           */
+          readonly permissions?: readonly string[];
+        }
+    >
+  >,
+): { peers: { vertical: string; operations: string[]; permissions: string[] }[] } {
+  const declared = Object.keys(operations);
+  const out = Object.keys(peers)
+    .sort()
+    .map((vertical) => {
+      const spec = peers[vertical]! as
+        | readonly string[]
+        | { readonly operations?: readonly string[]; readonly permissions?: readonly string[] };
+      const isList = Array.isArray(spec);
+      const named: readonly string[] = isList ? spec : ((spec as { operations?: readonly string[] }).operations ?? []);
+      const explicit = isList ? undefined : (spec as { permissions?: readonly string[] }).permissions;
+      const unknown = named.filter((op) => !declared.includes(op));
+      if (unknown.length > 0) {
+        throw new Error(
+          `peersDeclaredBy: peer '${vertical}' names operation(s) ${unknown.join(', ')}, which this ` +
+            'module does not declare — a peer allowlisted for an operation that does not exist can only ever be refused',
+        );
+      }
+      const needed = permissionsUsedBy(
+        Object.fromEntries(named.map((op) => [op, operations[op] as object])) as Record<string, object>,
+      );
+      if (explicit === undefined && named.length === 0) {
+        throw new Error(
+          `peersDeclaredBy: peer '${vertical}' names no operation and no permissions — a receive-only ` +
+            'peer (#1705) states the keys it holds, since there is nothing to derive them from',
+        );
+      }
+      const permissions = explicit === undefined ? needed : [...new Set(explicit)].sort();
+      const missing = needed.filter((key) => !permissions.includes(key));
+      if (missing.length > 0) {
+        throw new Error(
+          `peersDeclaredBy: peer '${vertical}' is allowlisted for operations checking ${missing.join(', ')}, ` +
+            'but is not given those keys — it would be refused at its own allowlisted calls',
+        );
+      }
+      if (permissions.length === 0) {
+        throw new Error(
+          `peersDeclaredBy: peer '${vertical}' would hold no permission — its operations check none, so ` +
+            'state the keys it needs, or do not declare it',
+        );
+      }
+      return { vertical, operations: [...named].sort(), permissions };
+    });
+  return { peers: out };
+}
+
 export function listsDeclaredBy(
   operations: Readonly<Record<string, object>>,
   entities: Record<string, EntityDef>,
