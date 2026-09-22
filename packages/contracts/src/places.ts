@@ -83,13 +83,6 @@ export const place = z
 
 export type Place = z.infer<typeof place>;
 
-/** The deep link for a place: `https://<hostname>/`, or `http:` for a loopback dev host. */
-export function placeUrl(entry: Pick<Place, 'hostname'>): string {
-  const host = entry.hostname.replace(/:\d+$/, '');
-  const loopback = host === 'localhost' || host === '127.0.0.1' || host.endsWith('.localhost');
-  return `${loopback ? 'http' : 'https'}://${entry.hostname}/`;
-}
-
 /**
  * Where an issuer says it keeps a places index: `${issuer}${PLACES_DISCOVERY_PATH}`. A
  * vertical reports only to an issuer that answers it, so an external issuer (Supabase,

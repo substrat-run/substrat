@@ -31,6 +31,7 @@ import { clientBranding } from './branding.js';
 import { CONSOLE_CLIENT_ID, clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
 import { signInLoggerFor } from './sign-in-log.js';
+import { placesOf } from './places.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
 
 /**
@@ -249,6 +250,16 @@ const sessionOf = async (headers: Headers): Promise<SessionSubject | null> => {
 };
 
 app.get('/api/session', async (c) => c.json(await sessionOf(c.req.raw.headers)));
+
+// The signed-in login's places (#1670) — the same `placesOf` the worker's DO answers with,
+// the subject taken from the session and from nothing else. Nothing in dev registers a place
+// (no platform delivers here), so this answers an empty list; it exists so `/account` renders.
+app.get('/api/account/places', async (c) => {
+  const subject = await sessionOf(c.req.raw.headers);
+  c.header('cache-control', 'no-store');
+  if (!subject) return c.json({ error: 'sign in to see your places' }, 401);
+  return c.json({ places: placesOf(sql, subject.sub) });
+});
 
 // The per-client read behind the login/consent screens — the theme (`src/branding.ts`) and
 // the sign-in methods this client accepts (`src/sign-in-policy.ts`). The same shared reads
