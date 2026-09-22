@@ -96,7 +96,7 @@ import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
-import { oidcCallbackUrl, retireAllPreviewClients, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
+import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
@@ -5687,7 +5687,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A fork's own sign-in clients go FIRST (#1704): a failure here leaves the preview in
     // place, so the retry a PR-close job makes still finds it — after the row is gone, nothing
     // would name those clients again. A clean room never had one.
-    if (preview.forkedFrom) await retireAllPreviewClients(previewAuthDeps(c), preview.tenantId, preview.id);
+    await retireClientsOfReapedScope(previewAuthDeps(c), preview);
     const vertical = await verticalForScope(c, preview);
     if (vertical) await vertical.deleteScope({ scopeId: preview.id });
     await options.host.deleteSnapshot(c.get('actor'), preview.tenantId, preview.id);

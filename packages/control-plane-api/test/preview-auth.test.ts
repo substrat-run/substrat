@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid } from '@substrat-run/kernel';
+import { runPlatformSweep, ulid } from '@substrat-run/kernel';
 import {
   PREVIEW_CLIENT_PATH,
   SHARED_ISSUER_CONFIG_KEY,
@@ -21,6 +21,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
+  retireClientsOfReapedScope,
   firstBuilderAuth,
   mintPushToken,
   pushActorFor,
@@ -414,6 +415,31 @@ describe('the reap deletes the preview’s client (#1704)', () => {
     expect(retried.status).toBe(200);
     expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
     expect(await host.admin.getScopeRecord(staff, tenant, out.scopeId)).toBeUndefined();
+  });
+});
+
+describe('the expiry sweep retires an expired preview’s client too (#1704)', () => {
+  it('as apps/control-plane composes it: the preview’s client goes with it, a snapshot is left alone', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1], ttlHours: 1 });
+    await host.admin.setScopeExpiresAt(staff, tenant, out.scopeId, new Date(Date.now() - 1000).toISOString());
+    const issuerClient = new VerticalClient({ fetch: issuers.fetch, platformSecret: 'test' });
+    const deps = { admin: host.admin, actor: staff, issuerClient: async () => issuerClient };
+    const report = await runPlatformSweep(host, {
+      actor: staff,
+      drainRetries: false,
+      deleteSnapshotFn: async (t, s) => {
+        await retireClientsOfReapedScope(deps, await host.admin.getScopeRecord(staff, t, s));
+        await host.deleteSnapshot(staff, t, s);
+      },
+    });
+    expect(report.snapshotsReaped).toBeGreaterThanOrEqual(1);
+    expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.instances.get(issuerScope)!.clients.has(PROD_CLIENT)).toBe(true);
+    // Anything that is not a preview fork has no client to retire, and is never asked about.
+    const before = issuers.calls.length;
+    expect(await retireClientsOfReapedScope(deps, (await host.admin.getScopeRecord(staff, tenant, prod))!)).toEqual([]);
+    expect(await retireClientsOfReapedScope(deps, undefined)).toEqual([]);
+    expect(issuers.calls.length).toBe(before);
   });
 });
 

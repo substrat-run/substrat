@@ -318,3 +318,13 @@ export async function retireAllPreviewClients(
   }
   return deleted;
 }
+
+/**
+ * The reap's half for ANY scope about to go, as the platform sweep's expiry GC sees it: a
+ * preview fork's clients are retired, and anything else — a snapshot, a clean room — has none
+ * and is left alone. One predicate for the interactive reap and the sweep, so they agree.
+ */
+export async function retireClientsOfReapedScope(deps: PreviewAuthDeps, scope: Scope | undefined): Promise<string[]> {
+  if (!scope || scope.kind !== 'preview' || !scope.forkedFrom) return [];
+  return retireAllPreviewClients(deps, scope.tenantId, scope.id);
+}
