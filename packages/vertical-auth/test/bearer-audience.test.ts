@@ -176,7 +176,8 @@ describe('the marker, as a vertical receives it (instanceAuthFor)', () => {
   });
 
   it("absent or cleared (''), the bearer path is unchanged", async () => {
-    for (const config of [{ [AUTH_CONFIG_KEY]: choice }, { [AUTH_CONFIG_KEY]: choice, [SHARED_ISSUER_CONFIG_KEY]: '' }]) {
+    const configs: Array<Record<string, string>> = [{ [AUTH_CONFIG_KEY]: choice }, { [AUTH_CONFIG_KEY]: choice, [SHARED_ISSUER_CONFIG_KEY]: '' }];
+    for (const config of configs) {
       const p = await providerFor(config);
       expect((await p.resolve(bearer(await token({ aud: 'desk-b' })), `${APP_A}/api/x`))?.sub).toBe('user-1');
     }
