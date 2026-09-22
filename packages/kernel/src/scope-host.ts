@@ -1,4 +1,10 @@
 import type {
+  ExportReadInput,
+  ExportedBatch,
+  ImportBatch,
+  ImportedEvent,
+  ImportResult,
+  ImportState,
   AdminAction,
   BecomeCapabilityInput,
   CapabilityExchange,
@@ -728,6 +734,22 @@ export type MigrateScopeOutcome =
 export type ConsumerHandler = (ctx: OperationContext, event: DomainEvent) => void | Promise<void>;
 
 /**
+ * A handler for an event ANOTHER vertical of the same tenant exported (#1705). It is registered
+ * under `ModuleRegistration.imports`, keyed by the producing vertical's slug and the event type,
+ * and declared in the manifest as `events.consumes: [{ from, type, schemaVersion }]`.
+ *
+ * It runs in this scope's own transaction, one per (event, module), with its delivery journal
+ * row, exactly as a consumer does. So a delivery is at-least-once across the edge and its
+ * effect happens once. The event is the crossed fact (`ImportedEvent`): the payload and the
+ * entity, never the producer's actor or authorization record. `event.source` says which
+ * vertical and scope it came from. That is data, never authority.
+ *
+ * Parse the payload with your OWN schema. The producer's types are another team's deployed
+ * code, and the version you declared is the only one you will be handed.
+ */
+export type ImportHandler = (ctx: OperationContext, event: ImportedEvent) => void | Promise<void>;
+
+/**
  * An **executor**: out-of-band host code that effects, outside a scope, what a module
  * asked for inside one (K-22 §4.2; D-18's triage rule — effects on the outside world
  * are connectors).
@@ -1397,6 +1419,16 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    * half-handled completion group. See `EventContract` (#696).
    */
   consumers?: ConsumersOf<C>;
+  /**
+   * Handlers for events other verticals export (#1705): producer slug → event type → handler.
+   * Each (slug, type) must be declared in `manifest.events.consumes` WITH `from: slug`.
+   *
+   * A separate map from `consumers` on purpose. A type can arrive both ways, for example two
+   * verticals composing the same engine, and the two are different deliveries with different
+   * authority. The separation is also what keeps a host that predates #1705 safe: it never
+   * reads this map, so it cannot wire an import in as a local consumer of the same type name.
+   */
+  imports?: Record<string, Record<string, ImportHandler>>;
   /**
    * Named guard predicates this module contributes to the host — the code half
    * of `manifest.guards`. Names are module-namespaced like operations
@@ -2229,6 +2261,41 @@ export interface HostAdmin {
     scopeId: ScopeId,
     eventIds: readonly string[],
   ): Promise<number>;
+
+  /**
+   * The PRODUCER half of a cross-vertical edge (#1705): the events of the types `input.wants`
+   * after `input.after` that this scope releases to `input.consumer`, oldest first.
+   *
+   * Everything that decides what leaves is decided HERE, by the code running this scope,
+   * never by the caller:
+   *
+   * - a type this scope's modules do not `export` is not read at all. It is reported in
+   *   `unexported`, and asking for it releases nothing;
+   * - the consumer's principal (`vertical:<consumer>`) must hold every read key the request
+   *   touches, AT this scope. If one is missing the edge is `paused`: nothing is walked, and
+   *   `next` stays `after`, so the backlog waits in this outbox and nothing is lost to the
+   *   gap. That is #1666's rule ("restore is the lever") applied to a kill switch on the peer;
+   * - a row classified other than `none`, at another version than the one wanted, past the hop
+   *   cap, or undecodable is WITHHELD. It is named without its payload, and the watermark steps
+   *   past it, because each of those facts is permanent.
+   *
+   * Reads the COMMITTED outbox (#1624). An in-flight operation's event must not reach another
+   * vertical before it exists. Access-logged like `readUndrainedEvents`: a platform read of
+   * domain data on its way out of the scope.
+   */
+  readExportedEvents(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: ExportReadInput,
+  ): Promise<ExportedBatch>;
+
+  /**
+   * The CONSUMER half's first question (#1705): what this scope's running code imports, and
+   * how far it has read each producer. Both come from the scope rather than the registry,
+   * because the version serving it is the one whose handlers will run.
+   */
+  importState(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<ImportState>;
 
   /**
    * Clear `drained_at` on events stamped BEFORE `drainedBefore`, so the drain ships them
@@ -3968,6 +4035,32 @@ export interface ScopeHost {
    * so the type holds, but it is **not a person**.
    */
   getSystemScope(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeStub>;
+
+  /**
+   * The CONSUMER half of a cross-vertical edge (#1705): hand this scope a batch another
+   * vertical exported, read by `HostAdmin.readExportedEvents` in the producer's scope.
+   *
+   * Platform-called, never module- or HTTP-reachable. `batch.source` is the producer as the
+   * platform resolved it from its directory. Nothing a vertical sent decides it.
+   *
+   * - **Applied under a compare-and-set** on this scope's watermark for the source. If it is
+   *   not `batch.after`, nothing runs and the answer is `stale`. An overlapping pass cannot
+   *   move the watermark backwards.
+   * - **Each (event, module) runs in its own transaction with its journal row**, the in-scope
+   *   consumer's shape, so a redelivered event finds its row and does not run twice. A
+   *   handler that throws is dead-lettered, and the events behind it are still delivered.
+   * - **Withheld events are journaled as dead letters** for each module that imports the type,
+   *   with the producer's reason and no payload. What was sent and not delivered is visible
+   *   where this scope's operator already looks.
+   * - The watermark moves to `batch.next` LAST, in this scope's own store. A crash before that
+   *   redelivers the batch, and the journal absorbs it.
+   *
+   * After the batch, the scope's ordinary dispatch runs in the same tail, so what the
+   * handlers emitted reaches this scope's consumers under the usual cascade cap. Their emits
+   * carry `caused_by` = the producer's event id, which `_substrat_imports` resolves to the
+   * source.
+   */
+  deliverToPeer(tenantId: TenantId, scopeId: ScopeId, batch: ImportBatch): Promise<ImportResult>;
 
   /**
    * Trade a capability's SECRET for what it grants (#1672) — one counted use.

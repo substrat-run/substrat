@@ -376,10 +376,43 @@ export type EntityGrantShape = z.infer<typeof entityGrantShape>;
  * Deliberately NOT the runtime grant table: minted capability grants are scope-local tuples
  * (control-plane.md §4.5), reachable only through the admin-query RPC, never mirrored here.
  */
+/**
+ * One event type this vertical releases to other verticals of the tenant (#1705), and the
+ * key a receiving vertical must hold for it. A row here is a flow OUT of the vertical, so
+ * it belongs in the same artifact as the keys that gate it.
+ */
+export const permissionRegistryExport = z.object({
+  type: eventType,
+  schemaVersion: z.number().int().positive(),
+  readPermission: permissionKey,
+  declaredBy: z.array(moduleId).min(1),
+});
+export type PermissionRegistryExport = z.infer<typeof permissionRegistryExport>;
+
+/**
+ * One event type this vertical receives from another vertical (#1705) — the flow IN.
+ * `from` is the producing vertical's registry slug.
+ */
+export const permissionRegistryImport = z.object({
+  from: verticalSlug,
+  type: eventType,
+  schemaVersion: z.number().int().positive(),
+  declaredBy: z.array(moduleId).min(1),
+});
+export type PermissionRegistryImport = z.infer<typeof permissionRegistryImport>;
+
 export const permissionRegistry = z.object({
   permissions: z.array(permissionRegistryEntry),
   roles: z.array(roleDefinition),
   entityGrants: z.array(entityGrantShape).default([]),
+  // #1705: the cross-vertical event edges, in and out. OPTIONAL, and omitted rather than
+  // emptied when a vertical declares none. The registry is hashed into `digests.permission`,
+  // so a defaulted `[]` would change every existing vertical's digest on its next push,
+  // and each promote would then ask a human to acknowledge a change that did not happen.
+  // Present, they move the digest, which is the point: widening what leaves a vertical,
+  // or what enters it, cannot be promoted unacknowledged.
+  exports: z.array(permissionRegistryExport).optional(),
+  imports: z.array(permissionRegistryImport).optional(),
 });
 export type PermissionRegistry = z.infer<typeof permissionRegistry>;
 
@@ -527,7 +560,36 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
     .sort((a, b) => cmp(a.entityType, b.entityType))
     .map((g) => ({ entityType: g.entityType, permissions: sortKeys(g.permissions) }));
 
-  return { permissions, roles, entityGrants };
+  // #1705: the edges. Keyed so two modules declaring the same flow collapse into one row
+  // with both named. A flow is one fact however many modules state it. The version and
+  // key are taken from the FIRST declaration; `registerModule` refuses a host where two
+  // modules disagree about them, so a disagreement never reaches a push.
+  const exportRows = new Map<string, PermissionRegistryExport>();
+  const importRows = new Map<string, PermissionRegistryImport>();
+  for (const m of input.modules) {
+    for (const e of m.manifest.events.exports ?? []) {
+      const row = exportRows.get(e.type);
+      if (row) row.declaredBy = [...new Set([...row.declaredBy, m.manifest.id])].sort(cmp);
+      else exportRows.set(e.type, { ...e, declaredBy: [m.manifest.id] });
+    }
+    for (const c of m.manifest.events.consumes) {
+      if (c.from === undefined) continue;
+      const key = `${c.from}\u0000${c.type}`;
+      const row = importRows.get(key);
+      if (row) row.declaredBy = [...new Set([...row.declaredBy, m.manifest.id])].sort(cmp);
+      else importRows.set(key, { from: c.from, type: c.type, schemaVersion: c.schemaVersion, declaredBy: [m.manifest.id] });
+    }
+  }
+  const exports = [...exportRows.values()].sort((a, b) => cmp(a.type, b.type));
+  const imports = [...importRows.values()].sort((a, b) => cmp(a.from, b.from) || cmp(a.type, b.type));
+
+  return {
+    permissions,
+    roles,
+    entityGrants,
+    ...(exports.length ? { exports } : {}),
+    ...(imports.length ? { imports } : {}),
+  };
 }
 
 /**

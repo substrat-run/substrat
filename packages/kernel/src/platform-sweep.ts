@@ -10,6 +10,14 @@ import type {
   TenantId,
   DrainedEvent,
 } from '@substrat-run/contracts';
+import type {
+  ExportReadInput,
+  ExportedBatch,
+  ImportBatch,
+  ImportResult,
+  ImportState,
+  WantedEvent,
+} from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, ScopeHost, SweepRunInput } from './scope-host.js';
 import { backoffAt } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
@@ -231,6 +239,17 @@ export interface PlatformSweepOptions {
   eventSink?: EventSink;
   /** Events drained per scope per pass. Default 200. */
   eventDrainBatch?: number;
+  /**
+   * Deliver cross-vertical events (#1705). For every active primary scope whose running code
+   * imports from another vertical, resolve that vertical's instance in the SAME tenant, read
+   * its outbox after the watermark the consumer holds, and hand the batch to the consumer.
+   *
+   * UNSET skips the phase, and opting in is deliberate. On the shared control plane this host's
+   * own namespace is the module-less placeholder, so the default reach would construct an empty
+   * DO per active scope per tick and report a fleet with no edges. The control plane opts in
+   * with a reach over `/internal`. A self-host, whose host IS the deployment, opts in with `{}`.
+   */
+  crossVertical?: CrossVerticalOptions;
   /** Rows shipped (and pruned) per pass. Default 500. */
   accessLogBatch?: number;
   /**
@@ -562,6 +581,8 @@ export interface PlatformSweepReport {
   accessLog: AccessLogSweepReport | null;
   /** What the event drain shipped this pass (#1334). Null when no sink is bound. */
   eventDrain: EventDrainReport | null;
+  /** Every cross-vertical edge this pass looked at (#1705). Null when the phase is off. */
+  crossVertical?: CrossVerticalReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
     kind:
@@ -577,7 +598,12 @@ export interface PlatformSweepReport {
       | 'freshness'
       | 'access-log'
       // #1334: one scope's event drain failed — its events stay undrained.
-      | 'event-drain';
+      | 'event-drain'
+      // #1705: one cross-vertical edge failed in transport. Its watermark did not move, so
+      // the next pass reads the same events again. A PAUSED or unresolved edge is not an
+      // error: it is a standing condition, reported on the edge and in the sweep-run rows,
+      // and the failure digest must not re-send it every tick.
+      | 'vertical-events';
     id: string;
     error: string;
   }[];
@@ -621,6 +647,65 @@ export interface EventDrainSkipped {
   count: number;
   /** The first of them, oldest first; capped (`UNDRAINED_SKIPPED_IDS`), so `count` may be larger. */
   eventIds: string[];
+}
+
+/** How the cross-vertical phase reaches the two scopes of an edge (#1705). */
+export interface CrossVerticalReach {
+  /** The consumer's running imports and its watermark per producer. */
+  importState(tenantId: TenantId, scopeId: ScopeId): Promise<ImportState>;
+  /** The producer's release after a watermark, decided by the producer's own code. */
+  readExports(tenantId: TenantId, scopeId: ScopeId, input: ExportReadInput): Promise<ExportedBatch>;
+  /** Hand a batch to the consumer, which applies it under its watermark's compare-and-set. */
+  deliver(tenantId: TenantId, scopeId: ScopeId, batch: ImportBatch): Promise<ImportResult>;
+}
+
+export interface CrossVerticalOptions {
+  /**
+   * How the two sides are reached. Defaults to this host's own verbs: `admin.importState`,
+   * `admin.readExportedEvents` and `deliverToPeer`. That is right when one host serves both
+   * scopes. Overridden where they live in different deployments: the control plane reaches
+   * each over `/internal`, and a two-deployment dev setup routes by scope.
+   */
+  reach?: CrossVerticalReach;
+  /** Events one edge moves per pass, at most. Default 200. */
+  budget?: number;
+}
+
+/**
+ * One edge's pass (#1705).
+ *
+ * - `delivered`: a batch was applied (its events delivered, dead-lettered or withheld).
+ * - `idle`: nothing new since the watermark.
+ * - `paused`: one side refused the other. The producer's principal check or the consumer's
+ *   door answered no, so nothing moved and the backlog waits in the producer's outbox.
+ * - `unresolved`: the platform could not name both ends. The producer is not installed in
+ *   the tenant, or either vertical has more than one primary instance there.
+ * - `stale`: the consumer's watermark moved under this pass, and the batch was refused.
+ * - `failed`: a transport or host error. Also in `errors`.
+ */
+export interface CrossVerticalEdge {
+  tenantId: TenantId;
+  consumer: { scopeId: ScopeId; vertical: string };
+  producer: { vertical: string; scopeId: ScopeId | null };
+  state: 'delivered' | 'idle' | 'paused' | 'unresolved' | 'stale' | 'failed';
+  delivered: number;
+  deadLettered: number;
+  withheld: number;
+  duplicates: number;
+  /** The sentence a person reads. Set on every state but `delivered` and `idle`. */
+  reason?: string;
+  /** Types the consumer imports that the producer does not export (reported, not paused). */
+  unexported?: WantedEvent[];
+  /** The producer had more than one batch waiting. The next pass takes the rest. */
+  more?: boolean;
+}
+
+export interface CrossVerticalReport {
+  edges: CrossVerticalEdge[];
+  delivered: number;
+  withheld: number;
+  paused: number;
+  unresolved: number;
 }
 
 export interface AccessLogSweepReport {
@@ -706,6 +791,7 @@ export async function runPlatformSweep(
     schedules: null,
     accessLog: null,
     eventDrain: null,
+    crossVertical: null,
     errors: [],
   };
 
@@ -1180,6 +1266,15 @@ export async function runPlatformSweep(
     }
   });
 
+  // -- cross-vertical event delivery (#1705) ------------------------------------
+  // After the provision reconcile, so a peer grant a new version declares is seated before
+  // the edge that needs it is read. Before the Tier-2 drain, which only ships each scope's
+  // own outbox. An import is never re-emitted into the consumer's outbox, so the two phases
+  // never ship the same event twice.
+  if (options.crossVertical) {
+    report.crossVertical = await sweepCrossVertical(host, options, options.crossVertical, failedThisPass, report);
+  }
+
   // -- drain each scope's domain events to Tier 2 (#1334, master-plan §5.3) ---
   // Before the access-log drain below, which is deliberately last: this phase
   // reads the directory (and so writes access rows), and the log drain ships a
@@ -1237,6 +1332,208 @@ export async function runPlatformSweep(
   }
 
   return report;
+}
+
+/**
+ * The tenant's ONE primary instance of `vertical` (#1705). Active, not a fork, and in the
+ * same tenant. Two primary instances are refused as `ambiguous` rather than guessed between,
+ * because either guess could deliver one scope's data to the wrong install.
+ */
+function instanceOf(
+  scopes: readonly Scope[],
+  tenantId: TenantId,
+  vertical: string,
+): { status: 'resolved'; scope: Scope } | { status: 'not-installed' | 'ambiguous' } {
+  const found = scopes.filter((s) => s.tenantId === tenantId && s.vertical === vertical);
+  if (found.length === 1) return { status: 'resolved', scope: found[0]! };
+  return { status: found.length === 0 ? 'not-installed' : 'ambiguous' };
+}
+
+/**
+ * One pass over every cross-vertical edge (#1705). Bounded like the event drain: one batch per
+ * edge per pass, reported rather than looped, so one busy producer cannot starve the rest.
+ */
+async function sweepCrossVertical(
+  host: ScopeHost,
+  options: PlatformSweepOptions,
+  cv: CrossVerticalOptions,
+  failedThisPass: ReadonlySet<string>,
+  report: PlatformSweepReport,
+): Promise<CrossVerticalReport> {
+  const out: CrossVerticalReport = { edges: [], delivered: 0, withheld: 0, paused: 0, unresolved: 0 };
+  const reach: CrossVerticalReach = cv.reach ?? {
+    importState: (t, s) => host.admin.importState(options.actor, t, s),
+    readExports: (t, s, input) => host.admin.readExportedEvents(options.actor, t, s, input),
+    deliver: (t, s, batch) => host.deliverToPeer(t, s, batch),
+  };
+  // Normalized for the eventDrainBatch reason: a fractional or NaN budget would reach a SQL
+  // LIMIT, and every edge would fail every tick as though the fleet were broken.
+  const configured = cv.budget ?? EVENT_DRAIN_BATCH;
+  const budget = Number.isFinite(configured) && configured >= 1 ? Math.min(Math.floor(configured), 1000) : EVENT_DRAIN_BATCH;
+  // Primary scopes only, on both ends (`isPrimaryScope`: no fork, no clean-room preview). A
+  // fork is a copy of somebody's data. Delivering into it would feed a copy as though it were
+  // the install, and reading from it would publish a copy's history to another vertical. A
+  // preview is not the install either.
+  const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
+    (s) => isPrimaryScope(s) && s.vertical !== null,
+  );
+
+  const record = (edge: CrossVerticalEdge): void => {
+    out.edges.push(edge);
+    out.delivered += edge.delivered;
+    out.withheld += edge.withheld;
+    if (edge.state === 'paused') out.paused += 1;
+    if (edge.state === 'unresolved') out.unresolved += 1;
+    if (edge.state === 'failed') {
+      report.errors.push({
+        kind: 'vertical-events',
+        id: `${edge.consumer.scopeId}:${edge.producer.vertical}`,
+        error: edge.reason ?? 'failed',
+      });
+    }
+    // Idle writes no row: one green row per edge per tick would bury the ones that matter.
+    if (edge.state === 'idle') return;
+    options.recordSweepRun?.({
+      kind: 'vertical-events',
+      unit: `${edge.consumer.scopeId}:${edge.producer.vertical}`,
+      outcome: edge.state === 'delivered' ? 'ok' : edge.state === 'failed' ? 'failed' : 'skipped',
+      tenantId: edge.tenantId,
+      scopeId: edge.consumer.scopeId,
+      vertical: edge.consumer.vertical,
+      operation: `sweep.vertical-events:${edge.producer.vertical}`,
+      error:
+        edge.state === 'delivered'
+          ? edge.withheld + edge.deadLettered > 0
+            ? `${edge.delivered} delivered, ${edge.deadLettered} dead-lettered, ${edge.withheld} withheld by the producer`
+            : null
+          : (edge.reason ?? null),
+    });
+  };
+
+  await mapBounded(scopes, options.concurrency ?? 8, async (consumer) => {
+    if (failedThisPass.has(consumer.id)) return;
+    let state: ImportState;
+    try {
+      state = await reach.importState(consumer.tenantId, consumer.id);
+    } catch (err) {
+      report.errors.push({ kind: 'vertical-events', id: consumer.id, error: message(err) });
+      return;
+    }
+    const bySource = new Map<string, WantedEvent[]>();
+    for (const c of state.consumes) {
+      const list = bySource.get(c.from) ?? [];
+      list.push({ type: c.type, schemaVersion: c.schemaVersion });
+      bySource.set(c.from, list);
+    }
+    // Sequential per consumer: its edges share the consumer's serialization queue anyway,
+    // and one consumer with many sources must not hold more than one slot of the pass.
+    for (const [from, wants] of [...bySource.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      record(await sweepEdge(reach, scopes, consumer, from, wants, state, budget));
+    }
+  });
+  return out;
+}
+
+async function sweepEdge(
+  reach: CrossVerticalReach,
+  scopes: readonly Scope[],
+  consumer: Scope,
+  from: string,
+  wants: WantedEvent[],
+  state: ImportState,
+  budget: number,
+): Promise<CrossVerticalEdge> {
+  const vertical = consumer.vertical!;
+  const edge = (
+    rest: Partial<CrossVerticalEdge> & Pick<CrossVerticalEdge, 'state'>,
+  ): CrossVerticalEdge => ({
+    tenantId: consumer.tenantId,
+    consumer: { scopeId: consumer.id, vertical },
+    producer: { vertical: from, scopeId: null },
+    delivered: 0,
+    deadLettered: 0,
+    withheld: 0,
+    duplicates: 0,
+    ...rest,
+  });
+  if (from === vertical) {
+    return edge({ state: 'unresolved', reason: `'${vertical}' imports from itself — an import names ANOTHER vertical` });
+  }
+  // Both ends must be the tenant's one primary instance of their vertical. The producer is
+  // who is read. The consumer is who the producer's grant names, and a grant naming a slug
+  // cannot tell two installs of it apart.
+  const self = instanceOf(scopes, consumer.tenantId, vertical);
+  if (self.status !== 'resolved') {
+    return edge({
+      state: 'unresolved',
+      reason: `this tenant has more than one primary instance of '${vertical}', so the producer cannot tell which one its grant names`,
+    });
+  }
+  const producer = instanceOf(scopes, consumer.tenantId, from);
+  if (producer.status !== 'resolved') {
+    return edge({
+      state: 'unresolved',
+      reason:
+        producer.status === 'not-installed'
+          ? `'${from}' is not installed in this tenant`
+          : `this tenant has more than one primary instance of '${from}' — delivery waits until one is chosen`,
+    });
+  }
+  const source = { vertical: from, scopeId: producer.scope.id };
+  const at = { producer: source };
+  const after = state.cursors.find((c) => c.source === producer.scope.id)?.cursor ?? null;
+  try {
+    const batch = await reach.readExports(producer.scope.tenantId, producer.scope.id, {
+      consumer: vertical as ExportReadInput['consumer'],
+      after,
+      wants,
+      limit: budget,
+    });
+    const unexported = batch.unexported.length ? { unexported: batch.unexported } : {};
+    if (batch.paused) {
+      return edge({
+        ...at,
+        ...unexported,
+        state: 'paused',
+        reason:
+          `paused: producer '${from}' does not grant vertical:${vertical} ${batch.paused.missing.join(', ')} — ` +
+          `nothing was read; the backlog waits in its outbox`,
+      });
+    }
+    if (batch.next === null || (batch.events.length === 0 && batch.withheld.length === 0)) {
+      return edge({ ...at, ...unexported, state: 'idle' });
+    }
+    const result = await reach.deliver(consumer.tenantId, consumer.id, {
+      source,
+      after,
+      next: batch.next,
+      events: batch.events,
+      withheld: batch.withheld,
+    });
+    if (result.paused) {
+      return edge({
+        ...at,
+        ...unexported,
+        state: 'paused',
+        reason: `paused: consumer '${vertical}' refused '${from}' — ${result.paused.reason}; the backlog waits in the producer's outbox`,
+      });
+    }
+    if (result.stale) {
+      return edge({ ...at, state: 'stale', reason: 'the consumer\'s watermark moved under this pass; the next pass reads from where it is' });
+    }
+    return edge({
+      ...at,
+      ...unexported,
+      state: 'delivered',
+      delivered: result.delivered,
+      deadLettered: result.deadLettered,
+      withheld: result.withheld,
+      duplicates: result.duplicates,
+      ...(batch.more ? { more: true } : {}),
+    });
+  } catch (err) {
+    return edge({ ...at, state: 'failed', reason: message(err) });
+  }
 }
 
 /**

@@ -663,8 +663,18 @@ export const issueEntry = z.object({
 });
 export type IssueEntry = z.infer<typeof issueEntry>;
 
-/** What a sweep pass touched (#1232). More kinds arrive with the views that read them. */
-export const sweepRunKind = z.enum(['connector', 'schedule', 'freshness']);
+/**
+ * What a sweep pass touched (#1232). More kinds arrive with the views that read them.
+ *
+ * `vertical-events` (#1705) is one cross-vertical edge: a consumer scope and the producer
+ * vertical it imports from. `unit` is `<consumerScopeId>:<producer slug>`. A row is written
+ * for every pass that moved something, and for every pass the edge could not run: paused,
+ * unresolved or failed, with the reason in `error`. A paused edge is silent by
+ * construction, because nothing is lost and nothing throws, so this row is where a person
+ * first sees it. An idle pass writes nothing, or the strip would be one green row per edge
+ * per tick.
+ */
+export const sweepRunKind = z.enum(['connector', 'schedule', 'freshness', 'vertical-events']);
 export type SweepRunKind = z.infer<typeof sweepRunKind>;
 /** `skipped` is a first-class outcome: "swept, nothing to do" and "bound but no
  *  sweeper registered" are the facts a freshness view needs most, and the ones
@@ -789,6 +799,15 @@ export const sweepRunsPayload = z.object({
               code: z.ZodIssueCode.custom,
               path: ['kind'],
               message: 'connector rows are recorded directly by the platform sweep, never through a scope-drained batch',
+            });
+          }
+          // #1705: an edge row is the platform's account of TWO scopes, which is the one
+          // thing a batch drained from one of them cannot be trusted to give.
+          if (e.kind === 'vertical-events') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['kind'],
+              message: 'vertical-events rows are recorded directly by the platform sweep, never through a scope-drained batch',
             });
           }
           // …and each kind carries ONLY its own fields: sweepRunEntry documents the

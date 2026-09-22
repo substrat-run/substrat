@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { moduleId, permissionKey } from './ids.js';
+import { moduleId, permissionKey, verticalSlug } from './ids.js';
 import { eventType } from './events.js';
 
 // The manifest is what makes a module self-describing — to agents now, to
@@ -20,6 +20,53 @@ export const eventTypeRef = z.object({
   schemaVersion: z.number().int().positive(),
 });
 export type EventTypeRef = z.infer<typeof eventTypeRef>;
+
+/**
+ * An event type this module consumes (#1705). Without `from` it means what `consumes` always
+ * meant: an event emitted IN THIS SCOPE, delivered by the in-scope dispatch.
+ *
+ * With `from` it names ANOTHER VERTICAL — its owner-prefixed registry slug — whose
+ * instance in the same tenant exports the type. Such an entry is never wired into the
+ * in-scope dispatch. Its handler goes in `ModuleRegistration.imports`, not `consumers`,
+ * and the platform delivers it from the producer's outbox, after a watermark this scope
+ * keeps.
+ *
+ * `from` is a new, optional key on an old list, and that is safe under version skew, which is
+ * the one property this shape had to have. A host that predates it strips `from` and sees a
+ * declared LOCAL consume with no handler, which delivers nothing: registration refuses only a
+ * handler for an UNdeclared type, never a declaration without one. Keeping the handler out of
+ * `consumers` is what keeps that true. Filed there, an old host would register it as a local
+ * consumer of the same type name.
+ */
+export const consumedEventRef = eventTypeRef.extend({
+  from: verticalSlug.optional(),
+});
+export type ConsumedEventRef = z.infer<typeof consumedEventRef>;
+
+/**
+ * An event type this module lets OTHER verticals of the same tenant receive (#1705).
+ *
+ * Publishing an event outside the vertical is a decision, so it is declared rather than
+ * implied by `emits`. An emitted type that is not listed here never leaves the scope. The
+ * producer's OWN running code applies the list when the platform reads its outbox, so a
+ * caller asking for an unexported type gets nothing.
+ *
+ * `readPermission` is the key a receiving vertical's principal (`vertical:<slug>`) must hold
+ * at this scope before any event of the type is released to it. It is the same key and the
+ * same check as a person's read, which is why it appears in the permission diff beside the
+ * roles that hold it.
+ *
+ * Only instances emitted with `piiClass: 'none'` cross. That is not declared here, because
+ * classification is per emit, but it is enforced twice: `eventsExportedBy` refuses a type
+ * any declaring operation classifies otherwise, and the export read withholds a classified
+ * row whatever its declaration said.
+ */
+export const eventExport = z.object({
+  type: eventType,
+  schemaVersion: z.number().int().positive(),
+  readPermission: permissionKey,
+});
+export type EventExport = z.infer<typeof eventExport>;
 
 export const manifestGuard = z.object({
   before: z.string().min(1), // operation name, e.g. 'bike-shop/close-repair'
@@ -163,7 +210,13 @@ export const moduleManifest = z.object({
   permissions: z.array(permissionDeclaration),
   events: z.object({
     emits: z.array(eventTypeRef),
-    consumes: z.array(eventTypeRef), // star topology: consumes types, never siblings (D-19)
+    // Star topology: in-scope consumes name TYPES, never sibling modules (D-19). A `from`
+    // entry names a VERTICAL, not a module: another team's deployed code, reached only
+    // through what it chose to export (#1705).
+    consumes: z.array(consumedEventRef),
+    // #1705: what other verticals of the same tenant may receive. Optional and additive
+    // (D-28): every earlier manifest parses unchanged and exports nothing.
+    exports: z.array(eventExport).optional(),
   }),
   migrations: z.object({
     journalDir: z.string().min(1), // Drizzle journal location within the package
@@ -358,6 +411,35 @@ export const moduleManifest = z.object({
     })
     .optional(),
 }).superRefine((m, ctx) => {
+  // #1705: one declaration per (source, type) and one export per type. A second entry would
+  // be read by whichever consumer of the list came first, so the two could disagree about
+  // the schemaVersion delivered, or about the key that releases it. Refused at parse,
+  // where the error is readable. A new field, so only a new declaration can fail (D-28).
+  const consumed = new Set<string>();
+  for (const [i, c] of m.events.consumes.entries()) {
+    const key = `${c.from ?? ''}\u0000${c.type}`;
+    if (consumed.has(key)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['events', 'consumes', i],
+        message: c.from
+          ? `module '${m.id}' consumes '${c.type}' from '${c.from}' twice — one entry per source and type`
+          : `module '${m.id}' consumes '${c.type}' twice — one entry per type`,
+      });
+    }
+    consumed.add(key);
+  }
+  const exported = new Set<string>();
+  for (const [i, e] of (m.events.exports ?? []).entries()) {
+    if (exported.has(e.type)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['events', 'exports', i],
+        message: `module '${m.id}' exports '${e.type}' twice — one export, one key, one version per type`,
+      });
+    }
+    exported.add(e.type);
+  }
   // #1232: a freshness expectation naming a type this module neither emits nor
   // consumes would read as permanently stale forever — a typo becoming a permanent
   // red pill. Refused at parse (push/registration), where the error is readable.
@@ -365,7 +447,12 @@ export const moduleManifest = z.object({
   // an engine's events lists the type in `consumes`, which star topology already
   // requires of it.
   if (!m.freshness?.length) return;
-  const known = new Set([...m.events.emits, ...m.events.consumes].map((e) => e.type));
+  // Only IN-SCOPE consumes count (#1705). Freshness is judged against this scope's own
+  // outbox, and an imported event never lands there — it is delivered, not re-emitted —
+  // so an expectation on one would be exactly the permanent red this check exists to stop.
+  const known = new Set(
+    [...m.events.emits, ...m.events.consumes.filter((c) => c.from === undefined)].map((e) => e.type),
+  );
   for (const [i, f] of m.freshness.entries()) {
     if (!known.has(f.eventType)) {
       ctx.addIssue({
