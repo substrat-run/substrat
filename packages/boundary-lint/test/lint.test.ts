@@ -251,6 +251,48 @@ describe('harness exemption', () => {
   });
 });
 
+describe('R9 — the local peer broker (#1706)', () => {
+  const brokerImport = `
+    import { createLocalVerticalBroker } from '@substrat-run/adapter-sqlite/vertical-broker';
+    export const broker = createLocalVerticalBroker({});
+  `;
+
+  it('server.ts and seed.ts may build a broker — the node harness is the trust domain', () => {
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      'src/server.ts': brokerImport,
+      'src/seed.ts': brokerImport,
+      'src/module.ts': 'export const x = 1;',
+    });
+    expect(lint(root)).toEqual([]);
+  });
+
+  it('worker.ts may not — harness, but a deployed entry that would vouch for itself', () => {
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      'src/worker.ts': brokerImport,
+      'src/module.ts': 'export const x = 1;',
+    });
+    const violations = lint(root);
+    expect(rules(violations)).toEqual(['R9']);
+    expect(violations[0]!.file).toBe(join('src', 'worker.ts'));
+  });
+
+  it('module code may not either — R9 beside the R2 its adapter import already earns', () => {
+    const root = project({ 'package.json': VERTICAL_PKG, 'src/ops.ts': brokerImport });
+    expect(rules(lint(root)).sort()).toEqual(['R2', 'R9']);
+  });
+
+  it('the pure host itself is not the broker — importing the adapter root in server.ts stays clean', () => {
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      'src/worker.ts': `import type { ScopeHost } from '@substrat-run/kernel';\nexport type H = ScopeHost;`,
+      'src/server.ts': `import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';\nexport const H = SqliteScopeHost;`,
+    });
+    expect(lint(root)).toEqual([]);
+  });
+});
+
 describe('R5 escape hatch (decision 27)', () => {
   it('an explicit allow block suppresses R5, and only within the block', () => {
     const root = project({

@@ -145,6 +145,11 @@ export const adminAction = z.enum([
   // a required `reason`: the row answers who turned a tenant's schedules off, and why.
   'revokeFromSystem',
   'restoreToSystem',
+  // #1706 — the same switch for a PEER vertical on one scope: a tenant turning another
+  // app's calls into this one off, and back on, without a push. Same reason-carrying
+  // pair, same intent-then-outcome rows.
+  'revokeFromPeer',
+  'restoreToPeer',
   // #40 — the directory's own disaster-recovery write: replace THE DIRECTORY (tenants,
   // scopes, hostnames, verticals, identities) with a stored dump. Carries no tenant,
   // because its blast radius is every tenant. The entry lands in the log it just

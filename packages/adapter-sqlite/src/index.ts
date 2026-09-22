@@ -44,6 +44,15 @@ import {
   connectionSecret,
   systemGrant,
   systemSwitch,
+  peerSwitch,
+  verticalCaller,
+  verticalSlug as verticalSlugOf,
+  type PeerCoverage,
+  type PeerSpec,
+  type PeerSwitch,
+  type PeerSwitchResult,
+  type VerticalCaller,
+  type VerticalResolution,
   subjectRef,
   requestFingerprint,
   createConnectionInput,
@@ -249,6 +258,12 @@ import {
   REDACTED_DELIVERY_NOTE,
   seatScopeTuple,
   switchSystemSchedules,
+  admitPeer,
+  collectPeers,
+  peerSeats,
+  resolveVerticalInstanceFrom,
+  switchPeer,
+  type PeerDeclarations,
   systemGrantsStatus,
   systemScheduleState,
   systemSwitchedOff,
@@ -487,6 +502,8 @@ interface RegisteredModule {
   schedules: ScheduleSpec[];
   /** The module's declared freshness expectations (#1232), empty if none. */
   freshness: FreshnessSpec[];
+  /** The module's declared peers (#1706), empty if it declares none. */
+  peers: PeerSpec[];
 }
 
 /** A manifest guard, bound to the module whose manifest declared it (K-17). */
@@ -2195,6 +2212,7 @@ export class SqliteScopeHost implements ScopeHost {
       consumers,
       schedules: manifest.schedules ?? [],
       freshness: manifest.freshness ?? [],
+      peers: manifest.peers ?? [],
     });
     for (const rel of manifest.entityRelations ?? []) {
       const parents = this.relations.get(rel.entityType) ?? new Set<string>();
@@ -2391,6 +2409,14 @@ export class SqliteScopeHost implements ScopeHost {
           const seat = seatScopeTuple(`system:${mod.id}`, `granted:${perm}`, `scope:${input.scopeId}`, null);
           rt.db.prepare(seat.sql).run(...seat.params);
         }
+      }
+      // #1706: every declared PEER holds its keys on the scope from provisioning on — the one
+      // call that makes "declared and installed" mean "live" (`peerSeats`). Same seat, same
+      // rules: a grant a switch tombstoned stays tombstoned, and a switched-off peer gets
+      // nothing seated.
+      for (const peer of peerSeats(this.peerDeclarations(), input.scopeId)) {
+        const seat = seatScopeTuple(peer.subject, peer.relation, peer.object, null);
+        rt.db.prepare(seat.sql).run(...seat.params);
       }
     });
     // Audit a real provision only; an idempotent re-provision changed nothing.
@@ -3361,16 +3387,18 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
-   * #1705: the read keys `consumer`'s principal does NOT hold at this scope.
-   * PEER_AUTHORITY_PENDING_1706 — answered by #1706's `peerCovers`; nothing is pushed before it is.
+   * #1705: the read keys `consumer`'s principal does NOT hold at this scope — #1706's
+   * `peerCovers`, the checker's own `covers`. A peer whose kill switch is off holds nothing,
+   * so it pauses the edge here with no marker read of its own.
    */
   private async peerMissing(
-    _tenantId: TenantId,
-    _scopeId: ScopeId,
-    _consumer: string,
-    _keys: readonly string[],
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    consumer: string,
+    keys: readonly string[],
   ): Promise<PermissionKey[]> {
-    return [];
+    const coverage = await this.peerCovers(tenantId, scopeId, consumer, keys as PermissionKey[]);
+    return coverage.filter((c) => !c.held).map((c) => c.permission);
   }
 
   /** #1705: this scope's watermark per producer, oldest source first. */
@@ -3396,8 +3424,6 @@ export class SqliteScopeHost implements ScopeHost {
     const batch = importBatch.parse(raw);
     const source = batch.source;
     const rt = await this.openActiveScope(tenantId, scopeId);
-    // PEER_AUTHORITY_PENDING_1706 — the door (#1706 `admitPeer(…, null)`) refuses here with
-    // `paused` when this scope has not declared the producer a peer, or its switch is off.
     return rt.actor.enqueue(async () => {
       const result: ImportResult = {
         delivered: 0,
@@ -3408,6 +3434,21 @@ export class SqliteScopeHost implements ScopeHost {
         stale: false,
         paused: null,
       };
+      // #1706's door, for a delivery (`operation: null`): the producer must be a declared peer
+      // of this vertical with its switch on. Admitted inside the actor task, before anything
+      // runs, so a switch pulled between two passes refuses the second. A refusal is a PAUSE:
+      // nothing ran, the watermark stays, and the producer's outbox keeps the backlog.
+      let subject: CheckSubject;
+      try {
+        subject = admitPeer(
+          switchSqlOf(rt.db),
+          this.peerDeclarations(),
+          { vertical: source.vertical, scope: source.scopeId },
+          null,
+        );
+      } catch (err) {
+        return { ...result, paused: { reason: err instanceof Error ? err.message : String(err) } };
+      }
       // The compare-and-set. Inside the actor, so nothing moves the watermark between this
       // read and the advance at the end.
       const current =
@@ -3456,7 +3497,10 @@ export class SqliteScopeHost implements ScopeHost {
           rt.causedBy = e.id;
           rt.db.exec('BEGIN IMMEDIATE');
           try {
-            await imp.handler(this.importContext(rt, source, imp.moduleId), event);
+            // As the producer's principal, admitted above: the handler's checks are real ones,
+            // against the grants this vertical's `peers` gave it, and its emits carry the actor
+            // `{ vertical, scope }` and the authorization they passed (K-34).
+            await imp.handler(this.operationContext(rt, subject), event);
             rt.db
               .prepare(
                 `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
@@ -3488,15 +3532,6 @@ export class SqliteScopeHost implements ScopeHost {
       await this.dispatchExecutors(rt, null);
       return result;
     });
-  }
-
-  /**
-   * #1705: the context an import handler runs in.
-   * PEER_AUTHORITY_PENDING_1706 — becomes the door's context (principal `vertical:<source>`, real
-   * checks, actor `{ vertical, scope }`) when #1706 lands; until then the consumer's shape.
-   */
-  private importContext(rt: ScopeRuntime, _source: ImportBatch['source'], moduleId: string): OperationContext {
-    return this.operationContext(rt, asPrincipal(this.systemPrincipal), { system: moduleId });
   }
 
   /**
@@ -3622,6 +3657,48 @@ export class SqliteScopeHost implements ScopeHost {
       .get(scopeId) as { vertical: string | null } | undefined;
     const store = this.attachmentStore(tenantId, scopeRow?.vertical ?? null);
     return this.buildAttachments(rt, { kind: 'capability-session', hash }, store);
+  }
+
+  /** Every registered module's `peers`, as one declaration per peer vertical (#1706). */
+  private peerDeclarations(): PeerDeclarations {
+    return collectPeers(this.modules.values());
+  }
+
+  /**
+   * The peer door (#1706) — mirror of the connection, system and capability doors. The caller is
+   * the local broker's word (the platform's, on the pure host); the pair and lifecycle gate run
+   * here, and `admitPeer` runs inside the scope's actor task on every invoke (`buildStub`).
+   */
+  async getVerticalScope(
+    caller: VerticalCaller,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ScopeStub> {
+    const parsed = verticalCaller.parse(caller);
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return this.buildStub(tenantId, scopeId, rt, { kind: 'vertical-peer', caller: parsed }, options);
+  }
+
+  /**
+   * Does peer `vertical` hold each key at this scope's node right now (#1706) — the checker's own
+   * `covers`, inside the scope's actor task so no invoke's open transaction is read half-done.
+   * The subject's `scope` is the target scope only to satisfy the type: `covers` records nothing,
+   * and the tuple ref it walks is the slug alone.
+   */
+  async peerCovers(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    vertical: string,
+    permissions: readonly PermissionKey[],
+  ): Promise<PeerCoverage[]> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const subject: CheckSubject = { kind: 'vertical', id: verticalSlugOf.parse(vertical), scope: scopeId };
+    const coverage = await rt.actor.enqueue(() =>
+      this.checker.covers(subject, [...permissions], { tenantId, scopeId }),
+    );
+    const missing = new Set<string>(coverage.covered ? [] : coverage.missing);
+    return permissions.map((permission) => ({ permission, held: !missing.has(permission) }));
   }
 
   registeredSchedules(): ScheduleRegistration[] {
@@ -3867,7 +3944,7 @@ export class SqliteScopeHost implements ScopeHost {
      * capability resolved once at mint time would outlive its own revocation for exactly
      * the one caller holding the stub.
      */
-    authority: CheckSubject | CapabilitySessionAuthority,
+    authority: CheckSubject | CapabilitySessionAuthority | VerticalPeerAuthority,
     options?: ScopeStubOptions,
     /**
      * K-42: the session this stub acts under. `subject` is already the
@@ -3968,13 +4045,18 @@ export class SqliteScopeHost implements ScopeHost {
           // actor task — so nothing can revoke between this read and the transaction below.
           // Refuses a stale session, a revoked or expired capability and an operation off its
           // allowlist before anything opens; none of those is a K-35 denial (no key checked).
+          // #1706: the peer door's admission, on the same terms — every invoke, inside the
+          // actor task. An undeclared peer, a switched-off one, or an operation off its
+          // allowlist is refused `forbidden` before anything opens; no key was checked.
           const subject: CheckSubject =
             authority.kind === 'capability-session'
               ? {
                   kind: 'capability',
                   id: resolveCapabilitySession(spineSql(rt.db), authority.hash, this.clock(), operation),
                 }
-              : authority;
+              : authority.kind === 'vertical-peer'
+                ? admitPeer(switchSqlOf(rt.db), this.peerDeclarations(), authority.caller, operation)
+                : authority;
           // #1672: the secrets this invocation mints — withheld from its idempotency recording,
           // and what the tripwire on its writes looks for.
           const minted: string[] = [];
@@ -5594,6 +5676,76 @@ export class SqliteScopeHost implements ScopeHost {
     };
 
     /**
+     * #1706: move one PEER's kill switch on one scope — see `HostAdmin.revokeFromPeer`. The
+     * schedule switch's body with the subject swapped (`switchPeer` → `switchSubjectGrants`):
+     * audit first, one turn on the scope actor, outcome after, `not_found` when nothing was held.
+     */
+    const switchPeerAt = async (
+      actor: PlatformActorId,
+      raw: PeerSwitch,
+      to: 'on' | 'off',
+    ): Promise<PeerSwitchResult> => {
+      const input = peerSwitch.parse(raw);
+      const { tenantId, scopeId } = input.node;
+      const scope = this.directory
+        .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+        .get(scopeId) as { tenant_id: string } | undefined;
+      if (!scope || scope.tenant_id !== tenantId) {
+        throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      }
+      const operationId = ulid();
+      const action = to === 'off' ? 'revokeFromPeer' : 'restoreToPeer';
+      const target = { tenantId, scopeId };
+      const base = { operationId, vertical: input.vertical, calls: to };
+      this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
+      let outcome: SwitchOutcome;
+      try {
+        const rt = this.runtime(tenantId, scopeId);
+        outcome = await rt.actor.turn(() =>
+          rt.db.transaction(() =>
+            switchPeer(switchSqlOf(rt.db), {
+              vertical: input.vertical,
+              scopeId,
+              to,
+              at: new Date().toISOString(),
+            }),
+          )(),
+        );
+      } catch (err) {
+        try {
+          this.recordAdmin(actor, action, target, null, {
+            ...base,
+            phase: 'failed',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        } catch {
+          // Best effort: the original error is what the caller must see.
+        }
+        throw err;
+      }
+      this.recordAdmin(actor, action, target, null, {
+        ...base,
+        phase: outcome.held ? 'applied' : 'refused',
+        changed: outcome.changed,
+        permissions: outcome.permissions,
+      });
+      if (!outcome.held) {
+        throw substratError(
+          'not_found',
+          `scope ${scopeId} holds no grant for peer '${input.vertical}' — nothing to switch ${to} ` +
+            `(check the slug: it is the calling vertical's registry id, as the target's \`peers\` names it)`,
+        );
+      }
+      return {
+        operationId,
+        vertical: input.vertical,
+        calls: to,
+        changed: outcome.changed,
+        permissions: outcome.permissions as PermissionKey[],
+      };
+    };
+
+    /**
      * The status read's admin-log join (#1674): the `intent` row of the `revokeFromSystem`
      * still in force for each OFF module — actor, reason, when. Paired to its `applied` row
      * by `operationId`, so a refused or failed attempt (only possible on a module this
@@ -5952,6 +6104,8 @@ export class SqliteScopeHost implements ScopeHost {
       // #1666: the schedule kill switch and its lever back — `system-switch.ts` is the
       // whole rule, shared with the Cloudflare adapter; this is the directory check, the
       // transaction and the audit row around it.
+      revokeFromPeer: async (actor: PlatformActorId, raw: PeerSwitch) => switchPeerAt(actor, raw, 'off'),
+      restoreToPeer: async (actor: PlatformActorId, raw: PeerSwitch) => switchPeerAt(actor, raw, 'on'),
       revokeFromSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'off'),
       restoreToSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'on'),
       // #1674: the switch's status read — same gate, the admin log to explain an `off`
@@ -6197,6 +6351,34 @@ export class SqliteScopeHost implements ScopeHost {
           rows.length,
         );
         return rows.map(mapHostname);
+      },
+      // #1706: the directory's answer to "vertical Y in tenant T", by the kernel's one rule.
+      resolveVerticalInstance: async (tenantId: TenantId, vertical: string): Promise<VerticalResolution> => {
+        const rows = this.directory
+          .prepare(
+            `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
+              WHERE tenant_id = ? AND vertical = ?`,
+          )
+          .all(tenantId, vertical) as {
+          scope_id: string;
+          tenant_id: string;
+          vertical: string | null;
+          status: string;
+          kind: string | null;
+          forked_from: string | null;
+        }[];
+        return resolveVerticalInstanceFrom(
+          rows.map((r) => ({
+            id: r.scope_id as ScopeId,
+            tenantId: r.tenant_id as TenantId,
+            vertical: r.vertical,
+            status: r.status as ScopeStatus,
+            kind: r.kind ?? '',
+            forkedFrom: (r.forked_from as ScopeId | null) ?? null,
+          })),
+          tenantId,
+          vertical,
+        );
       },
       resolveHostname: async (raw: string) => {
         // The router's per-request read. No actor, not logged — same carve-out as
@@ -9443,8 +9625,8 @@ export class SqliteScopeHost implements ScopeHost {
      */
     at: Instant = this.clock(),
   ): OperationContext {
-    // For a connection, system or capability subject this carries THAT id so the type
-    // holds — it is not a person, and the event actor below says what it is instead.
+    // For a connection, system, capability or peer-vertical subject this carries THAT id so
+    // the type holds — it is not a person, and the event actor below says what it is instead.
     const principal = subject.id as PrincipalId;
     const checker = this.checker;
     const relations = this.relations;
@@ -10268,6 +10450,16 @@ function spineSql(db: Database.Database): ScopedSql {
 interface CapabilitySessionAuthority {
   kind: 'capability-session';
   hash: string;
+}
+
+/**
+ * What the peer door hands `buildStub` in place of a subject (#1706): WHO is calling, as the
+ * platform (here, the local broker) supplied it. Every invoke admits it afresh inside the scope's
+ * actor task (`admitPeer`), so a switch pulled between two calls refuses the second.
+ */
+interface VerticalPeerAuthority {
+  kind: 'vertical-peer';
+  caller: VerticalCaller;
 }
 
 function scopedSql(db: Database.Database): ScopedSql {

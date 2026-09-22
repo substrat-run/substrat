@@ -249,6 +249,8 @@ export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export {
   SYSTEM_SWITCH_OFF_PREDICATE,
   SYSTEM_SWITCH_OFF_RELATION,
+  subjectSwitchedOff,
+  switchSubjectGrants,
   switchSystemSchedules,
   systemGrantsStatus,
   systemScheduleState,
@@ -256,6 +258,17 @@ export {
   systemSwitchedOffMessage,
 } from './system-switch.js';
 export type { SwitchOutcome, SwitchSql, SystemGrantsEntry, SystemScheduleState } from './system-switch.js';
+export {
+  PEER_SUBJECT_PREFIX,
+  admitPeer,
+  collectPeers,
+  peerSeats,
+  peerSubjectRef,
+  peerSwitchedOff,
+  resolveVerticalInstanceFrom,
+  switchPeer,
+} from './peer.js';
+export type { PeerDeclaration, PeerDeclarations, PeerSeat, VerticalInstanceCandidate } from './peer.js';
 export {
   DENIAL_COLUMNS,
   DENIAL_WINDOW_QUERY,

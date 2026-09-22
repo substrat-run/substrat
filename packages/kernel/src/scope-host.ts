@@ -58,6 +58,11 @@ import type {
   SystemGrantsStatusEntry,
   SystemSwitch,
   SystemSwitchResult,
+  PeerCoverage,
+  PeerSwitch,
+  PeerSwitchResult,
+  VerticalCaller,
+  VerticalResolution,
   CreateOrgInput,
   Node,
   Org,
@@ -1591,6 +1596,26 @@ export interface HostAdmin {
   ): Promise<SystemGrantsStatusEntry[]>;
 
   /**
+   * The PEER kill switch (#1706): turn one calling vertical off on one scope — the tenant's lever
+   * over "another app may call this one", pulled without a push. The mirror of
+   * `revokeFromSystem`, and the same statement underneath (`switchSubjectGrants`): every grant
+   * `vertical:<slug>` holds on the scope is tombstoned, an OFF marker goes live, and from the next
+   * call on the door refuses the peer `forbidden` and every check it could reach answers no. No
+   * re-provision re-seats a switched-off peer's grants — `restoreToPeer` is the only way back.
+   *
+   * Audited as `revokeFromPeer` with the required `reason`, intent row first. `not_found` when the
+   * scope holds neither a grant nor a marker for that peer, with nothing written: a typo'd slug
+   * must not plant a marker that silently blocks the peer the day a version declaring it lands.
+   *
+   * A scope served by a vertical's own deployment is not reachable from the shared control plane
+   * yet (the delegation is #1706's platform half); a host refuses rather than writing into a DO in
+   * the wrong namespace, as `mintCapability` does.
+   */
+  revokeFromPeer(actor: PlatformActorId, input: PeerSwitch): Promise<PeerSwitchResult>;
+  /** The inverse of `revokeFromPeer` (#1706): gives back exactly the grants OFF took, never more. */
+  restoreToPeer(actor: PlatformActorId, input: PeerSwitch): Promise<PeerSwitchResult>;
+
+  /**
    * Mint a `become` capability on a scope (#1672): whoever exchanges its secret yields
    * `input.principal` rather than a session — the shape an owner claim link and a member
    * invite are, so both can move onto this primitive later. The secret is returned once;
@@ -2079,6 +2104,20 @@ export interface HostAdmin {
    * enforcement point is a second thing that can disagree.
    */
   resolveHostname(hostname: string): Promise<RouteTarget | undefined>;
+
+  /**
+   * "The instance of vertical `vertical` in tenant `tenantId`" (#1706) — how the platform
+   * addresses another app of the same tenant by slug, never by hostname.
+   *
+   * One rule wherever it is asked (`resolveVerticalInstanceFrom`): a primary, active scope of
+   * THAT tenant bound to THAT vertical; `not-installed` for none, `ambiguous` for several — never
+   * a guess. The tenant is the caller's own, supplied by the platform; there is no parameter by
+   * which a caller could name another.
+   *
+   * Takes NO actor and is not logged, for `resolveHostname`'s reason: it is a machine read on the
+   * per-call path, before any staff member is involved.
+   */
+  resolveVerticalInstance(tenantId: TenantId, vertical: string): Promise<VerticalResolution>;
 
   // -- tenant registry (control-plane.md §4.1) -------------------------------
 
@@ -4140,6 +4179,50 @@ export interface ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<ScopeAttachments>;
+
+  /**
+   * A scope stub whose authority is ANOTHER VERTICAL of the same tenant (#1706) — the sixth door,
+   * beside the principal, connection, system, impersonation and capability ones, and a door
+   * rather than a flag for the reason each of those is: what differs is the authority.
+   *
+   * **Who is calling is the platform's word, not the caller's.** `caller` is supplied by the hop
+   * that identified the calling deployment — the router on the hosted path, the local broker on
+   * the pure host — which has already checked that the caller is a live, primary instance of the
+   * SAME tenant and resolved this scope as the target. The door's own guarantees are the
+   * scope's, checked here and again inside the scope on every invoke:
+   *
+   * - K-3's fail-closed (tenant, scope) pair and the lifecycle gate, as on every door;
+   * - **admission** (`admitPeer`), in the scope's serialized task on EVERY invoke: the caller is a
+   *   declared peer (`peers` in a registered manifest), its kill switch is on, and the operation
+   *   is on its allowlist. Each refusal is `forbidden` and none is a K-35 denial (no key checked);
+   * - then an ordinary operation: `ctx.check` resolves the `vertical:<slug>` grants the manifest
+   *   declared (seated at provisioning), refusals ARE recorded with actor `{ vertical, scope }`,
+   *   and so is every event it emits.
+   *
+   * There is no principal anywhere in it: the caller's signed-in user, if its request had one,
+   * does not cross. `ctx.principal` carries a value so the type holds; it is **not a person**, and
+   * the verbs that need one — minting a capability — refuse it.
+   */
+  getVerticalScope(
+    caller: VerticalCaller,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ScopeStub>;
+
+  /**
+   * Does peer `vertical` hold each of `permissions` at this scope's node RIGHT NOW (#1706) — the
+   * checker's own answer (`covers`), from the scope's own tuples. A peer switched off holds
+   * nothing (its grants are tombstoned), a key its manifest entry never declared is not held, and
+   * an undeclared peer holds nothing at all. What a platform verb asks before it hands a peer
+   * something the peer's own door would have checked — #1705's gate on an exported event.
+   */
+  peerCovers(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    vertical: string,
+    permissions: readonly PermissionKey[],
+  ): Promise<PeerCoverage[]>;
 
   /**
    * The recurring-work declarations of every module registered on this host (#383)

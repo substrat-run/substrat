@@ -9,6 +9,7 @@ import {
   principalId,
   scopeId,
   tenantId,
+  verticalSlug,
   type EventId,
   type Instant,
   type ModuleId,
@@ -52,7 +53,21 @@ export const connectorActor = z.object({ connection: z.string().min(1) });
  * so the trail can answer "reached through Anna's link" without inventing a guest.
  */
 export const capabilityActor = z.object({ capability: capabilityId });
-export const actor = z.union([principalId, systemActor, connectorActor, capabilityActor]);
+/**
+ * ANOTHER VERTICAL of the same tenant acted — its deployment called one of this vertical's
+ * operations through the platform (#1706).
+ *
+ * The fifth member, and a member rather than a principal for #97's reason: nobody signed in.
+ * The calling deployment is identified by the platform at a hop it cannot forge, never by a
+ * credential it holds, and the spine records it as what it is — `{ vertical, scope }`, the
+ * caller's registry slug AND the instance that called, because a tenant may run two
+ * instances of one vertical and "which one reached this record" is the question an audit
+ * asks. Authority is keyed by the slug alone (`vertical:<slug>` tuples, declared by THIS
+ * vertical's manifest `peers`), so every live instance of the caller holds the same grants.
+ */
+export const verticalActor = z.object({ vertical: verticalSlug, scope: scopeId });
+export type VerticalActor = z.infer<typeof verticalActor>;
+export const actor = z.union([principalId, systemActor, connectorActor, capabilityActor, verticalActor]);
 export type Actor = z.infer<typeof actor>;
 
 /**

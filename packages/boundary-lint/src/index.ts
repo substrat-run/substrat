@@ -86,6 +86,15 @@
  *                      exists for the one shape that is not a seam — a migration
  *                      or maintenance read of the engine's own table where the
  *                      row never leaves the engine.
+ *   R9 no local broker the pure host's peer broker (#1706,
+ *                      `@substrat-run/adapter-sqlite/vertical-broker`) asserts a
+ *                      calling vertical in-process, which is sound only where the
+ *                      process IS the trust domain: a test, `server.ts`, `seed.ts`.
+ *                      Every other file this walks — module code (where R2 also
+ *                      fires) and every other harness file, `worker.ts` first —
+ *                      may not import it, because a deployed entry that could
+ *                      would be a caller naming itself. The one rule that reads
+ *                      harness files; no hatch.
  *
  * NUMBERING. Rule numbers are claimed WHEN THEY SHIP, not when they are
  * proposed. #786's "catch outside ctx.atomic" rule was drafted as R6 while
@@ -148,7 +157,7 @@ export interface Violation {
   file: string;
   /** 1-indexed, when the rule is line-anchored. */
   line?: number;
-  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8';
+  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8' | 'R9';
   message: string;
 }
 
@@ -879,6 +888,30 @@ function checkSelectStar(rel: string, source: string, out: Violation[]): void {
   }
 }
 
+/** R9 (#1706): the local peer broker, and the only files it may be imported from. */
+const LOCAL_PEER_BROKER = '@substrat-run/adapter-sqlite/vertical-broker';
+const NODE_HARNESS = new Set(['server.ts', 'seed.ts']);
+
+/**
+ * R9 — a file that is not a node harness never imports the local peer broker (#1706). Read
+ * over EVERY walked file, harness included: the file it exists to catch is `worker.ts`, which
+ * is harness, and a deployed entry that could build a broker would be a caller vouching for
+ * itself. Tests live outside `src` and are never walked, so they need no exemption.
+ */
+function checkLocalBroker(file: string, rel: string, inPkg: string, out: Violation[]): void {
+  if (NODE_HARNESS.has(inPkg.split('/').pop() ?? '')) return;
+  const source = readFileSync(file, 'utf8');
+  if (!importsOf(source).includes(LOCAL_PEER_BROKER)) return;
+  out.push({
+    file: rel,
+    rule: 'R9',
+    message:
+      `local peer broker — '${LOCAL_PEER_BROKER}' asserts the calling vertical in-process, which is ` +
+      'sound only in a test, server.ts or seed.ts. A deployed entry reaches another vertical through ' +
+      'the platform, which says who is calling (#1706)',
+  });
+}
+
 function checkModuleFile(
   file: string,
   rel: string,
@@ -1170,6 +1203,7 @@ export function lint(root: string, config?: BoundaryLintConfig): Violation[] {
     const harness = new Set(pkg.harness);
     for (const file of walk(pkg.dir, skip)) {
       const inPkg = relative(pkg.dir, file).split(sep).join('/');
+      checkLocalBroker(file, relative(root, file), inPkg, violations);
       if (harness.has(inPkg)) continue;
       checkModuleFile(file, relative(root, file), pkg, tableOwners, violations);
     }

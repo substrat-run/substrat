@@ -65,6 +65,10 @@ export const crmExportModManifest = moduleManifest.parse({
       { type: 'crm.customer-touched', schemaVersion: 1, readPermission: 'customer:read' },
     ],
   },
+  // #1706's grant, used for both directions of the edge. board holds `customer:read` here,
+  // which releases crm's exports to it. It is admitted as a peer when it delivers into crm (the
+  // loop's return leg), where its handler checks `customer:write`. It may invoke nothing.
+  peers: [{ vertical: BOARD_VERTICAL, operations: [], permissions: ['customer:read', 'customer:write'] }],
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
   attachmentTargets: [],
   entitlementKey: 'crm-export',
@@ -135,6 +139,7 @@ export const crmExportMod: ModuleRegistration = {
     [BOARD_VERTICAL]: {
       // The loop's other half: every link board announces is answered with a touch.
       'board.association-linked': async (ctx, event) => {
+        assertAllowed(await ctx.check(key('customer:write')));
         const { crmId } = z.object({ crmId: z.string() }).parse(event.payload);
         ctx.emit({
           type: 'crm.customer-touched',
@@ -169,6 +174,9 @@ export const boardImportModManifest = moduleManifest.parse({
     ],
     exports: [{ type: 'board.association-linked', schemaVersion: 1, readPermission: 'association:read' }],
   },
+  // crm is admitted to deliver here, and its handlers' checks run against `association:sync`.
+  // `association:read` releases board's own export back to crm.
+  peers: [{ vertical: CRM_VERTICAL, operations: [], permissions: ['association:sync', 'association:read'] }],
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
   attachmentTargets: [],
   entitlementKey: 'board-import',
@@ -560,6 +568,9 @@ export function verticalEventsContractSuite(
       const imported = view.imports.find((i) => i.withheld === null)!;
       const reaction = view.outbox.find((o) => o.type === 'board.association-created')!;
       expect(reaction.caused_by).toBe(imported.event_id);
+      // The producer acted here, through the door, as itself (#1706's actor) — not as a person,
+      // and not as this module's own system principal.
+      expect(JSON.parse(reaction.actor)).toEqual({ vertical: CRM_VERTICAL, scope: p });
       expect(imported).toMatchObject({ source_vertical: CRM_VERTICAL, source_scope_id: p, hops: 1 });
       // The walk says where the trail went, rather than calling the record broken.
       const chain = await fx.consumer.admin.eventCause(staff, t, c, { eventId: eventId.parse(reaction.id) });
@@ -591,6 +602,66 @@ export function verticalEventsContractSuite(
       // Cut where the operator of the receiving app will see it.
       const letters = await fx.consumer.admin.deadLetters(staff, t, c, {});
       expect(letters.entries.some((l) => l.error.includes('vertical boundaries'))).toBe(true);
+    });
+
+    it('a peer switched off on the PRODUCER pauses the edge, and nothing is lost when it is switched back on', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      const reason = 'incident: pause exports to the board app';
+      await fx.producer.admin.revokeFromPeer(staff, { vertical: BOARD_VERTICAL, node: { tenantId: t, scopeId: p }, reason });
+      const during = await create(t, p, 'While paused');
+
+      const paused = await sweep();
+      expect(into(paused.report, c)).toMatchObject({
+        state: 'paused',
+        reason: expect.stringContaining(`does not grant vertical:${BOARD_VERTICAL} customer:read`),
+      });
+      expect((await board(t, c)).associations).toEqual([]);
+      // Nothing was read, so the watermark did not move past what arrived while paused.
+      expect((await fx.consumer.admin.importState(staff, t, c)).cursors).toEqual([]);
+      // Visible where a person reads it, not only in a report nobody keeps.
+      expect(paused.runs).toContainEqual(
+        expect.objectContaining({ kind: 'vertical-events', unit: `${c}:${CRM_VERTICAL}`, outcome: 'skipped' }),
+      );
+
+      await fx.producer.admin.restoreToPeer(staff, {
+        vertical: BOARD_VERTICAL,
+        node: { tenantId: t, scopeId: p },
+        reason: 'resolved',
+      });
+      const after = await create(t, p, 'After restore');
+      expect(into((await sweep()).report, c)).toMatchObject({ state: 'delivered', delivered: 2 });
+      expect((await board(t, c)).associations.map((r) => r.crm_id)).toEqual([during, after]);
+    });
+
+    it('a peer switched off on the CONSUMER is refused at its door, and nothing is lost when it is switched back on', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await fx.consumer.admin.revokeFromPeer(staff, {
+        vertical: CRM_VERTICAL,
+        node: { tenantId: t, scopeId: c },
+        reason: 'the board app stops taking CRM changes for now',
+      });
+      const during = await create(t, p, 'While refused');
+
+      const refused = await sweep();
+      expect(into(refused.report, c)).toMatchObject({
+        state: 'paused',
+        reason: expect.stringContaining(`consumer '${BOARD_VERTICAL}' refused '${CRM_VERTICAL}'`),
+      });
+      const view = await board(t, c);
+      expect(view.associations).toEqual([]);
+      expect(view.imports).toEqual([]); // not even journaled: the door refused before anything ran
+
+      await fx.consumer.admin.restoreToPeer(staff, {
+        vertical: CRM_VERTICAL,
+        node: { tenantId: t, scopeId: c },
+        reason: 'resolved',
+      });
+      await sweep();
+      expect((await board(t, c)).associations.map((r) => r.crm_id)).toEqual([during]);
     });
 
     it('a fork is neither read nor fed, and two primary installs are refused rather than guessed between', async () => {
