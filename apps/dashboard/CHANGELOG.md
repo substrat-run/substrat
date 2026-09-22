@@ -1,5 +1,66 @@
 # @substrat-run/dashboard
 
+## 0.35.8
+
+### Patch Changes
+
+- d7eb089: Apps that sign in with a team Auth Server now have their MCP endpoint registered there, so a client like Claude Desktop can connect without anyone configuring the issuer.
+
+  The dashboard registers one resource per hostname the app answers on (`https://<hostname>/api/mcp`): at install, and on an Identity change, where it is also cleared at the issuer the app left. Deleting the app un-registers it. Apps installed before this are registered the next time anyone on the team opens the Apps list. That pass runs once per team, retries on the next load until everything it tried has landed, and an auth-server that is down does not keep the others from being updated. None of this can fail an install, a save, or a delete. A vertical that mounts its MCP endpoint somewhere other than `/api/mcp`, or pins a different resource identifier, is not covered.
+
+- 7e855f3: A team member with the `viewer` role can no longer promote, roll back, delete or preview a vertical.
+
+  The dashboard's deployment routes checked that you were signed in and that the vertical was your team's, and stopped there, so a `viewer` — a role meant to look but not touch — could promote a version to `prod` (including a rollback), remove a vertical from the registry, create or reap a preview, and bind a custom domain to one. Those five now ask the same question the app-install actions already ask, and answer `403` to a `viewer`. `owner`, `admin` and `member` are unchanged. Reading a vertical's deployments, versions, previews and history is unchanged too.
+
+  No role or permission changed: this is the existing `dashboard:provision-app` check, applied where it was missing.
+
+- 20898ea: Promoting a version now shows what changes in the permission surface before it promotes, and asks for each acknowledgement separately.
+
+  The dashboard used to promote, wait for the registry to refuse a change to the permission or migration surface, and then show the refusal in a browser confirm box that carried two digests and nothing else. One OK acknowledged both kinds of change, whichever of them had actually moved. Now the promote dialog opens first, from the registry of the version `prod` serves against the registry of the one you are promoting: new, removed and re-worded permissions, roles that gained or lost a permission, and entity-grant shapes, with a plain line when a promotion only adds or only removes. Each kind of change has its own checkbox, and only a change you were shown and ticked is acknowledged.
+
+  A promotion that changes nothing opens no dialog and promotes as before. A version pushed before registries were kept has nothing to diff against, so the dialog says so and still asks for the acknowledgement. If the registry cannot be read, the promotion is blocked with the error instead of proceeding as "no changes".
+
+  A changed migration set is still learned from the registry's refusal and asked for in the same dialog, on its own checkbox. The migration SQL is not yet shown: it is not carried in the deploy manifest, which is the second half of the issue.
+
+- 224c9f6: The dashboard now holds a credential that can only reach your own team, and the platform refuses anything else.
+
+  Until now the dashboard presented one platform-wide credential to the control plane and narrowed itself to your team in its own code. The narrowing was real, and it was a promise the dashboard made about itself: nothing on the other side checked it, so it held exactly as long as every one of the dashboard's ninety-odd calls named the right team.
+
+  It is now a property of the credential. The control plane mints a **tenant token** per team, the dashboard presents that, and the plane refuses a request that names another team — in the path, in a query, in a body, or in the tenant header a caller sends alongside. Routes the dashboard does not use are refused outright rather than reachable, and routes whose answer is a fact about a vertical or a hostname are narrowed by who owns it. The reads that used to return the whole fleet and get filtered in the dashboard — invocation metrics, log lines — are narrowed before they leave the plane, so another team's numbers no longer cross the seam at all.
+
+  The platform credential stays for exactly one thing: asking the plane to mint that per-team token. Minting is refused to a tenant token itself, so a credential can never widen its own reach.
+
+  What has **not** changed is who an action is recorded as: the admin log still names the dashboard rather than the person who clicked. The tenant token carries no actor at all, so nothing about it can change that; naming your own admin is a separate change to what an audit row may hold.
+
+  **Operators:** set `TENANT_TOKEN_SECRET` on the control plane (a dedicated value — not the push-token secret, not the platform secret) and deploy it **before** the dashboard. A dashboard pointed at a plane that cannot mint says so rather than falling back to the old credential.
+
+- Updated dependencies [6504a99]
+- Updated dependencies [aabc227]
+- Updated dependencies [fb37a3e]
+- Updated dependencies [df5bf46]
+- Updated dependencies [44299a1]
+- Updated dependencies [4ef164c]
+- Updated dependencies [d7eb089]
+- Updated dependencies [269fa7a]
+- Updated dependencies [1df078d]
+- Updated dependencies [105a4c3]
+- Updated dependencies [a8c2c64]
+- Updated dependencies [02c181a]
+- Updated dependencies [0f13c41]
+- Updated dependencies [224c9f6]
+- Updated dependencies [2fa5147]
+- Updated dependencies [1f223f5]
+  - @substrat-run/contracts@0.117.0
+  - @substrat-run/kernel@0.117.0
+  - @substrat-run/adapter-cloudflare@0.117.0
+  - @substrat-run/control-plane-api@0.117.0
+  - @substrat-run/connector-fortnox@0.4.19
+  - @substrat-run/demo-callout@0.3.35
+  - @substrat-run/engine-invites@0.8.1
+  - @substrat-run/engine-invoicing@0.11.1
+  - @substrat-run/engine-protocol@0.13.1
+  - @substrat-run/engine-workorder@0.12.1
+
 ## 0.35.7
 
 ### Patch Changes
