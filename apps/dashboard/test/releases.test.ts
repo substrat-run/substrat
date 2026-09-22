@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { instant, platformActorId, type ChannelHistoryEntry, type OpsFailureEntry, type Scope } from '@substrat-run/contracts';
-import { deriveReleaseComparison, deriveReleases, deriveTeamSeries, deriveTrafficSeries } from '../src/releases.js';
+import {
+  deriveReleaseComparison,
+  deriveReleases,
+  deriveTeamSeries,
+  deriveTrafficSeries,
+  stackedStatusClasses,
+} from '../src/releases.js';
 import { versionPair } from '../src/deployments.js';
 import type { Deployment } from '../src/deployments.js';
 
@@ -268,6 +274,58 @@ describe('deriveTrafficSeries (#1236) — the chart series and its markers', () 
     // The window still exists (so a caller CAN render an axis), but the caller is
     // told not to — an all-zero chart and "I could not look" are different answers.
     expect(series.buckets.every((b) => b.requests === 0)).toBe(true);
+  });
+
+  it('sums the weighted status classes per bucket and the stacked total equals requests (#1693)', () => {
+    const series = deriveTrafficSeries({
+      hours: 2,
+      now,
+      releases: [],
+      prodHistory: [],
+      buckets: [
+        // A fixture naming every class, split across two rows landing in the same
+        // bucket — the same "two scripts, one column, summed" shape the plain
+        // requests/errors test above uses, so the weighted sum is exercised, not
+        // just the pass-through of one already-summed row.
+        { start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 90, errors: 3, class2xx: 70, class3xx: 10, class4xx: 7 },
+        { start: '2026-09-08T11:30:00.000Z', bucketMinutes: 60, requests: 10, errors: 0, class2xx: 8, class3xx: 1, class4xx: 1 },
+      ],
+    });
+    const hour11 = series.buckets.find((b) => b.start === '2026-09-08T11:00:00.000Z')!;
+    expect(hour11).toMatchObject({ requests: 100, errors: 3, green: 89, yellow: 8 });
+    expect(hour11.green! + hour11.yellow! + hour11.errors).toBe(hour11.requests);
+  });
+
+  it('falls back to no split when the source buckets carry no status-class fields', () => {
+    const series = deriveTrafficSeries({
+      hours: 2,
+      now,
+      releases: [],
+      prodHistory: [],
+      buckets: [{ start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 10, errors: 1 }],
+    });
+    const hour11 = series.buckets.find((b) => b.start === '2026-09-08T11:00:00.000Z')!;
+    expect(hour11.green).toBeUndefined();
+    expect(hour11.yellow).toBeUndefined();
+    // A bucket the source never touched (still zero-filled) is `green`-less too, not
+    // a stray `{ green: 0 }` that would read as "this source has the split".
+    const untouched = series.buckets.find((b) => b.start !== '2026-09-08T11:00:00.000Z')!;
+    expect(untouched.green).toBeUndefined();
+  });
+});
+
+describe('stackedStatusClasses (#1693) — the chart\'s green/yellow segments', () => {
+  it('combines 2xx and 3xx into green, keeps 4xx as yellow', () => {
+    expect(stackedStatusClasses({ class2xx: 70, class3xx: 10, class4xx: 7 })).toEqual({ green: 80, yellow: 7 });
+  });
+
+  it('renders no segment for a class with nothing in it', () => {
+    expect(stackedStatusClasses({ class2xx: 12, class3xx: 0, class4xx: 0 })).toEqual({ green: 12, yellow: 0 });
+  });
+
+  it('is null (the fallback signal) when any class field is absent — the split travels as one unit', () => {
+    expect(stackedStatusClasses({})).toBeNull();
+    expect(stackedStatusClasses({ class2xx: 1, class3xx: 1 })).toBeNull();
   });
 });
 

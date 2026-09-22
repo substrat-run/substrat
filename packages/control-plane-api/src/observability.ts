@@ -146,6 +146,16 @@ export interface TenantMetricsRow {
   surface: string | null;
   requests: number;
   errors: number;
+  /**
+   * Requests answered 2xx or 3xx / 4xx, weighted the same way `requests` is (#1693) —
+   * the traffic chart's green and yellow segments. `errors` above is already the 5xx
+   * count and stays exactly as it was; these are additive so a caller reading only
+   * `requests`/`errors` is unaffected. Optional because the backend that answers
+   * `requests` may not (yet) carry the status-class dimension `blob4` records.
+   */
+  class2xx?: number;
+  class3xx?: number;
+  class4xx?: number;
   /** Router-observed duration quantiles, milliseconds. */
   durationP50: number;
   durationP95: number;
@@ -174,6 +184,10 @@ export interface TenantMetricsBucket {
   bucketMinutes: number;
   requests: number;
   errors: number;
+  /** Same additive status-class split as `TenantMetricsRow` (#1693), per bucket. */
+  class2xx?: number;
+  class3xx?: number;
+  class4xx?: number;
   /** Weighted median request duration inside the bucket, ms. */
   durationP50: number;
   /** Weighted 95th percentile, ms. */

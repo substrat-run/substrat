@@ -1234,6 +1234,9 @@ export class TenantNarrowedControlPlane {
       surface: string | null;
       requests: number;
       errors: number;
+      class2xx?: number;
+      class3xx?: number;
+      class4xx?: number;
       durationP50: number;
       durationP95: number;
     }>
@@ -1242,6 +1245,7 @@ export class TenantNarrowedControlPlane {
     if (input.scopeId) q.set('scopeId', input.scopeId);
     if (input.vertical) q.set('vertical', input.vertical);
     const num = (v: unknown) => (typeof v === 'number' ? v : 0);
+    const optNum = (v: unknown) => (typeof v === 'number' ? v : undefined);
     const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);
     const rows =
       (await this.call<Array<Record<string, unknown>>>(`/observability/tenant-metrics?${q.toString()}`)) ?? [];
@@ -1251,6 +1255,9 @@ export class TenantNarrowedControlPlane {
       surface: str(r['surface']),
       requests: num(r['requests']),
       errors: num(r['errors']),
+      class2xx: optNum(r['class2xx']),
+      class3xx: optNum(r['class3xx']),
+      class4xx: optNum(r['class4xx']),
       durationP50: num(r['durationP50']),
       durationP95: num(r['durationP95']),
     }));
@@ -1275,6 +1282,9 @@ export class TenantNarrowedControlPlane {
       bucketMinutes: number;
       requests: number;
       errors: number;
+      class2xx?: number;
+      class3xx?: number;
+      class4xx?: number;
       durationP50: number;
       durationP95: number;
     }>
@@ -1286,6 +1296,7 @@ export class TenantNarrowedControlPlane {
       batches.push(scopeIds.slice(i, i + TENANT_SERIES_SCOPE_CAP));
     }
     const num = (v: unknown) => (typeof v === 'number' ? v : 0);
+    const optNum = (v: unknown) => (typeof v === 'number' ? v : undefined);
     const pages = await Promise.all(
       batches.map((ids) => {
         const q = new URLSearchParams({ tenantId: this.tenantId, hours: String(input.hours) });
@@ -1301,6 +1312,9 @@ export class TenantNarrowedControlPlane {
         bucketMinutes: num(r['bucketMinutes']),
         requests: num(r['requests']),
         errors: num(r['errors']),
+        class2xx: optNum(r['class2xx']),
+        class3xx: optNum(r['class3xx']),
+        class4xx: optNum(r['class4xx']),
         durationP50: num(r['durationP50']),
         durationP95: num(r['durationP95']),
       }));
