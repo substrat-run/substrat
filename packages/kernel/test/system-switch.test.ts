@@ -1,6 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { switchSystemSchedules, systemScheduleState, systemSwitchedOff, type SwitchSql } from '../src/index.js';
+import {
+  switchSystemSchedules,
+  systemGrantsStatus,
+  systemScheduleState,
+  systemSwitchedOff,
+  type SwitchSql,
+} from '../src/index.js';
 
 /**
  * #1666: the switch's own rule, executed against a real SQLite. Each adapter runs the same
@@ -74,5 +80,90 @@ describe('switchSystemSchedules (#1666)', () => {
     expect(systemSwitchedOff(sql, '@m/other')).toBe(false);
     move(sql, 'on');
     expect(systemSwitchedOff(sql, M)).toBe(false);
+  });
+});
+
+/**
+ * #1674: the status read's enumerator, against the same raw SQLite the switch itself
+ * runs on. The three public states — `on`, `off`, `ungranted` — plus the one it must
+ * NOT report: a module this scope never touched at all.
+ */
+describe('systemGrantsStatus (#1674)', () => {
+  const S = 's1';
+  const fresh = (): { db: DatabaseSync; sql: SwitchSql } => {
+    const db = new DatabaseSync(':memory:');
+    db.exec(`CREATE TABLE _substrat_tuples (
+      subject TEXT NOT NULL, relation TEXT NOT NULL, object TEXT NOT NULL,
+      expires_at TEXT, revoked_at TEXT, PRIMARY KEY (subject, relation, object)
+    )`);
+    const sql: SwitchSql = {
+      all: (q, ...p) => db.prepare(q).all(...p) as Record<string, unknown>[],
+      run: (q, ...p) => {
+        db.prepare(q).run(...p);
+      },
+    };
+    return { db, sql };
+  };
+  const grant = (db: DatabaseSync, moduleId: string, permission: string, revokedAt: string | null = null) =>
+    db
+      .prepare(`INSERT OR REPLACE INTO _substrat_tuples VALUES (?, ?, ?, NULL, ?)`)
+      .run(`system:${moduleId}`, `granted:${permission}`, `scope:${S}`, revokedAt);
+
+  it('reports a live grant as `on`', () => {
+    const { db, sql } = fresh();
+    grant(db, '@m/on', 'a:run');
+    expect(systemGrantsStatus(sql, '2026-09-21T12:00:00.000Z')).toEqual([{ moduleId: '@m/on', schedules: 'on' }]);
+  });
+
+  it('reports a switched-off module as `off`, even with its grant tombstoned and no live `granted:` row', () => {
+    const { db, sql } = fresh();
+    grant(db, '@m/off', 'a:run');
+    switchSystemSchedules(sql, { moduleId: '@m/off', scopeId: S, to: 'off', at: '2026-09-21T10:00:00.000Z' });
+    expect(systemGrantsStatus(sql, '2026-09-21T12:00:00.000Z')).toEqual([{ moduleId: '@m/off', schedules: 'off' }]);
+  });
+
+  it('reports `ungranted` for a module whose only row is a REVOKED grant and no marker — enumerated, not hidden', () => {
+    const { db, sql } = fresh();
+    // A grant revoked on its own (a raw write, or #1659's re-grant guarantee applied to a
+    // permission that was never re-granted) — no switch was ever pulled, so there is no
+    // marker. The enumeration SELECT has no `revoked_at IS NULL` filter (unlike
+    // `systemScheduleState`'s own EXISTS checks), so this subject is still picked up; it is
+    // `systemScheduleState`, run per subject, that classifies it as `ungranted` rather than
+    // silently agreeing with the enumeration's looser WHERE clause.
+    grant(db, '@m/historical', 'a:run', '2026-09-01T00:00:00.000Z');
+    expect(systemGrantsStatus(sql, '2026-09-21T12:00:00.000Z')).toEqual([
+      { moduleId: '@m/historical', schedules: 'ungranted' },
+    ]);
+  });
+
+  it('reports `ungranted` for a module whose only live grant has EXPIRED — enumerated, not hidden', () => {
+    const { db, sql } = fresh();
+    db.prepare(`INSERT INTO _substrat_tuples (subject, relation, object, expires_at, revoked_at) VALUES (?, ?, ?, ?, NULL)`).run(
+      'system:@m/expired',
+      'granted:a:run',
+      `scope:${S}`,
+      '2026-09-01T00:00:00.000Z',
+    );
+    expect(systemGrantsStatus(sql, '2026-09-21T12:00:00.000Z')).toEqual([
+      { moduleId: '@m/expired', schedules: 'ungranted' },
+    ]);
+  });
+
+  it('omits a module this scope never touched at all — no grant, ever, and no marker', () => {
+    const { sql } = fresh();
+    expect(systemGrantsStatus(sql, '2026-09-21T12:00:00.000Z')).toEqual([]);
+  });
+
+  it('enumerates several modules together, each classified independently', () => {
+    const { db, sql } = fresh();
+    grant(db, '@m/on', 'a:run');
+    grant(db, '@m/off', 'a:run');
+    switchSystemSchedules(sql, { moduleId: '@m/off', scopeId: S, to: 'off', at: '2026-09-21T10:00:00.000Z' });
+    grant(db, '@m/historical', 'a:run', '2026-09-01T00:00:00.000Z');
+    expect(systemGrantsStatus(sql, '2026-09-21T12:00:00.000Z')).toEqual([
+      { moduleId: '@m/historical', schedules: 'ungranted' },
+      { moduleId: '@m/off', schedules: 'off' },
+      { moduleId: '@m/on', schedules: 'on' },
+    ]);
   });
 });

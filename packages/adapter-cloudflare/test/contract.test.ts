@@ -409,6 +409,108 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
 });
 
 /**
+ * #1674 — the status read's own delegation, on the SAME `systemSwitchDelegation` seam the
+ * write above uses. `status` here is a genuine fake position (not a recording stub that
+ * throws): it reflects whatever `switch` last moved, so the admin-log join this host
+ * performs — reading rows `revokeFromSystem`/`restoreToSystem` wrote HERE, regardless of
+ * where the position itself lives — is exercised against a real off/on history.
+ */
+describe('#1674 — the status read is delegated exactly like the switch, and joined with the admin log here', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+  type StatusCall = { tenantId: string; scopeId: string };
+
+  const setup = async (vertical: string | null = 'sched-vertical') => {
+    const statusCalls: StatusCall[] = [];
+    let position: 'on' | 'off' = 'on';
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      systemSwitchDelegation: {
+        switch: async (a) => {
+          const changed = position !== a.to;
+          position = a.to;
+          return { held: true, changed, permissions: changed ? [permissionKey.parse('sched:tick')] : [] };
+        },
+        status: async (a) => {
+          statusCalls.push({ ...a });
+          return [{ moduleId: SCHED, schedules: position }];
+        },
+      },
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `hosted-status-${t.slice(-10).toLowerCase()}`, name: 'Hosted' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, ...(vertical ? { vertical } : {}) });
+    await host.admin.activateScope(staff, t, s);
+    return { host, t, s, statusCalls };
+  };
+
+  it('delegates the read, leaves the placeholder alone, and joins its OWN admin log by moduleId', async () => {
+    const { host, t, s, statusCalls } = await setup();
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'incident 99' });
+
+    const status = await host.admin.systemGrantsStatus(staff, { tenantId: t, scopeId: s });
+    expect(status).toEqual([
+      { moduleId: SCHED, schedules: 'off', switchedOff: { actor: staff, reason: 'incident 99', at: expect.any(String) } },
+    ]);
+    expect(statusCalls).toEqual([{ tenantId: t, scopeId: s }]);
+    // The placeholder DO's own grant was never touched by the delegated write (#1666's own
+    // assertion) — its schedules still fire, proving the position genuinely came from the
+    // delegation and not from a local fallback.
+    expect((await host.runDueSchedules(SCHED, t, s)).fired).toBe(2);
+
+    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'resolved' });
+    expect(await host.admin.systemGrantsStatus(staff, { tenantId: t, scopeId: s })).toEqual([
+      { moduleId: SCHED, schedules: 'on', switchedOff: null },
+    ]);
+  });
+
+  it('a scope bound to no vertical is read locally, never through the delegation', async () => {
+    const { host, t, s, statusCalls } = await setup(null);
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'local incident' });
+    const status = await host.admin.systemGrantsStatus(staff, { tenantId: t, scopeId: s });
+    expect(status).toEqual([
+      { moduleId: SCHED, schedules: 'off', switchedOff: { actor: staff, reason: 'local incident', at: expect.any(String) } },
+    ]);
+    expect(statusCalls).toEqual([]);
+  });
+
+  /**
+   * #1674 review: a hosted scope (vertical bound, on a non-cpLess host) with NO
+   * `systemSwitchDelegation` configured at all must fail loudly rather than silently
+   * answer from this host's own placeholder DO — an unrelated, and here empty, position.
+   * If the fallback the review flagged is ever reinstated, this comes back `[]` (200)
+   * instead of throwing, and the test goes red.
+   */
+  it('a hosted scope with NO delegation configured fails loudly instead of answering the placeholder', async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      // systemSwitchDelegation deliberately omitted.
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `hosted-nodeleg-${t.slice(-10).toLowerCase()}`, name: 'Hosted' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    await host.admin.activateScope(staff, t, s);
+
+    const refused = await host.admin.systemGrantsStatus(staff, { tenantId: t, scopeId: s }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(errorCodeOf(refused)).toBe('unavailable');
+    expect(String(refused)).toMatch(/no delegation configured for hosted scope/);
+  });
+});
+
+/**
  * #1666's two write-side guarantees on DO SQLite, each with the one lever a contract suite
  * cannot hold: a newer VERSION of a module (a second facade registering a manifest that
  * declares one more schedule permission — the coordinator's `provisionScope` seats from

@@ -5436,7 +5436,7 @@ export class SqliteScopeHost implements ScopeHost {
      * cannot disagree.
      */
     const systemGrantsStatusOf = async (
-      _actor: PlatformActorId,
+      actor: PlatformActorId,
       node: { tenantId: TenantId; scopeId: ScopeId },
     ): Promise<SystemGrantsStatusEntry[]> => {
       const { tenantId, scopeId } = node;
@@ -5450,14 +5450,17 @@ export class SqliteScopeHost implements ScopeHost {
       const states: SystemGrantsEntry[] = await rt.actor.turn(() =>
         systemGrantsStatus(switchSqlOf(rt.db), new Date().toISOString()),
       );
-      if (states.length === 0) return [];
       const offModules = new Set(states.filter((s) => s.schedules === 'off').map((s) => s.moduleId));
       const explanations = offModules.size > 0 ? lastSwitchedOff(tenantId, scopeId, offModules) : new Map();
-      return states.map((s) => ({
+      const result = states.map((s) => ({
         moduleId: s.moduleId as ModuleId,
         schedules: s.schedules,
         switchedOff: explanations.get(s.moduleId) ?? null,
       }));
+      // K-24: reading the switch's position and any live incident reason is itself
+      // access-logged, the same as every other HostAdmin read.
+      this.recordAccess(actor, 'systemGrantsStatus', { tenantId, scopeId }, null, result.length);
+      return result;
     };
 
     return {

@@ -644,10 +644,13 @@ export class VerticalClient {
   /**
    * The read half of the schedule kill switch's status (#1674): every module the
    * deployment serving this scope holds or has held system authority for, and where each
-   * stands. Mirrors `systemSwitch` exactly — same seam, same skew handling: a 404, a 501,
-   * an SPA shell, or a 200 of the wrong shape are ALL "this deployment predates the route
-   * (or the method)", never a wrong `on`, and the caller is told to redeploy rather than
-   * trust the answer.
+   * stands. Mirrors `systemSwitch`'s seam and its skew rule exactly (#1666's "only the
+   * explicit legacy signal reads as redeploy"): a 404 (the route does not exist) or an SPA
+   * shell (a 200 that is not JSON) are the deployment's own proof it predates this read,
+   * and become a 501 that says so. A 200 of the wrong-shaped JSON is NOT that proof — it
+   * is a failure this client cannot explain, so it surfaces as the 502 it is rather than a
+   * guess at "redeploy". The far end's own 501 (the route exists, the method doesn't)
+   * passes through `refusal` verbatim, unchanged either way.
    */
   async systemGrantsStatus(input: { scopeId: ScopeId }): Promise<SystemScheduleEntry[]> {
     const verb = 'system-grants';

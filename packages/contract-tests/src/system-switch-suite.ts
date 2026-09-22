@@ -52,7 +52,16 @@ export function systemSwitchContractSuite(
     };
     // `provisionScope` IS the reconcile on a CP-full host: it seats each schedule's
     // declared `system:` grant (#1659), and a re-run seats again.
-    const provision = (s: ScopeId) => host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    //
+    // NO `vertical` (#1674 review): this suite exercises the switch and the status read
+    // against the scope's OWN storage on both adapters, never through a hosted
+    // deployment's delegation — that seam has its own dedicated fixture (the CF adapter's
+    // `#1666`/`#1674` describe blocks, which configure a real `systemSwitchDelegation`). A
+    // scope here naming a vertical it never actually has one served by would make
+    // `systemGrantsStatus` correctly refuse (#1674 review: a hosted scope with no
+    // delegation configured fails loudly rather than silently reading the CF host's own
+    // placeholder DO) — the refusal this suite does not intend to exercise.
+    const provision = (s: ScopeId) => host.provisionScope(staff, { tenantId: t, scopeId: s });
     const off = (s: ScopeId, module = SCHED) =>
       host.admin.revokeFromSystem(staff, { moduleId: module, node: { tenantId: t, scopeId: s }, reason });
     const on = (s: ScopeId, module = SCHED) =>

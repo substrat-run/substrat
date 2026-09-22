@@ -3688,21 +3688,35 @@ export class CloudflareScopeHost implements ScopeHost {
         if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
         vertical = rec.vertical;
       }
+      // A hosted scope (a vertical bound, on a non-cpLess host) has no local storage worth
+      // reading — its grants live in the deployment serving it, reachable only through the
+      // delegation. Without one configured, the ternary below would silently fall to THIS
+      // host's own placeholder DO and answer an unrelated (and likely empty) position as
+      // if it were the scope's own — a fail-open wrong answer, not a fail-closed refusal.
+      if (!this.cpLess && vertical !== null && !this.systemSwitchDelegation) {
+        throw substratError(
+          'unavailable',
+          `no delegation configured for hosted scope ${scopeId} (vertical '${vertical}') — cannot read its schedule switches`,
+        );
+      }
       const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
       const states = delegation
         ? await delegation.status({ tenantId, scopeId })
         : systemScheduleEntry.array().parse(await this.scopeStub(scopeId).systemGrantsStatus());
-      if (states.length === 0) return [];
       const offModules = new Set(states.filter((s) => s.schedules === 'off').map((s) => s.moduleId as string));
       const explanations =
         offModules.size > 0
           ? await lastSwitchedOff(tenantId, scopeId, offModules)
           : new Map<string, { actor: PlatformActorId; reason: string; at: Instant }>();
-      return states.map((s) => ({
+      const result = states.map((s) => ({
         moduleId: s.moduleId,
         schedules: s.schedules,
         switchedOff: explanations.get(s.moduleId) ?? null,
       }));
+      // K-24: reading the switch's position and any live incident reason is itself
+      // access-logged, the same as every other HostAdmin read.
+      await this.recordAccess(actor, 'systemGrantsStatus', { tenantId, scopeId }, null, result.length);
+      return result;
     };
 
     return {
