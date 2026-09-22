@@ -6654,13 +6654,13 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 }
 
-/** A ledger row -> the wire entry, the attribution re-nested (#1054). */
 /** SHA-256 hex of an attachment's bytes — what `AttachmentRecord.sha256` holds. */
 async function sha256Hex(body: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', body);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** A ledger row -> the wire entry, the attribution re-nested (#1054). */
 function modelUsageEntryOf(r: ModelUsageRow): ModelUsageEntry {
   return modelUsageEntry.parse({
     id: r.id,
