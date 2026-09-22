@@ -11,22 +11,33 @@ import { runExclusive } from './exclusive';
  * and never confused with `on`. Everything else that failed (503 "no delegation
  * configured" among them) is `error`, likewise never read as `on`.
  */
-export type SchedulesCardState =
+export type SwitchCardState<T> =
   | { kind: 'loading' }
-  | { kind: 'ready'; entries: SystemGrantsStatusEntry[] }
+  | { kind: 'ready'; entries: T[] }
   | { kind: 'predates' }
   | { kind: 'error'; message: string };
 
-export function schedulesCardState(
-  entries: SystemGrantsStatusEntry[] | null,
-  error: unknown,
-): SchedulesCardState {
+/**
+ * The three-outcome fetch above, for ANY of the platform's switches — the schedule switch
+ * here and the peer switch (#1706), which normalize the same shapes for the same reasons.
+ * Written once so the two cards cannot come to disagree about what a 501 means.
+ */
+export function switchCardState<T>(entries: T[] | null, error: unknown): SwitchCardState<T> {
   if (error !== null && error !== undefined) {
     if (error instanceof ApiError && error.status === 501) return { kind: 'predates' };
     return { kind: 'error', message: error instanceof Error ? error.message : String(error) };
   }
   if (entries === null) return { kind: 'loading' };
   return { kind: 'ready', entries };
+}
+
+export type SchedulesCardState = SwitchCardState<SystemGrantsStatusEntry>;
+
+export function schedulesCardState(
+  entries: SystemGrantsStatusEntry[] | null,
+  error: unknown,
+): SchedulesCardState {
+  return switchCardState(entries, error);
 }
 
 /** Badge tone for one module's position — the same three-way split the kernel's

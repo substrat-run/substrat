@@ -29,6 +29,8 @@ import type {
   ScopeId,
   ScopeStatus,
   StorageMeterReading,
+  PeerGrantsStatusEntry,
+  PeerSwitchResult,
   SystemGrantsStatusEntry,
   SystemSwitchResult,
   Tenant,
@@ -413,6 +415,28 @@ export function createApi(actor: string | null, baseUrl = '/api') {
       call<SystemSwitchResult>(`/tenants/${t}/scopes/${s}/system-grants`, {
         method: 'POST',
         body: JSON.stringify({ moduleId, reason }),
+      }),
+
+    // The #1706 peer kill switch, read and moved from the console. The route admits a
+    // tenant's own credential as well as staff (unlike the schedule switch above), because
+    // it answers a question about the tenant's own two apps; the console is a staff session
+    // either way. `vertical` is the CALLING vertical's registry slug, always read off a
+    // status entry rather than typed by hand. A deployment predating the route answers 501,
+    // which `mapError`/`ControlPlaneError` relay verbatim (never a wrong `on`).
+    peerGrantsStatus: (t: TenantId, s: ScopeId) =>
+      call<PeerGrantsStatusEntry[]>(`/tenants/${t}/scopes/${s}/peer-grants`),
+    // DELETE on the switch route — `reason` is required server-side and lands on the admin
+    // log beside the actor, exactly as the schedule switch's does.
+    switchPeerOff: (t: TenantId, s: ScopeId, vertical: string, reason: string) =>
+      call<PeerSwitchResult>(`/tenants/${t}/scopes/${s}/peer-grants`, {
+        method: 'DELETE',
+        body: JSON.stringify({ vertical, reason }),
+      }),
+    // POST on the same route — the only way back on; restores exactly what the DELETE took.
+    switchPeerOn: (t: TenantId, s: ScopeId, vertical: string, reason: string) =>
+      call<PeerSwitchResult>(`/tenants/${t}/scopes/${s}/peer-grants`, {
+        method: 'POST',
+        body: JSON.stringify({ vertical, reason }),
       }),
 
     provisionScope: (input: {
