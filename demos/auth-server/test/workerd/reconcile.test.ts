@@ -830,3 +830,28 @@ describe('auth-server mints and retires a preview’s own client (#1704)', () =>
     expect(await clientRow(w.scope, b.clientId)).toBeNull();
   });
 });
+
+/** The same pin on workerd's own URL implementation (#1704): brackets kept, loopback refused. */
+describe('preview-client redirect URIs on workerd (#1704)', () => {
+  it('an IPv6 loopback hostname keeps its brackets here too, and no loopback redirect is minted', async () => {
+    expect(new URL('http://[::1]:8080/cb').hostname).toBe('[::1]');
+    const scope = scopeId.parse(ulid());
+    for (const redirectUri of ['http://[::1]/api/auth/callback', 'http://localhost/api/auth/callback', 'http://127.0.0.1/api/auth/callback']) {
+      const res = await SELF.fetch('https://auth-server.test/internal/preview-client', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-substrat-platform': env.PLATFORM_SECRET },
+        body: JSON.stringify({
+          tenantId: t,
+          scopeId: scope,
+          parentScopeId: scopeId.parse(ulid()),
+          parentRedirectUris: ['https://desk.acme.test/api/auth/callback'],
+          previewScopeId: scopeId.parse(ulid()),
+          redirectUri,
+          postLogoutRedirectUri: 'https://desk--pr-7.acme.test/',
+          clientName: 'Desk (pr-7)',
+        }),
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+});

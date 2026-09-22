@@ -55,15 +55,21 @@ export function oidcCallbackUrl(hostname: string): string {
 /** The issuer-side path of all three verbs (the check hangs off it as `/check`). */
 export const PREVIEW_CLIENT_PATH = '/internal/preview-client';
 
-/** An absolute `https:` URL (`http:` on loopback, for a local issuer), no fragment. */
+/**
+ * An absolute `https:` URL with no fragment and no credentials — and nothing else. No
+ * loopback exception: both ends of this protocol are hosted apps, a preview always has an
+ * https `--<tag>` hostname and so does the app it forks, and previews do not exist in local
+ * dev at all. A loopback redirect registered at a hosted issuer would be a client whose
+ * code any process on the signing-in machine could receive, so it is refused outright
+ * rather than allowed "for local issuers".
+ */
 const redirectUri = z
   .string()
   .max(2048)
   .refine((raw) => {
     try {
       const u = new URL(raw);
-      const loopback = u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]';
-      return (u.protocol === 'https:' || (u.protocol === 'http:' && loopback)) && !u.hash && !u.username && !u.password;
+      return u.protocol === 'https:' && !u.hash && !u.username && !u.password;
     } catch {
       return false;
     }

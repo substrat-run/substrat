@@ -24,7 +24,8 @@ by `preview delete`, `--refresh` or TTL expiry, deletes its client.
 `@substrat-run/contracts` adds the protocol between the control plane and the auth server
 (`preview-client.ts`): three platform-gated routes, `POST /internal/preview-client/check`,
 `POST /internal/preview-client` and `DELETE /internal/preview-client`, with their request and
-response schemas. It also adds `oidcCallbackUrl` / `OIDC_CALLBACK_PATH`, and `previewAuth`, the
+response schemas. Every redirect URI on that wire must be `https:`: loopback is refused, since
+both ends are hosted and previews don't exist in local dev. It also adds `oidcCallbackUrl` / `OIDC_CALLBACK_PATH`, and `previewAuth`, the
 `auth` field of `preview create`'s answer.
 
 `@substrat-run/control-plane-api` adds `VerticalClient.checkPreviewClient` /
