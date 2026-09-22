@@ -5850,9 +5850,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
     // The preview's own login (#1704), once it serves this version. Delivered into `target` —
     // THIS push's version deployment — and never "whatever the scope is bound to now", so an
-    // older push can never overwrite a newer push's config store.
-    // A failure lands an ops-failure row like a failed restore (#559): the preview exists and
-    // serves the PR, but has no working login. The message names no secret — none reaches it.
+    // older push can never overwrite a newer push's config store. A failure lands an
+    // ops-failure row like a failed restore (#559): the preview exists and serves the PR, but
+    // has no working login. The message names no secret; none ever reaches it.
     const wireLogin = async (previewId: ScopeId, hostname: string, parent: Scope | null) => {
       try {
         return await wirePreviewAuth(previewAuthDeps(c), {
