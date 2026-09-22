@@ -1138,6 +1138,41 @@ export interface AppScheduleRow {
 }
 
 /** The schedules panel's data. Both null = nothing declared or a pre-field version — hide. */
+/**
+ * One peer target this app declares it calls (#1706), resolved against what the tenant runs
+ * and against the switch in the TARGET's scope. Mirrors `apps/dashboard/src/peers.ts` —
+ * `not-installed` is an ordinary answer, never a fault, and `unreadable` is never folded
+ * into `allowed`.
+ */
+export type DeclaredCallRow =
+  | { state: 'not-installed'; vertical: string }
+  | { state: 'allowed'; vertical: string; scopeId: string }
+  | {
+      state: 'switched-off';
+      vertical: string;
+      scopeId: string;
+      switchedOff: { actor: string; reason: string; at: string } | null;
+    }
+  | { state: 'no-grant'; vertical: string; scopeId: string }
+  | { state: 'unreadable'; vertical: string; scopeId: string; message: string };
+
+/** Where one of the tenant's other apps stands at THIS app's door. */
+export interface PeerCallerRow {
+  vertical: string;
+  calls: 'on' | 'off' | 'ungranted';
+  switchedOff: { actor: string; reason: string; at: string } | null;
+}
+
+/** Both directions of the peer disclosure for one app (#1706). */
+export interface AppPeersView {
+  /** What the running version declares it calls. `null` = a version that predates the field. */
+  declares: string[] | null;
+  calls: DeclaredCallRow[];
+  /** The mirror: who may call in here. `null` when the read itself failed. */
+  callers: PeerCallerRow[] | null;
+  callersError: string | null;
+}
+
 export interface AppSchedulesView {
   running: { versionId: string | null; version: string | null };
   schedules: AppScheduleRow[] | null;
@@ -1453,6 +1488,12 @@ export const api = {
   appModel: (scopeId: string) => call<AppModelView>(`/apps/${encodeURIComponent(scopeId)}/model`),
   /** Schedule health for the app's running version (#1232) — null schedules hides the panel. */
   appSchedules: (scopeId: string) => call<AppSchedulesView>(`/apps/${encodeURIComponent(scopeId)}/schedules`),
+  appPeers: (scopeId: string) => call<AppPeersView>(`/apps/${encodeURIComponent(scopeId)}/peers`),
+  switchAppPeer: (scopeId: string, vertical: string, to: 'on' | 'off', reason: string) =>
+    call<{ changed: boolean }>(`/apps/${encodeURIComponent(scopeId)}/peers/switch`, {
+      method: 'POST',
+      body: JSON.stringify({ vertical, to, reason }),
+    }),
   /** The scopes an app spans (Data tab switcher) — several for a multi-scope vertical, one otherwise. */
   appScopes: (scopeId: string) => call<AppScope[]>(`/apps/${encodeURIComponent(scopeId)}/scopes`),
   /** The tables of the app's own database (Data tab). */

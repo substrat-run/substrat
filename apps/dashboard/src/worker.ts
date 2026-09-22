@@ -32,6 +32,7 @@ import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wir
 import { McpReconcileGate, clearAppMcpResources, isSharedIssuer, issuerFor, logUnsettled, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
+import { declaredCallState, targetScopeOf } from './peers.js';
 import { deriveFailureGroups } from './failure-groups.js';
 import { deriveReleases, deriveReleaseComparison, deriveTeamSeries, deriveTrafficSeries } from './releases.js';
 import { deriveAppOverlays, overlayWindow } from './overlays.js';
@@ -1970,6 +1971,99 @@ app.get('/api/apps/:scopeId/schedules', async (c) => {
  * tenant-narrowed to the app's vertical. Only browsable scopes (active/provisioning) are
  * returned; the viewed app scope is flagged so the UI opens on it.
  */
+/** The peer switch's body (#1706) — the scope comes from the path, the reason is required. */
+const peerSwitchRequest = z.object({
+  vertical: z.string().min(1),
+  to: z.enum(['on', 'off']),
+  reason: z.string().trim().min(1).max(500),
+});
+
+/**
+ * The peer disclosure for one app (#1706), both directions at once, because a tenant
+ * reading this panel is answering one question in two halves:
+ *
+ * - **What this app reaches** — the peer verticals its RUNNING version declares
+ *   (`substrat.calls`), each resolved against what the tenant actually runs and against the
+ *   switch in the TARGET's scope, which is the only place that decides anything.
+ * - **What reaches this app** — the mirror: which of the tenant's other apps may call into
+ *   this scope, and where each stands.
+ *
+ * Neither half is an error when it is empty, and the first half's `not-installed` is
+ * emphatically not one (`src/peers.ts` says why). What IS surfaced as unreadable is a
+ * target whose position could not be read — a deployment predating the route (501) or a
+ * hosted scope with no delegation (503) — because a tenant told "allowed" believes
+ * something nobody checked.
+ *
+ * One read per distinct target, deduped: a version may declare the same peer twice, and a
+ * tenant should not pay for that.
+ */
+app.get('/api/apps/:scopeId/peers', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const scope = scopeId.parse(appRow.app_scope_id);
+  const slug = appRow.vertical_slug;
+
+  // The mirror read first — its failure is this panel's own, not a target's.
+  const callers = await cp
+    .peerGrants(scope)
+    .then((entries) => ({ entries, error: null as string | null }))
+    .catch((e: unknown) => ({ entries: null, error: e instanceof Error ? e.message : String(e) }));
+
+  const { runningId } = await runningDeclarations(cp, scope, slug);
+  const declared = runningId ? await cp.versionCalls(slug, runningId).catch(() => null) : null;
+  const targets = [...new Set(declared ?? [])];
+  const calls = await Promise.all(
+    targets.map(async (vertical) => {
+      const scopes = await cp.listScopes(vertical).catch(() => []);
+      const target = targetScopeOf(scopes ?? [], node.tenantId, vertical);
+      if (target === null || 'ambiguous' in target) {
+        return declaredCallState({ vertical, caller: slug, target, entries: [] });
+      }
+      const read = await cp
+        .peerGrants(scopeId.parse(target.scopeId))
+        .then((entries) => ({ entries, error: null as string | null }))
+        .catch((e: unknown) => ({ entries: null, error: e instanceof Error ? e.message : String(e) }));
+      return declaredCallState({ vertical, caller: slug, target, entries: read.entries, readError: read.error });
+    }),
+  );
+
+  return c.json({
+    // `null` is a fact: this version predates the declaration and is unenforced, which a
+    // reader must be able to tell from a version that declares it calls nothing (`[]`).
+    declares: declared,
+    calls,
+    callers: callers.entries,
+    callersError: callers.error,
+  });
+});
+
+/**
+ * Move one peer's switch on this app's scope (#1706) — the tenant's own lever over which of
+ * its other apps may call in here. The control plane admits a tenant credential on this
+ * route and confines it to that tenant; the dashboard adds no authority of its own beyond
+ * resolving the app from the tenant-scoped `list-apps`, so a foreign scope id 404s here
+ * exactly as it does on every other app route.
+ */
+app.post('/api/apps/:scopeId/peers/switch', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const body = peerSwitchRequest.parse(await c.req.json());
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const result = await cp.switchPeer(scopeId.parse(appRow.app_scope_id), body.vertical, body.to, body.reason);
+  return c.json(result);
+});
+
 app.get('/api/apps/:scopeId/scopes', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
