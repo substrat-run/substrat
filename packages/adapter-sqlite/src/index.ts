@@ -2620,6 +2620,9 @@ export class SqliteScopeHost implements ScopeHost {
     // the invoke door's discipline, so a revoke or an expiry refuses the next read on a
     // surface built before it. Throws `unauthenticated`/`forbidden` for a dead session or
     // an allowlist, before any key is checked (not a K-35 denial). A read takes no use.
+    // THE ORDER, for every verb: the session (here, in the runner), then the target lookup,
+    // then the check — so every `targetGate` call on a capability path sits inside a
+    // `guarded` callback, and a dead link is told `unauthenticated` and nothing else.
     const capabilitySession = authority.kind === 'capability-session' ? authority.hash : undefined;
     const actingAs = (operation: string): CheckSubject =>
       authority.kind === 'capability-session'
@@ -2722,20 +2725,22 @@ export class SqliteScopeHost implements ScopeHost {
 
     return {
       upload: async (input) => {
-        const gate = targetGate(input.entity.entityType);
         if (capabilitySession !== undefined) {
           // #1686: refused BEFORE the bytes go anywhere — through the serialized runner, so
           // the session is resolved first (a dead one is `unauthenticated`, no K-35 row) and
-          // the refusal is recorded against `{ capability }` like any enforced denial.
+          // the refusal is recorded against `{ capability }` like any enforced denial. The
+          // target lookup is INSIDE, after the session: a dead link learns nothing about
+          // which entity types take attachments.
           return guarded('attachments.upload', async (_ctx, subject) => {
             throw capabilityAttachmentWriteRefused(
               subject.id as CapabilityId,
               'attachments.upload',
               node,
-              gate.write,
+              targetGate(input.entity.entityType).write,
             );
           });
         }
+        const gate = targetGate(input.entity.entityType);
         const creator = authority as CheckSubject;
         const id = ulid();
         const key = attachmentBlobKey(rt.scopeId, id);
@@ -2790,9 +2795,11 @@ export class SqliteScopeHost implements ScopeHost {
           throw err;
         }
       },
-      list: async (entity) => {
-        const gate = targetGate(entity.entityType);
-        return guarded('attachments.list', async (ctx) => {
+      list: async (entity) =>
+        // The target lookup inside the runner, after `actingAs` (#1686): a capability's
+        // session is decided before anything about the entity type is.
+        guarded('attachments.list', async (ctx) => {
+          const gate = targetGate(entity.entityType);
           assertAllowed(await ctx.check(gate.read, entity));
           const rows = rt.db
             .prepare(
@@ -2801,8 +2808,7 @@ export class SqliteScopeHost implements ScopeHost {
             )
             .all(entity.entityType, entity.entityId) as AttachmentRow[];
           return rows.map(rowToRecord);
-        });
-      },
+        }),
       open: async (attachmentId) => {
         const record = await guarded('attachments.open', async (ctx) => {
           const row = rt.db

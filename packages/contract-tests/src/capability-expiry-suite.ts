@@ -140,6 +140,10 @@ export function capabilityExpiryContractSuite(
       expect((await shortFiles.open(file.id))?.record.id).toBe(file.id);
       clock.advance(2 * MINUTE);
       expect(errorCodeOf(await refusal(shortFiles.open(file.id)))).toBe('unauthenticated');
+      // …and an expired link asking about a type that takes no files learns nothing of it.
+      const unknownType = await refusal(shortFiles.list({ entityType: 'widget', entityId: 'w1' }));
+      expect(errorCodeOf(unknownType)).toBe('unauthenticated');
+      expect((unknownType as Error).message).not.toMatch(/widget|attachmentTargets/);
 
       // The session's TTL, on a capability that never expires.
       const open = await share({ entity: folder('F'), permissions: [CAP_READ] });

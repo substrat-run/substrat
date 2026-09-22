@@ -275,6 +275,33 @@ describe('mountLinkShareDownload — files through a link share, over HTTP', () 
       expect((await legacy.request(url, { headers: headers(null, alice) })).status).toBe(200);
     });
 
+    it('every refusal — 401, 403, 404, 503 — carries every hardening header and a generic attachment disposition', async () => {
+      const minted = await mint({ entity: folder('F'), permissions: [CAP_READ] });
+      const cookie = await cookieFor(minted.secret);
+      const older = { attachments: host.attachments.bind(host) };
+      const legacy = new Hono();
+      mountLinkShareDownload(legacy, { host: () => older, node: () => node, principal: principalOf });
+      const refusals = [
+        { want: 401, res: await download(files.d1.id, null) },
+        { want: 403, res: await download(files.d3.id, cookie) },
+        { want: 404, res: await download(ulid(), cookie) },
+        {
+          want: 503,
+          res: await legacy.request(`http://docs.test/api/capability/attachments/${files.d1.id}`, {
+            headers: headers(cookie),
+          }),
+        },
+      ];
+      for (const { want, res } of refusals) {
+        expect(res.status).toBe(want);
+        expect(res.headers.get('cache-control')).toBe('private, no-store');
+        expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+        expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+        expect(res.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
+        expect(res.headers.get('content-disposition')).toBe('attachment');
+      }
+    });
+
     it('with neither, 401; an unknown id through a live link, 404', async () => {
       expect((await download(files.d1.id, null)).status).toBe(401);
       const minted = await mint({ entity: folder('F'), permissions: [CAP_READ] });

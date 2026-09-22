@@ -317,6 +317,39 @@ export function capabilityAttachmentContractSuite(
         await expect(stub.invoke('cap/read', { entity: doc('d1') })).resolves.toBeTruthy();
       });
 
+      // The order is the session, then the target lookup, then the check: a dead link must
+      // learn nothing about which entity types take attachments.
+      const undeclared: EntityRef = { entityType: 'widget', entityId: 'w1' };
+      const plantWidget = (surface: ScopeAttachments) =>
+        surface.upload({
+          entity: undeclared,
+          filename: 'w.txt',
+          contentType: 'text/plain',
+          visibility: 'internal',
+          body: bytes('w'),
+        });
+
+      it('a revoked link asking about an entity type that takes no files is told `unauthenticated` — nothing about the type', async () => {
+        const minted = await share(alice, { entity: folder('F'), permissions: [CAP_READ] });
+        const surface = await filesOf(await sessionOf(minted.secret));
+        await (await as(alice)).invoke('cap/unshare', { id: minted.id });
+        for (const attempt of [surface.list(undeclared), plantWidget(surface)]) {
+          const err = await refusal(attempt);
+          expect(errorCodeOf(err)).toBe('unauthenticated');
+          expect((err as Error).message).not.toMatch(/widget|attachmentTargets/);
+        }
+      });
+
+      it('the twin: a live link asking the same is told the type is not an attachment target', async () => {
+        const minted = await share(alice, { entity: folder('F'), permissions: [CAP_READ] });
+        const surface = await filesOf(await sessionOf(minted.secret));
+        for (const attempt of [surface.list(undeclared), plantWidget(surface)]) {
+          const err = await refusal(attempt);
+          expect(errorCodeOf(err)).not.toBe('unauthenticated');
+          expect((err as Error).message).toMatch(/'widget' in attachmentTargets/);
+        }
+      });
+
       it('a token that is not a session is refused at the door', async () => {
         expect(errorCodeOf(await refusal(filesOf('not-a-session')))).toBe('unauthenticated');
       });

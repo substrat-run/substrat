@@ -274,6 +274,9 @@ export function mountLinkShareDownload<E extends Env>(
     c.header('Cache-Control', 'private, no-store');
     c.header('Referrer-Policy', 'no-referrer');
     c.header('X-Content-Type-Options', 'nosniff');
+    c.header('Content-Security-Policy', "default-src 'none'; sandbox");
+    // Generic until there is a file to name — the 200 replaces it with the sanitised name.
+    c.header('Content-Disposition', 'attachment');
     try {
       const attachmentId = c.req.param('attachmentId');
       if (!attachmentId) throw substratError('not_found', 'no attachment named');
@@ -292,7 +295,6 @@ export function mountLinkShareDownload<E extends Env>(
         'Content-Type': opened.contentType,
         'Content-Length': String(opened.body.byteLength),
         'Content-Disposition': attachmentDisposition(opened.record.filename),
-        'Content-Security-Policy': "default-src 'none'; sandbox",
       });
     } catch (err) {
       return problemResponse(c, err);

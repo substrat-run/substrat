@@ -2539,6 +2539,10 @@ export function defineScopeDO(
      * Resolve the session and run `fn` as the capability; a refused check lands in the
      * denial log against `{ capability }`. A dead session throws before `fn` (no K-35 row).
      *
+     * THE ORDER, for every verb: the session (here), then the target lookup, then the
+     * check. So `attachmentGate` is only ever called inside `fn`: a dead link is told
+     * `unauthenticated` and learns nothing about which entity types take attachments.
+     *
      * The answer is an ENVELOPE, `invoke`'s: a failure travels as a value (`toWireFailure`)
      * because a throw across this boundary keeps only its message, and the caller has to
      * tell `permission_denied` from `unauthenticated` from `forbidden` — a 403, a 401 and a
@@ -2588,8 +2592,8 @@ export function defineScopeDO(
       scopeId: ScopeId,
     ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>> {
       await this.ensureMigrations();
-      const gate = this.attachmentGate(entity.entityType);
       return this.asCapability(sessionHash, tenantId, scopeId, 'attachments.list', async (ctx) => {
+        const gate = this.attachmentGate(entity.entityType);
         assertAllowed(await ctx.check(gate.read, entity));
         const rows = this.sql
           .exec(
