@@ -10,7 +10,7 @@
  * copy-paste.
  */
 
-import type { ScopeId } from '@substrat-run/contracts';
+import { SHARED_ISSUER_CONFIG_KEY, type ScopeId } from '@substrat-run/contracts';
 
 export type AppAuthChoice =
   /** An issuer the user configured by hand — Supabase, Auth0, Keycloak, …; the client
@@ -91,4 +91,19 @@ export async function authConfigFor(
   const register = input.registerClient ?? registerOidcClient;
   const client = await register(choice.issuer, { appName: input.appName, redirectUri: input.redirectUri });
   return { mode: 'oidc', issuer: choice.issuer, clientId: client.clientId, clientSecret: client.clientSecret };
+}
+
+/**
+ * The delivered entry that tells an app whether its issuer is one of the team's shared
+ * auth-servers (#1683) — `"true"` holds its bearer path to the app's OWN tokens, `""`
+ * leaves it as it always was. Delivered beside `substrat:auth` at install and on an
+ * Identity change, and re-asserted by the Apps list's reconcile (`mcp-resources.ts`) for
+ * every install that predates it. A key of its own so that re-assertion never has to
+ * re-deliver — and so never has to read back — the client secret inside `substrat:auth`.
+ *
+ * An external issuer gets `""`: it is the operator's own, and the knob they already have
+ * for its bearers is `audience`.
+ */
+export function sharedIssuerEntry(shared: boolean): { key: string; value: string } {
+  return { key: SHARED_ISSUER_CONFIG_KEY, value: shared ? 'true' : '' };
 }

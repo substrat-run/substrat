@@ -28,6 +28,12 @@ import { SignJWT, jwtVerify, importJWK, type JWTPayload } from 'jose';
 import { DEV_ALG, DEV_KID, DEV_PRIVATE_JWK, DEV_PUBLIC_JWK } from './keys.js';
 import type { DevPersona } from './personas.js';
 
+/**
+ * The client id `devLogin` signs in as unless told otherwise, and so the audience
+ * `/dev/token` mints for by default: a script's token is the harness's own (#1683).
+ */
+export const DEV_CLIENT_ID = 'substrat-dev';
+
 export interface DevIssuerOptions {
   /** The cast the picker offers. The `sub` values are the contract with the app's directory. */
   personas: DevPersona[];
@@ -316,7 +322,10 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
   app.post('/dev/token', async (c) => {
     const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
     const sub = typeof body.sub === 'string' ? body.sub : '';
-    const audience = typeof body.audience === 'string' ? body.audience : 'dev';
+    // The default audience is the client `devLogin` signs in as, so a minted token is one
+    // the harness accepts as its OWN, the way a hosted vertical on a team auth-server
+    // accepts only its own (#1683). An MCP client's token passes its endpoint's URL instead.
+    const audience = typeof body.audience === 'string' ? body.audience : DEV_CLIENT_ID;
     const persona = personaOf(sub);
     if (!persona) {
       return c.json({ error: `unknown sub '${sub}' — known: ${personas.map((p) => p.sub).join(', ')}` }, 400);

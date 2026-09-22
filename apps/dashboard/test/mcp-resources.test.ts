@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mcpResourceOf, scopeId } from '@substrat-run/contracts';
+import { SHARED_ISSUER_CONFIG_KEY, mcpResourceOf, scopeId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import {
   McpReconcileGate,
@@ -154,6 +154,8 @@ describe('the Apps list reconcile (existing installs)', () => {
       resources: [DESK_RESOURCE],
       clearedAt: [authB.app_scope_id],
       failed: [],
+      sharedIssuer: true,
+      markerFailed: null,
     });
     expect(reconcileConverged(outcomes)).toBe(true);
   });
@@ -174,6 +176,8 @@ describe('the Apps list reconcile (existing installs)', () => {
       resources: [DESK_RESOURCE],
       clearedAt: [],
       failed: [{ issuerScopeId: authB.app_scope_id, reason: 'issuer unreachable' }],
+      sharedIssuer: true,
+      markerFailed: null,
     });
     // And the pass says so, so its gate runs it again rather than marking it done.
     expect(reconcileConverged(outcomes)).toBe(false);
@@ -205,9 +209,53 @@ describe('the Apps list reconcile (existing installs)', () => {
       },
     });
     await run();
-    expect(deliveries).toEqual([
-      { scopeId: unstored.app_scope_id, key: `substrat:resources:${bound.app_scope_id}`, value: JSON.stringify([DESK_RESOURCE]) },
+    // Order-free: the two go out concurrently.
+    expect(deliveries).toHaveLength(2);
+    expect(deliveries).toEqual(
+      expect.arrayContaining([
+        { scopeId: unstored.app_scope_id, key: `substrat:resources:${bound.app_scope_id}`, value: JSON.stringify([DESK_RESOURCE]) },
+        { scopeId: bound.app_scope_id, key: SHARED_ISSUER_CONFIG_KEY, value: 'true' },
+      ]),
+    );
+  });
+
+  /**
+   * The heal for #1683. An install made before the shared-issuer marker existed signs in at
+   * a team auth-server and accepts any bearer that issuer signed. Nothing reconfigures it
+   * by hand, so this pass has to be what tells it — to the app's own scope, the key alone,
+   * never `substrat:auth` (which would mean reading back the client secret).
+   */
+  it('tells an existing team install that its issuer is shared (#1683)', async () => {
+    const { run, deliveries } = harness();
+    const outcomes = await run();
+    const toDesk = deliveries.filter((d) => d.scopeId === desk.app_scope_id);
+    expect(toDesk).toEqual([{ scopeId: desk.app_scope_id, key: SHARED_ISSUER_CONFIG_KEY, value: 'true' }]);
+    expect(outcomes).toContainEqual(expect.objectContaining({ appScopeId: desk.app_scope_id, sharedIssuer: true }));
+  });
+
+  it('marks an install whose identity names some other issuer as NOT shared, and one with no identity not at all', async () => {
+    const external = row({ hostname: 'ops-acme.global.substrat.run' });
+    identities[external.app_scope_id] = 'https://login.example-idp.test';
+    const { run, deliveries } = harness({ apps: [authA, external, builtin] });
+    const outcomes = await run();
+    // Cleared rather than left alone: an Identity change away from a team issuer whose
+    // own delivery did not land is repaired here.
+    expect(deliveries.filter((d) => d.scopeId === external.app_scope_id)).toEqual([
+      { scopeId: external.app_scope_id, key: SHARED_ISSUER_CONFIG_KEY, value: '' },
     ]);
+    expect(outcomes).toContainEqual(expect.objectContaining({ appScopeId: external.app_scope_id, sharedIssuer: false }));
+    // No stored identity: nothing delivered, since its deployment may store no config.
+    expect(deliveries.some((d) => d.scopeId === builtin.app_scope_id)).toBe(false);
+    expect(outcomes).toContainEqual(expect.objectContaining({ appScopeId: builtin.app_scope_id, sharedIssuer: null }));
+  });
+
+  it('is not converged while the marker has not landed, so the next load tries again', async () => {
+    const { run } = harness({ downIssuer: desk.app_scope_id });
+    const outcomes = await run();
+    expect(outcomes).toContainEqual(
+      expect.objectContaining({ appScopeId: desk.app_scope_id, sharedIssuer: null, markerFailed: 'issuer unreachable' }),
+    );
+    expect(reconcileConverged(outcomes)).toBe(false);
   });
 
   it('registers an app with no team issuer nowhere, and clears it everywhere', async () => {

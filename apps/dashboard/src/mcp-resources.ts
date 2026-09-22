@@ -1,5 +1,6 @@
 import { MCP_RESOURCES_CONFIG_PREFIX, mcpResourceOf, scopeId as scopeIdSchema, type ScopeId } from '@substrat-run/contracts';
 import type { TenantNarrowedControlPlane } from './authority.js';
+import { sharedIssuerEntry } from './auth-wiring.js';
 import type { DashboardAppRow } from './module.js';
 
 /**
@@ -158,19 +159,30 @@ export type McpReconcileOutcome =
       clearedAt: string[];
       /** Deliveries that did not land, each on its own. Every other one still went out. */
       failed: Array<{ issuerScopeId: string; reason: string }>;
+      /**
+       * The shared-issuer marker delivered to the APP itself (#1683, `sharedIssuerEntry`):
+       * `true` when it signs in at a team auth-server, `false` when its identity names some
+       * other issuer, `null` when nothing was delivered — it has no stored identity, or the
+       * delivery failed, which `markerFailed` then says.
+       */
+      sharedIssuer: boolean | null;
+      markerFailed: string | null;
     }
   | { appScopeId: string; skipped: string };
 
 /** Did a pass converge everything it touched? A caller that did not must run it again. */
 export function reconcileConverged(outcomes: readonly McpReconcileOutcome[]): boolean {
-  return outcomes.every((o) => !('skipped' in o) && o.failed.length === 0);
+  return outcomes.every((o) => !('skipped' in o) && o.failed.length === 0 && o.markerFailed === null);
 }
 
 const reasonOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /**
  * Converge every app of a team onto the right registrations: registered at the team
- * auth-server its identity names, and cleared at every other team auth-server. The second
+ * auth-server its identity names, and cleared at every other team auth-server. The same
+ * pass tells the app ITSELF whether that issuer is a shared one (#1683), which is how an
+ * install that predates the marker starts refusing other clients' bearers without anyone
+ * reconfiguring it — on the next load of the Apps list by anyone on the team. The second
  * half is what repairs an Identity change whose clear did not land. A DELETED app is not in
  * the list, so a delete's clear is not repaired here: its row names a hostname that no
  * longer routes, and the next app bound to that hostname takes it over. Idempotent,
@@ -206,10 +218,17 @@ export async function reconcileMcpResources(deps: {
     }
     const current = issuerFor(named, issuers);
     const others = issuers.filter((i) => i !== current);
-    const [registered, ...cleared] = await Promise.allSettled([
+    // Only to an app with a stored identity: that is an app whose deployment took a
+    // `substrat:auth` delivery, so it takes this one too. One with none may run a vertical
+    // that stores no config at all, whose 501 would keep the pass from ever converging.
+    const marker = named
+      ? deps.controlPlane.configureInstance(appScopeId, [sharedIssuerEntry(current !== undefined)])
+      : null;
+    const [registered, markerResult, ...cleared] = await Promise.allSettled([
       current
         ? registerAppMcpResources(deps.controlPlane, { appScopeId, issuerScopeId: current.scopeId })
         : Promise.resolve([] as string[]),
+      marker ?? Promise.resolve(),
       ...others.map((i) => clearAppMcpResources(deps.controlPlane, { appScopeId, issuerScopeId: i.scopeId })),
     ]);
     const failed: Array<{ issuerScopeId: string; reason: string }> = [];
@@ -227,6 +246,8 @@ export async function reconcileMcpResources(deps: {
       resources: registered!.status === 'fulfilled' ? registered!.value : [],
       clearedAt,
       failed,
+      sharedIssuer: marker && markerResult!.status === 'fulfilled' ? current !== undefined : null,
+      markerFailed: markerResult!.status === 'rejected' ? reasonOf(markerResult!.reason) : null,
     });
   }
   return outcomes;

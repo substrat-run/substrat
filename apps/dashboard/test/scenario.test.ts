@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
+  SHARED_ISSUER_CONFIG_KEY,
   mcpResourceOf,
   platformActorId,
   principalId,
@@ -360,7 +361,12 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(ext.status).toBe('active');
     expect(configured).toHaveLength(1);
     expect(configured[0]!.scopeId).toBe(extScope);
-    expect(configured[0]!.entries.map((e) => e.key)).toEqual(['substrat:auth']);
+    // With the shared-issuer marker (#1683) in the same delivery, and for an external
+    // issuer it says NOT shared: the operator's own issuer keeps today's bearer rules.
+    expect(configured[0]!.entries).toEqual([
+      expect.objectContaining({ key: 'substrat:auth' }),
+      { key: SHARED_ISSUER_CONFIG_KEY, value: '' },
+    ]);
     expect(JSON.parse(configured[0]!.entries[0]!.value)).toEqual({
       mode: 'oidc', issuer: 'https://auth.example.com', clientId: 'cid', clientSecret: 'cs',
     });
@@ -388,6 +394,9 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(JSON.parse(configured[1]!.entries[0]!.value)).toEqual({
       mode: 'oidc', issuer: 'https://auth-acme.global.substrat.run', clientId: 'minted-id', clientSecret: 'minted-secret',
     });
+    // A team auth-server IS shared, so the app holds bearers to its own tokens from its
+    // first request — never a window where it runs that login without the marker.
+    expect(configured[1]!.entries[1]).toEqual({ key: SHARED_ISSUER_CONFIG_KEY, value: 'true' });
 
     // A FAILING delivery is a failed app with the reason on its trail — the user asked
     // for THIS issuer; silently falling back to builtin would strand its users later.

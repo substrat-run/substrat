@@ -28,7 +28,7 @@ import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } fro
 import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
-import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
+import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
 import { McpReconcileGate, clearAppMcpResources, issuerFor, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
@@ -3885,11 +3885,19 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
     appScopeId: appRow.app_scope_id,
     config,
   })) as Record<string, string>;
+  // Which team auth-server the app signs in with NOW, if any: the MCP registration moves
+  // there below, and the app is told its issuer is shared (#1683) in the same delivery as
+  // the choice itself, so it never runs a team issuer's login without the marker.
+  const nextIssuer =
+    choice.source === 'auth-server' && choice.issuerScopeId
+      ? choice.issuerScopeId
+      : issuerFor(merged.issuer, issuers)?.scopeId;
   let delivered = false;
   let note: string | undefined;
   try {
     await cp.configureInstance(scopeId.parse(appRow.app_scope_id), [
       { key: 'substrat:auth', value: JSON.stringify(merged) },
+      sharedIssuerEntry(choice.source === 'auth-server' || nextIssuer !== undefined),
     ]);
     delivered = true;
   } catch (e) {
@@ -3903,10 +3911,6 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   // Best-effort, like the install's: the save above is what the caller asked for, and the
   // Apps list's reconcile converges whatever this did not.
   const appScope = scopeId.parse(appRow.app_scope_id);
-  const nextIssuer =
-    choice.source === 'auth-server' && choice.issuerScopeId
-      ? choice.issuerScopeId
-      : issuerFor(merged.issuer, issuers)?.scopeId;
   // Independent of each other: a register that failed must not leave the old issuer minting.
   const settle = (work: Promise<unknown>) =>
     work.catch((e: unknown) =>
