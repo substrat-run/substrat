@@ -8263,7 +8263,9 @@ export class SqliteScopeHost implements ScopeHost {
             .run(outcome.error.slice(0, 2000), now, id);
         }
         // #1691: the line is settled — now the data point, off the row's own identity
-        // (never the caller's input), fire-and-forget.
+        // (never the caller's input), fire-and-forget. With the no-op default there is
+        // nothing to hand it, so the self-host path skips the read entirely.
+        if (this.connectorCalls === noopConnectorCallRecorder) return;
         const row = this.directory
           .prepare('SELECT tenant_id, vertical, provider FROM _substrat_connections WHERE id = ?')
           .get(id) as { tenant_id: string; vertical: string; provider: string } | undefined;
