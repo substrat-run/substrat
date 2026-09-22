@@ -755,8 +755,14 @@ const connectionHealthQuery = z.object({
   status: connectionHealthState.optional(),
   provider: connectionProvider.optional(),
   tenantId: tenantIdSchema.optional(),
+  // Free text, matched case-insensitively against the row's own fields BEFORE paging, so
+  // a search finds a row on any page rather than only the ones a console has loaded.
+  q: z.string().trim().min(1).max(200).optional(),
   limit: listPageQuery.shape.limit,
   cursor: listPageQuery.shape.cursor,
+  // The walk is ascending by connection id, only. A `desc` is refused rather than
+  // silently ignored: a caller would otherwise read ascending pages as descending ones.
+  order: z.literal('asc').optional(),
 });
 
 /** The dead-letter window (#1690) — a week, the same horizon as the stale window. */
@@ -1597,8 +1603,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       status: c.req.query('status'),
       provider: c.req.query('provider'),
       tenantId: c.req.query('tenantId'),
+      q: c.req.query('q'),
       limit: c.req.query('limit'),
       cursor: c.req.query('cursor'),
+      order: c.req.query('order'),
     });
     const now = new Date();
     const rows = await admin.listConnections(c.get('actor'), {
@@ -1613,12 +1621,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       stale: 0,
       'never-used': 0,
       expiring: 0,
+      expired: 0,
     };
     for (const e of all) {
       summary[e.health] += 1;
-      if (e.expiryWarning) summary.expiring += 1;
+      if (e.expiryWarning === 'soon') summary.expiring += 1;
+      if (e.expiryWarning === 'expired') summary.expired += 1;
     }
-    const matching = q.status ? all.filter((e) => e.health === q.status) : all;
+    const needle = q.q?.toLowerCase();
+    const matching = all.filter(
+      (e) =>
+        (!q.status || e.health === q.status) &&
+        (!needle ||
+          [e.id, e.tenantId, e.provider, e.vertical, e.label, e.externalAccountRef, e.lastError].some((f) =>
+            f?.toLowerCase().includes(needle),
+          )),
+    );
     const page = pageSlice(matching, { limit: q.limit, cursor: q.cursor }, (e) => e.id);
 
     // Connector dead letters. A hosted vertical is CP-less, so its connector deliveries

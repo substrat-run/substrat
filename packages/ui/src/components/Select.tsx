@@ -3,6 +3,8 @@ import type { ChangeEvent, CSSProperties } from 'react';
 
 export interface SelectProps {
   label?: string;
+  /** The control's accessible name when no visible `label` is shown (a filter row). */
+  ariaLabel?: string;
   /** Options: strings or {value, label}. `disabled` renders but cannot be picked. */
   options: Array<string | { value: string; label: string; disabled?: boolean }>;
   size?: 'sm' | 'md' | 'lg';
@@ -17,7 +19,7 @@ const heights: Record<NonNullable<SelectProps['size']>, string> = {
   lg: 'var(--control-h-lg)',
 };
 
-export function Select({ label, options, size = 'md', value, onChange, style }: SelectProps) {
+export function Select({ label, ariaLabel, options, size = 'md', value, onChange, style }: SelectProps) {
   const [focus, setFocus] = useState(false);
   const h = heights[size];
 
@@ -44,6 +46,7 @@ export function Select({ label, options, size = 'md', value, onChange, style }: 
       )}
       <span style={{ position: 'relative', display: 'flex' }}>
         <select
+          aria-label={label ? undefined : ariaLabel}
           value={value}
           onChange={onChange}
           onFocus={() => setFocus(true)}

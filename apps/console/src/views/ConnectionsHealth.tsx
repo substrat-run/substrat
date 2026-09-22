@@ -8,6 +8,7 @@ import type {
 } from '@substrat-run/contracts';
 import { Badge, Button, Card, Input, Select, Stat, Tag } from '../components';
 import type { Api } from '../lib/api';
+import { runExclusive } from '../lib/exclusive';
 
 const PAGE = 50;
 
@@ -29,6 +30,16 @@ const HEALTH_LABEL: Record<ConnectionHealthState, string> = {
   stale: 'stale',
   'never-used': 'never used',
 };
+
+/** Debounce the search box so a server-side filter isn't refetched per keystroke. */
+function useDebounced(value: string, ms = 400): string {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return settled;
+}
 
 const stamp = (at: string) => at.slice(0, 16).replace('T', ' ');
 
@@ -57,7 +68,12 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
   const [statusFilter, setStatusFilter] = useState<'all' | ConnectionHealthState>('all');
   const [providerFilter, setProviderFilter] = useState('all');
   const [tenantFilter, setTenantFilter] = useState('all');
-  const [q, setQ] = useState('');
+  const [qInput, setQInput] = useState('');
+  // Server-side, before paging: a search over only the loaded pages would report
+  // "no entries match" for a row that simply had not been fetched yet.
+  const q = useDebounced(qInput.trim());
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadMoreInFlight = useRef(false);
   // The provider choices outlive a provider filter: once narrowed, the page only
   // names one provider, and the dropdown must still offer the others.
   const [providers, setProviders] = useState<string[]>([]);
@@ -66,6 +82,7 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
     status: statusFilter === 'all' ? undefined : statusFilter,
     provider: providerFilter === 'all' ? undefined : providerFilter,
     tenantId: tenantFilter === 'all' ? undefined : (tenantFilter as TenantId),
+    q: q || undefined,
   };
 
   const filterGeneration = useRef(0);
@@ -94,23 +111,30 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, statusFilter, providerFilter, tenantFilter]);
+  }, [api, statusFilter, providerFilter, tenantFilter, q]);
 
   async function loadMore() {
     if (!cursor) return;
-    const generation = filterGeneration.current;
-    const p = await api.listConnectionHealth({ limit: PAGE, cursor, ...serverFilter });
-    if (generation !== filterGeneration.current) return;
-    setEntries((prev) => [...prev, ...p.entries]);
-    setCursor(p.nextCursor);
+    // One page request at a time: a second click on the same cursor would append the
+    // same rows twice. A failure lands in the error card instead of going unhandled.
+    await runExclusive(loadMoreInFlight, async () => {
+      setLoadingMore(true);
+      const generation = filterGeneration.current;
+      try {
+        const p = await api.listConnectionHealth({ limit: PAGE, cursor, ...serverFilter });
+        if (generation !== filterGeneration.current) return;
+        setEntries((prev) => [...prev, ...p.entries]);
+        setCursor(p.nextCursor);
+      } catch (e) {
+        if (generation === filterGeneration.current) setError((e as Error).message);
+      } finally {
+        setLoadingMore(false);
+      }
+    });
   }
 
   const tenantLabel = (id: TenantId) => tenants.get(id)?.slug ?? id.slice(0, 8);
-  const visible = entries.filter((e) => {
-    if (!q) return true;
-    const hay = `${e.provider}${tenantLabel(e.tenantId)}${e.vertical}${e.label}${e.externalAccountRef ?? ''}${e.lastError ?? ''}`.toLowerCase();
-    return hay.includes(q.toLowerCase());
-  });
+
 
   const th: React.CSSProperties = {
     textAlign: 'left',
@@ -163,7 +187,9 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
           <Stat
             label="Expiring"
             value={summary.expiring}
-            meta={`grant ends within ${page.expiryWarningDays} days, where a connector reports it`}
+            meta={`grant ends within ${page.expiryWarningDays} days, where a connector reports it${
+              summary.expired ? ` · ${summary.expired} already expired` : ''
+            }`}
           />
         </div>
       )}
@@ -189,7 +215,7 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
       )}
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <Input placeholder="Filter by provider, tenant, account, or error…" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 300 }} />
+        <Input placeholder="Search provider, vertical, account, or error…" value={qInput} onChange={(e) => setQInput(e.target.value)} style={{ width: 300 }} />
         <Select
           options={[
             { value: 'all', label: 'All statuses' },
@@ -198,12 +224,14 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
             { value: 'never-used', label: 'Never used' },
             { value: 'healthy', label: 'Healthy' },
           ]}
+          ariaLabel="Health status"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
           style={{ width: 150 }}
         />
         <Select
           options={[{ value: 'all', label: 'All providers' }, ...providers.map((p) => ({ value: p, label: p }))]}
+          ariaLabel="Provider"
           value={providerFilter}
           onChange={(e) => setProviderFilter(e.target.value)}
           style={{ width: 150 }}
@@ -213,6 +241,7 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
             { value: 'all', label: 'All tenants' },
             ...[...tenants.values()].map((t) => ({ value: t.id, label: t.slug })),
           ]}
+          ariaLabel="Tenant"
           value={tenantFilter}
           onChange={(e) => setTenantFilter(e.target.value)}
           style={{ width: 160 }}
@@ -241,7 +270,7 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
               </tr>
             </thead>
             <tbody>
-              {visible.map((e) => (
+              {entries.map((e) => (
                 <Fragment key={e.id}>
                   <tr
                     onClick={() => setExpanded(expanded === e.id ? undefined : e.id)}
@@ -326,10 +355,10 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
                   )}
                 </Fragment>
               ))}
-              {visible.length === 0 && (
+              {entries.length === 0 && (
                 <tr>
                   <td colSpan={COLUMNS.length} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 80 }}>
-                    {entries.length === 0 && !error ? 'No connections match.' : 'No entries match.'}
+                    {error ? 'Could not load connections.' : 'No connections match.'}
                   </td>
                 </tr>
               )}
@@ -338,7 +367,7 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
         </div>
         {cursor && (
           <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
-            <Button variant="ghost" size="sm" onClick={() => void loadMore()}>
+            <Button variant="ghost" size="sm" loading={loadingMore} onClick={() => void loadMore()}>
               Load more
             </Button>
           </div>

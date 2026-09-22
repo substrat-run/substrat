@@ -153,8 +153,12 @@ export type ConnectorDeadLetterCount = z.infer<typeof connectorDeadLetterCount>;
 export interface ConnectionHealthPage {
   entries: ConnectionHealthEntry[];
   nextCursor: string | null;
-  /** Counts over the tenant/provider-filtered set, BEFORE the health filter — the chips' numbers. */
-  summary: Record<ConnectionHealthState, number> & { total: number; expiring: number };
+  /**
+   * Counts over the tenant/provider-filtered set, BEFORE the health and text filters — the
+   * chips' numbers. `expiring` is a grant ending inside the warning window; `expired` is
+   * one already past its `expiresAt`. They never overlap.
+   */
+  summary: Record<ConnectionHealthState, number> & { total: number; expiring: number; expired: number };
   deadLetters: ConnectorDeadLetterCount[];
   /** The start of the dead-letter window. */
   deadLettersSince: string;

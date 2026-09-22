@@ -165,7 +165,7 @@ describe('GET /connections/health (#1690)', () => {
       expect(by[ids.bad!]!.health).toBe('erroring');
       expect(by[ids.bad!]!.lastError).toBe('HTTP 401 from scrive');
       expect(by[ids.fresh!]!.health).toBe('never-used');
-      expect(body.summary).toEqual({ total: 3, healthy: 1, erroring: 1, stale: 0, 'never-used': 1, expiring: 0 });
+      expect(body.summary).toEqual({ total: 3, healthy: 1, erroring: 1, stale: 0, 'never-used': 1, expiring: 0, expired: 0 });
       expect(body.staleAfterDays).toBe(7);
       expect(body.expiryWarningDays).toBe(7);
     });
@@ -186,6 +186,18 @@ describe('GET /connections/health (#1690)', () => {
     it('refuses an unknown status rather than answering unfiltered', async () => {
       const res = await app.request('/connections/health?status=fine', { headers: asStaff });
       expect(res.status).toBe(400);
+    });
+
+    it('refuses order=desc rather than handing back ascending pages under that name', async () => {
+      expect((await app.request('/connections/health?order=desc', { headers: asStaff })).status).toBe(400);
+      // Its twin: the one order the walk has is accepted when spelled out.
+      expect((await app.request('/connections/health?order=asc', { headers: asStaff })).status).toBe(200);
+    });
+
+    it('q matches account, label and error text, case-insensitively', async () => {
+      expect((await read(app, '/connections/health?q=A2')).body.entries.map((e) => e.id)).toEqual([ids.bad]);
+      expect((await read(app, '/connections/health?q=http%20401')).body.entries.map((e) => e.id)).toEqual([ids.bad]);
+      expect((await read(app, '/connections/health?q=nothing-matches')).body.entries).toEqual([]);
     });
   });
 
@@ -229,6 +241,26 @@ describe('GET /connections/health (#1690)', () => {
       const erroring = rows.filter((_, i) => i % 2 === 0).map((r) => r.id);
       expect(seen).toEqual(erroring); // 5 rows: pages of 2, 2, 1
       expect(pages).toBe(3);
+    });
+
+    it('q finds a row that sits on a later page of the unfiltered walk', async () => {
+      // Row 7 is on page 4 at limit 2. A search applied to loaded pages only would miss it.
+      const { body } = await read(paged(), '/connections/health?q=ROW%207&limit=2');
+      expect(body.entries.map((e) => e.id)).toEqual([rows[7]!.id]);
+      expect(body.nextCursor).toBeNull();
+    });
+
+    it('summary counts an upcoming expiry and a passed one separately', async () => {
+      const day = 86_400_000;
+      const withExpiry = rows.slice(0, 3).map((r, i) => ({
+        ...r,
+        expiresAt: [iso(-2 * day), iso(day), null][i] as Connection['expiresAt'],
+      }));
+      const { body } = await read(apiFor(withListConnections(async () => withExpiry)));
+      expect(body.summary.expiring).toBe(1);
+      expect(body.summary.expired).toBe(1);
+      // iso() counts back from now: the first grant ends in two days, the second ended a day ago.
+      expect(body.entries.map((e) => e.expiryWarning)).toEqual(['soon', 'expired', null]);
     });
 
     it('its positive twin: the unfiltered walk returns every row in id order', async () => {

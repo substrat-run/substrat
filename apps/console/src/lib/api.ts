@@ -191,9 +191,14 @@ export interface SweepRunsQuery extends PageQuery {
   until?: string;
 }
 
-/** `GET /connections/health` (#1690) — `status` is the DERIVED health state. */
-export interface ConnectionHealthQuery extends PageQuery {
+/**
+ * `GET /connections/health` (#1690) — `status` is the DERIVED health state. No `order`:
+ * the walk is ascending by connection id only, and the route refuses `desc`.
+ */
+export interface ConnectionHealthQuery extends Omit<PageQuery, 'order'> {
   status?: ConnectionHealthState;
+  /** Free text, matched server-side before paging — so it finds rows on any page. */
+  q?: string;
   provider?: string;
   tenantId?: TenantId;
 }

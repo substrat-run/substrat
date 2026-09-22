@@ -495,7 +495,8 @@ health" as part of the framework; this is the minimum that makes §2.2's trade h
 
 Staff read it fleet-wide at `GET /connections/health` (#1690), the console's Health → Connections
 view. What the columns *mean* is one pure function, `deriveConnectionHealth` in contracts:
-**erroring** when the latest outcome is an error (a tie counts as one), **never used** when there is
+**erroring** when the latest outcome is an error (a tie counts as one) or the stored status is
+`expired`, **never used** when there is
 no outcome at all — deliberately not healthy, for §3.8's reason — **stale** once the last success is
 7 days old, and **healthy** otherwise. Seven days is a stated trade-off: it fires three weeks before
 a 30-day Scrive refresh (§3.6) idles out, and it misreads a connection that only a monthly job uses,
