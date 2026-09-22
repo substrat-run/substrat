@@ -2,7 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import type { ModuleId, Scope, SystemGrantsStatusEntry } from '@substrat-run/contracts';
 import { Badge, Button, Card, Dialog, Input, Table } from '../components';
 import type { Api } from '../lib/api';
-import { schedulesCardState, scheduleBadgeStatus, submitSwitch, validReason } from '../lib/schedules';
+import {
+  errorMessage,
+  performSwitch,
+  schedulesCardState,
+  scheduleBadgeStatus,
+  submitSwitch,
+  validReason,
+} from '../lib/schedules';
 import { ActorCell } from './ActorCell';
 
 const stamp = (iso: string) => iso.replace('T', ' ').replace(/\.\d+Z$/, 'Z');
@@ -70,26 +77,47 @@ export function SchedulesCard({
     if (!validReason(trimmed)) return;
     setBusy(true);
     try {
-      const result = await submitSwitch(switching, () =>
-        to === 'off'
-          ? api.switchScheduleOff(scope.tenantId, scope.id, moduleId, trimmed)
-          : api.switchScheduleOn(scope.tenantId, scope.id, moduleId, trimmed),
+      // The write and the re-read are two failures, not one (Copilot review, #1707): a
+      // switch that lands but whose follow-up read fails must never say "Refused" — the
+      // write already happened, and "Refused" would send an operator to retry it.
+      const attempt = await submitSwitch(switching, () =>
+        performSwitch(
+          () =>
+            to === 'off'
+              ? api.switchScheduleOff(scope.tenantId, scope.id, moduleId, trimmed)
+              : api.switchScheduleOn(scope.tenantId, scope.id, moduleId, trimmed),
+          load,
+        ),
       );
-      if (result === null) return; // a submit was already in flight — this click was skipped
-      // Re-read rather than assume: the switch may have answered `changed: false` (a
-      // repeat), and the delegated write for a hosted scope is a second hop this
-      // console never saw succeed until it asks again.
-      const fresh = await load();
-      setEntries(fresh);
+      if (attempt === null) return; // a submit was already in flight — this click was skipped
+      if (attempt.kind === 'refused') {
+        onToast('Refused', errorMessage(attempt.error), 'danger');
+        return;
+      }
+      if (attempt.kind === 'unconfirmed') {
+        // The switch applied, but the read that would prove it — and show the fresh
+        // position — failed. Clear the stale entries rather than leave the old (now
+        // wrong) position on screen: the card must never show "On" once it can no
+        // longer vouch for that being true.
+        setEntries(null);
+        setError(attempt.error);
+        onToast(
+          `${to === 'off' ? 'Switched off' : 'Switched back on'}, but the status could not be re-read`,
+          `${moduleId} on ${scope.slug} · ${errorMessage(attempt.error)}`,
+          'danger',
+        );
+        setDialog(null);
+        setReason('');
+        return;
+      }
+      setEntries(attempt.entries);
       setError(null);
       setDialog(null);
       setReason('');
       onToast(
         to === 'off' ? 'Schedules switched off' : 'Schedules switched back on',
-        `${moduleId} on ${scope.slug}${result.changed ? '' : ' · already in that position'}`,
+        `${moduleId} on ${scope.slug}${attempt.result.changed ? '' : ' · already in that position'}`,
       );
-    } catch (e) {
-      onToast('Refused', (e as Error).message, 'danger');
     } finally {
       setBusy(false);
     }

@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { SystemGrantsStatusEntry } from '@substrat-run/contracts';
 import { ApiError } from '../src/lib/api';
-import { schedulesCardState, scheduleBadgeStatus, submitSwitch, validReason } from '../src/lib/schedules';
+import {
+  errorMessage,
+  performSwitch,
+  schedulesCardState,
+  scheduleBadgeStatus,
+  submitSwitch,
+  validReason,
+} from '../src/lib/schedules';
 
 /**
  * The Schedules card (#1675) maps one status read into four card states, and the
@@ -126,5 +133,51 @@ describe('submitSwitch', () => {
       'conflict',
     );
     expect(flag.current).toBe(false);
+  });
+});
+
+describe('errorMessage', () => {
+  it('reads an Error message, and falls back to String() for anything else', () => {
+    expect(errorMessage(new Error('boom'))).toBe('boom');
+    expect(errorMessage('plain string')).toBe('plain string');
+  });
+});
+
+/**
+ * The write and the re-read are two separate failures (Copilot review on #1707,
+ * thread 4073371122): the naive single `try/catch` this replaces caught both steps
+ * together, so a switch that landed but whose follow-up read failed ALSO reported
+ * "Refused" — with the card still showing the stale, now-wrong position. An operator
+ * reading that would retry a switch that had already happened.
+ */
+describe('performSwitch', () => {
+  it('switch ok + refresh fails: unconfirmed, never refused, carries the read error', async () => {
+    const refresh = () => Promise.reject(new Error('status read timed out'));
+    const attempt = await performSwitch(async () => ({ changed: true }), refresh);
+    expect(attempt.kind).toBe('unconfirmed');
+    if (attempt.kind === 'unconfirmed') {
+      expect(attempt.result).toEqual({ changed: true }); // the write DID land
+      expect(errorMessage(attempt.error)).toBe('status read timed out');
+    }
+  });
+
+  it('switch fails: refused, and the refresh is never attempted', async () => {
+    let refreshCalls = 0;
+    const refresh = async () => {
+      refreshCalls += 1;
+      return [];
+    };
+    const attempt = await performSwitch(() => Promise.reject(new ApiError(409, 'conflict')), refresh);
+    expect(attempt).toEqual({ kind: 'refused', error: expect.any(ApiError) });
+    if (attempt.kind === 'refused') expect(errorMessage(attempt.error)).toBe('conflict');
+    expect(refreshCalls).toBe(0);
+  });
+
+  it('its twin: both steps land, and applied carries the fresh read', async () => {
+    const attempt = await performSwitch(
+      async () => ({ changed: true }),
+      async () => ['fresh'],
+    );
+    expect(attempt).toEqual({ kind: 'applied', result: { changed: true }, entries: ['fresh'] });
   });
 });

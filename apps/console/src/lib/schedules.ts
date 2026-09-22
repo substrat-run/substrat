@@ -62,3 +62,47 @@ export async function submitSwitch<T>(flag: { current: boolean }, run: () => Pro
   });
   return result;
 }
+
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The two-step shape one switch confirm is (Copilot review, #1707): the write, and the
+ * re-read that confirms it — kept SEPARATE, because the two can fail independently and
+ * an operator must never read one failure as the other.
+ *
+ * - `refused`: the switch itself failed. Nothing moved. This is the only branch that
+ *   should ever read as "Refused" — the naive single `try/catch` this replaces caught
+ *   BOTH steps together, so a switch that succeeded but whose follow-up read failed
+ *   also said "Refused", with the card left showing the stale (now wrong) position.
+ *   An operator reading that would retry a switch that had already happened.
+ * - `unconfirmed`: the switch applied (`result` is real), but the read that would
+ *   prove it — and show the fresh position — failed. The card must show neither the
+ *   stale entries nor a false "Refused"; it shows `error`, same as any other read
+ *   failure (`schedulesCardState`), so the operator sees "unknown, go look" rather
+ *   than a wrong answer in either direction.
+ * - `applied`: both steps landed. `entries` is the fresh read to render.
+ */
+export type SwitchAttempt<T, E> =
+  | { kind: 'applied'; result: T; entries: E }
+  | { kind: 'refused'; error: unknown }
+  | { kind: 'unconfirmed'; result: T; error: unknown };
+
+export async function performSwitch<T, E>(
+  runSwitch: () => Promise<T>,
+  refresh: () => Promise<E>,
+): Promise<SwitchAttempt<T, E>> {
+  let result: T;
+  try {
+    result = await runSwitch();
+  } catch (error) {
+    return { kind: 'refused', error };
+  }
+  try {
+    const entries = await refresh();
+    return { kind: 'applied', result, entries };
+  } catch (error) {
+    return { kind: 'unconfirmed', result, error };
+  }
+}
