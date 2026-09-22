@@ -70,8 +70,14 @@ for (const [worker, cfg] of Object.entries(MANIFEST)) {
   let src;
   try {
     src = readFileSync(workerFile, 'utf8');
-  } catch {
-    continue; // no single worker.ts to read for this member — nothing to check
+  } catch (err) {
+    // Every MANIFEST member today has exactly one `src/worker.ts` — this branch has
+    // never fired. It must still fail closed rather than skip: a silently-swallowed
+    // read error means this worker is checked for NOTHING, which is a green light
+    // that looked exactly like coverage. A worker genuinely without one would need
+    // an explicit MANIFEST opt-out, not a caught exception standing in for one.
+    problems.push(`${worker}: could not read ${workerFile} (${err.code ?? err.message}) — this worker was checked for nothing`);
+    continue;
   }
   const required = new Set(cfg.required ?? []);
   for (const name of fieldsRequiringSetup(src)) {
