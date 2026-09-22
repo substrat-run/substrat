@@ -310,7 +310,14 @@ function fillGrid(rows: TrafficBucketInput[], grid: BucketGrid): TrafficBucket[]
   // either carries the status-class dimension for its whole answer or not at all, and
   // a bucket that merely had no traffic of a class must still stack a real (zero)
   // green/yellow, not fall back to the no-split rendering.
-  const hasClasses = rows.some((b) => b.class2xx !== undefined);
+  //
+  // EVERY row must carry ALL three fields, not just some row carrying one of them —
+  // `some(class2xx !== undefined)` let a mixed or partial-version answer (one row
+  // missing `class4xx`, say) turn stacking on and then silently read its absent
+  // fields as zero, drawing an incomplete stack rather than falling back. A source
+  // is only "has the split" when nothing in it is guessing.
+  const hasClasses =
+    rows.length > 0 && rows.every((b) => b.class2xx !== undefined && b.class3xx !== undefined && b.class4xx !== undefined);
   const totals = new Map<number, { requests: number; errors: number; class2xx: number; class3xx: number; class4xx: number }>();
   for (const b of rows) {
     const t = Date.parse(b.start);

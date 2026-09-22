@@ -312,6 +312,50 @@ describe('deriveTrafficSeries (#1236) — the chart series and its markers', () 
     const untouched = series.buckets.find((b) => b.start !== '2026-09-08T11:00:00.000Z')!;
     expect(untouched.green).toBeUndefined();
   });
+
+  it('falls back for the WHOLE chart when one row of a mixed answer is missing a class field', () => {
+    // Two rows land in the same bucket; one carries the full split, the other is
+    // missing `class4xx` — a partial or mixed-version answer, not an absent one.
+    // Turning stacking on here would silently read the missing field as zero and
+    // draw an incomplete stack, which is worse than the honest single-color bar.
+    const series = deriveTrafficSeries({
+      hours: 2,
+      now,
+      releases: [],
+      prodHistory: [],
+      buckets: [
+        { start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 90, errors: 3, class2xx: 70, class3xx: 10, class4xx: 7 },
+        { start: '2026-09-08T11:30:00.000Z', bucketMinutes: 60, requests: 10, errors: 0, class2xx: 8, class3xx: 1 },
+      ],
+    });
+    expect(series.buckets.every((b) => b.green === undefined && b.yellow === undefined)).toBe(true);
+  });
+
+  it('falls back when a row names only one class', () => {
+    const series = deriveTrafficSeries({
+      hours: 2,
+      now,
+      releases: [],
+      prodHistory: [],
+      buckets: [{ start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 10, errors: 1, class2xx: 9 }],
+    });
+    expect(series.buckets.every((b) => b.green === undefined && b.yellow === undefined)).toBe(true);
+  });
+
+  it('stacks when every row is complete — the twin of the two fallback cases above', () => {
+    const series = deriveTrafficSeries({
+      hours: 2,
+      now,
+      releases: [],
+      prodHistory: [],
+      buckets: [
+        { start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 90, errors: 3, class2xx: 70, class3xx: 10, class4xx: 7 },
+        { start: '2026-09-08T11:30:00.000Z', bucketMinutes: 60, requests: 10, errors: 0, class2xx: 8, class3xx: 1, class4xx: 1 },
+      ],
+    });
+    const hour11 = series.buckets.find((b) => b.start === '2026-09-08T11:00:00.000Z')!;
+    expect(hour11).toMatchObject({ green: 89, yellow: 8 });
+  });
 });
 
 describe('stackedStatusClasses (#1693) — the chart\'s green/yellow segments', () => {
