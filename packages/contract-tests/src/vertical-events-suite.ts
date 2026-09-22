@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import {
   dataSubjectId,
   eventId,
@@ -294,7 +294,9 @@ export function verticalEventsContractSuite(
   adapterName: string,
   makeFixture: () => Promise<VerticalEventsFixture>,
 ): void {
-  describe(`cross-vertical events (#1705): ${adapterName}`, () => {
+  // A sweep pass is real work on workerd (every active scope in the directory is looked at),
+  // and a slow CI runner is several times slower than a laptop, so the suite gets room.
+  describe(`cross-vertical events (#1705): ${adapterName}`, { timeout: 30_000 }, () => {
     let fx: VerticalEventsFixture;
     const staff = platformActorId.parse(ulid());
     const writer: PrincipalId = principalId.parse(ulid());
@@ -315,8 +317,17 @@ export function verticalEventsContractSuite(
     // The reach a deployment-per-vertical platform has: each scope reached through the
     // deployment serving it, resolved from the directory. The control plane does the same
     // over `/internal`.
+    //
+    // Scoped to the tenants THIS test created. The sweep walks every active scope in the shared
+    // directory, so without this a test's passes would also move every earlier test's edges.
+    // Worse, a test that timed out keeps sweeping in the background (vitest does not cancel it),
+    // and would deliver the next test's events before that test's own pass could. An edge that
+    // has no consumer state is invisible to the phase, which is exactly what this returns.
+    const current = new Set<string>();
+    beforeEach(() => current.clear());
     const reach: CrossVerticalReach = {
-      importState: async (t, s) => (await hostOf(t, s)).admin.importState(staff, t, s),
+      importState: async (t, s) =>
+        current.has(t) ? (await hostOf(t, s)).admin.importState(staff, t, s) : { consumes: [], cursors: [] },
       readExports: async (t, s, input) => (await hostOf(t, s)).admin.readExportedEvents(staff, t, s, input),
       deliver: async (t, s, batch) => (await hostOf(t, s)).deliverToPeer(t, s, batch),
     };
@@ -326,6 +337,7 @@ export function verticalEventsContractSuite(
       await fx.producer.admin.createTenant(staff, { id: t, slug: `ve-${t.toLowerCase()}`, name: 'Vertical events' });
       await fx.producer.admin.grantEntitlement(staff, t, 'crm-export');
       await fx.producer.admin.grantEntitlement(staff, t, 'board-import');
+      current.add(t);
       return t;
     };
     const install = async (t: TenantId, vertical: string): Promise<ScopeId> => {
