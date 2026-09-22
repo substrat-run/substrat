@@ -1,6 +1,14 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { errorCodeOf, permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import {
+  errorCodeOf,
+  peerGrantsEntry,
+  permissionKey,
+  platformActorId,
+  principalId,
+  scopeId,
+  tenantId,
+} from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { PEER_CALLER, PEER_LISTENER, peerMod } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
@@ -197,9 +205,10 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
     /** `null` provisions a scope bound to no vertical. */
     vertical: string | null = 'peer-vertical',
     /** The halfway-upgraded control plane: served elsewhere, no peer delegation. */
-    options: { delegate?: boolean } = {},
+    options: { delegate?: boolean; positions?: () => { vertical: string; calls: 'on' | 'off' | 'ungranted' }[] } = {},
   ) => {
     const calls: Call[] = [];
+    const reads: { tenantId: string; scopeId: string }[] = [];
     const delegate = options.delegate ?? true;
     const host = new CloudflareScopeHost({
       scope: env.SCOPE,
@@ -211,6 +220,10 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
                 calls.push({ ...a });
                 const out = answer(a);
                 return { ...out, permissions: out.permissions.map((p) => permissionKey.parse(p)) };
+              },
+              status: async (a) => {
+                reads.push({ ...a });
+                return (options.positions ?? (() => []))().map((p) => peerGrantsEntry.parse(p));
               },
             },
           }
@@ -247,7 +260,7 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
       plain.registerModule(peerMod);
       return plain;
     };
-    return { host, t, s, calls, audit, placeholder };
+    return { host, t, s, calls, reads, audit, placeholder };
   };
 
   const rows = async (
@@ -370,6 +383,58 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
     expect(errorCodeOf(refused)).toBe('unavailable');
     // And the placeholder was not touched: the peer still holds what it held.
     expect(await placeholder().peerCovers(t, s, PEER_CALLER, [READ])).toEqual([{ permission: READ, held: true }]);
+  });
+
+  it('the status read is delegated too, and the admin log explains each OFF peer here', async () => {
+    const { host, t, s, reads, audit } = await setup(
+      () => ({ held: true, changed: true, permissions: ['peer:read'] }),
+      'peer-vertical',
+      {
+        positions: () => [
+          { vertical: PEER_CALLER, calls: 'off' },
+          { vertical: PEER_LISTENER, calls: 'on' },
+        ],
+      },
+    );
+    await host.admin.revokeFromPeer(staff, {
+      vertical: PEER_CALLER,
+      node: { tenantId: t, scopeId: s },
+      reason: 'incident 7',
+    });
+    const status = await host.admin.peerGrantsStatus(staff, { tenantId: t, scopeId: s });
+    // The POSITION came from the deployment; the EXPLANATION came from the admin log here.
+    expect(reads).toEqual([{ tenantId: t, scopeId: s }]);
+    expect(status).toEqual([
+      {
+        vertical: PEER_CALLER,
+        calls: 'off',
+        switchedOff: { actor: staff, reason: 'incident 7', at: expect.any(String) },
+      },
+      { vertical: PEER_LISTENER, calls: 'on', switchedOff: null },
+    ]);
+    // And the explanation is the one still in force: a FAILED attempt never explains a peer.
+    expect((await audit()).length).toBe(2);
+  });
+
+  it('a hosted scope with no peer delegation refuses the read rather than answering the placeholder', async () => {
+    const { host, t, s } = await setup(() => ({ held: true, changed: true, permissions: [] }), 'peer-vertical', {
+      delegate: false,
+    });
+    const refused = await host.admin.peerGrantsStatus(staff, { tenantId: t, scopeId: s }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(errorCodeOf(refused)).toBe('unavailable');
+    expect(String(refused)).toMatch(/no delegation configured/);
+  });
+
+  it('a scope bound to no vertical is read locally, and sees what provisioning seated', async () => {
+    const { host, t, s, reads } = await setup(() => ({ held: true, changed: true, permissions: [] }), null);
+    expect(await host.admin.peerGrantsStatus(staff, { tenantId: t, scopeId: s })).toEqual([
+      { vertical: PEER_CALLER, calls: 'on', switchedOff: null },
+      { vertical: PEER_LISTENER, calls: 'on', switchedOff: null },
+    ]);
+    expect(reads).toEqual([]);
   });
 
   it('refuses a scope the directory does not have before reaching anything', async () => {

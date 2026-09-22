@@ -1193,6 +1193,58 @@ describe('mountPlatformSurface — the schedule switch status read (#1674)', () 
 });
 
 /**
+ * The far end of the PEER kill switch's status read (#1706) — the schedule read's twin, and
+ * held to the same three things: the scope id is parsed and handed over, the entries come
+ * back verbatim (no admin-log join here; this deployment holds none), and a host that
+ * predates the method answers a 501 naming the redeploy rather than an empty list, which a
+ * control plane would otherwise read as "no peer may call in".
+ */
+describe('mountPlatformSurface — the peer switch status read (#1706)', () => {
+  const get = (host: VerticalScopeHost, scopeId: string = SCOPE, headers: Record<string, string> = authed()) =>
+    appWith(host).request(`/internal/peer-grants?scopeId=${scopeId}`, { method: 'GET', headers }, ENV);
+
+  it('parses the scope id and hands it to the host, answering its entries verbatim', async () => {
+    let got: unknown[] = [];
+    const host = fakeHost({
+      peerGrantsStatusLocal: async (...args: unknown[]) => {
+        got = args;
+        return [{ vertical: 'acme/board-room', calls: 'off' }] as never;
+      },
+    });
+    const res = await get(host);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([{ vertical: 'acme/board-room', calls: 'off' }]);
+    expect(got).toEqual([SCOPE]);
+  });
+
+  it('a scope no peer holds anything on is a 200 with an empty array', async () => {
+    const host = fakeHost({ peerGrantsStatusLocal: async () => [] });
+    const res = await get(host);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+
+  it('a host without the method answers 501, and nothing is called', async () => {
+    const host = fakeHost();
+    const res = await get(host);
+    expect(res.status).toBe(501);
+    expect(JSON.stringify(await res.json())).toMatch(/redeploy/);
+  });
+
+  it('sits behind the platform-secret gate like the rest of the surface', async () => {
+    let called = false;
+    const host = fakeHost({
+      peerGrantsStatusLocal: async () => {
+        called = true;
+        return [];
+      },
+    });
+    expect((await get(host, SCOPE, {})).status).toBe(403);
+    expect(called).toBe(false);
+  });
+});
+
+/**
  * #113 phase 4: the envelope is a problem document, served as one. `{ error }` survives
  * inside it for one deprecation window (§1) — which is why every assertion above this
  * block still reads.

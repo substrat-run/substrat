@@ -103,6 +103,7 @@ import {
   type PlatformRequestFailure,
   type ModuleId,
   type SystemSwitchOutcome,
+  type PeerGrantsEntry,
   type SystemScheduleEntry,
   verticalCaller,
   verticalSlug as verticalSlugOf,
@@ -256,6 +257,13 @@ export interface VerticalScopeHost {
    * never a wrong `on`.
    */
   systemGrantsStatusLocal?(scopeId: ScopeId): Promise<SystemScheduleEntry[]>;
+  /**
+   * The far end of the PEER kill switch's status read (#1706): every peer this scope holds
+   * or has held grants for, and where each stands. Optional for the same reason the two
+   * above are — a host built before it satisfies this interface without it, and the route
+   * answers 501, which the control plane reports as "redeploy", never a wrong `on`.
+   */
+  peerGrantsStatusLocal?(scopeId: ScopeId): Promise<PeerGrantsEntry[]>;
   /**
    * The far end of a PEER call (#1706): invoke one operation in this deployment as another
    * vertical of the same tenant, which the platform identified and resolved this scope for.
@@ -944,6 +952,18 @@ export function mountPlatformSurface<Env extends object>(
       return c.json({ error: 'this deployment cannot read schedule switches (#1674) — redeploy it' }, 501);
     }
     return c.json(await host.systemGrantsStatusLocal(scopeId));
+  });
+
+  // The peer kill switch's status read for a scope served HERE (#1706). The same shape as
+  // the route above and for the same reasons: bare positions, no admin-log join (this
+  // deployment holds no admin log), and a 501 naming the redeploy when the host predates it.
+  app.get('/internal/peer-grants', async (c) => {
+    const scopeId = scopeIdOf.parse(c.req.query('scopeId'));
+    const host = deps.hostFor(c.env);
+    if (!host.peerGrantsStatusLocal) {
+      return c.json({ error: 'this deployment cannot read peer switches (#1706) — redeploy it' }, 501);
+    }
+    return c.json(await host.peerGrantsStatusLocal(scopeId));
   });
 
   // The peer door's far end (#1706). The platform — the router, at the hop a calling

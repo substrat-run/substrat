@@ -22,6 +22,9 @@
  *   so a switched-off peer holds nothing to ANY check — `covers` included — without the checker
  *   knowing the marker exists; and `seatScopeTuple` seats nothing for a subject whose marker is
  *   live, so no re-provision can hand the grants back. `restoreToPeer` is the only way back.
+ * - **`peerGrantsStatus`** — the read half of that switch: every peer this scope holds or has
+ *   held grants for, and where each stands. The SAME predicate `admitPeer` gates on, so the
+ *   status a tenant reads and the answer a call gets cannot disagree.
  * - **`resolveVerticalInstanceFrom`** — "the instance of vertical Y in tenant T": one rule for
  *   every directory that is asked.
  *
@@ -40,7 +43,14 @@ import {
   type VerticalResolution,
 } from '@substrat-run/contracts';
 import { isPrimaryScope } from './platform-sweep.js';
-import { subjectSwitchedOff, switchSubjectGrants, type SwitchOutcome, type SwitchSql } from './system-switch.js';
+import {
+  SYSTEM_SWITCH_OFF_RELATION,
+  subjectGrantState,
+  subjectSwitchedOff,
+  switchSubjectGrants,
+  type SwitchOutcome,
+  type SwitchSql,
+} from './system-switch.js';
 
 /** The tuple-subject prefix of a peer vertical — `vertical:acme/board-room`. */
 export const PEER_SUBJECT_PREFIX = 'vertical:';
@@ -162,6 +172,42 @@ export function switchPeer(
 /** Is this peer switched off on the scope `db` is? */
 export function peerSwitchedOff(db: SwitchSql, vertical: string): boolean {
   return subjectSwitchedOff(db, peerSubjectRef(vertical));
+}
+
+/** One peer's position on one scope, as `peerGrantsStatus` enumerates them. */
+export interface PeerGrantsRow {
+  vertical: string;
+  calls: 'on' | 'off' | 'ungranted';
+}
+
+/**
+ * Every peer this scope holds or has held grants for, and where each stands (#1706) — the
+ * read half of the kill switch, and `systemGrantsStatus`'s shape with the subject swapped.
+ *
+ * One SELECT enumerating the `vertical:<slug>` subjects this scope's storage has a `granted:`
+ * tuple or an OFF marker for — revoked rows included, deliberately: a peer whose grants were
+ * tombstoned must keep appearing, as `ungranted`, rather than vanishing from the view that
+ * exists to say where it stands. A peer the scope never had any row for is absent, which is
+ * the honest answer to "what does this scope know about peers" — "not installed here" is a
+ * fact the DIRECTORY holds, not this storage, and the surfaces above join the two.
+ *
+ * Then `subjectGrantState` per subject: the SAME predicate `admitPeer` refuses on, so the
+ * status a tenant reads and the answer the next call gets cannot disagree.
+ *
+ * `substr` rather than `LIKE`, as everywhere on this table: `LIKE` is case-insensitive in
+ * SQLite and a Durable Object caps its patterns (#1655).
+ */
+export function peerGrantsStatus(db: SwitchSql, now: string): PeerGrantsRow[] {
+  const rows = db.all(
+    `SELECT DISTINCT subject FROM _substrat_tuples
+      WHERE substr(subject, 1, ${PEER_SUBJECT_PREFIX.length}) = '${PEER_SUBJECT_PREFIX}'
+        AND (substr(relation, 1, 8) = 'granted:' OR relation = '${SYSTEM_SWITCH_OFF_RELATION}')
+      ORDER BY subject`,
+  ) as { subject: string }[];
+  return rows.map((row) => {
+    const vertical = row.subject.slice(PEER_SUBJECT_PREFIX.length);
+    return { vertical, calls: subjectGrantState(db, row.subject, now) };
+  });
 }
 
 /** A directory row, as much of it as the resolution reads. */

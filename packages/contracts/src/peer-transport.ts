@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { instant, platformActorId, scopeId, tenantId, verticalSlug } from './ids.js';
+import { scopeId, tenantId, verticalSlug } from './ids.js';
 
 /**
  * The hosted transport for a peer call (#1706, part 2) — how a deployed vertical reaches
@@ -104,34 +104,3 @@ export const callDepthMessage = (depth: number): string =>
   `peer call refused: this call is already ${depth} deep, and a chain may be at most ` +
   `${PEER_CALL_DEPTH_MAX} (#1706). A chain that long is usually two verticals calling each ` +
   `other in a loop; an event is the shape for work that does not need an answer.`;
-
-/**
- * Where ONE peer stands on one scope (#1706) — the bare position, with no audit join: the
- * honest answer a vertical's own deployment can give, since it holds no admin log.
- *
- * - `on`: a live grant and no OFF marker — its calls are admitted.
- * - `off`: a live OFF marker. Every call is refused at the door until `restoreToPeer`.
- * - `ungranted`: neither. A peer this scope was never provisioned with (the manifest may
- *   name it while this scope predates that version), which is quiet rather than an error.
- */
-export const peerGrantsEntry = z.object({
-  vertical: verticalSlug,
-  calls: z.enum(['on', 'off', 'ungranted']),
-});
-export type PeerGrantsEntry = z.infer<typeof peerGrantsEntry>;
-
-/**
- * The per-scope status read, as the control plane answers it: the position above, plus the
- * one thing only the platform can add — while a peer is off, WHO switched it off, when and
- * why, from the admin log's `revokeFromPeer` intent row still in force.
- */
-export const peerGrantsStatusEntry = peerGrantsEntry.extend({
-  switchedOff: z
-    .object({
-      actor: platformActorId,
-      reason: z.string(),
-      at: instant,
-    })
-    .nullable(),
-});
-export type PeerGrantsStatusEntry = z.infer<typeof peerGrantsStatusEntry>;

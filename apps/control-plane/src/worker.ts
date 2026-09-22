@@ -824,6 +824,18 @@ function peerSwitchDelegationFor(env: Env): PeerSwitchDelegation | undefined {
       }
       return client.peerSwitch({ scopeId: a.scopeId, vertical: a.vertical, to: a.to });
     },
+    status: async (a) => {
+      const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+      const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId);
+      const client = rec?.vertical ? await resolveVerticalForScopeFor(env)(rec) : undefined;
+      if (!client) {
+        throw new Error(
+          `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — ` +
+            `cannot read which peers may call it`,
+        );
+      }
+      return client.peerGrantsStatus({ scopeId: a.scopeId });
+    },
   };
 }
 

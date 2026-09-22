@@ -272,6 +272,7 @@ export {
   subjectSwitchedOff,
   switchSubjectGrants,
   switchSystemSchedules,
+  subjectGrantState,
   systemGrantsStatus,
   systemScheduleState,
   systemSwitchedOff,
@@ -282,13 +283,14 @@ export {
   PEER_SUBJECT_PREFIX,
   admitPeer,
   collectPeers,
+  peerGrantsStatus,
   peerSeats,
   peerSubjectRef,
   peerSwitchedOff,
   resolveVerticalInstanceFrom,
   switchPeer,
 } from './peer.js';
-export type { PeerDeclaration, PeerDeclarations, PeerSeat, VerticalInstanceCandidate } from './peer.js';
+export type { PeerDeclaration, PeerDeclarations, PeerGrantsRow, PeerSeat, VerticalInstanceCandidate } from './peer.js';
 export {
   DENIAL_COLUMNS,
   DENIAL_WINDOW_QUERY,

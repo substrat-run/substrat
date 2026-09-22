@@ -76,11 +76,13 @@ import {
   seatScopeTuple,
   effectiveRoleGrantQuery,
   switchSystemSchedules,
+  peerGrantsStatus,
   systemGrantsStatus,
   systemScheduleState,
   systemSwitchedOff,
   type SwitchOutcome,
   type SwitchSql,
+  type PeerGrantsRow,
   type SystemGrantsEntry,
   type SystemScheduleState,
   denialListQuery,
@@ -3034,6 +3036,15 @@ export function defineScopeDO(
      */
     async systemGrantsStatus(): Promise<SystemGrantsEntry[]> {
       return systemGrantsStatus(this.switchSql(), new Date().toISOString());
+    }
+
+    /**
+     * Where every peer this scope holds or has held grants for stands (#1706) — the
+     * kernel's `peerGrantsStatus`, over this DO's own storage, and the same plain
+     * unqueued read as the line above: nothing here decides a write.
+     */
+    async peerGrantsStatus(): Promise<PeerGrantsRow[]> {
+      return peerGrantsStatus(this.switchSql(), new Date().toISOString());
     }
 
     /**

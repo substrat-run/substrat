@@ -55,6 +55,7 @@ import type {
   ModuleManifest,
   ScheduleSpec,
   SystemGrant,
+  PeerGrantsStatusEntry,
   SystemGrantsStatusEntry,
   SystemSwitch,
   SystemSwitchResult,
@@ -1608,13 +1609,31 @@ export interface HostAdmin {
    * scope holds neither a grant nor a marker for that peer, with nothing written: a typo'd slug
    * must not plant a marker that silently blocks the peer the day a version declaring it lands.
    *
-   * A scope served by a vertical's own deployment is not reachable from the shared control plane
-   * yet (the delegation is #1706's platform half); a host refuses rather than writing into a DO in
-   * the wrong namespace, as `mintCapability` does.
+   * A scope served by a vertical's own deployment is switched THERE, over `PeerSwitchDelegation`
+   * — that deployment holds the grants, and the shared control plane's own namespace holds a
+   * placeholder a peer call never consults. A host with no delegation configured refuses such a
+   * scope rather than writing into a DO in the wrong namespace, as `mintCapability` does.
    */
   revokeFromPeer(actor: PlatformActorId, input: PeerSwitch): Promise<PeerSwitchResult>;
   /** The inverse of `revokeFromPeer` (#1706): gives back exactly the grants OFF took, never more. */
   restoreToPeer(actor: PlatformActorId, input: PeerSwitch): Promise<PeerSwitchResult>;
+  /**
+   * The peer switch's status read (#1706) — every peer this scope holds or has held grants for,
+   * and where each stands: `on`, `off`, or `ungranted`, from the SAME predicate `admitPeer`
+   * refuses on, so what a tenant reads and what the next call gets cannot disagree.
+   *
+   * While a peer is `off`, the entry names who switched it off, when and why — the admin log's
+   * `intent` row for the `revokeFromPeer` still in force. That join happens HERE and nowhere
+   * else: the admin log is the control plane's own store, and a vertical's own deployment holds
+   * none of it, which is why `PeerSwitchDelegation` answers the bare position only.
+   *
+   * A peer the scope holds no row for is absent rather than reported: "not installed in this
+   * tenant" is the directory's fact, not this scope's, and a surface that shows both joins them.
+   */
+  peerGrantsStatus(
+    actor: PlatformActorId,
+    node: { tenantId: TenantId; scopeId: ScopeId },
+  ): Promise<PeerGrantsStatusEntry[]>;
 
   /**
    * Mint a `become` capability on a scope (#1672): whoever exchanges its secret yields

@@ -18,6 +18,7 @@ import type {
   PreviewClientRetire,
   PrincipalId,
   RetiredPreviewClients,
+  PeerGrantsEntry,
   PeerSwitchOutcome,
   SystemSwitchOutcome,
   SystemScheduleEntry,
@@ -63,6 +64,7 @@ import {
   ownerClaimLink,
   previewClientClaim,
   retiredPreviewClients,
+  peerGrantsEntry,
   peerSwitchOutcome,
   systemSwitchOutcome,
   systemScheduleEntry,
@@ -694,6 +696,44 @@ export class VerticalClient {
         502,
         `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`,
       );
+    }
+    return parsed.data;
+  }
+
+  /**
+   * The read half of the peer kill switch's status (#1706): every peer the deployment
+   * serving this scope holds or has held grants for, and where each stands. Mirrors
+   * `peerSwitch`'s seam and `systemGrantsStatus`'s skew rule exactly — a 404 or an SPA
+   * shell are the deployment's own proof it predates this read and become a 501 that says
+   * to redeploy; a wrong-shaped 200 is not that proof and surfaces as the 502 it is.
+   */
+  async peerGrantsStatus(input: { scopeId: ScopeId }): Promise<PeerGrantsEntry[]> {
+    const verb = 'peer-grants';
+    const predates = (): ControlPlaneError =>
+      new ControlPlaneError(
+        501,
+        `the deployment serving scope ${input.scopeId} predates the peer switch's status read (#1706) — ` +
+          `redeploy the vertical, then retry.`,
+      );
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.reach(verb, () =>
+      this.options.fetch(`${base}/internal/peer-grants?scopeId=${encodeURIComponent(input.scopeId)}`, {
+        method: 'GET',
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (res.status === 404) throw predates();
+    if (!res.ok) throw await this.refusal(verb, res);
+    const text = await res.text();
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      throw predates();
+    }
+    const parsed = peerGrantsEntry.array().safeParse(raw);
+    if (!parsed.success) {
+      throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`);
     }
     return parsed.data;
   }
