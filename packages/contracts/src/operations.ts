@@ -1073,6 +1073,69 @@ export function eventsEmittedBy(
 }
 
 /**
+ * The event types an operation set lets other verticals receive, for
+ * `manifest.events.exports` (#1705) — derived from the same `emits` declarations
+ * `eventsEmittedBy` reads, so an export and the event it names cannot describe
+ * different versions.
+ *
+ * ```ts
+ * exports: eventsExportedBy(ops, { 'crm.customer-created': 'customer:read' }),
+ * ```
+ *
+ * This is where the PII rule is held at declaration: a type is exportable only if
+ * EVERY operation declaring it classifies it `piiClass: 'none'`. One operation that
+ * emits the same type as `direct` makes the type unexportable, because the export read
+ * cannot tell from the type which instance it is holding. It withholds the classified
+ * row anyway, and then the export silently delivers less than it promised. Throwing here,
+ * at module load, puts the refusal in front of the author instead.
+ *
+ * Also refused: a type no operation emits (a typo, or an event this module never
+ * produces), and a type declared at two schemaVersions (there is no single version
+ * to promise).
+ */
+export function eventsExportedBy(
+  operations: Readonly<Record<string, object>>,
+  exports: Readonly<Record<string, string>>,
+): { type: string; schemaVersion: number; readPermission: string }[] {
+  const declared = new Map<string, { versions: Set<number>; classified: string[] }>();
+  for (const [name, op] of Object.entries(operations)) {
+    const emits = (op as { emits?: { type?: unknown; schemaVersion?: unknown; piiClass?: unknown } }).emits;
+    if (typeof emits?.type !== 'string' || typeof emits.schemaVersion !== 'number') continue;
+    const seen = declared.get(emits.type) ?? { versions: new Set<number>(), classified: [] };
+    seen.versions.add(emits.schemaVersion);
+    if (emits.piiClass !== 'none') seen.classified.push(`${name} (${String(emits.piiClass)})`);
+    declared.set(emits.type, seen);
+  }
+  return Object.entries(exports)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([type, readPermission]) => {
+      const seen = declared.get(type);
+      if (!seen) {
+        throw new Error(
+          `eventsExportedBy: '${type}' is exported but no operation emits it — ` +
+            `an export must name an event this module declares in an operation's \`emits\``,
+        );
+      }
+      if (seen.classified.length > 0) {
+        throw new Error(
+          `eventsExportedBy: '${type}' cannot be exported — ${seen.classified.join(', ')} ` +
+            `classif${seen.classified.length === 1 ? 'ies' : 'y'} it as carrying personal data. ` +
+            `Only piiClass 'none' crosses a vertical boundary (#1705): a shred in this scope cannot ` +
+            `reach what another vertical derived from it. Export a textless event instead, and let ` +
+            `the receiving vertical read the subject's data through a governed call.`,
+        );
+      }
+      if (seen.versions.size > 1) {
+        throw new Error(
+          `eventsExportedBy: '${type}' is emitted at schemaVersions ${[...seen.versions].sort().join(', ')} — ` +
+            `an export promises one version; finish the replace (K-39) before exporting it`,
+        );
+      }
+      return { type, schemaVersion: [...seen.versions][0]!, readPermission };
+    });
+}
+
+/**
  * The paged lists an operation set declares, for the manifest (#811).
  *
  * Read off every `paged.over` the way `eventsEmittedBy` reads every `emits`, and

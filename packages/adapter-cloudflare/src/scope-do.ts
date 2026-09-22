@@ -139,6 +139,18 @@ import {
   SCHEDULE_STATE_DDL,
   SCHEDULE_STATE_REBUILD,
   scheduleStateHasKind,
+  VERTICAL_EVENTS_DDL,
+  EXPORT_HOPS_SQL,
+  IMPORT_CURSORS_SQL,
+  IMPORT_CURSOR_OF_SQL,
+  IMPORT_CURSOR_ADVANCE_SQL,
+  IMPORT_RECORD_SQL,
+  CrossVerticalRegistry,
+  exportReadPlan,
+  exportReadQuery,
+  planExportBatch,
+  withheldNote,
+  type ExportRow,
   JOB_RUN_DDL,
   jobRunListLimit,
   type EntityVersion,
@@ -159,6 +171,12 @@ import type {
   CapabilityId,
   CapabilityRecord,
   CheckSubject,
+  ExportedBatch,
+  ExportReadInput,
+  ImportBatch,
+  ImportedEvent,
+  ImportResult,
+  ImportState,
   ImpersonationSession,
   Instant,
   MintedCapability,
@@ -447,6 +465,10 @@ const KERNEL_DDL = `
   -- builds and the shape a self-host builds cannot part company; the column
   -- comments, and the reason coalescing is NOT a unique index, are in there.
   ${JOB_RUN_DDL}
+  -- #1705: cross-vertical delivery. The consumer's journal of what it received (envelope
+  -- only) and its watermark per producer, plus the producer-side (type, id) outbox index the
+  -- export read seeks on. Shared with the pure adapter from @substrat-run/kernel.
+  ${VERTICAL_EVENTS_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
     module_id TEXT NOT NULL,
     version TEXT NOT NULL,
@@ -800,6 +822,8 @@ export function defineScopeDO(
     /** #116: the operations that declared `idempotency: false` — refusals, not participants. */
     private readonly operationIdempotencyOptOut = new Set<string>();
     private readonly modules = new Map<string, RegisteredModule>();
+    /** #1705: what this deployment exports to other verticals and imports from them. */
+    private readonly crossVertical = new CrossVerticalRegistry();
     /**
      * #1706: every registered module's `peers`, as declared. The door's admission reads the
      * union (`collectPeers`), built once on first use: registration finishes in the
@@ -915,6 +939,8 @@ export function defineScopeDO(
         }
         this.listPlans.set(plan.entityType, plan);
       }
+      // #1705: the same registry, the same refusals, as the coordinator and the pure host.
+      this.crossVertical.register(manifest, registration.imports);
       this.modules.set(manifest.id, {
         id: manifest.id,
         migrations: [
@@ -1175,6 +1201,196 @@ export function defineScopeDO(
      * `drainEvents` admin receipt only when this is nonzero, so a retried pass records
      * no egress it did not actually perform.
      */
+    /**
+     * #1705: the producer's release to `input.consumer`, decided by THIS deployment's own
+     * declarations. The pure adapter's `readExports`, row for row. The plan and the decision
+     * are the kernel's, so the two hosts cannot release different rows from the same outbox.
+     *
+     * On the queue, so no operation is mid-transaction while the outbox is read. An event
+     * must not reach another vertical before the transaction that wrote it has committed.
+     */
+    async exportedEventsRead(input: ExportReadInput, tenantId: TenantId, scopeId: ScopeId): Promise<ExportedBatch> {
+      await this.ensureMigrations();
+      const plan = exportReadPlan(this.crossVertical.exports(), input.wants);
+      const quiet: ExportedBatch = {
+        events: [],
+        withheld: [],
+        unexported: plan.unexported,
+        paused: null,
+        next: input.after,
+        more: false,
+      };
+      if (plan.types.length === 0) return quiet;
+      const missing = (await this.peerCovers(tenantId, scopeId, input.consumer, plan.keys as PermissionKey[]))
+        .filter((c) => !c.held)
+        .map((c) => c.permission);
+      if (missing.length > 0) return { ...quiet, paused: { missing } };
+      return await this.queue.enqueue(() => {
+        const q = exportReadQuery(plan.types, input.after, input.limit);
+        const rows = this.sql.exec(q.sql, ...q.params).toArray() as unknown as ExportRow[];
+        const batch = planExportBatch({
+          rows,
+          wanted: plan.wanted,
+          after: input.after,
+          limit: input.limit,
+          hopsBefore: (row) =>
+            row.caused_by
+              ? (((this.sql.exec(EXPORT_HOPS_SQL, row.caused_by).toArray()[0] as { hops: number } | undefined)?.hops) ?? 0)
+              : 0,
+        });
+        return { ...batch, unexported: plan.unexported, paused: null };
+      });
+    }
+
+    /** #1705: what this deployment imports, and this scope's watermark per producer. */
+    async importStateRead(): Promise<ImportState> {
+      await this.ensureMigrations();
+      const consumes = this.crossVertical.consumes();
+      if (consumes.length === 0) return { consumes: [], cursors: [] };
+      const cursors = this.sql
+        .exec(IMPORT_CURSORS_SQL)
+        .toArray()
+        .map((r) => ({
+          source: r.source_scope_id as string,
+          vertical: r.source_vertical as string,
+          cursor: r.cursor as string,
+          updatedAt: r.updated_at as string,
+        }));
+      return { consumes, cursors } as ImportState;
+    }
+
+    /**
+     * #1705: apply a batch another vertical exported. The pure adapter's `deliverToPeer`
+     * body, on this scope's queue: the compare-and-set on the watermark, a dead letter per
+     * importing module for each withheld event, one storage transaction per (event, module)
+     * with its journal row, the watermark moved last, then the post-commit tail.
+     *
+     * The coordinator parses the batch before it gets here and runs the executors after.
+     * Executors live on the coordinator here, as they do after an invoke.
+     */
+    async importApply(batch: ImportBatch, tenantId: TenantId, scopeId: ScopeId): Promise<ImportResult> {
+      await this.ensureMigrations();
+      const source = batch.source;
+      return await this.queue.enqueue(async () => {
+        const liveSince = this.liveHighWaterMark();
+        const result: ImportResult = {
+          delivered: 0,
+          deadLettered: 0,
+          duplicates: 0,
+          withheld: 0,
+          cursor: batch.after,
+          stale: false,
+          paused: null,
+        };
+        // #1706's door, for a delivery (`operation: null`), inside the queued body: the producer
+        // is a declared peer with its switch on, or nothing runs and the edge pauses.
+        let peerSubject: CheckSubject;
+        try {
+          peerSubject = admitPeer(this.switchSql(), this.peers, { vertical: source.vertical, scope: source.scopeId }, null);
+        } catch (err) {
+          return { ...result, paused: { reason: err instanceof Error ? err.message : String(err) } };
+        }
+        const current =
+          ((this.sql.exec(IMPORT_CURSOR_OF_SQL, source.scopeId).toArray()[0] as { cursor: string } | undefined)
+            ?.cursor ?? null);
+        if (current !== batch.after) return { ...result, cursor: current as ImportResult['cursor'], stale: true };
+
+        const at = new Date().toISOString();
+        const journaled = (id: string, moduleId: string): boolean =>
+          this.sql
+            .exec('SELECT 1 FROM _substrat_deliveries WHERE event_id = ? AND consumer_module = ?', id, moduleId)
+            .toArray().length > 0;
+        const deadLetter = (id: string, moduleId: string, when: string, error: string): void => {
+          this.sql.exec(
+            `INSERT OR IGNORE INTO _substrat_deliveries
+               (event_id, consumer_module, delivered_at, error, invocation_id)
+             VALUES (?, ?, ?, ?, NULL)`,
+            id,
+            moduleId,
+            when,
+            error,
+          );
+        };
+
+        for (const w of batch.withheld) {
+          this.sql.exec(IMPORT_RECORD_SQL, w.id, source.scopeId, source.vertical, w.type, w.schemaVersion,
+            w.occurredAt, w.entity.entityType, w.entity.entityId, 0, w.reason, at);
+          for (const moduleId of this.crossVertical.modulesImporting(source.vertical, w.type)) {
+            deadLetter(w.id, moduleId, at, withheldNote(w.reason, source.vertical));
+          }
+          result.withheld += 1;
+        }
+
+        for (const e of batch.events) {
+          this.sql.exec(IMPORT_RECORD_SQL, e.id, source.scopeId, source.vertical, e.type, e.schemaVersion,
+            e.occurredAt, e.entity.entityType, e.entity.entityId, e.hops, null, at);
+          let ran = false;
+          for (const imp of this.crossVertical.handlersFor(source.vertical, e.type)) {
+            if (journaled(e.id, imp.moduleId)) continue;
+            ran = true;
+            if (imp.schemaVersion !== e.schemaVersion) {
+              deadLetter(e.id, imp.moduleId, at, withheldNote('version', source.vertical));
+              result.deadLettered += 1;
+              continue;
+            }
+            const { hops: _hops, ...fact } = e;
+            const event: ImportedEvent = structuredClone({ ...fact, source });
+            this.causedBy = e.id;
+            try {
+              await this.ctx.storage.transaction(async () => {
+                // As the producer's principal: real checks against the grants this vertical's
+                // `peers` gave it; its emits carry `{ vertical, scope }` and what they passed.
+                await imp.handler(this.importContext(tenantId, scopeId, peerSubject), event);
+                this.sql.exec(
+                  `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
+                   VALUES (?, ?, ?, NULL)`,
+                  e.id,
+                  imp.moduleId,
+                  new Date().toISOString(),
+                );
+              });
+              result.delivered += 1;
+            } catch (err) {
+              // Dead-letter (v0), outside the rolled-back transaction.
+              deadLetter(e.id, imp.moduleId, new Date().toISOString(), String(err));
+              result.deadLettered += 1;
+            } finally {
+              this.causedBy = null;
+            }
+          }
+          if (!ran) result.duplicates += 1;
+        }
+
+        this.sql.exec(IMPORT_CURSOR_ADVANCE_SQL, source.scopeId, source.vertical, batch.next, at);
+        result.cursor = batch.next;
+        await this.settleCommitted(tenantId, scopeId, liveSince, null);
+        return result;
+      });
+    }
+
+    /**
+     * #1705: the context an import handler runs in: the peer door's subject, as the invoke path
+     * passes it (#1706). `principal` is a placeholder that the subject never reads, and there is
+     * no operation, so the emitted rows' `operation` is NULL, as it is for any consumer.
+     */
+    private importContext(tenantId: TenantId, scopeId: ScopeId, peerSubject: CheckSubject): OperationContext {
+      return this.operationContext(
+        principalId.parse(ulid()),
+        tenantId,
+        scopeId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [],
+        undefined,
+        peerSubject,
+      );
+    }
+
     async markEventsDrained(eventIds: readonly string[], at: string): Promise<number> {
       if (eventIds.length === 0) return 0;
       return await this.queue.enqueue(() => {

@@ -1,6 +1,16 @@
 import {
   fromWireFailure,
   type WireFailure,
+  exportReadInput,
+  exportedBatch,
+  importBatch,
+  importResult,
+  importState,
+  type ExportedBatch,
+  type ExportReadInput,
+  type ImportBatch,
+  type ImportResult,
+  type ImportState,
   accessLogEntry,
   adminLogEntry,
   opsFailureEntry,
@@ -280,6 +290,7 @@ import {
   type SystemScheduleState,
   type SystemGrantsEntry,
   systemSwitchedOffMessage,
+  CrossVerticalRegistry,
   collectPeers,
   peerSeats,
   connectorCallRecord,
@@ -1194,6 +1205,12 @@ interface ScopeStubRpc {
   /** The Tier-2 read, and what it stepped over (#1636) — an object, because it crosses the RPC. */
   undrainedEventsRead(limit: number): Promise<UndrainedRead>;
   markEventsDrained(eventIds: readonly string[], at: string): Promise<number>;
+  /** #1705: the producer's release, decided by the DO's own registered exports. */
+  exportedEventsRead(input: ExportReadInput, tenantId: TenantId, scopeId: ScopeId): Promise<ExportedBatch>;
+  /** #1705: what the DO's modules import, and its watermark per producer. */
+  importStateRead(): Promise<ImportState>;
+  /** #1705: apply a batch another vertical exported, under the watermark's compare-and-set. */
+  importApply(batch: ImportBatch, tenantId: TenantId, scopeId: ScopeId): Promise<ImportResult>;
   redrainEvents(drainedBefore: string): Promise<number>;
   /** How many rows that reopen WOULD touch, touching none of them (#1545). */
   redrainCount(drainedBefore: string): Promise<number>;
@@ -1534,6 +1551,13 @@ export class CloudflareScopeHost implements ScopeHost {
   // Registration-mechanics bookkeeping (validation only — the DO executes).
   // Code-time, derived from the bundled modules, NOT durable directory state.
   private readonly moduleIds = new Set<string>();
+  /**
+   * #1705: this deployment's cross-vertical declarations. The DO holds the handlers and makes
+   * every decision. The coordinator keeps its own copy for two reasons: registration refuses
+   * bad wiring at the same point as the pure host, and `importState` can answer "imports
+   * nothing" without waking a DO.
+   */
+  private readonly crossVertical = new CrossVerticalRegistry();
   /** Module id → its declared recurring schedules (#383), for `registeredSchedules`/`runDueSchedules`. */
   private readonly moduleSchedules = new Map<string, ScheduleSpec[]>();
   /** #1706: every registered module's `peers`, as declared — read as one union per peer. */
@@ -2282,7 +2306,10 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       seen.add(m.version);
     }
-    const declaredConsumes = new Set(manifest.events.consumes.map((c) => c.type));
+    // IN-SCOPE consumes only (#1705): a `from` entry is an import, handled under `imports`.
+    const declaredConsumes = new Set(
+      manifest.events.consumes.filter((c) => c.from === undefined).map((c) => c.type),
+    );
     for (const eventType of Object.keys(registration.consumers ?? {})) {
       if (!declaredConsumes.has(eventType)) {
         throw new Error(
@@ -2299,6 +2326,8 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       this.predicateNames.set(name, manifest.id);
     }
+    // #1705: after the checks above, so a refused module leaves nothing registered here.
+    this.crossVertical.register(manifest, registration.imports);
     this.moduleIds.add(manifest.id);
     if (manifest.schedules && manifest.schedules.length > 0) {
       this.moduleSchedules.set(manifest.id, manifest.schedules);
@@ -3061,6 +3090,29 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * #1705: the consumer half. The same lifecycle gate as every door (K-3), then the ScopeDO
+   * applies the batch, and the answer is re-parsed on this side of the RPC. Executors run here
+   * afterwards, as they do after an invoke. A failure to drain them does not un-deliver a batch
+   * that has committed, so it is contained, and the outbox is their backstop.
+   */
+  async deliverToPeer(tenantId: TenantId, scopeId: ScopeId, raw: ImportBatch): Promise<ImportResult> {
+    const batch = importBatch.parse(raw);
+    // The peer door's own gate (#1706): K-3's pair check, the refusal for a scope served
+    // elsewhere, the lifecycle check and the migration. A delivery is a write into the
+    // consumer's scope, so it takes the gate an invoke through that door takes.
+    await this.peerScopeGate(tenantId, scopeId, 'deliverToPeer');
+    const result = importResult.parse(await this.scopeStub(scopeId).importApply(batch, tenantId, scopeId));
+    if (result.delivered > 0) {
+      try {
+        await this.drainExecutors(tenantId, scopeId, null);
+      } catch (err) {
+        console.error('substrat: executor drain after a cross-vertical delivery failed', err);
+      }
+    }
+    return result;
+  }
+
+  /**
    * The exchange (#1672) — the same fail-closed (tenant, scope) and lifecycle gate as
    * `getScope`, then the kernel's `exchangeCapability` inside the ScopeDO, where the
    * capability row lives. The answer is re-parsed on this side of the RPC.
@@ -3153,13 +3205,7 @@ export class CloudflareScopeHost implements ScopeHost {
       if (!record) {
         throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
       }
-      if (this.servesScopesElsewhere && record.vertical !== null) {
-        throw substratError(
-          'unavailable',
-          `${verb} cannot reach scope ${scopeId}: it is served by the '${record.vertical}' deployment, ` +
-            'which a peer reaches through the platform, not through the shared control plane',
-        );
-      }
+      this.assertServedHere(record, scopeId, verb);
     }
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
@@ -3192,6 +3238,27 @@ export class CloudflareScopeHost implements ScopeHost {
    * delegations are set on that host and no other (their own docs say so), so any one of
    * them being present is the signal.
    */
+  /**
+   * Refuse a scope this host does not serve (#1706's door, and #1705's three cross-vertical
+   * verbs).
+   *
+   * On the shared control plane `this.scopeStub` is the module-less placeholder namespace, so
+   * reaching it for a scope bound to a vertical answers from an EMPTY Durable Object: a read
+   * reports a hosted producer as having nothing to export, and a delivery would journal a
+   * batch into a scope that is not the one it names. Both are wrong ANSWERS rather than
+   * failures, which is the shape that goes unnoticed. One refusal, shared by the door's gate
+   * and by the verbs that read a record of their own, so a caller never meets two of them.
+   */
+  private assertServedHere(record: { vertical: string | null }, scopeId: ScopeId, verb: string): void {
+    if (this.servesScopesElsewhere && record.vertical !== null) {
+      throw substratError(
+        'unavailable',
+        `${verb} cannot reach scope ${scopeId}: it is served by the '${record.vertical}' deployment, ` +
+          'which a peer reaches through the platform, not through the shared control plane',
+      );
+    }
+  }
+
   private get servesScopesElsewhere(): boolean {
     return Boolean(this.connectorDelegation || this.systemSwitchDelegation || this.eventDrainDelegation);
   }
@@ -3216,6 +3283,11 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     await this.migrateAndRecord(scopeId);
     return { stub: this.scopeStub(scopeId), vertical: rec.vertical };
+  }
+
+  /** #1705: what this deployment imports — the sweep's reason to call no scope when it is empty. */
+  registeredImports(): { from: string; type: string; schemaVersion: number }[] {
+    return this.crossVertical.consumes();
   }
 
   registeredSchedules(): ScheduleRegistration[] {
@@ -5002,6 +5074,40 @@ export class CloudflareScopeHost implements ScopeHost {
         const tables = await this.scopeStub(scopeId).introspectTables();
         await this.recordAccess(actor, 'listScopeTables', { tenantId, scopeId }, null, tables.length);
         return tables;
+      },
+      readExportedEvents: async (actor, tenantId, scopeId, raw): Promise<ExportedBatch> => {
+        // #1705: the producer half. The DO decides what leaves, from its own registered
+        // exports. This side gates the pair (K-3), parses both directions, and writes the
+        // access row, because a platform read of domain data leaving a scope is one.
+        const input = exportReadInput.parse(raw);
+        // The read's own K-3 and reap gate, then the same refusal the door gives: on the
+        // shared control plane this scope's outbox lives in its vertical's deployment, and
+        // the placeholder here would report a hosted producer as having nothing to export.
+        // Not `peerScopeGate`: a read must not migrate, and the phase makes this call once
+        // per edge per pass, where an extra round trip is a fleet-wide cost.
+        this.assertServedHere(await this.scopeRecordForRead(tenantId, scopeId), scopeId, 'readExportedEvents');
+        const batch = exportedBatch.parse(await this.scopeStub(scopeId).exportedEventsRead(input, tenantId, scopeId));
+        await this.recordAccess(
+          actor,
+          'readExportedEvents',
+          { tenantId, scopeId },
+          { consumer: input.consumer, after: input.after, limit: input.limit },
+          batch.events.length,
+        );
+        return batch;
+      },
+      importState: async (actor, tenantId, scopeId): Promise<ImportState> => {
+        // Answered with no call at all when this deployment imports nothing: not the directory,
+        // not the DO. "Imports nothing" is a fact about this code, and it names no scope, so it
+        // tells a caller nothing about a (tenant, scope) pair it may not address.
+        if (this.crossVertical.consumes().length === 0) return { consumes: [], cursors: [] };
+        // Then the read's own gate, and the same refusal: a hosted scope's watermark lives in
+        // its vertical's deployment, and the placeholder here would answer "never read
+        // anything", which a pass would act on by re-delivering that edge from the start.
+        this.assertServedHere(await this.scopeRecordForRead(tenantId, scopeId), scopeId, 'importState');
+        const state = importState.parse(await this.scopeStub(scopeId).importStateRead());
+        await this.recordAccess(actor, 'importState', { tenantId, scopeId }, null, state.cursors.length);
+        return state;
       },
       readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
         const record = await this.scopeRecordForRead(tenantId, scopeId);

@@ -20,5 +20,9 @@ declare module 'cloudflare:test' {
     LOCAL_SWEEP_SCOPE: DurableObjectNamespace;
     /** #938: the live-read scope class, carrying only `liveMod` — live-reads.test.ts. */
     LIVE_SCOPE: DurableObjectNamespace;
+    /** #1705: the cross-vertical suite's two deployments and their own directory. */
+    CRM_SCOPE: DurableObjectNamespace;
+    BOARD_SCOPE: DurableObjectNamespace;
+    VE_CONTROL_PLANE: DurableObjectNamespace;
   }
 }

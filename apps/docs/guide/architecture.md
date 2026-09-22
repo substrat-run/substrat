@@ -144,6 +144,50 @@ each engine independently versioned. The corollary test: *if two engines need ch
 synchronous communication, they are one engine drawn wrong* — which is why "work orders +
 time reporting" is one engine, not two.
 
+## Between verticals: exports and imports
+
+The same rule holds one level up. Two verticals of one tenant, such as a CRM and a board-room
+app, each in its own scope with its own audience, integrate by event. Neither reaches into the
+other's data. Each side declares its half:
+
+- The producer **exports** what may leave: `events.exports`, each type with the permission a
+  receiver must hold. An emitted type that is not exported never leaves its scope.
+- The consumer **imports** what it takes, and names the vertical it comes from:
+  `events.consumes: [{ from, type, schemaVersion }]`. Its handlers go under `imports` in its
+  module registration.
+
+Delivery is a **pull on a watermark the consumer keeps**. The platform reads the producer's
+outbox after that watermark, inside the producer's scope and through the producer's own code,
+then hands the batch to the consumer. The consumer runs each handler in its own transaction
+together with its delivery record, which makes delivery at-least-once with one effect per event
+per module. It then moves the watermark, last, in its own database. As a result:
+
+- A consumer installed after the producer receives the exported history.
+- Restoring the consumer re-delivers whatever the restore undid.
+
+- **Same tenant only.** The platform resolves each end as the tenant's one primary instance of
+  that vertical. It never resolves by hostname or across tenants. A preview or a fork is never
+  either end.
+- **Identity is the [peer door](/concepts/permissions#another-app-of-the-same-tenant-peers).**
+  The receiver must hold the export's key, as `vertical:<slug>`, in the producer's scope. The
+  producer enters the consumer's scope as itself, `{ vertical, scope }`, and its handlers' checks
+  are real. A peer switched off on either side **pauses** the edge: nothing is read, the
+  watermark holds, and nothing is lost when the peer is switched back on.
+- **Only events classified `piiClass: 'none'` cross.** Erasing a subject cannot reach what
+  another vertical derived from a payload, so personal data travels by a governed call instead.
+  A classified event is withheld: the consumer is told it was sent, and never receives its content.
+- **Loops are cut.** An event's cause chain may cross at most 8 vertical boundaries.
+- **Every edge is visible.** Each platform sweep reports every edge as delivered, idle,
+  paused or unresolved. A paused or unresolved edge also writes a sweep-run record with the
+  reason.
+
+Still to come:
+- The hosted transport: the control plane reaching both scopes, and delivery within seconds
+  of a commit rather than at the next sweep.
+- A way to replay from an earlier watermark.
+- An edge-health view.
+- A breaking-change check on exported event payloads.
+
 ## Language: TypeScript end-to-end
 
 Verticals are TypeScript regardless of what the kernel is written in — React UIs,

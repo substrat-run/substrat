@@ -13,6 +13,7 @@ import {
   walkEventEffects,
   type DenialOperationBucketRow,
   type ScopedSql,
+  VERTICAL_EVENTS_DDL,
 } from '../src/index.js';
 
 /**
@@ -80,6 +81,8 @@ const delivery = (n: number, over: Cells = {}): Cells => ({
 function world(events: Cells[], deliveries: Cells[]): Pick<ScopedSql, 'query'> {
   const db = new DatabaseSync(':memory:');
   db.exec(DDL);
+  // #1705: every scope has the import journal, and the dead-letter read consults it.
+  db.exec(VERTICAL_EVENTS_DDL);
   const put = (table: string, r: Cells) => {
     const cols = Object.keys(r);
     db.prepare(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(

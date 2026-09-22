@@ -1677,3 +1677,97 @@ describe('runPlatformSweep · event drain skips (#1636, #1641)', () => {
     expect(report.eventDrain).not.toHaveProperty('skipped');
   });
 });
+
+/**
+ * #1705: what the cross-vertical phase COSTS a fleet-wide cron. Every per-scope call is a Durable
+ * Object wake (an `/internal` hop too, when hosted), so the phase must call no scope when nothing
+ * imports, must call only candidates, and must cap what one pass visits.
+ */
+describe('runPlatformSweep · cross-vertical cost (#1705)', () => {
+  const scopesOf = (n: number, vertical = 'acme/board') =>
+    Array.from({ length: n }, () => ({
+      id: sid(),
+      tenantId: T,
+      status: 'active',
+      vertical,
+      kind: 'app',
+      forkedFrom: null,
+    }));
+  const hostWith = (scopes: object[], imports?: () => { from: string; type: string; schemaVersion: number }[]) => {
+    const calls: string[] = [];
+    const host = {
+      admin: {
+        listScopes: async () => scopes,
+        listConnections: async () => [],
+        importState: async (_a: unknown, _t: unknown, s: string) => {
+          calls.push(s);
+          return { consumes: [], cursors: [] };
+        },
+      },
+      ...(imports ? { registeredImports: imports } : {}),
+    } as unknown as ScopeHost;
+    return { host, calls };
+  };
+  const quiet: Omit<PlatformSweepOptions, 'crossVertical'> = {
+    actor: ACTOR,
+    fetch: FETCH,
+    sweepers: {},
+    drainRetries: false,
+    gcSnapshots: false,
+    reconcileMigrations: false,
+    runSchedules: false,
+  };
+
+  it('a host that imports nothing calls no scope at all, however large the fleet', async () => {
+    const { host, calls } = hostWith(scopesOf(500), () => []);
+    const report = await runPlatformSweep(host, { ...quiet, crossVertical: {} });
+    expect(calls).toEqual([]);
+    expect(report.crossVertical).toMatchObject({ candidates: 0, deferred: 0, edges: [] });
+  });
+
+  it('a host that predates registeredImports is read as importing nothing', async () => {
+    const { host, calls } = hostWith(scopesOf(50));
+    await runPlatformSweep(host, { ...quiet, crossVertical: {} });
+    expect(calls).toEqual([]);
+  });
+
+  it('only the candidates a reach names are ever called', async () => {
+    const scopes = scopesOf(10);
+    const { host, calls } = hostWith(scopes, () => [{ from: 'acme/crm', type: 'crm.a', schemaVersion: 1 }]);
+    const chosen = new Set([scopes[2]!.id, scopes[7]!.id]);
+    await runPlatformSweep(host, {
+      ...quiet,
+      crossVertical: {
+        reach: {
+          candidates: (all) => all.filter((s) => chosen.has(s.id)),
+          importState: (t, s) => host.admin.importState(ACTOR, t, s),
+          readExports: async () => {
+            throw new Error('no edge here');
+          },
+          deliver: async () => {
+            throw new Error('no edge here');
+          },
+        },
+      },
+    });
+    expect(new Set(calls)).toEqual(chosen);
+  });
+
+  it('caps the consumers one pass visits, defers the rest, and rotates where it starts', async () => {
+    const { host, calls } = hostWith(scopesOf(5), () => [{ from: 'acme/crm', type: 'crm.a', schemaVersion: 1 }]);
+    const first = await runPlatformSweep(host, { ...quiet, crossVertical: { maxConsumers: 2, rng: () => 0 } });
+    expect(calls).toHaveLength(2);
+    expect(first.crossVertical).toMatchObject({ candidates: 5, deferred: 3 });
+    const firstWindow = [...calls];
+
+    calls.length = 0;
+    await runPlatformSweep(host, { ...quiet, crossVertical: { maxConsumers: 2, rng: () => 0.6 } });
+    expect(calls).toHaveLength(2);
+    expect(calls).not.toEqual(firstWindow); // a different start: a stuck consumer holds no slot forever
+
+    calls.length = 0;
+    const paused = await runPlatformSweep(host, { ...quiet, crossVertical: { maxConsumers: 0 } });
+    expect(calls).toEqual([]); // 0 is the pause switch
+    expect(paused.crossVertical).toMatchObject({ candidates: 5, deferred: 5 });
+  });
+});

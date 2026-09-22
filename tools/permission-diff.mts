@@ -45,13 +45,24 @@ interface ScheduleLike {
   cadence?: { everyMinutes: number };
   permissions?: string[];
 }
+/** #1705: the two halves of a cross-vertical edge, as a manifest declares them. */
+interface EventsLike {
+  consumes?: { type: string; schemaVersion: number; from?: string }[];
+  exports?: { type: string; schemaVersion: number; readPermission: string }[];
+}
 interface PeerLike {
   vertical: string;
   operations: string[];
   permissions: string[];
 }
 interface ModuleLike {
-  manifest: { id: string; permissions: PermissionDecl[]; schedules?: ScheduleLike[]; peers?: PeerLike[] };
+  manifest: {
+    id: string;
+    permissions: PermissionDecl[];
+    schedules?: ScheduleLike[];
+    peers?: PeerLike[];
+    events?: EventsLike;
+  };
   /** A registration's operation map — present on a ModuleRegistration, absent on a bare manifest. */
   operations?: Record<string, unknown>;
 }
@@ -214,6 +225,13 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       }
     }
   }
+  // #1705: an export's key is what another vertical's principal must hold here. A key nobody
+  // declares can never be granted, so the export would pause every edge forever, silently.
+  for (const m of modules) {
+    for (const e of m.manifest.events?.exports ?? []) {
+      if (!declaredBy.has(e.readPermission)) orphans.push(`export ${code(e.type)} → ${code(e.readPermission)}`);
+    }
+  }
   // A peer's declared keys become `vertical:<slug>` grants at provisioning (#1706); an
   // undeclared key there denies the peer's call silently, same as a role. Its operations
   // are the door's allowlist: one no module registers admits nothing, forever — checked
@@ -346,6 +364,51 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
         (p) =>
           `| ${code(p.vertical)} | ${code(p.module)} | ${sorted(p.operations).map(code).join(', ') || '— none (receive only) —'} | ${sorted(p.permissions).map(code).join(', ')} |`,
       ),
+      ``,
+    );
+    section += 1;
+  }
+
+  // §_. The cross-vertical edges (#1705), out and in. Both are flows of this tenant's data
+  // across a vertical boundary, so they are reviewed where keys are: widening what leaves,
+  // or what enters, cannot merge without appearing here.
+  const exported = modules
+    .flatMap((m) => (m.manifest.events?.exports ?? []).map((e) => ({ module: m.manifest.id, ...e })))
+    .sort((a, b) => a.type.localeCompare(b.type));
+  if (exported.length) {
+    out.push(
+      `## ${section}. Exported events — what leaves this vertical`,
+      ``,
+      `Another vertical of the SAME tenant receives an event of these types only while its`,
+      `principal (\`vertical:<slug>\`) holds the key at this app's scope — the check a person's`,
+      `read passes. Only instances emitted with piiClass \`none\` ever cross; a classified one is`,
+      `withheld and named, never carried.`,
+      ``,
+      `| Event type | Version | Key the receiver must hold | Declared by |`,
+      `| --- | --- | --- | --- |`,
+      ...exported.map((e) => `| ${code(e.type)} | ${e.schemaVersion} | ${code(e.readPermission)} | ${code(e.module)} |`),
+      ``,
+    );
+    section += 1;
+  }
+  const imported = modules
+    .flatMap((m) =>
+      (m.manifest.events?.consumes ?? [])
+        .filter((c) => c.from !== undefined)
+        .map((c) => ({ module: m.manifest.id, from: c.from!, type: c.type, schemaVersion: c.schemaVersion })),
+    )
+    .sort((a, b) => a.from.localeCompare(b.from) || a.type.localeCompare(b.type));
+  if (imported.length) {
+    out.push(
+      `## ${section}. Imported events — what this vertical receives from others`,
+      ``,
+      `Delivered from the named vertical's one instance in the same tenant, never across`,
+      `tenants. Declaring a type here is a request: the producer's own exports decide what`,
+      `arrives, and its grant to this vertical decides whether anything does.`,
+      ``,
+      `| From | Event type | Version | Handled by |`,
+      `| --- | --- | --- | --- |`,
+      ...imported.map((i) => `| ${code(i.from)} | ${code(i.type)} | ${i.schemaVersion} | ${code(i.module)} |`),
       ``,
     );
     section += 1;

@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { eventId } from '@substrat-run/contracts';
-import { readDeadLetters, type ScopedSql } from '../src/index.js';
+import { readDeadLetters, VERTICAL_EVENTS_DDL, type ScopedSql } from '../src/index.js';
 
 /**
  * The scope-wide dead-letter read (#1525), against a real outbox and a real delivery
@@ -51,6 +51,8 @@ interface Del {
 function readerOver(events: number[], deliveries: Del[], invocation: string | null = null): Pick<ScopedSql, 'query'> {
   const db = new DatabaseSync(':memory:');
   db.exec(DDL);
+  // #1705: every scope has the import journal, and both reads consult it.
+  db.exec(VERTICAL_EVENTS_DDL);
   const ins = db.prepare(
     `INSERT INTO _substrat_outbox (id, type, occurred_at, actor, entity_type, entity_id, payload, pii_class, invocation_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,

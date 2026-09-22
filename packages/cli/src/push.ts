@@ -121,7 +121,12 @@ export function flattenDeclaredEvents(
 ): { events: NonNullable<DeployManifest['declaredEvents']>; truncated: boolean } {
   const events = permissions.modules.flatMap((m) => [
     ...(m.manifest.events?.emits ?? []).map((e) => ({ moduleId: m.manifest.id, type: e.type, direction: 'emits' as const })),
-    ...(m.manifest.events?.consumes ?? []).map((e) => ({ moduleId: m.manifest.id, type: e.type, direction: 'consumes' as const })),
+    // In-scope consumes only (#1705). A `from` entry is delivered from ANOTHER vertical's outbox
+    // and never lands in this one, so listed here it would read as a promise this app's outbox
+    // breaks: declared, never observed. The edge is in the permission registry instead.
+    ...(m.manifest.events?.consumes ?? [])
+      .filter((e) => e.from === undefined)
+      .map((e) => ({ moduleId: m.manifest.id, type: e.type, direction: 'consumes' as const })),
   ]);
   // Deduplicated: a module listing a type twice is one declaration, and a duplicate
   // would spend the cap below without telling the reader anything new.
