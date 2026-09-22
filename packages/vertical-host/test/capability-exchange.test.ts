@@ -409,7 +409,7 @@ describe('mountCapabilityExchange — a link share, end to end over HTTP', () =>
     expect(legacy.names()).toEqual([`${CAPABILITY_COOKIE}_${b.id}`]);
   });
 
-  it('a malformed name — `;`, `=`, spaces, non-ASCII, a near-id — is the 401 an unknown id gets, and clears nothing', async () => {
+  it('a malformed name — `;`, `=`, spaces, non-ASCII, a near-id, empty — is the 401 an unknown id gets, and clears nothing', async () => {
     const jar = new Jar();
     const a = await shareOf(folder('F'));
     await open(jar, a.secret);
@@ -422,6 +422,7 @@ describe('mountCapabilityExchange — a link share, end to end over HTTP', () =>
       a.id.toLowerCase(),
       `${a.id.slice(0, 25)}å`,
       `${a.id}0`,
+      '', // present but empty: a name, not the absence of one
     ];
     for (const name of malformed) {
       // By query, so non-ASCII arrives intact (a header cannot carry it).

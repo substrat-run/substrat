@@ -220,9 +220,11 @@ export function capabilitySessionsOf(c: Context, cookieName: string = CAPABILITY
  * `undefined` when it names none. Both, disagreeing, is refused rather than picked between.
  */
 export function namedCapabilityOf(c: Context): string | undefined {
-  const header = c.req.header(CAPABILITY_HEADER) || undefined;
-  const query = c.req.query(CAPABILITY_QUERY) || undefined;
-  if (header && query && header !== query) {
+  // Presence, not truthiness: an EMPTY selector is a name — a malformed one, refused 401 —
+  // and must not read as "named nothing", which would act as the newest link or clear all.
+  const header = c.req.header(CAPABILITY_HEADER);
+  const query = c.req.query(CAPABILITY_QUERY);
+  if (header !== undefined && query !== undefined && header !== query) {
     throw substratError('validation_failed', `${CAPABILITY_HEADER} and ?${CAPABILITY_QUERY}= name different links`);
   }
   return header ?? query;
