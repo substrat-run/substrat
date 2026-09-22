@@ -49,3 +49,11 @@ describe('navPath', () => {
     expect(navPath('verticals', undefined, '').path).toBe('/verticals');
   });
 });
+
+describe('Health → Connections (#1690)', () => {
+  it('survives a refresh — the path resolves back to the view', () => {
+    const { path } = navPath('connections', undefined, '');
+    expect(path).toBe('/connections');
+    expect(parseNav(path, '').view).toBe('connections');
+  });
+});

@@ -12,6 +12,12 @@ import {
   connectionActivitySource,
   connectionCredential,
   connectionFilter,
+  connectionHealthState,
+  connectionProvider,
+  connectorDispatchKind,
+  toConnectionHealthEntry,
+  CONNECTION_EXPIRY_WARNING_DAYS,
+  CONNECTION_STALE_DAYS,
   connectionProbe,
   createTenantInput,
   entitlementGrantInput,
@@ -71,6 +77,7 @@ import type {
   ConnectionActivity,
   ConnectionActivitySource,
   ConnectionCredential,
+  ConnectionHealthPage,
   ConnectionProbe,
   ListPageQuery,
   Page,
@@ -741,6 +748,27 @@ const opsFailuresQuery = z.object({
   // Bounded by default exactly as /admin-log, and for the same reason.
   ...listPageQuery.shape,
 });
+
+// The fleet connection-health read (#1690). `status` is the DERIVED health state, not the
+// stored `Connection.status`. Paged like every HTTP list read; the cursor is a connection id.
+const connectionHealthQuery = z.object({
+  status: connectionHealthState.optional(),
+  provider: connectionProvider.optional(),
+  tenantId: tenantIdSchema.optional(),
+  // Free text, matched case-insensitively against the row's own fields BEFORE paging, so
+  // a search finds a row on any page rather than only the ones a console has loaded.
+  q: z.string().trim().min(1).max(200).optional(),
+  limit: listPageQuery.shape.limit,
+  cursor: listPageQuery.shape.cursor,
+  // The walk is ascending by connection id, only. A `desc` is refused rather than
+  // silently ignored: a caller would otherwise read ascending pages as descending ones.
+  order: z.literal('asc').optional(),
+});
+
+/** The dead-letter window (#1690) — a week, the same horizon as the stale window. */
+const CONNECTOR_DEAD_LETTER_WINDOW_DAYS = 7;
+/** The per-provider read bound: past it the count is a floor, and says so (`capped`). */
+export const CONNECTOR_DEAD_LETTER_CAP = 200;
 
 // The issues read (#1233). No cursor by design: grouping IS the compression —
 // cardinality is the number of distinct failure shapes — and `limit` bounds it.
@@ -1545,6 +1573,106 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       includeRevoked: c.req.query('includeRevoked') === '1' ? true : undefined,
     });
     return c.json(await admin.listConnections(c.get('actor'), filter));
+  });
+
+  // -- connection health, fleet-wide (#1690) -----------------------------------
+  //
+  // The staff console's Health → Connections read: every tenant's connections, each with
+  // its derived health (`deriveConnectionHealth`, contracts) and refresh-expiry warning,
+  // plus connector dead letters counted per provider. Read-only, and staff/service only
+  // by construction: it is neither in BUILDER_ROUTES nor in the tenant credential's
+  // TENANT_ROUTES, so both default-deny it — and it lives outside `/tenants/:id` so no
+  // future tenant-path pin can reach it by pattern.
+  //
+  // Secrets: the read goes through the AUDITED `listConnections` (the access log records
+  // the filter and a count, never rows — §3.4's rule for the log), whose `Connection`
+  // cannot carry a credential; and each row is then projected through
+  // `toConnectionHealthEntry`'s allow-list rather than spread, so a widened row upstream
+  // does not ride out to a browser.
+  //
+  // Cost: `listConnections` has no page of its own, so this loads the (filtered) fleet's
+  // connection rows on every request and pages in memory. Unfiltered that is a full scan
+  // of `_substrat_connections`, a table in the low hundreds today. Past ~2,000 live rows
+  // (a directory read and a response-time cost paid on every console load) it wants a
+  // keyset page pushed into the adapter, which the derived-status filter makes
+  // non-trivial, because health is not a column. No cache: a stale health view is the
+  // one thing this page must not show. Filter-then-page is deliberate: paging first would hand back a short or
+  // empty page while a cursor still existed.
+  app.get('/connections/health', async (c) => {
+    const q = connectionHealthQuery.parse({
+      status: c.req.query('status'),
+      provider: c.req.query('provider'),
+      tenantId: c.req.query('tenantId'),
+      q: c.req.query('q'),
+      limit: c.req.query('limit'),
+      cursor: c.req.query('cursor'),
+      order: c.req.query('order'),
+    });
+    const now = new Date();
+    const rows = await admin.listConnections(c.get('actor'), {
+      ...(q.tenantId ? { tenantId: q.tenantId } : {}),
+      ...(q.provider ? { provider: q.provider } : {}),
+    });
+    const all = rows.map((r) => toConnectionHealthEntry(r, now)).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const summary: ConnectionHealthPage['summary'] = {
+      total: all.length,
+      healthy: 0,
+      erroring: 0,
+      stale: 0,
+      'never-used': 0,
+      expiring: 0,
+      expired: 0,
+    };
+    for (const e of all) {
+      summary[e.health] += 1;
+      if (e.expiryWarning === 'soon') summary.expiring += 1;
+      if (e.expiryWarning === 'expired') summary.expired += 1;
+    }
+    const needle = q.q?.toLowerCase();
+    const matching = all.filter(
+      (e) =>
+        (!q.status || e.health === q.status) &&
+        (!needle ||
+          [e.id, e.tenantId, e.provider, e.vertical, e.label, e.externalAccountRef, e.lastError].some((f) =>
+            f?.toLowerCase().includes(needle),
+          )),
+    );
+    const page = pageSlice(matching, { limit: q.limit, cursor: q.cursor }, (e) => e.id);
+
+    // Connector dead letters. A hosted vertical is CP-less, so its connector deliveries
+    // run as `connector:<provider>` platform intents, and a terminal or given-up intent
+    // lands an ops-failure row (platform-drain.ts) — directory-side, so this is one
+    // bounded query per provider rather than a walk over every scope. What it cannot see:
+    // an IN-PROCESS executor drain's dead letters (a host that runs connectors itself —
+    // dev, self-host), which journal only in the scope.
+    const since = new Date(now.getTime() - CONNECTOR_DEAD_LETTER_WINDOW_DAYS * 86_400_000).toISOString();
+    const providers = q.provider ? [q.provider] : [...new Set(rows.map((r) => r.provider))].sort();
+    const deadLetters = await Promise.all(
+      providers.map(async (provider) => {
+        const found = await admin.listOpsFailures(c.get('actor'), {
+          operation: `intent.${connectorDispatchKind(provider)}`,
+          ...(q.tenantId ? { tenantId: q.tenantId } : {}),
+          since,
+          limit: CONNECTOR_DEAD_LETTER_CAP + 1,
+        });
+        return {
+          provider,
+          count: Math.min(found.length, CONNECTOR_DEAD_LETTER_CAP),
+          capped: found.length > CONNECTOR_DEAD_LETTER_CAP,
+        };
+      }),
+    );
+
+    const body: ConnectionHealthPage = {
+      ...page,
+      summary,
+      deadLetters,
+      deadLettersSince: since,
+      staleAfterDays: CONNECTION_STALE_DAYS,
+      expiryWarningDays: CONNECTION_EXPIRY_WARNING_DAYS,
+      asOf: now.toISOString(),
+    };
+    return c.json(body);
   });
 
   // The same upsert semantics as `/internal/connections/upsert` (§3.5.2) — create under a

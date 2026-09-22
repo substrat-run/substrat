@@ -26,6 +26,7 @@ export const VIEWS: ViewKey[] = [
   'permissions',
   'members',
   'failures',
+  'connections',
   'settings',
 ];
 
