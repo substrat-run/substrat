@@ -16,6 +16,16 @@ export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 export { jobRunContractSuite } from './job-run-suite.js';
 export { systemSwitchContractSuite } from './system-switch-suite.js';
+export {
+  verticalEventsContractSuite,
+  crmExportMod,
+  crmExportModManifest,
+  boardImportMod,
+  boardImportModManifest,
+  CRM_VERTICAL,
+  BOARD_VERTICAL,
+  type VerticalEventsFixture,
+} from './vertical-events-suite.js';
 export { inputParseContractSuite } from './input-parse-suite.js';
 export { spineGuardContractSuite } from './spine-guard-suite.js';
 export { grantExpiryContractSuite } from './grant-expiry-suite.js';

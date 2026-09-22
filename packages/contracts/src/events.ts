@@ -328,6 +328,12 @@ export const causeTerminal = z.enum([
    * more", and there is no more to ask for.
    */
   'cycle',
+  /**
+   * #1705: the cause is an event ANOTHER vertical exported, and this scope received it.
+   * The chain continues in the producer's scope, which `causeChain.imported` names. It is
+   * not `missing`: nothing is wrong with the record, the trail simply leaves this app.
+   */
+  'imported',
 ]);
 export type CauseTerminal = z.infer<typeof causeTerminal>;
 
@@ -342,6 +348,11 @@ export type CauseTerminal = z.infer<typeof causeTerminal>;
 export const causeChain = z.object({
   chain: z.array(historyEntry),
   terminal: causeTerminal,
+  /**
+   * #1705: where the trail continues, when `terminal` is `imported`: the producer's event id,
+   * its vertical and its scope. Absent on every other ending.
+   */
+  imported: z.object({ eventId, vertical: z.string().min(1), scopeId }).optional(),
 });
 export type CauseChain = z.infer<typeof causeChain>;
 

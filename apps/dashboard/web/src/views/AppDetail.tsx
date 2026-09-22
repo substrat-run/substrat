@@ -2577,6 +2577,14 @@ function CauseChainStrip({ scopeId, eventId }: { scopeId: string; eventId: strin
         'The trail loops back on itself — an event names a cause that it also caused. That cannot happen in a sound record, so this app’s history needs looking at rather than reading further.',
       tone: 'var(--status-danger-fg)',
     },
+    // #1705: nothing is wrong. The cause is an event another app of this team exported,
+    // and the rest of the chain is in that app's records.
+    imported: {
+      text: chain.imported
+        ? `Caused by an event the ${chain.imported.vertical} app sent. The rest of the chain is in that app’s records.`
+        : 'Caused by an event another app sent. The rest of the chain is in that app’s records.',
+      tone: 'var(--text-secondary)',
+    },
   };
   const ending = TERMINAL[chain.terminal];
 
