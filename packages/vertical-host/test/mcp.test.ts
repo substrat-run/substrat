@@ -368,6 +368,83 @@ describe('the endpoint itself', () => {
     expect(calls).toEqual([]);
   });
 
+  /**
+   * #1711: on `initialize` the header is a PROPOSAL — nothing has been negotiated yet.
+   * Refusing it 400'd every client newer than our list before the resolver, so an
+   * anonymous one never saw the 401 challenge and could not discover how to sign in.
+   */
+  describe('an unknown pin on the handshake is a proposal, not a refusal (#1711)', () => {
+    const UNKNOWN = '2099-01-01';
+    const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: UNKNOWN } };
+    const send = (app: Hono, body: unknown, pin?: string) =>
+      app.request('https://desk.example/api/mcp', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(pin ? { 'MCP-Protocol-Version': pin } : {}) },
+        body: JSON.stringify(body),
+      });
+    const anonymous = () => {
+      let resolved = 0;
+      const app = new Hono();
+      mountOperations(
+        app,
+        operations,
+        async () => {
+          resolved++;
+          throw new HTTPException(401, { message: 'anonymous' });
+        },
+        { mcp: { protectedResource: { authorizationServers: ['https://issuer.example'] } } },
+      );
+      return { app, resolved: () => resolved };
+    };
+
+    it('negotiates down to its own latest for an authenticated client', async () => {
+      const { app } = harness();
+      const res = await send(app, initialize, UNKNOWN);
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as any).result.protocolVersion).toBe(MCP_PROTOCOL_VERSIONS[0]);
+    });
+
+    it('answers an anonymous client with the 401 challenge, not a 400', async () => {
+      const { app, resolved } = anonymous();
+      const res = await send(app, initialize, UNKNOWN);
+      expect(res.status).toBe(401);
+      expect(res.headers.get('WWW-Authenticate')).toBe(
+        'Bearer resource_metadata="https://desk.example/.well-known/oauth-protected-resource/api/mcp"',
+      );
+      expect(resolved()).toBe(1);
+    });
+
+    it('behaves exactly as an initialize that pins nothing', async () => {
+      const unpinned = await send(anonymous().app, initialize);
+      const pinned = await send(anonymous().app, initialize, UNKNOWN);
+      expect(pinned.status).toBe(unpinned.status);
+      expect([...pinned.headers]).toEqual([...unpinned.headers]);
+      expect(await pinned.text()).toBe(await unpinned.text());
+
+      const okUnpinned = await send(harness().app, initialize);
+      const okPinned = await send(harness().app, initialize, UNKNOWN);
+      expect(okPinned.status).toBe(okUnpinned.status);
+      expect(await okPinned.json()).toEqual(await okUnpinned.json());
+    });
+
+    it('still refuses a batch that carries a real call beside initialize, before resolving', async () => {
+      let resolved = 0;
+      const { app, calls } = harness({ resolve: () => void resolved++ });
+      const call = { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'todo_my-lists' } };
+      const res = await send(app, [initialize, call], UNKNOWN);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error.code).toBe(-32600);
+      expect(resolved).toBe(0);
+      expect(calls).toEqual([]);
+    });
+
+    it('still refuses notifications/initialized under a pin it never answered with', async () => {
+      const { app } = harness();
+      const res = await send(app, { jsonrpc: '2.0', method: 'notifications/initialized' }, UNKNOWN);
+      expect(res.status).toBe(400);
+    });
+  });
+
   it('accepts a request that pins no revision at all', async () => {
     const { app } = harness();
     const res = await app.request('/api/mcp', {

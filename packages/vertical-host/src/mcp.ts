@@ -605,15 +605,30 @@ export function mountMcp(
     } catch {
       return c.json(rpcError(null, -32700, 'Parse error'), 400);
     }
+    // Batching left the protocol in 2025-06-18 but earlier clients still send arrays,
+    // and answering one is cheaper than explaining why we will not.
+    const messages = Array.isArray(body) ? (body as Req[]) : [body as Req];
+    if (messages.length === 0) return c.json(rpcError(null, -32600, 'Invalid Request'), 400);
+
     /**
      * A client pins the revision it negotiated on every later request. One we do not
      * speak is a 400 BEFORE anything is dispatched: the alternative is answering a call
      * under a contract we never agreed to, whose framing we would then be guessing at.
      * Absent is not an error — a client that never sends it is the pre-header behaviour
      * the transport still allows.
+     *
+     * **Except on `initialize`, where nothing has been negotiated yet** (#1711). The
+     * header there is a proposal, and the body's `protocolVersion` is the negotiation
+     * that answers it — with our own latest when we do not speak theirs. Refusing it
+     * here stopped every client newer than this list at a 400 before the resolver, so it
+     * never saw the 401 challenge that starts sign-in. The skip holds only when EVERY
+     * message is `initialize`, which dispatches nothing: a batch carrying any other
+     * message is judged by its pin as before. `notifications/initialized` is not
+     * included — the client sends it after reading our answer, pinned to what we said.
      */
+    const handshakeOnly = messages.every((m) => !!m && typeof m === 'object' && m.method === 'initialize');
     const pinned = c.req.header(MCP_PROTOCOL_HEADER);
-    if (pinned !== undefined && !(MCP_PROTOCOL_VERSIONS as readonly string[]).includes(pinned)) {
+    if (!handshakeOnly && pinned !== undefined && !(MCP_PROTOCOL_VERSIONS as readonly string[]).includes(pinned)) {
       return c.json(
         rpcError(null, -32600, `Unsupported ${MCP_PROTOCOL_HEADER}: ${pinned}`, {
           supported: [...MCP_PROTOCOL_VERSIONS],
@@ -621,11 +636,6 @@ export function mountMcp(
         400,
       );
     }
-
-    // Batching left the protocol in 2025-06-18 but earlier clients still send arrays,
-    // and answering one is cheaper than explaining why we will not.
-    const messages = Array.isArray(body) ? (body as Req[]) : [body as Req];
-    if (messages.length === 0) return c.json(rpcError(null, -32600, 'Invalid Request'), 400);
 
     /**
      * A token minted for some other audience is refused BEFORE the resolver, so a
