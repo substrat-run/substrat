@@ -1,5 +1,289 @@
 # @substrat-run/kernel
 
+## 0.117.0
+
+### Minor Changes
+
+- 6504a99: A vertical can now share by link, and the permission checker enforces the link. A capability is authority carried by a secret rather than held by a principal: "anyone with this link may read this folder until Friday". An operation mints one with `ctx.capabilities.mint({ entity, permissions, operations?, expiresAt?, maxUses? })` and gets the secret back once. Whoever exchanges that secret acts as `{ capability: <id> }`, which is a new member of the event and denial actor union.
+
+  - **Exactly one subtree, exactly its keys.** A capability reaches its entity and everything beneath it through declared parent edges, and only the keys it carries. It holds no node-level authority, so an operation whose only check is a node-level one refuses it. An optional `operations` list narrows it further, and is enforced before the handler runs.
+  - **Never more than its minter holds, on every use.** Each key is checked on the entity at mint time with the operation's own check, the same way `ctx.grant` checks. The checker also re-checks the minter every time the capability acts, so a link stops granting the moment its minter loses access. Only a principal may mint. A capability, a connection, a schedule or a consumer cannot.
+  - **Directory-backed.** The capability is a row in the scope's own spine (`_substrat_capabilities`), read on every check. A revoke takes effect on the next call, including through sessions already handed out. `ctx.capabilities.revoke` is open to anyone who could have minted the capability, and `ctx.capabilities.list` reads them back.
+  - **A use is an exchange, not an invocation.** `ScopeHost.exchangeCapability` trades the secret for a session token and counts one use. `maxUses` bounds how many browsers may hold a capability, not how many reads they make. A single-use capability exchanged twice at once admits one. `getCapabilityScope(sessionToken, …)` is the door, and it re-resolves the session on every invoke.
+  - **On the spine.** Events a capability causes carry `{ capability }` as their actor, with K-34 authorization naming the root it was granted on. Its refusals land in the K-35 denial log. Every exchange is a `capability.exercised` spine event. A MODULE's mint and revoke (`ctx.capabilities`) are spine events too (`capability.minted`, `capability.revoked`), but the platform's `HostAdmin.mintCapability` and `HostAdmin.revokeCapability` write the admin log only. A consumer must not wait for a `capability.minted` or `capability.revoked` that a platform mint or revoke never produces.
+  - **Only the secret's hash is stored.** The kernel keeps its SHA-256, and an idempotent replay of a mint returns `[capability secret withheld]`. There is also a tripwire for accidents: while the minting invocation runs, `ctx.emit`, `ctx.requestPlatform` and `ctx.sql` refuse any record that carries the secret verbatim, anywhere in it (keys, entity ids, request kinds and byte parameters included). It catches a module persisting its own secret by mistake. It is not a boundary against a module that means to leak one, which could encode it first.
+  - **`@substrat-run/vertical-host`: `mountCapabilityExchange`.** The link carries the secret in its fragment (`#share=…`), which never reaches a server. The page posts it once to `/api/capability/exchange`, and the response sets the session as an HttpOnly `sb_capability` cookie, with `no-store` and `Referrer-Policy: no-referrer`. `capabilityStubOf(c, host, node)` then gives a request's stub.
+  - **`become` capabilities, platform-minted.** `HostAdmin.mintCapability` mints a capability whose exchange yields a principal, the shape an owner claim link or an invite has. It requires an expiry and a use limit, and is audited. `HostAdmin.revokeCapability` revokes any capability. An exchange can name the one mode it takes, and a secret of the other mode is refused without spending its use.
+  - The dashboard's history and the console's denial log name a capability actor as the link it came through.
+
+- aabc227: A permission key is at most 41 characters now, and `ctx.check` refuses one that is not a key.
+
+  **Breaking, for a key of 42 characters or more.** `permissionKey` gains `.max(41)`, exported as
+  `PERMISSION_KEY_MAX_LENGTH`. A manifest, role or grant naming a longer key is refused when it is
+  parsed, including at push. It is not an arbitrary number: the checker finds a principal's grants
+  with `relation LIKE 'granted:<key>%'`, and a Durable Object's SQLite refuses a LIKE pattern over
+  50 bytes. A 42-character key parsed, deployed, and then made every check of it throw on a hosted
+  scope while passing every local test. The longest key declared anywhere in this repository is 29
+  characters.
+
+  **`ctx.check` parses the key it is handed.** The `PermissionKey` type is compile-time only, so a
+  module that cast a string past it (`'Workorder:Read' as PermissionKey`) used to be refused as a
+  denial and recorded in the denial log under a key that cannot exist. Under a system actor (a
+  consumer), whose check is allowed without asking the checker, the same key was allowed, and
+  `ctx.grant` wrote it into the tuple store. Both adapters now parse the key first, above the
+  system-actor shortcut. A malformed key throws an `internal` error that names it. That error is not
+  a denial, so no denial row is written. `ctx.grant` and `ctx.revoke` inherit the check, because they
+  re-check before writing.
+
+  It fails closed. A throw hands back no decision, so nothing can pass `assertAllowed`, and nothing is
+  added to the `authorization` the operation's events carry. A caller that catches the throw and
+  carries on has skipped a check. It has not been granted one.
+
+  The new `assertPermissionKey` in `@substrat-run/kernel` is the one parse both adapters call.
+
+- 44299a1: A subject erasure now reaches the spine's second copy of an event. `shredSubject`
+  redacted `_substrat_outbox` and nothing else, but a host with no control plane cannot
+  run a connector, so each connector delivery becomes a `connector:<provider>` platform
+  intent whose payload is the whole event — and nothing ever deletes those rows. A name
+  therefore survived the erasure in the live scope database, and in every export, backup
+  and PITR window taken from it afterwards. Both tables are redacted now, in one pass.
+
+  The intent's `payload` column is `NOT NULL`, so it is replaced by an obviously-redacted
+  tombstone rather than nulled; `last_error` goes with it, being free text a provider
+  wrote about this person; and a still-pending intent is settled `failed` in the same
+  statement, so nothing is ever handed a tombstone to drain. The row itself stays, so the
+  journal still shows that something was asked of the platform, by whom, and when. Which
+  intents are selected is the outbox's own predicate — the subject, and a `piiClass` other
+  than `none` — read off whatever event the payload embeds, so a copy is never judged more
+  harshly than the original. `SubjectShredReceipt` gains `intentsRedacted` beside
+  `eventsRedacted`, defaulted so an older receipt still parses.
+
+  Settling a platform intent is now a compare-and-set on `status = 'pending'`. The drain
+  reads pending rows, runs a handler, then settles, so a settle can land after an erasure
+  has redacted the row — and settling by `id` alone wrote a provider's reply, which can
+  quote the person, back into `last_error` on a row whose payload had just been emptied.
+  Nothing legitimate is refused: the drain only ever reads pending rows, so every settle
+  targets one that was pending when it was read. A settle that finds the row already
+  terminal now does nothing.
+
+  On the hosted adapter, an erasure against a scope still running a scope host from before
+  this change is **refused** rather than half-performed. That host's redaction never reaches
+  the intent journal, so going ahead would destroy the subject's key — the irreversible half
+  — while leaving their payloads in place. The refusal is a `503` naming the scope, and the
+  erasure can simply be re-run once the vertical is redeployed.
+
+- 4ef164c: A promote of a listed vertical now re-runs provisioning on its installs, so what a new
+  version's `onProvision` sets up reaches the installs that already existed.
+
+  The sweep's provision reconcile (#1172) compared a scope's receipt with its bound version. A
+  listed vertical's promote re-serves every install in place but moves none of their version
+  pointers, which belong to each tenant and move when that tenant presses Update. So the phase
+  never saw those installs: a new service principal, a site registration or a place on the
+  sweeper roster never reached them. The phase now compares against the version that RUNS on
+  the scope (`runningVersionOf`): for a scope on its vertical's serving script, the version
+  the script serves. Tenants' version pointers are not touched, so Update is still offered.
+
+  - **Paced.** At most `provisionReconcileBatch` scopes per pass, default 50, set on the
+    control plane as `PROVISION_RECONCILE_BATCH` (`0` pauses the phase). The rest are reported
+    as `deferred` and reached on later passes. Each pass starts its window at a random point
+    in the behind set (`provisionReconcileRng` injects it), so installs that fail every time
+    cannot keep healthy ones waiting.
+  - **Forks never.** The phase keeps only primary scopes, via the now-exported
+    `isPrimaryScope`: no `forkedFrom`, and not `kind: 'preview'`. A PR preview is a restored
+    copy of production data.
+  - **`unsupported` apart from `failed`.** A vertical with no `/internal/reconcile` answers 501. `reconcileScopeFn` may resolve `'unsupported'` for it, which is counted, reported with
+    up to 50 scope ids, not marked and not listed as an error.
+  - **The receipt names what ran.** A reconcile records the version of the deployment it
+    actually reached (`versionReachedAt`, from the rung of the resolution ladder that chose
+    it). The console's **Re-run provisioning** records that. The sweep passes
+    `reconcileScopeFn` the version it will record (`expected`), and the control plane refuses
+    to reconcile through a deployment that runs anything else. If the serving ref doesn't
+    resolve and the ladder falls back to the bound version's deployment, the scope never looks
+    repaired while the served version's hook has not run.
+
+- 269fa7a: A reconcile no longer undoes a revoke. Re-running provisioning creates the grants it finds
+  missing and leaves a revoked one revoked.
+
+  Provisioning re-runs often. A private vertical's push, the console's **Re-run provisioning**,
+  a tenant's Update and, since the last release, every listed promote each reconcile the
+  installs. Each reconcile re-wrote the tuples provisioning grants with
+  `INSERT OR REPLACE … revoked_at = NULL`. That created a missing grant, but it also brought
+  back a revoked one. So a revoke of the owner's seat, of a connection grant, or of a module's
+  `system:<module>` schedule grant (the per-scope switch that turns its schedules off) lasted
+  only until the next reconcile, and nothing said so.
+
+  Provisioning now **seats** a tuple instead, with the kernel's new `seatScopeTuple`. Both
+  adapters use it: `provisionScopeLocal` on Cloudflare, and `provisionScope` on both.
+
+  - **Missing** → created, live. A scope whose storage was recreated is still repaired (#332).
+  - **Live** → its expiry follows the platform's, as before.
+  - **Revoked** → left exactly as it is, including `revoked_at` and `expires_at`.
+
+  **One exception, for the owner's seat.** If leaving the owner-of-record revoked would leave
+  the scope with no effective role grant at all, a reconcile re-seats the owner. A scope nobody
+  can act in is the lockout a reconcile exists to repair. So revoke the owner **after** seating a
+  successor, and the revoke holds. "Effective" means what the permission check means: someone
+  holding a role the vertical still defines. A grant of a role a later version removed passes no
+  check, so it does not count as a holder, and it no longer keeps a scope from being repaired.
+  The guard that decides whether a scope enforces its permissions locally reads the same rule.
+  Two consequences of the owner exception:
+
+  - Revoking the last role holder is undone at the next reconcile.
+  - The owner it re-seats is the one `owner_of_record` names, and the first owner written there
+    stays. If a successor is later revoked too, the original owner comes back.
+
+  To lock out a compromised owner, suspend the scope. A seat revoke is not that lever.
+
+  An explicit grant still clears a revoke: `assignScopeRole`, `grantEntityLocal`,
+  `connectorGrantLocal`, and `HostAdmin`'s `assignRole`, `grant`, `grantToSystem`,
+  `grantToConnection` and `grantToOrg`. Granting someone again gives them access again.
+
+- 105a4c3: A scope's schedules now have an off switch that holds. `HostAdmin.revokeFromSystem` turns
+  one module's scheduled work off on one scope, and `restoreToSystem` turns it back on. Both
+  take a required `reason`. Each call writes two admin-log rows, its intent first and then
+  its outcome, paired by the `operationId` the call answers with. A repeat call is logged
+  too. Staff reach them over HTTP as `DELETE` and `POST` on
+  `/tenants/:tenantId/scopes/:scopeId/system-grants`, with the body `{ moduleId, reason }`.
+
+  - **Module-wide, on one scope.** Schedules share permissions, so switching off one schedule
+    or one permission would either switch off its siblings too or make it fail on every pass.
+  - **Nothing fires while it is off.** `runDueSchedules` reports each schedule as `skipped`,
+    with `switchedOff: true` on the report. It is never `failed`, and the cadence clock is left
+    alone, so a due schedule fires on the first pass after the restore.
+  - **It is a kill switch, not a pause.** The module's `system:` grants on the scope are
+    revoked too, so a job run acting with that authority is denied by its own check.
+  - **Restore is the lever; a grant is not.** The off position is its own marker tuple. While
+    it is off, `grantToSystem` for the module on that scope is refused (409 `conflict`), and a
+    reconcile seats none of the module's system grants, not even one a newer version declares.
+    A restore gives back exactly what the switch took. A grant revoked separately before the
+    switch was pulled stays revoked.
+  - **Provisioning's seat is now `seatScopeTuple`**, which replaces the `SEAT_SCOPE_TUPLE_SQL`
+    constant (unreleased) because it binds the subject twice.
+  - **Hosted scopes.** The switch is moved in the vertical's own deployment, over the new
+    platform-secret `/internal/system-switch` route. A deployment built before that route
+    answers with a 501 that says to redeploy, and nothing is switched. A transport failure or a
+    5xx from the vertical is reported as a failure, because the switch may have moved.
+
+- a8c2c64: A tenant's storage can be read on demand: the size of each of its scope databases, and their sum.
+
+  `GET /meters/storage?tenantId=…` (staff-only) answers one page of the tenant's scopes, each
+  with its database size in bytes: `SqlStorage.databaseSize` on Cloudflare and
+  `page_count × page_size` on SQLite. A scope is read through `HostAdmin.scopeDatabaseSize` when it is co-located, and
+  through the vertical's new `/internal/database-size` when a vertical's deployment holds it.
+  The console's tenant page has a **Storage** card that reads only when the button is pressed.
+
+  Nothing is stored and nothing sweeps. Reading a scope's size wakes its Durable Object, so a
+  reading is bounded to one page of at most 200 scopes (default 50) with at most 8 reads in
+  flight, and there is no fleet-wide form. A scope whose read fails is listed with its error and left out
+  of the sum, and the reading says `complete: false`. Only a reading that covered every scope
+  with no failure is complete. Attachment files, per-tenant D1 databases and the lake are
+  not counted, and each reading names them in `excluded`.
+
+  `HostAdmin.scopeDatabaseSize` is a new required method on the kernel's host-admin interface.
+  `VerticalScopeHost.databaseSizeLocal` is optional, so a vertical built before it still
+  satisfies the interface, and its route answers 501 rather than a size.
+
+- 02c181a: The recorded sweep history no longer drops one of two entries when a recurring schedule and a freshness expectation in the same app happen to share a name.
+
+  An app's sweep reports its outcomes in batches, one batch per pass, and each entry is filed under the thing it is about: a schedule under its operation name, a freshness expectation under its event type. Nothing keeps those two sets of names apart — `orders.placed` is an ordinary name for either — and duplicate protection judged an entry by its batch and that name alone, without asking which kind it was. So when a schedule and a freshness expectation in one app shared a name, whichever of the two arrived second in a batch was discarded as a duplicate, with no error. The history then showed a gap, and a gap is exactly what a stopped freshness check or a missed schedule run looks like there.
+
+  Duplicate protection now takes the kind into account, so the two entries are kept side by side. A batch delivered twice is still recorded once.
+
+  Existing platform stores are updated the next time they start, on both the self-hosted and the hosted store: the duplicate check is replaced, and every entry already recorded is kept exactly as it was. Nothing to change to adopt it.
+
+- 2fa5147: One malformed platform-intent row no longer makes a scope's whole intent list unreadable.
+
+  Every read of a scope's intent journal returns a list — the drain's pending queue, the
+  journal history, and `ctx.platformRequests` inside an operation — and the row decode behind
+  all three was strict. A single row whose JSON would not parse therefore threw for the whole
+  scope: the drain could not read its own queue, and the history read, which exists so a
+  failed intent explains itself afterwards, was switched off by exactly the row that failed.
+  Module code cannot write such a row, but a restore replays a dump's rows verbatim, so a dump
+  from another world or one edited by hand was enough.
+
+  The reads are tolerant now, and say so. A row that does not decode is returned beside all
+  the others with a new optional `decodeError` naming every column that failed, and each of
+  those fields comes back empty — `null`, or a self-naming marker for the requester — rather
+  than guessed at. Every value a read returns still satisfies the published `PlatformRequest`
+  schema: a row whose id, kind, status, attempt count or request time is itself corrupt has no
+  honest empty value to fall back to, and is still refused as it was. A row the platform wrote
+  carries no `decodeError` at all, so a healthy list reads exactly as it did before. The three
+  copies of the decoder are now one, in the kernel (`platformRequestOf`).
+
+  The drain stays strict where it acts. A row carrying `decodeError` never reaches a handler:
+  it is settled `failed`, attributed to the platform, with the decode failure in its
+  `lastError`, and lands as a terminal ops failure like any other refusal.
+
+- 1f223f5: One malformed event or denial row no longer hides a whole list, or stops the work queued behind it.
+
+  A row whose JSON would not parse used to throw out of every list it appeared in. That covered an
+  entity's history and timeline, the walks that explain why something happened, the denial log and
+  its summary. Worse, it covered the event deliveries themselves, where one bad event halted every
+  event of its type behind it on every pass. Module code cannot write such a row, but a restore
+  replays a dump's rows verbatim, so a dump from another world or one edited by hand was enough.
+
+  **The reads return it, and say so.** A history, timeline, cause-walk, invocation, denial-log or
+  denial-summary row that does not decode now comes back beside all the others. It carries a new
+  optional `decodeError` naming every column that failed, and those fields come back empty: the
+  actor as `{ system: 'undecodable' }`, a JSON field as `null`. That is what tells an unreadable
+  payload from an erased one. Every value still satisfies the published schema. A row whose own id,
+  type or time is corrupt has no honest empty value and is still refused, as before.
+
+  A denial whose permission key is malformed is listed, not refused. That row can come from a
+  module that cast a bad key into a permission check, not only from a dump, and the log is where
+  you go to find out why. Its permission reads as `undecodable:permission`, and `decodeError` quotes
+  the key it actually checked. A healthy row carries no `decodeError` at all, so a clean list reads
+  exactly as it did.
+
+  **The work skips it, and keeps going.** An event that does not decode is dead-lettered for each
+  consumer and executor it was due for, with the columns that failed as the error. Its handlers are
+  never called with it, and the events behind it are delivered. An executor gives up on such an event
+  on the first attempt, since decoding the same stored text again cannot succeed. The Tier-2 drain
+  steps over the row too. It is never shipped in a guessed-at form, because the lake cannot take a
+  row back, and it is never stamped as drained, because it never left. The events behind it still
+  ship. The sweep reports the skipped event ids on every pass, and `readHistory` still returns the
+  event with its `decodeError`. That event is missing from the lake until the row is repaired.
+
+  The platform also checks every event against the published schema itself, just before it
+  ships to the lake. An app deployed on an older version sends its events unchecked, so this is
+  what keeps a malformed one out of the lake whichever version the app runs. An event that fails
+  is treated exactly like a skipped row: not shipped, not stamped, and counted in the report.
+
+### Patch Changes
+
+- fb37a3e: Three more spine reads check what they return instead of casting it.
+
+  The delivery list an event's effects carry, the scope's dead-letter list and the denial summary
+  grouped by operation each read stored columns and handed them back typed as valid, without asking
+  the value. A delivery whose `attempts` was `-1`, `1.5` or text reached a caller typed as a
+  non-negative integer. They are decoded against their published schemas now, on the same rule as the
+  history and denial reads.
+
+  **A column with an honest empty value comes back empty, and says so.** A nullable column that
+  does not decode (a delivery's error or call id, a bucket's operation) reads as `null` beside a new
+  optional `decodeError` on `EventDelivery`, `DeadLetter` and `DenialOperationBucket`. A healthy row
+  carries none, so a clean list reads exactly as it did.
+
+  **A column with none is refused, naming it.** `attempts`, a time, an id or a consumer that breaks
+  its schema throws with the column named, rather than being returned as though it were fine.
+
+  Two additions to `@substrat-run/contracts`, both additive. `DeadLetter` had no schema and is now
+  one (`deadLetter`); its type is unchanged. `deliveryConsumer` names what a delivery's consumer can
+  be: a module id, or `executor:<id>` for an executor, with whatever id registration accepted (it takes any string). The contract used to type it as a bare module
+  id, which an executor's delivery never was; `EventDelivery.consumer` accepts both now, and its
+  inferred type is the same.
+
+- Updated dependencies [6504a99]
+- Updated dependencies [aabc227]
+- Updated dependencies [fb37a3e]
+- Updated dependencies [44299a1]
+- Updated dependencies [d7eb089]
+- Updated dependencies [105a4c3]
+- Updated dependencies [a8c2c64]
+- Updated dependencies [2fa5147]
+- Updated dependencies [1f223f5]
+  - @substrat-run/contracts@0.117.0
+
 ## 0.116.0
 
 ### Minor Changes
@@ -4459,7 +4743,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
