@@ -29,7 +29,9 @@ import {
   verticalChannel,
   verticalVersion,
   connection,
+  capabilityExchange,
   capabilityGrant,
+  principalId,
   connectionGrant,
   connectionGrantRecord,
   connectionSecret,
@@ -113,6 +115,11 @@ import {
   type OrgId,
   type PermissionKey,
   type PlatformActorId,
+  type BecomeCapabilityInput,
+  type CapabilityExchange,
+  type CapabilityId,
+  type CapabilityRecord,
+  type MintedCapability,
   type PrincipalId,
   type PromotionAcknowledgement,
   type BindHostnameInput,
@@ -164,6 +171,9 @@ import {
   parseValidationRecords,
   resolveScopeRecord,
   ulid,
+  capabilityTokenHash,
+  checkBecomeInput,
+  plausibleSessionToken,
   type AccessLogFilter,
   type AuditLogFilter,
   type OpsFailureFilter,
@@ -822,6 +832,13 @@ interface ScopeStubRpc {
      * outcome rather than accepting an unrecorded one (see `getImpersonatedScope`).
      */
     impersonation?: ImpersonationSession,
+    /**
+     * #1672: the HASH of a capability session token (the plaintext never crosses). The DO
+     * resolves it to its capability inside its queue on every call. An older DO ignores the
+     * argument and runs the call as the fresh placeholder principal the coordinator sent,
+     * who holds nothing — and the coordinator refuses any success without `capability`.
+     */
+    capabilitySession?: string,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
@@ -863,7 +880,21 @@ interface ScopeStubRpc {
      * coordinator refuses on, not something it infers.
      */
     idempotency?: { keyHonoured: boolean; replayed: boolean };
+    /** #1672: present iff the DO understood `capabilitySession`, on `impersonation`'s reasoning. */
+    capability?: { honoured: boolean };
   }>;
+  /** Trade a capability secret for a session or a principal (#1672) — the kernel's
+   *  `exchangeCapability`, run in this scope's own storage. */
+  exchangeCapability(
+    secret: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    mode?: 'act' | 'become',
+  ): Promise<CapabilityExchange | null>;
+  /** The platform's `become` mint (#1672), serialized in this scope's own storage. */
+  mintBecomeCapability(input: BecomeCapabilityInput, actor: PlatformActorId): Promise<MintedCapability>;
+  /** The platform's revoke (#1672) — the record as it stood before, or null. */
+  revokeCapabilityAsPlatform(id: string, actor: PlatformActorId): Promise<CapabilityRecord | null>;
   /** Where a module's schedules stand on this scope (#383, #1666) — the kernel's
    *  `systemScheduleState`, run in the scope's own storage. */
   systemScheduleState(moduleId: string): Promise<SystemScheduleState>;
@@ -2865,6 +2896,80 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.buildStub(tenantId, scopeId, undefined, undefined, moduleId);
   }
 
+  /**
+   * The exchange (#1672) — the same fail-closed (tenant, scope) and lifecycle gate as
+   * `getScope`, then the kernel's `exchangeCapability` inside the ScopeDO, where the
+   * capability row lives. The answer is re-parsed on this side of the RPC.
+   */
+  async exchangeCapability(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    options?: { mode?: 'act' | 'become' },
+  ): Promise<CapabilityExchange | null> {
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    const outcome = await this.scopeStub(scopeId).exchangeCapability(
+      secret,
+      tenantId,
+      scopeId,
+      options?.mode,
+    );
+    return capabilityExchange.nullable().parse(outcome);
+  }
+
+  /**
+   * The capability door (#1672) — mirror of the connection, system and impersonation doors.
+   * The token is shape-checked and hashed HERE; only its hash reaches the ScopeDO, which
+   * re-resolves it to its capability on every invoke and acknowledges that it did.
+   */
+  async getCapabilityScope(
+    sessionToken: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ScopeStub> {
+    if (!plausibleSessionToken(sessionToken)) {
+      throw substratError('unauthenticated', 'not a capability session token');
+    }
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    const hash = await capabilityTokenHash(sessionToken);
+    return this.buildStub(tenantId, scopeId, undefined, undefined, undefined, options, undefined, hash);
+  }
+
+  /**
+   * Is this the SHARED control plane's host — the one whose own `SCOPE` namespace holds no
+   * hosted scope's storage, and which routes scope writes to the serving deployment? The
+   * delegations are set on that host and no other (their own docs say so), so any one of
+   * them being present is the signal.
+   */
+  private get servesScopesElsewhere(): boolean {
+    return Boolean(this.connectorDelegation || this.systemSwitchDelegation || this.eventDrainDelegation);
+  }
+
+  /**
+   * Where a platform capability verb (#1672) may write: this host's own ScopeDO — refused,
+   * loudly, on the shared control plane for a scope bound to a vertical, whose storage lives
+   * in that vertical's deployment. Writing through `this.scopeStub` there would mint into
+   * an empty DO of the wrong namespace, a capability nobody could ever exchange. Delegating
+   * these verbs to the serving deployment (as the schedule switch is) is a follow-up; the
+   * claim-link migration is the first caller that needs it.
+   */
+  private async capabilityScopeStub(tenantId: TenantId, scopeId: ScopeId, verb: string) {
+    const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+    if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    if (this.servesScopesElsewhere && rec.vertical !== null) {
+      throw substratError(
+        'unavailable',
+        `${verb} cannot reach scope ${scopeId}: it is served by the '${rec.vertical}' ` +
+          'deployment, and platform capability verbs are not delegated there yet',
+      );
+    }
+    await this.migrateAndRecord(scopeId);
+    return { stub: this.scopeStub(scopeId), vertical: rec.vertical };
+  }
+
   registeredSchedules(): ScheduleRegistration[] {
     const out: ScheduleRegistration[] = [];
     for (const [moduleId, schedules] of this.moduleSchedules) {
@@ -3009,16 +3114,25 @@ export class CloudflareScopeHost implements ScopeHost {
      * `endImpersonation` would stop nothing.
      */
     sessionId?: ImpersonationSessionId,
+    /**
+     * #1672: the HASH of a capability session token — the capability door hashed it and
+     * the plaintext goes no further. The ScopeDO resolves it on every invoke, inside its
+     * queue, and acknowledges it; see the refusal below for why the acknowledgement matters.
+     */
+    capabilitySession?: string,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
     const cp = this.cp;
     const operationEntitlement = this.operationEntitlement;
     // The DO needs SOME principal-shaped value for `ctx.principal`; for a
     // connection it is the connection id, for a schedule the module id, and the
-    // honest attribution rides on the event actor instead.
+    // honest attribution rides on the event actor instead. For a capability it is a
+    // FRESH id nobody holds anything under (#1672): the DO replaces it with the resolved
+    // capability, and a DO too old to know that would act as nobody rather than as someone.
     const asPrincipalId = (principal ??
       (connectionId as unknown as PrincipalId) ??
-      (systemModuleId as unknown as PrincipalId)) as PrincipalId;
+      (systemModuleId as unknown as PrincipalId) ??
+      (capabilitySession !== undefined ? principalId.parse(ulid()) : undefined)) as PrincipalId;
 
     return {
       tenantId,
@@ -3067,6 +3181,7 @@ export class CloudflareScopeHost implements ScopeHost {
           true,
           invokeOptions,
           session,
+          capabilitySession,
         );
         // The operation failed and the DO handed the error back as DATA — so it still
         // has its code and extensions, which a throw across this boundary would have
@@ -3108,6 +3223,17 @@ export class CloudflareScopeHost implements ScopeHost {
         // principal with nothing stamped and no read-only bound. The write has
         // committed; what this refuses is the SUCCESS, because a support session
         // believed to be recorded and bounded is worse than no support session.
+        // #1672, the same shape: a DO too old to know about capability sessions ignored the
+        // hash and ran the call as the fresh placeholder principal, who holds nothing — so
+        // the likely outcome is a refusal, but a SUCCESS here would have been decided
+        // without the capability's grant, its allowlist or its liveness, and is refused.
+        if (capabilitySession !== undefined && envelope.capability?.honoured !== true) {
+          throw substratError(
+            'unavailable',
+            `${operation} ran on a scope host that did not understand capability sessions. ` +
+              'Retry once the scope has been migrated',
+          );
+        }
         if (session !== undefined && envelope.impersonation?.honoured !== true) {
           throw substratError(
             'unavailable',
@@ -3612,6 +3738,49 @@ export class CloudflareScopeHost implements ScopeHost {
       // into the scope's storage, and the audit row around it.
       revokeFromSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'off'),
       restoreToSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'on'),
+      // #1672 — the platform's two capability verbs. Audited AFTER the write, on both, and
+      // the failure each leaves is the safe one: a mint whose audit row did not land never
+      // returned its secret, so nobody can ever exchange it; a revoke whose row did not land
+      // has still revoked. Neither the secret nor its hash is ever in before/after.
+      mintCapability: async (
+        actor: PlatformActorId,
+        tenantId: TenantId,
+        scopeId: ScopeId,
+        input: BecomeCapabilityInput,
+      ): Promise<MintedCapability> => {
+        // Checked HERE as well as in the DO: a typed refusal thrown across the RPC arrives as
+        // a bare message, and the caller would lose `validation_failed`. One function, so the
+        // two sides cannot disagree about what a valid mint is.
+        checkBecomeInput(input, new Date().toISOString() as Instant);
+        await this.cp.validateScopeAccess(tenantId, scopeId);
+        const { stub, vertical } = await this.capabilityScopeStub(tenantId, scopeId, 'mintCapability');
+        const minted = await stub.mintBecomeCapability(input, actor);
+        await this.recordAdmin(actor, 'mintCapability', { tenantId, scopeId, vertical }, null, {
+          capabilityId: minted.id,
+          mode: 'become',
+          principal: input.principal,
+          expiresAt: input.expiresAt,
+          maxUses: input.maxUses,
+          label: input.label ?? null,
+        });
+        return minted;
+      },
+      revokeCapability: async (
+        actor: PlatformActorId,
+        tenantId: TenantId,
+        scopeId: ScopeId,
+        capabilityId: CapabilityId,
+      ): Promise<void> => {
+        const { stub, vertical } = await this.capabilityScopeStub(tenantId, scopeId, 'revokeCapability');
+        const before = await stub.revokeCapabilityAsPlatform(capabilityId, actor);
+        if (!before) {
+          throw substratError('not_found', `no capability ${capabilityId} in scope ${scopeId}`);
+        }
+        await this.recordAdmin(actor, 'revokeCapability', { tenantId, scopeId, vertical }, before, {
+          capabilityId,
+          revoked: true,
+        });
+      },
 
       grantToOrg: async (actor, orgId, permission, node, entity) => {
         // The org must exist in the node's tenant. A grant to a phantom org looks

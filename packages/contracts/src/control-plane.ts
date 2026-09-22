@@ -166,6 +166,12 @@ export const adminAction = z.enum([
   // every row the session goes on to touch (K-33's failure ordering).
   'beginImpersonation',
   'endImpersonation',
+  // #1672 — the platform minting a `become` capability on a scope (the shape claim links
+  // and invites will move onto), and revoking any capability — the operator's lever for a
+  // leaked link. Neither the secret nor its hash is ever in before/after: this log is
+  // append-only, so a credential written here could never be removed.
+  'mintCapability',
+  'revokeCapability',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 

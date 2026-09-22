@@ -40,6 +40,14 @@ export type PlatformRequestId = z.infer<typeof platformRequestId>;
 export const dataSubjectId = z.string().regex(ULID).brand<'DataSubjectId'>();
 export type DataSubjectId = z.infer<typeof dataSubjectId>;
 
+// A capability (#1672) — authority carried by a secret rather than held by a principal:
+// "anyone with this link may read this folder until Friday". Branded distinctly from
+// PrincipalId for the reason PlatformActorId is: whoever holds the link is not a person
+// the checker knows, and an audit view that showed one as a principal would be lying.
+// The id names the directory row; the SECRET is a separate value only its hash is kept of.
+export const capabilityId = z.string().regex(ULID).brand<'CapabilityId'>();
+export type CapabilityId = z.infer<typeof capabilityId>;
+
 // npm-package-shaped, e.g. '@substrat-run/engine-workorder'
 export const moduleId = z
   .string()

@@ -7,6 +7,8 @@ import {
   grantExpiryContractSuite,
   facetRecencyContractSuite,
   impersonationContractSuite,
+  capabilityContractSuite,
+  capabilityExpiryContractSuite,
   connectorTestFetch,
   permissionContractSuite,
   scheduleContractSuite,
@@ -134,6 +136,40 @@ atomicContractSuite('adapter-sqlite', async () => {
 // grants no authority of its own, and an allow-all checker would make the one
 // test that proves it (a session against a principal who holds nothing) pass for
 // the wrong reason.
+// #1672: capabilities — authority carried by a secret. The DEFAULT tuple checker, for the
+// reason the impersonation suite gives: half of what it pins is that the door grants no
+// authority of its own, and an allow-all checker would make that pass for the wrong reason.
+capabilityContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-cap-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1672: the expiry TRANSITIONS, which need a clock the test can move — pure host only,
+// like `grantExpiryContractSuite` (the DO host takes no clock, #956).
+capabilityExpiryContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-cap-expiry-'));
+  const clock = manualClock();
+  const host = new SqliteScopeHost({ dir, clock: clock.read });
+  return {
+    host,
+    clock,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
 impersonationContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-imp-'));
   const host = new SqliteScopeHost({

@@ -1980,6 +1980,200 @@ export const idempotencyMod: ModuleRegistration = {
   operationIdempotencyOptOuts: operationIdempotencyOptOutsOf(idempotencyDeclaration),
 };
 
+// -- capabilities (#1672) ------------------------------------------------------
+
+/**
+ * The fixture for the capability suite: a folder tree (`doc` → `folder`, `folder` →
+ * `folder`), three keys, and operations shaped the way a document vertical's would be —
+ * a read and a write that check ONE entity, so what a capability can reach is decided by
+ * the checker's walk and nothing else.
+ *
+ * The minting operations are deliberately UNGUARDED, like `perm/share`: the guardrails
+ * under test live inside `ctx.capabilities`, and an operation-level check in front of
+ * them would only prove the check.
+ */
+export const capModManifest = moduleManifest.parse({
+  id: '@cap/mod',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [
+    { key: 'cap:read', description: 'read a folder or a document' },
+    { key: 'cap:write', description: 'comment on a document' },
+    { key: 'cap:admin', description: 'arrange the folder tree' },
+  ],
+  events: {
+    emits: [
+      { type: 'cap.commented', schemaVersion: 1 },
+      { type: 'cap.mint-requested', schemaVersion: 1 },
+    ],
+    consumes: [{ type: 'cap.mint-requested', schemaVersion: 1 }],
+  },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entityRelations: [
+    { entityType: 'doc', parentType: 'folder' },
+    { entityType: 'folder', parentType: 'folder' },
+  ],
+  entitlementKey: 'cap',
+});
+
+const CAP_READ = permissionKey.parse('cap:read');
+const CAP_WRITE = permissionKey.parse('cap:write');
+
+type CapShareInput = Parameters<OperationContext['capabilities']['mint']>[0];
+
+/** Every channel through which a module could persist its own minted secret by accident. */
+export const CAP_LEAK_CHANNELS = ['emit', 'key', 'entity', 'kind', 'intent', 'sql', 'bytes'] as const;
+type CapLeakChannel = (typeof CAP_LEAK_CHANNELS)[number];
+
+export const capMod: ModuleRegistration = {
+  manifest: capModManifest,
+  migrations: [
+    { version: '0001-init', sql: 'CREATE TABLE cap_notes (id TEXT PRIMARY KEY, body TEXT NOT NULL)' },
+  ],
+  operations: {
+    'cap/link': linkOp as OperationHandler<never, unknown>,
+    'cap/share': ((ctx, input) => ctx.capabilities.mint(input as CapShareInput)) as OperationHandler<
+      never,
+      unknown
+    >,
+    // The link a vertical would hand back — the secret spliced into a URL fragment, so the
+    // idempotency redaction has to find it INSIDE a string, not only as a whole value.
+    'cap/share-link': (async (ctx, input) => {
+      const minted = await ctx.capabilities.mint(input as CapShareInput);
+      return { id: minted.id, link: `https://docs.example/#share=${minted.secret}` };
+    }) as OperationHandler<never, unknown>,
+    // A module that mints and then writes something through ONE persisting channel. With
+    // `leak: true` what it writes is the secret — each channel an accident could take, and
+    // each must be refused, the refusal rolling the mint back with it. With `leak: false` it
+    // writes a harmless value through the very same channel: the clean twin, which must go
+    // through, so a guard that refused the channel outright would fail it.
+    'cap/share-and-leak': (async (ctx, input) => {
+      const i = input as CapShareInput & { via: CapLeakChannel; leak?: boolean };
+      const { via, leak = true, ...spec } = i;
+      const minted = await ctx.capabilities.mint(spec);
+      const value = leak ? minted.secret : `harmless-${minted.id}`;
+      const note = (payload: unknown, entity: EntityRef = spec.entity) =>
+        ctx.emit({ type: 'cap.commented', schemaVersion: 1, entity, piiClass: 'none', payload });
+      switch (via) {
+        case 'emit': // a payload value, spliced into a string
+          note({ note: `share it: ${value}` });
+          break;
+        case 'key': // an object KEY — JSON persists property names too
+          note({ links: { [value]: true } });
+          break;
+        case 'entity': // the event's entity id — persisted in its own outbox column
+          note({ note: 'filed under the link' }, { entityType: 'doc', entityId: value });
+          break;
+        case 'kind': // a platform intent's kind — persisted as surely as its payload
+          ctx.requestPlatform({ kind: value, payload: {} });
+          break;
+        case 'intent': // a platform intent's payload
+          ctx.requestPlatform({ kind: 'cap-note', payload: { body: value } });
+          break;
+        case 'sql': // a text SQL parameter
+          ctx.sql.exec('INSERT INTO cap_notes (id, body) VALUES (?, ?)', [ulid(), value]);
+          break;
+        case 'bytes': // a BYTE SQL parameter — stored as a BLOB, still the plaintext
+          ctx.sql.exec('INSERT INTO cap_notes (id, body) VALUES (?, ?)', [
+            ulid(),
+            new TextEncoder().encode(value),
+          ]);
+          break;
+      }
+      return { id: minted.id };
+    }) as OperationHandler<never, unknown>,
+    'cap/unshare': (async (ctx, input) => {
+      await ctx.capabilities.revoke((input as { id: string }).id as never);
+      return { revoked: true };
+    }) as OperationHandler<never, unknown>,
+    'cap/list': ((ctx, input) =>
+      ctx.capabilities.list(input as Parameters<OperationContext['capabilities']['list']>[0])) as OperationHandler<
+      never,
+      unknown
+    >,
+    // A read of ONE entity — the proof comes back so a test can see what authorized it.
+    'cap/read': (async (ctx, input) => {
+      const entity = (input as { entity: EntityRef }).entity;
+      const decision = await ctx.check(CAP_READ, entity);
+      assertAllowed(decision);
+      return { read: entity, proof: decision.proof };
+    }) as OperationHandler<never, unknown>,
+    // A node-level read: a capability holds no node-level authority, so this refuses it.
+    'cap/read-all': (async (ctx) => {
+      assertAllowed(await ctx.check(CAP_READ));
+      return { all: true };
+    }) as OperationHandler<never, unknown>,
+    // A write of ONE entity, which emits — K-34 authorization and the actor land on it.
+    'cap/comment': (async (ctx, input) => {
+      const i = input as { doc: EntityRef; body: string };
+      assertAllowed(await ctx.check(CAP_WRITE, i.doc));
+      ctx.emit({
+        type: 'cap.commented',
+        schemaVersion: 1,
+        entity: i.doc,
+        piiClass: 'none',
+        payload: { body: i.body },
+      });
+      return { commented: true };
+    }) as OperationHandler<never, unknown>,
+    'cap/whoami': whoAmIOp as OperationHandler<never, unknown>,
+    // Asks the CONSUMER below to mint. A consumer runs under an override actor whose
+    // checks allow unconditionally, so "the minter holds every key" would be vacuous
+    // there — the mint must be refused outright, whatever the check would have said.
+    'cap/request-mint': (async (ctx, input) => {
+      ctx.emit({
+        type: 'cap.mint-requested',
+        schemaVersion: 1,
+        entity: (input as { entity: EntityRef }).entity,
+        piiClass: 'none',
+        payload: { entity: (input as { entity: EntityRef }).entity },
+      });
+      return { requested: true };
+    }) as OperationHandler<never, unknown>,
+    'cap/notes': ((ctx) =>
+      ctx.sql.query('SELECT id, body FROM cap_notes ORDER BY id')) as OperationHandler<never, unknown>,
+    'cap/outbox': ((ctx) =>
+      ctx.sql.query(
+        'SELECT id, type, occurred_at, actor, authorization, operation, entity_type, entity_id, payload FROM _substrat_outbox ORDER BY id',
+      )) as OperationHandler<never, unknown>,
+    'cap/denials': readDenialsOp as OperationHandler<never, unknown>,
+    // The session table's size — what the bounded prune is measured by.
+    'cap/session-count': ((ctx) =>
+      ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM _substrat_capability_sessions')[0]?.n ??
+      0) as OperationHandler<never, unknown>,
+    // Every table in this scope, every row, as text — what "the secret appears in no stored
+    // row" is checked against. Read through module-facing `ctx.sql` on purpose: this is
+    // what a vertical (or a dump of the scope) can see.
+    'cap/dump': ((ctx) => {
+      const tables = ctx.sql.query<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' " +
+          "AND substr(name, 1, 4) <> '_cf_' AND substr(name, 1, 7) <> 'sqlite_'",
+      );
+      const out: Record<string, string> = {};
+      for (const { name } of tables) {
+        out[name] = JSON.stringify(ctx.sql.query(`SELECT * FROM "${name}"`));
+      }
+      return out;
+    }) as OperationHandler<never, unknown>,
+  },
+  consumers: {
+    // Records what the mint answered rather than letting the delivery fail, so the test
+    // reads an outcome instead of inferring one from a dead letter.
+    'cap.mint-requested': (async (ctx, event) => {
+      const entity = (event.payload as { entity: EntityRef }).entity;
+      let outcome: string;
+      try {
+        const minted = await ctx.capabilities.mint({ entity, permissions: [CAP_READ] });
+        outcome = `minted ${minted.id}`;
+      } catch (err) {
+        outcome = `refused ${(err as { code?: string }).code ?? (err as Error).message}`;
+      }
+      ctx.sql.exec('INSERT INTO cap_notes (id, body) VALUES (?, ?)', [event.id, outcome]);
+    }) as ConsumerHandler,
+  },
+};
+
 export const contractTestModules: ModuleRegistration[] = [
   ...contractTestInitialModules,
   lateMod,
@@ -2000,6 +2194,9 @@ export const contractTestModules: ModuleRegistration[] = [
   parseMod,
   concurrencyMod,
   idempotencyMod,
+  // #1672: the capability suite's folder tree. Inert for every other suite — nothing else
+  // reads `cap_notes` or invokes a `cap/*` operation.
+  capMod,
 ];
 
 // -- live reads (#938) -------------------------------------------------------

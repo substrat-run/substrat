@@ -3,6 +3,9 @@ export type { ScopeHostFixture, ScopeHostSuiteOptions } from './scope-host-suite
 export { permissionContractSuite } from './permission-suite.js';
 export { atomicContractSuite } from './atomic-suite.js';
 export { impersonationContractSuite } from './impersonation-suite.js';
+export { capabilityContractSuite } from './capability-suite.js';
+export { capabilityExpiryContractSuite } from './capability-expiry-suite.js';
+export type { CapabilityExpiryFixture } from './capability-expiry-suite.js';
 export { searchContractSuite } from './search-suite.js';
 export { entityVersionContractSuite } from './entity-version-suite.js';
 export { timelineContractSuite } from './timeline-suite.js';
@@ -39,6 +42,8 @@ export {
   liveMod,
   liveModManifest,
   permMod,
+  capMod,
+  capModManifest,
   scheduleMod,
   jobsMod,
   testMod,

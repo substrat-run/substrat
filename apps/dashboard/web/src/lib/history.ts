@@ -17,7 +17,8 @@ import type { Actor, EmittedEntity, HistoryEntry } from '@substrat-run/contracts
  * consumer emitted the event on no one's behalf, `{ connection }` when a
  * connector's callback did — a third member rather than a synthetic principal,
  * because "a connector that reads as a person in the audit trail is worse than
- * one that cannot act at all" (#97). Only the first member is a string, and
+ * one that cannot act at all" (#97) — and `{ capability }` when whoever held a
+ * link did (#1672), for the same reason. Only the first member is a string, and
  * putting either object straight into JSX throws `Objects are not valid as a
  * React child`; the dashboard carries no error boundary, so that unmounts the
  * whole SPA on the first consumer-emitted event in a record's history. Formatting
@@ -26,6 +27,7 @@ import type { Actor, EmittedEntity, HistoryEntry } from '@substrat-run/contracts
 export function actorLabel(actor: Actor): string {
   if (typeof actor === 'string') return actor;
   if ('system' in actor) return `system · ${actor.system}`;
+  if ('capability' in actor) return `link · ${actor.capability}`;
   return `connector · ${actor.connection}`;
 }
 

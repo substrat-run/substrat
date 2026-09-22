@@ -68,6 +68,11 @@ import {
   type AdminAction,
   type AccessLogEntry,
   type CheckSubject,
+  type BecomeCapabilityInput,
+  type Instant,
+  type CapabilityExchange,
+  type CapabilityId,
+  type MintedCapability,
   type Connection,
   type ConnectionGrant,
   type ConnectionFilter,
@@ -162,9 +167,22 @@ import {
   REDRAIN_BATCH,
 } from '@substrat-run/contracts';
 import {
+  actorOf,
   asPrincipal,
   assertAllowed,
+  assertNoSecret,
   assertPermissionKey,
+  CAPABILITY_DDL,
+  CAPABILITY_EXCHANGE_OPERATION,
+  capabilityTokenHash,
+  createCapabilityVerbs,
+  exchangeCapability as exchangeCapabilitySecret,
+  guardSecrets,
+  mintBecomeCapability,
+  plausibleSessionToken,
+  redactSecrets,
+  resolveCapabilitySession,
+  revokeCapabilityAsPlatform,
   assertReadOnlyQuery,
   attachmentBlobKey,
   entitlementDenial,
@@ -622,6 +640,10 @@ const KERNEL_DDL = `
     drained_at TEXT
   );
   ${IDEMPOTENCY_DDL}
+  -- #1672: capabilities — authority carried by a secret (a link share), and the sessions
+  -- an exchange trades that secret for. Spine (kernel-written), shared with the DO adapter
+  -- from @substrat-run/kernel so the two cannot part company; the column comments are there.
+  ${CAPABILITY_DDL}
   -- #383 / #1232 / #1288: the platform sweep's per-scope gating state, holding two
   -- families of row that the kind COLUMN — not the spelling of a key — tells apart.
   -- Spine (kernel-written), never a module migration. Shared with the DO adapter from
@@ -3209,6 +3231,108 @@ export class SqliteScopeHost implements ScopeHost {
     return this.buildStub(tenantId, scopeId, rt, { kind: 'system', id: moduleId });
   }
 
+  /**
+   * The lifecycle gate the capability doors share (#1672): the scope must exist in this
+   * tenant, the tenant must be active, the scope must be active — K-3's fail-closed pair
+   * check, worded as the principal door words it, so a scope in another tenant reads the
+   * same as one that does not exist. Migrations are applied as on every door.
+   */
+  private async openActiveScope(tenantId: TenantId, scopeId: ScopeId): Promise<ScopeRuntime> {
+    const scope = this.directory
+      .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { tenant_id: string; status: string } | undefined;
+    if (!scope || scope.tenant_id !== tenantId) {
+      throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    }
+    const tenant = this.directory
+      .prepare('SELECT status FROM tenants WHERE tenant_id = ?')
+      .get(tenantId) as { status: string } | undefined;
+    if (!tenant || tenant.status !== 'active') {
+      throw new Error(`tenant not active (status: ${tenant?.status ?? 'missing'}): ${tenantId}`);
+    }
+    if (scope.status !== 'active') {
+      throw new Error(`scope not active (status: ${scope.status}): ${scopeId}`);
+    }
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    return rt;
+  }
+
+  /**
+   * The exchange (#1672) — a secret traded for a session, or for the principal a `become`
+   * capability yields. One serialized scope task and one transaction, so the use it takes
+   * and the `capability.exercised` event recording it commit together or not at all; the
+   * event's consumers then dispatch as an invoke's would.
+   */
+  async exchangeCapability(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    options?: { mode?: 'act' | 'become' },
+  ): Promise<CapabilityExchange | null> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.enqueue(async () => {
+      // ONE instant for the whole exchange: the row's `last_used_at`, the session's times and
+      // the event's `occurredAt` are one fact, and two clock reads could disagree about it.
+      const now = this.clock();
+      rt.db.exec('BEGIN IMMEDIATE');
+      let outcome: CapabilityExchange | null;
+      try {
+        outcome = await exchangeCapabilitySecret(
+          {
+            sql: spineSql(rt.db),
+            now,
+            // Stamped `{ capability }` by the ordinary emit path, under the exchange's own
+            // pseudo-operation name — the actor is the capability, as on every event it
+            // goes on to cause.
+            emit: (capability, event) =>
+              this.operationContext(
+                rt,
+                { kind: 'capability', id: capability },
+                undefined,
+                undefined,
+                undefined,
+                CAPABILITY_EXCHANGE_OPERATION,
+                [],
+                now,
+              ).emit(event),
+          },
+          secret,
+          options?.mode,
+        );
+        rt.db.exec('COMMIT');
+      } catch (err) {
+        rt.db.exec('ROLLBACK');
+        throw err;
+      }
+      if (outcome) {
+        await this.dispatch(rt, null);
+        await this.dispatchExecutors(rt, null);
+      }
+      return outcome;
+    });
+  }
+
+  /**
+   * The capability door (#1672) — mirror of the connection and system doors. The token is
+   * shape-checked and hashed HERE, and only its hash travels on: `buildStub` re-resolves it
+   * to its capability on every invoke, so a revoke or an expiry refuses the very next call
+   * on a stub minted before it.
+   */
+  async getCapabilityScope(
+    sessionToken: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ScopeStub> {
+    if (!plausibleSessionToken(sessionToken)) {
+      throw substratError('unauthenticated', 'not a capability session token');
+    }
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const hash = await capabilityTokenHash(sessionToken);
+    return this.buildStub(tenantId, scopeId, rt, { kind: 'capability-session', hash }, options);
+  }
+
   registeredSchedules(): ScheduleRegistration[] {
     const out: ScheduleRegistration[] = [];
     for (const mod of this.modules.values()) {
@@ -3441,12 +3565,18 @@ export class SqliteScopeHost implements ScopeHost {
     return report;
   }
 
-  /** The stub body, shared by the principal, connection, system and impersonation doors. */
+  /** The stub body, shared by the principal, connection, system, impersonation and capability doors. */
   private buildStub(
     tenantId: TenantId,
     scopeId: ScopeId,
     rt: ScopeRuntime,
-    subject: CheckSubject,
+    /**
+     * Who the stub acts as — or, for the capability door (#1672), the SESSION it holds,
+     * which every invoke re-resolves to its capability inside the scope's actor task. A
+     * capability resolved once at mint time would outlive its own revocation for exactly
+     * the one caller holding the stub.
+     */
+    authority: CheckSubject | CapabilitySessionAuthority,
     options?: ScopeStubOptions,
     /**
      * K-42: the session this stub acts under. `subject` is already the
@@ -3543,9 +3673,23 @@ export class SqliteScopeHost implements ScopeHost {
           // which is the leak `causedBy` had to be moved off the host to avoid.
           rt.invocationId = invokeOptions?.invocationId ?? null;
           try {
+          // #1672: the capability door's session, re-resolved on EVERY invoke and inside the
+          // actor task — so nothing can revoke between this read and the transaction below.
+          // Refuses a stale session, a revoked or expired capability and an operation off its
+          // allowlist before anything opens; none of those is a K-35 denial (no key checked).
+          const subject: CheckSubject =
+            authority.kind === 'capability-session'
+              ? {
+                  kind: 'capability',
+                  id: resolveCapabilitySession(spineSql(rt.db), authority.hash, this.clock(), operation),
+                }
+              : authority;
+          // #1672: the secrets this invocation mints — withheld from its idempotency recording,
+          // and what the tripwire on its writes looks for.
+          const minted: string[] = [];
           // Fresh per operation: the context carries the K-34 authorization accumulator,
           // which must not leak across operations (invokes are serialized per scope).
-          const ctx = this.operationContext(rt, subject, undefined, signals, session, operation);
+          const ctx = this.operationContext(rt, subject, undefined, signals, session, operation, minted);
           const clonedInput = structuredClone(input);
           // #893: parse, don't trust — at the scope door, from the operation's own
           // declaration. BEFORE `BEGIN`, so a malformed call never opens a
@@ -3638,7 +3782,8 @@ export class SqliteScopeHost implements ScopeHost {
                 idempotencyKey,
                 operation,
                 fingerprint,
-                result,
+                // #1672: a replay of a mint returns the placeholder, never the secret.
+                redactSecrets(result, minted),
                 committedVersion ?? null,
                 at,
               );
@@ -4461,12 +4606,7 @@ export class SqliteScopeHost implements ScopeHost {
     // node) is recorded. A module's own hand-thrown `new PermissionDenied('…')` is its
     // policy, carries no permission key, and is left to the module.
     if (!err.permission || !err.node) return;
-    const actor =
-      subject.kind === 'system'
-        ? { system: subject.id }
-        : subject.kind === 'connection'
-          ? { connection: subject.id }
-          : (subject.id as PrincipalId);
+    const actor = actorOf(subject);
     rt.db
       .prepare(
         `INSERT INTO _substrat_denials
@@ -5450,6 +5590,56 @@ export class SqliteScopeHost implements ScopeHost {
       // transaction and the audit row around it.
       revokeFromSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'off'),
       restoreToSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'on'),
+      // #1672 — the platform's two capability verbs, both a turn on the scope actor
+      // (#1678: every scope-level admin write takes one, so none lands mid-invoke inside a
+      // stranger's transaction) and both in the admin log without the secret or its hash.
+      mintCapability: async (
+        actor: PlatformActorId,
+        tenantId: TenantId,
+        scopeId: ScopeId,
+        input: BecomeCapabilityInput,
+      ): Promise<MintedCapability> => {
+        const rt = await this.openActiveScope(tenantId, scopeId);
+        const minted = await rt.actor.turn(() =>
+          mintBecomeCapability(spineSql(rt.db), input, actor, this.clock()),
+        );
+        this.recordAdmin(actor, 'mintCapability', { tenantId, scopeId }, null, {
+          capabilityId: minted.id,
+          mode: 'become',
+          principal: input.principal,
+          expiresAt: input.expiresAt,
+          maxUses: input.maxUses,
+          label: input.label ?? null,
+        });
+        return minted;
+      },
+      revokeCapability: async (
+        actor: PlatformActorId,
+        tenantId: TenantId,
+        scopeId: ScopeId,
+        capabilityId: CapabilityId,
+      ): Promise<void> => {
+        const scope = this.directory
+          .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+          .get(scopeId) as { tenant_id: string } | undefined;
+        if (!scope || scope.tenant_id !== tenantId) {
+          throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        }
+        const rt = this.runtime(tenantId, scopeId);
+        await this.applyPendingMigrations(rt);
+        const before = await rt.actor.turn(() =>
+          rt.db.transaction(() =>
+            revokeCapabilityAsPlatform(spineSql(rt.db), capabilityId, actor, this.clock()),
+          )(),
+        );
+        if (!before) {
+          throw substratError('not_found', `no capability ${capabilityId} in scope ${scopeId}`);
+        }
+        this.recordAdmin(actor, 'revokeCapability', { tenantId, scopeId }, before, {
+          capabilityId,
+          revoked: true,
+        });
+      },
 
       grantToOrg: async (actor, orgId, permission, node, entity) => {
         // The org must exist in the node's tenant. A grant to a phantom org is
@@ -8828,7 +9018,23 @@ export class SqliteScopeHost implements ScopeHost {
      * behalf of no operation, and the emitted row's NULL says so.
      */
     operation?: string,
+    /**
+     * #1672: the secrets `ctx.capabilities.mint` hands out during this invocation. The
+     * stub owns the array (it withholds them from the idempotency recording); this
+     * context appends to it and holds `ctx.sql`, `ctx.emit` and `ctx.requestPlatform` to
+     * it — the tripwire that catches a module persisting one by accident (not a boundary
+     * against one that means to; see `assertNoSecret`).
+     */
+    minted: string[] = [],
+    /**
+     * #1672: the instant to stamp, when the caller already read one. The exchange passes the
+     * instant its row write used, so the `capability.exercised` event's `occurredAt` and the
+     * row's `last_used_at` are the same value — a second clock read could disagree.
+     */
+    at: Instant = this.clock(),
   ): OperationContext {
+    // For a connection, system or capability subject this carries THAT id so the type
+    // holds — it is not a person, and the event actor below says what it is instead.
     const principal = subject.id as PrincipalId;
     const checker = this.checker;
     const relations = this.relations;
@@ -8854,7 +9060,6 @@ export class SqliteScopeHost implements ScopeHost {
      * `ctx.now()` deterministic only in the sense that each reading is separately
      * unpredictable.
      */
-    const at = this.clock();
 
     /**
      * The scope host's half of `ctx.atomic` (#770) — everything else is the
@@ -8940,15 +9145,17 @@ export class SqliteScopeHost implements ScopeHost {
       });
     };
 
-    return {
+    const ctxRef: OperationContext = {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
       principal,
-      sql: scopedSql(rt.db),
+      sql: guardSecrets(scopedSql(rt.db), minted),
       now: () => at,
       emit: (event: DomainEventInput) => {
         assertImpersonationWrites(impersonation, 'ctx.emit');
         const input = domainEventInput.parse(event);
+        // #1672: the COMPLETE parsed event — entity id, type and subject as well as payload.
+        assertNoSecret('ctx.emit', input, minted);
         const full = domainEvent.parse({
           ...input,
           // #956: from the operation's instant, not the wall clock. `ORDER BY id`
@@ -8959,13 +9166,7 @@ export class SqliteScopeHost implements ScopeHost {
           occurredAt: at,
           tenantId: rt.tenantId,
           scopeId: rt.scopeId,
-          actor:
-            overrideActor ??
-            (subject.kind === 'system'
-              ? { system: subject.id }
-              : subject.kind === 'connection'
-                ? { connection: subject.id }
-                : principal),
+          actor: overrideActor ?? actorOf(subject),
           ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
           ...(stamp ? { impersonation: stamp } : {}),
           // #1231: kernel-stamped like the two above — `domainEventInput.parse`
@@ -9013,6 +9214,8 @@ export class SqliteScopeHost implements ScopeHost {
       requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
         assertImpersonationWrites(impersonation, 'ctx.requestPlatform');
         const input = platformRequestInput.parse(request);
+        // #1672: the COMPLETE parsed request — its `kind` is persisted as surely as its payload.
+        assertNoSecret('ctx.requestPlatform', input, minted);
         // #1474: a platform-authored kind (`sweep-runs`) is the platform's to enqueue, never
         // module code's — its drain handler writes schedule verdicts the dashboard trusts.
         assertModuleEnqueueableKind(input.kind);
@@ -9027,13 +9230,7 @@ export class SqliteScopeHost implements ScopeHost {
           throw new Error(`too many pending platform requests (${pending}); retry once some have drained`);
         }
         const id = platformRequestId.parse(ulid());
-        const requestedBy =
-          overrideActor ??
-          (subject.kind === 'system'
-            ? { system: subject.id }
-            : subject.kind === 'connection'
-              ? { connection: subject.id }
-              : principal);
+        const requestedBy = overrideActor ?? actorOf(subject);
         rt.db
           .prepare(
             `INSERT INTO _substrat_platform_requests
@@ -9184,6 +9381,21 @@ export class SqliteScopeHost implements ScopeHost {
           );
       },
       atomic: createAtomic(runSub, { passed, signals }),
+      // #1672: mint / revoke / list, written once in the kernel. The raw spine seam (this
+      // is the kernel's own write to `_substrat_capabilities`), the operation's OWN check —
+      // the predicate `grant` shares — and `ctx.emit` for the minted/revoked events. A
+      // consumer's override actor is passed as the system actor it is, so a consumer cannot
+      // mint: its checks allow unconditionally, which would make "the minter holds it" vacuous.
+      capabilities: createCapabilityVerbs({
+        sql: spineSql(rt.db),
+        subject: overrideActor ? { kind: 'system', id: overrideActor.system as ModuleId } : subject,
+        now: at,
+        check: runCheck,
+        emit: (event) => ctxRef.emit(event),
+        isOperation: (name) => this.operations.has(name),
+        assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+        minted,
+      }),
       link: (child: EntityRef, parent: EntityRef) => {
         assertImpersonationWrites(impersonation, 'ctx.link');
         const allowed = relations.get(child.entityType);
@@ -9268,6 +9480,7 @@ export class SqliteScopeHost implements ScopeHost {
         return sealTo({ keyId: key.keyId, publicKey: key.publicKey }, plaintext);
       },
     };
+    return ctxRef;
   }
 
   private async applyPendingMigrations(rt: ScopeRuntime): Promise<void> {
@@ -9621,6 +9834,32 @@ function cellToJson(v: unknown): unknown {
  * `_substrat_*`" a mechanism rather than a lint rule (#954) — the kernel's own
  * spine writes use `rt.db` directly and never pass through here.
  */
+/**
+ * The kernel's OWN spine access (#1672) — the same seam as `scopedSql` without `guardSpine`,
+ * because these are the kernel's writes to `_substrat_capabilities`, which module code may
+ * never make. Never handed to module code.
+ */
+function spineSql(db: Database.Database): ScopedSql {
+  return {
+    query: <T>(sql: string, params: readonly SqlValue[] = []): T[] =>
+      db.prepare(sql).all(...params) as T[],
+    exec: (sql: string, params: readonly SqlValue[] = []) => {
+      const info = db.prepare(sql).run(...params);
+      return { changes: info.changes };
+    },
+  };
+}
+
+/**
+ * What the capability door hands `buildStub` in place of a subject (#1672): the HASH of the
+ * session token an exchange issued. The plaintext token is hashed at the door and goes no
+ * further; every invoke resolves the hash to its capability afresh.
+ */
+interface CapabilitySessionAuthority {
+  kind: 'capability-session';
+  hash: string;
+}
+
 function scopedSql(db: Database.Database): ScopedSql {
   return guardSpine({
     query: <T>(sql: string, params: readonly SqlValue[] = []): T[] =>

@@ -62,6 +62,15 @@ describe('actorLabel', () => {
   it('names a connector as the connection, so it cannot read as a person', () => {
     expect(actorLabel({ connection: 'scrive-prod' } as HistoryEntry['actor'])).toBe('connector · scrive-prod');
   });
+
+  // #1672: whoever held a link. Before the branch it fell through to the connector
+  // label and read "connector · undefined" — a non-person, but the wrong one, naming
+  // nothing an operator could look up.
+  it('names a capability as the link it came through, never as a connector', () => {
+    const label = actorLabel({ capability: '01J00000000000000000000CAP' } as HistoryEntry['actor']);
+    expect(label).toBe('link · 01J00000000000000000000CAP');
+    expect(label).not.toContain('undefined');
+  });
 });
 
 describe('impersonationLabel', () => {

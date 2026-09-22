@@ -143,7 +143,18 @@ import {
   type LiveChange,
   type ScheduleStateKind,
 } from '@substrat-run/kernel';
-import type { CheckSubject, ImpersonationSession, ModuleId } from '@substrat-run/contracts';
+import type {
+  BecomeCapabilityInput,
+  CapabilityExchange,
+  CapabilityId,
+  CapabilityRecord,
+  CheckSubject,
+  ImpersonationSession,
+  Instant,
+  MintedCapability,
+  ModuleId,
+  PlatformActorId,
+} from '@substrat-run/contracts';
 import {
   isUpgradeRequest,
   readSubscription,
@@ -157,8 +168,19 @@ import {
   type LiveSubscription,
 } from './live-reads.js';
 import { OperationQueue } from './serialization.js';
-import { doScopedSql } from './sql.js';
+import { doScopedSql, doSpineSql } from './sql.js';
 import {
+  actorOf,
+  assertNoSecret,
+  CAPABILITY_DDL,
+  CAPABILITY_EXCHANGE_OPERATION,
+  createCapabilityVerbs,
+  exchangeCapability,
+  guardSecrets,
+  mintBecomeCapability,
+  redactSecrets,
+  resolveCapabilitySession,
+  revokeCapabilityAsPlatform,
   domainEventOf,
   facetEvents,
   readDeadLetters,
@@ -570,6 +592,10 @@ const KERNEL_DDL = `
   ${OUTBOX_ENTITY_INDEX}
   -- #116: the request-dedupe table, kernel-owned so no vertical migrates for it.
   ${IDEMPOTENCY_DDL}
+  -- #1672: capabilities — authority carried by a secret (a link share), and the sessions
+  -- an exchange trades that secret for. Shared with the pure adapter from
+  -- @substrat-run/kernel so the two cannot part company; the column comments are there.
+  ${CAPABILITY_DDL}
 `;
 
 /**
@@ -1522,6 +1548,15 @@ export function defineScopeDO(
        * bound, and nothing here can be reached without it having been minted.
        */
       impersonation?: ImpersonationSession,
+      /**
+       * #1672: the HASH of a capability session token — the coordinator hashed the token
+       * and the plaintext never crosses. Resolved to its capability INSIDE the queued body,
+       * on every call, so a revoke between two calls refuses the second. `principal` is
+       * then a random placeholder that holds nothing, and the reply carries
+       * `capability.honoured`: an old DO that ignored this argument would run the call as
+       * that placeholder, and the coordinator refuses a success without the acknowledgement.
+       */
+      capabilitySession?: string,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -1529,6 +1564,8 @@ export function defineScopeDO(
       concurrency?: { version: string | null; ifMatchChecked: boolean };
       /** K-42: set iff this DO understood `impersonation`. See `invokeOrThrow`. */
       impersonation?: { honoured: boolean };
+      /** #1672: set iff this DO understood `capabilitySession`. */
+      capability?: { honoured: boolean };
     }> {
       if (!failureEnvelope) {
         // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
@@ -1545,6 +1582,7 @@ export function defineScopeDO(
             systemModuleId,
             invokeOptions,
             impersonation,
+            capabilitySession,
           );
         } catch (err) {
           throw toRpcError(err);
@@ -1562,6 +1600,7 @@ export function defineScopeDO(
           systemModuleId,
           invokeOptions,
           impersonation,
+          capabilitySession,
         );
       } catch (err) {
         // The ONE place the error keeps its structure: flattened here, rebuilt by the
@@ -1584,6 +1623,8 @@ export function defineScopeDO(
       invokeOptions?: InvokeOptions,
       /** K-42: the session, resolved coordinator-side. See `invoke` above. */
       impersonation?: ImpersonationSession,
+      /** #1672: a capability session's hash. See `invoke` above. */
+      capabilitySession?: string,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -1599,6 +1640,8 @@ export function defineScopeDO(
        * outcome this whole feature exists to prevent.
        */
       impersonation?: { honoured: boolean };
+      /** #1672: the acknowledgement for `capabilitySession`, on `impersonation`'s reasoning. */
+      capability?: { honoured: boolean };
     }> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
@@ -1674,7 +1717,7 @@ export function defineScopeDO(
       // The subject a key is scoped to — the same three-way read `recordDenial`
       // makes below, hoisted because both need it. A key belongs to whoever sent
       // it: two principals choosing `1` must not reach each other's response.
-      const idempotencySubjectRef: CheckSubject = systemModuleId
+      let idempotencySubjectRef: CheckSubject = systemModuleId
         ? { kind: 'system', id: systemModuleId as ModuleId }
         : connectionId
           ? { kind: 'connection', id: connectionId }
@@ -1699,6 +1742,24 @@ export function defineScopeDO(
         // one call. Same placement as the SQLite adapter's actor task, for this reason.
         this.invocationId = invokeOptions?.invocationId ?? null;
         try {
+        // #1672: the capability session, resolved on EVERY call and here — inside the queued
+        // body, the one region where this call holds the DO to itself — so nothing can
+        // revoke between this read and the transaction. Refuses a stale session, a revoked
+        // or expired capability and an operation off its allowlist before anything opens;
+        // none of those is a K-35 denial (no key was checked).
+        let capabilityId: CapabilityId | undefined;
+        if (capabilitySession !== undefined) {
+          capabilityId = resolveCapabilitySession(
+            doSpineSql(this.sql),
+            capabilitySession,
+            instant.parse(new Date().toISOString()),
+            operation,
+          );
+          idempotencySubjectRef = { kind: 'capability', id: capabilityId };
+        }
+        // #1672: the secrets this call mints — withheld from its idempotency recording, and
+        // what the tripwire on its writes looks for.
+        const minted: string[] = [];
         /**
          * #938: the outbox's high-water mark BEFORE this call wrote anything, so the
          * post-commit fan-out can name exactly the events this call (and the consumers
@@ -1751,6 +1812,8 @@ export function defineScopeDO(
               signals,
               impersonation,
               operation,
+              capabilityId,
+              minted,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
@@ -1798,7 +1861,8 @@ export function defineScopeDO(
                 idempotencyKey,
                 operation,
                 fingerprint,
-                result,
+                // #1672: a replay of a mint returns the placeholder, never the secret.
+                redactSecrets(result, minted),
                 committedVersion,
                 at,
               );
@@ -1822,6 +1886,7 @@ export function defineScopeDO(
               result,
               platformRequests: 0,
               impersonation: { honoured: true },
+              ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),
               ...(idempotencyKey !== undefined
                 ? { idempotency: { keyHonoured: true, replayed } }
                 : {}),
@@ -1839,11 +1904,8 @@ export function defineScopeDO(
           // write (outside that transaction), so the denial survives the rollback.
           if (err instanceof PermissionDenied) {
             this.recordDenial(
-              systemModuleId
-                ? { kind: 'system', id: systemModuleId as ModuleId }
-                : connectionId
-                  ? { kind: 'connection', id: connectionId }
-                  : { kind: 'principal', id: principal },
+              // The subject the call acted as — the capability's, once resolved above.
+              idempotencySubjectRef,
               tenantId,
               operation,
               err,
@@ -1873,6 +1935,8 @@ export function defineScopeDO(
           result,
           platformRequests: signals.platformRequests,
           ...(impersonation ? { impersonation: { honoured: true } } : {}),
+          // #1672: the acknowledgement the coordinator's skew check reads — see `invoke`.
+          ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),
           // The acknowledgement the coordinator's skew check reads (#116), on the
           // same reasoning as `ifMatchChecked` below and with a sharper failure: a
           // DO too old to know about keys would EXECUTE THE OPERATION AGAIN and
@@ -2522,6 +2586,94 @@ export function defineScopeDO(
     async switchSystemSchedules(moduleId: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome> {
       return this.queue.enqueue(() =>
         this.ctx.storage.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
+      );
+    }
+
+    /**
+     * The exchange (#1672) — a capability's secret traded for a session, or for the
+     * principal a `become` capability yields. Runs the kernel's `exchangeCapability`, the
+     * function the pure adapter runs, in this DO: one queued body and one storage
+     * transaction, so the use it takes and the `capability.exercised` event recording it
+     * commit together or not at all; the event's consumers then settle as an invoke's do.
+     *
+     * The secret itself reaches this DO — it must, to be hashed and looked up — and goes
+     * no further: nothing here stores or returns it.
+     */
+    async exchangeCapability(
+      secret: string,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      mode?: 'act' | 'become',
+    ): Promise<CapabilityExchange | null> {
+      await this.ensureMigrations();
+      return await this.queue.enqueue(async () => {
+        const liveSince = this.liveHighWaterMark();
+        // ONE instant for the whole exchange: the row's `last_used_at`, the session's times
+        // and the event's `occurredAt` are one fact, and two clock reads could disagree.
+        const now = instant.parse(new Date().toISOString());
+        let outcome: CapabilityExchange | null = null;
+        await this.ctx.storage.transaction(async () => {
+          outcome = await exchangeCapability(
+            {
+              sql: doSpineSql(this.sql),
+              now,
+              // Stamped `{ capability }` by the ordinary emit path, under the exchange's own
+              // pseudo-operation name — the actor is the capability, as on every event it
+              // goes on to cause.
+              emit: (capability, event) =>
+                this.operationContext(
+                  principalId.parse(ulid()),
+                  tenantId,
+                  scopeId,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  CAPABILITY_EXCHANGE_OPERATION,
+                  capability,
+                  [],
+                  now,
+                ).emit(event),
+            },
+            secret,
+            mode,
+          );
+        });
+        if (outcome) await this.settleCommitted(tenantId, scopeId, liveSince, null);
+        return outcome;
+      });
+    }
+
+    /**
+     * The platform's mint (#1672, `HostAdmin.mintCapability`) — a `become` capability,
+     * serialized on the queue with every other spine write. One INSERT, so it needs no
+     * transaction of its own; the hash is computed before it.
+     */
+    async mintBecomeCapability(
+      input: BecomeCapabilityInput,
+      actor: PlatformActorId,
+    ): Promise<MintedCapability> {
+      await this.ensureMigrations();
+      return await this.queue.enqueue(() =>
+        mintBecomeCapability(doSpineSql(this.sql), input, actor, instant.parse(new Date().toISOString())),
+      );
+    }
+
+    /**
+     * The platform's revoke (#1672, `HostAdmin.revokeCapability`) — of any capability in
+     * this scope. Returns the record as it stood before, for the admin log, or `null`.
+     */
+    async revokeCapabilityAsPlatform(
+      id: string,
+      actor: PlatformActorId,
+    ): Promise<CapabilityRecord | null> {
+      await this.ensureMigrations();
+      return await this.queue.enqueue(
+        () =>
+          this.ctx.storage.transactionSync(() =>
+            revokeCapabilityAsPlatform(doSpineSql(this.sql), id, actor, instant.parse(new Date().toISOString())),
+          ) ?? null,
       );
     }
 
@@ -3953,12 +4105,7 @@ export function defineScopeDO(
       // node) is recorded. A module's own hand-thrown `new PermissionDenied('…')` carries
       // no permission key and is left to the module.
       if (!err.permission || !err.node) return;
-      const actor =
-        subject.kind === 'system'
-          ? { system: subject.id }
-          : subject.kind === 'connection'
-            ? { connection: subject.id }
-            : (subject.id as PrincipalId);
+      const actor = actorOf(subject);
       this.sql.exec(
         `INSERT INTO _substrat_denials
            (id, actor, permission, tenant_id, scope_id, operation, impersonation,
@@ -4002,6 +4149,27 @@ export function defineScopeDO(
        * behalf of no operation, and the emitted row's NULL says so.
        */
       operation?: string,
+      /**
+       * #1672: set when the caller holds a CAPABILITY session — already resolved from its
+       * hash inside the queued body, before the transaction. Mutually exclusive with
+       * `connectionId` and `systemModuleId`; `principal` is then a placeholder that the
+       * subject below never reads.
+       */
+      capabilityId?: string,
+      /**
+       * #1672: the secrets `ctx.capabilities.mint` hands out during this invocation. The
+       * caller owns the array (it withholds them from the idempotency recording); this
+       * context appends to it and holds `ctx.sql`, `ctx.emit` and `ctx.requestPlatform` to
+       * it — the tripwire that catches a module persisting one by accident (not a boundary
+       * against one that means to; see `assertNoSecret`).
+       */
+      minted: string[] = [],
+      /**
+       * #1672: the instant to stamp, when the caller already read one. The exchange passes
+       * the instant its row write used, so the `capability.exercised` event's `occurredAt`
+       * and the row's `last_used_at` are the same value — a second read could disagree.
+       */
+      instantOverride?: Instant,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -4016,21 +4184,18 @@ export function defineScopeDO(
        * on, and it holds identically here: `ctx.now()`, every `occurredAt` and
        * every `requested_at` in one operation are the same value.
        */
-      const at = instant.parse(new Date().toISOString());
+      const at = instantOverride ?? instant.parse(new Date().toISOString());
       // The permission subject and the derived event actor for a NON-override caller
       // (#383/#97): a scheduled module, a connection, or a person. `systemActor` (the
       // override, used only by consumer dispatch) stays a separate bypass path below.
-      const subject: CheckSubject = systemModuleId
-        ? { kind: 'system', id: systemModuleId as ModuleId }
-        : connectionId
-          ? { kind: 'connection', id: connectionId }
-          : { kind: 'principal', id: principal };
-      const derivedActor =
-        subject.kind === 'system'
-          ? { system: subject.id }
-          : subject.kind === 'connection'
-            ? { connection: subject.id }
-            : principal;
+      const subject: CheckSubject = capabilityId
+        ? { kind: 'capability', id: capabilityId as CapabilityId }
+        : systemModuleId
+          ? { kind: 'system', id: systemModuleId as ModuleId }
+          : connectionId
+            ? { kind: 'connection', id: connectionId }
+            : { kind: 'principal', id: principal };
+      const derivedActor = actorOf(subject);
       // #304: entitlement reads pick the same local-vs-RPC reader the permission checker
       // uses (projected scope → local table; console-managed → CP over RPC), resolved per
       // call so a scope that flips to 'local' is picked up without rebuilding the context.
@@ -4103,15 +4268,19 @@ export function defineScopeDO(
         return checker.covers(subject, role.permissions, { tenantId, scopeId });
       };
 
-      return {
+      const ctxRef: OperationContext = {
         tenantId,
         scopeId,
-        principal,
-        sql: doScopedSql(sql),
+        // #1672: a capability's own id stands in so the type holds — it is not a person, and
+        // the event actor says what it is instead. Every other door passes its own value.
+        principal: capabilityId ? (capabilityId as unknown as PrincipalId) : principal,
+        sql: guardSecrets(doScopedSql(sql), minted),
         now: () => at,
         emit: (event: DomainEventInput) => {
           assertImpersonationWrites(impersonation, 'ctx.emit');
           const parsed = domainEventInput.parse(event);
+          // #1672: the COMPLETE parsed event — entity id, type and subject as well as payload.
+          assertNoSecret('ctx.emit', parsed, minted);
           const full = domainEvent.parse({
             ...parsed,
             // #956: from the operation's instant, not a second reading of the clock.
@@ -4165,6 +4334,8 @@ export function defineScopeDO(
         requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
           assertImpersonationWrites(impersonation, 'ctx.requestPlatform');
           const input = platformRequestInput.parse(request);
+          // #1672: the COMPLETE parsed request — its `kind` is persisted as surely as its payload.
+          assertNoSecret('ctx.requestPlatform', input, minted);
           // #1474: a platform-authored kind (`sweep-runs`) never comes from module code —
           // the sweeper enqueues it through `enqueueSweepRuns`, which does not pass here.
           assertModuleEnqueueableKind(input.kind);
@@ -4306,6 +4477,22 @@ export function defineScopeDO(
           );
         },
         atomic: createAtomic(runSub, { passed, signals }),
+        // #1672: mint / revoke / list, written once in the kernel — the pure adapter hands
+        // the same function the same four things. The raw spine seam (the kernel's own write
+        // to `_substrat_capabilities`), the operation's OWN check, and `ctx.emit`. A
+        // consumer's override actor is passed as the system actor it is, so a consumer
+        // cannot mint: its checks allow unconditionally, which would make "the minter holds
+        // it" vacuous.
+        capabilities: createCapabilityVerbs({
+          sql: doSpineSql(sql),
+          subject: systemActor ? { kind: 'system', id: systemActor.system as ModuleId } : subject,
+          now: at,
+          check: runCheck,
+          emit: (event) => ctxRef.emit(event),
+          isOperation: (name) => this.operations.has(name),
+          assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+          minted,
+        }),
         link: (child: EntityRef, parent: EntityRef) => {
           assertImpersonationWrites(impersonation, 'ctx.link');
           const allowed = relations.get(child.entityType);
@@ -4352,6 +4539,7 @@ export function defineScopeDO(
           return sealTo({ keyId: row.key_id, publicKey: row.public_key }, plaintext);
         },
       };
+      return ctxRef;
     }
 
     /** True once this scope has had entitlements projected at least once (#304) — the switch

@@ -1,5 +1,9 @@
 import type {
   AdminAction,
+  BecomeCapabilityInput,
+  CapabilityExchange,
+  CapabilityId,
+  MintedCapability,
   ListPage,
   Connection,
   ConnectionFilter,
@@ -121,6 +125,7 @@ import type {
   IssueStatus,
   IssueStatusInput,
 } from '@substrat-run/contracts';
+import type { CapabilityVerbs } from './capability.js';
 import { substratError } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { SealedSecret } from './secret-box.js';
@@ -467,6 +472,41 @@ export interface OperationContext {
    * permission problem.
    */
   canAssign(roleKey: string): Promise<Coverage>;
+  /**
+   * Capabilities (#1672) — authority carried by a SECRET rather than held by a principal:
+   * "anyone with this link may read this folder until Friday".
+   *
+   * `mint` narrows authority the CALLER holds onto one entity (and what lies beneath it
+   * through declared parent edges), specific keys, an optional operation allowlist, an
+   * optional expiry and use limit, and returns the secret once. Whoever later exchanges
+   * that secret (`ScopeHost.exchangeCapability`) acts as `{ capability: <id> }` — resolved
+   * by the checker against the capability's own row, stamped on every event it emits,
+   * refused into the denial log like any other actor.
+   *
+   * Non-escalating on EVERY use, not only at mint: each key is re-checked here on the
+   * entity with this operation's own check (`ctx.grant`'s predicate), and the checker
+   * re-checks the minter every time the capability acts — so revoking the minter's access
+   * ends what their links can do. Only a principal may mint or revoke; a capability,
+   * connection or schedule cannot delegate.
+   *
+   * ```ts
+   * assertAllowed(await ctx.check('folder:share', folderRef));
+   * const { secret } = await ctx.capabilities.mint({
+   *   entity: folderRef,
+   *   permissions: ['folder:read'],
+   *   expiresAt: input.expiresAt,
+   * });
+   * return { link: `${origin}/#share=${secret}` }; // a FRAGMENT: never sent to a server
+   * ```
+   *
+   * The kernel stores only the secret's hash, and an idempotency recording withholds the
+   * secret. Beyond that, a TRIPWIRE: while this invocation runs, `ctx.emit`,
+   * `ctx.requestPlatform` and `ctx.sql` refuse any record that carries the secret verbatim,
+   * which catches a module persisting it by accident. It is not a boundary against a module
+   * that means to leak it (`assertNoSecret` says why). Transactional with the operation,
+   * like `ctx.grant`.
+   */
+  readonly capabilities: CapabilityVerbs;
   /**
    * Run `fn` as a SUB-TRANSACTION of this operation (#770,
    * docs/architecture/sub-transactions.md) — the boundary that makes catching an
@@ -1496,6 +1536,36 @@ export interface HostAdmin {
    * audit-first rows, same idempotence and `not_found`.
    */
   restoreToSystem(actor: PlatformActorId, input: SystemSwitch): Promise<SystemSwitchResult>;
+
+  /**
+   * Mint a `become` capability on a scope (#1672): whoever exchanges its secret yields
+   * `input.principal` rather than a session — the shape an owner claim link and a member
+   * invite are, so both can move onto this primitive later. The secret is returned once;
+   * the scope keeps its hash. Expiry and a use limit are required.
+   *
+   * Platform-only in this first cut, deliberately: `become` is impersonation by another
+   * name, and the bound on who may mint one from module code is designed with the claim
+   * and invite migrations. Audited in the admin log (never the secret, never its hash).
+   * Refuses an unknown or inactive scope, as `getScope` does.
+   */
+  mintCapability(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: BecomeCapabilityInput,
+  ): Promise<MintedCapability>;
+  /**
+   * Revoke any capability on a scope (#1672) — the operator's lever for a leaked link, and
+   * how a re-minted claim link retires the last one. Takes effect on the next check, for
+   * every session it handed out. Idempotent; `not_found` for a capability the scope does
+   * not hold. Audited in the admin log.
+   */
+  revokeCapability(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    capabilityId: CapabilityId,
+  ): Promise<void>;
 
   grantToOrg(
     actor: PlatformActorId,
@@ -3877,6 +3947,53 @@ export interface ScopeHost {
    * so the type holds, but it is **not a person**.
    */
   getSystemScope(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeStub>;
+
+  /**
+   * Trade a capability's SECRET for what it grants (#1672) — one counted use.
+   *
+   * `act`: a session token to present to `getCapabilityScope`, valid until the earlier of
+   * `CAPABILITY_SESSION_TTL_MS` and the capability's own expiry. The harness sets it as an
+   * HttpOnly cookie, so the secret itself is presented exactly once and never lives in
+   * browser history or a `Referer` (`@substrat-run/vertical-host`'s
+   * `mountCapabilityExchange`). `become`: the principal the holder becomes, for the
+   * harness's identity directory to bind.
+   *
+   * `null` for an unknown, expired, revoked or used-up secret — one answer, so a probe
+   * learns nothing. The use is atomic: a single-use secret exchanged twice at once admits
+   * one. The exchange is on the spine as `capability.exercised`, actor `{ capability }`.
+   * Same fail-closed (tenant, scope) and lifecycle gate as `getScope`.
+   *
+   * `options.mode` names the only kind the caller can handle; a secret of the other kind
+   * answers `null` WITHOUT taking a use — so a claim link pasted into a share-link route is
+   * refused rather than spent.
+   */
+  exchangeCapability(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    options?: { mode?: 'act' | 'become' },
+  ): Promise<CapabilityExchange | null>;
+
+  /**
+   * A scope stub whose authority is a CAPABILITY (#1672) — the fifth door, beside the
+   * principal, connection, system and impersonation ones, and a door rather than a flag for
+   * the reason each of those is: what differs is the authority.
+   *
+   * The session is re-resolved on EVERY invoke, inside the operation's transaction: a
+   * revoked or expired capability, or an expired session, is refused `unauthenticated`
+   * before the handler runs, and an operation outside the capability's allowlist is
+   * refused `forbidden`. Neither is a K-35 denial — no key was checked. Inside, the
+   * operation is ordinary: `ctx.check` resolves the capability's grant (its entity subtree,
+   * its keys, its minter's authority now), refusals ARE recorded with actor
+   * `{ capability }`, and so is every event it emits. `ctx.principal` carries the
+   * capability id so the type holds; it is **not a person**.
+   */
+  getCapabilityScope(
+    sessionToken: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ScopeStub>;
 
   /**
    * The recurring-work declarations of every module registered on this host (#383)

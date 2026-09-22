@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  capabilityId,
   dataSubjectId,
   eventId,
   instant,
@@ -41,7 +42,17 @@ export const systemActor = z.object({ system: moduleId });
  * who did not.
  */
 export const connectorActor = z.object({ connection: z.string().min(1) });
-export const actor = z.union([principalId, systemActor, connectorActor]);
+/**
+ * WHOEVER HELD A CAPABILITY acted — a link share, a claim link (#1672).
+ *
+ * The fourth member, and a member rather than a principal for #97's reason: the
+ * person holding a link is nobody the checker knows, and recording them as a
+ * principal would put a person in the trail who does not exist. The id names the
+ * capability's directory row, which says who minted it, for what, and until when —
+ * so the trail can answer "reached through Anna's link" without inventing a guest.
+ */
+export const capabilityActor = z.object({ capability: capabilityId });
+export const actor = z.union([principalId, systemActor, connectorActor, capabilityActor]);
 export type Actor = z.infer<typeof actor>;
 
 /**

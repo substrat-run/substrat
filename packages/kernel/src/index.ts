@@ -103,7 +103,7 @@ export {
   PermissionDenied,
   UNSAFE_allowAllChecker,
 } from './permission-checker.js';
-export { asPrincipal } from './permission-checker.js';
+export { actorOf, asPrincipal } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
 export { createTupleEvaluator } from './permission-eval.js';
 export type {
@@ -111,6 +111,39 @@ export type {
   PermissionTupleRow,
   ScopeTupleReader,
 } from './permission-eval.js';
+export {
+  CAPABILITY_COLUMNS,
+  CAPABILITY_DDL,
+  CAPABILITY_EXCHANGE_OPERATION,
+  CAPABILITY_SESSION_PRUNE_BATCH,
+  WITHHELD_SECRET,
+  assertNoSecret,
+  capabilityByIdQuery,
+  capabilityExchangeable,
+  capabilityGrantOf,
+  capabilityLive,
+  capabilityRecordOf,
+  capabilityTokenHash,
+  carriesSecret,
+  checkBecomeInput,
+  createCapabilityVerbs,
+  exchangeCapability,
+  guardSecrets,
+  mintBecomeCapability,
+  mintCapabilitySecret,
+  mintCapabilitySessionToken,
+  persistedText,
+  plausibleSessionToken,
+  redactSecrets,
+  resolveCapabilitySession,
+  revokeCapabilityAsPlatform,
+} from './capability.js';
+export type {
+  CapabilityGrantView,
+  CapabilityRow,
+  CapabilityVerbDeps,
+  CapabilityVerbs,
+} from './capability.js';
 export { createAtomic } from './sub-transaction.js';
 export type { RunSub, AtomicMarks } from './sub-transaction.js';
 export {

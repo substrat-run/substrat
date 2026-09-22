@@ -1,7 +1,9 @@
 import type Database from 'better-sqlite3';
 import type { Node, RoleDefinition } from '@substrat-run/contracts';
 import {
+  capabilityByIdQuery,
   createTupleEvaluator,
+  type CapabilityRow,
   type Clock,
   type PermissionChecker,
   type PermissionTupleReader,
@@ -53,6 +55,7 @@ const scopeReader = (db: Database.Database): ScopeTupleReader => {
   let tuplesStmt: Database.Statement | undefined;
   let grantStmt: Database.Statement | undefined;
   let parentsStmt: Database.Statement | undefined;
+  let capabilityStmt: Database.Statement | undefined;
   return {
     tuples: (subject, relationPrefix) =>
       (tuplesStmt ??= db.prepare(
@@ -69,6 +72,12 @@ const scopeReader = (db: Database.Database): ScopeTupleReader => {
         `SELECT ${TUPLE_COLUMNS} FROM _substrat_tuples
          WHERE subject = ? AND relation = 'parent'`,
       )).all(object) as PermissionTupleRow[],
+    // #1672: a capability subject is resolved against its own directory row, which lives
+    // in this scope's spine beside the entities it reaches.
+    capability: (id) =>
+      (capabilityStmt ??= db.prepare(capabilityByIdQuery(id).sql)).get(
+        ...capabilityByIdQuery(id).params,
+      ) as CapabilityRow | undefined,
   };
 };
 

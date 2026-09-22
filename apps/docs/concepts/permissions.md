@@ -319,6 +319,45 @@ screen makes, the next page of a walk and the detail of one row as much as the r
 `demos/todo/app/src/App.tsx` (`ListView`) and `demos/shop/app/src/App.tsx` (the nav tabs)
 are the reference.
 
+## Sharing by link: capabilities
+
+`ctx.grant` shares with a **person**, someone the checker already knows. A link shares with
+**whoever holds the URL**, and that is nobody the checker knows. A capability is the
+kernel's answer. It is authority carried by a secret: a row in the scope's own spine names
+one entity, the keys it may use there, and optionally an expiry, a use limit and a list of
+operations. Whoever exchanges the secret acts as `{ capability: <id> }`. The checker
+resolves that actor like any other, it is stamped on every event it causes, and its
+refusals are recorded like anyone's.
+
+```ts
+assertAllowed(await ctx.check(PERM.folderShare, folderRef));
+const { secret } = await ctx.capabilities.mint({
+  entity: folderRef,              // this folder and everything beneath it
+  permissions: [PERM.folderRead],
+  expiresAt: input.expiresAt,     // optional; so is maxUses
+});
+return { link: `${origin}/#share=${secret}` }; // a fragment: never sent to a server
+```
+
+- **Exactly one subtree, exactly its keys.** A capability reaches its entity and whatever
+  lies beneath it through declared parent edges, the same walk entity grants take. It holds
+  no node-level authority, so an operation that checks only at the node refuses it.
+- **Never more than the minter holds, at every use.** Minting re-checks each key on the
+  entity, as `ctx.grant` does. The checker also re-checks the minter every time the
+  capability acts, so a link stops working when the person who made it loses access. Only
+  a principal can mint.
+- **Revocable at once.** `ctx.capabilities.revoke(id)` is open to whoever could have
+  minted the capability. The row is read on every check, so a revoke refuses the very next
+  call, including one made through a session handed out earlier.
+- **A use is an exchange.** The secret is presented once. `mountCapabilityExchange` from
+  `@substrat-run/vertical-host` trades it for an HttpOnly session cookie, so the secret
+  does not stay in browser history or in a `Referer`. `maxUses` counts exchanges, which
+  means browsers, and not reads.
+- **Only the secret's hash is stored.** The kernel keeps its hash and nothing else. As a
+  tripwire against accidents, the operation that mints it is refused if it writes the
+  secret verbatim to an event, to its own tables or to a platform intent. That catches a
+  mistake; it cannot stop a module that means to leak its own secret.
+
 ## Assigning a role: `ctx.canAssign`
 
 Reviewing role *definitions* protects nothing on its own. Nothing in a checkpoint over

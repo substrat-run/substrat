@@ -2166,6 +2166,12 @@ importers:
         specifier: ^4.0.0
         version: 4.0.0(@ai-sdk/provider@4.0.7)(ai@7.0.62(zod@4.6.5))
     devDependencies:
+      '@substrat-run/adapter-sqlite':
+        specifier: workspace:^
+        version: link:../adapter-sqlite
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../contract-tests
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
