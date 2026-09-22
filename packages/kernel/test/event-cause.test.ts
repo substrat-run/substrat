@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { eventId } from '@substrat-run/contracts';
-import { walkEventCause, type ScopedSql } from '../src/index.js';
+import { walkEventCause, VERTICAL_EVENTS_DDL, type ScopedSql } from '../src/index.js';
 
 /**
  * The causal walk (#1237), against a REAL outbox.
@@ -51,6 +51,8 @@ interface Row {
 function readerOver(rows: Row[]): { sql: Pick<ScopedSql, 'query'>; db: DatabaseSync } {
   const db = new DatabaseSync(':memory:');
   db.exec(DDL);
+  // #1705: every scope has the import journal, and both reads consult it.
+  db.exec(VERTICAL_EVENTS_DDL);
   const insert = db.prepare(
     `INSERT INTO _substrat_outbox
        (id, type, occurred_at, actor, payload, pii_class, operation, caused_by)

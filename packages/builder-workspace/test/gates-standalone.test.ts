@@ -243,6 +243,61 @@ describe('permission-diff --root — the standalone permission checkpoint', () =
 	}, 60_000);
 });
 
+/**
+ * #1705: both ends of a cross-vertical edge, as two modules of one project declare them.
+ * `exports` is the flow out, `consumes` with `from` the flow in.
+ */
+async function edgeProject(exportKey = 'acme:read'): Promise<string> {
+	const dir = join(await mkdtemp(join(tmpdir(), 'permission-diff-edge-')), 'acme');
+	await mkdir(join(dir, 'src'), { recursive: true });
+	await writeFile(
+		join(dir, 'package.json'),
+		JSON.stringify({ name: 'acme-vertical', substrat: { permissions: 'src/provision.mjs' } }),
+	);
+	await writeFile(
+		join(dir, 'src/provision.mjs'),
+		'export const permissions = {\n' +
+			'  modules: [{ manifest: { id: "acme", permissions: [{ key: "acme:read", description: "Read" }],\n' +
+			'    events: {\n' +
+			'      consumes: [{ from: "acme/crm", type: "crm.customer-created", schemaVersion: 1 }, { type: "acme.local", schemaVersion: 1 }],\n' +
+			`      exports: [{ type: "acme.thing-made", schemaVersion: 2, readPermission: "${exportKey}" }],\n` +
+			'    } } }],\n' +
+			'  roles: [{ key: "staff", permissions: ["acme:read"], source: "acme" }],\n' +
+			'};\n',
+	);
+	return dir;
+}
+
+describe('permission-diff — the cross-vertical edge (#1705)', () => {
+	it('shows what leaves and what enters, and an edge change is drift a reviewer reads', async () => {
+		const dir = await edgeProject();
+		expect((await tool(['tools/permission-diff.mts', '--root', dir])).code).toBe(0);
+		const artifact = join(dir, 'PERMISSIONS.md');
+		const rendered = await readFile(artifact, 'utf8');
+		expect(rendered).toContain('Exported events — what leaves this vertical');
+		expect(rendered).toContain('| `acme.thing-made` | 2 | `acme:read` | `acme` |');
+		expect(rendered).toContain('Imported events — what this vertical receives from others');
+		expect(rendered).toContain('| `acme/crm` | `crm.customer-created` | 1 | `acme` |');
+		// A LOCAL consume is not an edge, and must not be rendered as one.
+		expect(rendered).not.toContain('acme.local');
+
+		// Widen what leaves: the committed artifact no longer matches, so the change cannot
+		// merge without the new row appearing in the PR diff.
+		const src = join(dir, 'src/provision.mjs');
+		const code = await readFile(src, 'utf8');
+		await writeFile(src, code.replace('exports: [', 'exports: [{ type: "acme.secret-kept", schemaVersion: 1, readPermission: "acme:read" }, '));
+		const drift = await tool(['tools/permission-diff.mts', '--root', dir, '--check']);
+		expect(drift.code).toBe(1);
+	}, 60_000);
+
+	it('an export gated on a key nobody declares is exit 2: that edge could never be granted', async () => {
+		const dir = await edgeProject('acme:nowhere');
+		const r = await tool(['tools/permission-diff.mts', '--root', dir, '--check']);
+		expect(r.code).toBe(2);
+		expect(r.out).toContain('export `acme.thing-made` → `acme:nowhere`');
+	}, 60_000);
+});
+
 describe('api-diff --root — the standalone API checkpoint', () => {
 	it('renders openapi.json for one project, then reports drift', async () => {
 		const dir = join(await mkdtemp(join(tmpdir(), 'api-diff-root-')), 'acme');
