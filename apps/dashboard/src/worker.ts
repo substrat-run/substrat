@@ -28,8 +28,8 @@ import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } fro
 import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
-import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
-import { McpReconcileGate, clearAppMcpResources, issuerFor, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
+import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
+import { McpReconcileGate, clearAppMcpResources, isSharedIssuer, issuerFor, logUnsettled, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
@@ -1432,10 +1432,7 @@ app.get('/api/apps', async (c) => {
         ((await dash.invoke('dashboard/get-app-auth', { appScopeId })) as { issuer?: string } | null)?.issuer ?? null,
       controlPlane: cp,
     });
-    const unsettled = outcomes.filter((o) => 'skipped' in o || o.failed.length > 0);
-    if (unsettled.length) {
-      console.error('dashboard: MCP resource reconcile left deliveries undone', JSON.stringify({ tenant: node.tenantId, unsettled }));
-    }
+    logUnsettled(node.tenantId, outcomes);
     return reconcileConverged(outcomes);
   });
   if (pass) {
@@ -3885,11 +3882,19 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
     appScopeId: appRow.app_scope_id,
     config,
   })) as Record<string, string>;
+  // Which team auth-server the app signs in with NOW, if any: the MCP registration moves
+  // there below, and the app is told its issuer is shared (#1683) in the same delivery as
+  // the choice itself, so it never runs a team issuer's login without the marker.
+  const nextIssuer =
+    choice.source === 'auth-server' && choice.issuerScopeId
+      ? choice.issuerScopeId
+      : issuerFor(merged.issuer, issuers)?.scopeId;
   let delivered = false;
   let note: string | undefined;
   try {
     await cp.configureInstance(scopeId.parse(appRow.app_scope_id), [
       { key: 'substrat:auth', value: JSON.stringify(merged) },
+      sharedIssuerEntry(isSharedIssuer({ source: choice.source, issuer: merged.issuer }, issuers)),
     ]);
     delivered = true;
   } catch (e) {
@@ -3903,10 +3908,6 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   // Best-effort, like the install's: the save above is what the caller asked for, and the
   // Apps list's reconcile converges whatever this did not.
   const appScope = scopeId.parse(appRow.app_scope_id);
-  const nextIssuer =
-    choice.source === 'auth-server' && choice.issuerScopeId
-      ? choice.issuerScopeId
-      : issuerFor(merged.issuer, issuers)?.scopeId;
   // Independent of each other: a register that failed must not leave the old issuer minting.
   const settle = (work: Promise<unknown>) =>
     work.catch((e: unknown) =>
@@ -3949,13 +3950,14 @@ app.post('/api/apps', async (c) => {
   // The Identity choice (vertical-auth-detach.md §2.4), resolved to a concrete issuer
   // (`resolveAuthChoice` above — an auth-server pick must be one of the caller's own).
   let appAuth: AppAuthChoice | undefined;
+  let installIssuers: TeamIssuer[] = [];
   if (body.auth) {
-    const apps =
-      body.auth.source === 'auth-server'
-        ? ((await (await host.getScope(node.principal, node.tenantId, node.scopeId)).invoke('dashboard/list-apps', {})) as DashboardAppRow[])
-        : [];
+    const apps = (await (await host.getScope(node.principal, node.tenantId, node.scopeId)).invoke('dashboard/list-apps', {})) as DashboardAppRow[];
     const providers = body.auth.source === 'auth-server' ? await oidcProviderSlugsFor(host, cp) : new Set<string>();
     appAuth = resolveAuthChoice(body.auth, apps, providers);
+    // The team's auth-servers, so an EXTERNAL pick whose URL is one of them is still
+    // marked shared at install (#1683), exactly as an Identity change marks it.
+    installIssuers = await teamIssuersFor(host, cp, apps);
   }
   const appRow = await createApp(host, {
     node,
@@ -3969,7 +3971,7 @@ app.post('/api/apps', async (c) => {
     // The TEAM's name, never the login's — this seeds the shared directory's tenant
     // row, which the CLI's workspace picker displays.
     tenantName: team?.name ?? 'Workspace',
-    ...(appAuth ? { appAuth } : {}),
+    ...(appAuth ? { appAuth, teamIssuers: installIssuers } : {}),
     ...(appConfig.length > 0 ? { appConfig } : {}),
   });
   return c.json(appRow, 201);

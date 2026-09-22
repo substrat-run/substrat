@@ -8,7 +8,10 @@
  */
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { beginLogin, completeLogin, type OidcEnv } from '@substrat-run/oidc-rp';
-import { createDevIssuer } from '../src/issuer.js';
+import { createDevIssuer, DEV_CLIENT_ID } from '../src/issuer.js';
+import { devLogin } from '../src/harness.js';
+import { mcpResourceOf } from '@substrat-run/contracts';
+import { decodeJwt } from 'jose';
 import type { DevPersona } from '../src/personas.js';
 
 const ISSUER = 'http://issuer.test';
@@ -212,5 +215,49 @@ describe('the non-interactive door', () => {
       }),
     );
     expect(res.status).toBe(400);
+  });
+});
+
+/**
+ * `devLogin` holds a bearer to the rule a hosted vertical on a team auth-server is held to
+ * (#1683): it must be this app's own token. So the documented script flow —
+ * `curl /dev/token {sub}`, then present the access token — only keeps working because the
+ * door's DEFAULT audience is the client the harness signs in as.
+ */
+describe('the door and the harness agree on whose token it is (#1683)', () => {
+  const login = devLogin({
+    issuer: ISSUER,
+    directory: { listIdentityTenants: async () => [], resolveIdentity: async () => undefined },
+    actor: 'actor' as never,
+    provider: 'oidc:dev-issuer',
+  });
+  const mint = async (body: Record<string, unknown>) =>
+    ((await (
+      await app.fetch(
+        new Request(`${ISSUER}/dev/token`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sub: 'dev|anna', ...body }),
+        }),
+      )
+    ).json()) as { access_token: string }).access_token;
+  const as = (token: string, host?: string) =>
+    login.subject(new Headers({ authorization: `Bearer ${token}`, ...(host ? { host } : {}) }));
+
+  it('mints for the harness client by default, and the harness admits it', async () => {
+    const token = await mint({});
+    expect(decodeJwt(token).aud).toBe(DEV_CLIENT_ID);
+    expect((await as(token))?.sub).toBe('dev|anna');
+  });
+
+  it("refuses a token minted for some other audience — the old default 'dev' included", async () => {
+    expect(await as(await mint({ audience: 'dev' }))).toBeNull();
+    expect(await as(await mint({ audience: 'someone-elses-client' }))).toBeNull();
+  });
+
+  it("admits an MCP token for this origin's own endpoint, and not another's", async () => {
+    const token = await mint({ audience: mcpResourceOf('http://localhost:8871') });
+    expect((await as(token, 'localhost:8871'))?.sub).toBe('dev|anna');
+    expect(await as(token, 'localhost:8872')).toBeNull();
   });
 });
