@@ -41,6 +41,15 @@
  *
  * Rate limiting the exchange is the neighbouring control and is not here (#130). With 256
  * bits of entropy a secret cannot be guessed; what a limit would bound is load.
+ *
+ * **One browser holds several links (#1686).** Each exchange sets a cookie of its own,
+ * `sb_capability_<capabilityId>`, so opening a second link no longer drops the first. A page
+ * holding several says which one a call acts as — the `capabilityId` the exchange answered
+ * with — in the `X-Substrat-Capability` header, or as `?capability=<id>` on a plain link (a
+ * download `<a href>` cannot set a header). The name only SELECTS: the session behind it is
+ * resolved by the host to its own capability row, so a session for share A acts within A's
+ * narrowing whatever it is called, and nothing ever falls back from one session to another.
+ * See `capabilitySessionOf` for the selection rule and `CAPABILITY_SESSIONS_MAX` for the cap.
  */
 import type { Context, Env, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
@@ -48,8 +57,40 @@ import { substratError, z, type PrincipalId, type ScopeId, type TenantId } from 
 import type { ScopeAttachments, ScopeHost, ScopeStub, ScopeStubOptions } from '@substrat-run/kernel';
 import { problemResponse } from './errors.js';
 
-/** The cookie a capability session rides in. Named beside oidc-rp's `sb_session`. */
+/**
+ * The cookie a capability session rides in. Named beside oidc-rp's `sb_session`.
+ *
+ * Since #1686 this is a PREFIX: an exchange sets `sb_capability_<capabilityId>`, one cookie
+ * per link. A bare `sb_capability` cookie is the one-link format set before that, and is
+ * still read (see `capabilitySessionOf`), so a browser that exchanged before the deploy keeps
+ * working without opening its link again; the next exchange deletes it.
+ */
 export const CAPABILITY_COOKIE = 'sb_capability';
+/**
+ * The request header naming which of a browser's capability sessions a call acts as — the
+ * `capabilityId` the exchange answered with. `?capability=<id>` says the same on a plain link.
+ */
+export const CAPABILITY_HEADER = 'x-substrat-capability';
+/** The query-string twin of `CAPABILITY_HEADER`, for a link a browser follows unaided. */
+export const CAPABILITY_QUERY = 'capability';
+/**
+ * The most capability sessions one browser holds for one vertical host. An exchange beyond
+ * it evicts the OLDEST (by when it was exchanged): that cookie is deleted, a call naming its
+ * capability is then refused exactly as a revoked link is (`unauthenticated`), and opening
+ * the link again re-exchanges it if it has uses left. The session row itself is not revoked
+ * — the browser no longer holds its token, and the row lapses at its own expiry (≤24 h).
+ *
+ * Why 8, and why a cookie each rather than one cookie holding a set: a cookie is
+ * `sb_capability_` + a 26-character id + a ~60-character value — under 100 bytes — so eight
+ * are well under 1 KB of `Cookie` header, far from the 4 KB-per-cookie and ~50-per-domain
+ * floors RFC 6265 asks browsers to support, with room beside the sign-in session. One cookie
+ * per link keeps every attribute (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`) exactly as
+ * the one-link cookie had them, lets each expire at its OWN session's end rather than the
+ * longest one's, and — the deciding reason — needs no read-modify-write: two links opened at
+ * once in two tabs each set their own cookie, where a shared set would be rewritten by
+ * whichever response landed last and silently lose the other, the bug this replaces.
+ */
+export const CAPABILITY_SESSIONS_MAX = 8;
 /** Where `mountCapabilityExchange` listens unless told otherwise. */
 export const CAPABILITY_EXCHANGE_PATH = '/api/capability/exchange';
 /** Where `mountLinkShareDownload` listens unless told otherwise (#1686). */
@@ -109,8 +150,18 @@ export function mountCapabilityExchange<E extends Env>(
         mode: 'act',
       });
       if (!outcome || outcome.kind !== 'session') throw invalidLink();
-      const maxAge = Math.max(0, Math.floor((Date.parse(outcome.expiresAt) - Date.now()) / 1000));
-      setCookie(c, cookieName, outcome.sessionToken, {
+      const now = Date.now();
+      const maxAge = Math.max(0, Math.floor((Date.parse(outcome.expiresAt) - now) / 1000));
+      // Make room: keep the newest MAX-1 OTHER sessions, so this one is the MAX-th. The same
+      // link opened again replaces its own cookie and evicts nothing. Two exchanges racing
+      // can each keep MAX-1 and briefly leave MAX+1; the next exchange trims back.
+      const others = capabilitySessionsOf(c, cookieName).filter((s) => s.capabilityId !== outcome.capabilityId);
+      for (const evicted of others.slice(0, Math.max(0, others.length - (CAPABILITY_SESSIONS_MAX - 1)))) {
+        deleteCookie(c, sessionCookieName(cookieName, evicted.capabilityId), { path: '/' });
+      }
+      // The one-link cookie this format replaces: an exchange replaced it before, and does now.
+      if (getCookie(c, cookieName)) deleteCookie(c, cookieName, { path: '/' });
+      setCookie(c, sessionCookieName(cookieName, outcome.capabilityId), `${now.toString(36)}.${outcome.sessionToken}`, {
         httpOnly: true,
         sameSite: 'Lax',
         path: '/',
@@ -128,9 +179,79 @@ export function mountCapabilityExchange<E extends Env>(
   });
 }
 
-/** The capability session this request carries, or `undefined`. */
+/** One of the capability sessions a browser holds (#1686) — the id is the cookie's name. */
+export interface HeldCapabilitySession {
+  capabilityId: string;
+  /** When this browser exchanged it (epoch ms), from the cookie's value — the eviction order. */
+  exchangedAt: number;
+  sessionToken: string;
+}
+
+const ULID_SHAPE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const sessionCookieName = (cookieName: string, capabilityId: string) => `${cookieName}_${capabilityId}`;
+
+/** A named capability this browser holds no session for: refused as a revoked link is. */
+const noSuchSession = () =>
+  substratError('unauthenticated', 'This link is not open in this browser, or no longer is. Open it again.');
+
+/**
+ * Every per-link capability session this request carries, OLDEST first — the order an
+ * exchange evicts in. The one-link `sb_capability` cookie is not among them: it names no
+ * capability, so nothing can select it by name (see `capabilitySessionOf`).
+ */
+export function capabilitySessionsOf(c: Context, cookieName: string = CAPABILITY_COOKIE): HeldCapabilitySession[] {
+  const prefix = `${cookieName}_`;
+  const held: HeldCapabilitySession[] = [];
+  for (const [name, value] of Object.entries(getCookie(c))) {
+    if (!name.startsWith(prefix) || !value) continue;
+    const capabilityId = name.slice(prefix.length);
+    if (!ULID_SHAPE.test(capabilityId)) continue;
+    const dot = value.indexOf('.');
+    const exchangedAt = dot > 0 ? parseInt(value.slice(0, dot), 36) : NaN;
+    const sessionToken = dot > 0 ? value.slice(dot + 1) : value;
+    if (!sessionToken) continue;
+    held.push({ capabilityId, exchangedAt: Number.isFinite(exchangedAt) ? exchangedAt : 0, sessionToken });
+  }
+  return held.sort((a, b) => a.exchangedAt - b.exchangedAt || (a.capabilityId < b.capabilityId ? -1 : 1));
+}
+
+/**
+ * The capability this request NAMES — `X-Substrat-Capability`, or `?capability=` — or
+ * `undefined` when it names none. Both, disagreeing, is refused rather than picked between.
+ */
+export function namedCapabilityOf(c: Context): string | undefined {
+  const header = c.req.header(CAPABILITY_HEADER) || undefined;
+  const query = c.req.query(CAPABILITY_QUERY) || undefined;
+  if (header && query && header !== query) {
+    throw substratError('validation_failed', `${CAPABILITY_HEADER} and ?${CAPABILITY_QUERY}= name different links`);
+  }
+  return header ?? query;
+}
+
+/**
+ * The capability session this request acts through, or `undefined` when it carries none.
+ *
+ * Deterministic, and never a search (#1686):
+ * - **The request names a capability** (`namedCapabilityOf`): that capability's own cookie,
+ *   and nothing else. A name this browser holds no session for — never exchanged here,
+ *   evicted, cleared, or not an id at all — THROWS `unauthenticated`, the refusal a revoked
+ *   link gets. It never falls back to another session, nor to the one-link cookie (which
+ *   names no capability, so cannot be shown to be the named one), nor to the signed-in
+ *   principal: trying the next credential until one is allowed would turn a share someone
+ *   was sent into ambient authority over every share the browser holds.
+ * - **It names none**: the most recently exchanged session, else the one-link
+ *   `sb_capability` cookie — exactly what the single cookie held before #1686, where each
+ *   exchange replaced the last. So a page that names nothing behaves as it always did, and
+ *   a browser holding only a pre-#1686 cookie keeps working with no re-exchange.
+ */
 export function capabilitySessionOf(c: Context, cookieName: string = CAPABILITY_COOKIE): string | undefined {
-  return getCookie(c, cookieName) || undefined;
+  const named = namedCapabilityOf(c);
+  if (named !== undefined) {
+    const held = ULID_SHAPE.test(named) ? capabilitySessionsOf(c, cookieName).find((s) => s.capabilityId === named) : undefined;
+    if (!held) throw noSuchSession();
+    return held.sessionToken;
+  }
+  return capabilitySessionsOf(c, cookieName).at(-1)?.sessionToken ?? (getCookie(c, cookieName) || undefined);
 }
 
 /**
@@ -177,8 +298,37 @@ export async function linkShareStub(
   return (await capabilityStubOf(c, host, node, options)) ?? (await principal());
 }
 
-/** Forget this browser's capability session — so a signed-in visitor acts as themselves again. */
-export function clearCapabilitySession(c: Context, cookieName: string = CAPABILITY_COOKIE): void {
+export interface ClearCapabilitySessionOptions {
+  /** The one link to forget. Defaults to the one the request names (`namedCapabilityOf`). */
+  capabilityId?: string;
+  /** Defaults to `CAPABILITY_COOKIE`. */
+  cookieName?: string;
+}
+
+/**
+ * Forget a capability session.
+ *
+ * With a capability named — `options.capabilityId`, else the request's
+ * `X-Substrat-Capability` / `?capability=` — exactly that link's session is forgotten and
+ * every other link this browser holds stays open. With none named, every capability session
+ * is forgotten, the one-link cookie included, so a signed-in visitor acts as themselves again
+ * — what this did when a browser could hold only one. A string argument is the cookie name,
+ * as before #1686.
+ */
+export function clearCapabilitySession(
+  c: Context,
+  options: string | ClearCapabilitySessionOptions = {},
+): void {
+  const { capabilityId, cookieName = CAPABILITY_COOKIE } = typeof options === 'string' ? { cookieName: options } : options;
+  const named = capabilityId ?? namedCapabilityOf(c);
+  if (named !== undefined) {
+    // Only a well-formed id becomes a cookie name; anything else names nothing this set.
+    if (ULID_SHAPE.test(named)) deleteCookie(c, sessionCookieName(cookieName, named), { path: '/' });
+    return;
+  }
+  for (const held of capabilitySessionsOf(c, cookieName)) {
+    deleteCookie(c, sessionCookieName(cookieName, held.capabilityId), { path: '/' });
+  }
   deleteCookie(c, cookieName, { path: '/' });
 }
 
