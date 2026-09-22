@@ -807,6 +807,59 @@ Semantic commitments pinned now — free today, breaking changes once verticals 
 3. **The outbox is a per-database mechanism** — one per consistency domain, not "one per
    scope."
 
+**Module code has no tenant-level storage.** `OperationContext` gives a handler ambient
+tenancy and a scope-bound `ctx.sql` (§5.1), with no tenant-wide relational storage
+surface. Other capabilities, including events, permissions and attachments, remain
+available on the context. There is no cross-scope table a module can reach: the
+tenant-root DO exists (§3.2), but it is *"lightweight by rule — it holds control-plane
+state only,"* not a place a vertical's own tables live. So a per-user fact that is not
+per-scope — a preference, an app password, an installed connector, a notification setting
+— has no single scope to belong to. Two ways of making scope tables its authoritative
+home are wrong in a way that only shows up later:
+
+- **A "home" scope holding the row.** Every other scope's read of it is then a cross-scope
+  read, and none of the kernel's read paths answer that for module code (§5.6): in-scope
+  reads don't reach another scope by definition, an outbox-fed read model loses
+  read-your-writes at the crossing, and Tier 2 is a history tier, never a UI list view
+  ([#1581](https://github.com/substrat-run/substrat/issues/1581)).
+- **An authoritative copy per scope.** This is the same move K-22 already rejected for
+  membership, one layer up: it turns one tenant-wide fact into N scope-local copies, which is a
+  revocation hazard — nothing keeps the copies in sync when the fact changes or the
+  principal loses it, because there is no cross-scope transaction to do it with (rule 2,
+  above).
+
+Derived scope-local projections are a different choice: they can be useful when their
+consumers accept eventual consistency. They cannot supply a tenant-wide read-your-writes
+or revocation guarantee.
+
+**A vertical can own tenant-level storage outside module code.** It declares
+`runtimeNeeds.tenantStores`; the platform mints an isolated store per tenant, and host
+code opens it through `openTenantStore` (or the injected D1 binding on Cloudflare's
+request path). See §5.2 and [self-serve-deploy.md](self-serve-deploy.md) §4. This is a
+vertical-owned store, not the tenant-root directory and not a new surface on `ctx.sql`.
+Its writes do not share the scope transaction or automatically acquire the scope outbox
+and the `HostAdmin` audit trail; the vertical must design those semantics explicitly.
+
+K-22 settles the membership case: the tenant-wide fact lives in the directory, and module
+code reaches it through an executor, never directly. The engine emits a fat event inside
+its scope transaction, and a privileged executor outside module code effects the change
+through `HostAdmin.addMember` ([membership.md](membership.md) §4.2). A rollback leaves no
+event and no membership change; after commit, the executor applies the effect at-least-once,
+with correlation to the admin log. The contract is eventually consistent. `HostAdmin`
+exposes `addMember`/`removeMember` for org membership and `assignRole`/`unassignRole` for
+role assignments. It has no general `revoke` method.
+
+That outbox/executor pattern also applies when a module operation must cause a change to
+a vertical's own tenant-wide fact. The destination can be its tenant store; it does not
+follow that arbitrary vertical tables belong in the directory. The vertical needs an
+explicit host-side seam with retry/idempotency and audit semantics for that effect, rather
+than a scope table pretending to be tenant-wide storage.
+
+One adjacent question this is not: whether a fact is the same human across *tenants*, not
+across scopes within one. That is K-23's `identity_pools` — a `central` pool says two
+tenants' `externalId`s are one person, a `tenant-bound` pool says they collide — and no
+choice of where a preference table lives changes that answer.
+
 ### 7.4 UI composition model (K-15)
 
 **Microfrontend outcomes, monolithic build mechanics.** Each vertical is one React app,
