@@ -260,6 +260,21 @@ describe('mountLinkShareDownload — files through a link share, over HTTP', () 
       expect((await download(files.d1.id, await cookieFor(minted.secret), carol)).status).toBe(200);
     });
 
+    it('a host without the optional verb refuses a request carrying the cookie — it never answers as the signed-in visitor', async () => {
+      // `getCapabilityAttachments` is optional on ScopeHost: a host built before it has only
+      // `attachments`. Falling back to the principal there would break the precedence.
+      const older = { attachments: host.attachments.bind(host) };
+      const legacy = new Hono();
+      mountLinkShareDownload(legacy, { host: () => older, node: () => node, principal: principalOf });
+      const minted = await mint({ entity: folder('F'), permissions: [CAP_READ] });
+      const cookie = await cookieFor(minted.secret);
+      const url = `http://docs.test/api/capability/attachments/${files.d3.id}`;
+      const refused = await legacy.request(url, { headers: headers(cookie, alice) });
+      expect(refused.status).toBe(503);
+      // The twin: the same host, no cookie — the owner reads as themselves.
+      expect((await legacy.request(url, { headers: headers(null, alice) })).status).toBe(200);
+    });
+
     it('with neither, 401; an unknown id through a live link, 404', async () => {
       expect((await download(files.d1.id, null)).status).toBe(401);
       const minted = await mint({ entity: folder('F'), permissions: [CAP_READ] });
