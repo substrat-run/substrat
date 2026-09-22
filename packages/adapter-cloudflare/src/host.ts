@@ -162,6 +162,7 @@ import {
   type TenantRole,
   type TenantStatus,
   type TenantStoreHandle,
+  callsOfManifestJson,
   outboundOfManifestJson,
   substratError,
   redrainEventsInput,
@@ -3592,6 +3593,7 @@ export class CloudflareScopeHost implements ScopeHost {
         admissionNote: r.admission_note,
         origin: r.origin_json ? JSON.parse(r.origin_json) : null,
         outbound: outboundOfManifestJson(r.manifest_json),
+        calls: callsOfManifestJson(r.manifest_json),
         createdAt: r.created_at,
       });
 

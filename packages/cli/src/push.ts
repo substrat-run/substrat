@@ -938,6 +938,11 @@ export interface PushOptions {
    *  Undefined is still SENT as `[]` — a new-CLI push always declares its outbound
    *  surface, and "no third-party egress" is the least-privilege default. */
   outbound?: readonly unknown[];
+  /** Declared outgoing PEER calls (#1706), from package.json `substrat.calls`: the other
+   *  verticals of the same tenant whose operations this one invokes. Sent on the same terms
+   *  as `outbound` — `[]` when undeclared, because absence means "pushed before the
+   *  declaration existed", which the platform reads as unenforced. */
+  calls?: readonly unknown[];
   /**
    * Acknowledge a lineage fork (#388): a first push of a NEW registry id whose name
    * matches an existing lineage under a different owner is refused by the control plane
@@ -1269,6 +1274,10 @@ export async function push(
     // only) and a new-CLI push must not read as that. Unlike the metadata above it is
     // enforcement input, versioned with the code it ships beside.
     outbound: opts.outbound ?? [],
+    // The declared outgoing peer calls (#1706), on exactly `outbound`'s terms: always sent,
+    // `[]` when undeclared, because absence means "pre-#1706 push" (unenforced) and a
+    // new-CLI push must not read as that. Enforcement input, versioned with the code.
+    calls: opts.calls ?? [],
     // The declared permission surface travels with the bundle (D-39/D-41): keys+descriptions,
     // role templates, entity-grant shapes. Required — its content hash is digests.permission.
     registry,
@@ -1366,6 +1375,9 @@ export interface VerticalMeta {
    *  = the key is absent, which the push STILL sends as `[]` — a new-CLI push always
    *  declares its outbound surface, and no third-party egress is the default. */
   outbound: readonly unknown[] | undefined;
+  /** Declared outgoing peer calls (#1706), from package.json `substrat.calls`. Undefined
+   *  travels as `[]`, for `outbound`'s reason. */
+  calls: readonly unknown[] | undefined;
 }
 
 /**
@@ -1379,7 +1391,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
   let pkg: {
     name?: string;
     version?: string;
-    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[]; provisions?: unknown[]; sendsEmail?: boolean; usesModels?: boolean; surfaces?: unknown[]; outbound?: unknown[] };
+    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[]; provisions?: unknown[]; sendsEmail?: boolean; usesModels?: boolean; surfaces?: unknown[]; outbound?: unknown[]; calls?: unknown[] };
   } = {};
   try {
     pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as typeof pkg;
@@ -1406,6 +1418,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
     usesModels: s?.usesModels,
     surfaces: s?.surfaces,
     outbound: s?.outbound,
+    calls: s?.calls,
   };
 }
 

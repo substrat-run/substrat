@@ -25,6 +25,7 @@ import {
   emailRelayRequest,
   PROVISION_SIBLING_KIND,
   ARCHIVE_SCOPE_KIND,
+  PEER_INVOKE_KIND,
   PROVISION_TENANT_KIND,
   SET_ENTITLEMENTS_KIND,
   MODEL_USAGE_KIND,
@@ -84,6 +85,7 @@ import {
   ConnectUrlRelayError,
   provisionSiblingHandler,
   archiveScopeHandler,
+  peerInvokeHandler,
   provisionTenantHandler,
   setEntitlementsHandler,
   modelUsageHandler,
@@ -1095,6 +1097,11 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
         patchScriptBindings: patchScriptBindingsFor(env),
       }),
       [ARCHIVE_SCOPE_KIND]: archiveScopeHandler({ host, actor: SWEEP_ACTOR }),
+      // #1706: the asynchronous leg of a peer call. Module code runs inside the scope DO,
+      // where it has no network and no egress worker to name it, so a handler asks for the
+      // call instead and this delivers it — with the caller taken from the scope this drain
+      // found the row in, never from the payload.
+      [PEER_INVOKE_KIND]: peerInvokeHandler({ host, actor: SWEEP_ACTOR, resolveVerticalForScope }),
       [PROVISION_TENANT_KIND]: provisionTenantHandler(managedTenantDeps),
       [SET_ENTITLEMENTS_KIND]: setEntitlementsHandler(managedTenantDeps),
       // #1054: a vertical's model host produced a usage line; the platform's ledger (meter 3).

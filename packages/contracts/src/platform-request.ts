@@ -166,6 +166,32 @@ export type ArchiveScopePayload = z.infer<typeof archiveScopePayload>;
 export const ARCHIVE_SCOPE_KIND = 'archive-scope';
 
 /**
+ * The `peer-invoke` intent (#1706): module code asking the platform to invoke an operation on
+ * another vertical of the same tenant.
+ *
+ * **Why an intent rather than a call.** Operations, consumers and schedules run inside the
+ * scope's Durable Object, where module code has no network by rule — and where a fetch would
+ * not pass the egress worker that names the caller. So a handler enqueues this instead, inside
+ * its own transaction, and the platform delivers it: at-least-once, with the intent id as the
+ * idempotency key, and with the caller taken from the SCOPE the intent was drained from. The
+ * payload names the target and the operation; it cannot name a caller, and one would not be
+ * believed if it did.
+ *
+ * The synchronous leg (a harness route, through egress and the router) is the same door with a
+ * different transport — `peer-transport.ts`.
+ */
+export const peerInvokePayload = z.object({
+  /** The target vertical's registry slug. Resolved in the ENQUEUING scope's tenant, only. */
+  vertical: z.string().min(1),
+  operation: z.string().min(1),
+  input: z.unknown().optional(),
+});
+export type PeerInvokePayload = z.infer<typeof peerInvokePayload>;
+
+/** The well-known intent kind string for `peerInvokePayload`. */
+export const PEER_INVOKE_KIND = 'peer-invoke';
+
+/**
  * One entitlement a manager vertical asks the platform to grant (#412) — the SKU key plus
  * its tier grouping. `plan: null` = an ungrouped on/off flag. Deliberately NOT the full
  * `entitlementGrantInput` (no quota/expiry): a manager names WHAT a customer bought; how

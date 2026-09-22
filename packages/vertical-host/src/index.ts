@@ -1166,6 +1166,8 @@ export * from './mcp.js';
 export * from './public-surface.js';
 // #1672: the link-share exchange — a capability's secret traded for an HttpOnly session.
 export * from './capability-exchange.js';
+// #1706: calling another vertical of the same tenant, from harness code.
+export * from './peer-client.js';
 export {
   classifyError,
   isPlatformFault,

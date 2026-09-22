@@ -1079,6 +1079,35 @@ export class VerticalClient {
   }
 
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
+  /**
+   * Invoke ONE operation on this deployment as a PEER vertical (#1706) — the far end of an
+   * asynchronous peer call, whose caller the platform took from the scope it drained the
+   * intent from. The door at the other end admits it (declared peer, switch on, operation
+   * allowlisted) and every check inside runs as `{ vertical, scope }`.
+   */
+  async verticalInvoke(input: {
+    caller: { vertical: string; scope: ScopeId };
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    operation: string;
+    input?: unknown;
+    idempotencyKey?: string;
+  }): Promise<unknown> {
+    const { result } = await this.postInternal<{ result: unknown }>(
+      '/internal/vertical-invoke',
+      {
+        caller: input.caller,
+        tenantId: input.tenantId,
+        scopeId: input.scopeId,
+        operation: input.operation,
+        ...(input.input === undefined ? {} : { input: input.input }),
+        ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
+      },
+      'peer call',
+    );
+    return result;
+  }
+
   private async postInternal<T>(path: string, body: unknown, verb: string): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const res = await this.reach(verb, () =>

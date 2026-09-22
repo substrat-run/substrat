@@ -168,6 +168,7 @@ import {
   SCOPE_TABLE_PAGE_MAX,
   SCOPE_QUERY_ROW_MAX,
   verticalServingState,
+  callsOfManifestJson,
   outboundOfManifestJson,
   listLimitOf,
   substratError,
@@ -5195,6 +5196,7 @@ export class SqliteScopeHost implements ScopeHost {
         admissionNote: r.admission_note,
         origin: r.origin_json ? JSON.parse(r.origin_json) : null,
         outbound: outboundOfManifestJson(r.manifest_json),
+        calls: callsOfManifestJson(r.manifest_json),
         createdAt: r.created_at,
       });
     const readVersion = (id: string): VerticalVersion | undefined => {

@@ -11,6 +11,9 @@ import {
   tenantId as tenantIdSchema,
   provisionSiblingPayload,
   archiveScopePayload,
+  callsDeclares,
+  peerInvokePayload,
+  undeclaredCallMessage,
   provisionTenantPayload,
   setEntitlementsPayload,
   connectorDispatchPayload,
@@ -390,6 +393,88 @@ export function archiveScopeHandler(deps: ArchiveScopeDeps): PlatformRequestHand
     }
     await admin.archiveScope(deps.actor, ctx.tenantId, payload.scopeId);
     return { status: 'done', result: { archived: payload.scopeId } };
+  };
+}
+
+/** Deps for the PEER-INVOKE handler (#1706). */
+export interface PeerInvokeDeps {
+  host: ScopeHost;
+  actor: PlatformActorId;
+  /** Resolve the `VerticalClient` that serves a scope — the same resolver the others take. */
+  resolveVerticalForScope: (scope: {
+    vertical: string | null;
+    verticalVersionId: string | null;
+    servingRef?: string | null;
+  }) => Promise<VerticalClient | undefined>;
+}
+
+/**
+ * The ASYNCHRONOUS leg of a peer call (#1706): module code asked the platform to invoke an
+ * operation on another vertical of the same tenant, and this delivers it.
+ *
+ * **The caller is the scope this intent was drained from**, and nothing else. `ctx.tenantId`,
+ * `ctx.vertical` and `ctx.scopeId` are the platform's own facts about where the row was found
+ * — the payload names only the target and the operation, and could not name a caller if it
+ * tried (`peerInvokePayload` has no field for one). That is the same guarantee the synchronous
+ * leg gets from the dispatch parameters, arrived at a different way.
+ *
+ * The gates, in order, each settling `failed` with a reason a builder can act on:
+ *
+ * 1. **The caller declared this target** (`substrat.calls`, read from the version bound at
+ *    drain time). The rule holds on BOTH legs — a declaration enforced on one and not the
+ *    other is the gap someone finds later. A version pushed before the declaration existed
+ *    carries null and is unenforced, exactly as a pre-#303 `outbound` is.
+ * 2. **The target resolves** to one primary, active instance in the CALLER's tenant, by the
+ *    kernel's one rule. Never another tenant's, never a preview, never a guess.
+ * 3. **The target's deployment answers.** Its door then decides what the peer may do.
+ *
+ * At-least-once, with the intent id as the idempotency key: a redelivery after a crash reaches
+ * the same recorded response rather than running the operation twice.
+ */
+export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler {
+  return async (ctx, request) => {
+    const payload = peerInvokePayload.parse(request.payload);
+    const admin = deps.host.admin;
+    if (payload.vertical === ctx.vertical) {
+      return { status: 'failed', error: `'${ctx.vertical}' cannot peer-call itself` };
+    }
+    // 1. The caller's own declaration, from the version bound to the scope at drain time.
+    if (ctx.versionId) {
+      const version = await admin.getVersion(deps.actor, ctx.versionId).catch(() => undefined);
+      const declared = version?.calls ?? null;
+      if (!callsDeclares(declared ?? null, payload.vertical)) {
+        return { status: 'failed', error: undeclaredCallMessage(ctx.vertical, payload.vertical) };
+      }
+    }
+    // 2. The target instance, in the caller's tenant only.
+    const resolution = await admin.resolveVerticalInstance(ctx.tenantId, payload.vertical);
+    if (resolution.outcome === 'not-installed') {
+      return { status: 'failed', error: `vertical '${payload.vertical}' is not installed in this tenant` };
+    }
+    if (resolution.outcome === 'ambiguous') {
+      return {
+        status: 'failed',
+        error:
+          `this tenant runs ${resolution.count} instances of '${payload.vertical}' — a call cannot ` +
+          'pick one; bind the instance first',
+      };
+    }
+    // 3. The target's own deployment.
+    const target = await admin.getScopeRecord(deps.actor, ctx.tenantId, resolution.instance.scopeId);
+    const client = target ? await deps.resolveVerticalForScope(target) : undefined;
+    if (!client) {
+      return { status: 'failed', error: `no deployment serves '${payload.vertical}' in this tenant` };
+    }
+    const result = await client.verticalInvoke({
+      caller: { vertical: ctx.vertical, scope: ctx.scopeId },
+      tenantId: ctx.tenantId,
+      scopeId: resolution.instance.scopeId,
+      operation: payload.operation,
+      ...(payload.input === undefined ? {} : { input: payload.input }),
+      // The intent id: a redelivery reaches the recorded response instead of running twice.
+      idempotencyKey: request.id,
+    });
+    return { status: 'done', result: { invoked: payload.operation, result: result ?? null } };
   };
 }
 

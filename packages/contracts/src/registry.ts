@@ -249,6 +249,13 @@ export const verticalVersion = z.object({
    * worker meters but does not enforce it.
    */
   outbound: z.array(z.string()).nullish(),
+  /**
+   * The version's DECLARED outgoing PEER calls (#1706) — `substrat.calls`, lifted from its
+   * stored manifest exactly as `outbound` is, and null on the same terms (a version pushed
+   * before the declaration existed, which the platform reads as unenforced). The drain reads
+   * it to judge an asynchronous peer call, so the same rule holds on both legs.
+   */
+  calls: z.array(z.string()).nullish(),
   createdAt: instant,
 });
 export type VerticalVersion = z.infer<typeof verticalVersion>;
