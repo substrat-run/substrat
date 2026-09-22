@@ -2291,15 +2291,21 @@ export class SqliteScopeHost implements ScopeHost {
     // one stays revoked. Turning a scope's schedules off is `revokeFromSystem` (#1666), and
     // its OFF marker is not a grant, so no re-provision can seat it away; `restoreToSystem`
     // is the only way back (`grantToSystem` clears a tuple's tombstone, not the switch).
-    for (const mod of this.modules.values()) {
-      const perms = new Set<string>();
-      for (const s of mod.schedules) for (const p of s.permissions) perms.add(p);
-      for (const perm of perms) {
-        // A module switched off (#1666) gets nothing seated — see `seatScopeTuple`.
-        const seat = seatScopeTuple(`system:${mod.id}`, `granted:${perm}`, `scope:${input.scopeId}`, null);
-        rt.db.prepare(seat.sql).run(...seat.params);
+    //
+    // One turn on the scope actor for the whole loop (#1678): a seat issued while an
+    // invoke held its transaction open joined it, and a rollback un-seated the grant
+    // after provisioning had returned. The switch check lives inside the seat statement.
+    await rt.actor.turn(() => {
+      for (const mod of this.modules.values()) {
+        const perms = new Set<string>();
+        for (const s of mod.schedules) for (const p of s.permissions) perms.add(p);
+        for (const perm of perms) {
+          // A module switched off (#1666) gets nothing seated — see `seatScopeTuple`.
+          const seat = seatScopeTuple(`system:${mod.id}`, `granted:${perm}`, `scope:${input.scopeId}`, null);
+          rt.db.prepare(seat.sql).run(...seat.params);
+        }
       }
-    }
+    });
     // Audit a real provision only; an idempotent re-provision changed nothing.
     if (!existing) {
       this.recordAdmin(
@@ -2792,7 +2798,7 @@ export class SqliteScopeHost implements ScopeHost {
       forkedFrom: input.forkedFrom ?? (dump.scopeId as ScopeId),
       forkedAt: input.forkedAt ?? dump.capturedAt,
     });
-    this.loadDump(input.tenantId, input.scopeId, dump.tables);
+    await this.loadDump(input.tenantId, input.scopeId, dump.tables);
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     this.recordAdmin(
       actor,
@@ -2804,7 +2810,7 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /** Drop-then-replay a dump into a scope's db, refreshing the migration frontier. */
-  private loadDump(tenantId: TenantId, scopeId: ScopeId, tables: ScopeDumpTable[]): void {
+  private async loadDump(tenantId: TenantId, scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<void> {
     const rt = this.runtime(tenantId, scopeId);
     const db = rt.db;
     const load = db.transaction((dumped: ScopeDumpTable[]) => {
@@ -2891,16 +2897,21 @@ export class SqliteScopeHost implements ScopeHost {
           WHERE object LIKE 'scope:%' AND object <> ?`,
       ).run(`scope:${scopeId}`, `scope:${scopeId}`);
     });
-    load(tables);
-    // The frontier came in with the dump — refresh the cached applied-migration set so
-    // a later bind/migrate builds on the loaded state, not the previous one.
-    rt.appliedMigrations.clear();
-    for (const r of db.prepare('SELECT module_id, version FROM _substrat_migrations').all() as {
-      module_id: string;
-      version: string;
-    }[]) {
-      rt.appliedMigrations.add(`${r.module_id}@${r.version}`);
-    }
+    // On the scope actor (#1678): issued while an invoke held its transaction open, the
+    // load was a SAVEPOINT inside it, and that invoke's rollback undid the restore after
+    // this verb had audited it.
+    await rt.actor.turn(() => {
+      load(tables);
+      // The frontier came in with the dump — refresh the cached applied-migration set so
+      // a later bind/migrate builds on the loaded state, not the previous one.
+      rt.appliedMigrations.clear();
+      for (const r of db.prepare('SELECT module_id, version FROM _substrat_migrations').all() as {
+        module_id: string;
+        version: string;
+      }[]) {
+        rt.appliedMigrations.add(`${r.module_id}@${r.version}`);
+      }
+    });
   }
 
   async restoreScope(
@@ -2912,7 +2923,7 @@ export class SqliteScopeHost implements ScopeHost {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
-    this.loadDump(tenantId, scopeId, dump.tables);
+    await this.loadDump(tenantId, scopeId, dump.tables);
     this.recordAdmin(
       actor,
       'restoreScope',
@@ -3245,52 +3256,58 @@ export class SqliteScopeHost implements ScopeHost {
       }
     }
     if (windows.size === 0) return report;
-    const types = [...windows.keys()];
-    const observed = new Map<string, string>();
-    for (const row of rt.db
-      .prepare(
-        `SELECT type, MAX(occurred_at) AS at FROM _substrat_outbox
-          WHERE type IN (${types.map(() => '?').join(', ')}) GROUP BY type`,
-      )
-      .all(...types) as { type: string; at: string | null }[]) {
-      if (row.at !== null) observed.set(row.type, row.at);
-    }
+    // The WHOLE evaluation is one turn on the scope actor (#1678 review): the outbox probe,
+    // the previous verdict and the write that records the new one. Read outside the turn, the
+    // probe saw a suspended operation's UNCOMMITTED event on this shared connection, then
+    // waited here and persisted an `ok` for an event its rollback was about to remove.
+    await rt.actor.turn(() => {
+      const types = [...windows.keys()];
+      const observed = new Map<string, string>();
+      for (const row of rt.db
+        .prepare(
+          `SELECT type, MAX(occurred_at) AS at FROM _substrat_outbox
+            WHERE type IN (${types.map(() => '?').join(', ')}) GROUP BY type`,
+        )
+        .all(...types) as { type: string; at: string | null }[]) {
+        if (row.at !== null) observed.set(row.type, row.at);
+      }
 
-    const nowIso = this.clock();
-    const now = Date.parse(nowIso);
-    for (const [eventType, withinHours] of windows) {
-      const observedAt = observed.get(eventType) ?? null;
-      const outcome: FreshnessReport['checks'][number]['outcome'] =
-        observedAt === null
-          ? 'skipped' // never observed — the never-run analogue, not a failure
-          : now - Date.parse(observedAt) <= withinHours * 3_600_000
-            ? 'ok'
-            : 'failed';
-      const stateKey = `freshness:${eventType}`;
-      // #1288: the evaluator's own row, named by kind. Before the column, a module
-      // declaring a schedule called `freshness:<this type>` shared it — and the
-      // verdict read back here was whichever of the two wrote last.
-      const state = rt.db
-        .prepare(
-          `SELECT last_run_at, last_status FROM _substrat_schedule_state
-            WHERE kind = 'freshness' AND schedule_op = ?`,
-        )
-        .get(stateKey) as { last_run_at: string | null; last_status: string | null } | undefined;
-      const changed = state?.last_status !== outcome;
-      const heartbeatDue =
-        !state?.last_run_at ||
-        now - Date.parse(state.last_run_at) > FRESHNESS_HEARTBEAT_MINUTES * 60_000;
-      if (!changed && !heartbeatDue) continue;
-      rt.db
-        .prepare(
-          `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
-             VALUES ('freshness', ?, ?, ?)
-           ON CONFLICT(kind, schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
-                                                        last_status = excluded.last_status`,
-        )
-        .run(stateKey, nowIso, outcome);
-      report.checks.push({ eventType, outcome, observedAt, withinHours });
-    }
+      const nowIso = this.clock();
+      const now = Date.parse(nowIso);
+      for (const [eventType, withinHours] of windows) {
+        const observedAt = observed.get(eventType) ?? null;
+        const outcome: FreshnessReport['checks'][number]['outcome'] =
+          observedAt === null
+            ? 'skipped' // never observed — the never-run analogue, not a failure
+            : now - Date.parse(observedAt) <= withinHours * 3_600_000
+              ? 'ok'
+              : 'failed';
+        const stateKey = `freshness:${eventType}`;
+        // #1288: the evaluator's own row, named by kind. Before the column, a module
+        // declaring a schedule called `freshness:<this type>` shared it — and the
+        // verdict read back here was whichever of the two wrote last.
+        const state = rt.db
+          .prepare(
+            `SELECT last_run_at, last_status FROM _substrat_schedule_state
+              WHERE kind = 'freshness' AND schedule_op = ?`,
+          )
+          .get(stateKey) as { last_run_at: string | null; last_status: string | null } | undefined;
+        const changed = state?.last_status !== outcome;
+        const heartbeatDue =
+          !state?.last_run_at ||
+          now - Date.parse(state.last_run_at) > FRESHNESS_HEARTBEAT_MINUTES * 60_000;
+        if (!changed && !heartbeatDue) continue;
+        rt.db
+          .prepare(
+            `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
+               VALUES ('freshness', ?, ?, ?)
+             ON CONFLICT(kind, schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
+                                                          last_status = excluded.last_status`,
+          )
+          .run(stateKey, nowIso, outcome);
+        report.checks.push({ eventType, outcome, observedAt, withinHours });
+      }
+    });
     return report;
   }
 
@@ -3371,14 +3388,18 @@ export class SqliteScopeHost implements ScopeHost {
           error: err instanceof Error ? err.message : String(err),
         });
       }
-      rt.db
-        .prepare(
-          `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
-             VALUES ('schedule', ?, ?, ?)
-           ON CONFLICT(kind, schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
-                                                        last_status = excluded.last_status`,
-        )
-        .run(schedule.operation, new Date(now).toISOString(), status);
+      // On the scope actor (#1678): the cadence row joined whatever transaction an invoke
+      // held open, so its rollback forgot the run and the next pass fired it AGAIN.
+      await rt.actor.turn(() =>
+        rt.db
+          .prepare(
+            `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
+               VALUES ('schedule', ?, ?, ?)
+             ON CONFLICT(kind, schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
+                                                          last_status = excluded.last_status`,
+          )
+          .run(schedule.operation, new Date(now).toISOString(), status),
+      );
       report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
     return report;
@@ -5027,6 +5048,19 @@ export class SqliteScopeHost implements ScopeHost {
       }
     };
 
+    /**
+     * A node's write, on the scope actor when the node is a scope (#1678). `invoke` holds a
+     * raw `BEGIN IMMEDIATE` on the scope's connection across awaits, so a bare statement
+     * issued mid-invoke joined that transaction and rolled back with it — after the verb
+     * had answered success and audited. `body` holds the check AND the write, synchronously,
+     * so nothing moves between them. Tenant-level: a directory write, which no scope's
+     * transaction can hold, so it runs as it always did.
+     */
+    const onNode = <T>(node: Node, body: () => T): Promise<T> =>
+      node.scopeId
+        ? this.runtime(node.tenantId, node.scopeId).actor.turn(body)
+        : Promise.resolve().then(body);
+
     /** #1666: move one module's schedule switch on one scope — see `HostAdmin.revokeFromSystem`. */
     const switchSystem = async (
       actor: PlatformActorId,
@@ -5170,11 +5204,9 @@ export class SqliteScopeHost implements ScopeHost {
       assignRole: async (actor: PlatformActorId, assignment: RoleAssignment) => {
         const subject = `principal:${assignment.principalId}`;
         if (assignment.node.scopeId) {
-          writeScopeTuple(
-            assignment.node,
-            subject,
-            `role:${assignment.roleKey}`,
-            `scope:${assignment.node.scopeId}`,
+          const scopeNode = assignment.node.scopeId;
+          await onNode(assignment.node, () =>
+            writeScopeTuple(assignment.node, subject, `role:${assignment.roleKey}`, `scope:${scopeNode}`),
           );
         } else {
           writeTenantTuple(
@@ -5201,13 +5233,19 @@ export class SqliteScopeHost implements ScopeHost {
         const now = new Date().toISOString();
         let changes: number;
         if (assignment.node.scopeId) {
-          const rt = this.runtime(assignment.node.tenantId, assignment.node.scopeId);
-          changes = rt.db
-            .prepare(
-              `UPDATE _substrat_tuples SET revoked_at = ?
-               WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
-            )
-            .run(now, subject, relation, `scope:${assignment.node.scopeId}`).changes;
+          // On the scope actor (#1678): a revoke that joined a stranger's transaction and
+          // rolled back with it left the role LIVE after the caller was told it was gone.
+          const scopeNode = assignment.node.scopeId;
+          const rt = this.runtime(assignment.node.tenantId, scopeNode);
+          changes = await rt.actor.turn(
+            () =>
+              rt.db
+                .prepare(
+                  `UPDATE _substrat_tuples SET revoked_at = ?
+                   WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+                )
+                .run(now, subject, relation, `scope:${scopeNode}`).changes,
+          );
         } else {
           changes = this.directory
             .prepare(
@@ -5230,12 +5268,14 @@ export class SqliteScopeHost implements ScopeHost {
         // trust: the parse is where an `expiresAt` carrying a UTC offset is normalised
         // to Z text (#963), and liveness here is a lexicographic `expires_at > ?`.
         const grant = capabilityGrant.parse(raw);
-        writeGrant(
-          `principal:${grant.principalId}`,
-          grant.permission,
-          grant.node,
-          grant.entity,
-          grant.expiresAt,
+        await onNode(grant.node, () =>
+          writeGrant(
+            `principal:${grant.principalId}`,
+            grant.permission,
+            grant.node,
+            grant.entity,
+            grant.expiresAt,
+          ),
         );
         this.recordAdmin(
           actor,
@@ -5247,60 +5287,72 @@ export class SqliteScopeHost implements ScopeHost {
       },
       grantToConnection: async (actor: PlatformActorId, raw: ConnectionGrant) => {
         const grant = connectionGrant.parse(raw);
-        const conn = this.connectionRow(grant.connectionId);
-        if (conn.revoked_at) {
-          throw new Error(`connection ${grant.connectionId} is revoked — grant nothing to it`);
-        }
-        // The grant may not reach outside what the connection already is. A
-        // connection is keyed (tenant, vertical, provider); letting it hold a
-        // permission in another tenant would make the key decorative.
-        if (conn.tenant_id !== grant.node.tenantId) {
-          throw new Error(
-            `connection ${grant.connectionId} belongs to tenant ${conn.tenant_id} and cannot ` +
-              `be granted anything in ${grant.node.tenantId}`,
-          );
-        }
-        if (grant.node.scopeId) {
-          const scope = this.directory
-            .prepare('SELECT tenant_id, vertical FROM scopes WHERE scope_id = ?')
-            .get(grant.node.scopeId) as { tenant_id: string; vertical: string | null } | undefined;
-          if (!scope || scope.tenant_id !== grant.node.tenantId) {
-            throw new Error(`unknown scope ${grant.node.scopeId} in tenant ${grant.node.tenantId}`);
+        const check = () => {
+          const conn = this.connectionRow(grant.connectionId);
+          if (conn.revoked_at) {
+            throw new Error(`connection ${grant.connectionId} is revoked — grant nothing to it`);
           }
-          if (scope.vertical !== conn.vertical) {
+          // The grant may not reach outside what the connection already is. A
+          // connection is keyed (tenant, vertical, provider); letting it hold a
+          // permission in another tenant would make the key decorative.
+          if (conn.tenant_id !== grant.node.tenantId) {
             throw new Error(
-              `connection ${grant.connectionId} is for vertical '${conn.vertical}' and scope ` +
-                `${grant.node.scopeId} runs '${scope.vertical ?? 'none'}'`,
+              `connection ${grant.connectionId} belongs to tenant ${conn.tenant_id} and cannot ` +
+                `be granted anything in ${grant.node.tenantId}`,
             );
           }
-        }
-        writeGrant(
-          subjectRef({ kind: 'connection', id: grant.connectionId }),
-          grant.permission,
-          grant.node,
-          undefined,
-          grant.expiresAt,
-        );
-        // #592: the directory-side record, alongside the tuple. The tuple is checked
-        // where it lives; this row is what provision/reconcile gather FROM, so the
-        // grant reaches scopes provisioned after it without a human replaying it.
-        this.directory
-          .prepare(
-            `INSERT OR REPLACE INTO _substrat_connection_grants
-               (connection_id, tenant_id, vertical, permission, scope_id, expires_at,
-                granted_by, granted_at, revoked_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-          )
-          .run(
-            grant.connectionId,
-            grant.node.tenantId,
-            conn.vertical,
+          if (grant.node.scopeId) {
+            const scope = this.directory
+              .prepare('SELECT tenant_id, vertical FROM scopes WHERE scope_id = ?')
+              .get(grant.node.scopeId) as { tenant_id: string; vertical: string | null } | undefined;
+            if (!scope || scope.tenant_id !== grant.node.tenantId) {
+              throw new Error(`unknown scope ${grant.node.scopeId} in tenant ${grant.node.tenantId}`);
+            }
+            if (scope.vertical !== conn.vertical) {
+              throw new Error(
+                `connection ${grant.connectionId} is for vertical '${conn.vertical}' and scope ` +
+                  `${grant.node.scopeId} runs '${scope.vertical ?? 'none'}'`,
+              );
+            }
+          }
+          return conn;
+        };
+        // Once BEFORE the turn, so a refused grant never opens (and so creates) the scope's
+        // file; then again inside it, with the tuple and the directory row, in ONE body on
+        // the scope actor (#1678) — so the tuple cannot roll back with a stranger's
+        // transaction and leave the directory row (#592) claiming a grant the scope lacks.
+        check();
+        const conn = await onNode(grant.node, () => {
+          const row = check();
+          writeGrant(
+            subjectRef({ kind: 'connection', id: grant.connectionId }),
             grant.permission,
-            grant.node.scopeId ?? null,
-            grant.expiresAt ?? null,
-            grant.grantedBy,
-            new Date().toISOString(),
+            grant.node,
+            undefined,
+            grant.expiresAt,
           );
+          // #592: the directory-side record, alongside the tuple. The tuple is checked
+          // where it lives; this row is what provision/reconcile gather FROM, so the
+          // grant reaches scopes provisioned after it without a human replaying it.
+          this.directory
+            .prepare(
+              `INSERT OR REPLACE INTO _substrat_connection_grants
+                 (connection_id, tenant_id, vertical, permission, scope_id, expires_at,
+                  granted_by, granted_at, revoked_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+            )
+            .run(
+              grant.connectionId,
+              grant.node.tenantId,
+              row.vertical,
+              grant.permission,
+              grant.node.scopeId ?? null,
+              grant.expiresAt ?? null,
+              grant.grantedBy,
+              new Date().toISOString(),
+            );
+          return row;
+        });
         this.recordAdmin(
           actor,
           'grantToConnection',
@@ -5369,8 +5421,13 @@ export class SqliteScopeHost implements ScopeHost {
         // The org must exist in the node's tenant. A grant to a phantom org is
         // worse than an error: it looks applied, resolves for nobody, and shows up
         // in the permission diff as though access were conferred.
+        // Checked once before the turn, so a refusal opens no scope file; then again with
+        // the write in one body, on the scope actor when the node is a scope (#1678).
         requireOrg(node.tenantId, orgId);
-        writeGrant(`org:${orgId}`, permission, node, entity);
+        await onNode(node, () => {
+          requireOrg(node.tenantId, orgId);
+          writeGrant(`org:${orgId}`, permission, node, entity);
+        });
         this.recordAdmin(
           actor,
           'grantToOrg',
@@ -6213,11 +6270,17 @@ export class SqliteScopeHost implements ScopeHost {
         // cannot absorb: the next read resumes from the middle of a batch already
         // in the lake, and the object it writes overlaps the one already there —
         // the duplication the first-id object key exists to prevent.
-        const drained = db.transaction(() => {
-          let n = 0;
-          for (const id of eventIds) n += stmt.run(at, id).changes;
-          return n;
-        })();
+        //
+        // On the scope actor (#1678): issued mid-invoke, this transaction was a SAVEPOINT
+        // inside the invoke's, and its rollback un-marked a batch already in the lake — so
+        // the next pass shipped it again, the same duplicate by another road.
+        const drained = await this.runtime(tenantId, scopeId).actor.turn(() =>
+          db.transaction(() => {
+            let n = 0;
+            for (const id of eventIds) n += stmt.run(at, id).changes;
+            return n;
+          })(),
+        );
         // K-24's rule, one tier down (#1334): declaring domain payloads shipped is an
         // EGRESS, and the admin log is where "these events left the platform, at this
         // time, on this actor's say-so" is recorded. `drainAccessLog` audits the same
@@ -6288,16 +6351,22 @@ export class SqliteScopeHost implements ScopeHost {
         // is never pruned, so the unbounded form scales with the scope's whole history.
         // SQLite is built here without UPDATE...LIMIT, so the batch is a subselect over the
         // primary key — oldest first, so a partial run leaves a prefix rather than holes.
-        const redrained = db
-          .prepare(
-            `UPDATE _substrat_outbox SET drained_at = NULL
-              WHERE id IN (
-                SELECT id FROM _substrat_outbox
-                 WHERE drained_at IS NOT NULL AND drained_at < ?
-                 ORDER BY id LIMIT ?
-              )`,
-          )
-          .run(drainedBefore, REDRAIN_BATCH).changes;
+        //
+        // On the scope actor (#1678), so a stranger's rollback cannot undo a reopen this
+        // verb has already counted and receipted.
+        const redrained = await this.runtime(tenantId, scopeId).actor.turn(
+          () =>
+            db
+              .prepare(
+                `UPDATE _substrat_outbox SET drained_at = NULL
+                  WHERE id IN (
+                    SELECT id FROM _substrat_outbox
+                     WHERE drained_at IS NOT NULL AND drained_at < ?
+                     ORDER BY id LIMIT ?
+                  )`,
+              )
+              .run(drainedBefore, REDRAIN_BATCH).changes,
+        );
         // The outcome beside the intent above — only when something changed, so a re-run
         // over an already reopened window leaves no row claiming it did something.
         if (redrained > 0) {
@@ -7058,19 +7127,24 @@ export class SqliteScopeHost implements ScopeHost {
         // tombstones below and the key's own tombstone should not disagree about when a
         // person was erased.
         const at = new Date().toISOString();
-        const redacted = db
-          .prepare(
-            `UPDATE _substrat_outbox SET payload = NULL
-              WHERE subject_id = ? AND pii_class != 'none' AND payload IS NOT NULL`,
-          )
-          .run(subjectId);
-        // The spine's OTHER copy of an event (#1600). A CP-less host routes a connector
-        // delivery it cannot run into `_substrat_platform_requests` with the whole event
-        // embedded, and nothing ever deletes those rows — so the same line has to be held
-        // here, or the redaction above only moves the name one table across. Same
-        // idempotence as the outbox half: a re-run finds the tombstones and changes
-        // nothing.
-        const intentsRedacted = this.redactSubjectIntents(db, subjectId, at);
+        // Both scope-side redactions in ONE turn on the scope actor (#1678): issued while an
+        // invoke held its transaction open, they joined it, and its rollback put the
+        // person's PII back after this verb had destroyed the key and receipted the erasure.
+        const { redacted, intentsRedacted } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
+          redacted: db
+            .prepare(
+              `UPDATE _substrat_outbox SET payload = NULL
+                WHERE subject_id = ? AND pii_class != 'none' AND payload IS NOT NULL`,
+            )
+            .run(subjectId),
+          // The spine's OTHER copy of an event (#1600). A CP-less host routes a connector
+          // delivery it cannot run into `_substrat_platform_requests` with the whole event
+          // embedded, and nothing ever deletes those rows — so the same line has to be held
+          // here, or the redaction above only moves the name one table across. Same
+          // idempotence as the outbox half: a re-run finds the tombstones and changes
+          // nothing.
+          intentsRedacted: this.redactSubjectIntents(db, subjectId, at),
+        }));
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
           subjectId,
