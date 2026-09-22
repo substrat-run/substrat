@@ -236,6 +236,29 @@ for my users to log in" has a stock answer; it stops being special the moment yo
   use: a client identifies itself by an HTTPS URL that *is* its metadata document, so
   nothing is registered, stored or rotated per client until one actually arrives.
 
+### Bearer tokens: whose token it is
+
+A browser signs in once and holds a session cookie. An API client or an [MCP client](/concepts/mcp)
+presents the issuer's token as `Authorization: Bearer` instead, and the vertical verifies its
+signature and issuer. What else it checks depends on whose issuer it is.
+
+- **One of your team's auth servers.** Every app on the team signs in there, and so can any client
+  that registers itself. So a token that verifies says who signed it, not which app it is for. A
+  vertical bound to a team auth server accepts only its **own** tokens: its own `id_token` (`aud` is
+  its client id), a token issued to its client (`azp` or `client_id` is its client id), or an access
+  token for its own MCP endpoint (`aud` is `https://<host>/api/mcp`, whichever client requested it).
+  Another app's `id_token`, or a token minted for another vertical's MCP endpoint, is a `401`. The
+  dashboard tells the app its issuer is shared (the `substrat:auth:shared-issuer` delivery) at
+  install and on every Identity change. Apps installed earlier are told the next time anyone on the
+  team opens the Apps list.
+- **An issuer you configured by hand** (Supabase, Auth0, Keycloak, …). It is yours, so the vertical
+  keeps checking what it always checked: the signature and the issuer. To hold bearers to one
+  audience, set the connection's **audience**, for example `authenticated` for a Supabase access
+  token or your API identifier at Auth0. A set audience always wins, on either kind of issuer.
+
+Locally, `devLogin` applies the team rule, so a script that works against `pnpm dev` works hosted.
+`/dev/token` mints for the harness's client (`substrat-dev`) unless you pass an `audience`.
+
 ## Identity sync on first login
 
 The first time an adapter resolves an external user it hasn't seen, it provisions them —
