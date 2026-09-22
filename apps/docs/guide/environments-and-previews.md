@@ -76,6 +76,30 @@ preview their own pending code (#513). What a preview will not do is fork a scop
 `global`-jurisdiction, or fork a first-party vertical you don't own.
 :::
 
+### What a fork carries over, and what it doesn't
+
+A fork copies the app's **data** and nothing it was *configured* with. The per-install settings the
+platform delivers to an app, such as the dashboard's **Env** tab values and its **Identity** choice
+(`substrat:auth`), live with the app's own deployment, not in its database. A preview runs its own
+version, so it starts with none of them, and it starts empty again on every push. Unset settings fall
+back to the deployment's defaults.
+
+The login is handled for you when the app signs in at one of **your team's auth servers**. Each create
+and each push registers a client **of the preview's own** at that auth server, delivers it to the
+preview, and removes the one the previous push used. Deleting the preview, or letting it expire, removes
+it too. Your app's own client is never changed, and it never learns a preview's address.
+
+Any other login isn't copied. For an **external issuer** (Auth0, Keycloak, Supabase, …), `preview create`
+tells you so and prints the preview's callback, `https://<app>--<tag>.<base>/api/auth/callback`. The
+dashboard shows the same callback on the preview's row. Registering it at the issuer isn't enough on
+its own: the platform never copies your app's client secret to a preview.
+
+```text
+✓ preview 'pr-42' created → https://helpdesk-acme--pr-42.global.substrat.run
+  Sign-in: this preview has its own client at your auth server https://auth-acme.global.substrat.run …
+  Settings: a preview does not carry over the app's per-install settings (the dashboard's Env tab) …
+```
+
 ### A vertical's *first* environment — the clean room
 
 A fork needs something to fork. A brand-new vertical has no prod scope yet — exactly when a

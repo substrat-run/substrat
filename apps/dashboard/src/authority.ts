@@ -27,6 +27,7 @@ import type {
   PermissionDenial,
   PermissionRegistry,
   PlatformRequest,
+  PreviewAuth,
   PrincipalId,
   Scope,
   ScopeDump,
@@ -213,6 +214,8 @@ export interface PreviewRecord {
   expiresAt: string | null;
   hostname: string | null;
   url: string | null;
+  /** The preview's OIDC callback — what an external issuer would need registered (#1704). */
+  callbackUrl?: string | null;
 }
 
 export class TenantNarrowedControlPlane {
@@ -1641,7 +1644,16 @@ export class TenantNarrowedControlPlane {
       surface?: string;
       refresh?: boolean;
     },
-  ): Promise<{ scopeId: string; hostname: string; url: string; versionId: string; reused: boolean }> {
+  ): Promise<{
+    scopeId: string;
+    hostname: string;
+    url: string;
+    versionId: string;
+    reused: boolean;
+    /** What happened to the preview's login (#1704); absent from a plane that predates it. */
+    auth?: PreviewAuth;
+    notes?: string[];
+  }> {
     return this.post(`/verticals/${encodeURIComponent(verticalSlug)}/previews`, input);
   }
 
