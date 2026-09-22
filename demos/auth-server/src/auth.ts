@@ -223,7 +223,50 @@ export async function seedDemoClient(
   return { clientId: created.client_id, clientSecret: created.client_secret ?? '' };
 }
 
+/**
+ * The two discovery documents, at every path the plugin serves them from: the root forms
+ * (`/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, and its
+ * issuer-path form), and the Better Auth base-path forms.
+ */
+const DISCOVERY_PATH = /\/\.well-known\/(?:openid-configuration|oauth-authorization-server)(?:\/|$)/;
+
+/**
+ * Say in discovery that this issuer takes an RFC 8707 `resource` parameter (#1619).
+ *
+ * `resource_parameter_supported` is NOT an IANA-registered authorization-server metadata
+ * name. RFC 8707 defines none, and no registry entry exists for one. RFC 8414 §2 allows
+ * additional members, and a client that does not know this one ignores it. It is published
+ * because a client reading the metadata otherwise learns only at `/authorize`, from an
+ * `invalid_target`, that resources are enforced here.
+ *
+ * Added on the way out of the handler rather than through a Better Auth hook, because the
+ * plugin answers the root documents from its own `onRequest`, and better-call returns an
+ * `onRequest` response without running any `onResponse`. This wrapper is the one place
+ * both runtimes' requests pass through.
+ */
+async function advertiseResourceParameter(request: Request, response: Response): Promise<Response> {
+  if (request.method !== 'GET' || response.status !== 200) return response;
+  if (!DISCOVERY_PATH.test(new URL(request.url).pathname)) return response;
+  if (!response.headers.get('content-type')?.includes('json')) return response;
+  const document = (await response.json()) as Record<string, unknown>;
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  return new Response(JSON.stringify({ ...document, resource_parameter_supported: true }), {
+    status: response.status,
+    headers,
+  });
+}
+
 export function buildAuth(deps: AuthDeps) {
+  const auth = betterAuthFor(deps);
+  const handle = auth.handler;
+  // `fetch` is Better Auth's alias for the same function; both are replaced so neither
+  // spelling serves a document without the flag.
+  auth.handler = auth.fetch = async (request: Request) => advertiseResourceParameter(request, await handle(request));
+  return auth;
+}
+
+function betterAuthFor(deps: AuthDeps) {
   return betterAuth({
     database: deps.database,
     emailAndPassword: {
@@ -285,6 +328,38 @@ export function buildAuth(deps: AuthDeps) {
         // only say "an application", which is what the old plugin's session-gated client read
         // forced.
         allowPublicClientPrelogin: true,
+        /**
+         * RESOURCE INDICATORS (RFC 8707), for the MCP endpoint every vertical mounts (#1619).
+         *
+         * A token for a `resource` is minted only if an `oauth_resource` row names it. Here
+         * the platform writes those rows: `src/resources.ts`, one per hostname a vertical
+         * answers on, delivered by the dashboard when it binds that vertical to this issuer.
+         * Nothing else registers one, and an unregistered resource is still `invalid_target`.
+         *
+         * `enforcePerClientResources: false` is the CHECKPOINT decision here. With it on (the
+         * plugin's default), a client may target a resource only if a row in
+         * `oauth_client_resource` links the two. No self-registered client, DCR or CIMD, is
+         * ever linked, so every MCP client would be refused `client … is not linked`. Linking
+         * every such client to every platform resource would grant exactly what turning the
+         * check off grants, at the cost of a row per pair. Linking only the clients whose
+         * redirect URI shares the resource's origin would exclude every real MCP client,
+         * whose callback lives at its own vendor. The trade-off, plainly: any client of this
+         * issuer may obtain a token for any registered resource, gated by the user's own
+         * sign-in and consent. After that, the resource server's `aud` check and its own
+         * permission checks are what protect the resource. The lever this gives up — "client
+         * X may only target resource Y" — had no links and no screen behind it.
+         */
+        enforcePerClientResources: false,
+        /**
+         * Who may create, change, delete or link resources through the plugin's
+         * `adminCreateOAuthResource` family. Those are `SERVER_ONLY`, so nothing reaches them
+         * over HTTP, and nothing here calls them today. But left unset, the plugin lets them
+         * run for ANY authenticated session they are handed. So the first console route that
+         * forwarded a caller's headers to one would let any signed-in user register a
+         * resource, or delete the platform's, now that resources decide what gets minted.
+         * Administrators only, the same gate `clientPrivileges` puts on the client registry.
+         */
+        resourcePrivileges: ({ user }) => (user as { role?: string } | undefined)?.role === 'admin',
       }),
       // Client ID Metadata Documents (draft-ietf-oauth-client-id-metadata-document), under
       // the MCP 2026-07-28 profile. A client identifies itself by an HTTPS URL that IS its
@@ -539,4 +614,4 @@ export function buildAuth(deps: AuthDeps) {
   });
 }
 
-export type Auth = ReturnType<typeof buildAuth>;
+export type Auth = ReturnType<typeof betterAuthFor>;
