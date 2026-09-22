@@ -22,6 +22,7 @@ import type { ExecutorDrainReport, FetchLike, ScopeHost, SweepRunInput } from '.
 import { backoffAt } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
+import { resolveVerticalInstanceFrom } from './peer.js';
 
 // setTimeout/clearTimeout are web-standard (Node, Workers, browsers) but the
 // kernel pulls in no platform lib typings; declared locally, returning an opaque
@@ -1335,21 +1336,6 @@ export async function runPlatformSweep(
 }
 
 /**
- * The tenant's ONE primary instance of `vertical` (#1705). Active, not a fork, and in the
- * same tenant. Two primary instances are refused as `ambiguous` rather than guessed between,
- * because either guess could deliver one scope's data to the wrong install.
- */
-function instanceOf(
-  scopes: readonly Scope[],
-  tenantId: TenantId,
-  vertical: string,
-): { status: 'resolved'; scope: Scope } | { status: 'not-installed' | 'ambiguous' } {
-  const found = scopes.filter((s) => s.tenantId === tenantId && s.vertical === vertical);
-  if (found.length === 1) return { status: 'resolved', scope: found[0]! };
-  return { status: found.length === 0 ? 'not-installed' : 'ambiguous' };
-}
-
-/**
  * One pass over every cross-vertical edge (#1705). Bounded like the event drain: one batch per
  * edge per pass, reported rather than looped, so one busy producer cannot starve the rest.
  */
@@ -1459,31 +1445,32 @@ async function sweepEdge(
   if (from === vertical) {
     return edge({ state: 'unresolved', reason: `'${vertical}' imports from itself — an import names ANOTHER vertical` });
   }
-  // Both ends must be the tenant's one primary instance of their vertical. The producer is
-  // who is read. The consumer is who the producer's grant names, and a grant naming a slug
-  // cannot tell two installs of it apart.
-  const self = instanceOf(scopes, consumer.tenantId, vertical);
-  if (self.status !== 'resolved') {
+  // Both ends must be the tenant's one primary instance of their vertical, by #1706's one rule
+  // (`resolveVerticalInstanceFrom`: same tenant, active, primary; two are `ambiguous`, refused
+  // rather than guessed). The producer is who is read. The consumer is who the producer's grant
+  // names, and a grant naming a slug cannot tell two installs of it apart.
+  const self = resolveVerticalInstanceFrom(scopes, consumer.tenantId, vertical);
+  if (self.outcome !== 'resolved' || self.instance.scopeId !== consumer.id) {
     return edge({
       state: 'unresolved',
       reason: `this tenant has more than one primary instance of '${vertical}', so the producer cannot tell which one its grant names`,
     });
   }
-  const producer = instanceOf(scopes, consumer.tenantId, from);
-  if (producer.status !== 'resolved') {
+  const producer = resolveVerticalInstanceFrom(scopes, consumer.tenantId, from);
+  if (producer.outcome !== 'resolved') {
     return edge({
       state: 'unresolved',
       reason:
-        producer.status === 'not-installed'
+        producer.outcome === 'not-installed'
           ? `'${from}' is not installed in this tenant`
           : `this tenant has more than one primary instance of '${from}' — delivery waits until one is chosen`,
     });
   }
-  const source = { vertical: from, scopeId: producer.scope.id };
+  const source = { vertical: from, scopeId: producer.instance.scopeId };
   const at = { producer: source };
-  const after = state.cursors.find((c) => c.source === producer.scope.id)?.cursor ?? null;
+  const after = state.cursors.find((c) => c.source === source.scopeId)?.cursor ?? null;
   try {
-    const batch = await reach.readExports(producer.scope.tenantId, producer.scope.id, {
+    const batch = await reach.readExports(producer.instance.tenantId, source.scopeId, {
       consumer: vertical as ExportReadInput['consumer'],
       after,
       wants,
