@@ -10,6 +10,7 @@
  * the caller's tenant (§5), so a builder never types their own prefix. Auth is the same
  * tenant-scoped push token CI already carries.
  */
+import { oidcCallbackUrl, type PreviewAuth } from '@substrat-run/contracts';
 import { warnIfStale } from './version.js';
 import { parseJsonBody } from './http.js';
 import { failureMessage } from './problem.js';
@@ -20,6 +21,13 @@ export interface PreviewCreated {
   url: string;
   versionId: string;
   reused: boolean;
+  /**
+   * What happened to the preview's login (#1704). Absent from a control plane that predates
+   * it — which also means nothing was done about the login at all.
+   */
+  auth?: PreviewAuth;
+  /** What a preview does not carry over from the app it forks. */
+  notes?: string[];
 }
 
 export interface PreviewRow {
@@ -30,6 +38,29 @@ export interface PreviewRow {
   expiresAt: string | null;
   hostname: string | null;
   url: string | null;
+  /** The preview's OIDC callback — what an external issuer would need registered (#1704). */
+  callbackUrl?: string | null;
+}
+
+/**
+ * The lines `preview create` prints about the preview's login and what it did not carry over
+ * (#1704). Every status gets a line, so a preview without a working login is never silent —
+ * and one that could not be wired is marked, since its URL still opens.
+ */
+export function formatPreviewLogin(created: PreviewCreated): string[] {
+  const lines: string[] = [];
+  const auth = created.auth;
+  if (!auth) {
+    lines.push(
+      '  ⚠ Sign-in: this control plane predates preview logins, so nothing was delivered for one. ' +
+        `If the app signs in with OIDC, its callback here is ${oidcCallbackUrl(created.hostname)}.`,
+    );
+  } else {
+    const warn = auth.status === 'unregistered' || auth.status === 'ambiguous' || auth.status === 'unknown';
+    lines.push(`  ${warn ? '⚠ ' : ''}${auth.note}`);
+  }
+  for (const note of created.notes ?? []) lines.push(`  ${note}`);
+  return lines;
 }
 
 /**

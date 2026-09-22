@@ -33,7 +33,9 @@ peers: [{ vertical: 'acme/board-room', operations: ['customer/list'], permission
 
 These are REQUIRED members of `ScopeHost` and `HostAdmin`, so every implementation in or out of tree needs them. The shared rules are exported from `peer.ts`.
 
-**Both adapters implement all of it.** On the Durable-Object path, the coordinator threads the caller to the ScopeDO, which admits it in its queue on every invoke and acknowledges it. The coordinator refuses a success the DO did not acknowledge, the capability session's skew pattern.
+**Both adapters enforce all of it.** On the Durable-Object path, the coordinator threads the caller to the ScopeDO, which admits it in its queue on every invoke and acknowledges it. The coordinator refuses a success the DO did not acknowledge, the capability session's skew pattern.
+
+**What "enforced" does and does not mean on Cloudflare.** A deployment ENFORCES a peer call the platform forwards to it: the door, the declared grants, the allowlist and the switch all run there, on real Durable-Object SQLite. A hosted deployment cannot yet ORIGINATE one, because nothing on the hosted path says who is calling until the router hop lands in the next release. Locally, the broker below stands two verticals side by side today.
 
 **`@substrat-run/vertical-host`** adds `/internal/vertical-invoke`, which takes a strict body naming the caller and nothing that could act as a person, and `/internal/peer-switch`. Both sit behind the platform secret, like every `/internal` verb. They use two OPTIONAL `VerticalScopeHost` methods, and a deployment built before them answers 501.
 

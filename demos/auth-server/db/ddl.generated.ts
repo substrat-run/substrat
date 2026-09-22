@@ -261,4 +261,17 @@ export const SCHEMA_STATEMENTS: string[] = [
   // The primary key serves the login's own read (`WHERE sub = ?`); this serves an app's
   // whole-set repair and the drop of an app's entries.
   `CREATE INDEX IF NOT EXISTS place_member_app_idx ON place_member (app_scope_id)`,
+  // A PREVIEW's own clients (#1704, `src/preview-clients.ts`): every client the platform
+  // minted for a preview scope. A delete selects from here and nothing else, so no client the
+  // platform did not mint for that preview — prod's included — can be reached by one. The
+  // generation is the row's AUTOINCREMENT key: this issuer's own order of mints, never
+  // reused after a delete, which is what "older than the kept one" is judged by. Cascades
+  // with the client, so an operator removing one in the console leaves no row behind.
+  `CREATE TABLE IF NOT EXISTS preview_client (
+    generation INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL UNIQUE REFERENCES oauth_client(client_id) ON DELETE CASCADE,
+    preview_scope_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
+  // A preview's own clients, oldest first — what every delete walks.
+  `CREATE INDEX IF NOT EXISTS preview_client_scope_idx ON preview_client (preview_scope_id, generation)`,
 ];

@@ -311,6 +311,21 @@ function* walk(dir: string, skip: Set<string>): Generator<string> {
   }
 }
 
+/**
+ * Every module specifier a file NAMES: static `import`/`export … from`, and a dynamic
+ * `import()` or `require()` with a literal specifier.
+ *
+ * The dynamic half was missing until #1706's review, and its absence was a hole in every
+ * rule built on this function — R1, R2, R3 and R9 alike. `await import('better-sqlite3')`
+ * reaches the adapter exactly as the static form does, and a one-line rewrite evaded all
+ * four bans. A ban a one-line change walks around is not a ban.
+ *
+ * What it still cannot see is a COMPUTED specifier (`import(base + name)`), which no text
+ * scanner can resolve. That is the standing limit of a lint over a parser, and it is why
+ * the bans that matter are backed by something that is not a lint: `@substrat-run/adapter-sqlite`
+ * needs better-sqlite3, which no Workers bundle can carry, and its `vertical-broker` subpath
+ * resolves to nothing under the `workerd`, `worker` and `browser` conditions.
+ */
 function importsOf(source: string): string[] {
   const specs: string[] = [];
   const re =
@@ -318,6 +333,10 @@ function importsOf(source: string): string[] {
   for (let m: RegExpExecArray | null; (m = re.exec(source)); ) {
     const spec = m[1] ?? m[2];
     if (spec) specs.push(spec);
+  }
+  const dynamic = /\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  for (let m: RegExpExecArray | null; (m = dynamic.exec(source)); ) {
+    if (m[1]) specs.push(m[1]);
   }
   return specs;
 }
@@ -899,7 +918,10 @@ const NODE_HARNESS = new Set(['server.ts', 'seed.ts']);
  * itself. Tests live outside `src` and are never walked, so they need no exemption.
  */
 function checkLocalBroker(file: string, rel: string, inPkg: string, out: Violation[]): void {
-  if (NODE_HARNESS.has(inPkg.split('/').pop() ?? '')) return;
+  // The package-relative PATH, not the basename: `src/jobs/server.ts` is not a composition
+  // root, and exempting it by name would have exempted any file somebody called `server.ts`.
+  // Same comparison the harness list itself uses (`harness.has(inPkg)` in `lint`).
+  if (NODE_HARNESS.has(inPkg)) return;
   const source = readFileSync(file, 'utf8');
   if (!importsOf(source).includes(LOCAL_PEER_BROKER)) return;
   out.push({
