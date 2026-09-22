@@ -35,7 +35,22 @@ import { AUTH_SERVER_ENV } from './manifest.js';
 import { isResourcesEntry, parseResourcesEntry, syncPlatformResources } from './resources.js';
 import { isPlacesEntry, parsePlacesEntry, syncPlaceRegistrations } from './places.js';
 import { servePlaces, serveReport } from './places-http.js';
-import type { ConfigEntry, InstanceMeta, IssuerState, SessionSubject } from './do-contract.js';
+import {
+  PreviewClientRefusal,
+  claimsParent,
+  mintPreviewClient,
+  retirePreviewClients,
+  type RegisterClientFn,
+} from './preview-clients.js';
+import type { ConfigEntry, InstanceMeta, IssuerState, PreviewClientOutcome, SessionSubject } from './do-contract.js';
+import type {
+  MintedPreviewClient,
+  PreviewClientCheck,
+  PreviewClientClaim,
+  PreviewClientMint,
+  PreviewClientRetire,
+  RetiredPreviewClients,
+} from '@substrat-run/contracts';
 
 /**
  * One issuer, as one Durable Object. STANDALONE (own worker, own hostname): a single
@@ -280,6 +295,77 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    */
   async reconcileInstance(): Promise<InstanceMeta | null> {
     return this.instanceMeta() ?? null;
+  }
+
+  /**
+   * A preview's own client (#1704, `preview-clients.ts`) — check, mint, retire. Each is the
+   * far end of a platform-gated `/internal/preview-client*` call and answers only for THIS
+   * instance: the call names a tenant and a scope, and both must be what `provisionInstance`
+   * recorded here. The platform secret proves the caller is the platform, never which tenant
+   * the platform is acting for, so without this a tenant's preview could be wired to another
+   * tenant's issuer. A never-provisioned DO (a stray id) has no record and refuses everything.
+   */
+  private foreignCall(input: { tenantId: string; scopeId: string }): PreviewClientRefusal | null {
+    const meta = this.instanceMeta();
+    if (!meta || meta.tenantId !== input.tenantId || meta.scopeId !== input.scopeId) {
+      return new PreviewClientRefusal(403, `scope ${input.scopeId} is not an issuer of tenant ${input.tenantId}`);
+    }
+    return null;
+  }
+
+  private async previewCall<T>(input: { tenantId: string; scopeId: string }, fn: () => Promise<T> | T): Promise<PreviewClientOutcome<T>> {
+    const refused = this.foreignCall(input);
+    if (refused) return { ok: false, status: refused.status, error: refused.message };
+    try {
+      return { ok: true, value: await fn() };
+    } catch (e) {
+      if (e instanceof PreviewClientRefusal) return { ok: false, status: e.status, error: e.message };
+      throw e;
+    }
+  }
+
+  async checkPreviewClient(input: PreviewClientCheck): Promise<PreviewClientOutcome<PreviewClientClaim>> {
+    return this.previewCall(input, () => ({ claimed: claimsParent(this.ctx.storage.sql, input) }));
+  }
+
+  async mintPreviewClient(input: PreviewClientMint): Promise<PreviewClientOutcome<MintedPreviewClient>> {
+    return this.previewCall(input, () =>
+      mintPreviewClient(this.ctx.storage.sql, this.registerClient(), input, (fn) => this.ctx.storage.transactionSync(fn)),
+    );
+  }
+
+  async retirePreviewClients(input: PreviewClientRetire): Promise<PreviewClientOutcome<RetiredPreviewClients>> {
+    return this.previewCall(input, () =>
+      this.ctx.storage.transactionSync(() => retirePreviewClients(this.ctx.storage.sql, input)),
+    );
+  }
+
+  /**
+   * Dynamic client registration, in-process: the plugin's own `/oauth2/register`, the endpoint
+   * the dashboard's install-time registration POSTs to. So a preview's client is registered by
+   * exactly the code an app's is — the plugin mints the id, hashes the secret and judges the
+   * URIs. A platform call has no request origin, and registration does not depend on one.
+   */
+  private registerClient(): RegisterClientFn {
+    const origin = this.env.PUBLIC_ORIGIN ?? 'https://preview-client.platform.invalid';
+    const auth = this.auth(origin);
+    return async (body) => {
+      const res = await auth.handler(
+        new Request(`${origin}/api/auth/oauth2/register`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+      );
+      const out = (await res.json().catch(() => null)) as
+        | { client_id?: string; client_secret?: string; error_description?: string; error?: string }
+        | null;
+      if (!res.ok || !out?.client_id || !out.client_secret) {
+        const why = out?.error_description ?? out?.error ?? `status ${res.status}`;
+        throw new PreviewClientRefusal(400, `the issuer refused the preview client's registration: ${why}`);
+      }
+      return { client_id: out.client_id, client_secret: out.client_secret };
+    };
   }
 
   /**

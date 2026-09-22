@@ -7,6 +7,7 @@ import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_APP_TRAFFIC, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { renderModelHtml } from '@substrat-run/model-view';
+import { oidcCallbackUrl } from '@substrat-run/contracts';
 import { relativeTime, shortDate, shortId, untilTime } from '../lib/format';
 import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
@@ -1923,6 +1924,16 @@ function Previews({ app }: { app: AppRow }) {
                   </a>
                 ) : (
                   <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>—</span>
+                )}
+                {/* A per-PR preview's own sign-in callback (#1704). A team auth server gets the
+                    preview its own client automatically; an external issuer needs this registered. */}
+                {s.kind === 'preview' && s.url && (
+                  <span
+                    title="Sign-in callback. A team auth server registers it for the preview automatically; an external issuer needs it registered, and the preview gets no copy of the app's own client."
+                    style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                  >
+                    sign-in callback {oidcCallbackUrl(s.url)}
+                  </span>
                 )}
               </span>
               <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{s.forkedAt ? relativeTime(s.forkedAt) : '—'}</span>
