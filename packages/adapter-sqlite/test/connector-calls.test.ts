@@ -159,6 +159,20 @@ describe('connector calls into the recorder (#1691)', () => {
     });
   });
 
+  describe('an untimed settlement is still a call (#1691)', () => {
+    it('writes the -1 duration sentinel but keeps its outcome, so it counts in calls and errors', async () => {
+      const { points, recorder } = capture();
+      const w = await world(recorder);
+      // The shape the connect-time probe and any legacy caller use: no duration, no status.
+      await w.host.admin.recordConnectionUse(w.id, { ok: true });
+      await w.host.admin.recordConnectionUse(w.id, { ok: false, error: 'provider refused' });
+      expect(points).toEqual([
+        { indexes: [w.t], blobs: ['scrive', 'docs', 'ok'], doubles: [-1, 0] },
+        { indexes: [w.t], blobs: ['scrive', 'docs', 'unknown'], doubles: [-1, 0] },
+      ]);
+    });
+  });
+
   describe('the recorder cannot fail or stall the call', () => {
     it('a throwing Analytics Engine write is swallowed and counted; the call and its health line are untouched', async () => {
       const recorder = analyticsEngineConnectorCallRecorder({

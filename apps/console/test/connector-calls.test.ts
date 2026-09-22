@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ConnectorCallsBucket } from '../src/lib/api';
-import { connectorCallsSeries } from '../src/lib/connector-calls';
+import { ApiError } from '../src/lib/api';
+import { connectorCallsFailure, connectorCallsNote, connectorCallsSeries } from '../src/lib/connector-calls';
 
 /** The chart's grid (#1691): zero-filled, shared across providers, coloured to sum. */
 const HOUR = 3_600_000;
@@ -57,5 +58,24 @@ describe('connectorCallsSeries (#1691)', () => {
       NOW,
     );
     expect(series.map((s) => s.provider)).toEqual(['fortnox', 'scrive']);
+  });
+});
+
+describe('an unconfigured control plane is said, never drawn as zero (#1691)', () => {
+  it('a 501 reads as unconfigured, and the chart says so rather than "no calls"', () => {
+    const state = connectorCallsFailure(new ApiError(501, 'connector-call analytics are not configured'));
+    expect(state).toBe('unconfigured');
+    const note = connectorCallsNote(state, undefined);
+    expect(note).toMatch(/not configured/);
+    expect(note).not.toMatch(/No connector calls/);
+  });
+
+  it('its positive twin: a configured plane with an empty window says "no calls"', () => {
+    expect(connectorCallsNote('ready', [])).toBe('No connector calls in this window.');
+  });
+
+  it('any other failure is an error, not "unconfigured"', () => {
+    expect(connectorCallsFailure(new ApiError(500, 'boom'))).toBe('error');
+    expect(connectorCallsFailure(new Error('network'))).toBe('error');
   });
 });

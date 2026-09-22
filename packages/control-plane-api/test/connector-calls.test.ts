@@ -58,8 +58,15 @@ describe('cf observability connectorCallsSeries (#1691)', () => {
     expect(sql).toContain('sum(_sample_interval) AS calls'); // weighted, never count()
     expect(sql).not.toMatch(/count\(\)/);
     expect(sql).toContain(`sum(if(blob3 = 'ok', _sample_interval, 0)) AS ok`); // blob3 = outcome
-    // An untimed call (double1 = -1) weighs nothing in the latency quantiles.
+    // An untimed call (double1 = -1) weighs nothing in the latency quantiles…
+    expect(sql).toContain('quantileWeighted(0.5)(double1, if(double1 >= 0, _sample_interval, 0))');
     expect(sql).toContain('quantileWeighted(0.95)(double1, if(double1 >= 0, _sample_interval, 0))');
+    // …and ONLY there: every count weighs each point by its sample interval alone, so an
+    // untimed probe is still a call, and an untimed error still an error.
+    const counts = sql.split('\n').filter((l) => /\bsum\(/.test(l));
+    expect(counts).toHaveLength(5); // calls, ok, class4xx, class5xx, timeouts
+    for (const l of counts) expect(l).not.toContain('double1');
+    expect(sql.match(/double1 >= 0/g)).toHaveLength(2);
     expect(sql).toContain(`INTERVAL '60' MINUTE`);
   });
 
@@ -205,5 +212,31 @@ describe('GET /connections/calls (#1691) — staff only', () => {
 
   it('501s when no dataset is configured, rather than an empty series', async () => {
     expect((await apiWith().request('/connections/calls', { headers: asStaff })).status).toBe(501);
+  });
+
+  it('a real reader built with no dataset name answers 501, and never queries — self-host and dev', async () => {
+    const sql = vi.fn();
+    vi.stubGlobal('fetch', sql);
+    try {
+      const unset = createCfObservabilityReader({ accountId: 'a', apiToken: 't' }); // CONNECTOR_ANALYTICS_DATASET unset
+      const res = await apiWith(unset).request('/connections/calls', { headers: asStaff });
+      expect(res.status).toBe(501);
+      expect(((await res.json()) as { error: string }).error).toMatch(/not configured/);
+      expect(sql).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('its positive twin: the same reader WITH a dataset name answers 200 from the dataset', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })));
+    try {
+      const named = createCfObservabilityReader({ accountId: 'a', apiToken: 't', connectorCallsDataset: 'cc_ds' });
+      const res = await apiWith(named).request('/connections/calls', { headers: asStaff });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ hours: 24, buckets: [] });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

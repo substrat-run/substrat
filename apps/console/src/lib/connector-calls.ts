@@ -1,4 +1,4 @@
-import type { ConnectorCallsBucket } from './api';
+import { ApiError, type ConnectorCallsBucket } from './api';
 
 /** One bucket of one provider's series, zero-filled, in the three chart colours. */
 export interface ConnectorCallsCell {
@@ -78,4 +78,24 @@ export function connectorCallsSeries(
   return series
     .filter((s) => s.totals.calls > 0)
     .sort((a, b) => b.totals.red - a.totals.red || a.provider.localeCompare(b.provider));
+}
+
+/**
+ * What a failed read means for the chart. A 501 is the control plane saying it names no
+ * connector-call dataset (self-host, dev) — a fact to state, never an empty series, which
+ * would draw as a healthy, idle fleet. Anything else is an error to show.
+ */
+export function connectorCallsFailure(e: unknown): 'unconfigured' | 'error' {
+  return e instanceof ApiError && e.status === 501 ? 'unconfigured' : 'error';
+}
+
+/** The line the chart shows in place of bars, or null when it has bars to draw. */
+export function connectorCallsNote(
+  state: 'loading' | 'ready' | 'unconfigured' | 'error',
+  series: ConnectorCallsSeries[] | undefined,
+): string | null {
+  if (state === 'loading') return 'Loading…';
+  if (state === 'unconfigured') return 'Connector-call analytics are not configured on this control plane.';
+  if (state === 'ready' && (series?.length ?? 0) === 0) return 'No connector calls in this window.';
+  return null;
 }

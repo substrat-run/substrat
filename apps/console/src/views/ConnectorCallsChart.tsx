@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Card, Select } from '../components';
-import { ApiError, type Api } from '../lib/api';
-import { bucketMinutesFor, connectorCallsSeries, type ConnectorCallsSeries } from '../lib/connector-calls';
+import type { Api } from '../lib/api';
+import {
+  bucketMinutesFor,
+  connectorCallsFailure,
+  connectorCallsNote,
+  connectorCallsSeries,
+  type ConnectorCallsSeries,
+} from '../lib/connector-calls';
 
 const WINDOWS = [
   { value: '6', label: 'Last 6 hours' },
@@ -47,12 +53,9 @@ export function ConnectorCallsChart({ api, provider }: { api: Api; provider?: st
       } catch (e) {
         if (!live) return;
         // 501 is a fact about this control plane, not a failure: no dataset is named.
-        if (e instanceof ApiError && e.status === 501) {
-          setState('unconfigured');
-          return;
-        }
-        setError((e as Error).message);
-        setState('error');
+        const failure = connectorCallsFailure(e);
+        if (failure === 'error') setError((e as Error).message);
+        setState(failure);
       }
     })();
     return () => {
@@ -78,12 +81,8 @@ export function ConnectorCallsChart({ api, provider }: { api: Api; provider?: st
         />
       </div>
       <div style={{ display: 'grid', gap: 16, padding: '0 16px 16px' }}>
-        {state === 'loading' && <Muted>Loading…</Muted>}
-        {state === 'unconfigured' && (
-          <Muted>Connector-call analytics are not configured on this control plane.</Muted>
-        )}
+        {connectorCallsNote(state, series) && <Muted>{connectorCallsNote(state, series)}</Muted>}
         {state === 'error' && <span style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</span>}
-        {state === 'ready' && series && series.length === 0 && <Muted>No connector calls in this window.</Muted>}
         {state === 'ready' && series?.map((s) => <ProviderChart key={s.provider} series={s} />)}
       </div>
     </Card>
