@@ -2602,6 +2602,7 @@ export function defineScopeDO(
       secret: string,
       tenantId: TenantId,
       scopeId: ScopeId,
+      mode?: 'act' | 'become',
     ): Promise<CapabilityExchange | null> {
       await this.ensureMigrations();
       return await this.queue.enqueue(async () => {
@@ -2630,6 +2631,7 @@ export function defineScopeDO(
                 ).emit(event),
             },
             secret,
+            mode,
           );
         });
         if (outcome) await this.settleCommitted(tenantId, scopeId, liveSince, null);

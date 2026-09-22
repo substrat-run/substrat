@@ -592,6 +592,12 @@ export async function exchangeCapability(
     emit: (capability: CapabilityId, event: DomainEventInput) => void;
   },
   secret: unknown,
+  /**
+   * The only mode the caller can handle. A secret of the OTHER mode answers `null` without
+   * taking a use: a claim link pasted into a share-link exchange must not be spent by a
+   * route that would then throw away the principal it yielded.
+   */
+  mode?: 'act' | 'become',
 ): Promise<CapabilityExchange | null> {
   if (!plausible(secret, CAPABILITY_SECRET_PREFIX)) return null;
   const tokenHash = await capabilityTokenHash(secret);
@@ -600,6 +606,7 @@ export async function exchangeCapability(
     [tokenHash],
   )[0];
   if (!row || !capabilityExchangeable(row, deps.now)) return null;
+  if (mode !== undefined && row.mode !== mode) return null;
   const taken = deps.sql.exec(
     `UPDATE _substrat_capabilities SET uses = uses + 1, last_used_at = ?
      WHERE id = ? AND uses = ?`,

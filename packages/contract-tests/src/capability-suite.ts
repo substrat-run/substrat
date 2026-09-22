@@ -549,6 +549,27 @@ export function capabilityContractSuite(
         expect(JSON.parse(exercised.payload!)).toMatchObject({ mode: 'become', principal: seat });
       });
 
+      it('a route that can only take a session refuses a `become` secret WITHOUT spending it', async () => {
+        const minted = await host.admin.mintCapability(staff, t1, s1, {
+          principal: seat,
+          expiresAt: inFuture(60_000),
+          maxUses: 1,
+        });
+        expect(await host.exchangeCapability(t1, s1, minted.secret, { mode: 'act' })).toBeNull();
+        // Still unspent: the route that CAN take a principal gets it.
+        expect(await host.exchangeCapability(t1, s1, minted.secret, { mode: 'become' })).toEqual({
+          kind: 'principal',
+          capabilityId: minted.id,
+          principal: seat,
+        });
+      });
+
+      it('and a claim route refuses a share link without spending it', async () => {
+        const link = await share(alice, { entity: folder('F'), permissions: [CAP_READ], maxUses: 1 });
+        expect(await host.exchangeCapability(t1, s1, link.secret, { mode: 'become' })).toBeNull();
+        expect((await host.exchangeCapability(t1, s1, link.secret, { mode: 'act' }))?.kind).toBe('session');
+      });
+
       it('is revoked by the platform, not by a module', async () => {
         const minted = await host.admin.mintCapability(staff, t1, s1, {
           principal: seat,

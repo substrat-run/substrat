@@ -885,7 +885,12 @@ interface ScopeStubRpc {
   }>;
   /** Trade a capability secret for a session or a principal (#1672) — the kernel's
    *  `exchangeCapability`, run in this scope's own storage. */
-  exchangeCapability(secret: string, tenantId: TenantId, scopeId: ScopeId): Promise<CapabilityExchange | null>;
+  exchangeCapability(
+    secret: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    mode?: 'act' | 'become',
+  ): Promise<CapabilityExchange | null>;
   /** The platform's `become` mint (#1672), serialized in this scope's own storage. */
   mintBecomeCapability(input: BecomeCapabilityInput, actor: PlatformActorId): Promise<MintedCapability>;
   /** The platform's revoke (#1672) — the record as it stood before, or null. */
@@ -2900,10 +2905,16 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     secret: string,
+    options?: { mode?: 'act' | 'become' },
   ): Promise<CapabilityExchange | null> {
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    const outcome = await this.scopeStub(scopeId).exchangeCapability(secret, tenantId, scopeId);
+    const outcome = await this.scopeStub(scopeId).exchangeCapability(
+      secret,
+      tenantId,
+      scopeId,
+      options?.mode,
+    );
     return capabilityExchange.nullable().parse(outcome);
   }
 

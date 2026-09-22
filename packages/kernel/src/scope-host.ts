@@ -3959,11 +3959,16 @@ export interface ScopeHost {
    * learns nothing. The use is atomic: a single-use secret exchanged twice at once admits
    * one. The exchange is on the spine as `capability.exercised`, actor `{ capability }`.
    * Same fail-closed (tenant, scope) and lifecycle gate as `getScope`.
+   *
+   * `options.mode` names the only kind the caller can handle; a secret of the other kind
+   * answers `null` WITHOUT taking a use — so a claim link pasted into a share-link route is
+   * refused rather than spent.
    */
   exchangeCapability(
     tenantId: TenantId,
     scopeId: ScopeId,
     secret: string,
+    options?: { mode?: 'act' | 'become' },
   ): Promise<CapabilityExchange | null>;
 
   /**

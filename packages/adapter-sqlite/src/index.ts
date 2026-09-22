@@ -3249,6 +3249,7 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     secret: string,
+    options?: { mode?: 'act' | 'become' },
   ): Promise<CapabilityExchange | null> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     return rt.actor.enqueue(async () => {
@@ -3273,6 +3274,7 @@ export class SqliteScopeHost implements ScopeHost {
               ).emit(event),
           },
           secret,
+          options?.mode,
         );
         rt.db.exec('COMMIT');
       } catch (err) {
