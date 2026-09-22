@@ -1,7 +1,7 @@
 {
   "name": "@substrat-run/vertical-host",
   "version": "0.116.0",
-  "description": "The platform's /internal/* surface + error envelope, authored once — mount it in a vertical worker instead of re-copying the control-plane contract",
+  "description": "The platform's /internal/* surface + error envelope, authored once \u2014 mount it in a vertical worker instead of re-copying the control-plane contract",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
@@ -39,6 +39,8 @@
     "workers-ai-provider": "^4.0.0"
   },
   "devDependencies": {
+    "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/contract-tests": "workspace:^",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

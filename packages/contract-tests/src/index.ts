@@ -42,6 +42,8 @@ export {
   liveMod,
   liveModManifest,
   permMod,
+  capMod,
+  capModManifest,
   scheduleMod,
   jobsMod,
   testMod,
