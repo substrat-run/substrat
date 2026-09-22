@@ -100,6 +100,11 @@ describe('a peer call through egress (#1706)', () => {
     const res = await call(envWith({ OUTBOUND_POLICY: policy() }));
     expect(res.status).toBe(503);
     expect(internet).not.toHaveBeenCalled();
+    // The refusal NAMES the missing binding and the worker it belongs on: this is a
+    // deployment step, and the developer reading it is looking at a vertical's code.
+    const { error } = await res.json<{ error: string }>();
+    expect(error).toContain('PEER_CALLS');
+    expect(error).toContain('substrat-vertical-egress');
   });
 
   it('the router’s refusal is passed through with its status and reason', async () => {

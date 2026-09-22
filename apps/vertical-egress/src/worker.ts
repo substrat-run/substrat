@@ -198,7 +198,16 @@ async function peerCall(request: Request, env: Env): Promise<Response> {
     new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } });
   const policy = env.OUTBOUND_POLICY;
   if (!env.PEER_CALLS) {
-    return problem(503, 'peer calls are not available in this environment (#1706)');
+    // Name the binding and the worker it belongs on. A refusal that says only "not
+    // available" sends whoever reads it looking through a vertical's own code for a bug
+    // that is one line of deployment config in a different repo directory.
+    return problem(
+      503,
+      'peer calls are not available in this environment: the egress worker ' +
+        '(substrat-vertical-egress) has no PEER_CALLS binding to the router\'s PeerCalls ' +
+        'entrypoint. Add it to apps/vertical-egress/wrangler.jsonc and redeploy the egress ' +
+        'worker (#1706).',
+    );
   }
   if (!policy?.slug || !policy.tenant || !policy.scope) {
     return problem(
