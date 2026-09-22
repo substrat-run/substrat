@@ -165,6 +165,19 @@ import {
   outboundOfManifestJson,
   substratError,
   redrainEventsInput,
+  peerCoverage,
+  peerSwitch,
+  peerSwitchOutcome,
+  verticalCaller,
+  verticalResolution,
+  verticalSlug,
+  type PeerCoverage,
+  type PeerSpec,
+  type PeerSwitch,
+  type PeerSwitchOutcome,
+  type PeerSwitchResult,
+  type VerticalCaller,
+  type VerticalResolution,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -266,6 +279,8 @@ import {
   type SystemScheduleState,
   type SystemGrantsEntry,
   systemSwitchedOffMessage,
+  collectPeers,
+  peerSeats,
   connectorCallRecord,
   noopConnectorCallRecorder,
   recordConnectorCall,
@@ -483,6 +498,8 @@ interface ControlPlaneStub {
   ): Promise<{ subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[]>;
   readHostname(hostname: string): Promise<HostnameRow | undefined>;
   readRoute(hostname: string): Promise<RouteRow | undefined>;
+  /** #1706: "vertical Y in tenant T", by the kernel's one rule — see `HostAdmin.resolveVerticalInstance`. */
+  resolveVerticalInstance(tenantId: string, vertical: string): Promise<VerticalResolution>;
   demoteCanonical(scopeId: string, surface: string): Promise<void>;
   upsertHostname(h: {
     hostname: string; tenantId: string; scopeId: string; verticalSlug: string | null;
@@ -863,6 +880,13 @@ interface ScopeStubRpc {
      * who holds nothing — and the coordinator refuses any success without `capability`.
      */
     capabilitySession?: string,
+    /**
+     * #1706: the calling PEER vertical, as the platform named it. The DO admits it inside its
+     * queue on every call (`admitPeer`). An older DO ignores the argument and runs the call as
+     * the fresh placeholder principal the coordinator sent, who holds nothing — and the
+     * coordinator refuses any success without `vertical`.
+     */
+    verticalCaller?: VerticalCaller,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
@@ -906,6 +930,8 @@ interface ScopeStubRpc {
     idempotency?: { keyHonoured: boolean; replayed: boolean };
     /** #1672: present iff the DO understood `capabilitySession`, on `impersonation`'s reasoning. */
     capability?: { honoured: boolean };
+    /** #1706: present iff the DO understood `verticalCaller`, on the same reasoning. */
+    vertical?: { honoured: boolean };
   }>;
   /** Trade a capability secret for a session or a principal (#1672) — the kernel's
    *  `exchangeCapability`, run in this scope's own storage. */
@@ -925,6 +951,15 @@ interface ScopeStubRpc {
   /** Move a module's schedule switch on this scope (#1666) — the kernel's
    *  `switchSystemSchedules`, as one serialized unit. */
   switchSystemSchedules(moduleId: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome>;
+  /** Move one peer's kill switch on this scope (#1706) — the kernel's `switchPeer`. */
+  switchPeer(vertical: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome>;
+  /** Does a peer hold each key here now (#1706) — the checker's own `covers`. */
+  peerCovers(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    vertical: string,
+    permissions: PermissionKey[],
+  ): Promise<PeerCoverage[]>;
   /** Every module this scope holds or has held system authority for, and where each
    *  stands (#1674) — the kernel's `systemGrantsStatus`, run in the scope's own storage. */
   systemGrantsStatus(): Promise<SystemGrantsEntry[]>;
@@ -1500,6 +1535,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly moduleIds = new Set<string>();
   /** Module id → its declared recurring schedules (#383), for `registeredSchedules`/`runDueSchedules`. */
   private readonly moduleSchedules = new Map<string, ScheduleSpec[]>();
+  /** #1706: every registered module's `peers`, as declared — read as one union per peer. */
+  private readonly peerSources: { peers?: readonly PeerSpec[] }[] = [];
   /** #1232: declared freshness per module. Registered UNCONDITIONALLY — the schedule
    *  map is only populated for modules WITH schedules, and hanging freshness off it
    *  would drop a freshness-only module at registration. */
@@ -2265,6 +2302,9 @@ export class CloudflareScopeHost implements ScopeHost {
     if (manifest.schedules && manifest.schedules.length > 0) {
       this.moduleSchedules.set(manifest.id, manifest.schedules);
     }
+    if (manifest.peers && manifest.peers.length > 0) {
+      this.peerSources.push({ peers: manifest.peers });
+    }
     if (manifest.freshness && manifest.freshness.length > 0) {
       this.moduleFreshness.set(manifest.id, manifest.freshness);
     }
@@ -2347,6 +2387,13 @@ export class CloudflareScopeHost implements ScopeHost {
           null,
         );
       }
+    }
+    // #1706: every declared PEER holds its keys on the scope from provisioning on — the one
+    // call (`peerSeats`) that makes "declared and installed" mean "live". Same seat as the
+    // schedule grants above, so a grant a switch tombstoned stays tombstoned and a
+    // switched-off peer gets nothing seated.
+    for (const seat of peerSeats(collectPeers(this.peerSources), input.scopeId)) {
+      await this.scopeStub(input.scopeId).seatTuple(seat.subject, seat.relation, seat.object, null);
     }
     // Audit a real provision only; an idempotent re-provision changed nothing.
     if (created) {
@@ -3055,6 +3102,69 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * The peer door (#1706) — mirror of the connection, system and capability doors. `caller`
+   * is the platform's word (the router's, on the hosted path); the pair and lifecycle gate run
+   * here, and the ScopeDO admits the peer inside its queue on every invoke and acknowledges it.
+   */
+  async getVerticalScope(
+    caller: VerticalCaller,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ScopeStub> {
+    const parsed = verticalCaller.parse(caller);
+    await this.peerScopeGate(tenantId, scopeId, 'getVerticalScope');
+    return this.buildStub(tenantId, scopeId, undefined, undefined, undefined, options, undefined, undefined, parsed);
+  }
+
+  /**
+   * Does peer `vertical` hold each key at this scope's node now (#1706) — the ScopeDO's own
+   * checker, so it answers what an invoke would be told, switch included.
+   */
+  async peerCovers(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    vertical: string,
+    permissions: readonly PermissionKey[],
+  ): Promise<PeerCoverage[]> {
+    await this.peerScopeGate(tenantId, scopeId, 'peerCovers');
+    return peerCoverage
+      .array()
+      .parse(await this.scopeStub(scopeId).peerCovers(tenantId, scopeId, verticalSlug.parse(vertical), [...permissions]));
+  }
+
+  /**
+   * Where a peer verb (#1706) may reach a scope: its own ScopeDO, after the ordinary pair and
+   * lifecycle gate. Refused, loudly, on the SHARED control plane for a scope bound to a
+   * vertical, whose storage lives in that vertical's deployment — reaching through
+   * `this.scopeStub` there would open an empty DO in the wrong namespace. On the hosted path a
+   * peer reaches the target deployment itself, through the platform, never through this host.
+   */
+  private async peerScopeGate(tenantId: TenantId, scopeId: ScopeId, verb: string): Promise<void> {
+    // K-3's pair check runs HERE, not only inside the ControlPlaneDO (#1714 review). An error
+    // thrown in a Durable Object arrives at the coordinator FLATTENED — its code and
+    // extensions gone — so a typed refusal thrown there reaches a caller untyped, which this
+    // door's own tenant-confinement test proved. A RECORD crosses intact, so the coordinator
+    // reads the record and types the refusal itself. `validateScopeAccess` still runs below
+    // and still owns the lifecycle half (a suspended tenant or scope).
+    if (!this.cpLess) {
+      const record = await this.cp.getScopeRecord(tenantId, scopeId);
+      if (!record) {
+        throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      }
+      if (this.servesScopesElsewhere && record.vertical !== null) {
+        throw substratError(
+          'unavailable',
+          `${verb} cannot reach scope ${scopeId}: it is served by the '${record.vertical}' deployment, ` +
+            'which a peer reaches through the platform, not through the shared control plane',
+        );
+      }
+    }
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+  }
+
+  /**
    * The capability's attachment door (#1686) — `getCapabilityScope`'s gate, then the
    * attachment surface with only the session's HASH going on to the ScopeDO. The DO
    * resolves it inside its queue on every call, checks each read as `{ capability }` and
@@ -3257,6 +3367,11 @@ export class CloudflareScopeHost implements ScopeHost {
      * queue, and acknowledges it; see the refusal below for why the acknowledgement matters.
      */
     capabilitySession?: string,
+    /**
+     * #1706: the calling PEER vertical, as the platform named it. The ScopeDO admits it on
+     * every invoke, inside its queue, and acknowledges it — the capability session's pattern.
+     */
+    verticalCaller?: VerticalCaller,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
     const cp = this.cp;
@@ -3266,10 +3381,14 @@ export class CloudflareScopeHost implements ScopeHost {
     // honest attribution rides on the event actor instead. For a capability it is a
     // FRESH id nobody holds anything under (#1672): the DO replaces it with the resolved
     // capability, and a DO too old to know that would act as nobody rather than as someone.
+    // A peer vertical (#1706) gets a fresh id too, for the same reason: the DO acts as the
+    // admitted `{ vertical, scope }`, and a DO too old to know that acts as nobody.
     const asPrincipalId = (principal ??
       (connectionId as unknown as PrincipalId) ??
       (systemModuleId as unknown as PrincipalId) ??
-      (capabilitySession !== undefined ? principalId.parse(ulid()) : undefined)) as PrincipalId;
+      (capabilitySession !== undefined || verticalCaller !== undefined
+        ? principalId.parse(ulid())
+        : undefined)) as PrincipalId;
 
     return {
       tenantId,
@@ -3319,6 +3438,7 @@ export class CloudflareScopeHost implements ScopeHost {
           invokeOptions,
           session,
           capabilitySession,
+          verticalCaller,
         );
         // The operation failed and the DO handed the error back as DATA — so it still
         // has its code and extensions, which a throw across this boundary would have
@@ -3368,6 +3488,16 @@ export class CloudflareScopeHost implements ScopeHost {
           throw substratError(
             'unavailable',
             `${operation} ran on a scope host that did not understand capability sessions. ` +
+              'Retry once the scope has been migrated',
+          );
+        }
+        // #1706, the same shape: a DO too old to know about peer callers ran the call as the
+        // fresh placeholder principal — without the peer's admission, its allowlist or its
+        // switch. A success decided that way is refused.
+        if (verticalCaller !== undefined && envelope.vertical?.honoured !== true) {
+          throw substratError(
+            'unavailable',
+            `${operation} ran on a scope host that did not understand peer callers. ` +
               'Retry once the scope has been migrated',
           );
         }
@@ -3588,6 +3718,64 @@ export class CloudflareScopeHost implements ScopeHost {
      * switch pulled while every schedule kept firing. The audit row is written HERE either
      * way — the deployment's host is CP-less, and its `recordAdmin` is a no-op.
      */
+    /**
+     * #1706: move one PEER's kill switch on one scope — see `HostAdmin.revokeFromPeer`. The
+     * schedule switch's audit discipline (intent first, outcome after, every attempt). Reaches
+     * the scope's own ScopeDO; on the SHARED control plane a scope served by a vertical's own
+     * deployment is refused `unavailable` (`peerScopeGate`) until the verb is delegated there.
+     */
+    const switchPeerAt = async (
+      actor: PlatformActorId,
+      raw: PeerSwitch,
+      to: 'on' | 'off',
+    ): Promise<PeerSwitchResult> => {
+      const input = peerSwitch.parse(raw);
+      const { tenantId, scopeId } = input.node;
+      let vertical: string | null = null;
+      if (!this.cpLess) {
+        const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        vertical = rec.vertical;
+      }
+      await this.peerScopeGate(tenantId, scopeId, to === 'off' ? 'revokeFromPeer' : 'restoreToPeer');
+      const operationId = ulid();
+      const action = to === 'off' ? 'revokeFromPeer' : 'restoreToPeer';
+      const target = { tenantId, scopeId, vertical };
+      const base = { operationId, vertical: input.vertical, calls: to };
+      await this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
+      let outcome: SwitchOutcome;
+      try {
+        outcome = await this.scopeStub(scopeId).switchPeer(input.vertical, scopeId, to, new Date().toISOString());
+      } catch (err) {
+        await this.recordAdmin(actor, action, target, null, {
+          ...base,
+          phase: 'failed',
+          error: err instanceof Error ? err.message : String(err),
+        }).catch(() => undefined);
+        throw err;
+      }
+      await this.recordAdmin(actor, action, target, null, {
+        ...base,
+        phase: outcome.held ? 'applied' : 'refused',
+        changed: outcome.changed,
+        permissions: outcome.permissions,
+      });
+      if (!outcome.held) {
+        throw substratError(
+          'not_found',
+          `scope ${scopeId} holds no grant for peer '${input.vertical}' — nothing to switch ${to} ` +
+            `(check the slug: it is the calling vertical's registry id, as the target's \`peers\` names it)`,
+        );
+      }
+      return {
+        operationId,
+        vertical: input.vertical,
+        calls: to,
+        changed: outcome.changed,
+        permissions: outcome.permissions as PermissionKey[],
+      };
+    };
+
     const switchSystem = async (
       actor: PlatformActorId,
       raw: SystemSwitch,
@@ -3960,6 +4148,8 @@ export class CloudflareScopeHost implements ScopeHost {
       // #1666: the schedule kill switch and its lever back — `system-switch.ts` is the
       // whole rule, shared with the pure adapter; this is the directory check, the reach
       // into the scope's storage, and the audit row around it.
+      revokeFromPeer: async (actor: PlatformActorId, raw: PeerSwitch) => switchPeerAt(actor, raw, 'off'),
+      restoreToPeer: async (actor: PlatformActorId, raw: PeerSwitch) => switchPeerAt(actor, raw, 'on'),
       revokeFromSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'off'),
       restoreToSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'on'),
       // #1674: the switch's status read — same gate, same delegation, and (unlike the
@@ -4143,6 +4333,10 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         return rows.map(mapHostname);
       },
+      // #1706: the directory's answer to "vertical Y in tenant T", in the ControlPlaneDO, by
+      // the kernel's one rule. No actor, not logged — `resolveHostname`'s machine-path reason.
+      resolveVerticalInstance: async (tenantId: TenantId, vertical: string): Promise<VerticalResolution> =>
+        verticalResolution.parse(await this.cp.resolveVerticalInstance(tenantId, verticalSlug.parse(vertical))),
       resolveHostname: async (raw: string) =>
         // The router's per-request read. No actor, not logged — the same machine-path
         // carve-out resolveIdentity has (K-24). Shares its mapping with the router's
@@ -6567,6 +6761,14 @@ export class CloudflareScopeHost implements ScopeHost {
             expires_at: null,
           }));
         }),
+        // #1706: each declared PEER's grants ride the same unit — the CP-less mirror of
+        // `provisionScope`'s peer seat, through the one function that decides it.
+        ...peerSeats(collectPeers(this.peerSources), input.scopeId).map((seat) => ({
+          subject: seat.subject,
+          relation: seat.relation,
+          object: seat.object,
+          expires_at: null,
+        })),
         // #592: the tenant's connection grants ride the same unit — the provision-time
         // mirror of `connectorGrantLocal`, so the connector return path works on every
         // install, not only the one that existed when `grantToConnection` ran.
@@ -6807,6 +7009,36 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async systemGrantsStatusLocal(scopeId: ScopeId): Promise<SystemScheduleEntry[]> {
     return systemScheduleEntry.array().parse(await this.scopeStub(scopeId).systemGrantsStatus());
+  }
+
+  // -- the peer door's far end (#1706) ----------------------------------------
+  // The platform identified the calling deployment (the router, at the hop the caller cannot
+  // forge) and resolved THIS scope as the instance of this vertical in the caller's tenant;
+  // it reaches here over the platform-secret-gated `/internal/vertical-invoke`. What runs
+  // HERE is the half only this deployment can enforce: the peer's admission and its grants,
+  // in the scope's own DO, on every call.
+
+  /** Invoke ONE operation in this deployment as a PEER vertical (#1706). */
+  async verticalInvokeLocal(
+    caller: VerticalCaller,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    operation: string,
+    input?: unknown,
+    options?: InvokeOptions,
+  ): Promise<unknown> {
+    return (await this.getVerticalScope(caller, tenantId, scopeId)).invoke(operation, input, options);
+  }
+
+  /**
+   * Move one peer's kill switch on a scope served HERE (#1706) — the far end of
+   * `revokeFromPeer` / `restoreToPeer` for a hosted scope. Nothing is audited here; the
+   * platform writes the admin rows around this call, as for the schedule switch.
+   */
+  async peerSwitchLocal(scopeId: ScopeId, vertical: string, to: 'on' | 'off'): Promise<PeerSwitchOutcome> {
+    return peerSwitchOutcome.parse(
+      await this.scopeStub(scopeId).switchPeer(verticalSlug.parse(vertical), scopeId, to, new Date().toISOString()),
+    );
   }
 }
 

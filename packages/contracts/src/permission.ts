@@ -8,6 +8,7 @@ import {
   principalId,
   scopeId,
   tenantId,
+  verticalSlug,
 } from './ids.js';
 import { entityRef } from './events.js';
 
@@ -86,12 +87,20 @@ export const checkSubject = z.union([
   // ever written, and the minter's own authority is re-checked on every use — so a
   // capability can never hold more than the principal who minted it holds right now.
   z.object({ kind: z.literal('capability'), id: capabilityId }),
+  // ANOTHER VERTICAL of the same tenant (#1706), calling through the platform. Resolved by
+  // the ordinary tuple path, like a connection or a schedule: its authority is exactly the
+  // `vertical:<slug>` grants THIS vertical's manifest declares for it (`peers`), seated at
+  // provisioning. `scope` names the calling INSTANCE — it is what the spine records beside
+  // the slug — and takes no part in the tuple ref: every live instance of the caller holds
+  // the same grants. No memberships (§ the checker expands membership for principals only).
+  z.object({ kind: z.literal('vertical'), id: verticalSlug, scope: scopeId }),
 ]);
 export type CheckSubject = z.infer<typeof checkSubject>;
 
 /**
  * The tuple-store ref for a subject: `principal:01J…` / `connection:01J…` /
- * `system:@scope/mod` / `capability:01J…`.
+ * `system:@scope/mod` / `capability:01J…` / `vertical:acme/board-room` — for a vertical the
+ * SLUG only, never the calling instance (see `checkSubject`).
  */
 export const subjectRef = (subject: CheckSubject): string => `${subject.kind}:${subject.id}`;
 

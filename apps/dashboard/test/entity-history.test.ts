@@ -71,6 +71,14 @@ describe('actorLabel', () => {
     expect(label).toBe('link · 01J00000000000000000000CAP');
     expect(label).not.toContain('undefined');
   });
+
+  // #1706: another app of the tenant, calling through the platform. It falls through to the
+  // connector label without its branch, the same way the capability did.
+  it('names a peer vertical as the app it is, never as a connector', () => {
+    const label = actorLabel({ vertical: 'acme/board-room', scope: '01J00000000000000000000SCP' } as HistoryEntry['actor']);
+    expect(label).toBe('app · acme/board-room');
+    expect(label).not.toContain('connector');
+  });
 });
 
 describe('impersonationLabel', () => {

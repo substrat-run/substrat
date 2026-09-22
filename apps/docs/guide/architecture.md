@@ -98,6 +98,33 @@ drift between the declaration and what is checked in.
 
 See [Modules & the manifest](/concepts/modules).
 
+## Calling another vertical: the peer door
+
+Two verticals of one tenant sometimes need each other's operations. A board-room app reads
+customers from a CRM, for example. Neither call is a person acting, so there is no user token
+to carry, and an API key pasted into the other app's settings would be a second enforcement
+system beside the kernel. Instead, the platform says which app is calling:
+
+- **The target declares its peers.** The `peers` entry in its module manifest names the calling
+  vertical, the operations it may invoke and the permissions it holds while doing so. Those are
+  granted as `vertical:<slug>` at provisioning and listed in `PERMISSIONS.md`, so widening what
+  another app may do is a reviewed permission diff. See
+  [peers](/concepts/permissions#another-app-of-the-same-tenant-peers).
+- **The caller acts as itself**, recorded as `{ vertical, scope }`: the calling app and the
+  instance that called. Checks inside the operation are ordinary, no person comes along, and
+  the caller holds no credential of its own.
+- **Same tenant only.** The target is found by slug, as the tenant's one primary, active
+  instance of that vertical. It is never found by hostname or in another tenant, it is never a
+  preview, and it is never guessed when a tenant runs two instances.
+- **Revocation takes effect on the next call.** A tenant can switch a peer off on a scope. That
+  removes everything the peer held there, and no re-provision gives it back. A caller that has
+  been suspended or uninstalled is refused on its next call.
+
+Still to come:
+- The hosted transport: the router identifying the calling deployment at a point it cannot
+  forge, and a path for code that runs inside a scope.
+- The console and dashboard controls for the switch.
+
 ## Composition: star topology
 
 Engines talk to the kernel, **never to each other**. No engine imports or calls a

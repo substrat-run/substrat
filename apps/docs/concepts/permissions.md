@@ -419,6 +419,45 @@ const href = `/api/capability/attachments/${fileId}?capability=${capabilityId}`;
 - **Forgetting is per link.** `clearCapabilitySession(c, { capabilityId })` forgets one link
   and keeps the rest. With no link named, it forgets them all.
 
+## Another app of the same tenant: peers
+
+Sometimes one app of a tenant has to call another app's operations. A board-room app reads
+customers from a CRM, and the CRM hands an approved document back. Neither call is a person
+acting, so there is no user token to carry. A peer lets the platform say which app is
+calling, so nobody has to paste an API key into the other app's settings.
+
+The app being called declares who may call it, in its module manifest:
+
+```ts
+peers: [
+  { vertical: 'acme/board-room', operations: ['customer/list', 'customer/get'], permissions: ['customer:read'] },
+],
+```
+
+- **What a peer holds is declared, and reviewed.** The listed permissions are granted to
+  `vertical:acme/board-room` on every install of this app, from provisioning on, and
+  `PERMISSIONS.md` shows them in their own section. Widening what another app may do is a
+  permission diff like any other.
+- **It may invoke only what is listed.** Any other operation is refused `forbidden` before it
+  runs. `operations: []` declares a peer that holds its permissions and invokes nothing. That
+  is the shape for an app that only receives from this one.
+- **Your operations do not change.** `assertAllowed(await ctx.check(PERM.customerRead))`
+  resolves for the peer exactly as it does for a person who holds the key.
+- **It is recorded as itself.** Every event and every denial names `{ vertical, scope }`: the
+  calling app and the instance of it that called. A person signed in to the calling app does
+  not come along, and a peer cannot mint a link share.
+- **A tenant can switch one off.** `revokeFromPeer` refuses that app's next call on one scope
+  and removes everything it held there, and no re-provision gives it back. `restoreToPeer`
+  gives back exactly what was removed.
+- **Same tenant only.** The platform finds "the instance of that app in this tenant" by its
+  slug. It never looks in another tenant, never picks a preview, and refuses to guess when a
+  tenant runs two instances of the same app.
+
+On the pure host, `@substrat-run/adapter-sqlite/vertical-broker` runs two apps side by side
+under the same rules, for tests and local development. The platform hop that identifies a
+calling app on hosted deployments is the next piece of this work, so hosted apps cannot make
+peer calls yet.
+
 ## Assigning a role: `ctx.canAssign`
 
 Reviewing role *definitions* protects nothing on its own. Nothing in a checkpoint over

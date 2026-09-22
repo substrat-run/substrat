@@ -45,8 +45,15 @@ interface ScheduleLike {
   cadence?: { everyMinutes: number };
   permissions?: string[];
 }
+interface PeerLike {
+  vertical: string;
+  operations: string[];
+  permissions: string[];
+}
 interface ModuleLike {
-  manifest: { id: string; permissions: PermissionDecl[]; schedules?: ScheduleLike[] };
+  manifest: { id: string; permissions: PermissionDecl[]; schedules?: ScheduleLike[]; peers?: PeerLike[] };
+  /** A registration's operation map — present on a ModuleRegistration, absent on a bare manifest. */
+  operations?: Record<string, unknown>;
 }
 interface RoleLike {
   key: string;
@@ -207,9 +214,27 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       }
     }
   }
+  // A peer's declared keys become `vertical:<slug>` grants at provisioning (#1706); an
+  // undeclared key there denies the peer's call silently, same as a role. Its operations
+  // are the door's allowlist: one no module registers admits nothing, forever — checked
+  // only when every module here carries its operation map, so a bare manifest cannot
+  // make a registered operation look missing.
+  const opsKnown = modules.length > 0 && modules.every((m) => m.operations !== undefined);
+  const registeredOps = new Set(modules.flatMap((m) => Object.keys(m.operations ?? {})));
+  for (const m of modules) {
+    for (const peer of m.manifest.peers ?? []) {
+      for (const p of peer.permissions) {
+        if (!declaredBy.has(p)) orphans.push(`peer ${code(peer.vertical)} → ${code(p)}`);
+      }
+      if (!opsKnown) continue;
+      for (const op of peer.operations) {
+        if (!registeredOps.has(op)) orphans.push(`peer ${code(peer.vertical)} → operation ${code(op)} (not registered)`);
+      }
+    }
+  }
   if (orphans.length) {
     cannot(
-      `${rel} references ${orphans.length} permission key(s) no registered manifest declares:\n` +
+      `${rel} references ${orphans.length} permission key(s) or operation(s) nothing here declares:\n` +
         orphans.map((o) => `    ${o}`).join('\n') +
         `\n\n  A check against an undeclared key denies silently at runtime, forever — it never\n` +
         `  throws, so no test catches it. Fix the typo, or declare the key in the owning\n` +
@@ -293,6 +318,33 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       ...schedules.map(
         (s) =>
           `| ${code(s.operation)} | ${s.cadence ? `every ${s.cadence.everyMinutes} min` : '—'} | ${code(`system:${s.module}`)} | ${sorted(s.permissions ?? []).map(code).join(', ') || '— none —'} |`,
+      ),
+      ``,
+    );
+    section += 1;
+  }
+
+  // §_. Peers (#1706): the other verticals of the same tenant this one lets call it, what
+  // each may invoke and what it holds while doing so. Widening what another app may do
+  // here lands in this section, in the reviewed diff, like any other widening.
+  const peers = modules
+    .flatMap((m) => (m.manifest.peers ?? []).map((p) => ({ module: m.manifest.id, ...p })))
+    .sort((a, b) => a.vertical.localeCompare(b.vertical) || a.module.localeCompare(b.module));
+  if (peers.length) {
+    out.push(
+      `## ${section}. Other verticals — what each may do here`,
+      ``,
+      `Each is another vertical of the SAME tenant, calling through the platform as`,
+      `\`vertical:<slug>\` — never with a token, and never as a person. It holds the permissions`,
+      `shown on every instance of this vertical from provisioning on, and may invoke only the`,
+      `operations shown (none: it may only receive). A tenant switches one off per scope with`,
+      `\`revokeFromPeer\`.`,
+      ``,
+      `| Vertical | Declared by | May invoke | Holds |`,
+      `| --- | --- | --- | --- |`,
+      ...peers.map(
+        (p) =>
+          `| ${code(p.vertical)} | ${code(p.module)} | ${sorted(p.operations).map(code).join(', ') || '— none (receive only) —'} | ${sorted(p.permissions).map(code).join(', ')} |`,
       ),
       ``,
     );
