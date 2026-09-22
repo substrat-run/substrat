@@ -58,7 +58,7 @@ const ms = (at: string | Date): number => (typeof at === 'string' ? Date.parse(a
  * - otherwise `healthy`.
  */
 export function deriveConnectionHealth(
-  c: Pick<Connection, 'status' | 'lastOkAt' | 'lastErrorAt'>,
+  c: { status: Connection['status']; lastOkAt: string | null; lastErrorAt: string | null },
   now: string | Date,
   staleDays: number = CONNECTION_STALE_DAYS,
 ): ConnectionHealthState {

@@ -24,7 +24,7 @@ const outcomes = (
   lastOkAt: string | null,
   lastErrorAt: string | null,
   status: Connection['status'] = 'active',
-): Pick<Connection, 'status' | 'lastOkAt' | 'lastErrorAt'> => ({ status, lastOkAt, lastErrorAt });
+): Parameters<typeof deriveConnectionHealth>[0] => ({ status, lastOkAt, lastErrorAt });
 
 describe('deriveConnectionHealth', () => {
   it('no outcome at all is never-used — not healthy (§3.8, #605)', () => {
