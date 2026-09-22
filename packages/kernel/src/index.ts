@@ -62,6 +62,26 @@ export type {
   TenantStoreProvisionInput,
   TenantStoreRecord,
 } from './scope-host.js';
+export type {
+  AnalyticsEngineDatasetLike,
+  ConnectionUseOutcome,
+  ConnectionUseTiming,
+  ConnectorCallErrorType,
+  ConnectorCallRecord,
+  ConnectorCallRecorder,
+  CountingConnectorCallRecorder,
+} from './connector-calls.js';
+export {
+  CONNECTOR_CALL_DATA_POINT_LAYOUT,
+  CONNECTOR_CALL_ERROR_TYPES,
+  analyticsEngineConnectorCallRecorder,
+  connectorCallDataPoint,
+  connectorCallErrorType,
+  connectorCallRecord,
+  noopConnectorCallRecorder,
+  recordConnectorCall,
+  settleConnectionUse,
+} from './connector-calls.js';
 export {
   assertRedrainWindow,
   attachmentBlobKey,

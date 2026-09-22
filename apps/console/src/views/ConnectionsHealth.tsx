@@ -9,6 +9,7 @@ import type {
 import { Badge, Button, Card, Input, Select, Stat, Tag } from '../components';
 import type { Api } from '../lib/api';
 import { runExclusive } from '../lib/exclusive';
+import { ConnectorCallsChart } from './ConnectorCallsChart';
 
 const PAGE = 50;
 
@@ -213,6 +214,10 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
           </div>
         </Card>
       )}
+
+      {/* #1691: the trend behind the last-line column below. Follows the provider filter;
+          the tenant and status filters narrow connections, not calls, so it ignores them. */}
+      <ConnectorCallsChart api={api} provider={providerFilter === 'all' ? undefined : providerFilter} />
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         <Input placeholder="Search provider, vertical, account, or error…" value={qInput} onChange={(e) => setQInput(e.target.value)} style={{ width: 300 }} />

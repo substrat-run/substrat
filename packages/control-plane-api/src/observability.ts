@@ -201,6 +201,35 @@ export interface TenantMetricsBucket {
  */
 export const TENANT_SERIES_SCOPE_CAP = 50;
 
+/**
+ * Connector calls to ONE provider inside ONE time bucket (#1691) — the trend behind the
+ * connection-health line, fleet-wide. Read from the connector-call dataset the control
+ * plane writes (kernel `connector-calls.ts`), never the router's.
+ *
+ * Counts are sampling-weighted exactly as the tenant grain's are (`sum(_sample_interval)`,
+ * never `count()`), and split by outcome so a chart can colour them: `ok` green,
+ * `class4xx` yellow (usually us — a revoked grant, a malformed call), and everything else
+ * red — `class5xx`, `timeouts`, and `failed` (a throw before any status, an unclassed
+ * error, or a non-4xx/5xx status). `errors` is `calls − ok`, so the three segments sum to
+ * `calls`. An empty bucket is omitted, never zero-filled; the caller fills.
+ */
+export interface ConnectorCallsBucket {
+  provider: string;
+  /** The bucket's opening instant, ISO, UTC. */
+  start: string;
+  bucketMinutes: number;
+  calls: number;
+  errors: number;
+  ok: number;
+  class4xx: number;
+  class5xx: number;
+  timeouts: number;
+  failed: number;
+  /** Weighted quantiles over the TIMED calls only (an untimed call writes `-1`), ms. */
+  durationP50: number;
+  durationP95: number;
+}
+
 export interface ObservabilityReader {
   /** Per-service invocation metrics for the trailing window (fleet + builder views). */
   serviceMetrics(input: { hours: number }): Promise<ServiceMetricsRow[]>;
@@ -243,6 +272,17 @@ export interface ObservabilityReader {
    * bucket width from the window and reports it on every row.
    */
   tenantMetricsSeries?(input: { tenantId: string; scopeIds: string[]; hours: number }): Promise<TenantMetricsBucket[]>;
+
+  /**
+   * Connector calls per provider, bucketed over time (#1691) — a STAFF read, fleet-wide
+   * by design: it is the operator's "is this provider getting worse" question, and the
+   * route that exposes it refuses every tenant and builder credential.
+   *
+   * Optional for the reason the tenant grain is: the backend has to have been told which
+   * dataset the control plane writes, and absent must 501, never answer an empty series
+   * a chart draws as "no calls". `provider` narrows; absent means every provider.
+   */
+  connectorCallsSeries?(input: { hours: number; provider?: string }): Promise<ConnectorCallsBucket[]>;
 
   /**
    * ONE tenant's recent log events — the lines their own installations produced (§4.3).

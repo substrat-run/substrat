@@ -505,6 +505,28 @@ which is why the response carries the window it applied. Rows are projected thro
 the ops-failure record, where a CP-less vertical's terminal `connector:<provider>` intent lands. An
 in-process drain's dead letters journal only in the scope, and that count cannot see them.
 
+The line says what happened last and nothing about a trend, so every settlement of it also
+becomes one data point (#1691). Both hosts do this inside `recordConnectionUse`, after the line is
+written, and hand a `ConnectorCallRecord` to their `ConnectorCallRecorder` (kernel
+`connector-calls.ts`). The record is keyed by OpenTelemetry semantic-convention names, so the
+Analytics Engine row, a future custom span and a future self-host OTel metric share one
+vocabulary: `substrat.tenant.id`, `substrat.vertical` (the slug) and
+`substrat.connection.provider`, all read off the connection row, plus OTel's own `error.type`,
+`http.response.status_code` and `http.client.request.duration` (in seconds, OTel's unit).
+`error.type` is absent on success and otherwise a closed enum (`4xx`, `5xx`, `other_status`,
+`timeout`, `network`, `_OTHER`) derived from the status and the abort alone. No field has room
+for a URL, a header, a body, a credential or an error message, and there is deliberately no
+`server.address` or `url.*`. The recorder is fire-and-forget: the host never awaits it and
+swallows a throw, and the Analytics Engine recorder counts the writes it drops. Self-host defaults
+to a no-op recorder with the same shape. The hosted control plane binds its own dataset
+(`CONNECTOR_ANALYTICS` → `substrat_connector_calls`, `…_test` on TEST), never the router's,
+because the two shapes' ordinals mean different things. The ordinals, each with its OTel name
+and unit, are published beside the router's in `packages/control-plane-api/src/cf-observability.ts`
+and only ever grow. Staff read
+the trend at `GET /connections/calls?hours=&provider=`. The read is sampling-weighted and
+bucketed, answers 501 when no dataset is named, and the console charts it per provider above the
+connections table.
+
 ### 3.8 Inspection: verify, and what it did (#605)
 
 Health is the minimum, and the minimum turned out to be too little. It is one line,

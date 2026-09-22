@@ -128,6 +128,7 @@ export type {
   ServiceMetricsRow,
   RecentLogEvent,
   TenantMetricsBucket,
+  ConnectorCallsBucket,
 } from './observability.js';
 export { TENANT_SERIES_SCOPE_CAP } from './observability.js';
 export {

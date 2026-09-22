@@ -281,6 +281,12 @@ import {
   systemSwitchedOffMessage,
   collectPeers,
   peerSeats,
+  connectorCallRecord,
+  noopConnectorCallRecorder,
+  recordConnectorCall,
+  settleConnectionUse,
+  type ConnectionUseOutcome,
+  type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -651,7 +657,11 @@ interface ControlPlaneStub {
     grantedAt: string;
   }): Promise<void>;
   listConnectionGrants(tenantId: string): Promise<ConnectionGrantDoRow[]>;
-  recordConnectionUse(id: string, error: string | null, at: string): Promise<void>;
+  recordConnectionUse(
+    id: string,
+    error: string | null,
+    at: string,
+  ): Promise<{ tenantId: string; vertical: string; provider: string } | null | void>;
   putConnectorState(id: string, key: string, value: string, at: string): Promise<void>;
   getConnectorState(id: string, key: string): Promise<string | undefined>;
   listConnectorState(id: string, prefix?: string): Promise<{ key: string; value: string }[]>;
@@ -1374,6 +1384,13 @@ export interface CloudflareScopeHostOptions {
    */
   fetch?: FetchLike;
   /**
+   * #1691: where each connector call's data point goes, beside the health line
+   * `recordConnectionUse` settles — on the platform, the control plane's Analytics
+   * Engine dataset (`analyticsEngineConnectorCallRecorder`). Defaults to the no-op
+   * recorder. Fire-and-forget: never awaited, and a throw is swallowed.
+   */
+  connectorCalls?: ConnectorCallRecorder;
+  /**
    * Scope-local permissions (docs/architecture/scope-local-permissions.md, Phase 2). When
    * on, this host PROJECTS a tenant's roles + tenant-level tuples into its scopes on
    * every tenant-level write, and flips those scopes to evaluate permissions from
@@ -1531,6 +1548,7 @@ export class CloudflareScopeHost implements ScopeHost {
   /** Executor id → {eventType, handler} (K-22 §4.2). Coordinator-side, not in the DO. */
   private readonly secretBox: SecretBox;
   private readonly fetchImpl: FetchLike;
+  private readonly connectorCalls: ConnectorCallRecorder;
   /** The live D1 client for per-tenant stores (#301); undefined ⇒ refuse loudly. */
   private readonly tenantStores?: D1TenantStores;
   /** The live R2 client for per-tenant blob stores (#473); undefined ⇒ refuse loudly. */
@@ -1579,6 +1597,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.blobStores = options.blobStores;
     this.attachmentBuckets = options.attachmentBuckets;
     this.fetchImpl = options.fetch ?? globalFetch;
+    this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
     this.cpLess = !options.controlPlane;
@@ -1687,6 +1706,8 @@ export class CloudflareScopeHost implements ScopeHost {
           // request pending across a rotation still opens.
           unseal: async (sealed) => openSealed(await this.openSealingKeys(open.id), sealed),
           fetch: async (input, init) => {
+            // #1691: timed where the call is made, so the data point carries a duration.
+            const started = Date.now();
             try {
               const res = await fetchImpl(input, {
                 ...init,
@@ -1694,14 +1715,14 @@ export class CloudflareScopeHost implements ScopeHost {
               });
               await admin.recordConnectionUse(
                 open.id,
-                res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status} from ${provider}` },
+                settleConnectionUse(provider, Date.now() - started, { response: res }),
               );
               return res;
             } catch (err) {
-              await admin.recordConnectionUse(open.id, {
-                ok: false,
-                error: err instanceof Error ? err.message : String(err),
-              });
+              await admin.recordConnectionUse(
+                open.id,
+                settleConnectionUse(provider, Date.now() - started, { error: err }),
+              );
               throw err;
             }
           },
@@ -5813,15 +5834,15 @@ export class CloudflareScopeHost implements ScopeHost {
         };
       },
 
-      recordConnectionUse: async (
-        id: ConnectionId,
-        outcome: { ok: true } | { ok: false; error: string },
-      ) => {
-        await this.cp.recordConnectionUse(
+      recordConnectionUse: async (id: ConnectionId, outcome: ConnectionUseOutcome) => {
+        const row = await this.cp.recordConnectionUse(
           id,
           outcome.ok ? null : outcome.error,
           new Date().toISOString(),
         );
+        // #1691: the line is settled — now the data point, off the identity the DO read
+        // from the row (never the caller's input), fire-and-forget.
+        if (row) recordConnectorCall(this.connectorCalls, connectorCallRecord(row, outcome));
       },
 
       putConnectorState: async (id: ConnectionId, key: string, value: unknown) => {

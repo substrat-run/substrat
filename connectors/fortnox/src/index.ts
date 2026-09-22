@@ -17,6 +17,7 @@ import type {
   HostAdmin,
   ScopeHost,
 } from '@substrat-run/kernel';
+import { settleConnectionUse } from '@substrat-run/kernel';
 import {
   FortnoxApi,
   FortnoxApiError,
@@ -719,18 +720,20 @@ async function openFortnoxConnection(
   return {
     ...open,
     fetch: async (input, init) => {
+      // #1691: timed, so the host's per-call data point carries a duration.
+      const started = Date.now();
       try {
         const res = await fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
         await admin.recordConnectionUse(
           open.id,
-          res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status} from fortnox` },
+          settleConnectionUse('fortnox', Date.now() - started, { response: res }),
         );
         return res;
       } catch (err) {
-        await admin.recordConnectionUse(open.id, {
-          ok: false,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        await admin.recordConnectionUse(
+          open.id,
+          settleConnectionUse('fortnox', Date.now() - started, { error: err }),
+        );
         throw err;
       }
     },
