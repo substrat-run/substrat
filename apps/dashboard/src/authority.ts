@@ -29,6 +29,8 @@ import type {
   PlatformRequest,
   PreviewAuth,
   PrincipalId,
+  PeerGrantsStatusEntry,
+  PeerSwitchResult,
   Scope,
   ScopeDump,
   ScopeDumpTable,
@@ -1815,6 +1817,43 @@ export class TenantNarrowedControlPlane {
   listScopes(vertical: string): Promise<Scope[]> {
     const q = new URLSearchParams({ tenantId: this.tenantId, vertical });
     return this.listAll<Scope>(`/scopes?${q}`);
+  }
+
+  /**
+   * Which of the tenant's OTHER apps may call into this scope, and where each stands
+   * (#1706). Tenant-pinned like every call here, so a scope of another tenant fails closed
+   * below the seam (K-3).
+   *
+   * A deployment that predates the route answers **501** and a hosted scope with no
+   * delegation **503** — both surface as the `ApiError` they are rather than an empty list,
+   * because "no app may call in here" and "this could not be read" are different answers and
+   * only one of them is safe to show a tenant.
+   */
+  peerGrants(scopeId: ScopeId): Promise<PeerGrantsStatusEntry[]> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/peer-grants`);
+  }
+
+  /** Move one peer's switch on a scope of this tenant (#1706). `reason` is required. */
+  switchPeer(scopeId: ScopeId, vertical: string, to: 'on' | 'off', reason: string): Promise<PeerSwitchResult> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/peer-grants`, {
+      method: to === 'off' ? 'DELETE' : 'POST',
+      body: JSON.stringify({ vertical, reason }),
+    });
+  }
+
+  /**
+   * What one VERSION declares it calls (`substrat.calls`, #1706) — the caller's half of the
+   * disclosure. `null` is a fact, not an absence of data: a version pushed before the
+   * declaration existed is unenforced, and the UI must say that rather than "calls nothing".
+   */
+  async versionCalls(verticalSlug: string, versionId: string): Promise<string[] | null> {
+    // Read off `/flow`, where `calls` rides beside `outbound` — the manifest is already
+    // parsed there, and a sibling route would cost a second full parse for a field sitting
+    // next to one this seam already fetches.
+    const res = await this.call<{ calls?: string[] | null }>(
+      `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/flow`,
+    );
+    return res?.calls ?? null;
   }
 
   // -- read-only scope-DB introspection (§5.4 admin-query RPC; the Data tab) ---

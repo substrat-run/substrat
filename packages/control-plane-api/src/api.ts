@@ -4355,6 +4355,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // happen — while this one wants the declaration as a node.
       schedules: parsed?.schedules ?? [],
       outbound: parsed?.outbound ?? [],
+      // The peer verticals this version declares it calls (#1706) — `outbound`'s sibling
+      // one band over: the same kind of declared reach, at another of the tenant's apps
+      // rather than at a third-party host. `null` is a FACT, not missing data: a version
+      // pushed before the declaration existed is unenforced, which a reader must be able
+      // to tell from a version that declares it calls nothing.
+      calls: parsed?.calls ?? null,
     });
   });
 
