@@ -16,6 +16,7 @@ import type {
   MeterReading,
   ModelUsageSummary,
   MigrationProgress,
+  ModuleId,
   OpsFailureEntry,
   SweepRunEntry,
   IssueEntry,
@@ -28,6 +29,8 @@ import type {
   ScopeId,
   ScopeStatus,
   StorageMeterReading,
+  SystemGrantsStatusEntry,
+  SystemSwitchResult,
   Tenant,
   TenantId,
   TenantRole,
@@ -368,6 +371,28 @@ export function createApi(actor: string | null, baseUrl = '/api') {
       call<DenialSummary>(`/tenants/${t}/scopes/${s}/denials/summary${denialQuery(filter)}`),
     listDenials: (t: TenantId, s: ScopeId, filter?: DenialFilter) =>
       call<PermissionDenial[]>(`/tenants/${t}/scopes/${s}/denials${denialQuery(filter)}`),
+
+    // The #1666 schedule kill switch, read and moved from the console (#1674/#1675). No
+    // new permission surface here — the route is already staff-only server-side
+    // (`confinedTenant`), and the console is a staff session. `moduleId` is the module's
+    // manifest id (e.g. '@substrat-run/engine-absence'), always read off a status entry
+    // rather than typed by hand. A deployment predating the route answers 501, which
+    // `mapError`/`ControlPlaneError` relay verbatim (never a wrong `on`).
+    systemGrantsStatus: (t: TenantId, s: ScopeId) =>
+      call<SystemGrantsStatusEntry[]>(`/tenants/${t}/scopes/${s}/system-grants`),
+    // DELETE on the switch route (#1676) — `reason` is required server-side
+    // (`z.string().trim().min(1).max(500)`) and lands on the admin log beside the actor.
+    switchScheduleOff: (t: TenantId, s: ScopeId, moduleId: ModuleId, reason: string) =>
+      call<SystemSwitchResult>(`/tenants/${t}/scopes/${s}/system-grants`, {
+        method: 'DELETE',
+        body: JSON.stringify({ moduleId, reason }),
+      }),
+    // POST on the same route — the only way back on; restores exactly what the DELETE took.
+    switchScheduleOn: (t: TenantId, s: ScopeId, moduleId: ModuleId, reason: string) =>
+      call<SystemSwitchResult>(`/tenants/${t}/scopes/${s}/system-grants`, {
+        method: 'POST',
+        body: JSON.stringify({ moduleId, reason }),
+      }),
 
     provisionScope: (input: {
       tenantId: TenantId;
