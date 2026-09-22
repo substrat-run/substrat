@@ -347,8 +347,9 @@ describe("a login's places at the identity pool (#1670)", () => {
   }
   type Pool = Awaited<ReturnType<typeof pool>>;
 
+  // workerd has `getSetCookie`; the workers-types this project compiles against do not name it.
   const cookiesFrom = (res: Response) =>
-    res.headers
+    (res.headers as unknown as { getSetCookie(): string[] })
       .getSetCookie()
       .map((c) => c.split(';')[0] ?? '')
       .filter((pair) => !pair.endsWith('='))
