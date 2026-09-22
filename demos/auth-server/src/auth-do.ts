@@ -32,6 +32,7 @@ import {
 import { PlatformRelayEmailTransport } from '@substrat-run/adapter-email';
 import { transportFor, senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
+import { isResourcesEntry, parseResourcesEntry, syncPlatformResources } from './resources.js';
 import type { ConfigEntry, InstanceMeta, IssuerState, SessionSubject } from './do-contract.js';
 
 /**
@@ -290,7 +291,33 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * deterministic first admin (the seed itself stays guarded on a zero-user store).
    */
   async setInstanceConfig(entries: ConfigEntry[]): Promise<void> {
-    putDeliveredConfig(this.ctx.storage.sql, entries);
+    // `substrat:resources:<scope>` is not config but the platform's registration of a
+    // vertical's MCP endpoint (#1619, `resources.ts`). It becomes rows in `oauth_resource`,
+    // which is the registry the plugin reads, and is NOT also kept as a `cfg:` row: one
+    // source of truth, so the two cannot disagree. Every such entry is parsed before
+    // anything is written, so a malformed one refuses the whole delivery.
+    const resources = entries.filter((e) => isResourcesEntry(e.key)).map((e) => parseResourcesEntry(e.key, e.value));
+    const config = entries.filter((e) => !isResourcesEntry(e.key));
+    // ONE transaction for the whole delivery. DO SQLite commits each `exec` on its own
+    // unless it is wrapped, so a statement that fails halfway through a multi-host
+    // un-registration would leave part of the set removed, and a deleted app has no later
+    // reconcile to finish the job. `transactionSync` rolls every write back on a throw.
+    // It is synchronous, which is why the admin seed below, which awaits, stays outside it.
+    const now = Date.now();
+    const synced = this.ctx.storage.transactionSync(() => {
+      const results = resources.map((delivery) => ({
+        app: delivery.appScopeId,
+        ...syncPlatformResources(this.ctx.storage.sql, delivery, now),
+      }));
+      if (config.length) putDeliveredConfig(this.ctx.storage.sql, config);
+      return results;
+    });
+    // Logged only once committed, so a line never describes writes that rolled back.
+    for (const sync of synced) {
+      if (sync.added.length || sync.removed.length || sync.operatorOwned.length) {
+        console.log('auth-server: platform resources synced', JSON.stringify(sync));
+      }
+    }
     await this.seedEnvAdmin();
   }
 

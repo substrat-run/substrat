@@ -574,3 +574,134 @@ describe('a 401 raised by a foreign HTTPException still challenges', () => {
     expect(((await res.json()) as { detail?: string }).detail).toBe('sign in first');
   });
 });
+
+/**
+ * The audience half of MCP authorization (#1619): a token counts here only if it was
+ * minted for THIS endpoint.
+ *
+ * Every vertical on one team auth-server trusts the same issuer, so a resolver that checks
+ * the signature and the issuer alone accepts a token another vertical's endpoint asked
+ * for — the confused deputy RFC 8707's `aud` exists to stop. The mount holds the token to
+ * the SAME resource string its document publishes, before the resolver runs.
+ *
+ * The tokens below are unsigned on purpose. Signature verification is the resolver's job
+ * and this mount has no keys, so the property to prove is that the check can only REFUSE:
+ * a right-`aud` token still has to get past the resolver, which is modelled here by a
+ * resolver that counts its calls and can say no.
+ */
+describe('a token minted for another audience is refused before the resolver', () => {
+  const b64url = (value: unknown) =>
+    btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  /** A JWS-shaped token with these claims. The signature is junk, and nothing here reads it. */
+  const jwt = (claims: Record<string, unknown>) =>
+    `${b64url({ alg: 'EdDSA', typ: 'JWT' })}.${b64url({ iss: 'https://issuer.example', sub: 'u1', ...claims })}.c2ln`;
+
+  const A = 'https://desk-a.example';
+  const B = 'https://desk-b.example';
+
+  function app(opts: { admit?: boolean; protectedResource?: Record<string, unknown> } = {}) {
+    let resolved = 0;
+    const a = new Hono();
+    mountOperations(
+      a,
+      operations,
+      async () => {
+        resolved++;
+        if (opts.admit === false) throw new HTTPException(401, { message: 'bad signature' });
+        return { invoke: async () => ({ ok: true }) } as never;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { mcp: { protectedResource: opts.protectedResource ?? { authorizationServers: ['https://issuer.example'] } } } as any,
+    );
+    return { app: a, resolved: () => resolved };
+  }
+
+  const call = (a: Hono, origin: string, authorization?: string) =>
+    a.request(`${origin}/api/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(authorization ? { authorization } : {}) },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+
+  it("refuses vertical B's token at vertical A's endpoint, and never asks A's resolver", async () => {
+    const { app: a, resolved } = app();
+    const res = await call(a, A, `Bearer ${jwt({ aud: `${B}/api/mcp` })}`);
+    expect(res.status).toBe(401);
+    expect(resolved()).toBe(0);
+    // `invalid_token`, with the document that says which resource to ask for instead.
+    expect(res.headers.get('WWW-Authenticate')).toBe(
+      `Bearer resource_metadata="${A}/.well-known/oauth-protected-resource/api/mcp", error="invalid_token", ` +
+        `error_description="this token was not issued for ${A}/api/mcp"`,
+    );
+    expect(res.headers.get('content-type')).toMatch(/problem\+json/);
+  });
+
+  it('refuses an id_token presented as a bearer — its audience is a client, not this resource', async () => {
+    const { app: a, resolved } = app();
+    const res = await call(a, A, `Bearer ${jwt({ aud: 'some-client-id', azp: 'some-client-id' })}`);
+    expect(res.status).toBe(401);
+    expect(resolved()).toBe(0);
+  });
+
+  it('refuses a token that names no audience at all', async () => {
+    const { app: a } = app();
+    expect((await call(a, A, `Bearer ${jwt({})}`)).status).toBe(401);
+  });
+
+  it('accepts a token whose audience is this endpoint', async () => {
+    const { app: a, resolved } = app();
+    const res = await call(a, A, `Bearer ${jwt({ aud: `${A}/api/mcp` })}`);
+    expect(res.status).toBe(200);
+    expect(resolved()).toBe(1);
+  });
+
+  it('accepts it among others — the auth-server adds userinfo to `aud` when openid was asked for', async () => {
+    const { app: a } = app();
+    const res = await call(a, A, `Bearer ${jwt({ aud: [`${A}/api/mcp`, 'https://issuer.example/api/auth/oauth2/userinfo'] })}`);
+    expect(res.status).toBe(200);
+  });
+
+  it('holds the token to the origin it arrived on — the same vertical on another hostname is another resource', async () => {
+    const { app: a } = app();
+    expect((await call(a, 'https://crm.acme.example', `Bearer ${jwt({ aud: `${A}/api/mcp` })}`)).status).toBe(401);
+  });
+
+  it('holds the token to a pinned `resource`, the same string the document publishes', async () => {
+    const pinned = 'https://api.desk-a.example/mcp';
+    const { app: a } = app({ protectedResource: { authorizationServers: ['https://issuer.example'], resource: pinned } });
+    expect((await call(a, A, `Bearer ${jwt({ aud: pinned })}`)).status).toBe(200);
+    expect((await call(a, A, `Bearer ${jwt({ aud: `${A}/api/mcp` })}`)).status).toBe(401);
+    const doc = (await (await a.request(`${A}/.well-known/oauth-protected-resource/api/mcp`)).json()) as { resource: string };
+    expect(doc.resource).toBe(pinned);
+  });
+
+  /** The property that makes reading an unverified claim safe: passing here admits nobody. */
+  it('grants nothing on its own — a right-audience token the resolver rejects is still a 401', async () => {
+    const { app: a, resolved } = app({ admit: false });
+    const res = await call(a, A, `Bearer ${jwt({ aud: `${A}/api/mcp` })}`);
+    expect(res.status).toBe(401);
+    expect(resolved()).toBe(1);
+  });
+
+  it('leaves a request with no bearer to the resolver — a cookie session is its business', async () => {
+    const { app: a, resolved } = app();
+    expect((await call(a, A)).status).toBe(200);
+    expect(resolved()).toBe(1);
+  });
+
+  it('leaves an opaque bearer to the resolver — it carries no audience this mount could read', async () => {
+    const { app: a, resolved } = app({ admit: false });
+    expect((await call(a, A, 'Bearer opaque-access-token')).status).toBe(401);
+    expect(resolved()).toBe(1);
+  });
+
+  it('refuses with the bare scheme when no metadata is configured, audience still enforced', async () => {
+    const a = new Hono();
+    mountOperations(a, operations, async () => ({ invoke: async () => ({ ok: true }) }) as never);
+    const res = await call(a, A, `Bearer ${jwt({ aud: `${B}/api/mcp` })}`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get('WWW-Authenticate')).toBe(
+      `Bearer error="invalid_token", error_description="this token was not issued for ${A}/api/mcp"`,
+    );
+  });
+});

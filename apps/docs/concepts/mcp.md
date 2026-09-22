@@ -101,6 +101,56 @@ An instance nobody has configured a login for publishes a document with **no**
 `authorization_servers` rather than an empty list: "this resource has no issuer" and
 "nobody has set this up yet" are different claims, and a client acts differently on them.
 
+### The issuer mints for it
+
+Next, a client asks that issuer for a token *for this endpoint*. It passes the document's
+`resource` as an [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707) resource indicator.
+An authorization server that enforces resource indicators mints only for resources it
+knows about. It turns anything else away with `invalid_target`, before any login page
+renders.
+
+If the vertical signs in with one of the team's own Auth Server apps, the platform
+registers the endpoint there, so there is nothing to configure. When the dashboard binds
+an app to a team Auth Server (at install, or when you change its Identity), it registers
+one resource per hostname the app answers on: `https://<hostname>/api/mcp`. Deleting the
+app, or moving it to another issuer, un-registers them, and from the next request on the
+old issuer refuses to mint for them. Apps installed before this existed are registered
+the next time anyone on the team opens the dashboard.
+
+Two cases fall outside this:
+
+- **A vertical that moves its endpoint or pins its identifier.** The platform registers
+  only the convention, `/api/mcp`, the default `mountOperations` uses. A vertical that
+  mounts the endpoint elsewhere (`mcp: { path }`) or pins `resource` advertises a string
+  nothing registers, and its clients still get `invalid_target`.
+- **An external issuer** (Auth0, Keycloak, Supabase, …). Its resource registry is
+  yours to configure. Register the `resource` your document publishes.
+
+The Auth Server says so in its metadata (`resource_parameter_supported: true`), and any
+client it knows may request a token for any resource registered there. It does not
+restrict which client may target which resource: every MCP client registers itself, so
+there is no fixed list of clients to restrict to. What protects the endpoint is the user's
+own sign-in and consent, the audience check below, and the permissions every operation
+checks.
+
+### A token has to be for this endpoint
+
+The endpoint accepts a bearer token only if its `aud` names this endpoint's resource,
+the same string its document publishes. Anything else gets a `401` with
+`error="invalid_token"` and the challenge that names the document. That covers a token
+another vertical's endpoint asked for from the same issuer, and an `id_token` presented
+as a bearer, whose audience is the client it was minted for.
+
+It matters because every vertical on one team Auth Server trusts the same issuer, so the
+signature and the issuer alone cannot tell vertical A's token from vertical B's. The check
+only ever refuses. The vertical's own resolver still verifies the signature, the issuer
+and the expiry, and a token has to pass both.
+
+The rest of the API does not apply this check by default. Setting `OIDC_AUDIENCE` (or
+`audience` on a delivered `substrat:auth`) holds every bearer route to that audience. If
+you also serve MCP, set it to the endpoint's resource, because a token then has to name
+that string for both checks.
+
 ### What is deliberately not here
 
 **Client registration.** How a client obtains a `client_id` — dynamic registration
@@ -109,10 +159,6 @@ is a question for the *authorization server*. A resource server validates an acc
 and has no opinion about who minted the client, so that work belongs at the issuer, not
 here. (The platform's stock issuer supports both — see
 [the auth server](/concepts/identity#the-auth-server-a-full-oidc-provider-you-can-run).)
-
-**Audience validation** is already in place where it is configured: set `OIDC_AUDIENCE`
-(or `audience` on a delivered `substrat:auth`) and a token minted for another resource is
-rejected. Worth setting before you hand the URL to anyone.
 
 ## Paged reads
 

@@ -267,6 +267,11 @@ app.post('/internal/reconcile', async (c) => {
  * §2.2) — the delivery half of the dashboard's Env tab. Same gate and addressing as
  * provisioning: platform-secret, the BODY's scope id. Idempotent upserts; the DO decides
  * what the keys mean (only declared env-spec keys take effect).
+ *
+ * It also carries the platform's registration of a vertical's MCP endpoint (#1619):
+ * `substrat:resources:<scope>` is not config but that vertical's whole set of RFC 8707
+ * resources, which the DO writes into the issuer's resource registry
+ * (`src/resources.ts`). A malformed one is a 400, and nothing in the delivery is applied.
  */
 app.post('/internal/configure', async (c) => {
   assertPlatform(c.env, c.req.raw);
