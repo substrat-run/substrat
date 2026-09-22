@@ -2005,11 +2005,21 @@ export const capModManifest = moduleManifest.parse({
     emits: [
       { type: 'cap.commented', schemaVersion: 1 },
       { type: 'cap.mint-requested', schemaVersion: 1 },
+      // #1686: implied by the attachment targets below, declared for permMod's reason.
+      { type: 'attachment.added', schemaVersion: 1 },
+      { type: 'attachment.removed', schemaVersion: 1 },
     ],
     consumes: [{ type: 'cap.mint-requested', schemaVersion: 1 }],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
-  attachmentTargets: [],
+  // #1686: files in the folder tree, for `capabilityAttachmentContractSuite`. A document's
+  // file is read with the key that reads the document and written with the one that
+  // comments on it — so a capability CAN carry the write key, and the surface's refusal of
+  // a write is seen to be structural rather than the key's.
+  attachmentTargets: [
+    { entityType: 'doc', readPermission: 'cap:read', writePermission: 'cap:write' },
+    { entityType: 'folder', readPermission: 'cap:read', writePermission: 'cap:admin' },
+  ],
   entityRelations: [
     { entityType: 'doc', parentType: 'folder' },
     { entityType: 'folder', parentType: 'folder' },

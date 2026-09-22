@@ -174,6 +174,7 @@ import {
   assertPermissionKey,
   CAPABILITY_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
+  capabilityAttachmentWriteRefused,
   capabilityTokenHash,
   createCapabilityVerbs,
   exchangeCapability as exchangeCapabilitySecret,
@@ -2611,10 +2612,23 @@ export class SqliteScopeHost implements ScopeHost {
    */
   private buildAttachments(
     rt: ScopeRuntime,
-    subject: CheckSubject,
+    authority: CheckSubject | CapabilitySessionAuthority,
     store: TenantBlobStore,
     opts: { reentrant?: boolean; admitByEvent?: string } = {},
   ): ScopeAttachments {
+    // #1686: a capability session is resolved per CALL, inside the call's own actor task —
+    // the invoke door's discipline, so a revoke or an expiry refuses the next read on a
+    // surface built before it. Throws `unauthenticated`/`forbidden` for a dead session or
+    // an allowlist, before any key is checked (not a K-35 denial). A read takes no use.
+    const capabilitySession = authority.kind === 'capability-session' ? authority.hash : undefined;
+    const actingAs = (operation: string): CheckSubject =>
+      authority.kind === 'capability-session'
+        ? {
+            kind: 'capability',
+            id: resolveCapabilitySession(spineSql(rt.db), authority.hash, this.clock(), operation),
+          }
+        : authority;
+    const node = { tenantId: rt.tenantId, scopeId: rt.scopeId };
     const targetGate = (entityType: string): { read: PermissionKey; write: PermissionKey } => {
       const gate = this.attachmentTargets.get(entityType);
       if (!gate) {
@@ -2646,14 +2660,15 @@ export class SqliteScopeHost implements ScopeHost {
     // the events it emitted).
     const serialized = <T>(
       operation: string,
-      fn: (ctx: OperationContext) => Promise<T>,
+      fn: (ctx: OperationContext, subject: CheckSubject) => Promise<T>,
     ): Promise<T> =>
       rt.actor.enqueue(async () => {
+        const subject = actingAs(operation);
         const ctx = this.operationContext(rt, subject, undefined, undefined, undefined, operation);
         rt.db.exec('BEGIN IMMEDIATE');
         let result: T;
         try {
-          result = await fn(ctx);
+          result = await fn(ctx, subject);
           rt.db.exec('COMMIT');
         } catch (err) {
           rt.db.exec('ROLLBACK');
@@ -2684,10 +2699,14 @@ export class SqliteScopeHost implements ScopeHost {
      */
     const reentrant = async <T>(
       operation: string,
-      fn: (ctx: OperationContext) => Promise<T>,
+      fn: (ctx: OperationContext, subject: CheckSubject) => Promise<T>,
     ): Promise<T> => {
+      const subject = actingAs(operation);
       try {
-        return await fn(this.operationContext(rt, subject, undefined, undefined, undefined, operation));
+        return await fn(
+          this.operationContext(rt, subject, undefined, undefined, undefined, operation),
+          subject,
+        );
       } catch (err) {
         // #1525: the ENCLOSING call's id, deliberately. This runner takes no turn of its
         // own — it is the connector's dispatch-time read, already inside that call's
@@ -2704,6 +2723,20 @@ export class SqliteScopeHost implements ScopeHost {
     return {
       upload: async (input) => {
         const gate = targetGate(input.entity.entityType);
+        if (capabilitySession !== undefined) {
+          // #1686: refused BEFORE the bytes go anywhere — through the serialized runner, so
+          // the session is resolved first (a dead one is `unauthenticated`, no K-35 row) and
+          // the refusal is recorded against `{ capability }` like any enforced denial.
+          return guarded('attachments.upload', async (_ctx, subject) => {
+            throw capabilityAttachmentWriteRefused(
+              subject.id as CapabilityId,
+              'attachments.upload',
+              node,
+              gate.write,
+            );
+          });
+        }
+        const creator = authority as CheckSubject;
         const id = ulid();
         const key = attachmentBlobKey(rt.scopeId, id);
         const record = attachmentRecord.parse({
@@ -2714,7 +2747,7 @@ export class SqliteScopeHost implements ScopeHost {
           size: input.body.byteLength,
           sha256: await sha256Hex(input.body),
           visibility: input.visibility,
-          createdBy: subject.id,
+          createdBy: creator.id,
           createdAt: new Date().toISOString(),
         });
         // Bytes first, row second: a crash between the two leaves an orphaned object
@@ -2800,10 +2833,20 @@ export class SqliteScopeHost implements ScopeHost {
         return { record, body: obj.body, contentType: obj.contentType ?? record.contentType };
       },
       remove: async (attachmentId) => {
-        const removed = await guarded('attachments.remove', async (ctx) => {
+        const removed = await guarded('attachments.remove', async (ctx, subject) => {
           const row = rt.db
             .prepare('SELECT * FROM _substrat_attachments WHERE id = ?')
             .get(attachmentId) as AttachmentRow | undefined;
+          if (capabilitySession !== undefined) {
+            // #1686: refused whether or not the id exists — one answer, so a holder learns
+            // nothing about ids — but recorded only when there is a write key to record.
+            throw capabilityAttachmentWriteRefused(
+              subject.id as CapabilityId,
+              'attachments.remove',
+              node,
+              row ? targetGate(row.entity_type).write : undefined,
+            );
+          }
           if (!row) return null;
           const gate = targetGate(row.entity_type);
           assertAllowed(
@@ -3331,6 +3374,29 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = await this.openActiveScope(tenantId, scopeId);
     const hash = await capabilityTokenHash(sessionToken);
     return this.buildStub(tenantId, scopeId, rt, { kind: 'capability-session', hash }, options);
+  }
+
+  /**
+   * The capability's attachment door (#1686) — `getCapabilityScope`'s gate, then the
+   * attachment surface with the session's hash as its authority. `buildAttachments`
+   * re-resolves that hash on every call, reads are the checker's as `{ capability }`, and
+   * writes are refused.
+   */
+  async getCapabilityAttachments(
+    sessionToken: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ScopeAttachments> {
+    if (!plausibleSessionToken(sessionToken)) {
+      throw substratError('unauthenticated', 'not a capability session token');
+    }
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const hash = await capabilityTokenHash(sessionToken);
+    const scopeRow = this.directory
+      .prepare('SELECT vertical FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { vertical: string | null } | undefined;
+    const store = this.attachmentStore(tenantId, scopeRow?.vertical ?? null);
+    return this.buildAttachments(rt, { kind: 'capability-session', hash }, store);
   }
 
   registeredSchedules(): ScheduleRegistration[] {

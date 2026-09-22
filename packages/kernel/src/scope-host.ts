@@ -3996,6 +3996,38 @@ export interface ScopeHost {
   ): Promise<ScopeStub>;
 
   /**
+   * The attachment surface for a CAPABILITY session (#1686) — the mirror of
+   * `getConnectorAttachments`, so a link share of a folder can deliver the files under it,
+   * where `getCapabilityScope` reaches `invoke` only.
+   *
+   * **Reads are the checker's, as the capability.** `list` and `open` check the target's
+   * `readPermission` on the owning entity as `{ capability }` — the same evaluator branch an
+   * invoke meets: the capability's own keys, its entity subtree, and its minter's authority
+   * NOW. So a capability reads no attachment its minter could not read at this moment, and
+   * none outside its subtree. The session is re-resolved on EVERY call, as on the invoke
+   * door: a revoked or expired capability, or an expired session, refuses `unauthenticated`
+   * before any key is checked; a capability carrying an operation allowlist refuses
+   * `forbidden`, since no attachment verb is an operation it could have named. A read never
+   * takes a use — a use is an exchange.
+   *
+   * **Writes are refused.** `upload` and `remove` throw `capabilityAttachmentWriteRefused`
+   * whatever keys the capability carries, recorded in the denial log against
+   * `{ capability }`; no byte reaches the blob store.
+   *
+   * OPTIONAL, like `checkFreshness`: a host built before it, or a third-party adapter,
+   * satisfies this interface without it, and a caller feature-detects it rather than
+   * assuming it (`@substrat-run/vertical-host`'s `linkShareAttachments` refuses the request
+   * when it is absent, never falls back to the signed-in principal). Same fail-closed
+   * (tenant, scope) and lifecycle gate as `getCapabilityScope`; throws when no blob store is
+   * provisioned for the scope's vertical, exactly like `attachments`.
+   */
+  getCapabilityAttachments?(
+    sessionToken: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ScopeAttachments>;
+
+  /**
    * The recurring-work declarations of every module registered on this host (#383)
    * — each module's id, the vertical it belongs to, and its `schedules`. Sync like
    * `migrationFrontier`: code-time bookkeeping derived from the registered

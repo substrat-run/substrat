@@ -44,14 +44,16 @@
  */
 import type { Context, Env, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
-import { substratError, z, type ScopeId, type TenantId } from '@substrat-run/contracts';
-import type { ScopeHost, ScopeStub, ScopeStubOptions } from '@substrat-run/kernel';
+import { substratError, z, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import type { ScopeAttachments, ScopeHost, ScopeStub, ScopeStubOptions } from '@substrat-run/kernel';
 import { problemResponse } from './errors.js';
 
 /** The cookie a capability session rides in. Named beside oidc-rp's `sb_session`. */
 export const CAPABILITY_COOKIE = 'sb_capability';
 /** Where `mountCapabilityExchange` listens unless told otherwise. */
 export const CAPABILITY_EXCHANGE_PATH = '/api/capability/exchange';
+/** Where `mountLinkShareDownload` listens unless told otherwise (#1686). */
+export const LINK_SHARE_DOWNLOAD_PATH = '/api/capability/attachments/:attachmentId';
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -178,4 +180,122 @@ export async function linkShareStub(
 /** Forget this browser's capability session — so a signed-in visitor acts as themselves again. */
 export function clearCapabilitySession(c: Context, cookieName: string = CAPABILITY_COOKIE): void {
   deleteCookie(c, cookieName, { path: '/' });
+}
+
+// ---------------------------------------------------------------------------
+// Files through a link share (#1686).
+// ---------------------------------------------------------------------------
+
+/**
+ * The attachment surface a LINK-SHARE route reads through: **the capability first, then the
+ * principal** — `linkShareStub`'s precedence, for files. With the capability cookie present
+ * the surface is the host's `getCapabilityAttachments`: every read checked as the
+ * capability (its keys, its subtree, its minter's authority now), every write refused. With
+ * no cookie, `principal` decides, and a signed-in visitor reads as themselves.
+ *
+ * A host without `getCapabilityAttachments` (it is optional on `ScopeHost`) REFUSES a
+ * request carrying the cookie rather than falling back to the principal: the precedence is
+ * what a link-share route promises, and quietly answering as someone else would break it.
+ */
+export async function linkShareAttachments(
+  c: Context,
+  host: Pick<ScopeHost, 'getCapabilityAttachments' | 'attachments'>,
+  node: CapabilityNode,
+  principal: () => Awaitable<PrincipalId | undefined>,
+  options?: { cookieName?: string },
+): Promise<ScopeAttachments | undefined> {
+  const token = capabilitySessionOf(c, options?.cookieName);
+  if (token) {
+    if (!host.getCapabilityAttachments) {
+      throw substratError(
+        'unavailable',
+        'this scope host serves no files through a link share (getCapabilityAttachments)',
+      );
+    }
+    return host.getCapabilityAttachments(token, node.tenantId, node.scopeId);
+  }
+  const who = await principal();
+  return who ? host.attachments(who, node.tenantId, node.scopeId) : undefined;
+}
+
+export interface LinkShareDownloadOptions<E extends Env = Env> {
+  /** The host serving the scope — any host with the two attachment doors. */
+  host: (c: Context<E>) => Awaitable<Pick<ScopeHost, 'getCapabilityAttachments' | 'attachments'>>;
+  /** Which scope this request is for. */
+  node: (c: Context<E>) => Awaitable<CapabilityNode>;
+  /** The signed-in principal, for a request carrying no capability. Omitted: links only. */
+  principal?: (c: Context<E>) => Awaitable<PrincipalId | undefined>;
+  /** Defaults to `LINK_SHARE_DOWNLOAD_PATH`; must carry an `:attachmentId` parameter. */
+  path?: string;
+  /** Defaults to `CAPABILITY_COOKIE`. */
+  cookieName?: string;
+}
+
+/**
+ * `Content-Disposition` for a stored filename: always `attachment`, so the browser saves
+ * the file rather than rendering it on this origin, with an ASCII fallback (quotes,
+ * backslashes, control and non-ASCII characters replaced) and the exact name as RFC 5987
+ * `filename*`. The filename is the uploader's text, so nothing of it reaches the header raw.
+ */
+export function attachmentDisposition(filename: string): string {
+  const fallback = filename.replace(/[^\x20-\x7e]|["\\]/g, '_') || 'download';
+  const exact = encodeURIComponent(filename).replace(
+    /['()*]/g,
+    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${exact}`;
+}
+
+/**
+ * Mount `GET <path>`: download one attachment through `linkShareAttachments` — the file a
+ * link share of its folder or document reaches, or, with no capability cookie, one the
+ * signed-in visitor may read themselves.
+ *
+ * 200 with the bytes; 404 for an id the scope does not know; 403 for a file outside the
+ * capability's subtree, or one its minter can no longer read (recorded in the denial log
+ * against the capability); 401 for a revoked or expired link, or no session at all.
+ *
+ * **Nothing about the response may leak.** `Cache-Control: private, no-store` — a shared
+ * cache must never hold a private file, and neither should the browser's once the link is
+ * gone — plus `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and a
+ * `sandbox` CSP, so a file that is secretly HTML cannot run as this origin even if opened
+ * directly. `Content-Disposition` is always `attachment` (`attachmentDisposition`). All of
+ * it is set before anything can fail, so a refusal carries it too.
+ *
+ * A download is not a use: `maxUses` counts exchanges, and reading a file through a session
+ * takes nothing from the link.
+ */
+export function mountLinkShareDownload<E extends Env>(
+  app: Hono<E>,
+  options: LinkShareDownloadOptions<E>,
+): void {
+  const path = options.path ?? LINK_SHARE_DOWNLOAD_PATH;
+  app.get(path, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    c.header('Referrer-Policy', 'no-referrer');
+    c.header('X-Content-Type-Options', 'nosniff');
+    try {
+      const attachmentId = c.req.param('attachmentId');
+      if (!attachmentId) throw substratError('not_found', 'no attachment named');
+      const [host, node] = await Promise.all([options.host(c), options.node(c)]);
+      const files = await linkShareAttachments(
+        c,
+        host,
+        node,
+        () => options.principal?.(c),
+        { cookieName: options.cookieName },
+      );
+      if (!files) throw substratError('unauthenticated', 'sign in, or open the link you were sent');
+      const opened = await files.open(attachmentId);
+      if (!opened) throw substratError('not_found', 'no such file');
+      return c.body(opened.body as unknown as ArrayBuffer, 200, {
+        'Content-Type': opened.contentType,
+        'Content-Length': String(opened.body.byteLength),
+        'Content-Disposition': attachmentDisposition(opened.record.filename),
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+      });
+    } catch (err) {
+      return problemResponse(c, err);
+    }
+  });
 }

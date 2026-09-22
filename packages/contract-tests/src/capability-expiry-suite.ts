@@ -36,6 +36,8 @@ import {
 import { capMod } from './modules.js';
 
 const CAP_READ = permissionKey.parse('cap:read');
+// #1686: the folder's attachment write key, so the owner can put a file there to download.
+const CAP_ADMIN = permissionKey.parse('cap:admin');
 const START = '2026-03-01T09:00:00.000Z';
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -89,7 +91,11 @@ export function capabilityExpiryContractSuite(
       await host.admin.grantEntitlement(staff, t1, 'cap');
       await host.provisionScope(staff, { tenantId: t1, scopeId: s1, vertical: 'cap-vertical' });
       await host.admin.activateScope(staff, t1, s1);
-      await host.admin.defineRole(staff, t1, { key: 'owner', permissions: [CAP_READ], source: 'vertical' });
+      await host.admin.defineRole(staff, t1, {
+        key: 'owner',
+        permissions: [CAP_READ, CAP_ADMIN],
+        source: 'vertical',
+      });
       await host.admin.assignRole(staff, {
         principalId: alice,
         roleKey: 'owner',
@@ -111,6 +117,37 @@ export function capabilityExpiryContractSuite(
       clock.advance(2 * MINUTE);
       expect(errorCodeOf(await refusal(read(token)))).toBe('unauthenticated');
       expect(await host.exchangeCapability(t1, s1, minted.secret)).toBeNull();
+    });
+
+    it('a download (#1686) works until the capability expires and not after — nor past the session TTL', async () => {
+      await host.provisionBlobStore(staff, { tenantId: t1, vertical: 'cap-vertical', binding: 'ATTACHMENTS' });
+      const file = await (await host.attachments(alice, t1, s1)).upload({
+        entity: folder('F'),
+        filename: 'f.txt',
+        contentType: 'text/plain',
+        visibility: 'internal',
+        body: new TextEncoder().encode('f'),
+      });
+      const filesOf = (token: string) => {
+        if (!host.getCapabilityAttachments) throw new Error('host has no getCapabilityAttachments');
+        return host.getCapabilityAttachments(token, t1, s1);
+      };
+
+      // The capability's own expiry.
+      const short = await share({ entity: folder('F'), permissions: [CAP_READ], expiresAt: at(HOUR) });
+      const shortFiles = await filesOf((await session(short.secret)).token);
+      clock.advance(HOUR - MINUTE);
+      expect((await shortFiles.open(file.id))?.record.id).toBe(file.id);
+      clock.advance(2 * MINUTE);
+      expect(errorCodeOf(await refusal(shortFiles.open(file.id)))).toBe('unauthenticated');
+
+      // The session's TTL, on a capability that never expires.
+      const open = await share({ entity: folder('F'), permissions: [CAP_READ] });
+      const openFiles = await filesOf((await session(open.secret)).token);
+      clock.advance(CAPABILITY_SESSION_TTL_MS - MINUTE);
+      expect((await openFiles.open(file.id))?.record.id).toBe(file.id);
+      clock.advance(2 * MINUTE);
+      expect(errorCodeOf(await refusal(openFiles.open(file.id)))).toBe('unauthenticated');
     });
 
     it('a session lives its TTL and no longer; the link itself exchanges again', async () => {

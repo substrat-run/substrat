@@ -4,6 +4,7 @@ export { permissionContractSuite } from './permission-suite.js';
 export { atomicContractSuite } from './atomic-suite.js';
 export { impersonationContractSuite } from './impersonation-suite.js';
 export { capabilityContractSuite } from './capability-suite.js';
+export { capabilityAttachmentContractSuite } from './capability-attachment-suite.js';
 export { capabilityExpiryContractSuite } from './capability-expiry-suite.js';
 export type { CapabilityExpiryFixture } from './capability-expiry-suite.js';
 export { searchContractSuite } from './search-suite.js';
