@@ -4,8 +4,8 @@
  *
  * What it pins, in one sentence: **whoever exchanges a capability's secret acts as the
  * capability, and the capability reaches exactly its entity subtree and keys, never more
- * than its minter holds right now, for as long as it is live — and the secret itself is in
- * no stored row.**
+ * than its minter holds right now, for as long as it is live — and the kernel stores only the
+ * secret's hash.**
  *
  * Every refusal here is paired with the allow beside it, so a checker that refused
  * everything cannot pass: the sibling folder is refused NEXT TO the shared folder being
@@ -26,10 +26,13 @@
  *    move, so it is asserted on the pure host — see `capabilityExpiryContractSuite`.)
  * 4. **The spine.** An event the capability causes carries `{ capability }` as its actor
  *    and K-34 authorization naming the root; the mint and the exchange are events too.
- * 5. **The secret is in no stored row.** Every table of the scope is scanned after a mint,
- *    an exchange and a use; the hash is there and the secret is not. A module that tries to
- *    write it — onto an event, into its own table, into an intent — is refused and its mint
- *    rolled back; an idempotent replay of a mint returns a placeholder, never the secret.
+ * 5. **Only the hash is stored.** Every table of the scope is scanned after a mint, an
+ *    exchange and a use; the hash is there and the secret is not. The TRIPWIRE for a module
+ *    persisting its own secret by accident — as a payload value, an object key, an entity id,
+ *    an intent's kind, a text or a byte SQL parameter — refuses the write and rolls the mint
+ *    back, and each channel's clean twin goes through. An idempotent replay of a mint returns
+ *    a placeholder. (A tripwire, not a boundary: a module that means to leak its secret can
+ *    encode it first, and no scan of storage can recognise every encoding.)
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
@@ -51,7 +54,7 @@ import {
 } from '@substrat-run/contracts';
 import { capabilityTokenHash, ulid, WITHHELD_SECRET, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { capMod } from './modules.js';
+import { CAP_LEAK_CHANNELS, capMod } from './modules.js';
 
 const CAP_READ = permissionKey.parse('cap:read');
 const CAP_WRITE = permissionKey.parse('cap:write');
@@ -63,6 +66,7 @@ const doc = (id: string): EntityRef => ({ entityType: 'doc', entityId: id });
 interface OutboxRow {
   id: string;
   type: string;
+  occurred_at: string;
   actor: string;
   authorization: string | null;
   operation: string | null;
@@ -437,6 +441,11 @@ export function capabilityContractSuite(
         )!;
         expect(JSON.parse(exercised.actor)).toEqual({ capability: minted.id });
         expect(exercised.operation).toBe('capabilities.exchange');
+        // ONE instant per exchange: the event says the use happened exactly when the row does.
+        const [record] = (await (await as(alice)).invoke<unknown[]>('cap/list', { entity: folder('F'), limit: 200 }))
+          .map((r) => capabilityRecord.parse(r))
+          .filter((r) => r.id === minted.id);
+        expect(record?.lastUsedAt).toBe(exercised.occurred_at);
         expect(JSON.parse(exercised.payload!)).toMatchObject({ mode: 'act', uses: 1 });
         for (const r of [mint, exercised]) expect(r.payload).not.toContain(minted.secret);
       });
@@ -451,7 +460,7 @@ export function capabilityContractSuite(
       });
     });
 
-    describe('the secret is in no stored row', () => {
+    describe('only the hash is stored; an accidental write of the secret is refused', () => {
       it('after a mint, an exchange and a use, every table holds the hash and none holds the secret', async () => {
         const minted = await share(alice, { entity: folder('F'), permissions: [CAP_READ, CAP_WRITE] });
         const token = await sessionOf(minted.secret);
@@ -466,8 +475,16 @@ export function capabilityContractSuite(
         expect(tables._substrat_capability_sessions).toContain(await capabilityTokenHash(token));
       });
 
-      for (const via of ['emit', 'sql', 'intent'] as const) {
-        it(`a module writing the secret via ${via} is refused, and its mint rolled back with it`, async () => {
+      // The tripwire, channel by channel: each accidental write of the secret is refused
+      // and takes its mint down with it; the SAME channel carrying a harmless value goes
+      // through and the capability persists — so a guard that refused a channel wholesale,
+      // or scanned only the payload, would fail one side or the other.
+      const labelled = async (label: string) =>
+        (await (await as(alice)).invoke<unknown[]>('cap/list', { includeRevoked: true, limit: 200 }))
+          .map((r) => capabilityRecord.parse(r))
+          .some((r) => r.label === label);
+      for (const via of CAP_LEAK_CHANNELS) {
+        it(`the secret written via ${via} is refused, and its mint rolled back with it`, async () => {
           const label = `leak-${via}-${ulid()}`;
           const err = await refusal(
             (await as(alice)).invoke('cap/share-and-leak', {
@@ -478,9 +495,19 @@ export function capabilityContractSuite(
             }),
           );
           expect(errorCodeOf(err)).toBe('forbidden');
-          const all = (await (await as(alice)).invoke<unknown[]>('cap/list', { includeRevoked: true, limit: 200 }))
-            .map((r) => capabilityRecord.parse(r));
-          expect(all.some((r) => r.label === label)).toBe(false);
+          expect(await labelled(label)).toBe(false);
+        });
+
+        it(`a harmless value written via ${via} goes through (the clean twin)`, async () => {
+          const label = `clean-${via}-${ulid()}`;
+          await (await as(alice)).invoke('cap/share-and-leak', {
+            entity: folder('F'),
+            permissions: [CAP_READ],
+            label,
+            via,
+            leak: false,
+          });
+          expect(await labelled(label)).toBe(true);
         });
       }
 

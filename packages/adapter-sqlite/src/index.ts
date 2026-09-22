@@ -69,6 +69,7 @@ import {
   type AccessLogEntry,
   type CheckSubject,
   type BecomeCapabilityInput,
+  type Instant,
   type CapabilityExchange,
   type CapabilityId,
   type MintedCapability,
@@ -3271,13 +3272,16 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<CapabilityExchange | null> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     return rt.actor.enqueue(async () => {
+      // ONE instant for the whole exchange: the row's `last_used_at`, the session's times and
+      // the event's `occurredAt` are one fact, and two clock reads could disagree about it.
+      const now = this.clock();
       rt.db.exec('BEGIN IMMEDIATE');
       let outcome: CapabilityExchange | null;
       try {
         outcome = await exchangeCapabilitySecret(
           {
             sql: spineSql(rt.db),
-            now: this.clock(),
+            now,
             // Stamped `{ capability }` by the ordinary emit path, under the exchange's own
             // pseudo-operation name — the actor is the capability, as on every event it
             // goes on to cause.
@@ -3289,6 +3293,8 @@ export class SqliteScopeHost implements ScopeHost {
                 undefined,
                 undefined,
                 CAPABILITY_EXCHANGE_OPERATION,
+                [],
+                now,
               ).emit(event),
           },
           secret,
@@ -3678,8 +3684,8 @@ export class SqliteScopeHost implements ScopeHost {
                   id: resolveCapabilitySession(spineSql(rt.db), authority.hash, this.clock(), operation),
                 }
               : authority;
-          // #1672: the secrets this invocation mints — kept out of every row it writes and
-          // withheld from its idempotency recording.
+          // #1672: the secrets this invocation mints — withheld from its idempotency recording,
+          // and what the tripwire on its writes looks for.
           const minted: string[] = [];
           // Fresh per operation: the context carries the K-34 authorization accumulator,
           // which must not leak across operations (invokes are serialized per scope).
@@ -9016,9 +9022,16 @@ export class SqliteScopeHost implements ScopeHost {
      * #1672: the secrets `ctx.capabilities.mint` hands out during this invocation. The
      * stub owns the array (it withholds them from the idempotency recording); this
      * context appends to it and holds `ctx.sql`, `ctx.emit` and `ctx.requestPlatform` to
-     * it, so a minted secret cannot reach a stored row by any sanctioned write.
+     * it — the tripwire that catches a module persisting one by accident (not a boundary
+     * against one that means to; see `assertNoSecret`).
      */
     minted: string[] = [],
+    /**
+     * #1672: the instant to stamp, when the caller already read one. The exchange passes the
+     * instant its row write used, so the `capability.exercised` event's `occurredAt` and the
+     * row's `last_used_at` are the same value — a second clock read could disagree.
+     */
+    at: Instant = this.clock(),
   ): OperationContext {
     // For a connection, system or capability subject this carries THAT id so the type
     // holds — it is not a person, and the event actor below says what it is instead.
@@ -9047,7 +9060,6 @@ export class SqliteScopeHost implements ScopeHost {
      * `ctx.now()` deterministic only in the sense that each reading is separately
      * unpredictable.
      */
-    const at = this.clock();
 
     /**
      * The scope host's half of `ctx.atomic` (#770) — everything else is the
@@ -9142,7 +9154,8 @@ export class SqliteScopeHost implements ScopeHost {
       emit: (event: DomainEventInput) => {
         assertImpersonationWrites(impersonation, 'ctx.emit');
         const input = domainEventInput.parse(event);
-        assertNoSecret('ctx.emit', input.payload, minted);
+        // #1672: the COMPLETE parsed event — entity id, type and subject as well as payload.
+        assertNoSecret('ctx.emit', input, minted);
         const full = domainEvent.parse({
           ...input,
           // #956: from the operation's instant, not the wall clock. `ORDER BY id`
@@ -9201,7 +9214,8 @@ export class SqliteScopeHost implements ScopeHost {
       requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
         assertImpersonationWrites(impersonation, 'ctx.requestPlatform');
         const input = platformRequestInput.parse(request);
-        assertNoSecret('ctx.requestPlatform', input.payload, minted);
+        // #1672: the COMPLETE parsed request — its `kind` is persisted as surely as its payload.
+        assertNoSecret('ctx.requestPlatform', input, minted);
         // #1474: a platform-authored kind (`sweep-runs`) is the platform's to enqueue, never
         // module code's — its drain handler writes schedule verdicts the dashboard trusts.
         assertModuleEnqueueableKind(input.kind);

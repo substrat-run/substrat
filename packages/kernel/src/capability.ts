@@ -122,7 +122,8 @@ export const CAPABILITY_DDL = `
   -- its own expiry and the capability's; the capability is re-read on every invoke, so
   -- revoking it ends every session at once — a revoke touches only the capability row,
   -- and it is that per-invoke read, not a cascade here, that refuses the next call.
-  -- Expired rows are pruned on exchange (bounded work, on the only path that adds one).
+  -- Expired rows are pruned on exchange, at most CAPABILITY_SESSION_PRUNE_BATCH at a time,
+  -- on the only path that adds one — so an exchange's write is bounded however many expired.
   CREATE TABLE IF NOT EXISTS _substrat_capability_sessions (
     token_hash TEXT PRIMARY KEY,
     capability_id TEXT NOT NULL,
@@ -271,27 +272,66 @@ export async function capabilityTokenHash(token: string): Promise<string> {
   return hex;
 }
 
+/**
+ * How many expired sessions one exchange prunes, at most. An unlimited link can hand out any
+ * number of sessions, so pruning every expired row at once would make one visitor's request
+ * an unbounded write — and a Durable Object's transaction a large one. A fixed batch keeps
+ * each exchange's cost constant, and the table still drains: every exchange takes another
+ * batch, and an expired session acts as nobody whether or not it has been pruned yet.
+ */
+export const CAPABILITY_SESSION_PRUNE_BATCH = 100;
+
 /** A secret or token that cannot be one of ours is refused before it is ever hashed. */
 const TOKEN_MAX_LENGTH = 128;
 const plausible = (token: unknown, prefix: string): token is string =>
   typeof token === 'string' && token.startsWith(prefix) && token.length <= TOKEN_MAX_LENGTH;
 
 // ---------------------------------------------------------------------------
-// The minting invocation's secrets — kept out of every stored row.
+// The minting invocation's secrets — a tripwire, not a boundary.
 // ---------------------------------------------------------------------------
+//
+// **What this guard is, and what it is not.** It catches a module ACCIDENTALLY persisting
+// the secret it just minted — writing the link it built into its own table, putting it on
+// an event, keying a map by it, handing it to an intent. Those are the mistakes an honest
+// vertical makes, and each would leave a plaintext credential in a row the platform keeps
+// forever, undoing "only the hash is stored" without anyone noticing.
+//
+// It is **not** a boundary against a module that MEANS to leak one. Module code holds the
+// secret in memory and can transform it before writing (base64 it, reverse it, split it
+// across two rows) and no scan of what reaches storage can recognise every encoding. That
+// is a statement about module code, which is trusted with the secret it minted by
+// construction: the secret has to be returned through it. The kernel's own guarantee is
+// narrower and holds absolutely — nothing the KERNEL writes carries the secret, only its
+// hash — and this tripwire extends it, best-effort, to what module code writes by accident.
+
+// Declared locally for the same reason `TextEncoder` is above.
+declare const TextDecoder: new () => { decode(input: Uint8Array): string };
+
+const decodeBytes = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
 /**
- * Does `value` carry any of `secrets`, anywhere? A deep walk over what JSON can hold, so a
- * secret nested in an event payload, or spliced into a link inside a string, is found.
+ * The text a value would persist as — ONE serialization of the COMPLETE record, keys
+ * included, byte values decoded as UTF-8. The guard scans this rather than walking chosen
+ * fields, so a secret used as an entity id, a request kind, an object key or a BLOB
+ * parameter is found exactly as one in a payload value is: there is no field list to
+ * forget a field from. The secret's alphabet (base64url behind `sbcap_`) contains nothing
+ * JSON escapes, so the serialization contains the secret exactly when the value does.
  */
+export function persistedText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value instanceof Uint8Array) return decodeBytes(value);
+  return (
+    JSON.stringify(value, (_key, v: unknown) =>
+      v instanceof Uint8Array ? decodeBytes(v) : typeof v === 'bigint' ? v.toString() : v,
+    ) ?? ''
+  );
+}
+
+/** Does `value`, serialized as it would persist (`persistedText`), contain any of `secrets`? */
 export function carriesSecret(value: unknown, secrets: readonly string[]): boolean {
   if (secrets.length === 0) return false;
-  if (typeof value === 'string') return secrets.some((s) => value.includes(s));
-  if (Array.isArray(value)) return value.some((v) => carriesSecret(v, secrets));
-  if (value !== null && typeof value === 'object') {
-    return Object.values(value as Record<string, unknown>).some((v) => carriesSecret(v, secrets));
-  }
-  return false;
+  const text = persistedText(value);
+  return secrets.some((s) => text.includes(s));
 }
 
 /** What a recorded response carries in place of a minted secret. */
@@ -302,34 +342,26 @@ export const WITHHELD_SECRET = '[capability secret withheld]';
  * recording stores. A replayed mint therefore returns the placeholder, never the secret:
  * the caller that lost the first response mints again, which is the honest outcome, since
  * the alternative is a plaintext secret in a spine table for a day.
+ *
+ * Done on the serialization, like the guard, so a secret in a key is withheld as surely as
+ * one in a value. The recording is JSON already, so round-tripping through it changes
+ * nothing the recording would have kept — and a value carrying no secret is returned as is.
  */
 export function redactSecrets<T>(value: T, secrets: readonly string[]): T {
-  if (secrets.length === 0) return value;
-  const walk = (v: unknown): unknown => {
-    if (typeof v === 'string') {
-      let out = v;
-      for (const s of secrets) out = out.split(s).join(WITHHELD_SECRET);
-      return out;
-    }
-    if (Array.isArray(v)) return v.map(walk);
-    if (v !== null && typeof v === 'object') {
-      return Object.fromEntries(
-        Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, walk(x)]),
-      );
-    }
-    return v;
-  };
-  return walk(value) as T;
+  if (value === undefined || !carriesSecret(value, secrets)) return value;
+  let text = persistedText(value);
+  for (const s of secrets) text = text.split(s).join(WITHHELD_SECRET);
+  return JSON.parse(text) as T;
 }
 
 /**
- * Refuse a write that would put a minted secret into storage. Thrown from `ctx.emit`,
- * `ctx.requestPlatform` and `ctx.sql` while the minting invocation runs: the kernel stores
- * only the secret's hash, and a module that wrote the secret into its own table or onto an
- * event would undo that in a row the platform keeps forever.
+ * The tripwire (see above): refuse a write whose COMPLETE record, as it would persist,
+ * carries a secret this invocation minted. Thrown from `ctx.emit` (the whole parsed event),
+ * `ctx.requestPlatform` (the whole parsed request) and `ctx.sql` (the statement and every
+ * parameter, bytes decoded) while the minting invocation runs.
  */
-export function assertNoSecret(where: string, value: unknown, secrets: readonly string[]): void {
-  if (carriesSecret(value, secrets)) {
+export function assertNoSecret(where: string, record: unknown, secrets: readonly string[]): void {
+  if (carriesSecret(record, secrets)) {
     throw substratError(
       'forbidden',
       `${where} would store a capability secret. Only its hash is ever kept — return the ` +
@@ -339,15 +371,15 @@ export function assertNoSecret(where: string, value: unknown, secrets: readonly 
   }
 }
 
-/** `ctx.sql` with every statement's text and parameters held to `assertNoSecret`. */
+/** `ctx.sql` with every statement — its text and all its parameters — held to `assertNoSecret`. */
 export function guardSecrets(inner: ScopedSql, secrets: readonly string[]): ScopedSql {
   return {
     query: (sql, params) => {
-      assertNoSecret('ctx.sql', [sql, ...(params ?? [])].map(String), secrets);
+      assertNoSecret('ctx.sql', [sql, ...(params ?? [])], secrets);
       return inner.query(sql, params);
     },
     exec: (sql, params) => {
-      assertNoSecret('ctx.sql', [sql, ...(params ?? [])].map(String), secrets);
+      assertNoSecret('ctx.sql', [sql, ...(params ?? [])], secrets);
       return inner.exec(sql, params);
     },
   };
@@ -643,7 +675,14 @@ export async function exchangeCapability(
     ? row.expires_at
     : ttlEnd) as Instant;
   const sessionToken = mintCapabilitySessionToken();
-  deps.sql.exec('DELETE FROM _substrat_capability_sessions WHERE expires_at <= ?', [deps.now]);
+  // Bounded (see CAPABILITY_SESSION_PRUNE_BATCH) — a subquery LIMIT rather than
+  // `DELETE … LIMIT`, which SQLite accepts only when built with an option neither host
+  // promises. The expiry index makes the inner select a range seek.
+  deps.sql.exec(
+    `DELETE FROM _substrat_capability_sessions WHERE token_hash IN (
+       SELECT token_hash FROM _substrat_capability_sessions WHERE expires_at <= ? LIMIT ?)`,
+    [deps.now, CAPABILITY_SESSION_PRUNE_BATCH],
+  );
   deps.sql.exec(
     `INSERT INTO _substrat_capability_sessions (token_hash, capability_id, created_at, expires_at)
      VALUES (?, ?, ?, ?)`,

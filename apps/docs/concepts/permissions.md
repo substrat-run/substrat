@@ -353,8 +353,10 @@ return { link: `${origin}/#share=${secret}` }; // a fragment: never sent to a se
   `@substrat-run/vertical-host` trades it for an HttpOnly session cookie, so the secret
   does not stay in browser history or in a `Referer`. `maxUses` counts exchanges, which
   means browsers, and not reads.
-- **The secret is in no stored row.** Only its hash is kept. The operation that mints it
-  cannot write it to an event, to its own tables or to a platform intent.
+- **Only the secret's hash is stored.** The kernel keeps its hash and nothing else. As a
+  tripwire against accidents, the operation that mints it is refused if it writes the
+  secret verbatim to an event, to its own tables or to a platform intent. That catches a
+  mistake; it cannot stop a module that means to leak its own secret.
 
 ## Assigning a role: `ctx.canAssign`
 

@@ -17,6 +17,7 @@ import {
   carriesSecret,
   guardSecrets,
   mintCapabilitySecret,
+  persistedText,
   redactSecrets,
   type CapabilityRow,
 } from '../src/capability.js';
@@ -231,6 +232,22 @@ describe('the secret', () => {
     expect(carriesSecret('anything', [])).toBe(false);
   });
 
+  it('is scanned in the COMPLETE record as it would persist — keys, and bytes decoded', () => {
+    const s = mintCapabilitySecret();
+    const bytes = new TextEncoder().encode(s);
+    // As an object key: JSON persists property names, so the scan must see them.
+    expect(carriesSecret({ links: { [s]: true } }, [s])).toBe(true);
+    expect(carriesSecret({ links: { harmless: true } }, [s])).toBe(false);
+    // As an entity id, or a request kind — fields beside the payload, not inside it.
+    expect(carriesSecret({ type: 'x.y', entity: { entityType: 'doc', entityId: s }, payload: {} }, [s])).toBe(true);
+    expect(carriesSecret({ kind: s, payload: {} }, [s])).toBe(true);
+    expect(carriesSecret({ kind: 'cap-note', payload: {} }, [s])).toBe(false);
+    // As bytes: a Uint8Array is decoded as UTF-8, not listed as comma-separated numbers.
+    expect(persistedText(bytes)).toBe(s);
+    expect(carriesSecret(['INSERT …', bytes], [s])).toBe(true);
+    expect(carriesSecret(['INSERT …', new TextEncoder().encode('harmless')], [s])).toBe(false);
+  });
+
   it('is withheld from a recording wherever it appears, and nothing else changes', () => {
     const s = mintCapabilitySecret();
     expect(redactSecrets({ id: 'x', link: `https://x/#share=${s}`, n: 3 }, [s])).toEqual({
@@ -238,8 +255,11 @@ describe('the secret', () => {
       link: `https://x/#share=${WITHHELD_SECRET}`,
       n: 3,
     });
+    // A secret used as a KEY is withheld too — the recording persists keys as well.
+    expect(redactSecrets({ links: { [s]: true } }, [s])).toEqual({ links: { [WITHHELD_SECRET]: true } });
     const untouched = { a: 1 };
     expect(redactSecrets(untouched, [])).toBe(untouched);
+    expect(redactSecrets(untouched, [s])).toBe(untouched);
   });
 
   it('cannot reach ctx.sql — in the statement or a parameter — while other statements pass', () => {
@@ -258,7 +278,11 @@ describe('the secret', () => {
     const guarded = guardSecrets(inner, [s]);
     expect(() => guarded.exec('INSERT INTO t VALUES (?)', [s])).toThrow(/capability secret/);
     expect(() => guarded.query(`SELECT '${s}'`)).toThrow(/capability secret/);
+    expect(() => guarded.exec('INSERT INTO t VALUES (?)', [new TextEncoder().encode(s)])).toThrow(
+      /capability secret/,
+    );
     guarded.exec('INSERT INTO t VALUES (?)', ['fine']);
-    expect(ran).toEqual(['INSERT INTO t VALUES (?)']);
+    guarded.exec('INSERT INTO t VALUES (?)', [new TextEncoder().encode('fine')]);
+    expect(ran).toEqual(['INSERT INTO t VALUES (?)', 'INSERT INTO t VALUES (?)']);
   });
 });

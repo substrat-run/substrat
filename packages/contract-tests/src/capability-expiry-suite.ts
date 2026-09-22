@@ -11,6 +11,7 @@
  *
  * Three clocks run out here, and each has a positive twin one step before it:
  * the capability's own `expiresAt`, a session's TTL, and a platform `become`'s expiry.
+ * The bounded prune lives here too: it needs a thousand sessions to expire at once.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
@@ -26,7 +27,12 @@ import {
   type MintedCapability,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { ulid, type ManualClock, type ScopeHost } from '@substrat-run/kernel';
+import {
+  CAPABILITY_SESSION_PRUNE_BATCH,
+  ulid,
+  type ManualClock,
+  type ScopeHost,
+} from '@substrat-run/kernel';
 import { capMod } from './modules.js';
 
 const CAP_READ = permissionKey.parse('cap:read');
@@ -116,6 +122,35 @@ export function capabilityExpiryContractSuite(
       expect(errorCodeOf(await refusal(read(token)))).toBe('unauthenticated');
       const fresh = await session(minted.secret);
       await expect(read(fresh.token)).resolves.toBeTruthy();
+    });
+
+    it('an exchange prunes at most one batch of expired sessions, and later exchanges drain the rest', async () => {
+      // A scope of its own, so no other test's sessions are in the count.
+      const s2 = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s2, vertical: 'cap-vertical' });
+      await host.admin.activateScope(staff, t1, s2);
+      const stub = await host.getScope(alice, t1, s2);
+      const count = () => stub.invoke<number>('cap/session-count');
+      const minted = await stub.invoke<MintedCapability>('cap/share', {
+        entity: folder('F'),
+        permissions: [CAP_READ],
+      });
+      const exchange = () => host.exchangeCapability(t1, s2, minted.secret);
+
+      for (let i = 0; i < 1000; i++) await exchange();
+      expect(await count()).toBe(1000);
+      clock.advance(CAPABILITY_SESSION_TTL_MS + MINUTE); // every one of them is now expired
+
+      await exchange();
+      // One batch gone, one live session added — not the thousand an unbounded prune takes.
+      expect(await count()).toBe(1000 - CAPABILITY_SESSION_PRUNE_BATCH + 1);
+
+      const exchangesToDrain = 1000 / CAPABILITY_SESSION_PRUNE_BATCH;
+      for (let i = 1; i < exchangesToDrain; i++) await exchange();
+      // Drained: only the live sessions those exchanges handed out remain.
+      expect(await count()).toBe(exchangesToDrain);
+      await exchange();
+      expect(await count()).toBe(exchangesToDrain + 1);
     });
 
     it('a platform `become` exchanges until its expiry, and not after', async () => {

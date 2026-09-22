@@ -150,6 +150,7 @@ import type {
   CapabilityRecord,
   CheckSubject,
   ImpersonationSession,
+  Instant,
   MintedCapability,
   ModuleId,
   PlatformActorId,
@@ -1756,8 +1757,8 @@ export function defineScopeDO(
           );
           idempotencySubjectRef = { kind: 'capability', id: capabilityId };
         }
-        // #1672: the secrets this call mints — kept out of every row it writes and
-        // withheld from its idempotency recording.
+        // #1672: the secrets this call mints — withheld from its idempotency recording, and
+        // what the tripwire on its writes looks for.
         const minted: string[] = [];
         /**
          * #938: the outbox's high-water mark BEFORE this call wrote anything, so the
@@ -2607,12 +2608,15 @@ export function defineScopeDO(
       await this.ensureMigrations();
       return await this.queue.enqueue(async () => {
         const liveSince = this.liveHighWaterMark();
+        // ONE instant for the whole exchange: the row's `last_used_at`, the session's times
+        // and the event's `occurredAt` are one fact, and two clock reads could disagree.
+        const now = instant.parse(new Date().toISOString());
         let outcome: CapabilityExchange | null = null;
         await this.ctx.storage.transaction(async () => {
           outcome = await exchangeCapability(
             {
               sql: doSpineSql(this.sql),
-              now: instant.parse(new Date().toISOString()),
+              now,
               // Stamped `{ capability }` by the ordinary emit path, under the exchange's own
               // pseudo-operation name — the actor is the capability, as on every event it
               // goes on to cause.
@@ -2628,6 +2632,8 @@ export function defineScopeDO(
                   undefined,
                   CAPABILITY_EXCHANGE_OPERATION,
                   capability,
+                  [],
+                  now,
                 ).emit(event),
             },
             secret,
@@ -4154,9 +4160,16 @@ export function defineScopeDO(
        * #1672: the secrets `ctx.capabilities.mint` hands out during this invocation. The
        * caller owns the array (it withholds them from the idempotency recording); this
        * context appends to it and holds `ctx.sql`, `ctx.emit` and `ctx.requestPlatform` to
-       * it, so a minted secret cannot reach a stored row by any sanctioned write.
+       * it — the tripwire that catches a module persisting one by accident (not a boundary
+       * against one that means to; see `assertNoSecret`).
        */
       minted: string[] = [],
+      /**
+       * #1672: the instant to stamp, when the caller already read one. The exchange passes
+       * the instant its row write used, so the `capability.exercised` event's `occurredAt`
+       * and the row's `last_used_at` are the same value — a second read could disagree.
+       */
+      instantOverride?: Instant,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -4171,7 +4184,7 @@ export function defineScopeDO(
        * on, and it holds identically here: `ctx.now()`, every `occurredAt` and
        * every `requested_at` in one operation are the same value.
        */
-      const at = instant.parse(new Date().toISOString());
+      const at = instantOverride ?? instant.parse(new Date().toISOString());
       // The permission subject and the derived event actor for a NON-override caller
       // (#383/#97): a scheduled module, a connection, or a person. `systemActor` (the
       // override, used only by consumer dispatch) stays a separate bypass path below.
@@ -4266,7 +4279,8 @@ export function defineScopeDO(
         emit: (event: DomainEventInput) => {
           assertImpersonationWrites(impersonation, 'ctx.emit');
           const parsed = domainEventInput.parse(event);
-          assertNoSecret('ctx.emit', parsed.payload, minted);
+          // #1672: the COMPLETE parsed event — entity id, type and subject as well as payload.
+          assertNoSecret('ctx.emit', parsed, minted);
           const full = domainEvent.parse({
             ...parsed,
             // #956: from the operation's instant, not a second reading of the clock.
@@ -4320,7 +4334,8 @@ export function defineScopeDO(
         requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
           assertImpersonationWrites(impersonation, 'ctx.requestPlatform');
           const input = platformRequestInput.parse(request);
-          assertNoSecret('ctx.requestPlatform', input.payload, minted);
+          // #1672: the COMPLETE parsed request — its `kind` is persisted as surely as its payload.
+          assertNoSecret('ctx.requestPlatform', input, minted);
           // #1474: a platform-authored kind (`sweep-runs`) never comes from module code —
           // the sweeper enqueues it through `enqueueSweepRuns`, which does not pass here.
           assertModuleEnqueueableKind(input.kind);

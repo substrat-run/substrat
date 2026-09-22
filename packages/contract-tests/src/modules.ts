@@ -2022,6 +2022,10 @@ const CAP_WRITE = permissionKey.parse('cap:write');
 
 type CapShareInput = Parameters<OperationContext['capabilities']['mint']>[0];
 
+/** Every channel through which a module could persist its own minted secret by accident. */
+export const CAP_LEAK_CHANNELS = ['emit', 'key', 'entity', 'kind', 'intent', 'sql', 'bytes'] as const;
+type CapLeakChannel = (typeof CAP_LEAK_CHANNELS)[number];
+
 export const capMod: ModuleRegistration = {
   manifest: capModManifest,
   migrations: [
@@ -2039,24 +2043,43 @@ export const capMod: ModuleRegistration = {
       const minted = await ctx.capabilities.mint(input as CapShareInput);
       return { id: minted.id, link: `https://docs.example/#share=${minted.secret}` };
     }) as OperationHandler<never, unknown>,
-    // A module that mints and then mishandles the secret — each channel a stored row could
-    // take. Every one must be refused, and the refusal must roll the mint back with it.
+    // A module that mints and then writes something through ONE persisting channel. With
+    // `leak: true` what it writes is the secret — each channel an accident could take, and
+    // each must be refused, the refusal rolling the mint back with it. With `leak: false` it
+    // writes a harmless value through the very same channel: the clean twin, which must go
+    // through, so a guard that refused the channel outright would fail it.
     'cap/share-and-leak': (async (ctx, input) => {
-      const i = input as CapShareInput & { via: 'emit' | 'sql' | 'intent' };
-      const { via, ...spec } = i;
+      const i = input as CapShareInput & { via: CapLeakChannel; leak?: boolean };
+      const { via, leak = true, ...spec } = i;
       const minted = await ctx.capabilities.mint(spec);
-      if (via === 'emit') {
-        ctx.emit({
-          type: 'cap.commented',
-          schemaVersion: 1,
-          entity: spec.entity,
-          piiClass: 'none',
-          payload: { note: `share it: ${minted.secret}` },
-        });
-      } else if (via === 'sql') {
-        ctx.sql.exec('INSERT INTO cap_notes (id, body) VALUES (?, ?)', [ulid(), minted.secret]);
-      } else {
-        ctx.requestPlatform({ kind: 'cap-note', payload: { body: minted.secret } });
+      const value = leak ? minted.secret : `harmless-${minted.id}`;
+      const note = (payload: unknown, entity: EntityRef = spec.entity) =>
+        ctx.emit({ type: 'cap.commented', schemaVersion: 1, entity, piiClass: 'none', payload });
+      switch (via) {
+        case 'emit': // a payload value, spliced into a string
+          note({ note: `share it: ${value}` });
+          break;
+        case 'key': // an object KEY — JSON persists property names too
+          note({ links: { [value]: true } });
+          break;
+        case 'entity': // the event's entity id — persisted in its own outbox column
+          note({ note: 'filed under the link' }, { entityType: 'doc', entityId: value });
+          break;
+        case 'kind': // a platform intent's kind — persisted as surely as its payload
+          ctx.requestPlatform({ kind: value, payload: {} });
+          break;
+        case 'intent': // a platform intent's payload
+          ctx.requestPlatform({ kind: 'cap-note', payload: { body: value } });
+          break;
+        case 'sql': // a text SQL parameter
+          ctx.sql.exec('INSERT INTO cap_notes (id, body) VALUES (?, ?)', [ulid(), value]);
+          break;
+        case 'bytes': // a BYTE SQL parameter — stored as a BLOB, still the plaintext
+          ctx.sql.exec('INSERT INTO cap_notes (id, body) VALUES (?, ?)', [
+            ulid(),
+            new TextEncoder().encode(value),
+          ]);
+          break;
       }
       return { id: minted.id };
     }) as OperationHandler<never, unknown>,
@@ -2112,9 +2135,13 @@ export const capMod: ModuleRegistration = {
       ctx.sql.query('SELECT id, body FROM cap_notes ORDER BY id')) as OperationHandler<never, unknown>,
     'cap/outbox': ((ctx) =>
       ctx.sql.query(
-        'SELECT id, type, actor, authorization, operation, entity_type, entity_id, payload FROM _substrat_outbox ORDER BY id',
+        'SELECT id, type, occurred_at, actor, authorization, operation, entity_type, entity_id, payload FROM _substrat_outbox ORDER BY id',
       )) as OperationHandler<never, unknown>,
     'cap/denials': readDenialsOp as OperationHandler<never, unknown>,
+    // The session table's size — what the bounded prune is measured by.
+    'cap/session-count': ((ctx) =>
+      ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM _substrat_capability_sessions')[0]?.n ??
+      0) as OperationHandler<never, unknown>,
     // Every table in this scope, every row, as text — what "the secret appears in no stored
     // row" is checked against. Read through module-facing `ctx.sql` on purpose: this is
     // what a vertical (or a dump of the scope) can see.

@@ -499,9 +499,12 @@ export interface OperationContext {
    * return { link: `${origin}/#share=${secret}` }; // a FRAGMENT: never sent to a server
    * ```
    *
-   * The secret never reaches storage: only its hash is kept, an idempotency recording
-   * withholds it, and this invocation's `ctx.emit`, `ctx.requestPlatform` and `ctx.sql`
-   * refuse anything carrying it. Transactional with the operation, like `ctx.grant`.
+   * The kernel stores only the secret's hash, and an idempotency recording withholds the
+   * secret. Beyond that, a TRIPWIRE: while this invocation runs, `ctx.emit`,
+   * `ctx.requestPlatform` and `ctx.sql` refuse any record that carries the secret verbatim,
+   * which catches a module persisting it by accident. It is not a boundary against a module
+   * that means to leak it (`assertNoSecret` says why). Transactional with the operation,
+   * like `ctx.grant`.
    */
   readonly capabilities: CapabilityVerbs;
   /**

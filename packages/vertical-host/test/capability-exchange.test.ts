@@ -29,7 +29,7 @@ import { capMod } from '@substrat-run/contract-tests';
 import {
   CAPABILITY_COOKIE,
   capabilitySessionOf,
-  capabilityStubOf,
+  linkShareStub,
   mountCapabilityExchange,
   problemResponse,
 } from '../src/index.js';
@@ -43,21 +43,32 @@ describe('mountCapabilityExchange — a link share, end to end over HTTP', () =>
   const host = new SqliteScopeHost({ dir });
   const t1 = tenantId.parse(ulid());
   const s1 = scopeId.parse(ulid());
-  const alice = principalId.parse(ulid());
+  const alice = principalId.parse(ulid()); // holds cap:read — the minter
+  const carol = principalId.parse(ulid()); // signed in, holds nothing
   const staff = platformActorId.parse(ulid());
   const node = { tenantId: t1, scopeId: s1 };
 
-  // What a vertical mounts: the exchange, and a read whose stub comes from the cookie.
+  // What a vertical mounts: the exchange, and link-share routes whose stub is the capability
+  // FIRST, then the signed-in principal (`x-test-principal` stands in for a session).
   const app = new Hono();
   mountCapabilityExchange(app, { host: () => host, node: () => node });
+  const stubFor = async (c: Parameters<typeof linkShareStub>[0]) =>
+    linkShareStub(c, host, node, () => {
+      const who = c.req.header('x-test-principal');
+      return who ? host.getScope(principalId.parse(who), t1, s1) : undefined;
+    });
   app.post('/api/read', async (c) => {
     try {
-      const stub = await capabilityStubOf(c, host, node);
+      const stub = await stubFor(c);
       if (!stub) return c.json({ error: 'no session' }, 401);
       return c.json(await stub.invoke('cap/read', await c.req.json()));
     } catch (err) {
       return problemResponse(c, err);
     }
+  });
+  app.get('/api/whoami', async (c) => {
+    const stub = await stubFor(c);
+    return c.json({ as: stub ? await stub.invoke('cap/whoami') : null });
   });
   app.get('/api/session', (c) => c.json({ session: capabilitySessionOf(c) ?? null }));
 
@@ -73,12 +84,27 @@ describe('mountCapabilityExchange — a link share, end to end over HTTP', () =>
     if (!m) throw new Error(`no ${CAPABILITY_COOKIE} cookie in: ${set}`);
     return m[1]!;
   };
-  const read = (cookie: string, entity: EntityRef) =>
+  const read = (cookie: string | null, entity: EntityRef, signedInAs?: string) =>
     app.request('http://docs.test/api/read', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', cookie: `${CAPABILITY_COOKIE}=${cookie}` },
+      headers: {
+        'content-type': 'application/json',
+        ...(cookie ? { cookie: `${CAPABILITY_COOKIE}=${cookie}` } : {}),
+        ...(signedInAs ? { 'x-test-principal': signedInAs } : {}),
+      },
       body: JSON.stringify({ entity }),
     });
+  const whoami = async (cookie: string | null, signedInAs?: string) =>
+    (
+      (await (
+        await app.request('http://docs.test/api/whoami', {
+          headers: {
+            ...(cookie ? { cookie: `${CAPABILITY_COOKIE}=${cookie}` } : {}),
+            ...(signedInAs ? { 'x-test-principal': signedInAs } : {}),
+          },
+        })
+      ).json()) as { as: string | null }
+    ).as;
   const mint = async (spec: Record<string, unknown>): Promise<MintedCapability> =>
     (await host.getScope(alice, t1, s1)).invoke<MintedCapability>('cap/share', spec);
 
@@ -121,6 +147,25 @@ describe('mountCapabilityExchange — a link share, end to end over HTTP', () =>
     expect(denials).toContainEqual(
       expect.objectContaining({ actor: JSON.stringify({ capability: minted.id }), permission: 'cap:read' }),
     );
+  });
+
+  it('on a link-share route the link wins over a signed-in visitor who holds no access of their own', async () => {
+    const minted = await mint({ entity: folder('F'), permissions: [CAP_READ] });
+    const session = cookieOf(await exchange(minted.secret));
+    // carol is signed in and holds nothing — yet with the link's cookie the shared doc reads.
+    const withLink = await read(session, doc('d1'), carol);
+    expect(withLink.status).toBe(200);
+    expect(await whoami(session, carol)).toBe(minted.id);
+    // The twin: the same visitor with no capability cookie acts as themselves, and is refused.
+    expect((await read(null, doc('d1'), carol)).status).toBe(403);
+    expect(await whoami(null, carol)).toBe(carol);
+  });
+
+  it('with no capability cookie the signed-in principal decides, exactly as without link shares', async () => {
+    expect((await read(null, doc('d1'), alice)).status).toBe(200);
+    expect(await whoami(null, alice)).toBe(alice);
+    // Nobody at all: no stub.
+    expect((await read(null, doc('d1'))).status).toBe(401);
   });
 
   it('the session travels ONLY in an HttpOnly cookie — never in the body — and nothing is cached', async () => {

@@ -27,9 +27,10 @@
  * ```
  *
  * The route answers with the session in `Set-Cookie` only (never in the body), `no-store`,
- * and `Referrer-Policy: no-referrer`. From then on the vertical's own stub resolution reads
- * the cookie (`capabilityStubOf`) and every call acts as `{ capability }` — resolved by the
- * checker against the capability's own row, on every call, so a revoke is the next call.
+ * and `Referrer-Policy: no-referrer`. From then on a link-share route resolves its stub with
+ * `linkShareStub` — the capability FIRST, then a signed-in principal — and every call acts
+ * as `{ capability }`, resolved by the checker against the capability's own row on every
+ * call, so a revoke is the next call.
  *
  * **Only `act` capabilities are exchanged here.** A `become` secret (a claim link) answers
  * 404 and is NOT spent, so pasting a claim link into a share page cannot burn it.
@@ -42,7 +43,7 @@
  * bits of entropy a secret cannot be guessed; what a limit would bound is load.
  */
 import type { Context, Env, Hono } from 'hono';
-import { getCookie, setCookie } from 'hono/cookie';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { substratError, z, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import type { ScopeHost, ScopeStub, ScopeStubOptions } from '@substrat-run/kernel';
 import { problemResponse } from './errors.js';
@@ -132,14 +133,9 @@ export function capabilitySessionOf(c: Context, cookieName: string = CAPABILITY_
 
 /**
  * The stub a request's capability session acts through, or `undefined` when it carries
- * none — the one line a vertical's stub resolution adds after its principal branch:
- *
- * ```ts
- * const stub = (await principalStub(c)) ?? (await capabilityStubOf(c, host, node));
- * ```
- *
- * The session is resolved on every invoke through the stub, not here, so a stub obtained
- * before a revoke refuses the call after it.
+ * none. The session is resolved on every invoke through the stub, not here, so a stub
+ * obtained before a revoke refuses the call after it. A link-share route wants
+ * `linkShareStub`, which also says what happens when the visitor is signed in.
  */
 export async function capabilityStubOf(
   c: Context,
@@ -149,4 +145,37 @@ export async function capabilityStubOf(
 ): Promise<ScopeStub | undefined> {
   const token = capabilitySessionOf(c, options?.cookieName);
   return token ? host.getCapabilityScope(token, node.tenantId, node.scopeId, options) : undefined;
+}
+
+/**
+ * The stub a LINK-SHARE route acts through: **the capability first, then the principal.**
+ *
+ * On a route a link share serves, a presented capability wins over a signed-in principal.
+ * The other order ignores the link whenever the browser happens to be signed in: a
+ * recipient who is signed in but holds no access of their own would act as themselves, and
+ * the shared folder would answer 403 — the opposite of "whoever holds the link". With no
+ * capability cookie, `principal` decides, exactly as a route without link shares would.
+ *
+ * ```ts
+ * const stub = await linkShareStub(c, host, node, () => principalStubOf(c)); // yours
+ * ```
+ *
+ * The flip side of the precedence: a capability cookie that has gone stale (the link was
+ * revoked, or its session expired) refuses every call on such a route as `unauthenticated`,
+ * even for a visitor who is signed in. A page that sees that — or that is done with a
+ * link — calls `clearCapabilitySession`, and the principal decides again.
+ */
+export async function linkShareStub(
+  c: Context,
+  host: Pick<ScopeHost, 'getCapabilityScope'>,
+  node: CapabilityNode,
+  principal: () => Awaitable<ScopeStub | undefined>,
+  options?: ScopeStubOptions & { cookieName?: string },
+): Promise<ScopeStub | undefined> {
+  return (await capabilityStubOf(c, host, node, options)) ?? (await principal());
+}
+
+/** Forget this browser's capability session — so a signed-in visitor acts as themselves again. */
+export function clearCapabilitySession(c: Context, cookieName: string = CAPABILITY_COOKIE): void {
+  deleteCookie(c, cookieName, { path: '/' });
 }
