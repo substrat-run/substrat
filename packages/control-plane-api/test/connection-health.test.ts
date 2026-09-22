@@ -100,7 +100,9 @@ describe('GET /connections/health (#1690)', () => {
     await host.admin.createTenant(staff, { id: other, slug: 'other', name: 'Other' });
 
     await host.admin.recordConnectionUse(await connect('ok', acme, 'scrive', 'a1'), { ok: true });
-    await host.admin.recordConnectionUse(await connect('bad', acme, 'scrive', 'a2'), {
+    // The account ref carries a `-`: no ULID ever contains one (#1716), so a needle built
+    // from it can never accidentally land inside a fixture's randomly-minted id.
+    await host.admin.recordConnectionUse(await connect('bad', acme, 'scrive', 'a-2'), {
       ok: false,
       error: 'HTTP 401 from scrive',
     });
@@ -195,9 +197,53 @@ describe('GET /connections/health (#1690)', () => {
     });
 
     it('q matches account, label and error text, case-insensitively', async () => {
-      expect((await read(app, '/connections/health?q=A2')).body.entries.map((e) => e.id)).toEqual([ids.bad]);
+      // The needle is `A-2`, not `A2`: a plain `a2` is also a run of valid Crockford
+      // ULID digits, so it would occasionally (~1.5%, #1716) match one of the OTHER
+      // fixtures' randomly-minted id instead of this one. `-` never appears in a ULID,
+      // so this needle cannot land inside an id by chance — deterministic by
+      // construction, not by luck.
+      expect((await read(app, '/connections/health?q=A-2')).body.entries.map((e) => e.id)).toEqual([ids.bad]);
       expect((await read(app, '/connections/health?q=http%20401')).body.entries.map((e) => e.id)).toEqual([ids.bad]);
       expect((await read(app, '/connections/health?q=nothing-matches')).body.entries).toEqual([]);
+    });
+
+    it('an id fragment finds nothing; the whole id, case-insensitively, finds exactly its row', async () => {
+      const fragment = ids.bad.slice(-4);
+      expect((await read(app, `/connections/health?q=${fragment}`)).body.entries).toEqual([]);
+      expect((await read(app, `/connections/health?q=${ids.bad}`)).body.entries.map((e) => e.id)).toEqual([ids.bad]);
+      expect((await read(app, `/connections/health?q=${ids.bad.toLowerCase()}`)).body.entries.map((e) => e.id)).toEqual([
+        ids.bad,
+      ]);
+    });
+
+    it('#1716 regression: a needle that only occurs inside an id is never matched', async () => {
+      // What the flake actually was: two ids minted in the same millisecond share a
+      // monotonic prefix, so a needle landing in that shared random part matched every
+      // row born that millisecond, not just the one it was typed for. Reproduced here
+      // without depending on real same-millisecond timing — a fixed id that CONTAINS the
+      // needle, with every human field deliberately clear of it. Put `e.id` back in the
+      // haystack (api.ts) and this fails.
+      const needle = 'ab2cd';
+      const collidingId = connectionId.parse('01JZAB2CD00000000000000000');
+      const row: Connection = {
+        id: collidingId,
+        tenantId: acme,
+        vertical: 'callout',
+        provider: 'scrive',
+        label: 'unrelated label',
+        status: 'active',
+        externalAccountRef: 'unrelated-ref',
+        scopes: [],
+        expiresAt: null,
+        lastOkAt: null,
+        lastError: null,
+        lastErrorAt: null,
+        createdBy: staff,
+        createdAt: new Date(0).toISOString(),
+        revokedAt: null,
+      };
+      const { body } = await read(apiFor(withListConnections(async () => [row])), `/connections/health?q=${needle}`);
+      expect(body.entries).toEqual([]);
     });
   });
 

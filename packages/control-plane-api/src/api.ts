@@ -1628,12 +1628,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (e.expiryWarning === 'soon') summary.expiring += 1;
       if (e.expiryWarning === 'expired') summary.expired += 1;
     }
+    // #1716: ids are Crockford-base32 ULIDs, drawn from a small alphabet that a short
+    // human needle collides with by chance (`a2` inside a random 16-char tail, ~1.5%
+    // of the time) — worse, two ids minted in the same millisecond share a monotonic
+    // prefix, so one hit there matches every row born that millisecond. The console's
+    // box promises "provider, vertical, account, or error" (ConnectionsHealth.tsx) —
+    // never ids — so only THOSE fields get substring matching. A tenant already has the
+    // exact `?tenantId=` filter, so `e.tenantId` gets no needle match at all. Pasting a
+    // connection id still finds its row: `q` equal to the WHOLE id, case-insensitively,
+    // is an exact match a fragment can never collide with.
     const needle = q.q?.toLowerCase();
     const matching = all.filter(
       (e) =>
         (!q.status || e.health === q.status) &&
         (!needle ||
-          [e.id, e.tenantId, e.provider, e.vertical, e.label, e.externalAccountRef, e.lastError].some((f) =>
+          e.id.toLowerCase() === needle ||
+          [e.provider, e.vertical, e.label, e.externalAccountRef, e.lastError].some((f) =>
             f?.toLowerCase().includes(needle),
           )),
     );
