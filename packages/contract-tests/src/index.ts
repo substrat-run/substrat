@@ -16,6 +16,7 @@ export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 export { jobRunContractSuite } from './job-run-suite.js';
 export { systemSwitchContractSuite } from './system-switch-suite.js';
+export { peerContractSuite, verticalResolutionContractSuite } from './peer-suite.js';
 export { inputParseContractSuite } from './input-parse-suite.js';
 export { spineGuardContractSuite } from './spine-guard-suite.js';
 export { grantExpiryContractSuite } from './grant-expiry-suite.js';
@@ -45,6 +46,10 @@ export {
   permMod,
   capMod,
   capModManifest,
+  peerMod,
+  peerModManifest,
+  PEER_CALLER,
+  PEER_LISTENER,
   scheduleMod,
   jobsMod,
   testMod,

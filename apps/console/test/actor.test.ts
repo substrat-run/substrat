@@ -12,6 +12,12 @@ const cases: [Actor, ReturnType<typeof actorKind>, string][] = [
   [{ system: '@acme/billing' } as Actor, 'system', '@acme/billing'],
   [{ connection: '01J00000000000000000000CON' } as Actor, 'connection', '01J00000000000000000000CON'],
   [{ capability: '01J00000000000000000000CAP' } as Actor, 'capability', '01J00000000000000000000CAP'],
+  // #1706: another app of the tenant — named with the instance that called, never as a connector.
+  [
+    { vertical: 'acme/board-room', scope: '01J00000000000000000000SCP' } as Actor,
+    'vertical',
+    'acme/board-room · 01J00000000000000000000SCP',
+  ],
 ];
 
 describe('the denial log names every kind of actor as what it is', () => {

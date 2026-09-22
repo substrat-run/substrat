@@ -151,6 +151,9 @@ import {
   type ScheduleStateKind,
 } from '@substrat-run/kernel';
 import type {
+  PeerCoverage,
+  PeerSpec,
+  VerticalCaller,
   BecomeCapabilityInput,
   CapabilityExchange,
   CapabilityId,
@@ -178,6 +181,10 @@ import { OperationQueue } from './serialization.js';
 import { doScopedSql, doSpineSql } from './sql.js';
 import {
   actorOf,
+  admitPeer,
+  collectPeers,
+  switchPeer,
+  type PeerDeclarations,
   assertNoSecret,
   CAPABILITY_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
@@ -793,6 +800,16 @@ export function defineScopeDO(
     /** #116: the operations that declared `idempotency: false` — refusals, not participants. */
     private readonly operationIdempotencyOptOut = new Set<string>();
     private readonly modules = new Map<string, RegisteredModule>();
+    /**
+     * #1706: every registered module's `peers`, as declared. The door's admission reads the
+     * union (`collectPeers`), built once on first use: registration finishes in the
+     * constructor, before any call can reach the door.
+     */
+    private readonly peerSources: { peers?: readonly PeerSpec[] }[] = [];
+    private peerUnion: PeerDeclarations | undefined;
+    private get peers(): PeerDeclarations {
+      return (this.peerUnion ??= collectPeers(this.peerSources));
+    }
     private readonly guards = new Map<string, DeclaredGuard[]>();
     private readonly predicates = new Map<string, { module: string; handler: GuardPredicate }>();
     private readonly withdrawn = new Map<string, string>();
@@ -872,6 +889,7 @@ export function defineScopeDO(
 
     private registerModule(registration: ModuleRegistration): void {
       const manifest = registration.manifest;
+      if (manifest.peers?.length) this.peerSources.push({ peers: manifest.peers });
       // #827: the FTS indexes `searchables` declares, appended after the module's
       // own migrations so the content table exists when the trigger references it.
       // Same derivation as the pure adapter — both call the kernel, neither owns
@@ -1571,6 +1589,15 @@ export function defineScopeDO(
        * that placeholder, and the coordinator refuses a success without the acknowledgement.
        */
       capabilitySession?: string,
+      /**
+       * #1706: set when the caller is ANOTHER VERTICAL of the same tenant — the platform's
+       * word for who is calling, carried through the coordinator. Admitted INSIDE the queued
+       * body on every call (`admitPeer`: declared, switched on, operation allowlisted).
+       * `principal` is then a random placeholder that holds nothing, and the reply carries
+       * `vertical.honoured`: an old DO that ignored this argument would run the call as that
+       * placeholder, and the coordinator refuses a success without the acknowledgement.
+       */
+      verticalCaller?: VerticalCaller,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -1580,6 +1607,8 @@ export function defineScopeDO(
       impersonation?: { honoured: boolean };
       /** #1672: set iff this DO understood `capabilitySession`. */
       capability?: { honoured: boolean };
+      /** #1706: set iff this DO understood `verticalCaller`. */
+      vertical?: { honoured: boolean };
     }> {
       if (!failureEnvelope) {
         // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
@@ -1597,6 +1626,7 @@ export function defineScopeDO(
             invokeOptions,
             impersonation,
             capabilitySession,
+            verticalCaller,
           );
         } catch (err) {
           throw toRpcError(err);
@@ -1615,6 +1645,7 @@ export function defineScopeDO(
           invokeOptions,
           impersonation,
           capabilitySession,
+          verticalCaller,
         );
       } catch (err) {
         // The ONE place the error keeps its structure: flattened here, rebuilt by the
@@ -1639,6 +1670,8 @@ export function defineScopeDO(
       impersonation?: ImpersonationSession,
       /** #1672: a capability session's hash. See `invoke` above. */
       capabilitySession?: string,
+      /** #1706: the calling vertical, as the platform named it. See `invoke` above. */
+      verticalCaller?: VerticalCaller,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -1656,6 +1689,8 @@ export function defineScopeDO(
       impersonation?: { honoured: boolean };
       /** #1672: the acknowledgement for `capabilitySession`, on `impersonation`'s reasoning. */
       capability?: { honoured: boolean };
+      /** #1706: the acknowledgement for `verticalCaller`, on the same reasoning. */
+      vertical?: { honoured: boolean };
     }> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
@@ -1771,6 +1806,14 @@ export function defineScopeDO(
           );
           idempotencySubjectRef = { kind: 'capability', id: capabilityId };
         }
+        // #1706: the peer door's admission, on the capability door's terms — every call,
+        // here, before anything opens. An undeclared peer, a switched-off one and an
+        // operation off its allowlist are refused `forbidden`; none is a K-35 denial.
+        let peerSubject: CheckSubject | undefined;
+        if (verticalCaller !== undefined) {
+          peerSubject = admitPeer(this.switchSql(), this.peers, verticalCaller, operation);
+          idempotencySubjectRef = peerSubject;
+        }
         // #1672: the secrets this call mints — withheld from its idempotency recording, and
         // what the tripwire on its writes looks for.
         const minted: string[] = [];
@@ -1828,6 +1871,8 @@ export function defineScopeDO(
               operation,
               capabilityId,
               minted,
+              undefined,
+              peerSubject,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
@@ -1901,6 +1946,7 @@ export function defineScopeDO(
               platformRequests: 0,
               impersonation: { honoured: true },
               ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),
+              ...(verticalCaller !== undefined ? { vertical: { honoured: true } } : {}),
               ...(idempotencyKey !== undefined
                 ? { idempotency: { keyHonoured: true, replayed } }
                 : {}),
@@ -1951,6 +1997,8 @@ export function defineScopeDO(
           ...(impersonation ? { impersonation: { honoured: true } } : {}),
           // #1672: the acknowledgement the coordinator's skew check reads — see `invoke`.
           ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),
+          // #1706: the same, for the peer door.
+          ...(verticalCaller !== undefined ? { vertical: { honoured: true } } : {}),
           // The acknowledgement the coordinator's skew check reads (#116), on the
           // same reasoning as `ifMatchChecked` below and with a sharper failure: a
           // DO too old to know about keys would EXECUTE THE OPERATION AGAIN and
@@ -2726,6 +2774,40 @@ export function defineScopeDO(
       return this.queue.enqueue(() =>
         this.ctx.storage.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
       );
+    }
+
+    /**
+     * Move one PEER's kill switch on this scope (#1706) — the kernel's `switchPeer`, which is
+     * the schedule switch's statement with a `vertical:` subject. Queued, one transaction.
+     */
+    async switchPeer(vertical: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome> {
+      return this.queue.enqueue(() =>
+        this.ctx.storage.transactionSync(() => switchPeer(this.switchSql(), { vertical, scopeId, to, at })),
+      );
+    }
+
+    /**
+     * Does peer `vertical` hold each key at this scope's node now (#1706) — the checker's own
+     * `covers`, queued so no invoke's open transaction is read half-done. The subject's `scope`
+     * is the target scope only to satisfy the type: `covers` records nothing, and the tuple ref
+     * it walks is the slug alone.
+     */
+    async peerCovers(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      vertical: string,
+      permissions: PermissionKey[],
+    ): Promise<PeerCoverage[]> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () => {
+        const coverage = await this.checker.covers(
+          { kind: 'vertical', id: vertical, scope: scopeId },
+          permissions,
+          { tenantId, scopeId },
+        );
+        const missing = new Set<string>(coverage.covered ? [] : coverage.missing);
+        return permissions.map((permission) => ({ permission, held: !missing.has(permission) }));
+      });
     }
 
     /**
@@ -4320,6 +4402,12 @@ export function defineScopeDO(
        * and the row's `last_used_at` are the same value — a second read could disagree.
        */
       instantOverride?: Instant,
+      /**
+       * #1706: set when the caller is a PEER vertical — the subject `admitPeer` returned inside
+       * the queued body. Mutually exclusive with the other non-person callers; `principal` is
+       * then a placeholder that the subject below never reads.
+       */
+      peerSubject?: CheckSubject,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -4338,7 +4426,9 @@ export function defineScopeDO(
       // The permission subject and the derived event actor for a NON-override caller
       // (#383/#97): a scheduled module, a connection, or a person. `systemActor` (the
       // override, used only by consumer dispatch) stays a separate bypass path below.
-      const subject: CheckSubject = capabilityId
+      const subject: CheckSubject = peerSubject
+        ? peerSubject
+        : capabilityId
         ? { kind: 'capability', id: capabilityId as CapabilityId }
         : systemModuleId
           ? { kind: 'system', id: systemModuleId as ModuleId }

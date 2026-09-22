@@ -16,6 +16,13 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./vertical-broker": {
+      "workerd": null,
+      "worker": null,
+      "browser": null,
+      "types": "./dist/vertical-broker.d.ts",
+      "default": "./dist/vertical-broker.js"
     }
   },
   "files": [

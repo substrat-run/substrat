@@ -11,6 +11,7 @@ import {
   SWEEP_RUNS_INTENT_INDEX,
   sweepRunsIntentHasKind,
   MODEL_USAGE_RETENTION_DAYS,
+  resolveVerticalInstanceFrom,
   type ImpersonationRow,
 } from '@substrat-run/kernel';
 import { splitSqlStatements } from './scope-do.js';
@@ -21,9 +22,12 @@ import type {
   SweepRunEntry,
   RoleDefinition,
   ScopeDumpTable,
+  ScopeId,
   ScopeStatus,
   Tenant,
+  TenantId,
   TenantStatus,
+  VerticalResolution,
 } from '@substrat-run/contracts';
 import { assertReplayableDump } from '@substrat-run/contracts';
 
@@ -2010,6 +2014,44 @@ export class ControlPlaneDO extends DurableObject {
    * read is an invitation to a second enforcement point that can disagree with the
    * first.
    */
+  /**
+   * "The instance of vertical Y in tenant T" (#1706) — the directory's half of addressing a
+   * peer by slug. Reads every scope of that tenant bound to that vertical and hands them to the
+   * kernel's one rule (`resolveVerticalInstanceFrom`: primary, active, exactly one), so this,
+   * the pure host and any future caller cannot disagree about what resolves. Unlike
+   * `readRoute`, this one DOES read scope status: a suspended or archived instance is not a
+   * callable one, and nothing downstream of this answer re-checks it on the hosted path (#1713).
+   */
+  resolveVerticalInstance(tenantId: string, vertical: string): VerticalResolution {
+    const rows = this.sql
+      .exec(
+        `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
+          WHERE tenant_id = ? AND vertical = ?`,
+        tenantId,
+        vertical,
+      )
+      .toArray() as unknown as {
+      scope_id: string;
+      tenant_id: string;
+      vertical: string | null;
+      status: string;
+      kind: string | null;
+      forked_from: string | null;
+    }[];
+    return resolveVerticalInstanceFrom(
+      rows.map((r) => ({
+        id: r.scope_id as ScopeId,
+        tenantId: r.tenant_id as TenantId,
+        vertical: r.vertical,
+        status: r.status as ScopeStatus,
+        kind: r.kind ?? '',
+        forkedFrom: (r.forked_from as ScopeId | null) ?? null,
+      })),
+      tenantId as TenantId,
+      vertical,
+    );
+  }
+
   readRoute(hostname: string): RouteRow | undefined {
     // Join the scope's dispatch script, so the router resolves it in the same one
     // directory read (orchestration.md §5.4). A scope whose data lives in the stable

@@ -103,9 +103,15 @@ export interface IdempotentReplay {
   readonly entityVersion: string | null;
 }
 
-/** The subject a key is scoped to, in the form the column stores. */
+/**
+ * The subject a key is scoped to, in the form the column stores.
+ *
+ * A peer vertical (#1706) is scoped per calling INSTANCE, not per slug: two instances of one
+ * vertical in a tenant share their grants (`vertical:<slug>`) but are two callers, and a key one
+ * of them chose must not replay the response the other received.
+ */
 export function idempotencySubject(subject: CheckSubject): string {
-  return subjectRef(subject);
+  return subject.kind === 'vertical' ? `${subjectRef(subject)}@${subject.scope}` : subjectRef(subject);
 }
 
 /**

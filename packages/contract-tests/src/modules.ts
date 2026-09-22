@@ -2184,6 +2184,98 @@ export const capMod: ModuleRegistration = {
   },
 };
 
+// -- peers (#1706) -----------------------------------------------------------
+
+/**
+ * The TARGET of a peer call: a vertical that declares two other verticals of the same tenant as
+ * peers — one that may call four of its operations holding `peer:read` + `peer:write`, and one
+ * RECEIVE-ONLY peer (`operations: []`) that holds `peer:read` and may call nothing. `peer:admin`
+ * is declared and granted to no peer, so an allowlisted operation that checks it is a K-35
+ * denial against `{ vertical, scope }`, not a door refusal. `peer/off-list` is registered and on
+ * no allowlist. Inert for every other suite: nothing else reads `peer_notes` or names a `peer/*`
+ * operation — though every scope provisioned with it registered holds the peers' seats.
+ */
+export const PEER_CALLER = 'acme/board-room';
+export const PEER_LISTENER = 'acme/listener';
+
+export const peerModManifest = moduleManifest.parse({
+  id: '@test/peer',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [
+    { key: 'peer:read', description: 'read the notes' },
+    { key: 'peer:write', description: 'write a note' },
+    { key: 'peer:admin', description: 'a key no peer is declared to hold' },
+  ],
+  events: { emits: [{ type: 'peer.noted', schemaVersion: 1 }], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'peer',
+  peers: [
+    {
+      vertical: PEER_CALLER,
+      operations: ['peer/note', 'peer/list', 'peer/admin', 'peer/share'],
+      permissions: ['peer:read', 'peer:write'],
+    },
+    { vertical: PEER_LISTENER, operations: [], permissions: ['peer:read'] },
+  ],
+});
+
+const PEER_READ = permissionKey.parse('peer:read');
+const PEER_WRITE = permissionKey.parse('peer:write');
+const PEER_ADMIN = permissionKey.parse('peer:admin');
+
+export const peerMod: ModuleRegistration = {
+  manifest: peerModManifest,
+  migrations: [
+    { version: '0001-init', sql: 'CREATE TABLE peer_notes (id TEXT PRIMARY KEY, body TEXT NOT NULL)' },
+  ],
+  operations: {
+    'peer/note': (async (ctx, input) => {
+      assertAllowed(await ctx.check(PEER_WRITE));
+      const { id, body } = input as { id: string; body: string };
+      ctx.sql.exec('INSERT INTO peer_notes (id, body) VALUES (?, ?)', [id, body]);
+      ctx.emit({
+        type: 'peer.noted',
+        schemaVersion: 1,
+        entity: { entityType: 'peer-note', entityId: id },
+        piiClass: 'none',
+        payload: { id, body },
+      });
+      return { id };
+    }) as OperationHandler<never, unknown>,
+    'peer/list': (async (ctx) => {
+      assertAllowed(await ctx.check(PEER_READ));
+      return ctx.sql.query<{ id: string; body: string }>('SELECT id, body FROM peer_notes ORDER BY id');
+    }) as OperationHandler<never, unknown>,
+    // Allowlisted for the caller, and checking a key the caller was never declared to hold.
+    'peer/admin': (async (ctx) => {
+      assertAllowed(await ctx.check(PEER_ADMIN));
+      return { admin: true };
+    }) as OperationHandler<never, unknown>,
+    // A capability on a note — the one module verb that needs a PERSON to be the minter.
+    'peer/share': (async (ctx, input) => {
+      const { id } = input as { id: string };
+      return ctx.capabilities.mint({ entity: { entityType: 'peer-note', entityId: id }, permissions: [PEER_READ] });
+    }) as OperationHandler<never, unknown>,
+    // Registered, checking a key the caller holds — and on no peer's allowlist.
+    'peer/off-list': (async (ctx) => {
+      assertAllowed(await ctx.check(PEER_READ));
+      return { reached: true };
+    }) as OperationHandler<never, unknown>,
+    // Spine reads for the suite's assertions (module code may READ `_substrat_*`).
+    'peer/outbox': ((ctx) =>
+      ctx.sql.query(
+        "SELECT actor, authorization, operation, entity_id FROM _substrat_outbox WHERE type = 'peer.noted' ORDER BY id",
+      )) as OperationHandler<never, unknown>,
+    'peer/denials': readDenialsOp as OperationHandler<never, unknown>,
+    'peer/tuples': ((ctx) =>
+      ctx.sql.query(
+        "SELECT subject, relation, object, revoked_at FROM _substrat_tuples WHERE substr(subject, 1, 9) = 'vertical:' ORDER BY subject, relation",
+      )) as OperationHandler<never, unknown>,
+  },
+};
+
 export const contractTestModules: ModuleRegistration[] = [
   ...contractTestInitialModules,
   lateMod,
@@ -2207,6 +2299,8 @@ export const contractTestModules: ModuleRegistration[] = [
   // #1672: the capability suite's folder tree. Inert for every other suite — nothing else
   // reads `cap_notes` or invokes a `cap/*` operation.
   capMod,
+  // #1706: the peer suite's target. Inert for every other suite beyond the peers' seats.
+  peerMod,
 ];
 
 // -- live reads (#938) -------------------------------------------------------

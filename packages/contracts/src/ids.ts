@@ -137,3 +137,4 @@ export const slug = z.string().regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
 export const verticalSlug = z
   .string()
   .regex(/^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
+export type VerticalSlug = z.infer<typeof verticalSlug>;

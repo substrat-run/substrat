@@ -31,6 +31,8 @@ import {
   scheduleMod,
   jobRunContractSuite,
   systemSwitchContractSuite,
+  peerContractSuite,
+  verticalResolutionContractSuite,
   scopeHostContractSuite,
   searchContractSuite,
   entityVersionContractSuite,
@@ -119,6 +121,22 @@ capabilityContractSuite('adapter-cloudflare', async () => {
   });
   return { host, cleanup: async () => host.close() };
 });
+
+// #1706: the peer door, on the DO path — the coordinator threads the platform's `caller` to the
+// ScopeDO, which admits it inside its queue on every invoke and acknowledges it; and the
+// instance resolution, answered by the ControlPlaneDO's directory. CP-full and co-located, so the
+// switch and `peerCovers` reach this namespace's own ScopeDO. DO SQLite is not node SQLite: the
+// seat, the switch's marker predicate and the admission's reads run here as they run hosted.
+const peerFixture = async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+};
+peerContractSuite('adapter-cloudflare', peerFixture);
+verticalResolutionContractSuite('adapter-cloudflare', peerFixture);
 
 // #1686: attachments through a capability, on the DO path — the ScopeDO resolves the
 // session hash inside its queue and checks each read as `{ capability }`; the coordinator
