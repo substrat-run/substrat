@@ -493,6 +493,17 @@ once, properly, rather than a Scrive-specific timer.
 is where a dead-lettered delivery (§2.2) surfaces. Master plan §6 lists "per-tenant config +
 health" as part of the framework; this is the minimum that makes §2.2's trade honest.
 
+Staff read it fleet-wide at `GET /connections/health` (#1690), the console's Health → Connections
+view. What the columns *mean* is one pure function, `deriveConnectionHealth` in contracts:
+**erroring** when the latest outcome is an error (a tie counts as one), **never used** when there is
+no outcome at all — deliberately not healthy, for §3.8's reason — **stale** once the last success is
+7 days old, and **healthy** otherwise. Seven days is a stated trade-off: it fires three weeks before
+a 30-day Scrive refresh (§3.6) idles out, and it misreads a connection that only a monthly job uses,
+which is why the response carries the window it applied. Rows are projected through an allow-list
+(`toConnectionHealthEntry`) rather than spread. Connector dead letters are counted per provider from
+the ops-failure record, where a CP-less vertical's terminal `connector:<provider>` intent lands. An
+in-process drain's dead letters journal only in the scope, and that count cannot see them.
+
 ### 3.8 Inspection: verify, and what it did (#605)
 
 Health is the minimum, and the minimum turned out to be too little. It is one line,

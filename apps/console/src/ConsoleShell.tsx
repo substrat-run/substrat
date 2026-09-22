@@ -16,6 +16,7 @@ export type ViewKey =
   | 'failures'
   | 'issues'
   | 'sweeps'
+  | 'connections'
   | 'settings';
 
 /*
@@ -149,6 +150,14 @@ export function ConsoleShell({
               // The fleet's sweep record (#1232) — the staff twin of the
               // dashboard's per-app strips, one page instead of a tenant tour.
               { value: 'sweeps', label: 'Sweeps', icon: <SubIcon d={SubIcons.bell} /> },
+            ],
+          },
+          {
+            // Is the platform healthy right now (#1690) — the pull half of fleet health.
+            title: 'Health',
+            items: [
+              // Every tenant's connections with their derived health, one page.
+              { value: 'connections', label: 'Connections', icon: <SubIcon d={SubIcons.pulse} /> },
             ],
           },
           {

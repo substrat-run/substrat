@@ -3,6 +3,8 @@ import type {
   AdminAction,
   AdminLogEntry,
   ChannelName,
+  ConnectionHealthPage,
+  ConnectionHealthState,
   DirectoryBackup,
   DenialFilter,
   DenialSummary,
@@ -187,6 +189,13 @@ export interface SweepRunsQuery extends PageQuery {
   connectionId?: string;
   since?: string;
   until?: string;
+}
+
+/** `GET /connections/health` (#1690) — `status` is the DERIVED health state. */
+export interface ConnectionHealthQuery extends PageQuery {
+  status?: ConnectionHealthState;
+  provider?: string;
+  tenantId?: TenantId;
 }
 
 export interface OpsFailuresQuery extends PageQuery {
@@ -490,6 +499,11 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // skipped, freshness verdicts. Newest first; 14-day retention.
     listSweepRuns: (q: SweepRunsQuery = {}) =>
       call<Page<SweepRunEntry>>(`/sweep-runs${query({ ...q })}`),
+
+    // Fleet-wide connection health (#1690) — every tenant's connections with their
+    // derived health, refresh-expiry warning, and connector dead letters per provider.
+    listConnectionHealth: (q: ConnectionHealthQuery = {}) =>
+      call<ConnectionHealthPage>(`/connections/health${query({ ...q })}`),
 
     // Failures grouped by fingerprint (#1233) — counted defects with a lifecycle.
     // `{ entries }` alone: the server sends no cursor, deliberately.
