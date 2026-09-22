@@ -3096,8 +3096,10 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async deliverToPeer(tenantId: TenantId, scopeId: ScopeId, raw: ImportBatch): Promise<ImportResult> {
     const batch = importBatch.parse(raw);
-    await this.cp.validateScopeAccess(tenantId, scopeId);
-    await this.migrateAndRecord(scopeId);
+    // The peer door's own gate (#1706): K-3's pair check, the refusal for a scope served
+    // elsewhere, the lifecycle check and the migration. A delivery is a write into the
+    // consumer's scope, so it takes the gate an invoke through that door takes.
+    await this.peerScopeGate(tenantId, scopeId, 'deliverToPeer');
     const result = importResult.parse(await this.scopeStub(scopeId).importApply(batch, tenantId, scopeId));
     if (result.delivered > 0) {
       try {
@@ -3202,13 +3204,7 @@ export class CloudflareScopeHost implements ScopeHost {
       if (!record) {
         throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
       }
-      if (this.servesScopesElsewhere && record.vertical !== null) {
-        throw substratError(
-          'unavailable',
-          `${verb} cannot reach scope ${scopeId}: it is served by the '${record.vertical}' deployment, ` +
-            'which a peer reaches through the platform, not through the shared control plane',
-        );
-      }
+      this.assertServedHere(record, scopeId, verb);
     }
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
@@ -3241,6 +3237,27 @@ export class CloudflareScopeHost implements ScopeHost {
    * delegations are set on that host and no other (their own docs say so), so any one of
    * them being present is the signal.
    */
+  /**
+   * Refuse a scope this host does not serve (#1706's door, and #1705's three cross-vertical
+   * verbs).
+   *
+   * On the shared control plane `this.scopeStub` is the module-less placeholder namespace, so
+   * reaching it for a scope bound to a vertical answers from an EMPTY Durable Object: a read
+   * reports a hosted producer as having nothing to export, and a delivery would journal a
+   * batch into a scope that is not the one it names. Both are wrong ANSWERS rather than
+   * failures, which is the shape that goes unnoticed. One refusal, shared by the door's gate
+   * and by the verbs that read a record of their own, so a caller never meets two of them.
+   */
+  private assertServedHere(record: { vertical: string | null }, scopeId: ScopeId, verb: string): void {
+    if (this.servesScopesElsewhere && record.vertical !== null) {
+      throw substratError(
+        'unavailable',
+        `${verb} cannot reach scope ${scopeId}: it is served by the '${record.vertical}' deployment, ` +
+          'which a peer reaches through the platform, not through the shared control plane',
+      );
+    }
+  }
+
   private get servesScopesElsewhere(): boolean {
     return Boolean(this.connectorDelegation || this.systemSwitchDelegation || this.eventDrainDelegation);
   }
@@ -5061,7 +5078,12 @@ export class CloudflareScopeHost implements ScopeHost {
         // exports. This side gates the pair (K-3), parses both directions, and writes the
         // access row, because a platform read of domain data leaving a scope is one.
         const input = exportReadInput.parse(raw);
-        await this.scopeRecordForRead(tenantId, scopeId);
+        // The read's own K-3 and reap gate, then the same refusal the door gives: on the
+        // shared control plane this scope's outbox lives in its vertical's deployment, and
+        // the placeholder here would report a hosted producer as having nothing to export.
+        // Not `peerScopeGate`: a read must not migrate, and the phase makes this call once
+        // per edge per pass, where an extra round trip is a fleet-wide cost.
+        this.assertServedHere(await this.scopeRecordForRead(tenantId, scopeId), scopeId, 'readExportedEvents');
         const batch = exportedBatch.parse(await this.scopeStub(scopeId).exportedEventsRead(input, tenantId, scopeId));
         await this.recordAccess(
           actor,
@@ -5077,7 +5099,10 @@ export class CloudflareScopeHost implements ScopeHost {
         // not the DO. "Imports nothing" is a fact about this code, and it names no scope, so it
         // tells a caller nothing about a (tenant, scope) pair it may not address.
         if (this.crossVertical.consumes().length === 0) return { consumes: [], cursors: [] };
-        await this.scopeRecordForRead(tenantId, scopeId);
+        // Then the read's own gate, and the same refusal: a hosted scope's watermark lives in
+        // its vertical's deployment, and the placeholder here would answer "never read
+        // anything", which a pass would act on by re-delivering that edge from the start.
+        this.assertServedHere(await this.scopeRecordForRead(tenantId, scopeId), scopeId, 'importState');
         const state = importState.parse(await this.scopeStub(scopeId).importStateRead());
         await this.recordAccess(actor, 'importState', { tenantId, scopeId }, null, state.cursors.length);
         return state;
