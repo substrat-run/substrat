@@ -23,6 +23,12 @@ export interface OpsFailuresProps {
   initialVertical?: string;
   /** Pre-narrow to one issue's exemplar rows — the jump from Operations → Issues (#1233). */
   initialFingerprint?: string;
+  /**
+   * Pre-fill the free-text filter — the jump from a Services tile (#1690 §2). Client-side
+   * and page-scoped like `q` always is: a Services count and what this box then shows are
+   * not claimed to agree exactly, only to point at the same rows.
+   */
+  initialQuery?: string;
 }
 
 /**
@@ -33,7 +39,7 @@ export interface OpsFailuresProps {
  * side — and copies out for a Cloudflare support ticket, which is the only place
  * a redacted storage fault's reference actually resolves.
  */
-export function OpsFailures({ api, tenants, initialVertical, initialFingerprint }: OpsFailuresProps) {
+export function OpsFailures({ api, tenants, initialVertical, initialFingerprint, initialQuery }: OpsFailuresProps) {
   const [entries, setEntries] = useState<OpsFailureEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string>();
@@ -50,7 +56,7 @@ export function OpsFailures({ api, tenants, initialVertical, initialFingerprint 
   // debounced so typing doesn't refetch per keystroke. Free-text stays client-side.
   const vertical = useDebounced(verticalInput.trim());
   const reference = useDebounced(referenceInput.trim());
-  const [q, setQ] = useState('');
+  const [q, setQ] = useState(initialQuery ?? '');
 
   const serverFilter = {
     tenantId: tenantFilter === 'all' ? undefined : (tenantFilter as TenantId),

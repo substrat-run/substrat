@@ -17,7 +17,8 @@ export type ViewKey =
   | 'issues'
   | 'sweeps'
   | 'connections'
-  | 'settings';
+  | 'settings'
+  | 'services';
 
 /*
  * There used to be a "Planned" nav stratum here — items with nothing behind
@@ -158,6 +159,9 @@ export function ConsoleShell({
             items: [
               // Every tenant's connections with their derived health, one page.
               { value: 'connections', label: 'Connections', icon: <SubIcon d={SubIcons.pulse} /> },
+              // The fleet-wide overview (#1690 §2) — composed from the other Health,
+              // Operations and Fleet views, each tile linking back to its detail.
+              { value: 'services', label: 'Services', icon: <SubIcon d={SubIcons.grid} /> },
             ],
           },
           {

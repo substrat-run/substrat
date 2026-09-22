@@ -261,3 +261,29 @@ export const connectorDispatchPayload = z.object({
   event: domainEvent,
 });
 export type ConnectorDispatchPayload = z.infer<typeof connectorDispatchPayload>;
+
+/**
+ * `GET /platform-requests/backlog` (#1690 §2) — how many platform-intent deliveries have
+ * GIVEN UP terminally across the fleet, over a window. Counted from the ops-failure record
+ * (platform-drain.ts records `operation: intent.<kind>` at the attempt ceiling and on a
+ * terminal refusal), one bounded query per known kind — the same technique
+ * `/connections/health` already uses for its per-provider connector dead-letter count.
+ *
+ * This is a count of FAILURES, never a queue depth: a still-`pending` intent lives in the
+ * vertical's own scope DO (K-31), and nothing indexes it fleet-wide — walking every active
+ * scope to count it is the fan-out the sweep itself already pays for on its own cadence, not
+ * something a console page should repeat on every load. So `total` only ever answers "how
+ * much has this given up on lately", never "how much is waiting" — a caller that reads it as
+ * a backlog depth is reading a claim this number does not make.
+ */
+export const platformRequestBacklog = z.object({
+  total: z.number().int().nonnegative(),
+  /** `total` hit the per-kind read bound and is a floor, not an exact count. */
+  capped: z.boolean(),
+  // A plain ISO string, like `ConnectionHealthPage.deadLettersSince` — stamped server-side
+  // from `Date#toISOString`, never parsed from the wire, so the branded `instant` (which a
+  // response body never round-trips through) buys this field nothing.
+  since: z.string(),
+  windowDays: z.number().int().positive(),
+});
+export type PlatformRequestBacklog = z.infer<typeof platformRequestBacklog>;
