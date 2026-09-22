@@ -15,6 +15,12 @@ import {
   connectionHealthState,
   connectionProvider,
   connectorDispatchKind,
+  PROVISION_SIBLING_KIND,
+  ARCHIVE_SCOPE_KIND,
+  PROVISION_TENANT_KIND,
+  SET_ENTITLEMENTS_KIND,
+  MODEL_USAGE_KIND,
+  SWEEP_RUNS_KIND,
   toConnectionHealthEntry,
   CONNECTION_EXPIRY_WARNING_DAYS,
   CONNECTION_STALE_DAYS,
@@ -82,6 +88,7 @@ import type {
   ListPageQuery,
   Page,
   PlatformActorId,
+  PlatformRequestBacklog,
   Scope,
   ScopeDump,
   ScopeId,
@@ -770,6 +777,14 @@ const connectionHealthQuery = z.object({
 const CONNECTOR_DEAD_LETTER_WINDOW_DAYS = 7;
 /** The per-provider read bound: past it the count is a floor, and says so (`capped`). */
 export const CONNECTOR_DEAD_LETTER_CAP = 200;
+
+/**
+ * `/platform-requests/backlog` (#1690 §2) rides the SAME window and per-kind bound as the
+ * connector dead-letter count above — one incident horizon, one honestly-capped read, for
+ * every fleet-wide "how much has given up lately" number this API answers.
+ */
+const PLATFORM_REQUEST_BACKLOG_WINDOW_DAYS = CONNECTOR_DEAD_LETTER_WINDOW_DAYS;
+const PLATFORM_REQUEST_BACKLOG_CAP = CONNECTOR_DEAD_LETTER_CAP;
 
 // The issues read (#1233). No cursor by design: grouping IS the compression —
 // cardinality is the number of distinct failure shapes — and `limit` bounds it.
@@ -1709,6 +1724,57 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       .parse({ hours: c.req.query('hours'), provider: c.req.query('provider') || undefined });
     const buckets = await options.observability.connectorCallsSeries(input);
     return c.json({ hours: input.hours, buckets });
+  });
+
+  // -- platform-request backlog, fleet-wide (#1690 §2) -----------------------
+  //
+  // "Is the platform's own intent drain keeping up" — composed from the SAME ops-failure
+  // record the dead-letter count above reads, generalized from one provider family to
+  // every known intent kind. Staff/service only by the same construction as
+  // `/connections/health` — absent from BUILDER_ROUTES and TENANT_ROUTES, so both
+  // credentials default-deny it.
+  //
+  // This is a count of terminal FAILURES, never a queue depth (see `platformRequestBacklog`'s
+  // doc): a still-`pending` intent lives in the vertical's own scope DO and nothing here
+  // walks the fleet to find it. A `0` means "nothing has given up lately", not "nothing is
+  // waiting" — the console tile is worded to keep that distinction, not just this comment.
+  app.get('/platform-requests/backlog', async (c) => {
+    const now = new Date();
+    const since = new Date(now.getTime() - PLATFORM_REQUEST_BACKLOG_WINDOW_DAYS * 86_400_000).toISOString();
+    // The fixed kinds the platform itself registers, plus one `connector:<provider>` kind
+    // per provider that has (or had) a live connection anywhere in the fleet — the same
+    // derivation the dead-letter count above uses, since that kind only exists for a
+    // provider some connection actually names.
+    const providers = [...new Set((await admin.listConnections(c.get('actor'))).map((r) => r.provider))];
+    const kinds = [
+      PROVISION_SIBLING_KIND,
+      ARCHIVE_SCOPE_KIND,
+      PROVISION_TENANT_KIND,
+      SET_ENTITLEMENTS_KIND,
+      MODEL_USAGE_KIND,
+      SWEEP_RUNS_KIND,
+      ...providers.map(connectorDispatchKind),
+    ];
+    const counts = await Promise.all(
+      kinds.map(async (kind) => {
+        const found = await admin.listOpsFailures(c.get('actor'), {
+          operation: `intent.${kind}`,
+          since,
+          limit: PLATFORM_REQUEST_BACKLOG_CAP + 1,
+        });
+        return {
+          count: Math.min(found.length, PLATFORM_REQUEST_BACKLOG_CAP),
+          capped: found.length > PLATFORM_REQUEST_BACKLOG_CAP,
+        };
+      }),
+    );
+    const body: PlatformRequestBacklog = {
+      total: counts.reduce((sum, k) => sum + k.count, 0),
+      capped: counts.some((k) => k.capped),
+      since,
+      windowDays: PLATFORM_REQUEST_BACKLOG_WINDOW_DAYS,
+    };
+    return c.json(body);
   });
 
   // The same upsert semantics as `/internal/connections/upsert` (§3.5.2) — create under a

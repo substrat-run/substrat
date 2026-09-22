@@ -22,6 +22,7 @@ import { ConnectionsHealth } from './views/ConnectionsHealth';
 import { Permissions } from './views/Permissions';
 import { ScopeDetail } from './views/ScopeDetail';
 import { Scopes } from './views/Scopes';
+import { Services } from './views/Services';
 import { Settings } from './views/Settings';
 import { TenantDetail } from './views/TenantDetail';
 import { Tenants } from './views/Tenants';
@@ -107,6 +108,8 @@ export function App() {
   // The Issues → Failures exemplar jump (#1233): the fingerprint travels by
   // navigation state, never a URL or input — it embeds U+001F.
   const [failuresFingerprint, setFailuresFingerprint] = useState<string | undefined>();
+  // The Services → Failures jump (#1690 §2): pre-fills the client-side free-text filter.
+  const [failuresQuery, setFailuresQuery] = useState<string | undefined>();
   const [dark, setDark] = useState(false);
   const [toast, setToast] = useState<Toast>();
   const [error, setError] = useState<string>();
@@ -251,7 +254,7 @@ export function App() {
         : undefined;
 
   const crumbs: BreadcrumbItem[] = [
-    { label: view === 'settings' || view === 'members' ? 'Console' : view === 'failures' || view === 'issues' || view === 'sweeps' ? 'Operations' : view === 'connections' ? 'Health' : 'Fleet' },
+    { label: view === 'settings' || view === 'members' ? 'Console' : view === 'failures' || view === 'issues' || view === 'sweeps' ? 'Operations' : view === 'connections' || view === 'services' ? 'Health' : 'Fleet' },
     { label: view === 'admin-log' ? 'Admin log' : view[0]!.toUpperCase() + view.slice(1), onClick: clearDetail },
     ...(detailCrumb ? [detailCrumb] : []),
   ];
@@ -307,6 +310,7 @@ export function App() {
         setView(v);
         setFailuresVertical(undefined);
         setFailuresFingerprint(undefined);
+        setFailuresQuery(undefined);
         clearDetail();
       }}
       onToggleDark={() => setDark((d) => !d)}
@@ -426,7 +430,13 @@ export function App() {
       )}
       {view === 'admin-log' && <AdminLog api={api} tenants={tenantMap} />}
       {view === 'failures' && (
-        <OpsFailures api={api} tenants={tenantMap} initialVertical={failuresVertical} initialFingerprint={failuresFingerprint} />
+        <OpsFailures
+          api={api}
+          tenants={tenantMap}
+          initialVertical={failuresVertical}
+          initialFingerprint={failuresFingerprint}
+          initialQuery={failuresQuery}
+        />
       )}
       {view === 'issues' && (
         <Issues
@@ -445,6 +455,34 @@ export function App() {
       {view === 'permissions' && <Permissions api={api} tenants={tenantMap} />}
       {view === 'members' && <Members api={api} onToast={notify} />}
       {view === 'settings' && <Settings api={api} onToast={notify} />}
+      {view === 'services' && (
+        <Services
+          api={api}
+          onOpenConnections={() => {
+            setView('connections');
+            clearDetail();
+          }}
+          onOpenSweeps={() => {
+            setView('sweeps');
+            clearDetail();
+          }}
+          onOpenObservability={() => {
+            setView('observability');
+            clearDetail();
+          }}
+          onOpenVerticals={() => {
+            setView('verticals');
+            clearDetail();
+          }}
+          onOpenFailures={(q) => {
+            setFailuresQuery(q);
+            setFailuresVertical(undefined);
+            setFailuresFingerprint(undefined);
+            setView('failures');
+            clearDetail();
+          }}
+        />
+      )}
 
       {toast && (
         <div style={{ position: 'fixed', right: 24, bottom: 24, zIndex: 50 }}>

@@ -57,3 +57,11 @@ describe('Health → Connections (#1690)', () => {
     expect(parseNav(path, '').view).toBe('connections');
   });
 });
+
+describe('Health → Services (#1690)', () => {
+  it('survives a refresh — the path resolves back to the view', () => {
+    const { path } = navPath('services', undefined, '');
+    expect(path).toBe('/services');
+    expect(parseNav(path, '').view).toBe('services');
+  });
+});
