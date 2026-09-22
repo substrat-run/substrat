@@ -22,7 +22,7 @@ import { invitesModule } from '@substrat-run/engine-invites';
 import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js';
 import { ControlPlaneError, TenantNarrowedControlPlane, type DnsRecordRow, type SnapshotRecord } from './authority.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice, type RegisterOidcClientFn } from './auth-wiring.js';
-import { clearAppMcpResources, registerAppMcpResources } from './mcp-resources.js';
+import { clearAppMcpResources, isSharedIssuer, registerAppMcpResources, type TeamIssuer } from './mcp-resources.js';
 
 /** This vertical's slug and the DO/entitlement key it registers under. */
 export const VERTICAL = 'dashboard';
@@ -282,6 +282,12 @@ export async function createApp(
      * mode only (embedded has no delivery seam).
      */
     appAuth?: AppAuthChoice;
+    /**
+     * The team's auth-servers, live. With `appAuth`, they decide whether the app is told
+     * its issuer is shared (#1683, `isSharedIssuer`) — by the issuer, so an `external` pick
+     * whose URL is one of them is marked at install rather than left open until a heal.
+     */
+    teamIssuers?: readonly TeamIssuer[];
     /** Injected client-registration (tests); defaults to real dynamic registration. */
     registerOidcClient?: RegisterOidcClientFn;
     /** Backoff schedule for the step-3 configure retry (#391); tests pass short/empty. */
@@ -349,7 +355,7 @@ export async function createApp(
             input.controlPlane!,
             input.appScopeId,
             config,
-            input.appAuth!.source === 'auth-server',
+            isSharedIssuer({ source: input.appAuth!.source, issuer: config.issuer }, input.teamIssuers ?? []),
             input.configureRetryDelaysMs,
           );
         } catch (e) {

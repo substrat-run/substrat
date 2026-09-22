@@ -398,6 +398,27 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     // first request — never a window where it runs that login without the marker.
     expect(configured[1]!.entries[1]).toEqual({ key: SHARED_ISSUER_CONFIG_KEY, value: 'true' });
 
+    // Classified by the ISSUER, not the form (#1683): an EXTERNAL pick whose URL is one of
+    // the team's auth-servers is shared, and is marked at install rather than left open
+    // until a heal — and its twin, a truly outside issuer with the same team issuers known,
+    // is not.
+    const teamIssuers = [{ scopeId: scopeId.parse(ulid()), origins: new Set(['https://auth-acme.global.substrat.run']) }];
+    for (const [issuer, marker] of [
+      ['https://auth-acme.global.substrat.run', 'true'],
+      ['https://auth.example.com', ''],
+    ] as const) {
+      const before = configured.length;
+      const typed = await createApp(host, {
+        node: acme, appScopeId: scopeId.parse(ulid()), verticalSlug: 'meridian', name: `Typed ${marker || 'outside'}`,
+        appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+        controlPlane: happyCp(),
+        appAuth: { source: 'external', issuer, clientId: 'cid' },
+        teamIssuers,
+      });
+      expect(typed.status).toBe('active');
+      expect(configured[before]!.entries[1]).toEqual({ key: SHARED_ISSUER_CONFIG_KEY, value: marker });
+    }
+
     // A FAILING delivery is a failed app with the reason on its trail — the user asked
     // for THIS issuer; silently falling back to builtin would strand its users later.
     const failScope = scopeId.parse(ulid());

@@ -3,7 +3,9 @@ import { SHARED_ISSUER_CONFIG_KEY, mcpResourceOf, scopeId } from '@substrat-run/
 import { ulid } from '@substrat-run/kernel';
 import {
   McpReconcileGate,
+  isSharedIssuer,
   issuerFor,
+  logUnsettled,
   mcpResourcesFor,
   reconcileConverged,
   reconcileMcpResources,
@@ -294,23 +296,95 @@ describe('the Apps list reconcile (existing installs)', () => {
     expect(reconcileConverged(outcomes)).toBe(false);
   });
 
-  it('does nothing at all for a team with no auth-server', async () => {
+  /**
+   * A team with no auth-server is a real, empty answer, and the walk still runs on it
+   * (#1683): nothing is registered anywhere, but an app that once signed in at a team
+   * issuer — since switched to an outside one, or whose team deleted that issuer — must be
+   * told its issuer is no longer shared, or its stale `"true"` stands.
+   */
+  it('for a team with no auth-server, registers nothing and clears the marker on every app with an identity', async () => {
+    const external = row({ hostname: 'ops-acme.global.substrat.run' });
+    identities[external.app_scope_id] = 'https://login.example-idp.test';
+    const deliveries: Array<{ scopeId: string; key: string; value: string }> = [];
     const out = await reconcileMcpResources({
-      apps: [desk, builtin],
+      apps: [external, builtin],
       isIssuer: () => false,
-      issuerOf: async () => {
-        throw new Error('never asked');
-      },
+      issuerOf: async (id) => identities[id] ?? null,
       controlPlane: {
         listHostnames: async () => {
           throw new Error('never asked');
         },
-        configureInstance: async () => {
-          throw new Error('never asked');
+        configureInstance: async (sid, entries) => {
+          for (const e of entries) deliveries.push({ scopeId: sid, ...e });
         },
       },
     });
-    expect(out).toEqual([]);
+    expect(deliveries).toEqual([{ scopeId: external.app_scope_id, key: SHARED_ISSUER_CONFIG_KEY, value: '' }]);
+    expect(out).toContainEqual(expect.objectContaining({ appScopeId: external.app_scope_id, sharedIssuer: false }));
+    expect(reconcileConverged(out)).toBe(true);
+  });
+
+  /**
+   * The other empty: an auth-server EXISTS, but this pass cannot read where it answers (no
+   * stored hostname, and the live read failed). Treating that as "no issuers" would tell
+   * every app bound there that its issuer is not shared, and mark the pass converged, so
+   * pre-marker installs stayed open for the life of the isolate. Nothing is delivered and
+   * the next load tries again.
+   */
+  it('delivers nothing and is not converged while an auth-server cannot be located', async () => {
+    const unstored = row({ vertical_slug: 'auth-server', hostname: null });
+    const bound = row({ hostname: 'desk-acme.global.substrat.run' });
+    identities[bound.app_scope_id] = 'https://auth-a.global.substrat.run';
+    const deliveries: unknown[] = [];
+    const out = await reconcileMcpResources({
+      apps: [unstored, bound],
+      isIssuer: (a) => a.vertical_slug === 'auth-server',
+      issuerOf: async (id) => identities[id] ?? null,
+      controlPlane: {
+        listHostnames: async () => {
+          throw new Error('control plane unreachable');
+        },
+        configureInstance: async (_sid, entries) => {
+          deliveries.push(...entries);
+        },
+      },
+    });
+    expect(deliveries).toEqual([]);
+    expect(out).toEqual([{ appScopeId: unstored.app_scope_id, skipped: 'auth-server hostnames could not be read' }]);
+    expect(reconcileConverged(out)).toBe(false);
+  });
+});
+
+describe('the one shared-issuer classification (#1683)', () => {
+  const issuers = [{ scopeId: scopeId.parse(ulid()), origins: new Set(['https://auth-a.global.substrat.run']) }];
+
+  it('is decided by the issuer: an external pick that IS a team auth-server is shared', () => {
+    expect(isSharedIssuer({ source: 'external', issuer: 'https://auth-a.global.substrat.run' }, issuers)).toBe(true);
+    expect(isSharedIssuer({ source: 'external', issuer: 'https://login.example-idp.test' }, issuers)).toBe(false);
+    expect(isSharedIssuer({ source: 'auth-server', issuer: 'https://auth-a.global.substrat.run' }, [])).toBe(true);
+    expect(isSharedIssuer({ issuer: null }, issuers)).toBe(false);
+  });
+});
+
+describe('what a pass left undone is logged', () => {
+  const app = scopeId.parse(ulid());
+  const settled = { appScopeId: app, registeredAt: null, resources: [], clearedAt: [], failed: [], sharedIssuer: true, markerFailed: null };
+
+  it('logs a marker-only failure — a security delivery that keeps failing must be visible', () => {
+    const logged: string[] = [];
+    const unsettled = logUnsettled('tenant-a', [{ ...settled, sharedIssuer: null, markerFailed: 'scope unreachable' }], (m, d) =>
+      logged.push(`${m} ${d}`),
+    );
+    expect(unsettled).toHaveLength(1);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain('shared-issuer marker');
+    expect(logged[0]).toContain('scope unreachable');
+  });
+
+  it('stays quiet for a pass that settled everything', () => {
+    const logged: string[] = [];
+    expect(logUnsettled('tenant-a', [settled], (m) => logged.push(m))).toEqual([]);
+    expect(logged).toEqual([]);
   });
 });
 

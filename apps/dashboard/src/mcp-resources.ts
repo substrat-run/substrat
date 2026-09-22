@@ -80,24 +80,45 @@ export interface TeamIssuer {
  * converge. So each one's live bindings are read too, and every hostname it answers on is
  * an origin its issuer URL may carry (a custom domain included). A live read that fails
  * falls back to the stored column, never to nothing.
+ *
+ * When there is nothing to fall back to — no stored hostname and a live read that failed —
+ * the auth-server is `unresolved`: it exists, but this pass cannot say which origins are
+ * its. That is not the same answer as "the team has no such issuer", and a caller that
+ * classifies apps by issuer must not treat it as one (#1683): an app bound there would read
+ * as bound to an outside issuer.
  */
+export async function discoverTeamIssuers(
+  apps: readonly DashboardAppRow[],
+  isIssuer: (app: DashboardAppRow) => boolean,
+  cp: Pick<TenantNarrowedControlPlane, 'listHostnames'>,
+): Promise<{ issuers: TeamIssuer[]; unresolved: ScopeId[] }> {
+  const issuers: TeamIssuer[] = [];
+  const unresolved: ScopeId[] = [];
+  for (const app of apps) {
+    if (app.status !== 'active' || !isIssuer(app)) continue;
+    const scopeId = scopeIdSchema.parse(app.app_scope_id);
+    let readFailed = false;
+    const live = await cp
+      .listHostnames(scopeId)
+      .then((rows) => rows.filter((h) => h.status === 'active').map((h) => h.hostname))
+      .catch(() => {
+        readFailed = true;
+        return [] as string[];
+      });
+    const hostnames = [...new Set([...(app.hostname ? [app.hostname] : []), ...live])];
+    if (hostnames.length > 0) issuers.push({ scopeId, origins: new Set(hostnames.map((h) => `https://${h}`)) });
+    else if (readFailed) unresolved.push(scopeId);
+  }
+  return { issuers, unresolved };
+}
+
+/** `discoverTeamIssuers`' resolved half — for a caller that registers, where a miss is retried. */
 export async function teamIssuers(
   apps: readonly DashboardAppRow[],
   isIssuer: (app: DashboardAppRow) => boolean,
   cp: Pick<TenantNarrowedControlPlane, 'listHostnames'>,
 ): Promise<TeamIssuer[]> {
-  const issuers: TeamIssuer[] = [];
-  for (const app of apps) {
-    if (app.status !== 'active' || !isIssuer(app)) continue;
-    const scopeId = scopeIdSchema.parse(app.app_scope_id);
-    const live = await cp
-      .listHostnames(scopeId)
-      .then((rows) => rows.filter((h) => h.status === 'active').map((h) => h.hostname))
-      .catch(() => [] as string[]);
-    const hostnames = [...new Set([...(app.hostname ? [app.hostname] : []), ...live])];
-    if (hostnames.length > 0) issuers.push({ scopeId, origins: new Set(hostnames.map((h) => `https://${h}`)) });
-  }
-  return issuers;
+  return (await discoverTeamIssuers(apps, isIssuer, cp)).issuers;
 }
 
 /**
@@ -117,6 +138,23 @@ export function issuerFor(issuer: string | null | undefined, issuers: readonly T
     return undefined;
   }
   return issuers.find((i) => i.origins.has(origin));
+}
+
+/**
+ * Is this identity's issuer one of the team's SHARED auth-servers (#1683)? The one
+ * classification behind the `SHARED_ISSUER_CONFIG_KEY` marker, used alike by install, by
+ * an Identity change and by the reconcile below, so the three cannot disagree.
+ *
+ * Decided by the ISSUER, not by which part of the form it was picked from: an `auth-server`
+ * pick is one by construction, and an issuer typed in as `external` that is in fact one of
+ * the team's auth-servers is one too — the vertical signs in there either way, beside every
+ * other client of that issuer.
+ */
+export function isSharedIssuer(
+  identity: { source?: 'external' | 'auth-server'; issuer: string | null | undefined },
+  issuers: readonly TeamIssuer[],
+): boolean {
+  return identity.source === 'auth-server' || issuerFor(identity.issuer, issuers) !== undefined;
 }
 
 /** The value the auth-server reads: the set as JSON, or `""` for none. */
@@ -178,6 +216,27 @@ export function reconcileConverged(outcomes: readonly McpReconcileOutcome[]): bo
 const reasonOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /**
+ * Log what a pass left undone, and return it. Every kind counts: an app skipped, a
+ * registration or clear that did not land, and the shared-issuer marker (#1683) — which
+ * is a SECURITY delivery, so a failure that repeats pass after pass must be visible rather
+ * than only retried.
+ */
+export function logUnsettled(
+  tenantId: string,
+  outcomes: readonly McpReconcileOutcome[],
+  log: (message: string, detail: string) => void = console.error,
+): McpReconcileOutcome[] {
+  const unsettled = outcomes.filter((o) => 'skipped' in o || o.failed.length > 0 || o.markerFailed !== null);
+  if (unsettled.length) {
+    log(
+      'dashboard: MCP resource / shared-issuer marker reconcile left deliveries undone',
+      JSON.stringify({ tenant: tenantId, unsettled }),
+    );
+  }
+  return unsettled;
+}
+
+/**
  * Converge every app of a team onto the right registrations: registered at the team
  * auth-server its identity names, and cleared at every other team auth-server. The same
  * pass tells the app ITSELF whether that issuer is a shared one (#1683), which is how an
@@ -203,8 +262,16 @@ export async function reconcileMcpResources(deps: {
   issuerOf: (appScopeId: string) => Promise<string | null>;
   controlPlane: ResourceControlPlane;
 }): Promise<McpReconcileOutcome[]> {
-  const issuers = await teamIssuers(deps.apps, deps.isIssuer, deps.controlPlane);
-  if (issuers.length === 0) return [];
+  const { issuers, unresolved } = await discoverTeamIssuers(deps.apps, deps.isIssuer, deps.controlPlane);
+  // An auth-server whose origins cannot be read this pass makes every classification a
+  // guess: an app bound to it would be told its issuer is NOT shared, clearing a marker
+  // that should stand. So nothing is delivered, and the pass reports itself unconverged.
+  if (unresolved.length > 0) {
+    return unresolved.map((appScopeId) => ({ appScopeId, skipped: 'auth-server hostnames could not be read' }));
+  }
+  // An EMPTY set is a real answer, and the walk below still runs on it: there is nothing to
+  // register, but an app that left a team issuer — or whose team deleted it — is told its
+  // issuer is no longer shared.
   const outcomes: McpReconcileOutcome[] = [];
   for (const app of deps.apps) {
     if (app.status !== 'active' || deps.isIssuer(app)) continue;
@@ -222,7 +289,7 @@ export async function reconcileMcpResources(deps: {
     // `substrat:auth` delivery, so it takes this one too. One with none may run a vertical
     // that stores no config at all, whose 501 would keep the pass from ever converging.
     const marker = named
-      ? deps.controlPlane.configureInstance(appScopeId, [sharedIssuerEntry(current !== undefined)])
+      ? deps.controlPlane.configureInstance(appScopeId, [sharedIssuerEntry(isSharedIssuer({ issuer: named }, issuers))])
       : null;
     const [registered, markerResult, ...cleared] = await Promise.allSettled([
       current
