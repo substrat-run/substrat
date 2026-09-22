@@ -611,3 +611,90 @@ describe('VerticalClient.systemGrantsStatus (#1674)', () => {
     expect((err as ControlPlaneError).status).toBe(403);
   });
 });
+
+/**
+ * The preview-client hops (#1704) — check, mint and retire at a team auth-server. The skew rule
+ * is `systemSwitch`'s plus the auth-server's own fallback: its `/internal/*` catch-all answers a
+ * JSON 501, so a 501 is "predates" here too, alongside a 404 and an SPA shell. Whatever the
+ * cause, "predates" must never be mistaken for "the parent does not sign in here" — the caller
+ * turns it into "redeploy", not into "external".
+ */
+describe('VerticalClient preview-client verbs (#1704)', () => {
+  const issuer = scopeId.parse(ulid());
+  const address = { tenantId: t, scopeId: issuer };
+  const check = { ...address, parentScopeId: s, parentRedirectUris: ['https://desk.acme.test/api/auth/callback'] };
+  const mint = {
+    ...check,
+    previewScopeId: scopeId.parse(ulid()),
+    redirectUri: 'https://desk--pr-7.acme.test/api/auth/callback',
+    postLogoutRedirectUri: 'https://desk--pr-7.acme.test/',
+    clientName: 'Desk (pr-7)',
+  };
+  const retire = { ...address, previewScopeId: mint.previewScopeId, keep: 'c1' };
+  const answering = (res: () => Response, seen: { method: string; path: string; body: unknown }[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string, init: RequestInit) => {
+        seen.push({ method: init.method ?? 'GET', path: new URL(u).pathname, body: JSON.parse(String(init.body)) });
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+  const verbs = [
+    ['check', (c: VerticalClient) => c.checkPreviewClient(check)],
+    ['mint', (c: VerticalClient) => c.mintPreviewClient(mint)],
+    ['retire', (c: VerticalClient) => c.retirePreviewClients(retire)],
+  ] as const;
+
+  it('speaks the contract’s paths and methods, and reads each answer', async () => {
+    const seen: { method: string; path: string; body: unknown }[] = [];
+    await expect(answering(() => Response.json({ claimed: true }), seen).checkPreviewClient(check)).resolves.toEqual({ claimed: true });
+    await expect(
+      answering(() => Response.json({ clientId: 'c1', clientSecret: 'shh', generation: 3 }, { status: 201 }), seen).mintPreviewClient(mint),
+    ).resolves.toEqual({ clientId: 'c1', clientSecret: 'shh', generation: 3 });
+    await expect(
+      answering(() => Response.json({ deleted: ['c0'], kept: true, superseded: false }), seen).retirePreviewClients(retire),
+    ).resolves.toEqual({ deleted: ['c0'], kept: true, superseded: false });
+    expect(seen).toEqual([
+      { method: 'POST', path: '/internal/preview-client/check', body: check },
+      { method: 'POST', path: '/internal/preview-client', body: mint },
+      { method: 'DELETE', path: '/internal/preview-client', body: retire },
+    ]);
+  });
+
+  it.each([
+    ['the auth-server’s own /internal/* fallback (501)', () => Response.json({ error: 'auth-server does not implement POST /internal/preview-client' }, { status: 501 })],
+    ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
+    ['an SPA shell (200, not JSON)', () => new Response('<!doctype html><html></html>', { status: 200 })],
+  ])('%s is a 501 that says to redeploy the auth server — for every verb', async (_name, res) => {
+    for (const [, run] of verbs) {
+      const err = await run(answering(res)).then(() => null, (e: unknown) => e);
+      expect(err).toBeInstanceOf(ControlPlaneError);
+      expect((err as ControlPlaneError).status).toBe(501);
+      expect((err as ControlPlaneError).message).toMatch(/predates preview clients.*redeploy it/);
+    }
+  });
+
+  it('a refusal passes through verbatim: another tenant’s issuer (403), an unclaimed parent (409)', async () => {
+    for (const status of [403, 409]) {
+      const err = await answering(() => Response.json({ error: `refused ${status}` }, { status }))
+        .mintPreviewClient(mint)
+        .then(() => null, (e: unknown) => e);
+      expect((err as ControlPlaneError).status).toBe(status);
+      expect((err as ControlPlaneError).message).toBe(`refused ${status}`);
+    }
+  });
+
+  it('a transport failure is a 502, and a wrong-shaped mint is a 502 that never quotes the secret it carried', async () => {
+    const down = new VerticalClient({
+      fetch: (() => Promise.reject(new Error('Network connection lost'))) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    expect(((await down.checkPreviewClient(check).then(() => null, (e: unknown) => e)) as ControlPlaneError).status).toBe(502);
+    const err = (await answering(() => Response.json({ clientId: 'c1', clientSecret: 'TOP-SECRET-VALUE' }, { status: 201 }))
+      .mintPreviewClient(mint)
+      .then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/unexpected shape/);
+    expect(err.message).not.toContain('TOP-SECRET-VALUE');
+  });
+});

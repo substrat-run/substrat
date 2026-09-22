@@ -564,6 +564,33 @@ describe('concurrent pushes to one preview (#1704)', () => {
     expect(aDeletes[0]!.body.keep).toBeUndefined();
   });
 
+  it('superseded while its own version is still bound means stop: no re-mint, and the newer client survives', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    // A sibling push of the SAME version mints just before this one retires — the one case in
+    // which a newer client can exist while this push's version is still the bound one.
+    let sibling = '';
+    issuers.beforeRetire = async (body) => {
+      if (body.keep && !sibling) {
+        sibling = 'sibling-client';
+        issuers.instances.get(issuerScope)!.clients.set(sibling, {
+          redirectUris: [oidcCallbackUrl(PREVIEW_HOST('pr-7'))],
+          postLogout: [],
+          secretHash: 'h',
+          disabled: false,
+          preview: base.scopeId,
+          generation: 10_000,
+        });
+      }
+    };
+    const from = issuers.calls.length;
+    const out = await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(out.auth.status).toBe('wired');
+    const mints = issuers.calls.slice(from).filter((c) => c.method === 'POST' && c.path === PREVIEW_CLIENT_PATH);
+    expect(mints).toHaveLength(1);
+    expect(issuers.tagged(issuerScope, base.scopeId)).toContain(sibling);
+    expect(issuers.tagged(issuerScope, base.scopeId)).toContain(out.auth.clientId);
+  });
+
   it('a client that vanished while its version is still bound is retried, and converges', async () => {
     const base = await created({ tag: 'pr-7', versionId: versions[1] });
     // A same-version sibling's retire removes this push's client just before it retires.
