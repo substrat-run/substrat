@@ -1,5 +1,77 @@
 # @substrat-run/contracts
 
+## 0.118.0
+
+### Minor Changes
+
+- 030fafd: A vertical bound to a team auth server accepts only bearer tokens minted for it.
+
+  Before, when no `audience` was configured, the relying party's bearer fallback checked only the token's signature and issuer. Every app on a team auth server shares that issuer, and so does any client that registers itself there. So on every route, a vertical accepted another app's `id_token` and an access token requested for another vertical's MCP endpoint. Cookie sessions were never affected.
+
+  Now, when the delivered config marks the issuer as shared (`substrat:auth:shared-issuer` = `"true"`, exported as `SHARED_ISSUER_CONFIG_KEY` from `@substrat-run/contracts`), a bearer is accepted only if it is the app's own:
+
+  - its `aud` names the app's MCP resource on the origin the request reached (`mcpResourceOf`). That is an MCP client's access token, whatever client requested it.
+  - its `azp` / `client_id` is the app's client id. Every one that is present must match.
+  - it has neither claim, and its `aud` is exactly the app's client id. That is the app's own `id_token`. A multi-valued `aud` with no `azp` is refused.
+
+  Anything else is a `401`. A configured `audience` still wins, as before. `oidcRpAuthProvider` takes the marker as `sharedIssuer`, and `instanceAuthFor` reads it from the delivered config. `AuthProvider.resolve` takes an optional second argument, the request URL. A caller that omits it (every existing one) gets the origin from the `Host` header.
+
+  **Issuers you configured by hand are unchanged.** Supabase, Auth0, Keycloak and the like carry no marker, and their bearers are checked exactly as before. To hold them to one audience, set the connection's `audience` (`authenticated` for a Supabase access token, the API identifier at Auth0).
+
+  The dashboard delivers the marker beside `substrat:auth` at install and on an Identity change. The issuer decides whether it is shared, not the part of the form it was picked from, so a hand-typed issuer URL that is one of the team's auth servers is marked too. The same classification runs at install, on an Identity change and in the heal. Apps installed before this get it the next time anyone on the team opens the Apps list, from the same pass that registers their MCP endpoint. That pass retries on later loads until the marker lands. It also retries while one of the team's auth servers cannot be located, so apps bound to it are never mistaken for apps on an outside issuer. Every delivery it could not make is logged, marker failures included. On a team with no auth server left, it clears the marker from every app that still carries it. An existing install is protected once both halves are live: this dashboard, and a deploy of the vertical built against this `vertical-auth`.
+
+  The dev issuer's `/dev/token` now mints for `substrat-dev` by default, the client `devLogin` signs in as (it was `dev`), and `devLogin` applies the team rule, so a script that works locally works hosted. A script that passed `audience: 'dev'` explicitly, or that points `devLogin` at another client id with `OIDC_CLIENT_ID`, must now mint for that client id. `DEV_CLIENT_ID` is exported.
+
+- 56a931b: A subject erasure now reaches two more places a copy of the person could survive.
+
+  A redacted platform intent's `result` is redacted too. It is whatever the drain's handler
+  returned, and for a connector that is the provider's answer about delivering this person's
+  data, so it could quote them. A non-NULL `result` now becomes the same tombstone as the
+  payload, and a NULL one stays NULL. `last_failure` is nulled beside it: it attributes
+  `last_error`, and once `last_error` is the redaction note, a kept `origin: 'provider'` would
+  caption the platform's note as the provider's words.
+
+  The resumable run tables, `_substrat_job_runs` and `_substrat_job_steps`, are reached for
+  the first time. A run carries no subject column, so the erasure uses the link it already
+  uses for intents: a copy of an event classified as the subject's, at any depth, in the
+  run's payload, its cursor or a step's stored result. Each such column is replaced by the
+  tombstone and the row's `last_error` by a note. A run still in progress is settled
+  `failed`, so no pass is handed a tombstone as a step's answer. A pass that was mid-flight
+  when the erasure landed can no longer write its cursor, its status or a fresh step result
+  back over the redaction, because both writes are now a compare-and-set on the run still
+  being `running`. What this does not reach is external output that names the person with
+  no classified event around it. That is stated as a limit in the kernel design, and
+  declaring a subject on a run is the open design that would close it.
+
+  A failed delivery of one of the subject's redacted events has its error text replaced by a
+  note, because a consumer's or executor's throw can quote the payload it failed on. A
+  delivered row is left alone, since an error there would mark it dead-lettered.
+
+  `SubjectShredReceipt` gains `jobRunsRedacted`, counted once per run however many of its
+  columns and steps were rewritten, and defaulted so an older receipt still parses. On the
+  hosted adapter, an erasure against a scope whose host predates this change is refused
+  with a `503` before the subject key is touched, as it already was for a host that
+  predates the intent redaction, so it can be re-run after a redeploy.
+
+- 429cc84: A vertical can tell its identity pool who is a member, so a login's "Your places" list at a team auth server stays in step with the app.
+
+  `@substrat-run/vertical-auth` adds `placesReporter`, built from an instance's delivered identity, and three calls on top of it:
+
+  - `observePlace` reports what a resolve just established. Call it after `/api/me` resolves a signed-in subject: bound means present, unbound means absent. It goes once per login per isolate, and again after an hour.
+  - `unbindMember` removes a member's binding and reports the place gone.
+  - `reportScopeMembers` sends the whole set bound in a scope. Run it from your provision hook, which the platform's reconcile re-runs, and a report that went missing is repaired. A scope with more than 10,000 bindings is refused and logged rather than half-sent.
+
+  Reports are best-effort and never throw. They go only to an issuer that publishes `/.well-known/substrat-places`, so an external issuer (Supabase, Auth0, …) is never sent one.
+
+  `IdentityDO` gains `unbind(scopeId, sub)` and `subjectsOf(scopeId, limit)`. `unbind` is the directory's first removal: it takes the binding away and never re-opens the owner seat.
+
+  `@substrat-run/contracts` exports the shared vocabulary:
+
+  - `place`, the exact entry: tenant, scope, hostname, name.
+  - `placeRegistration` / `placeRegistrations` and `PLACES_CONFIG_PREFIX`, which is how the platform registers a team's apps at an issuer.
+  - `placeReport` and `MAX_PLACE_MEMBERS`, what a vertical sends.
+  - `PLACES_DISCOVERY_PATH` / `placesDiscovery`.
+
 ## 0.117.0
 
 ### Minor Changes
@@ -5425,7 +5497,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

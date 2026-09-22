@@ -1,5 +1,25 @@
 # @substrat-run/demo-ticket0
 
+## 0.3.26
+
+### Patch Changes
+
+- 429cc84: The desk keeps its team auth server's "Your places" list in step with who is on the desk.
+
+  After `/api/me` resolves a signed-in person, the desk tells its auth server whether they are bound to it. This covers the owner's first sign-in, a claim link and an accepted invite, at that person's next request. A platform reconcile also sends the desk's whole membership, so a report that went missing is repaired. Nothing is sent for a desk on an external issuer.
+
+- Updated dependencies [030fafd]
+- Updated dependencies [56a931b]
+- Updated dependencies [429cc84]
+  - @substrat-run/vertical-auth@0.15.0
+  - @substrat-run/contracts@0.118.0
+  - @substrat-run/dev-issuer@0.2.0
+  - @substrat-run/kernel@0.118.0
+  - @substrat-run/adapter-sqlite@0.118.0
+  - @substrat-run/adapter-cloudflare@0.118.0
+  - @substrat-run/engine-metering@0.6.2
+  - @substrat-run/vertical-host@0.118.0
+
 ## 0.3.25
 
 ### Patch Changes
