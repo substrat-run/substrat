@@ -274,6 +274,12 @@ describe('readVerticalMeta — slug identity', () => {
     expect(meta.slugExplicit).toBe(false);
   });
 
+  it('reads declared calls while preserving absence and explicit emptiness', () => {
+    expect(readVerticalMeta(scratch({ name: 'crm', substrat: { calls: ['acme/crm'] } })).calls).toEqual(['acme/crm']);
+    expect(readVerticalMeta(scratch({ name: 'crm', substrat: { calls: [] } })).calls).toEqual([]);
+    expect(readVerticalMeta(scratch({ name: 'crm' })).calls).toBeUndefined();
+  });
+
   it('reads the declared outbound surface (#303), and reports absence as undefined', () => {
     // Absence must stay distinguishable from `[]` HERE, because push turns undefined into
     // `[]` on the wire (a new-CLI push always declares) — collapsing the two at the read
@@ -689,6 +695,7 @@ describe('cli.ts — every declared field readVerticalMeta reads reaches push()'
           usesModels: true,
           surfaces: [],
           outbound: [],
+          calls: [],
         },
       }),
     );

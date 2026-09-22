@@ -16,6 +16,22 @@ const ok = (result: unknown) =>
   vi.fn(async () => new Response(JSON.stringify({ result }), { status: 200 }));
 
 describe('peerClient (#1706)', () => {
+  it('the default transport invokes runtime fetch with its global receiver', async () => {
+    const runtime = vi.fn(function (this: unknown) {
+      expect(this).toBe(globalThis);
+      return Promise.resolve(Response.json({ result: 'ok' }));
+    });
+    vi.stubGlobal('fetch', runtime);
+    try {
+      await expect(peerClient('acme/crm').invoke('customer/list')).resolves.toBe('ok');
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it.each(['<html>old app</html>', '{}', '{"error":"wrong route"}'])('rejects invalid successful responses: %s', async (body) => {
+    const client = peerClient('acme/crm', { fetch: async () => new Response(body) });
+    await expect(client.invoke('customer/list')).rejects.toThrow(/invalid peer response/);
+  });
+
   it('posts the target and operation to the one reserved address, naming no caller', async () => {
     const fetchImpl = ok({ items: [1, 2] });
     const client = peerClient('acme/crm', { fetch: fetchImpl as unknown as typeof fetch });

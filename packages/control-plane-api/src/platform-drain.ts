@@ -1,5 +1,6 @@
 import {
   isTerminalDispatchFailure,
+  isPrimaryScope,
   ulid,
   type ConnectorHandler,
   type OpsFailureInput,
@@ -437,6 +438,21 @@ export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler 
     const admin = deps.host.admin;
     if (payload.vertical === ctx.vertical) {
       return { status: 'failed', error: `'${ctx.vertical}' cannot peer-call itself` };
+    }
+    // Revalidate on every delivery, including direct kicks and intents queued before suspension.
+    let caller: Scope | undefined;
+    let tenant: Awaited<ReturnType<typeof admin.getTenant>>;
+    try {
+      [caller, tenant] = await Promise.all([
+        admin.getScopeRecord(deps.actor, ctx.tenantId, ctx.scopeId),
+        admin.getTenant(deps.actor, ctx.tenantId),
+      ]);
+    } catch (error) {
+      return { status: 'pending', error: `could not verify peer caller lifecycle: ${String(error)}` };
+    }
+    if (!caller || caller.tenantId !== ctx.tenantId || caller.vertical !== ctx.vertical ||
+        caller.status !== 'active' || !isPrimaryScope(caller) || tenant?.status !== 'active') {
+      return { status: 'failed', error: 'peer caller must be a primary, active scope in an active tenant' };
     }
     // 1. The caller's own declaration, from the version bound to the scope at drain time.
     if (ctx.versionId) {

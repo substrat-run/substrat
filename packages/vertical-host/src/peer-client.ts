@@ -1,4 +1,5 @@
-import { PEER_CALL_URL, substratError, type ErrorCode } from '@substrat-run/contracts';
+import { globalFetch } from '@substrat-run/kernel';
+import { PEER_CALL_URL, peerCallResponse, substratError, type ErrorCode } from '@substrat-run/contracts';
 
 /**
  * Calling another vertical of the same tenant, from a vertical's own harness (#1706).
@@ -42,11 +43,12 @@ const REFUSAL_BY_STATUS: Record<number, ErrorCode> = {
   404: 'not_found',
   409: 'conflict',
   429: 'rate_limited',
+  502: 'unavailable',
   503: 'unavailable',
 };
 
 export function peerClient(vertical: string, options: PeerClientOptions = {}): PeerClient {
-  const call = options.fetch ?? fetch;
+  const call = options.fetch ?? globalFetch;
   return {
     async invoke<O>(operation: string, input?: unknown, invokeOptions?: { idempotencyKey?: string }): Promise<O> {
       const response = await call(PEER_CALL_URL, {
@@ -74,7 +76,9 @@ export function peerClient(vertical: string, options: PeerClientOptions = {}): P
             : `the call to '${vertical}' was refused (${response.status})`,
         );
       }
-      return (body?.result ?? null) as O;
+      const parsed = peerCallResponse.safeParse(body);
+      if (!parsed.success) throw substratError('unavailable', `invalid peer response from '${vertical}'`);
+      return parsed.data.result as O;
     },
   };
 }

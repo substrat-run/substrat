@@ -28,3 +28,13 @@ describe('dashboard peer switch confirmation', () => {
     expect(validPeerReason('x'.repeat(500))).toBe(true);
   });
 });
+
+import { showPeerDisclosure } from '../web/src/lib/peer-disclosure.js';
+
+it('discloses legacy unenforced callers, hiding only a known empty declaration', () => {
+  const empty = { declares: [], calls: [], callers: [], callersError: null };
+  expect(showPeerDisclosure(empty)).toBe(false);
+  expect(showPeerDisclosure({ ...empty, declares: null })).toBe(true);
+  expect(showPeerDisclosure({ ...empty, declares: ['acme/crm'] })).toBe(true);
+  expect(showPeerDisclosure({ ...empty, callersError: 'unreadable' })).toBe(true);
+});

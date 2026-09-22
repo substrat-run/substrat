@@ -75,6 +75,7 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
   let host: SqliteScopeHost;
   const tenant = tenantId.parse(ulid());
   const dashScope = scopeId.parse(ulid());
+  const peerScope = scopeId.parse(ulid());
   /** What the plane was asked to DO (not to read) — a refused route leaves this empty. */
   let effects: string[];
   /** EVERY request that reached the plane's service binding: reads, ownership lookups, token mints. */
@@ -98,6 +99,7 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
     const link = (sub: string, principal: typeof owner) =>
       host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: sub, principal, tenantId: tenant, scopeId: dashScope });
     await link(subs.owner, owner);
+    await (await host.getScope(owner, tenant, dashScope)).invoke('dashboard/provision-app', { appScopeId: peerScope, verticalSlug: 'acme/hr', name: 'HR' });
     for (const role of ['member', 'viewer'] as const) {
       const p = principalId.parse(ulid());
       await host.admin.assignRole(staff, { principalId: p, roleKey: role, node: { tenantId: tenant, scopeId: null } });
@@ -120,6 +122,10 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
           const path = u.pathname.replace(/^\/api/, '') + u.search;
           planeCalls.push(`${method} ${path}`);
           if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
+          if ((method === 'POST' || method === 'DELETE') && path.endsWith('/peer-grants')) {
+            effects.push(`${method} ${path}`);
+            return Response.json({ changed: true });
+          }
           const acts =
             (method === 'POST' && /^\/verticals\/[^/]+\/channels\/[^/]+\/promote$/.test(u.pathname.replace(/^\/api/, ''))) ||
             (method === 'POST' && /^\/verticals\/[^/]+\/previews$/.test(u.pathname.replace(/^\/api/, ''))) ||
@@ -188,6 +194,19 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
     }
     expect(effects.length).toBeGreaterThan(0);
   }
+
+  it('peer switch: a viewer cannot cut off or restore access', async () => {
+    for (const to of ['on', 'off']) {
+      await refused(['POST', `/api/apps/${peerScope}/peers/switch`, { vertical: 'acme/board-room', to, reason: 'review' }]);
+    }
+  });
+  it('peer switch: an owner and member can change access to their app', async () => {
+    await allowed(['POST', `/api/apps/${peerScope}/peers/switch`, { vertical: 'acme/board-room', to: 'off', reason: 'review' }], [200]);
+  });
+  it('peer switch: a manager cannot address an app outside the team', async () => {
+    expect((await asRole('owner', 'POST', `/api/apps/${ulid()}/peers/switch`, { vertical: 'acme/board-room', to: 'off', reason: 'review' })).status).toBe(404);
+    expect(planeCalls).toEqual([]);
+  });
 
   // -- promote ---------------------------------------------------------------
 

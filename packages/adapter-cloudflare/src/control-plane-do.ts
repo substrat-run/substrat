@@ -2099,11 +2099,12 @@ export class ControlPlaneDO extends DurableObject {
   ): PeerCallTargetRow {
     const caller = this.sql
       .exec(
-        `SELECT tenant_id, vertical, status, kind, forked_from FROM scopes WHERE scope_id = ?`,
+        `SELECT s.tenant_id, s.vertical, s.status, s.kind, s.forked_from, t.status AS tenant_status
+           FROM scopes s LEFT JOIN tenants t ON t.tenant_id = s.tenant_id WHERE s.scope_id = ?`,
         callerScopeId,
       )
       .toArray()[0] as
-      | { tenant_id: string; vertical: string | null; status: string; kind: string | null; forked_from: string | null }
+      | { tenant_id: string; vertical: string | null; status: string; tenant_status: string | null; kind: string | null; forked_from: string | null }
       | undefined;
     const candidates = this.sql
       .exec(
@@ -2146,11 +2147,11 @@ export class ControlPlaneDO extends DurableObject {
       ? 'unknown'
       : !isPrimaryScope({ kind: caller.kind ?? '', forkedFrom: (caller.forked_from as ScopeId | null) ?? null })
         ? 'not-primary'
-        : caller.status !== 'active'
+        : caller.status !== 'active' || caller.tenant_status !== 'active'
           ? 'inactive'
           : 'ok';
     return {
-      caller: { state: callerState, status: caller?.status ?? null },
+      caller: { state: callerState, status: caller?.tenant_status !== 'active' ? `tenant ${caller?.tenant_status ?? 'unknown'}` : caller.status },
       outcome: resolution.outcome,
       count: resolution.outcome === 'ambiguous' ? resolution.count : 0,
       target,

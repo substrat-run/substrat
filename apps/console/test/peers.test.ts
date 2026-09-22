@@ -87,7 +87,7 @@ describe('peerBadgeStatus', () => {
 
 describe('peerStateLabel', () => {
   it('says what a position means in a tenant’s words', () => {
-    expect(peerStateLabel('on')).toBe('May call in');
+    expect(peerStateLabel('on')).toBe('Grants active');
     expect(peerStateLabel('off')).toBe('Switched off');
   });
 

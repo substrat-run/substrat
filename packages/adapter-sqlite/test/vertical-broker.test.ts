@@ -127,6 +127,14 @@ describe('the local peer broker (#1706)', () => {
   });
 
   describe('revocation on suspend and uninstall: the caller is re-read on every call', () => {
+    it('a suspended caller tenant is refused even while its scope and target tenant stay active', async () => {
+      await callers.admin.setTenantStatus(staff, t, 'suspended');
+      try {
+        expect(errorCodeOf(await refusal(call(caller)))).toBe('forbidden');
+      } finally { await callers.admin.setTenantStatus(staff, t, 'active'); }
+      await expect(call(caller)).resolves.toBeDefined();
+    });
+
     it('a suspended caller is refused on its next call', async () => {
       await callers.admin.suspendScope(staff, t, caller);
       expect(errorCodeOf(await refusal(call(caller)))).toBe('forbidden');

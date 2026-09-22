@@ -204,7 +204,7 @@ are no migrations or persisted domain rows: the CRM returns one fixed example cu
 In an ESM project using the packages from this release, install the dependencies:
 
 ```sh
-npm install @substrat-run/contracts @substrat-run/kernel @substrat-run/adapter-sqlite zod
+npm install @substrat-run/contracts @substrat-run/kernel @substrat-run/adapter-sqlite
 npm install --save-dev tsx
 ```
 
@@ -215,9 +215,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { z } from 'zod';
 import {
-  defineEntities, defineOperations, errorCodeOf, manifestOperations, moduleManifest,
+  z, defineEntities, defineOperations, errorCodeOf, manifestOperations, moduleManifest,
   operationInputsOf, peersDeclaredBy, permissionKey, platformActorId, scopeId, tenantId,
 } from '@substrat-run/contracts';
 import { assertAllowed, ulid } from '@substrat-run/kernel';

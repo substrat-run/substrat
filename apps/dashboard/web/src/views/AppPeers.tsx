@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Input } from '@substrat-run/ui';
+import { showPeerDisclosure } from '../lib/peer-disclosure';
 import { changePeerAccess, validPeerReason } from '../lib/peer-switch';
 import { api, type AppPeersView, type DeclaredCallRow, type PeerCallerRow } from '../lib/api';
 import { Pill, card, type PillKind } from '../components/ui';
@@ -21,7 +22,7 @@ import { relativeTime } from '../lib/format';
 
 const CALL_STATE: Record<DeclaredCallRow['state'], { kind: PillKind; label: string }> = {
   ambiguous: { kind: 'warning', label: 'Multiple instances' },
-  allowed: { kind: 'success', label: 'May call' },
+  allowed: { kind: 'success', label: 'Grants active' },
   // Not a fault, and deliberately neutral rather than warning: declaring a call on an app
   // the tenant does not run is the ordinary state of a freshly installed vertical.
   'not-installed': { kind: 'neutral', label: 'Not installed here' },
@@ -31,7 +32,7 @@ const CALL_STATE: Record<DeclaredCallRow['state'], { kind: PillKind; label: stri
 };
 
 const CALLER_STATE: Record<PeerCallerRow['calls'], { kind: PillKind; label: string }> = {
-  on: { kind: 'success', label: 'May call in' },
+  on: { kind: 'success', label: 'Grants active' },
   off: { kind: 'danger', label: 'Switched off' },
   ungranted: { kind: 'neutral', label: 'Holds nothing here' },
 };
@@ -43,7 +44,7 @@ function callLine(row: DeclaredCallRow): string {
     case 'ambiguous':
       return `You run ${row.count} active instances of ${row.vertical}. Calls are refused; instance binding is not available yet.`;
     case 'allowed':
-      return `Admitted at ${row.vertical}, with the permissions that app's own manifest grants it.`;
+      return `Grants are active at ${row.vertical}. Its manifest separately decides which operations this app may invoke.`;
     case 'switched-off':
       return row.switchedOff
         ? `Cut off at ${row.vertical} by ${row.switchedOff.actor} ${relativeTime(row.switchedOff.at)} — “${row.switchedOff.reason}”`
@@ -121,7 +122,7 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
   const callers = view.callers ?? [];
   // The whole panel is hidden only when there is genuinely nothing to say in EITHER
   // direction and no read failed. A failed mirror read is something to say.
-  if (view.calls.length === 0 && callers.length === 0 && view.callersError === null) return null;
+  if (!showPeerDisclosure(view)) return null;
 
   return (
     <section style={card}>
@@ -130,9 +131,14 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
       <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: '19px' }}>
         Apps of this team can call each other's operations without an API key — the platform
         names the calling app, and each side declares its half. Nothing outside this team can
-        use it.
+        use it. Grants shown here do not promise admission to every operation; the target’s manifest decides that separately.
       </p>
 
+      {view.declares === null && (
+        <p role="status">This version predates outgoing call declarations. Its targets are not restricted by
+          <code> substrat.calls</code>; each target still enforces its own peer grants and operations.
+          Redeploy with an explicit calls declaration to restrict outgoing targets.</p>
+      )}
       {view.calls.length > 0 && (
         <>
           <h3 style={{ margin: '0 0 6px', fontSize: 13, color: 'var(--text-secondary)' }}>

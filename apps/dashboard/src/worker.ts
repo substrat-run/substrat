@@ -2054,6 +2054,7 @@ app.post('/api/apps/:scopeId/peers/switch', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayManageApps(host, node);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));

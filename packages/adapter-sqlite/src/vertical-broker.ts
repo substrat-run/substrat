@@ -98,11 +98,12 @@ export function createLocalVerticalBroker(hosts: Readonly<Record<string, SqliteS
                 'call is made by a live instance of the calling vertical',
             );
           }
-          if (record.status !== 'active' || !isPrimaryScope(record)) {
+          const tenant = await callerHost!.admin.getTenant(LOCAL_BROKER_ACTOR, caller.tenantId);
+          if (tenant?.status !== 'active' || record.status !== 'active' || !isPrimaryScope(record)) {
             throw substratError(
               'forbidden',
               `scope ${caller.scopeId} of '${caller.vertical}' may not call other verticals: it is ` +
-                (record.status !== 'active' ? `${record.status}` : 'a preview or a fork') +
+                (tenant?.status !== 'active' ? `in a ${tenant?.status ?? 'missing'} tenant` : record.status !== 'active' ? `${record.status}` : 'a preview or a fork') +
                 ' — only a live primary instance acts as its vertical',
             );
           }

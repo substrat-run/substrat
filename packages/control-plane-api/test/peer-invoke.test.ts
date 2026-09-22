@@ -136,12 +136,41 @@ describe('peerInvokeHandler (#1706)', () => {
   it('refuses a target that is not installed in the caller’s tenant — the other tenant’s is not reachable', async () => {
     calls.length = 0;
     const outcome = await handler()(
-      { tenantId: other, scopeId: elsewhere, vertical: 'acme/board-room' },
+      { tenantId: other, scopeId: elsewhere, vertical: 'acme/crm' },
       intent({ payload: { vertical: 'acme/absent', operation: 'x/y' } }),
     );
     expect(outcome).toMatchObject({ status: 'failed' });
     expect(String(outcome.error)).toMatch(/not installed in this tenant/);
     expect(calls).toHaveLength(0);
+  });
+
+  it('rechecks tenant and scope suspension on each delivery, with an active twin', async () => {
+    const request = intent({ payload: { vertical: 'acme/crm', operation: 'customer/list' } });
+    for (const suspend of ['tenant', 'scope']) {
+      calls.length = 0;
+      if (suspend === 'tenant') await host.admin.setTenantStatus(staff, t, 'suspended');
+      else await host.admin.suspendScope(staff, t, caller);
+      try {
+        expect((await handler()(ctx, request)).status).toBe('failed');
+        expect(calls).toHaveLength(0);
+      } finally {
+        if (suspend === 'tenant') await host.admin.setTenantStatus(staff, t, 'active');
+        else await host.admin.unsuspendScope(staff, t, caller);
+      }
+      expect((await handler()(ctx, request)).status).toBe('done');
+      expect(calls).toHaveLength(1);
+    }
+  });
+
+  it('refuses active previews and forged caller identity before delivery', async () => {
+    const preview = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: preview, vertical: ctx.vertical, kind: 'preview' });
+    await host.admin.activateScope(staff, t, preview);
+    for (const from of [{ ...ctx, scopeId: preview }, { ...ctx, vertical: 'acme/stranger' }, { ...ctx, scopeId: scopeId.parse(ulid()) }]) {
+      calls.length = 0;
+      expect((await handler()(from, intent({ payload: { vertical: 'acme/crm', operation: 'customer/list' } }))).status).toBe('failed');
+      expect(calls).toHaveLength(0);
+    }
   });
 
   it('refuses a vertical calling itself', async () => {

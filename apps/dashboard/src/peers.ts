@@ -94,7 +94,7 @@ export function declaredCallLine(entry: DeclaredCallState): string {
     case 'ambiguous':
       return `${entry.count} active instances of ${entry.vertical} — calls are refused until one target can be resolved.`;
     case 'allowed':
-      return `May call ${entry.vertical}, with the permissions that app's own manifest grants it.`;
+      return `Grants are active at ${entry.vertical}. Its manifest separately decides which operations this app may invoke.`;
     case 'switched-off':
       return `Switched off — ${entry.vertical} refuses this app's calls until you let it back in.`;
     case 'no-grant':

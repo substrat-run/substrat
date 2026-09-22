@@ -37,7 +37,7 @@ export function peerBadgeStatus(calls: PeerGrantsStatusEntry['calls']): 'success
  * predates the manifest version declaring it. Left unexplained it reads as a fault.
  */
 export function peerStateLabel(calls: PeerGrantsStatusEntry['calls']): string {
-  if (calls === 'on') return 'May call in';
+  if (calls === 'on') return 'Grants active';
   if (calls === 'off') return 'Switched off';
   return 'Holds nothing here';
 }

@@ -1,6 +1,7 @@
 ---
 '@substrat-run/contracts': minor
 '@substrat-run/kernel': minor
+'@substrat-run/contract-tests': minor
 '@substrat-run/console': patch
 '@substrat-run/dashboard': patch
 '@substrat-run/dashboard-web': patch

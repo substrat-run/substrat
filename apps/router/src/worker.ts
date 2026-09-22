@@ -21,7 +21,7 @@ import {
   createRouteResolver,
   type RouteResolver,
 } from '@substrat-run/adapter-cloudflare/routing';
-import { peerCallRequest, peerCaller, type PeerCaller, type RouteTarget } from '@substrat-run/contracts';
+import { peerCallRequest, peerCallResponse, peerCaller, type PeerCaller, type RouteTarget } from '@substrat-run/contracts';
 
 export interface Env {
   /**
@@ -514,7 +514,11 @@ export async function handlePeerCall(
       message: typeof body?.error === 'string' ? body.error : `the call was refused (${response.status})`,
     };
   }
-  return { ok: true, result: body?.result ?? null };
+  const parsed = peerCallResponse.safeParse(body);
+  if (!parsed.success) {
+    return { ok: false, status: 502, code: 'unavailable', message: 'peer target returned an invalid operation response; redeploy the target' };
+  }
+  return { ok: true, result: parsed.data.result };
 }
 
 /** What the entrypoint answers: a result, or a refusal with the status the caller sees. */

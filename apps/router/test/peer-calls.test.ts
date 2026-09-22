@@ -348,3 +348,17 @@ describe('a target still propagating (#1706)', () => {
     ).rejects.toThrow(/exceeded CPU/);
   });
 });
+
+
+describe('peer response validation', () => {
+  it.each(['<html>old app</html>', '{}', '{"error":"wrong route"}'])('refuses invalid HTTP success: %s', async (body) => {
+    const app = entrypoint({ CONTROL_PLANE: directory(), DISPATCH: {
+      get: () => ({ fetch: async () => new Response(body) }),
+    } as unknown as Env['DISPATCH'] });
+    expect(await app.invoke(caller(), request())).toMatchObject({ ok: false, status: 502, code: 'unavailable' });
+  });
+  it('accepts an explicit null result', async () => {
+    const app = entrypoint({ CONTROL_PLANE: directory(), DISPATCH: dispatch(200, { result: null }) as unknown as Env['DISPATCH'] });
+    expect(await app.invoke(caller(), request())).toEqual({ ok: true, result: null });
+  });
+});

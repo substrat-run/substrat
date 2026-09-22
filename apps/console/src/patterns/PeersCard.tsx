@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { PeerGrantsStatusEntry, Scope } from '@substrat-run/contracts';
 import { Badge, Button, Card, Dialog, Input, Table } from '../components';
 import type { Api } from '../lib/api';
-import { peerBadgeStatus, peerStateLabel, peersCardState } from '../lib/peers';
+import { peerBadgeStatus, peerStateLabel, peersCardState, switchedOffLine } from '../lib/peers';
 import { errorMessage, performSwitch, submitSwitch, validReason } from '../lib/schedules';
 import { ActorCell } from './ActorCell';
 
@@ -157,7 +157,7 @@ export function PeersCard({
               {
                 header: 'Switched off',
                 render: (e) =>
-                  e.switchedOff ? (
+                  switchedOffLine(e) !== null && e.switchedOff ? (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <ActorCell actor={e.switchedOff.actor} />
                       <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
