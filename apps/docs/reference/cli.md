@@ -299,8 +299,10 @@ substrat preview delete --tag pr-42            # reap it (idempotent)
 Creates a **preview** — a scope with data bound to a version, at its own `--<tag>` hostname. This is
 the non-production environment primitive: `create` pushes the working tree, forks the vertical's prod
 scope (or provisions an `--empty` clean-room scope), binds the pushed version, and mints the URL.
-Re-running the same `--tag` **rebinds** onto the same fork (migrations roll forward on one copy) and
-**renews** its TTL; `--refresh` starts from a clean fork. `--ttl` defaults to `72h`; `--ttl none`
+Re-running the same `--tag` **rebinds** onto the same fork, copying its data into the new version
+so migrations roll forward on the same data (a write made to the preview while the push runs may be
+lost, see [what a push copies](/guide/environments-and-previews#previews-the-non-prod-primitive)),
+and **renews** its TTL; `--refresh` starts from a clean fork. `--ttl` defaults to `72h`; `--ttl none`
 **pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so
 they never advance the release version your repo owns. Because `create` is a push, it takes push's
 own overrides: `--skip-lint` and `--allow-unserved-ui` mean the same thing here as they do there.
@@ -318,7 +320,10 @@ Pins **one** scope to a version of the same vertical — the per-scope rollout p
 promote cascades every tenant scope; `scope bind` moves a single one, which is how you canary
 *tenant A first* or advance a long-lived [test environment](/guide/environments-and-previews#a-long-lived-test-environment)
 on each merge. `--snapshot` forks the scope's data before a migration-crossing bind (the rollback
-point). A pending (unadmitted) version is refused unless the scope is a preview.
+point). A scope that runs on its bound version's own deployment, such as a preview or a test
+environment forked from one, has its data copied into the new version before the bind; a write
+made to it while the bind runs may be lost. A pending (unadmitted) version is refused unless the
+scope is a preview.
 
 ### `scope domain`
 

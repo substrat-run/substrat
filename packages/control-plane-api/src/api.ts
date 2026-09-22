@@ -2276,8 +2276,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * What it does not do:
    * - Carry writes that land on the source between the export and the bind. Those are lost.
    * - Delete the source copy. That copy is unreachable once the caller binds, and it stays
-   *   in the old script until something reaps it (#1710). Deleting it here would race a
-   *   concurrent push that is still exporting from it.
+   *   in the old script, because nothing reaps it yet (#1722). Deleting it here would race
+   *   a concurrent push that is still exporting from it.
    * - Cross lineages. A version of another vertical reads as absent here, and moving a scope
    *   between lineages is `rebindScopeOntoVertical`'s job, behind its migration gate.
    */

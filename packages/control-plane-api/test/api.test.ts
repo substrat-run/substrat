@@ -1873,7 +1873,7 @@ describe('control-plane API', () => {
       expect((await boundOf(preview)).verticalVersionId).toBe(v2);
       // The loss window is said where the person pushing reads it.
       expect(second.body.notes.find((n) => n.startsWith('Data:'))).toMatch(/may be lost/);
-      // The old copy is left where it was: reaping it is #1710's remaining work.
+      // The old copy is left where it was: nothing reaps it yet (#1722).
       expect(rows(v1, preview)).toEqual([['prod-row'], ['review-row']]);
     });
 

@@ -415,8 +415,10 @@ substrat preview delete --tag pr-42            # reap it (idempotent)
 `create` pushes the working tree (so the version it binds is exactly the PR's code), forks
 your vertical's prod scope, binds the pushed version to the fork, and mints a non-canonical
 `--<tag>` hostname alongside your prod URL. Re-running the same `--tag` (what a new push to
-the PR does) **rebinds the new version onto the same fork**, so successive pushes roll their
-migrations forward on one copy — the rehearsal you actually want before a migration merges.
+the PR does) **rebinds the new version onto the same fork** and copies the fork's data into it,
+so successive pushes roll their migrations forward on the same data — the rehearsal you actually
+want before a migration merges. A write made to the preview while a push runs may be lost
+([why](/guide/environments-and-previews#previews-the-non-prod-primitive)).
 `--refresh` starts over from a clean fork of prod. Every preview carries a TTL (`--ttl 72h`
 by default) so an abandoned one is garbage-collected even if it is never deleted.
 

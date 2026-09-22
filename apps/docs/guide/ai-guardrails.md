@@ -188,8 +188,8 @@ honest.
 
 Open a PR and the platform forks the production scope, binds the version that PR just
 pushed, gives it its own hostname, and posts the URL on the PR; closing the PR reaps it.
-Successive pushes to the same PR roll their migrations **forward on one copy**, exactly as a
-real upgrade would. When a bind crosses a migration-digest boundary the pre-migration data
+Successive pushes to the same PR carry the preview's data along and roll their migrations
+**forward on the same data**, exactly as a real upgrade would. When a bind crosses a migration-digest boundary the pre-migration data
 is snapshotted first — and the digest comparison is the gate, not a flag someone remembers
 to pass, so the safety net is on precisely when it matters and absent on a code-only rebind.
 
