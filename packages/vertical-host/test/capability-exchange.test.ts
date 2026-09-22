@@ -409,6 +409,36 @@ describe('mountCapabilityExchange — a link share, end to end over HTTP', () =>
     expect(legacy.names()).toEqual([`${CAPABILITY_COOKIE}_${b.id}`]);
   });
 
+  it('a malformed name — `;`, `=`, spaces, non-ASCII, a near-id — is the 401 an unknown id gets, and clears nothing', async () => {
+    const jar = new Jar();
+    const a = await shareOf(folder('F'));
+    await open(jar, a.secret);
+    const before = jar.header();
+    const malformed = [
+      `${a.id}; ${CAPABILITY_COOKIE}_x=1`,
+      `${a.id}=`,
+      `${a.id} `.padStart(28, ' '),
+      'A B',
+      a.id.toLowerCase(),
+      `${a.id.slice(0, 25)}å`,
+      `${a.id}0`,
+    ];
+    for (const name of malformed) {
+      // By query, so non-ASCII arrives intact (a header cannot carry it).
+      const q = `?capability=${encodeURIComponent(name)}`;
+      const res = await app.request(`http://docs.test/api/whoami${q}`, { headers: as(jar) });
+      expect([name, res.status]).toEqual([name, 401]);
+      const cleared = await app.request(`http://docs.test/api/capability/clear${q}`, {
+        method: 'POST',
+        headers: as(jar),
+      });
+      expect([name, cleared.status, cleared.headers.get('set-cookie')]).toEqual([name, 204, null]);
+    }
+    // Nothing was forgotten, and the well-formed name still acts.
+    expect(jar.header()).toBe(before);
+    expect(await whoamiAs(jar, a.id)).toBe(a.id);
+  });
+
   it('clearing one link leaves the others open; clearing with none named forgets them all', async () => {
     const jar = new Jar();
     const a = await shareOf(folder('F'));

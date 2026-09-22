@@ -247,10 +247,17 @@ export function namedCapabilityOf(c: Context): string | undefined {
 export function capabilitySessionOf(c: Context, cookieName: string = CAPABILITY_COOKIE): string | undefined {
   const named = namedCapabilityOf(c);
   if (named !== undefined) {
+    // The name is the caller's text. It is held to the capability-id shape first and then
+    // only COMPARED with the ids parsed off cookie names — never spliced into one — so no
+    // `;`, `=`, space or non-ASCII character in it reaches a header; anything else is the
+    // 401 an unknown id gets.
     const held = ULID_SHAPE.test(named) ? capabilitySessionsOf(c, cookieName).find((s) => s.capabilityId === named) : undefined;
     if (!held) throw noSuchSession();
     return held.sessionToken;
   }
+  // Naming nothing can only NARROW: the token chosen is one session, resolved by the host to
+  // its own capability row, so the call acts within that link's entity subtree and keys or
+  // is refused — it never unions two links, and never widens past the newest one's grant.
   return capabilitySessionsOf(c, cookieName).at(-1)?.sessionToken ?? (getCookie(c, cookieName) || undefined);
 }
 
@@ -322,7 +329,9 @@ export function clearCapabilitySession(
   const { capabilityId, cookieName = CAPABILITY_COOKIE } = typeof options === 'string' ? { cookieName: options } : options;
   const named = capabilityId ?? namedCapabilityOf(c);
   if (named !== undefined) {
-    // Only a well-formed id becomes a cookie name; anything else names nothing this set.
+    // The one place a caller's text becomes part of a cookie NAME, so it must be an id first:
+    // anything else (`;`, `=`, spaces, non-ASCII) names no cookie this module set, and
+    // clearing it is a no-op with no `Set-Cookie` at all — forgetting is idempotent.
     if (ULID_SHAPE.test(named)) deleteCookie(c, sessionCookieName(cookieName, named), { path: '/' });
     return;
   }
