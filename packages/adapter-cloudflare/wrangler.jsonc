@@ -38,7 +38,15 @@
       // and must not walk every other suite's).
       { "name": "CRM_SCOPE", "class_name": "CrmScopeDO" },
       { "name": "BOARD_SCOPE", "class_name": "BoardScopeDO" },
-      { "name": "VE_CONTROL_PLANE", "class_name": "ControlPlaneDO" }
+      { "name": "VE_CONTROL_PLANE", "class_name": "ControlPlaneDO" },
+      // #1710: three pushed versions of one vertical. Hosted, each is its own script, and a
+      // Durable Object namespace belongs to its script, so each gets its own CLASS here (a
+      // second binding to the same class would share one namespace and prove nothing). The
+      // directory the control-plane API runs over is its own too.
+      { "name": "PC_V1_SCOPE", "class_name": "PreviewV1ScopeDO" },
+      { "name": "PC_V2_SCOPE", "class_name": "PreviewV2ScopeDO" },
+      { "name": "PC_V3_SCOPE", "class_name": "PreviewV3ScopeDO" },
+      { "name": "PC_CONTROL_PLANE", "class_name": "ControlPlaneDO" }
     ]
   },
   "migrations": [
@@ -65,6 +73,10 @@
     {
       "tag": "v6",
       "new_sqlite_classes": ["CrmScopeDO", "BoardScopeDO"]
+    },
+    {
+      "tag": "v7",
+      "new_sqlite_classes": ["PreviewV1ScopeDO", "PreviewV2ScopeDO", "PreviewV3ScopeDO"]
     }
   ]
 }

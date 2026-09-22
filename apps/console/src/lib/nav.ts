@@ -28,6 +28,7 @@ export const VIEWS: ViewKey[] = [
   'failures',
   'connections',
   'settings',
+  'services',
 ];
 
 export interface Nav {

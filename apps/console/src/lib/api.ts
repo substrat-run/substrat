@@ -41,6 +41,7 @@ import type {
   VerticalChannel,
   VerticalSource,
   VerticalVersion,
+  PlatformRequestBacklog,
 } from '@substrat-run/contracts';
 import type { DoNamespace, PlatformRuntime, TenantStores } from './cf-links';
 
@@ -682,6 +683,10 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     /** Observed-vs-declared outbound egress for a vertical's deployed versions (#859). */
     verticalEgress: (slug: string, q: { hours?: number; limit?: number } = {}) =>
       call<EgressReport>(`/verticals/${encodeURIComponent(slug)}/egress${query({ ...q })}`),
+
+    // Platform-request drain backlog, fleet-wide (#1690 §2) — terminal give-ups over a
+    // window, never a queue depth. See `PlatformRequestBacklog`'s own doc.
+    platformRequestBacklog: () => call<PlatformRequestBacklog>('/platform-requests/backlog'),
   };
 }
 

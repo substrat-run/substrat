@@ -1668,6 +1668,9 @@ importers:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../contract-tests
+      '@substrat-run/control-plane-api':
+        specifier: workspace:^
+        version: link:../control-plane-api
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

@@ -299,8 +299,12 @@ substrat preview delete --tag pr-42            # reap it (idempotent)
 Creates a **preview** — a scope with data bound to a version, at its own `--<tag>` hostname. This is
 the non-production environment primitive: `create` pushes the working tree, forks the vertical's prod
 scope (or provisions an `--empty` clean-room scope), binds the pushed version, and mints the URL.
-Re-running the same `--tag` **rebinds** onto the same fork (migrations roll forward on one copy) and
-**renews** its TTL; `--refresh` starts from a clean fork. `--ttl` defaults to `72h`; `--ttl none`
+Re-running the same `--tag` **rebinds** onto the same fork and **renews** its TTL. On a host with a
+per-version resolver, routing between distinct version deployments copies the data before binding;
+unchanged routing and co-located incoming versions need no copy. Migrations roll forward on the
+same data, but writes during a copy may be lost (see
+[what a push copies](/guide/environments-and-previews#previews-the-non-prod-primitive)).
+`--refresh` starts from a clean fork. `--ttl` defaults to `72h`; `--ttl none`
 **pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so
 they never advance the release version your repo owns. Because `create` is a push, it takes push's
 own overrides: `--skip-lint` and `--allow-unserved-ui` mean the same thing here as they do there.
@@ -318,7 +322,11 @@ Pins **one** scope to a version of the same vertical — the per-scope rollout p
 promote cascades every tenant scope; `scope bind` moves a single one, which is how you canary
 *tenant A first* or advance a long-lived [test environment](/guide/environments-and-previews#a-long-lived-test-environment)
 on each merge. `--snapshot` forks the scope's data before a migration-crossing bind (the rollback
-point). A pending (unadmitted) version is refused unless the scope is a preview.
+point). A scope that runs on its bound version's own deployment, such as a preview or a test
+environment forked from one, has its data copied before binding when routing moves between distinct
+version deployments and the host has a per-version resolver. Unchanged routing and co-located
+incoming versions need no copy. Writes during a copy may be lost. A pending (unadmitted) version
+is refused unless the scope is a preview.
 
 ### `scope domain`
 

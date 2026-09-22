@@ -15,6 +15,12 @@ import {
   connectionHealthState,
   connectionProvider,
   connectorDispatchKind,
+  PROVISION_SIBLING_KIND,
+  ARCHIVE_SCOPE_KIND,
+  PROVISION_TENANT_KIND,
+  SET_ENTITLEMENTS_KIND,
+  MODEL_USAGE_KIND,
+  SWEEP_RUNS_KIND,
   toConnectionHealthEntry,
   CONNECTION_EXPIRY_WARNING_DAYS,
   CONNECTION_STALE_DAYS,
@@ -83,6 +89,7 @@ import type {
   ListPageQuery,
   Page,
   PlatformActorId,
+  PlatformRequestBacklog,
   Scope,
   ScopeDump,
   ScopeId,
@@ -771,6 +778,14 @@ const connectionHealthQuery = z.object({
 const CONNECTOR_DEAD_LETTER_WINDOW_DAYS = 7;
 /** The per-provider read bound: past it the count is a floor, and says so (`capped`). */
 export const CONNECTOR_DEAD_LETTER_CAP = 200;
+
+/**
+ * `/platform-requests/backlog` (#1690 §2) rides the SAME window and per-kind bound as the
+ * connector dead-letter count above — one incident horizon, one honestly-capped read, for
+ * every fleet-wide "how much has given up lately" number this API answers.
+ */
+const PLATFORM_REQUEST_BACKLOG_WINDOW_DAYS = CONNECTOR_DEAD_LETTER_WINDOW_DAYS;
+const PLATFORM_REQUEST_BACKLOG_CAP = CONNECTOR_DEAD_LETTER_CAP;
 
 // The issues read (#1233). No cursor by design: grouping IS the compression —
 // cardinality is the number of distinct failure shapes — and `limit` bounds it.
@@ -1715,6 +1730,57 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ hours: input.hours, buckets });
   });
 
+  // -- platform-request backlog, fleet-wide (#1690 §2) -----------------------
+  //
+  // "Is the platform's own intent drain keeping up" — composed from the SAME ops-failure
+  // record the dead-letter count above reads, generalized from one provider family to
+  // every known intent kind. Staff/service only by the same construction as
+  // `/connections/health` — absent from BUILDER_ROUTES and TENANT_ROUTES, so both
+  // credentials default-deny it.
+  //
+  // This is a count of terminal FAILURES, never a queue depth (see `platformRequestBacklog`'s
+  // doc): a still-`pending` intent lives in the vertical's own scope DO and nothing here
+  // walks the fleet to find it. A `0` means "nothing has given up lately", not "nothing is
+  // waiting" — the console tile is worded to keep that distinction, not just this comment.
+  app.get('/platform-requests/backlog', async (c) => {
+    const now = new Date();
+    const since = new Date(now.getTime() - PLATFORM_REQUEST_BACKLOG_WINDOW_DAYS * 86_400_000).toISOString();
+    // The fixed kinds the platform itself registers, plus one `connector:<provider>` kind
+    // per provider that has (or had) a live connection anywhere in the fleet — the same
+    // derivation the dead-letter count above uses, since that kind only exists for a
+    // provider some connection actually names.
+    const providers = [...new Set((await admin.listConnections(c.get('actor'), { includeRevoked: true })).map((r) => r.provider))];
+    const kinds = [
+      PROVISION_SIBLING_KIND,
+      ARCHIVE_SCOPE_KIND,
+      PROVISION_TENANT_KIND,
+      SET_ENTITLEMENTS_KIND,
+      MODEL_USAGE_KIND,
+      SWEEP_RUNS_KIND,
+      ...providers.map(connectorDispatchKind),
+    ];
+    const counts = await Promise.all(
+      kinds.map(async (kind) => {
+        const found = await admin.listOpsFailures(c.get('actor'), {
+          operation: `intent.${kind}`,
+          since,
+          limit: PLATFORM_REQUEST_BACKLOG_CAP + 1,
+        });
+        return {
+          count: Math.min(found.length, PLATFORM_REQUEST_BACKLOG_CAP),
+          capped: found.length > PLATFORM_REQUEST_BACKLOG_CAP,
+        };
+      }),
+    );
+    const body: PlatformRequestBacklog = {
+      total: counts.reduce((sum, k) => sum + k.count, 0),
+      capped: counts.some((k) => k.capped),
+      since,
+      windowDays: PLATFORM_REQUEST_BACKLOG_WINDOW_DAYS,
+    };
+    return c.json(body);
+  });
+
   // The same upsert semantics as `/internal/connections/upsert` (§3.5.2) — create under a
   // fresh id, or rotate the one live row in place so its grant tuples survive — behind
   // platform-actor auth instead of the vertical-harness PLATFORM_SECRET. The tenant is
@@ -2249,6 +2315,90 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
     await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
     return { servingRef: serving.ref, versionId: serving.versionId, tables: restored.tables };
+  };
+
+  /**
+   * Carry a scope's data onto the script a version bind is about to route it to (#1710).
+   * The caller binds only after this returns.
+   *
+   * A scope that is not on the serving script routes by its bound version's own
+   * per-version script (`COALESCE(servingRef, deploymentRef)`), and a Durable Object
+   * namespace belongs to its script. So a bind to a version with a DIFFERENT
+   * `deploymentRef` points the scope at an empty namespace. Previews live there by design
+   * (#527), and so does a forked scope that `scope bind` re-points. This moves the data
+   * first, in adopt-serving's order: export from the script the router resolves the scope
+   * to TODAY, then restore into the incoming version's script.
+   *
+   * After validating the incoming version, it reads no scope data and carries nothing
+   * when the route does not move: the incoming
+   * version has no script of its own (co-located), the two refs are the same script, the
+   * scope stays pinned to the serving script (the version pointer never touches its
+   * route), or the scope's data is not in a named script. It also carries nothing on a
+   * host with no per-version resolver, because such a host has no per-version namespaces
+   * to move between. `dropServingRef` is for a caller that clears the pin in the same act:
+   * the route then does move, off the serving script.
+   *
+   * A failure strands nothing. The pointer has not moved and the source copy is untouched,
+   * and the restore is one transaction in the target DO (drop-then-replay). So a failed
+   * carry leaves the scope serving its data from the old script, and a retry carries again
+   * over any partial copy. A retry after a bind that landed finds the same script on both
+   * ends and carries nothing.
+   *
+   * What it does not do:
+   * - Carry writes that land on the source between the export and the bind. Those are lost.
+   * - Delete the source copy. That copy is unreachable once the caller binds, and it stays
+   *   in the old script, because nothing reaps it yet (#1722). Deleting it here would race
+   *   a concurrent push that is still exporting from it.
+   * - Cross lineages. A version of another vertical reads as absent here, and moving a scope
+   *   between lineages is `rebindScopeOntoVertical`'s job, behind its migration gate.
+   */
+  const carryOntoVersion = async (
+    c: { get: (k: 'actor') => PlatformActorId },
+    scope: Scope,
+    versionId: string,
+    opts: { dropServingRef?: boolean } = {},
+  ): Promise<{ from: string; to: string; tables: number } | null> => {
+    const resolveVersion = options.resolveVerticalVersion;
+    if (!scope.vertical) return null;
+    const actor = c.get('actor');
+    const incoming = await admin.getVersion(actor, versionId, scope.vertical);
+    // The bind refuses a version that is not admitted, except onto a preview. Check that
+    // BEFORE the copy. Otherwise unreviewed code would receive the scope's data through its
+    // own restore handler, only for the bind to refuse afterwards.
+    if (!incoming) {
+      throw new ControlPlaneError(404, `unknown version ${versionId} for vertical '${scope.vertical}'`);
+    }
+    if (incoming.admission !== 'admitted' && scope.kind !== 'preview') {
+      throw new ControlPlaneError(409, `version ${versionId} is not admitted`);
+    }
+    if (!resolveVersion || (scope.servingRef && !opts.dropServingRef)) return null;
+    const to = incoming.deploymentRef ?? null;
+    const bound = scope.verticalVersionId
+      ? await admin.getVersion(actor, scope.verticalVersionId, scope.vertical)
+      : undefined;
+    const from = scope.servingRef ?? bound?.deploymentRef ?? null;
+    if (!to || !from || from === to) return null;
+    // Resolve each end at exactly the script named above. No fallback to the prod channel:
+    // a guessed source would be exported, found empty, and carried as if it were the data.
+    const source = scope.servingRef
+      ? await options.resolveVerticalRef?.(scope.servingRef)
+      : await resolveVersion(scope.vertical, scope.verticalVersionId!, actor);
+    const dest = await resolveVersion(scope.vertical, versionId, actor);
+    if (!source || !dest) {
+      // Binding anyway would point the scope at an empty store and leave its data behind,
+      // so refuse and name the end that did not resolve. 502, like any unreachable
+      // dependency here (`vertical-client.ts` `reach`, `preview-auth.ts`): this is a wiring or
+      // transient failure, not a deployment that is too old to do it (which is what 501 means).
+      const missing = !source ? `the script holding its data ('${from}')` : `version ${versionId}'s script ('${to}')`;
+      throw new ControlPlaneError(
+        502,
+        `cannot move scope ${scope.id} from '${from}' to '${to}': ${missing} could not be reached, ` +
+          `so the version was not bound (#1710)`,
+      );
+    }
+    const dump = await retryTransient(() => source.exportScope(scope.id));
+    const restored = await retryTransient(() => dest.restoreScope(scope.tenantId, scope.id, dump));
+    return { from, to, tables: restored.tables };
   };
 
   app.get('/tenants/:tenantId/scopes/:scopeId/tables', async (c) => {
@@ -3860,13 +4010,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // opts into fork-before-promote (§4): on a migration-digest-crossing bind the
   // pre-migration data is snapshotted first — orchestrated through the vertical
   // when one resolves, in-process otherwise.
+  //
+  // A scope that routes by its bound version's own script (a fork, such as a forked test
+  // environment `substrat scope bind` re-points on every merge) has its data carried into
+  // the new version's script before the pointer moves (#1710). The snapshot is taken
+  // after a successful carry, before binding, in the script the data is leaving. A scope
+  // on the serving script carries nothing, because its route does not follow the version pointer.
   app.post('/tenants/:tenantId/scopes/:scopeId/version', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const { versionId, snapshot } = bindScopeVersionBody.parse(await c.req.json());
     const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    // A refusal throws a ControlPlaneError, which the app's error boundary relays with its
+    // status and records as an ops failure. An unknown scope carries nothing, and the bind
+    // below refuses it as it always has.
+    const carry = async (): Promise<void> => {
+      if (scope) await carryOntoVersion(c, scope, versionId);
+    };
     if (snapshot) {
-      const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
       if (!scope) {
         return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
       }
@@ -3874,21 +4036,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (vertical) {
         // Delegated path: the digest compare lives here (the in-process path does
         // it below the seam). Snapshot only a migration-crossing bind.
+        let migrationCrossing = false;
         if (scope.vertical && scope.verticalVersionId) {
           const [current, incoming] = await Promise.all([
             admin.getVersion(actor, scope.verticalVersionId, scope.vertical),
             admin.getVersion(actor, versionId, scope.vertical),
           ]);
-          if (current && incoming && current.migrationDigest !== incoming.migrationDigest) {
-            await orchestratedSnapshot(c, tenantId, scope, {});
-          }
+          migrationCrossing = Boolean(
+            current && incoming && current.migrationDigest !== incoming.migrationDigest,
+          );
         }
+        await carry();
+        if (migrationCrossing) await orchestratedSnapshot(c, tenantId, scope, {});
         await admin.bindScopeVersion(actor, tenantId, scopeId, versionId);
       } else {
+        await carry();
         await admin.bindScopeVersion(actor, tenantId, scopeId, versionId, { snapshot: true });
       }
       return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
     }
+    await carry();
     await admin.bindScopeVersion(actor, tenantId, scopeId, versionId);
     return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
   });
@@ -5943,16 +6110,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const baseHostname = await previewBaseHostname(actor, source, tenantId, slug, surface);
 
     // Idempotent on (tenant, vertical, tag): a PR *synchronize* rebinds the new version
-    // onto the SAME preview — successive pushes roll their migrations forward on one copy
-    // (§4's rehearsal case) — unless `refresh` asks for a fresh one.
+    // onto the SAME preview, unless `refresh` asks for a fresh one. On a hosted vertical
+    // every push is its own script, so the rebind first CARRIES the preview's data into
+    // the new version's script (#1710). The preview's data then follows it from push to
+    // push, and each push's migrations run forward over it (§4's rehearsal case).
     const existing = (await admin.listScopes(actor, { tenantId, vertical: slug })).find(
       (s) => s.kind === 'preview' && s.slug === previewSlug(slug, opts.tag),
     );
     // A preview only HAS data once its two-phase create finished: the directory row lands
     // first as `provisioning` (K-31), the fork's export→restore runs, and `activateScope`
     // is the last step. So a row still at `provisioning` is a create that DIED mid-fork —
-    // its DO is empty. Reuse must never adopt one: reuse only rebinds the version and the
-    // hostname, it never copies data, so adopting a half-built row hands back a
+    // its DO is empty. Reuse must never adopt one: reuse carries whatever the preview holds
+    // and never re-forks from the source, so adopting a half-built row hands back a
     // permanently EMPTY preview and reports `reused: true` — success for a URL that shows
     // a reviewer no data at all. That is exactly what a CI retry does (the generated
     // workflow retries `preview create` on a transient), so the failure mode is the
@@ -5962,6 +6131,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // scope would otherwise collide with the old row's still-bound `--<tag>` hostname.
     const stale = existing !== undefined && (opts.refresh || existing.status !== 'active');
     if (existing && !stale) {
+      // Data first, pointer last (#1710): move the preview's data into this push's script
+      // BEFORE anything re-points it. A failed carry therefore leaves the preview bound to
+      // its old script with its data, and records why, like a failed fork restore (#559).
+      // `dropServingRef`: a preview provisioned before #527 inherited a serving_ref that is
+      // cleared just below, so its route leaves the serving script too.
+      let carried: Awaited<ReturnType<typeof carryOntoVersion>>;
+      try {
+        carried = await carryOntoVersion(c, existing, opts.versionId, { dropServingRef: true });
+      } catch (e) {
+        if (e instanceof ControlPlaneError && e.status >= 500 && e.status !== 501) {
+          recordFailure({
+            actor,
+            operation: 'preview.create',
+            stage: 'carry',
+            tenantId,
+            scopeId: existing.id,
+            vertical: slug,
+            version: opts.versionId,
+            status: e.status,
+            message: e.message,
+          }, e);
+        }
+        throw e;
+      }
       // Heal a preview provisioned before #527: clear any inherited serving_ref so routing
       // follows the bound version (its per-version script), not the prod serving script.
       if (existing.servingRef) await admin.setScopeServingRef(actor, tenantId, existing.id, null);
@@ -5971,7 +6164,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const hostname = await bindPreviewHostname(actor, baseHostname, tenantId, existing.id, opts.tag, surface);
       await assertServesBoundVersion(existing.id);
       // The fork it was made from, not whichever prod scope this call picked: a reuse is the
-      // same preview. Every push is a new version with an EMPTY config store, so the login is
+      // same preview. Every push is a new version with an EMPTY config store, and the carry
+      // above moves the scope's data but not the vertical's config store, so the login is
       // wired again on every reuse, never assumed to have survived.
       const parent = existing.forkedFrom
         ? ((await admin.getScopeRecord(actor, tenantId, existing.forkedFrom)) ?? null)
@@ -5984,7 +6178,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         versionId: opts.versionId,
         reused: true,
         auth,
-        notes: notesFor(parent),
+        // The carry's loss window, said where the person pushing reads it (the CLI prints
+        // every note): a reviewer who clicked around during the push would otherwise just
+        // find their change gone.
+        notes: [
+          ...(carried
+            ? [
+                `Data: the preview's data was copied into this push's version (${carried.tables} tables). ` +
+                  'Anything written to the preview while this push ran may be lost.',
+              ]
+            : []),
+          ...notesFor(parent),
+        ],
       };
     }
     // Free the tag: the slug is unique per tenant and the `--<tag>` hostname is still bound
