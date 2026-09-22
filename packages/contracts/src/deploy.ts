@@ -566,13 +566,16 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
   // modules disagree about them, so a disagreement never reaches a push.
   const exportRows = new Map<string, PermissionRegistryExport>();
   const importRows = new Map<string, PermissionRegistryImport>();
+  // `events?.` although the type says required: this runs over whatever a vertical's permissions
+  // entry exports, which the CLI imports as plain JS, and a manifest with no event surface
+  // declares no edge. It must not throw where it used to succeed.
   for (const m of input.modules) {
-    for (const e of m.manifest.events.exports ?? []) {
+    for (const e of m.manifest.events?.exports ?? []) {
       const row = exportRows.get(e.type);
       if (row) row.declaredBy = [...new Set([...row.declaredBy, m.manifest.id])].sort(cmp);
       else exportRows.set(e.type, { ...e, declaredBy: [m.manifest.id] });
     }
-    for (const c of m.manifest.events.consumes) {
+    for (const c of m.manifest.events?.consumes ?? []) {
       if (c.from === undefined) continue;
       const key = `${c.from}\u0000${c.type}`;
       const row = importRows.get(key);
