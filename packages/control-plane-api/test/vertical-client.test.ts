@@ -538,3 +538,76 @@ describe('VerticalClient.systemSwitch (#1666)', () => {
     expect((err as ControlPlaneError).status).toBe(403);
   });
 });
+
+/**
+ * The status read's hop (#1674) — `systemGrantsStatus`, the read half of the switch above.
+ * Same skew contract, on purpose: a deployment that predates the read must answer
+ * "redeploy", never a wrong `on`, exactly like `systemSwitch` does for the write.
+ */
+describe('VerticalClient.systemGrantsStatus (#1674)', () => {
+  const input = { scopeId: s };
+  const answering = (res: () => Response, seen: { path: string; search: string }[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string) => {
+        const url = new URL(u);
+        seen.push({ path: url.pathname, search: url.search });
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('gets the status by scope id and reads the entries', async () => {
+    const seen: { path: string; search: string }[] = [];
+    const client = answering(
+      () => new Response(JSON.stringify([{ moduleId: '@test/sched', schedules: 'off' }]), { status: 200 }),
+      seen,
+    );
+    await expect(client.systemGrantsStatus(input)).resolves.toEqual([{ moduleId: '@test/sched', schedules: 'off' }]);
+    expect(seen).toEqual([{ path: '/internal/system-grants', search: `?scopeId=${s}` }]);
+  });
+
+  it.each([
+    ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
+    ['an SPA shell (200, not JSON)', () => new Response('<!doctype html><html></html>', { status: 200 })],
+  ])('%s — the explicit legacy signal — is a 501 that says to redeploy', async (_name, res) => {
+    const err = await answering(res).systemGrantsStatus(input).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect((err as ControlPlaneError).status).toBe(501);
+    expect((err as ControlPlaneError).message).toMatch(/predates the schedule switch's status read.*redeploy the vertical/);
+  });
+
+  it('a transport failure surfaces as the 502 it is', async () => {
+    const client = new VerticalClient({
+      fetch: (() => Promise.reject(new Error('Network connection lost'))) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const err = (await client.systemGrantsStatus(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/unreachable during system-grants: Network connection lost/);
+  });
+
+  it('a 200 JSON of the wrong shape is a failure, not a silent wrong answer', async () => {
+    const err = (await answering(() => new Response(JSON.stringify({ ok: true }), { status: 200 }))
+      .systemGrantsStatus(input)
+      .then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/unexpected shape/);
+  });
+
+  it("the far end's own 501 (a host without the method) passes through verbatim", async () => {
+    const err = (await answering(
+      () => new Response(JSON.stringify({ error: 'this deployment cannot read schedule switches (#1674) — redeploy it' }), { status: 501 }),
+    )
+      .systemGrantsStatus(input)
+      .then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err.status).toBe(501);
+    expect(err.message).toMatch(/redeploy it/);
+  });
+
+  it("a refusal the far end means is still the vertical's own answer", async () => {
+    const err = await answering(() => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }))
+      .systemGrantsStatus(input)
+      .then(() => null, (e: unknown) => e);
+    expect((err as ControlPlaneError).status).toBe(403);
+  });
+});

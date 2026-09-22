@@ -244,3 +244,123 @@ describe('the schedule switch routes (#1666)', () => {
     expect(await again.json()).toMatchObject({ schedules: 'off', changed: false, permissions: [] });
   });
 });
+
+/**
+ * The status read (#1674): `GET .../system-grants` — "is this module switched off on this
+ * scope?", without the scope's own SQL console. Same staff-only gate as the switch, and
+ * the SAME `systemScheduleState` predicate `runDueSchedules` gates on, so a read that
+ * disagreed with what the runner just did would fail here.
+ */
+describe('the status read route (#1674)', () => {
+  const TENANT_SECRET = 'test-tenant-token-secret';
+  const PUSH_SECRET = 'test-push-token-secret';
+  const t = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const serviceActor = platformActorId.parse('01JZ00000000000000000000SR');
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  let asTenant: Record<string, string>;
+  let asBuilder: Record<string, string>;
+  let dir: string;
+  let host: SqliteScopeHost;
+  let app: ReturnType<typeof createControlPlaneApi>;
+
+  const route = (s: string, tenant: string = t) => `/tenants/${tenant}/scopes/${s}/system-grants`;
+  const get = (path: string, headers: Record<string, string>) => app.request(path, { method: 'GET', headers });
+  const off = (s: string, reason = 'incident: runaway tick') =>
+    app.request(route(s), {
+      method: 'DELETE',
+      headers: asStaff,
+      body: JSON.stringify({ moduleId: TICK, reason }),
+    });
+  const on = (s: string) =>
+    app.request(route(s), {
+      method: 'POST',
+      headers: asStaff,
+      body: JSON.stringify({ moduleId: TICK, reason: 'resolved' }),
+    });
+
+  const newScope = async () => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'tick-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    return s;
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-schedule-switch-status-'));
+    host = new SqliteScopeHost({ dir });
+    host.registerModule(tickModule);
+    app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      authenticateTenantService: tenantTokenAuth(TENANT_SECRET, serviceActor),
+      authenticateBuilder: firstBuilderAuth(pushTokenBuilderAuth(PUSH_SECRET)),
+      tenantTokenSecret: TENANT_SECRET,
+      pushTokenSecret: PUSH_SECRET,
+    });
+    await host.admin.createTenant(staff, { id: t, slug: 'acme-status', name: 'Acme' });
+    await host.admin.grantEntitlement(staff, t, 'tick');
+
+    const minted = await app.request('/tenant-tokens', {
+      method: 'POST',
+      headers: asStaff,
+      body: JSON.stringify({ tenantId: t }),
+    });
+    expect(minted.status).toBe(201);
+    asTenant = { [SERVICE_TOKEN_HEADER]: ((await minted.json()) as { token: string }).token, 'content-type': 'application/json' };
+    const push = await mintPushToken(PUSH_SECRET, { actor: await pushActorFor(t), tenantId: t, tenantSlug: 'acme-status' });
+    asBuilder = { [SERVICE_TOKEN_HEADER]: push, 'content-type': 'application/json' };
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reads on, off (with who/when/why), and on again, agreeing with the runner at each step', async () => {
+    const s = await newScope();
+    const runnerState = async () => {
+      const r = await host.runDueSchedules(TICK, t, scopeId.parse(s));
+      return r.switchedOff ? 'off' : 'on';
+    };
+
+    const initial = await get(route(s), asStaff);
+    expect(initial.status).toBe(200);
+    expect(await initial.json()).toEqual([{ moduleId: TICK, schedules: 'on', switchedOff: null }]);
+    expect(await runnerState()).toBe('on');
+
+    const before = new Date().toISOString();
+    await off(s);
+    const offRead = await get(route(s), asStaff);
+    expect(offRead.status).toBe(200);
+    const offEntries = (await offRead.json()) as { moduleId: string; schedules: string; switchedOff: { actor: string; reason: string; at: string } | null }[];
+    expect(offEntries).toEqual([
+      { moduleId: TICK, schedules: 'off', switchedOff: { actor: staff, reason: 'incident: runaway tick', at: expect.any(String) } },
+    ]);
+    expect(offEntries[0]!.switchedOff!.at >= before).toBe(true);
+    expect(await runnerState()).toBe('off');
+
+    await on(s);
+    const onRead = await get(route(s), asStaff);
+    expect(await onRead.json()).toEqual([{ moduleId: TICK, schedules: 'on', switchedOff: null }]);
+    expect(await runnerState()).toBe('on');
+  });
+
+  it("REFUSES the tenant's own credential, with staff reading the same route as the positive twin", async () => {
+    const s = await newScope();
+    expect((await get(route(s), asTenant)).status).toBe(403);
+    expect((await get(route(s), asStaff)).status).toBe(200);
+  });
+
+  it('REFUSES a builder, with staff reading the same route as the positive twin', async () => {
+    const s = await newScope();
+    expect((await get(route(s), asBuilder)).status).toBe(403);
+    expect((await get(route(s), asStaff)).status).toBe(200);
+  });
+
+  it('answers 404 for a scope of another tenant', async () => {
+    const s = await newScope();
+    const foreign = await get(route(s, tenantId.parse(ulid())), asStaff);
+    expect(foreign.status).toBe(404);
+  });
+});

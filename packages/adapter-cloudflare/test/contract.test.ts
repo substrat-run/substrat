@@ -222,6 +222,12 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
           const out = answer(a);
           return { ...out, permissions: out.permissions.map((p) => permissionKey.parse(p)) };
         },
+        // Not exercised by this describe block (#1674 has its own), but required by
+        // `SystemSwitchDelegation` — a fake that cannot answer the read would make a
+        // status-read test here fail confusingly rather than at its own call site.
+        status: async () => {
+          throw new Error('not exercised by this fixture — see the #1674 describe block');
+        },
       },
     });
     host.registerModule(scheduleMod);

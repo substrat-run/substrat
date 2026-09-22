@@ -100,6 +100,33 @@ export function systemScheduleState(db: SwitchSql, moduleId: string, now: string
   return Number(row?.granted) === 1 ? 'on' : 'ungranted';
 }
 
+/** One module's position, as `systemGrantsStatus` below enumerates them. */
+export interface SystemGrantsEntry {
+  moduleId: string;
+  schedules: SystemScheduleState;
+}
+
+/**
+ * Every module this scope holds or has ever held system authority for, and where each
+ * stands (#1674) — the per-scope status read (`GET .../system-grants`). One SELECT
+ * enumerating the `system:<moduleId>` subjects this scope's storage has a live `granted:`
+ * tuple or OFF marker for (a module with neither has never run here, and has nothing to
+ * report — not even `ungranted`), then `systemScheduleState` per one: the SAME predicate
+ * `runDueSchedules` gates on, so the read and the runner cannot disagree.
+ */
+export function systemGrantsStatus(db: SwitchSql, now: string): SystemGrantsEntry[] {
+  const rows = db.all(
+    `SELECT DISTINCT subject FROM _substrat_tuples
+      WHERE substr(subject, 1, 7) = 'system:'
+        AND (substr(relation, 1, 8) = 'granted:' OR relation = '${SYSTEM_SWITCH_OFF_RELATION}')
+      ORDER BY subject`,
+  ) as { subject: string }[];
+  return rows.map((row) => {
+    const moduleId = row.subject.slice('system:'.length);
+    return { moduleId, schedules: systemScheduleState(db, moduleId, now) };
+  });
+}
+
 /** Is this module switched off on the scope `db` is? What `grantToSystem` refuses on. */
 export function systemSwitchedOff(db: SwitchSql, moduleId: string): boolean {
   const row = db.all(`SELECT ${SYSTEM_SWITCH_OFF_PREDICATE} AS off`, subjectOf(moduleId))[0] as

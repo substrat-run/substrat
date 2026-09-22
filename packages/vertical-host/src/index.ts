@@ -102,6 +102,7 @@ import {
   type PlatformRequestFailure,
   type ModuleId,
   type SystemSwitchOutcome,
+  type SystemScheduleEntry,
 } from '@substrat-run/contracts';
 
 /**
@@ -242,6 +243,14 @@ export interface VerticalScopeHost {
    * control plane reports as "redeploy", never as a switch that moved.
    */
   systemSwitchLocal?(scopeId: ScopeId, moduleId: ModuleId, to: 'on' | 'off'): Promise<SystemSwitchOutcome>;
+  /**
+   * The far end of the schedule kill switch's status read (#1674): every module this
+   * scope holds or has held system authority for, and where each stands. Optional for the
+   * same reason `systemSwitchLocal` is: a host built before it satisfies this interface
+   * without it, and the route answers 501, which the control plane reports as "redeploy",
+   * never a wrong `on`.
+   */
+  systemGrantsStatusLocal?(scopeId: ScopeId): Promise<SystemScheduleEntry[]>;
 }
 
 /**
@@ -875,6 +884,20 @@ export function mountPlatformSurface<Env extends object>(
       return c.json({ error: 'this deployment cannot switch schedules (#1666) — redeploy it' }, 501);
     }
     return c.json(await host.systemSwitchLocal(body.scopeId, body.moduleId, body.to));
+  });
+
+  // The status read (#1674): the far end of `HostAdmin.systemGrantsStatus` for a scope
+  // served HERE. Bare positions only — no admin-log join, since this deployment holds no
+  // admin log; the platform joins its own onto this by moduleId once it returns. Same
+  // "route exists, host method doesn't" 501 as the switch above, and the same reason for
+  // it: a deployment built before this shipped satisfies `VerticalScopeHost` without it.
+  app.get('/internal/system-grants', async (c) => {
+    const scopeId = scopeIdOf.parse(c.req.query('scopeId'));
+    const host = deps.hostFor(c.env);
+    if (!host.systemGrantsStatusLocal) {
+      return c.json({ error: 'this deployment cannot read schedule switches (#1674) — redeploy it' }, 501);
+    }
+    return c.json(await host.systemGrantsStatusLocal(scopeId));
   });
 
   app.post('/internal/platform-requests/settle', async (c) => {

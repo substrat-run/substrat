@@ -38,6 +38,7 @@ import {
   systemGrant,
   systemSwitch,
   systemSwitchOutcome,
+  systemScheduleEntry,
   entitlementGrant,
   entitlementGrantInput,
   instant,
@@ -72,6 +73,8 @@ import {
   type SystemSwitch,
   type SystemSwitchResult,
   type SystemSwitchOutcome,
+  type SystemScheduleEntry,
+  type SystemGrantsStatusEntry,
   type CreateConnectionInput,
   type AccessLogEntry,
   type AdminLogEntry,
@@ -261,6 +264,7 @@ import {
   type UndrainedRead,
   type SwitchOutcome,
   type SystemScheduleState,
+  type SystemGrantsEntry,
   systemSwitchedOffMessage,
 } from '@substrat-run/kernel';
 import {
@@ -911,6 +915,9 @@ interface ScopeStubRpc {
   /** Move a module's schedule switch on this scope (#1666) — the kernel's
    *  `switchSystemSchedules`, as one serialized unit. */
   switchSystemSchedules(moduleId: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome>;
+  /** Every module this scope holds or has held system authority for, and where each
+   *  stands (#1674) — the kernel's `systemGrantsStatus`, run in the scope's own storage. */
+  systemGrantsStatus(): Promise<SystemGrantsEntry[]>;
   /** `grantToSystem`'s scope-level write (#1666): `false`, and nothing written, while the
    *  module's schedule kill switch is off on this scope. */
   writeSystemGrant(moduleId: string, relation: string, object: string, expiresAt: string | null): Promise<boolean>;
@@ -1239,6 +1246,13 @@ export interface SystemSwitchDelegation {
     moduleId: ModuleId;
     to: 'on' | 'off';
   }): Promise<SwitchOutcome>;
+  /**
+   * The read half (#1674): every module the deployment serving this scope holds or has
+   * held system authority for, and where each stands. Same reach as `switch` — the same
+   * `/internal/*` seam, the same deployment, the same "who actually holds the grants"
+   * answer — so the two can never disagree about what a hosted scope's switch shows.
+   */
+  status(args: { tenantId: TenantId; scopeId: ScopeId }): Promise<SystemScheduleEntry[]>;
 }
 
 /**
@@ -3618,6 +3632,79 @@ export class CloudflareScopeHost implements ScopeHost {
       };
     };
 
+    /**
+     * The status read's admin-log join (#1674): the `intent` row of the `revokeFromSystem`
+     * still in force for each OFF module — actor, reason, when. Paired to its `applied` row
+     * by `operationId`, so a refused or failed attempt is never read as the explanation
+     * (`switchSystemSchedules`'s `held` check means one can only occur on a module this
+     * scope has never switched off before, so it can never be what a currently-off module
+     * is explained by — this is belt-and-braces, not a case that is expected to fire).
+     */
+    const lastSwitchedOff = async (
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      moduleIds: Set<string>,
+    ): Promise<Map<string, { actor: PlatformActorId; reason: string; at: Instant }>> => {
+      // `order: 'desc'` is load-bearing: the loop below takes the FIRST intent it sees per
+      // module as the latest one, and `auditLog`'s own default is 'asc' (oldest first).
+      const rows = await this.cp.auditLog({ tenantId, scopeId, action: ['revokeFromSystem'], order: 'desc' });
+      const appliedOps = new Set<string>();
+      for (const row of rows) {
+        const payload = row.after as { phase?: string; operationId?: string } | null;
+        if (payload?.phase === 'applied' && payload.operationId) appliedOps.add(payload.operationId);
+      }
+      const result = new Map<string, { actor: PlatformActorId; reason: string; at: Instant }>();
+      for (const row of rows) {
+        if (result.size === moduleIds.size) break;
+        const payload = row.after as
+          | { phase?: string; operationId?: string; moduleId?: string; reason?: string }
+          | null;
+        if (!payload || payload.phase !== 'intent' || !payload.operationId || !payload.moduleId) continue;
+        if (!moduleIds.has(payload.moduleId) || result.has(payload.moduleId)) continue;
+        if (!appliedOps.has(payload.operationId) || typeof payload.reason !== 'string') continue;
+        result.set(payload.moduleId, { actor: row.actor, reason: payload.reason, at: row.at });
+      }
+      return result;
+    };
+
+    /**
+     * The status read (#1674): every module this scope holds or has held system authority
+     * for, and where each stands — the SAME predicate `switchSystem` gates its writes on
+     * (`systemScheduleState`, walked over every held subject by the kernel's
+     * `systemGrantsStatus`), so the read and the runner cannot disagree. For a hosted
+     * scope, delegated exactly as the write is (see `switchSystem` above): a deployment
+     * built before #1666's route answers the same "redeploy the vertical", never a wrong
+     * `on`. The admin-log join happens HERE only — never on the deployment, which holds
+     * no admin log of its own.
+     */
+    const systemGrantsStatusOf = async (
+      actor: PlatformActorId,
+      node: { tenantId: TenantId; scopeId: ScopeId },
+    ): Promise<SystemGrantsStatusEntry[]> => {
+      const { tenantId, scopeId } = node;
+      let vertical: string | null = null;
+      if (!this.cpLess) {
+        const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        vertical = rec.vertical;
+      }
+      const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
+      const states = delegation
+        ? await delegation.status({ tenantId, scopeId })
+        : systemScheduleEntry.array().parse(await this.scopeStub(scopeId).systemGrantsStatus());
+      if (states.length === 0) return [];
+      const offModules = new Set(states.filter((s) => s.schedules === 'off').map((s) => s.moduleId as string));
+      const explanations =
+        offModules.size > 0
+          ? await lastSwitchedOff(tenantId, scopeId, offModules)
+          : new Map<string, { actor: PlatformActorId; reason: string; at: Instant }>();
+      return states.map((s) => ({
+        moduleId: s.moduleId,
+        schedules: s.schedules,
+        switchedOff: explanations.get(s.moduleId) ?? null,
+      }));
+    };
+
     return {
       // #603: fixed at construction — a worker deployed without SECRET_BOX_KEY can never
       // store a credential, and saying so is what lets a transport answer 503 instead of 500.
@@ -3840,6 +3927,9 @@ export class CloudflareScopeHost implements ScopeHost {
       // into the scope's storage, and the audit row around it.
       revokeFromSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'off'),
       restoreToSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'on'),
+      // #1674: the switch's status read — same gate, same delegation, and (unlike the
+      // deployment it may delegate to) the admin log to explain an `off` entry.
+      systemGrantsStatus: systemGrantsStatusOf,
       // #1672 — the platform's two capability verbs. Audited AFTER the write, on both, and
       // the failure each leaves is the safe one: a mint whose audit row did not land never
       // returned its secret, so nobody can ever exchange it; a revoke whose row did not land
@@ -6671,6 +6761,17 @@ export class CloudflareScopeHost implements ScopeHost {
     return systemSwitchOutcome.parse(
       await this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, new Date().toISOString()),
     );
+  }
+
+  /**
+   * The far end of the status read for a scope served HERE (#1674): `/internal/system-grants`
+   * lands on this, from the shared control plane's `systemGrantsStatus`. No admin-log join
+   * happens here — this deployment holds none — so it answers the bare per-module position
+   * only, exactly like `systemSwitchLocal` answers a bare outcome; the platform joins its
+   * own admin log onto this by moduleId once it returns.
+   */
+  async systemGrantsStatusLocal(scopeId: ScopeId): Promise<SystemScheduleEntry[]> {
+    return systemScheduleEntry.array().parse(await this.scopeStub(scopeId).systemGrantsStatus());
   }
 }
 

@@ -249,11 +249,12 @@ export {
   SYSTEM_SWITCH_OFF_PREDICATE,
   SYSTEM_SWITCH_OFF_RELATION,
   switchSystemSchedules,
+  systemGrantsStatus,
   systemScheduleState,
   systemSwitchedOff,
   systemSwitchedOffMessage,
 } from './system-switch.js';
-export type { SwitchOutcome, SwitchSql, SystemScheduleState } from './system-switch.js';
+export type { SwitchOutcome, SwitchSql, SystemGrantsEntry, SystemScheduleState } from './system-switch.js';
 export {
   DENIAL_COLUMNS,
   DENIAL_WINDOW_QUERY,

@@ -66,6 +66,7 @@ export function systemSwitchContractSuite(
         node: { tenantId: t, scopeId: s },
         grantedBy: staff,
       });
+    const status = (s: ScopeId) => host.admin.systemGrantsStatus(staff, { tenantId: t, scopeId: s });
 
     /** What a switch call answers, less its permissions — the operation id is per call. */
     const moved = (schedules: 'on' | 'off', changed: boolean) => ({
@@ -266,6 +267,61 @@ export function systemSwitchContractSuite(
       const resumed = await host.runDueJobs(t, s);
       expect(resumed.completed).toBe(1);
       expect((await (await host.getScope(reader, t, s)).invoke('jobs/items')) as string[]).toEqual(['one']);
+    });
+
+    /**
+     * The status read (#1674): `systemGrantsStatus`, over the SAME `systemScheduleState`
+     * predicate `runDueSchedules` gates on — so a read that drifted onto its own idea of
+     * "off" would fail this the moment it disagreed with what the runner actually did.
+     */
+    it('the status read agrees with the runner through on, off, and on again — and names who, when, why while off', async () => {
+      const s = await newScope();
+      expect(await status(s)).toEqual([{ moduleId: SCHED, schedules: 'on', switchedOff: null }]);
+      expect((await host.runDueSchedules(SCHED, t, s)).switchedOff).toBeUndefined();
+
+      const before = new Date().toISOString();
+      await off(s);
+      expect(await status(s)).toEqual([
+        { moduleId: SCHED, schedules: 'off', switchedOff: { actor: staff, reason, at: expect.any(String) } },
+      ]);
+      const entries = await status(s);
+      expect(entries[0]!.switchedOff!.at >= before).toBe(true);
+      expect((await host.runDueSchedules(SCHED, t, s)).switchedOff).toBe(true);
+
+      // A repeat OFF with a fresh reason re-asserts the explanation — the latest attempt
+      // is what a status read owes, not the first one.
+      await host.admin.revokeFromSystem(staff, {
+        moduleId: SCHED,
+        node: { tenantId: t, scopeId: s },
+        reason: 'still investigating',
+      });
+      expect((await status(s))[0]!.switchedOff).toMatchObject({ actor: staff, reason: 'still investigating' });
+
+      await on(s);
+      expect(await status(s)).toEqual([{ moduleId: SCHED, schedules: 'on', switchedOff: null }]);
+      expect((await host.runDueSchedules(SCHED, t, s)).switchedOff).toBeUndefined();
+    });
+
+    it('a module with no schedules is absent from the read until it holds something, on or off', async () => {
+      const s = await newScope();
+      // JOBS declares no schedules, so provisioning seats it nothing — it holds no grant
+      // and no marker, and the enumeration (unlike `ungranted`) reports nothing for it.
+      expect(await status(s)).toEqual([{ moduleId: SCHED, schedules: 'on', switchedOff: null }]);
+
+      await grant(s, 'jobs:write', JOBS);
+      expect(await status(s)).toEqual(
+        expect.arrayContaining([{ moduleId: JOBS, schedules: 'on', switchedOff: null }]),
+      );
+
+      await off(s, JOBS);
+      const entries = await status(s);
+      expect(entries.find((e) => e.moduleId === JOBS)).toEqual({
+        moduleId: JOBS,
+        schedules: 'off',
+        switchedOff: { actor: staff, reason, at: expect.any(String) },
+      });
+      // The other module is untouched by JOBS's switch.
+      expect(entries.find((e) => e.moduleId === SCHED)).toEqual({ moduleId: SCHED, schedules: 'on', switchedOff: null });
     });
   });
 }

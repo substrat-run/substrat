@@ -76,10 +76,12 @@ import {
   seatScopeTuple,
   effectiveRoleGrantQuery,
   switchSystemSchedules,
+  systemGrantsStatus,
   systemScheduleState,
   systemSwitchedOff,
   type SwitchOutcome,
   type SwitchSql,
+  type SystemGrantsEntry,
   type SystemScheduleState,
   denialListQuery,
   denialSummaryQuery,
@@ -2724,6 +2726,16 @@ export function defineScopeDO(
       return this.queue.enqueue(() =>
         this.ctx.storage.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
       );
+    }
+
+    /**
+     * Every module this scope holds or has held system authority for, and where each
+     * stands (#1674) — the kernel's `systemGrantsStatus`, over this DO's own storage. A
+     * plain read like `systemScheduleState` above, not queued: nothing here decides a
+     * write.
+     */
+    async systemGrantsStatus(): Promise<SystemGrantsEntry[]> {
+      return systemGrantsStatus(this.switchSql(), new Date().toISOString());
     }
 
     /**

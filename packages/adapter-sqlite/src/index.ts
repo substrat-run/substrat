@@ -82,6 +82,7 @@ import {
   type ModuleId,
   type ScheduleSpec,
   type SystemGrant,
+  type SystemGrantsStatusEntry,
   type SystemSwitch,
   type SystemSwitchResult,
   type AdminLogEntry,
@@ -240,11 +241,13 @@ import {
   REDACTED_DELIVERY_NOTE,
   seatScopeTuple,
   switchSystemSchedules,
+  systemGrantsStatus,
   systemScheduleState,
   systemSwitchedOff,
   systemSwitchedOffMessage,
   type SwitchOutcome,
   type SwitchSql,
+  type SystemGrantsEntry,
   type PlatformRequestRedactionCandidate,
   denialListQuery,
   denialSummaryQuery,
@@ -5379,6 +5382,84 @@ export class SqliteScopeHost implements ScopeHost {
       };
     };
 
+    /**
+     * The status read's admin-log join (#1674): the `intent` row of the `revokeFromSystem`
+     * still in force for each OFF module — actor, reason, when. Paired to its `applied` row
+     * by `operationId`, so a refused or failed attempt (only possible on a module this
+     * scope has never switched off before, per `switchSystemSchedules`'s `held` check, so
+     * never the explanation for a module that is currently off) is never read as one.
+     */
+    const lastSwitchedOff = (
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      moduleIds: Set<string>,
+    ): Map<string, { actor: PlatformActorId; reason: string; at: Instant }> => {
+      const rows = this.directory
+        .prepare(
+          `SELECT actor, after, at FROM _substrat_admin_log
+            WHERE tenant_id = ? AND scope_id = ? AND action = 'revokeFromSystem'
+            ORDER BY id DESC`,
+        )
+        .all(tenantId, scopeId) as { actor: string; after: string | null; at: string }[];
+      const appliedOps = new Set<string>();
+      for (const row of rows) {
+        if (!row.after) continue;
+        const payload = JSON.parse(row.after) as { phase?: string; operationId?: string };
+        if (payload.phase === 'applied' && payload.operationId) appliedOps.add(payload.operationId);
+      }
+      const result = new Map<string, { actor: PlatformActorId; reason: string; at: Instant }>();
+      for (const row of rows) {
+        if (result.size === moduleIds.size) break;
+        if (!row.after) continue;
+        const payload = JSON.parse(row.after) as {
+          phase?: string;
+          operationId?: string;
+          moduleId?: string;
+          reason?: string;
+        };
+        if (payload.phase !== 'intent' || !payload.operationId || !payload.moduleId) continue;
+        if (!moduleIds.has(payload.moduleId) || result.has(payload.moduleId)) continue;
+        if (!appliedOps.has(payload.operationId) || typeof payload.reason !== 'string') continue;
+        result.set(payload.moduleId, {
+          actor: row.actor as PlatformActorId,
+          reason: payload.reason,
+          at: row.at as Instant,
+        });
+      }
+      return result;
+    };
+
+    /**
+     * The status read (#1674): every module this scope holds or has held system authority
+     * for, and where each stands — the SAME predicate `switchSystem` gates its writes on
+     * (`systemGrantsStatus`, over the scope's own storage), so the read and the runner
+     * cannot disagree.
+     */
+    const systemGrantsStatusOf = async (
+      _actor: PlatformActorId,
+      node: { tenantId: TenantId; scopeId: ScopeId },
+    ): Promise<SystemGrantsStatusEntry[]> => {
+      const { tenantId, scopeId } = node;
+      const scope = this.directory
+        .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+        .get(scopeId) as { tenant_id: string } | undefined;
+      if (!scope || scope.tenant_id !== tenantId) {
+        throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      }
+      const rt = this.runtime(tenantId, scopeId);
+      const states: SystemGrantsEntry[] = await rt.actor.turn(() =>
+        systemGrantsStatus(switchSqlOf(rt.db), new Date().toISOString()),
+      );
+      if (states.length === 0) return [];
+      const offModules = new Set(states.filter((s) => s.schedules === 'off').map((s) => s.moduleId));
+      const explanations = offModules.size > 0 ? lastSwitchedOff(tenantId, scopeId, offModules) : new Map();
+      return states.map((s) => ({
+        moduleId: s.moduleId as ModuleId,
+        schedules: s.schedules,
+        switchedOff: explanations.get(s.moduleId) ?? null,
+      }));
+    };
+
     return {
       // #603: fixed at construction — a host built without a box can never store a
       // credential, and saying so is what lets a transport answer 503 instead of 500.
@@ -5659,6 +5740,9 @@ export class SqliteScopeHost implements ScopeHost {
       // transaction and the audit row around it.
       revokeFromSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'off'),
       restoreToSystem: async (actor: PlatformActorId, raw: SystemSwitch) => switchSystem(actor, raw, 'on'),
+      // #1674: the switch's status read — same gate, the admin log to explain an `off`
+      // entry. Nothing to delegate here: the pure adapter's scope storage IS the store.
+      systemGrantsStatus: systemGrantsStatusOf,
       // #1672 — the platform's two capability verbs, both a turn on the scope actor
       // (#1678: every scope-level admin write takes one, so none lands mid-invoke inside a
       // stranger's transaction) and both in the admin log without the secret or its hash.

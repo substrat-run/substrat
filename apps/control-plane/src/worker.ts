@@ -765,6 +765,18 @@ function systemSwitchDelegationFor(env: Env): SystemSwitchDelegation | undefined
       }
       return client.systemSwitch({ scopeId: a.scopeId, moduleId: a.moduleId, to: a.to });
     },
+    status: async (a) => {
+      const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+      const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId);
+      const client = rec?.vertical ? await resolveVerticalForScopeFor(env)(rec) : undefined;
+      if (!client) {
+        throw new Error(
+          `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — ` +
+            `cannot read its schedule switches`,
+        );
+      }
+      return client.systemGrantsStatus({ scopeId: a.scopeId });
+    },
   };
 }
 

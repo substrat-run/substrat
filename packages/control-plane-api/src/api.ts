@@ -6038,6 +6038,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.delete('/tenants/:tenantId/scopes/:scopeId/system-grants', switchScheduleRoute('off'));
   app.post('/tenants/:tenantId/scopes/:scopeId/system-grants', switchScheduleRoute('on'));
 
+  // The status read (#1674): "is this module switched off on this scope?", without
+  // reaching for the scope's own SQL console (the CHECKPOINT runbook's old CONFIRM step —
+  // now this route). Same staff-only gate as the switch itself: a tenant credential passes
+  // the `/tenants/<own>` confinement, so it is refused here too, by the same
+  // `confinedTenant` check, not a kind test.
+  app.get('/tenants/:tenantId/scopes/:scopeId/system-grants', async (c) => {
+    if (confinedTenant(c.get('principal')) !== null) {
+      return c.json({ error: 'forbidden: the schedule switch is staff-only' }, 403);
+    }
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    // K-3 first, so a scope of another tenant reads as absent before anything is reached.
+    if (!(await admin.getScopeRecord(actor, tenantId, scopeId))) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    return c.json(await admin.systemGrantsStatus(actor, { tenantId, scopeId }));
+  });
+
   // Orgs: the portal-customer grouping (§4.1). Creating one mints no permission —
   // members reach what the org was GRANTED, and granting stays off this surface.
   app.post('/tenants/:tenantId/orgs', async (c) => {
