@@ -77,6 +77,11 @@ const MANIFEST = {
       'PLATFORM_SECRET',
       'ROUTER_SECRET',
       'PUSH_TOKEN_SECRET',
+      // #1602: without it, minting a tenant token 501s and the dashboard's tenant
+      // credential flow never authenticates — every tenant request the dashboard
+      // makes through it comes back a 503. Deploy this on the control plane BEFORE
+      // the dashboard that expects it.
+      'TENANT_TOKEN_SECRET',
       // Without it the host falls back to `unconfiguredSecretBox` and every connection
       // upsert rejects — the plane cannot store a provider credential at all.
       'SECRET_BOX_KEY',
@@ -92,6 +97,11 @@ const MANIFEST = {
       PLATFORM_SECRET: 'PLATFORM_SECRET',
       ROUTER_SECRET: 'ROUTER_SECRET',
       PUSH_TOKEN_SECRET: 'CP_PUSH_TOKEN_SECRET',
+      // A DEDICATED value (#1602) — never the push-token secret and never
+      // PLATFORM_SECRET, same reasoning as PUSH_TOKEN_SECRET above but its own key,
+      // so a compromised push token and a compromised tenant credential stay two
+      // separate incidents.
+      TENANT_TOKEN_SECRET: 'CP_TENANT_TOKEN_SECRET',
       // Seals connection credentials in the directory (#574) — the CP's own box,
       // deliberately NOT the dashboard's key (different stores, independent rotation).
       SECRET_BOX_KEY: 'CP_SECRET_BOX_KEY',
@@ -255,6 +265,7 @@ const GENERATABLE = [
   'DASH_SESSION_SECRET',
   'BUILDER_SESSION_SECRET',
   'CP_PUSH_TOKEN_SECRET',
+  'CP_TENANT_TOKEN_SECRET',
   'SECRET_BOX_KEY', // base64 of 32 bytes (AES-256); the rest are hex
   'CP_SECRET_BOX_KEY', // base64 of 32 bytes — the control plane's connection box (#574)
 ];
@@ -677,31 +688,37 @@ async function cmdGithub() {
   console.log('Values are never printed. Anything not in GITHUB_VARIABLES is refused by construction.');
 }
 
-switch (cmd) {
-  case 'check':
-    cmdCheck();
-    break;
-  case 'status':
-    cmdStatus();
-    break;
-  case 'push':
-    await cmdPush();
-    break;
-  case 'verticals':
-    await cmdVerticals();
-    break;
-  case 'dev':
-    cmdDev();
-    break;
-  case 'generate':
-    cmdGenerate();
-    break;
-  case 'github':
-    await cmdGithub();
-    break;
-  default:
-    // Lines 3–30 of this file: the intro, the command list and the flags. Kept as a
-    // slice rather than a duplicated string so the help cannot drift from the header.
-    console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(2, 30).join('\n').replace(/^ \*?/gm, ''));
-    if (cmd) fail(`unknown command '${cmd}'`);
+// Guarded so `tools/secrets-coverage.mjs` can import MANIFEST without running a
+// command (and risking a `push`/`github` side effect) as a side effect of `import`.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  switch (cmd) {
+    case 'check':
+      cmdCheck();
+      break;
+    case 'status':
+      cmdStatus();
+      break;
+    case 'push':
+      await cmdPush();
+      break;
+    case 'verticals':
+      await cmdVerticals();
+      break;
+    case 'dev':
+      cmdDev();
+      break;
+    case 'generate':
+      cmdGenerate();
+      break;
+    case 'github':
+      await cmdGithub();
+      break;
+    default:
+      // Lines 3–30 of this file: the intro, the command list and the flags. Kept as a
+      // slice rather than a duplicated string so the help cannot drift from the header.
+      console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(2, 30).join('\n').replace(/^ \*?/gm, ''));
+      if (cmd) fail(`unknown command '${cmd}'`);
+  }
 }
+
+export { MANIFEST };
