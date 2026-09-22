@@ -462,3 +462,94 @@ describe('who may manage resources through the plugin', () => {
     expect(resourceRows().map((r) => r['identifier'])).toEqual(['https://admin-made.example/api/mcp']);
   });
 });
+
+// ── a vertical's REST routes on a shared issuer (#1683) ──────────────────────
+
+/**
+ * The rest of the vertical, not only its MCP endpoint. #1619 made `/api/mcp` hold a token
+ * to its own resource; every other route resolves the caller through the relying party's
+ * bearer fallback, which verified the signature and the issuer and nothing else. On a team
+ * auth-server that admitted every token the issuer ever signed for anyone.
+ *
+ * The verifier here is the one `oidcRpAuthProvider` builds when the dashboard has marked
+ * the issuer shared: this app's client id, and `mcpResourceOf` for its resource. Every
+ * token is a REAL one from this issuer, so the claims the rule reads — `aud`, `azp`,
+ * `client_id`, and their absence on an `id_token` — are what Better Auth actually emits.
+ */
+describe("a vertical on a team auth-server accepts only its own bearers on REST (#1683)", () => {
+  async function restAt(ownClientId: string): Promise<Hono> {
+    const jwks = (await (await call('/api/auth/jwks')).json()) as JSONWebKeySet;
+    const verifier = oidcAuthProvider({
+      issuer: ORIGIN,
+      keys: createLocalJWKSet(jwks),
+      clientId: ownClientId,
+      resourceOf: (origin) => mcpResourceOf(origin),
+    });
+    const app = new Hono();
+    // One route handed the request URL, one handed headers alone: every caller written
+    // before #1683 is the second, and the `Host` header is what names the origin there.
+    app.get('/api/me', async (c) => {
+      const subject = await verifier.resolve(c.req.raw.headers, c.req.url);
+      return subject ? c.json({ sub: subject.sub }) : c.json({ error: 'unauthenticated' }, 401);
+    });
+    app.get('/api/me-by-host', async (c) => {
+      const subject = await verifier.resolve(c.req.raw.headers);
+      return subject ? c.json({ sub: subject.sub }) : c.json({ error: 'unauthenticated' }, 401);
+    });
+    return app;
+  }
+
+  const get = (app: Hono, url: string, bearer: string, host?: string) =>
+    app.request(url, { headers: { authorization: `Bearer ${bearer}`, ...(host ? { host } : {}) } });
+
+  it("admits A's own id_token and A's own client's access token", async () => {
+    register(APP_A, [RESOURCE_A]);
+    const clientA = await registerMcpClient();
+    const own = await tokensFor(clientA, RESOURCE_A);
+    // The shape the rule relies on: an id_token names the client in `aud` and carries no `azp`.
+    expect(decodeJwt(own.id_token).aud).toBe(clientA);
+    expect(decodeJwt(own.id_token).azp).toBeUndefined();
+    const rest = await restAt(clientA);
+    expect((await get(rest, `${DESK_A}/api/me`, own.id_token)).status).toBe(200);
+    expect((await get(rest, `${DESK_A}/api/me`, own.access_token)).status).toBe(200);
+  });
+
+  it("admits an MCP client's access token for A's own resource, by URL and by Host", async () => {
+    register(APP_A, [RESOURCE_A]);
+    const clientA = await registerMcpClient();
+    const mcpClient = await registerMcpClient();
+    const { access_token } = await tokensFor(mcpClient, RESOURCE_A);
+    // Its authorized party is the MCP client, never A — so only the resource admits it.
+    expect(decodeJwt(access_token).azp).toBe(mcpClient);
+    const rest = await restAt(clientA);
+    expect((await get(rest, `${DESK_A}/api/me`, access_token)).status).toBe(200);
+    expect((await get(rest, `${DESK_A}/api/me-by-host`, access_token, 'desk-a.example')).status).toBe(200);
+    // No URL and no Host: nothing names our resource, so it is refused rather than guessed.
+    expect((await get(rest, `${DESK_A}/api/me-by-host`, access_token)).status).toBe(401);
+  });
+
+  it("refuses another client's id_token — the replay #1683 describes", async () => {
+    register(APP_A, [RESOURCE_A]);
+    const clientA = await registerMcpClient();
+    // Any client at all: DCR is open, so this is what an anonymous registrant holds.
+    const other = await registerMcpClient();
+    const { id_token } = await tokensFor(other, RESOURCE_A);
+    const rest = await restAt(clientA);
+    expect((await get(rest, `${DESK_A}/api/me`, id_token)).status).toBe(401);
+    // The twin: at the app that IS that client, the same token is admitted.
+    expect((await get(await restAt(other), `${DESK_A}/api/me`, id_token)).status).toBe(200);
+  });
+
+  it("refuses an MCP token minted for vertical B's endpoint, by URL and by Host", async () => {
+    register(APP_A, [RESOURCE_A]);
+    register(APP_B, [RESOURCE_B]);
+    const clientA = await registerMcpClient();
+    const mcpClient = await registerMcpClient();
+    const forB = await tokensFor(mcpClient, RESOURCE_B);
+    const rest = await restAt(clientA);
+    expect((await get(rest, `${DESK_A}/api/me`, forB.access_token)).status).toBe(401);
+    expect((await get(rest, `${DESK_A}/api/me-by-host`, forB.access_token, 'desk-a.example')).status).toBe(401);
+    // The twin: at B's own origin it is B's resource, and admitted.
+    expect((await get(rest, `${DESK_B}/api/me`, forB.access_token)).status).toBe(200);
+  });
+});

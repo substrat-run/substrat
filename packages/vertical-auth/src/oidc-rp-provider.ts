@@ -13,6 +13,7 @@ import {
   FLOW_MAXAGE,
   type OidcEnv,
 } from '@substrat-run/oidc-rp';
+import { mcpResourceOf } from '@substrat-run/contracts';
 import type { AuthProvider, AuthSubject } from './provider.js';
 import { oidcAuthProvider } from './oidc.js';
 import { resolveCookieDomain } from './cookie-domain.js';
@@ -40,6 +41,14 @@ export interface OidcRpConfig {
   sessionSecret: string;
   /** Expected `aud` for PRESENTED bearer tokens (the API-client path), if the issuer sets one. */
   audience?: string;
+  /**
+   * The issuer is shared with other clients: a team auth-server, which the dashboard marks
+   * by delivering `SHARED_ISSUER_CONFIG_KEY` (#1683). With no `audience`, a presented bearer
+   * must then be THIS app's own token — its own `id_token`, a token issued to its client,
+   * or an access token for its own MCP resource — never another client's that the same
+   * issuer happened to sign. Unset, the bearer path is exactly what it was.
+   */
+  sharedIssuer?: boolean;
   /**
    * Share the login across every surface under this parent domain (`acme.se` covers
    * `crm.` and `eka.` alike) — the session cookie is set with `Domain=…` instead of
@@ -126,14 +135,22 @@ function redirectWith(location: string, cookies: string[]): Response {
   return new Response(null, { status: 302, headers });
 }
 
-// Bearer verifiers cached per issuer+audience so the JWKS fetch survives across
-// requests in an isolate even though the provider object itself is per-request.
+// Bearer verifiers cached per issuer+audience(+own client, on a shared issuer) so the JWKS
+// fetch survives across requests in an isolate even though the provider object itself is
+// per-request. The client is part of the key because two apps on one team auth-server
+// share an issuer and must never share a verifier that admits the other's tokens.
 const bearerCache = new Map<string, AuthProvider>();
 function bearerVerifier(cfg: OidcRpConfig): AuthProvider {
-  const key = `${cfg.issuer}|${cfg.audience ?? ''}`;
+  // A delivered `audience` still wins over it; `oidcAuthProvider` is where that is decided.
+  const own = cfg.sharedIssuer ? cfg.clientId : undefined;
+  const key = `${cfg.issuer}|${cfg.audience ?? ''}|${own ?? ''}`;
   let p = bearerCache.get(key);
   if (!p) {
-    p = oidcAuthProvider({ issuer: cfg.issuer, ...(cfg.audience ? { audience: cfg.audience } : {}) });
+    p = oidcAuthProvider({
+      issuer: cfg.issuer,
+      ...(cfg.audience ? { audience: cfg.audience } : {}),
+      ...(own ? { clientId: own, resourceOf: (origin: string) => mcpResourceOf(origin) } : {}),
+    });
     bearerCache.set(key, p);
   }
   return p;
@@ -217,7 +234,7 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
     );
   }
 
-  async function resolve(headers: Headers): Promise<AuthSubject | null> {
+  async function resolve(headers: Headers, url?: string): Promise<AuthSubject | null> {
     const session = await verifySession(env, readCookie(headers.get('cookie'), SESSION_COOKIE));
     if (session) {
       return {
@@ -229,8 +246,9 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
         emailVerified: session.emailVerified,
       };
     }
-    // No cookie session — an API client presenting the issuer's own token directly.
-    return bearerVerifier(cfg).resolve(headers);
+    // No cookie session — an API client presenting the issuer's own token directly. On a
+    // shared issuer it must be one minted for THIS app (#1683); `url` names our resource.
+    return bearerVerifier(cfg).resolve(headers, url);
   }
 
   return { handle, resolve };

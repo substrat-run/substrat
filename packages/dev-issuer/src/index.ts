@@ -1,4 +1,4 @@
-export { createDevIssuer, type DevIssuerOptions } from './issuer.js';
+export { createDevIssuer, DEV_CLIENT_ID, type DevIssuerOptions } from './issuer.js';
 export type { DevPersona } from './personas.js';
 export { DEV_ALG, DEV_KID, DEV_PUBLIC_JWK } from './keys.js';
 export {

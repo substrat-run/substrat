@@ -21,8 +21,8 @@ import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { invitesModule } from '@substrat-run/engine-invites';
 import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js';
 import { ControlPlaneError, TenantNarrowedControlPlane, type DnsRecordRow, type SnapshotRecord } from './authority.js';
-import { authConfigFor, type AppAuthChoice, type RegisterOidcClientFn } from './auth-wiring.js';
-import { clearAppMcpResources, registerAppMcpResources } from './mcp-resources.js';
+import { authConfigFor, sharedIssuerEntry, type AppAuthChoice, type RegisterOidcClientFn } from './auth-wiring.js';
+import { clearAppMcpResources, isSharedIssuer, registerAppMcpResources, type TeamIssuer } from './mcp-resources.js';
 
 /** This vertical's slug and the DO/entitlement key it registers under. */
 export const VERTICAL = 'dashboard';
@@ -282,6 +282,12 @@ export async function createApp(
      * mode only (embedded has no delivery seam).
      */
     appAuth?: AppAuthChoice;
+    /**
+     * The team's auth-servers, live. With `appAuth`, they decide whether the app is told
+     * its issuer is shared (#1683, `isSharedIssuer`) — by the issuer, so an `external` pick
+     * whose URL is one of them is marked at install rather than left open until a heal.
+     */
+    teamIssuers?: readonly TeamIssuer[];
     /** Injected client-registration (tests); defaults to real dynamic registration. */
     registerOidcClient?: RegisterOidcClientFn;
     /** Backoff schedule for the step-3 configure retry (#391); tests pass short/empty. */
@@ -345,7 +351,13 @@ export async function createApp(
             redirectUri: `https://${provisioned.hostname}/api/auth/callback`,
             ...(input.registerOidcClient ? { registerClient: input.registerOidcClient } : {}),
           });
-          await deliverAuthConfig(input.controlPlane!, input.appScopeId, config, input.configureRetryDelaysMs);
+          await deliverAuthConfig(
+            input.controlPlane!,
+            input.appScopeId,
+            config,
+            isSharedIssuer({ source: input.appAuth!.source, issuer: config.issuer }, input.teamIssuers ?? []),
+            input.configureRetryDelaysMs,
+          );
         } catch (e) {
           throw new Error(identityFailureReason(e, input.verticalSlug), { cause: e });
         }
@@ -490,11 +502,17 @@ async function deliverAuthConfig(
   cp: TenantNarrowedControlPlane,
   appScopeId: ScopeId,
   config: Record<string, string>,
+  /** A team auth-server: the app's bearers are held to its own tokens (#1683). */
+  sharedIssuer: boolean,
   delays: readonly number[] = CONFIGURE_RETRY_DELAYS_MS,
 ): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
-      await cp.configureInstance(appScopeId, [{ key: 'substrat:auth', value: JSON.stringify(config) }]);
+      // One delivery, so an app never runs a team issuer's login without the marker.
+      await cp.configureInstance(appScopeId, [
+        { key: 'substrat:auth', value: JSON.stringify(config) },
+        sharedIssuerEntry(sharedIssuer),
+      ]);
       return;
     } catch (e) {
       const transient = e instanceof ControlPlaneError && (e.status === 0 || (e.status >= 500 && e.status !== 501));

@@ -33,5 +33,10 @@ export interface AuthSubject {
 
 export interface AuthProvider {
   handle(request: Request): Promise<Response>;
-  resolve(headers: Headers): Promise<AuthSubject | null>;
+  /**
+   * `url` is the request's own URL, when the caller has it. Optional and additive: a
+   * provider that needs the origin (an OIDC bearer on a shared issuer holds an MCP token
+   * to this app's own resource, #1683) falls back to the `Host` header without it.
+   */
+  resolve(headers: Headers, url?: string): Promise<AuthSubject | null>;
 }

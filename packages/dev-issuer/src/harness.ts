@@ -17,6 +17,7 @@
  */
 import { oidcRpAuthProvider } from '@substrat-run/vertical-auth/oidc-rp-provider';
 import type { AuthSubject } from '@substrat-run/vertical-auth/provider';
+import { DEV_CLIENT_ID } from './issuer.js';
 import type {
   PlatformActorId,
   PrincipalId,
@@ -90,9 +91,13 @@ export function devLogin(opts: DevLoginOptions): DevLogin {
     // The dev issuer registers no clients and checks no secret; a hosted instance is
     // handed real ones through `substrat:auth`. Overridable so this same harness can be
     // pointed at an issuer that does care.
-    clientId: opts.clientId ?? process.env.OIDC_CLIENT_ID ?? 'substrat-dev',
+    clientId: opts.clientId ?? process.env.OIDC_CLIENT_ID ?? DEV_CLIENT_ID,
     clientSecret: opts.clientSecret ?? process.env.OIDC_CLIENT_SECRET ?? 'dev-issuer-checks-no-secret',
     sessionSecret: opts.sessionSecret ?? process.env.SESSION_SECRET ?? 'substrat-local-dev-session-secret',
+    // Held to the rule a hosted vertical on a team auth-server is held to (#1683): a bearer
+    // must be this app's own — `/dev/token`'s default audience, or an MCP token for this
+    // origin's endpoint — so a script that works here works there.
+    sharedIssuer: true,
   });
 
   return {
