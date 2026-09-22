@@ -233,6 +233,11 @@ import {
   platformRequestRedactionParams,
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
+  redactSubjectJobRuns,
+  JOB_RUN_PATCH_SQL,
+  JOB_STEP_RECORD_SQL,
+  DELIVERY_ERROR_REDACTION_SQL,
+  REDACTED_DELIVERY_NOTE,
   seatScopeTuple,
   switchSystemSchedules,
   systemScheduleState,
@@ -4197,12 +4202,10 @@ export class SqliteScopeHost implements ScopeHost {
           last_error, started_at, updated_at, next_attempt_at, ended_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    const patchRun = db.prepare(
-      `UPDATE _substrat_job_runs
-          SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
-              updated_at = ?, next_attempt_at = ?, ended_at = ?
-        WHERE id = ?`,
-    );
+    // A compare-and-set on `running` (#1632): a pass that outlived an erasure must not
+    // write its cursor back over the redaction. The kernel's statement, so both adapters
+    // hold the same line.
+    const patchRun = db.prepare(JOB_RUN_PATCH_SQL);
     const patchArgs = (id: string, p: JobRunPatch) =>
       [p.status, p.cursor, p.counters, p.attempts, p.lastError, p.updatedAt, p.nextAttemptAt, p.endedAt, id] as const;
     // `db.transaction` on better-sqlite3 runs its body SYNCHRONOUSLY inside a real
@@ -4282,14 +4285,8 @@ export class SqliteScopeHost implements ScopeHost {
         at: string,
       ) =>
         turn(() => {
-          db.prepare(
-          `INSERT INTO _substrat_job_steps (run_id, step, result, attempts, last_error, recorded_at)
-             VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT (run_id, step) DO UPDATE SET result = excluded.result,
-                                                    attempts = excluded.attempts,
-                                                    last_error = excluded.last_error,
-                                                    recorded_at = excluded.recorded_at`,
-          ).run(runId, name, result, attempts, lastError, at);
+          // Only while the run is still `running` (#1632) — see `JOB_STEP_RECORD_SQL`.
+          db.prepare(JOB_STEP_RECORD_SQL).run(runId, name, result, attempts, lastError, at, runId);
         }),
     };
   }
@@ -7428,7 +7425,7 @@ export class SqliteScopeHost implements ScopeHost {
         // Both scope-side redactions in ONE turn on the scope actor (#1678): issued while an
         // invoke held its transaction open, they joined it, and its rollback put the
         // person's PII back after this verb had destroyed the key and receipted the erasure.
-        const { redacted, intentsRedacted } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
+        const { redacted, intentsRedacted, jobRunsRedacted } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
           redacted: db
             .prepare(
               `UPDATE _substrat_outbox SET payload = NULL
@@ -7442,12 +7439,30 @@ export class SqliteScopeHost implements ScopeHost {
           // idempotence as the outbox half: a re-run finds the tombstones and changes
           // nothing.
           intentsRedacted: this.redactSubjectIntents(db, subjectId, at),
+          // A failed delivery's error text about one of those events (#1632) — keyed by
+          // event id, so the outbox predicate names it. Not a copy; not counted.
+          deliveries: db
+            .prepare(DELIVERY_ERROR_REDACTION_SQL)
+            .run(REDACTED_DELIVERY_NOTE, REDACTED_DELIVERY_NOTE, subjectId),
+          // The job-run tables (#1632): a run, its cursor or a step's memo can hold a copy
+          // of the same event. The kernel's walk, so the DO runs the identical SQL.
+          jobRunsRedacted: redactSubjectJobRuns(
+            (sql, params) => {
+              const stmt = db.prepare(sql);
+              if (stmt.reader) return stmt.all(...params);
+              stmt.run(...params);
+              return [];
+            },
+            subjectId,
+            at,
+          ),
         }));
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
           subjectId,
           eventsRedacted: redacted.changes,
           intentsRedacted,
+          jobRunsRedacted,
           keyDestroyed: existed,
           tombstoned: true,
         });
@@ -7462,7 +7477,7 @@ export class SqliteScopeHost implements ScopeHost {
           'shredSubject',
           { tenantId, scopeId },
           { subjectId },
-          redacted.changes + intentsRedacted,
+          redacted.changes + intentsRedacted + jobRunsRedacted,
         );
         return receipt;
       },

@@ -199,6 +199,13 @@ export const subjectShredReceipt = z.object({
    */
   intentsRedacted: z.number().int().nonnegative().default(0),
   /**
+   * Job runs (#1632) whose record held a copy of a redacted event — in the run's payload or
+   * cursor, or in a step of its ledger — and were rewritten. Counted per run. Defaulted for
+   * `intentsRedacted`'s reason: a receipt minted before this field existed parses as the
+   * zero it honestly was.
+   */
+  jobRunsRedacted: z.number().int().nonnegative().default(0),
+  /**
    * Whether a subject key existed to destroy. False means nothing platform-retained was ever
    * sealed for this subject — either it was never exported, or a prior shred already ran.
    */

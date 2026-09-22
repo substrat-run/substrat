@@ -251,6 +251,7 @@ import {
   type StartJobRunInput,
   type LiveReadSurface,
   type SubjectRedactionCounts,
+  type LegacySubjectRedactionCounts,
   globalFetch,
   assertRedrainWindow,
   platformRequestOf,
@@ -1118,8 +1119,14 @@ interface ScopeStubRpc {
    * as `{ events, intents: 0 }` would mint a receipt claiming an erasure that did not
    * happen. Typed as a union rather than cast at the call site so the skew has to be
    * handled to compile.
+   *
+   * **The `LegacySubjectRedactionCounts` arm is the same skew, one release later
+   * (#1632).** A DO from after #1600 answers `{ events, intents }` and never looked at
+   * the job-run tables, so it is refused the same way rather than read as `jobRuns: 0`.
    */
-  redactSubject(subjectId: string): Promise<SubjectRedactionCounts | number>;
+  redactSubject(
+    subjectId: string,
+  ): Promise<SubjectRedactionCounts | LegacySubjectRedactionCounts | number>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
   appliedMigrations(limit?: number): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
@@ -5095,13 +5102,26 @@ export class CloudflareScopeHost implements ScopeHost {
               `leaving their payloads in the intent journal. Redeploy the vertical and re-run.`,
           );
         }
-        const { events: eventsRedacted, intents: intentsRedacted } = redacted;
+        // A DO from after #1600 and before #1632: it redacted the outbox and the intent
+        // journal and never looked at the job-run tables. Refused BEFORE the key, for the
+        // reason above — its reply read as `jobRuns: 0` would receipt an erasure that left
+        // the person in a step's memo.
+        if (!('jobRuns' in redacted) || typeof redacted.jobRuns !== 'number') {
+          throw substratError(
+            'unavailable',
+            `scope ${scopeId} runs a ScopeDO from before #1632, whose redaction does not reach ` +
+              `_substrat_job_runs or _substrat_job_steps — erasing now would destroy the subject ` +
+              `key while leaving their data in the job-run tables. Redeploy the vertical and re-run.`,
+          );
+        }
+        const { events: eventsRedacted, intents: intentsRedacted, jobRuns: jobRunsRedacted } = redacted;
         const at = new Date().toISOString();
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
           subjectId,
           eventsRedacted,
           intentsRedacted,
+          jobRunsRedacted,
           keyDestroyed: existed,
           tombstoned: true,
         });
@@ -5116,7 +5136,7 @@ export class CloudflareScopeHost implements ScopeHost {
           'shredSubject',
           { tenantId, scopeId },
           { subjectId },
-          eventsRedacted + intentsRedacted,
+          eventsRedacted + intentsRedacted + jobRunsRedacted,
         );
         return receipt;
       },

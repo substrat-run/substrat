@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  dataSubjectId,
   errorCodeOf,
   moduleId,
   permissionKey,
@@ -10,7 +11,14 @@ import {
   type PrincipalId,
   type ScopeId,
 } from '@substrat-run/contracts';
-import { ulid, type JobPassContext, type ScopeHost } from '@substrat-run/kernel';
+import {
+  CANCELLED_JOB_NOTE,
+  REDACTED_INTENT_MARKER,
+  REDACTED_JOB_NOTE,
+  ulid,
+  type JobPassContext,
+  type ScopeHost,
+} from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { jobsMod } from './modules.js';
 
@@ -61,6 +69,21 @@ export function jobRunContractSuite(
 
     /** How many times the `doomed` job's step BODY actually ran. */
     let doomedCalls = 0;
+
+    /** The scope the `outlived` job erases its subject in — set by that test. */
+    let shredScope: ScopeId | null = null;
+
+    /**
+     * A spine envelope as a job would hold a copy of one: what #1600's predicate keys on
+     * is `subjectId` beside a `piiClass` other than `none`, at any depth.
+     */
+    const envelopeFor = (subject: string, said: string, piiClass = 'direct') => ({
+      id: ulid(),
+      type: 'crm.contact-imported',
+      piiClass,
+      subjectId: subject,
+      payload: { name: said },
+    });
 
     /** A scope of its own, with the module's system grant on it. */
     const newScope = async (): Promise<ScopeId> => {
@@ -183,6 +206,26 @@ export function jobRunContractSuite(
           await pass.step('same', () => 1);
           await pass.step('same', () => 2);
           return { done: true };
+        },
+        { maxAttempts: 2, baseDelayMs: 0 },
+      );
+
+      // A pass that outlives a subject erasure (#1632). Its first step hands back a copy
+      // of the subject's classified event; the erasure lands WHILE the pass is still
+      // working; the pass then runs another step and commits a cursor carrying the same
+      // copy. Everything after the erasure is a stale writeback, and must change nothing.
+      host.registerJob(
+        JOBS_MODULE,
+        'outlived',
+        async (pass: JobPassContext) => {
+          const { subject, fail } = pass.payload as { subject: string; fail?: boolean };
+          const fetched = await pass.step('fetch', () => envelopeFor(subject, 'Anna Ek'));
+          await host.admin.shredSubject(staff, t, shredScope!, dataSubjectId.parse(subject));
+          await pass.step('after', () => envelopeFor(subject, 'Anna Ek'));
+          // A FAILED pass keeps its step ledger — so this is the path on which a stale
+          // step write would survive, where a commit would have dropped it anyway.
+          if (fail) throw new Error('HTTP 502 while writing Anna Ek');
+          return { cursor: { last: fetched }, done: false };
         },
         { maxAttempts: 2, baseDelayMs: 0 },
       );
@@ -657,6 +700,278 @@ export function jobRunContractSuite(
       // A fractional limit is a value SQLite refuses outright rather than rounds.
       expect(await host.jobRuns(t, s, { limit: 2.7 })).toHaveLength(2);
       expect(await host.jobRuns(t, s, { limit: 1_000_000 })).toHaveLength(3);
+    });
+
+    // -- subject erasure reaches the job-run tables (#1632) ----------------------
+    //
+    // A run's payload, its cursor and a step's memo are whatever a HOST handler handed
+    // the driver — a walk of an external system, so an external system's output. None of
+    // it carries a `subject_id`. What the erasure can read reliably is #1600's link: a
+    // copy of a classified spine envelope, at any depth. These pin both halves of that —
+    // what it reaches, and (the last test) what it deliberately does not.
+    describe('subject erasure (#1632)', () => {
+      const RUNS_DDL =
+        'CREATE TABLE _substrat_job_runs (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, ' +
+        'job TEXT NOT NULL, instance TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, ' +
+        "cursor TEXT, counters TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0, " +
+        'last_error TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
+        'next_attempt_at TEXT, ended_at TEXT)';
+      const RUN_COLUMNS = [
+        'id', 'module_id', 'job', 'instance', 'payload', 'status', 'cursor', 'counters',
+        'attempts', 'last_error', 'started_at', 'updated_at', 'next_attempt_at', 'ended_at',
+      ];
+      const STEPS_DDL =
+        'CREATE TABLE _substrat_job_steps (run_id TEXT NOT NULL, step TEXT NOT NULL, ' +
+        'result TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, ' +
+        'recorded_at TEXT NOT NULL, PRIMARY KEY (run_id, step))';
+      const STEP_COLUMNS = ['run_id', 'step', 'result', 'attempts', 'last_error', 'recorded_at'];
+      const T0 = '2026-09-01T00:00:00.000Z';
+
+      type Run = {
+        id: string;
+        payload: unknown;
+        cursor?: unknown;
+        status?: 'running' | 'done' | 'failed';
+        lastError?: string | null;
+      };
+      type Step = { runId: string; step: string; result: unknown; lastError?: string | null };
+
+      /** A scope holding exactly these rows — the only way to place a copy precisely. */
+      const seeded = async (runs: Run[], steps: Step[]): Promise<ScopeId> => {
+        const s = await newScope();
+        await host.restoreScope(staff, t, s, {
+          tenantId: t,
+          scopeId: s,
+          capturedAt: T0,
+          tables: [
+            {
+              name: '_substrat_job_runs',
+              ddl: RUNS_DDL,
+              columns: RUN_COLUMNS,
+              rows: runs.map((r) => {
+                const status = r.status ?? 'failed';
+                return [
+                  r.id, JOBS_MODULE, 'absent-job', r.id, JSON.stringify(r.payload), status,
+                  r.cursor === undefined ? null : JSON.stringify(r.cursor), '{}', 1,
+                  r.lastError ?? null, T0, T0, null, status === 'running' ? null : T0,
+                ];
+              }),
+            },
+            {
+              name: '_substrat_job_steps',
+              ddl: STEPS_DDL,
+              columns: STEP_COLUMNS,
+              rows: steps.map((st) => [
+                st.runId, st.step, JSON.stringify(st.result), 1, st.lastError ?? null, T0,
+              ]),
+            },
+          ],
+        });
+        return s;
+      };
+
+      /** Every row of both job tables, as the dump carries them — raw, nothing decoded. */
+      const rowsOf = async (s: ScopeId) => {
+        const dump = await host.admin.exportScope(staff, t, s);
+        const table = (name: string) => {
+          const tb = dump.tables.find((x) => x.name === name)!;
+          return tb.rows.map((r) => Object.fromEntries(tb.columns.map((c, i) => [c, r[i]])));
+        };
+        return {
+          runs: table('_substrat_job_runs') as Record<string, string | null>[],
+          steps: table('_substrat_job_steps') as Record<string, string | null>[],
+        };
+      };
+
+      const tombstoneOf = (subject: string) => ({
+        [REDACTED_INTENT_MARKER]: expect.objectContaining({ reason: 'subject-erasure', subjectId: subject }),
+      });
+
+      it('tombstones the payload, the cursor and a step memo that copy the subject\'s event', async () => {
+        const erased = dataSubjectId.parse(ulid());
+        const s = await seeded(
+          [
+            {
+              id: 'run-a',
+              payload: { source: 'crm', seed: envelopeFor(erased, 'Anna Ek') },
+              cursor: { page: 3, last: envelopeFor(erased, 'Anna Ek') },
+              lastError: 'HTTP 422: Anna Ek has no postal address',
+            },
+          ],
+          [{ runId: 'run-a', step: 'fetch', result: [envelopeFor(erased, 'Anna Ek')], lastError: 'retry: Anna Ek' }],
+        );
+        expect(JSON.stringify(await rowsOf(s))).toContain('Anna Ek');
+
+        const receipt = await host.admin.shredSubject(staff, t, s, erased);
+
+        const { runs, steps } = await rowsOf(s);
+        // THE property: no trace of the name in either table.
+        expect(JSON.stringify({ runs, steps })).not.toContain('Anna Ek');
+        const run = runs.find((r) => r.id === 'run-a')!;
+        expect(JSON.parse(run.payload!)).toEqual(tombstoneOf(erased));
+        expect(JSON.parse(run.cursor!)).toEqual(tombstoneOf(erased));
+        expect(run.last_error).toBe(REDACTED_JOB_NOTE);
+        // Already terminal: not re-dated, not reopened.
+        expect(run.status).toBe('failed');
+        expect(run.ended_at).toBe(T0);
+        const step = steps.find((r) => r.run_id === 'run-a' && r.step === 'fetch')!;
+        expect(JSON.parse(step.result!)).toEqual(tombstoneOf(erased));
+        expect(step.last_error).toBe(REDACTED_JOB_NOTE);
+        // Counted once per RUN — payload, cursor and a step are one job's worth of data,
+        // not three. An honest receipt, not a count of rewritten cells.
+        expect(receipt.jobRunsRedacted).toBe(1);
+      });
+
+      it('leaves another subject\'s run and steps exactly as they were', async () => {
+        // The twin without which a redact-every-run bug passes the test above.
+        const erased = dataSubjectId.parse(ulid());
+        const spared = dataSubjectId.parse(ulid());
+        const s = await seeded(
+          [
+            { id: 'run-mine', payload: envelopeFor(erased, 'Anna Ek') },
+            {
+              id: 'run-theirs',
+              payload: envelopeFor(spared, 'Bo Lund'),
+              cursor: { last: envelopeFor(spared, 'Bo Lund') },
+              lastError: 'HTTP 422: Bo Lund has no postal address',
+            },
+          ],
+          [{ runId: 'run-theirs', step: 'fetch', result: envelopeFor(spared, 'Bo Lund'), lastError: 'retry: Bo Lund' }],
+        );
+        const before = await rowsOf(s);
+
+        const receipt = await host.admin.shredSubject(staff, t, s, erased);
+
+        const after = await rowsOf(s);
+        expect(after.runs.find((r) => r.id === 'run-theirs')).toEqual(
+          before.runs.find((r) => r.id === 'run-theirs'),
+        );
+        expect(after.steps).toEqual(before.steps);
+        expect(receipt.jobRunsRedacted).toBe(1);
+      });
+
+      it('spares a copy classified `none`, as the outbox spares the original', async () => {
+        const erased = dataSubjectId.parse(ulid());
+        const s = await seeded([{ id: 'run-none', payload: envelopeFor(erased, 'nothing about anybody', 'none') }], []);
+        const receipt = await host.admin.shredSubject(staff, t, s, erased);
+        expect(receipt.jobRunsRedacted).toBe(0);
+        expect((await rowsOf(s)).runs[0]!.payload).toContain('nothing about anybody');
+      });
+
+      it('stops a running run whose memo was redacted, so no pass is handed the tombstone', async () => {
+        // A step's memo is returned to the handler WITHOUT running anything, so a
+        // tombstoned memo on a live run would be replayed as the step's answer. The run is
+        // settled `failed` in the same statement, and is no longer due.
+        const erased = dataSubjectId.parse(ulid());
+        const s = await seeded(
+          [{ id: 'run-live', payload: { source: 'crm' }, status: 'running' }],
+          [{ runId: 'run-live', step: 'fetch', result: envelopeFor(erased, 'Anna Ek') }],
+        );
+
+        const receipt = await host.admin.shredSubject(staff, t, s, erased);
+
+        const run = (await rowsOf(s)).runs.find((r) => r.id === 'run-live')!;
+        expect(run.status).toBe('failed');
+        expect(run.last_error).toBe(CANCELLED_JOB_NOTE);
+        expect(run.ended_at).not.toBeNull();
+        // Only the columns that held a copy were replaced — the payload named nobody.
+        expect(JSON.parse(run.payload!)).toEqual({ source: 'crm' });
+        expect(receipt.jobRunsRedacted).toBe(1);
+        expect((await runOf(s, 'run-live'))?.status).toBe('failed');
+      });
+
+      it('is idempotent — a second erasure finds only tombstones and changes nothing', async () => {
+        const erased = dataSubjectId.parse(ulid());
+        const s = await seeded(
+          [{ id: 'run-a', payload: envelopeFor(erased, 'Anna Ek'), cursor: envelopeFor(erased, 'Anna Ek') }],
+          [{ runId: 'run-a', step: 'fetch', result: envelopeFor(erased, 'Anna Ek') }],
+        );
+        expect((await host.admin.shredSubject(staff, t, s, erased)).jobRunsRedacted).toBe(1);
+        const once = await rowsOf(s);
+        expect((await host.admin.shredSubject(staff, t, s, erased)).jobRunsRedacted).toBe(0);
+        expect(await rowsOf(s)).toEqual(once);
+      });
+
+      it('refuses the writeback of a pass the erasure overtook', async () => {
+        // The erasure lands mid-pass (inside the handler, between two steps). What the
+        // pass does afterwards — a second step, then a commit whose cursor carries the
+        // copy — is a stale writeback onto a redacted run. Patching by id alone put the
+        // cursor and `running` straight back; both writes are a CAS on `running` now.
+        //
+        // What this does NOT claim to stop is the pass's own work: it had the payload and
+        // it keeps it until it returns. Only its writes onto the redacted rows are refused.
+        const erased = dataSubjectId.parse(ulid());
+        const s = await newScope();
+        shredScope = s;
+        const run = await host.startJobRun(t, s, {
+          moduleId: JOBS_MODULE,
+          job: 'outlived',
+          payload: { subject: erased },
+        });
+
+        await host.runDueJobs(t, s);
+
+        const after = (await rowsOf(s)).runs.find((r) => r.id === run.id)!;
+        expect(after.status).toBe('failed');
+        expect(after.last_error).toBe(CANCELLED_JOB_NOTE);
+        expect(after.cursor).toBeNull();
+        expect(JSON.stringify(await rowsOf(s))).not.toContain('Anna Ek');
+        // Terminal, so nothing drives it again.
+        expect((await host.runDueJobs(t, s)).attempted).toBe(0);
+      });
+
+      it('refuses the stale STEP write of a pass the erasure overtook, and its failure patch', async () => {
+        // The failing twin of the test above. A failed pass does not drop its ledger, so a
+        // step recorded after the erasure would stay — a fresh memo carrying the person on
+        // a run the erasure just emptied — and the failure patch would put `running` and a
+        // provider's sentence back. Both are refused by the same CAS on `running`.
+        const erased = dataSubjectId.parse(ulid());
+        const s = await newScope();
+        shredScope = s;
+        const run = await host.startJobRun(t, s, {
+          moduleId: JOBS_MODULE,
+          job: 'outlived',
+          payload: { subject: erased, fail: true },
+        });
+
+        await host.runDueJobs(t, s);
+
+        const { runs, steps } = await rowsOf(s);
+        expect(JSON.stringify({ runs, steps })).not.toContain('Anna Ek');
+        // The only step row is the one the erasure tombstoned; `after` was never written.
+        expect(steps.map((r) => r.step)).toEqual(['fetch']);
+        const after = runs.find((r) => r.id === run.id)!;
+        expect(after.status).toBe('failed');
+        expect(after.last_error).toBe(CANCELLED_JOB_NOTE);
+      });
+
+      it('does NOT reach output that names the subject without a classified envelope', async () => {
+        // THE DOCUMENTED LIMIT, pinned so nobody reads the tests above as covering it
+        // (kernel-design.md §13.1 limit 8). The subject's id and name sit here as plain
+        // text: nothing in the row says whose it is, and a substring match on the id
+        // would erase on coincidence and still miss the name. Closing this wants a
+        // declared subject on the run — the open half of #1632 — not a wider heuristic.
+        // If this test starts failing because the rows WERE redacted, that is the design
+        // changing: update §13.1 with it, don't just flip the assertion.
+        const erased = dataSubjectId.parse(ulid());
+        const s = await seeded(
+          [
+            {
+              id: 'run-plain',
+              payload: { contact: erased },
+              cursor: { contact: erased, name: 'Anna Ek' },
+              lastError: `HTTP 422: contact ${erased} (Anna Ek) has no postal address`,
+            },
+          ],
+          [{ runId: 'run-plain', step: 'fetch', result: { contact: erased, name: 'Anna Ek' } }],
+        );
+        const before = await rowsOf(s);
+
+        const receipt = await host.admin.shredSubject(staff, t, s, erased);
+
+        expect(receipt.jobRunsRedacted).toBe(0);
+        expect(await rowsOf(s)).toEqual(before);
+      });
     });
 
     it('leaves a run whose job this host does not register untouched', async () => {

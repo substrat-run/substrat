@@ -66,6 +66,11 @@ import {
   platformRequestRedactionParams,
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
+  redactSubjectJobRuns,
+  JOB_RUN_PATCH_SQL,
+  JOB_STEP_RECORD_SQL,
+  DELIVERY_ERROR_REDACTION_SQL,
+  REDACTED_DELIVERY_NOTE,
   type PlatformRequestRedactionCandidate,
   type SubjectRedactionCounts,
   seatScopeTuple,
@@ -3045,11 +3050,9 @@ export function defineScopeDO(
      * last failure's error beside the new cursor, which reads as broken forever.
      */
     async jobRunPatch(id: string, patch: JobRunPatch): Promise<void> {
+      // A compare-and-set on `running` (#1632) — see `JOB_RUN_PATCH_SQL`.
       this.sql.exec(
-        `UPDATE _substrat_job_runs
-            SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
-                updated_at = ?, next_attempt_at = ?, ended_at = ?
-          WHERE id = ?`,
+        JOB_RUN_PATCH_SQL,
         patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
         patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id,
       );
@@ -3077,15 +3080,8 @@ export function defineScopeDO(
       lastError: string | null,
       at: string,
     ): Promise<void> {
-      this.sql.exec(
-        `INSERT INTO _substrat_job_steps (run_id, step, result, attempts, last_error, recorded_at)
-           VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT (run_id, step) DO UPDATE SET result = excluded.result,
-                                                  attempts = excluded.attempts,
-                                                  last_error = excluded.last_error,
-                                                  recorded_at = excluded.recorded_at`,
-        runId, step, result, attempts, lastError, at,
-      );
+      // Only while the run is still `running` (#1632) — see `JOB_STEP_RECORD_SQL`.
+      this.sql.exec(JOB_STEP_RECORD_SQL, runId, step, result, attempts, lastError, at, runId);
     }
 
     /**
@@ -3105,10 +3101,7 @@ export function defineScopeDO(
       // boundary, which is precisely the gap this method exists to close.
       this.ctx.storage.transactionSync(() => {
         this.sql.exec(
-          `UPDATE _substrat_job_runs
-              SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
-                  updated_at = ?, next_attempt_at = ?, ended_at = ?
-            WHERE id = ?`,
+          JOB_RUN_PATCH_SQL,
           patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
           patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id,
         );
@@ -4047,7 +4040,20 @@ export function defineScopeDO(
       for (const id of doomed) {
         this.sql.exec('UPDATE _substrat_outbox SET payload = NULL WHERE id = ?', id);
       }
-      return { events: doomed.length, intents: this.redactSubjectIntents(subjectId, at) };
+      // A failed delivery's error text about one of those events (#1632) — keyed by event
+      // id, so the outbox predicate names it. Not a copy of the event; not counted.
+      this.sql.exec(DELIVERY_ERROR_REDACTION_SQL, REDACTED_DELIVERY_NOTE, REDACTED_DELIVERY_NOTE, subjectId);
+      return {
+        events: doomed.length,
+        intents: this.redactSubjectIntents(subjectId, at),
+        // The job-run tables (#1632) — the kernel's walk, so the pure host runs the
+        // identical SQL.
+        jobRuns: redactSubjectJobRuns(
+          (sql, params) => this.sql.exec(sql, ...params).toArray(),
+          subjectId,
+          at,
+        ),
+      };
     }
 
     /**

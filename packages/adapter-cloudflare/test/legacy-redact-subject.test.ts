@@ -36,8 +36,12 @@ describe('a ScopeDO from before the intent redaction (#1600)', () => {
     await host.close();
   });
 
-  /** The real host, optionally with `redactSubject` answering the way it used to. */
-  const hostFor = (legacy = false) =>
+  /**
+   * The real host, optionally with `redactSubject` answering the way it used to: `true` is
+   * the pre-#1600 bare count, `'pre-1632'` the `{ events, intents }` a DO answered after
+   * #1600 and before the job-run tables were reached.
+   */
+  const hostFor = (legacy: boolean | 'pre-1632' = false) =>
     new CloudflareScopeHost({
       scope: legacy
         ? ({
@@ -50,7 +54,7 @@ describe('a ScopeDO from before the intent redaction (#1600)', () => {
               return new Proxy(real, {
                 get: (target, prop, receiver) =>
                   prop === 'redactSubject'
-                    ? async () => 1
+                    ? async () => (legacy === 'pre-1632' ? { events: 1, intents: 0 } : 1)
                     : Reflect.get(target, prop, receiver),
               });
             },
@@ -88,6 +92,25 @@ describe('a ScopeDO from before the intent redaction (#1600)', () => {
     await legacy.close();
   });
 
+  it('refuses a DO from before #1632 the same way — its job-run tables were never read', async () => {
+    // The same skew one release later. Reading `{ events, intents }` as `jobRuns: 0` would
+    // destroy the key and receipt an erasure that left the person in a step's memo.
+    const subject = dataSubjectId.parse(ulid());
+    const [sealed] = await hostFor().admin.sealSubjectPayloads(staff, t, s, [
+      { subjectId: subject, plaintext: 'in the backup' },
+    ]);
+    const legacy = hostFor('pre-1632');
+    await expect(legacy.admin.shredSubject(staff, t, s, subject)).rejects.toSatisfy(
+      (e: unknown) => errorCodeOf(e) === 'unavailable' && /before #1632/.test((e as Error).message),
+    );
+    const [opened] = await hostFor().admin.openSubjectPayloads(staff, t, s, [
+      { subjectId: subject, sealed: sealed! },
+    ]);
+    expect(opened).toBe('in the backup');
+    await hostFor().close();
+    await legacy.close();
+  });
+
   it('a migrated DO on the same scope erases normally', async () => {
     // The positive twin: the guard must refuse the legacy reply and nothing else.
     const subject = dataSubjectId.parse(ulid());
@@ -95,6 +118,7 @@ describe('a ScopeDO from before the intent redaction (#1600)', () => {
     const receipt = await host.admin.shredSubject(staff, t, s, subject);
     expect(receipt.tombstoned).toBe(true);
     expect(receipt.intentsRedacted).toBe(0);
+    expect(receipt.jobRunsRedacted).toBe(0);
     await host.close();
   });
 });

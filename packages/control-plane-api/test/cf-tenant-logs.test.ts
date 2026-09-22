@@ -449,6 +449,54 @@ describe('cf tenant metrics', () => {
       reader.tenantMetrics!({ tenantId: "01T' OR 1=1 --", hours: 24 }),
     ).rejects.toThrow(/unexpected characters/);
   });
+
+  /**
+   * The traffic chart's status-class split (#1693): `blob4` names every class the
+   * router can stamp, so the aggregate sums each of 2xx/3xx/4xx the same way it
+   * already sums 5xx into `errors` — weighted by `_sample_interval`, never `count()`.
+   */
+  it('sums every status class, weighted the same way `errors` already is', async () => {
+    let sql = '';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body: string }) => {
+        sql = init.body;
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                scopeId: '01SCOPE',
+                vertical: 'callout',
+                surface: 'api',
+                requests: '130',
+                errors: '5',
+                class2xx: '100',
+                class3xx: '20',
+                class4xx: '5',
+                durationP50: 12,
+                durationP95: 40,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }),
+    );
+    const reader = createCfObservabilityReader({
+      accountId: 'acct',
+      apiToken: 't',
+      routerDataset: 'substrat_router_test',
+    });
+    const rows = await reader.tenantMetrics!({ tenantId: '01TENANT', hours: 24 });
+
+    for (const cls of ['2xx', '3xx', '4xx']) {
+      expect(sql).toContain(`sum(if(blob4 = '${cls}', _sample_interval, 0))`);
+    }
+    expect(rows[0]).toMatchObject({ class2xx: 100, class3xx: 20, class4xx: 5, errors: 5, requests: 130 });
+    // Every class the fixture named accounts for the whole bucket — the stacked bar's
+    // total must equal `requests`, or the chart draws a bar shorter than its own axis.
+    expect(rows[0]!.class2xx! + rows[0]!.class3xx! + rows[0]!.class4xx! + rows[0]!.errors).toBe(rows[0]!.requests);
+  });
 });
 
 /**
@@ -497,9 +545,32 @@ describe('cf tenant metrics series', () => {
     expect(sql).not.toMatch(/\bquantile\(/);
     expect(sql).toContain("toStartOfInterval(timestamp, INTERVAL '60' MINUTE)");
     expect(sql).toContain('FROM substrat_router_test');
+    // The traffic chart's status-class split (#1693) — same weight, per bucket.
+    for (const cls of ['2xx', '3xx', '4xx']) {
+      expect(sql).toContain(`sum(if(blob4 = '${cls}', _sample_interval, 0))`);
+    }
 
     await reader().tenantMetricsSeries!({ tenantId: '01TENANT', scopeIds: ['01SCOPE'], hours: 6 });
     expect(sent[1]).toContain("toStartOfInterval(timestamp, INTERVAL '15' MINUTE)");
+  });
+
+  it('sums every status class per bucket, weighted, so the stacked total equals requests (#1693)', async () => {
+    stubSql([
+      {
+        scopeId: '01SCOPE',
+        start: '2026-09-13 10:00:00',
+        requests: '130',
+        errors: '5',
+        class2xx: '100',
+        class3xx: '20',
+        class4xx: '5',
+        durationP50: 12,
+        durationP95: 40,
+      },
+    ]);
+    const rows = await reader().tenantMetricsSeries!({ tenantId: '01TENANT', scopeIds: ['01SCOPE'], hours: 1 });
+    expect(rows[0]).toMatchObject({ class2xx: 100, class3xx: 20, class4xx: 5, errors: 5, requests: 130 });
+    expect(rows[0]!.class2xx! + rows[0]!.class3xx! + rows[0]!.class4xx! + rows[0]!.errors).toBe(rows[0]!.requests);
   });
 
   it('projects AE rows into ISO-instant buckets, sums as strings included', async () => {
@@ -511,8 +582,32 @@ describe('cf tenant metrics series', () => {
     ]);
     const rows = await reader().tenantMetricsSeries!({ tenantId: '01TENANT', scopeIds: ['01SCOPE'], hours: 24 });
     expect(rows).toEqual([
-      { scopeId: '01SCOPE', start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 40, errors: 2, durationP50: 12.5, durationP95: 80 },
-      { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', bucketMinutes: 60, requests: 7, errors: 0, durationP50: 9, durationP95: 31 },
+      {
+        scopeId: '01SCOPE',
+        start: '2026-09-13T10:00:00Z',
+        bucketMinutes: 60,
+        requests: 40,
+        errors: 2,
+        // Absent from the stubbed AE row, same as `errors` would be if unstubbed —
+        // `aeNum` defaults a missing column to 0 rather than leaving it undefined.
+        class2xx: 0,
+        class3xx: 0,
+        class4xx: 0,
+        durationP50: 12.5,
+        durationP95: 80,
+      },
+      {
+        scopeId: '01SCOPE',
+        start: '2026-09-13T11:00:00Z',
+        bucketMinutes: 60,
+        requests: 7,
+        errors: 0,
+        class2xx: 0,
+        class3xx: 0,
+        class4xx: 0,
+        durationP50: 9,
+        durationP95: 31,
+      },
     ]);
   });
 

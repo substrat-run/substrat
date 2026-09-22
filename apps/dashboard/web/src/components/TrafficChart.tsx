@@ -53,9 +53,11 @@ const HIT = 24;
  * The reading rules this encodes, because a chart is where an honest record
  * most easily becomes a dishonest picture:
  *
- * - **Errors are drawn inside their bucket's bar**, not beside it: the eye
- *   compares heights, and a separate error series invites reading a tall error
- *   bar next to a short request bar as "more errors than requests".
+ * - **Each bar stacks by HTTP status class** (#1693) when the bucket carries the
+ *   split: green (2xx + 3xx) at the base, yellow (4xx — a client got a no, not
+ *   necessarily an alarm) above it, red (5xx) on top. A bucket missing the split
+ *   (an older plane, or the script-grain source that cannot carry it) falls back
+ *   to a single bar with the red 5xx count drawn inside it, as before.
  * - **A zero bucket is a visible baseline tick**, never a gap — the series is
  *   already zero-filled worker-side, and skipping empties would let neighbours
  *   join and hide an outage as a narrower peak.
@@ -137,6 +139,17 @@ export function TrafficChart({
 
   const shownLines = lines?.slice(0, LEGEND_CAP) ?? [];
   const hiddenLines = (lines?.length ?? 0) - shownLines.length;
+
+  // The legend beneath a stacked bar chart (#1693): the same three counts the tooltip
+  // gives per bucket, totalled over the window. Only drawn in bar mode (`lines` draws
+  // no error/class series at all — see the module doc) and only when every bucket
+  // carries the split, which `fillGrid` guarantees is all-or-nothing for one series.
+  const classTotals = !lines && buckets.every((b) => b.green !== undefined && b.yellow !== undefined)
+    ? buckets.reduce(
+        (acc, b) => ({ green: acc.green + (b.green ?? 0), yellow: acc.yellow + (b.yellow ?? 0), red: acc.red + b.errors }),
+        { green: 0, yellow: 0, red: 0 },
+      )
+    : null;
 
   const overlayMarkers = overlays?.markers ?? [];
   const overlaySpans = overlays?.spans ?? [];
@@ -230,8 +243,22 @@ export function TrafficChart({
             ))
           : buckets.map((b, i) => {
               const total = (b.requests / peak) * (H - 2);
+              const classes = b.green !== undefined && b.yellow !== undefined ? { green: b.green, yellow: b.yellow } : null;
+              const label = classes
+                ? `${fmt(b.start)} — ${b.requests.toLocaleString()} req, ${classes.green.toLocaleString()} 2xx/3xx, ${classes.yellow.toLocaleString()} 4xx, ${b.errors.toLocaleString()} 5xx`
+                : `${fmt(b.start)} — ${b.requests.toLocaleString()} req, ${b.errors.toLocaleString()} err`;
+              // Stacked bottom-up: green (no complaint), yellow (a no), red (5xx) on top —
+              // so the eye reads severity climbing toward the top of the bar. A class with
+              // nothing in it draws no segment at all (#1693 acceptance).
+              const segments =
+                classes && b.requests > 0
+                  ? [
+                      { count: classes.green, color: 'var(--status-success-fg, #16a34a)' },
+                      { count: classes.yellow, color: 'var(--status-warning-fg, #b45309)' },
+                      { count: b.errors, color: 'var(--status-danger-fg, #dc2626)' },
+                    ]
+                  : null;
               const errs = b.requests === 0 ? 0 : (b.errors / peak) * (H - 2);
-              const label = `${fmt(b.start)} — ${b.requests.toLocaleString()} req, ${b.errors.toLocaleString()} err`;
               return (
                 <g
                   key={b.start}
@@ -254,10 +281,34 @@ export function TrafficChart({
                       0.6-unit tick, and asking a reader to hit that is asking them not to
                       use the cursor on exactly the buckets an outage produces. */}
                   {onBucket && <rect x={i} y={0} width={1} height={H} fill="transparent" />}
-                  {/* The baseline tick keeps an empty bucket visible as a bucket. */}
-                  <rect x={i + 0.1} y={H - Math.max(total, 0.6)} width={0.8} height={Math.max(total, 0.6)} fill="var(--brand-500, #6366f1)" opacity={0.55} />
-                  {errs > 0 && (
-                    <rect x={i + 0.1} y={H - errs} width={0.8} height={errs} fill="var(--status-danger-fg, #dc2626)" opacity={0.9} />
+                  {segments ? (
+                    (() => {
+                      let yCursor = H;
+                      return segments.map((s) => {
+                        const h = (s.count / peak) * (H - 2);
+                        if (h <= 0) return null;
+                        const rect = (
+                          <rect key={s.color} x={i + 0.1} y={yCursor - h} width={0.8} height={h} fill={s.color} opacity={0.85} />
+                        );
+                        yCursor -= h;
+                        return rect;
+                      });
+                    })()
+                  ) : (
+                    <>
+                      {/* The baseline tick keeps an empty bucket visible as a bucket. */}
+                      <rect
+                        x={i + 0.1}
+                        y={H - Math.max(total, 0.6)}
+                        width={0.8}
+                        height={Math.max(total, 0.6)}
+                        fill="var(--brand-500, #6366f1)"
+                        opacity={0.55}
+                      />
+                      {errs > 0 && (
+                        <rect x={i + 0.1} y={H - errs} width={0.8} height={errs} fill="var(--status-danger-fg, #dc2626)" opacity={0.9} />
+                      )}
+                    </>
                   )}
                   <title>{label}</title>
                 </g>
@@ -365,6 +416,22 @@ export function TrafficChart({
         <span>{fmt(buckets[0]!.start)}</span>
         <span>{fmt(buckets[buckets.length - 1]!.start)}</span>
       </div>
+      {classTotals && (
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span aria-hidden style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--status-success-fg)', display: 'inline-block' }} />
+            <span>{classTotals.green.toLocaleString()} 2xx/3xx</span>
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span aria-hidden style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--status-warning-fg)', display: 'inline-block' }} />
+            <span>{classTotals.yellow.toLocaleString()} 4xx</span>
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span aria-hidden style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--status-danger-fg)', display: 'inline-block' }} />
+            <span>{classTotals.red.toLocaleString()} 5xx</span>
+          </span>
+        </div>
+      )}
       {lines && lines.length > 0 && (
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--text-tertiary)' }}>
           {shownLines.map((line, i) => (

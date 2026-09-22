@@ -64,7 +64,8 @@
     "lint:scaffold": "node tools/scaffold-check.mjs",
     "fortnox:connect": "tsx connectors/fortnox/scripts/connect.mts",
     "fortnox:seed": "tsx connectors/fortnox/scripts/seed-sandbox.mts",
-    "lint:wrangler-config": "node tools/wrangler-config-check.mjs"
+    "lint:wrangler-config": "node tools/wrangler-config-check.mjs",
+    "lint:secrets-coverage": "node tools/secrets-coverage.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
