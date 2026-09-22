@@ -11,6 +11,7 @@ import {
   SWEEP_RUNS_INTENT_INDEX,
   sweepRunsIntentHasKind,
   MODEL_USAGE_RETENTION_DAYS,
+  isPrimaryScope,
   resolveVerticalInstanceFrom,
   type ImpersonationRow,
 } from '@substrat-run/kernel';
@@ -179,6 +180,33 @@ export interface RouteRow {
   deployment_ref: string | null;
   /** The dispatched code's declared outbound surface (#303) as JSON text. */
   outbound_json: string | null;
+  /** The dispatched code's declared outgoing peer calls (#1706) as JSON text. */
+  calls_json: string | null;
+}
+
+/** One candidate instance of a vertical in a tenant (#1706), with what it dispatches as. */
+export interface PeerCandidateRow {
+  scope_id: string;
+  tenant_id: string;
+  vertical: string | null;
+  status: string;
+  kind: string | null;
+  forked_from: string | null;
+  deployment_ref: string | null;
+  outbound_json: string | null;
+  calls_json: string | null;
+}
+
+/** Where the CALLER stands: usable, or the one reason it is not (#1706). */
+export type PeerCallerState = 'ok' | 'unknown' | 'not-primary' | 'inactive';
+
+/** What `peerCallTarget` answers: the caller's standing, and the resolved target (or why not). */
+export interface PeerCallTargetRow {
+  caller: { state: PeerCallerState; status: string | null };
+  outcome: 'resolved' | 'not-installed' | 'ambiguous';
+  /** How many live instances, when `ambiguous`. Zero otherwise. */
+  count: number;
+  target: PeerCandidateRow | null;
 }
 
 export interface VerticalRow {
@@ -2052,6 +2080,83 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
+  /**
+   * Everything the router needs to place ONE peer call (#1706), in one round trip: the
+   * CALLER's own scope record, and the target instance of `vertical` in that tenant with the
+   * script and dispatch parameters that instance runs under.
+   *
+   * One read rather than three, because this sits on a request path. The caller's record is
+   * what decides whether it may call at all — live, primary, and the vertical it claims — and
+   * it is read HERE rather than inferred from routing, so this path does not inherit #1713.
+   * The target side applies the kernel's one rule (`resolveVerticalInstanceFrom`), the same
+   * rule the pure host and the local broker apply.
+   */
+  peerCallTarget(
+    tenantId: string,
+    callerScopeId: string,
+    callerVertical: string,
+    vertical: string,
+  ): PeerCallTargetRow {
+    const caller = this.sql
+      .exec(
+        `SELECT tenant_id, vertical, status, kind, forked_from FROM scopes WHERE scope_id = ?`,
+        callerScopeId,
+      )
+      .toArray()[0] as
+      | { tenant_id: string; vertical: string | null; status: string; kind: string | null; forked_from: string | null }
+      | undefined;
+    const candidates = this.sql
+      .exec(
+        `SELECT s.scope_id, s.tenant_id, s.vertical, s.status, s.kind, s.forked_from,
+                COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
+                CASE WHEN s.serving_ref IS NOT NULL
+                     THEN json_extract(sv.manifest_json, '$.outbound')
+                     ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json,
+                CASE WHEN s.serving_ref IS NOT NULL
+                     THEN json_extract(sv.manifest_json, '$.calls')
+                     ELSE json_extract(vv.manifest_json, '$.calls') END AS calls_json
+           FROM scopes s
+           LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
+           LEFT JOIN verticals vr ON vr.slug = s.vertical
+           LEFT JOIN vertical_versions sv ON sv.id = vr.serving_version_id
+          WHERE s.tenant_id = ? AND s.vertical = ?`,
+        tenantId,
+        vertical,
+      )
+      .toArray() as unknown as PeerCandidateRow[];
+    const resolution = resolveVerticalInstanceFrom(
+      candidates.map((r) => ({
+        id: r.scope_id as ScopeId,
+        tenantId: r.tenant_id as TenantId,
+        vertical: r.vertical,
+        status: r.status as ScopeStatus,
+        kind: r.kind ?? '',
+        forkedFrom: (r.forked_from as ScopeId | null) ?? null,
+      })),
+      tenantId as TenantId,
+      vertical,
+    );
+    const target =
+      resolution.outcome === 'resolved'
+        ? (candidates.find((r) => r.scope_id === resolution.instance.scopeId) ?? null)
+        : null;
+    // The caller's own state, decided HERE — this DO already applies the kernel's one rule
+    // for the target, and the router must not carry a second copy of "what is primary".
+    const callerState: PeerCallerState = !caller || caller.tenant_id !== tenantId || caller.vertical !== callerVertical
+      ? 'unknown'
+      : !isPrimaryScope({ kind: caller.kind ?? '', forkedFrom: (caller.forked_from as ScopeId | null) ?? null })
+        ? 'not-primary'
+        : caller.status !== 'active'
+          ? 'inactive'
+          : 'ok';
+    return {
+      caller: { state: callerState, status: caller?.status ?? null },
+      outcome: resolution.outcome,
+      count: resolution.outcome === 'ambiguous' ? resolution.count : 0,
+      target,
+    };
+  }
+
   readRoute(hostname: string): RouteRow | undefined {
     // Join the scope's dispatch script, so the router resolves it in the same one
     // directory read (orchestration.md §5.4). A scope whose data lives in the stable
@@ -2074,7 +2179,10 @@ export class ControlPlaneDO extends DurableObject {
                 COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
                 CASE WHEN s.serving_ref IS NOT NULL
                      THEN json_extract(sv.manifest_json, '$.outbound')
-                     ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json
+                     ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json,
+                CASE WHEN s.serving_ref IS NOT NULL
+                     THEN json_extract(sv.manifest_json, '$.calls')
+                     ELSE json_extract(vv.manifest_json, '$.calls') END AS calls_json
            FROM hostnames h
            LEFT JOIN scopes s ON s.scope_id = h.scope_id
            LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id

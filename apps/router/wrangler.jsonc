@@ -15,7 +15,9 @@
 // answers 404 — a name it does not know is a name it will not serve.
 {
 	"name": "substrat-router",
-	"main": "src/worker.ts",
+	// Two exports: the public `fetch` router, and the `PeerCalls` entrypoint the egress
+	// worker binds (#1706). A named entrypoint must be exported from the main module.
+	"main": "src/index.ts",
 	"compatibility_date": "2025-01-01",
 
 	// The directory lives in the CONTROL PLANE's deployment, so this is a

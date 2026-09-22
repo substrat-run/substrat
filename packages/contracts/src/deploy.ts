@@ -287,6 +287,22 @@ export function outboundOfManifestJson(manifestJson: string | null | undefined):
 }
 
 /**
+ * The declared outgoing peer calls of a STORED manifest (#1706) — `outboundOfManifestJson`'s
+ * sibling, and null on the same terms: no manifest, unparseable, or a version pushed before the
+ * declaration existed. The directory read lifts it with the outbound surface, in one query, so
+ * the router judges both from the dispatch it already resolved.
+ */
+export function callsOfManifestJson(manifestJson: string | null | undefined): string[] | null {
+  if (!manifestJson) return null;
+  try {
+    const m = JSON.parse(manifestJson) as { calls?: unknown };
+    return Array.isArray(m.calls) ? m.calls.filter((v): v is string => typeof v === 'string') : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The §4 sandbox allowlist: the binding types a hosted vertical may declare, because each
  * is one of its OWN resources and carries no reach into platform infrastructure. This is a
  * POSITIVE allowlist — anything not named here is refused (self-serve-deploy.md §4), the
@@ -709,6 +725,14 @@ export const deployManifest = z.object({
    *  and the email relay are platform-side and need no declaration). ABSENT = pushed by a
    *  pre-#303 CLI: unenforced (metered only) until the next push, which always carries it. */
   outbound: z.array(outboundHost).max(32).optional(),
+  /** The vertical's DECLARED outgoing PEER calls (#1706): the other verticals of the same
+   *  tenant whose operations this one invokes. Versioned with the code exactly as `outbound`
+   *  is, and enforced by the platform on both legs — the router refuses a synchronous call to
+   *  a vertical this list does not name, and the drain refuses an asynchronous one. It is the
+   *  caller's half; what the TARGET allows is its own manifest's `peers`, which is where the
+   *  permissions live and where the permission diff reviews them. `[]` = this vertical calls
+   *  no sibling. ABSENT = a version pushed before #1706: unenforced until the next push. */
+  calls: z.array(verticalSlug).max(32).optional(),
   /** DECLARED email-sender intent (#303): this vertical wants to send transactional mail
    *  (password-reset, verification, invites) — package.json `substrat.sendsEmail`. Outbound
    *  is a platform concern (deploy.ts §4 keeps `send_email` OUT of the sandbox allowlist and

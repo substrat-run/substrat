@@ -16,8 +16,12 @@
  */
 // The `/routing` subpath, not the package root: the root re-exports the scope-DO
 // class, and the router must not carry code for opening scopes it has no binding to.
-import { createRouteResolver, type RouteResolver } from '@substrat-run/adapter-cloudflare/routing';
-import type { RouteTarget } from '@substrat-run/contracts';
+import {
+  createPeerCallResolver,
+  createRouteResolver,
+  type RouteResolver,
+} from '@substrat-run/adapter-cloudflare/routing';
+import { peerCallRequest, peerCaller, type PeerCaller, type RouteTarget } from '@substrat-run/contracts';
 
 export interface Env {
   /**
@@ -97,6 +101,16 @@ interface OutboundPolicy {
   slug: string | null;
   tenant: string;
   hosts: string[] | null;
+  /**
+   * #1706: the SCOPE this dispatch serves, the declared outgoing peer calls of the code it
+   * runs, and how deep a chain of peer calls this dispatch already sits in. Together with
+   * `slug` and `tenant` they are the caller's whole identity on a peer call — set here, by
+   * the dispatcher, from what the directory resolved. Nothing a dispatched script does can
+   * change them, which is the entire reason a peer needs no credential of its own.
+   */
+  scope: string;
+  calls: string[] | null;
+  depth: number;
 }
 
 /** Headers the router asserts. Any inbound copy is stripped before these are set. */
@@ -119,6 +133,11 @@ function verticalFor(env: Env, target: RouteTarget): Fetcher | undefined {
       slug: target.verticalSlug,
       tenant: target.tenantId,
       hosts: target.outboundHosts,
+      scope: target.scopeId,
+      calls: target.calls,
+      // A request from the outside world starts a chain: depth 0. A peer call sets its own
+      // (see `PeerCalls` below), which is what bounds A→B→A.
+      depth: 0,
     };
     return env.DISPATCH.get(target.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
   }
@@ -382,4 +401,101 @@ export default {
       });
     }
   },
+};
+
+/**
+ * Place ONE peer call (#1706) — the whole decision, as a pure function over the env.
+ *
+ * It lives here rather than in the `WorkerEntrypoint` class for a reason worth keeping: the
+ * router's tests run in plain node, and `cloudflare:workers` cannot be imported there. The
+ * class (`src/peer-calls.ts`) is a three-line shell around this, so what is tested is what
+ * runs, and the runtime import stays out of every module a test loads.
+ *
+ * The caller is NOT a parameter a request can influence: the egress worker builds it from
+ * the dispatch parameters this router set when it dispatched the caller, and this function
+ * parses them. What the peer may then DO — which operation, holding which keys — is the
+ * target scope's own door (#1714). This decides only who is calling, which instance answers,
+ * and whether the chain has gone on too long.
+ */
+export async function handlePeerCall(
+  env: Env,
+  rawCaller: unknown,
+  rawRequest: unknown,
+): Promise<PeerCallOutcome> {
+  const secret = env.PLATFORM_SECRET;
+  if (!secret) {
+    // Fail closed and loudly, as the fetch handler does for ROUTER_SECRET: without it the
+    // target's `/internal` gate refuses every call, and the silence would look like a
+    // vertical's bug rather than a half-provisioned router.
+    console.error('router: PLATFORM_SECRET is not configured — refusing every peer call');
+    return { ok: false, status: 503, code: 'unavailable', message: 'this router is not configured for peer calls' };
+  }
+  const caller: PeerCaller = peerCaller.parse(rawCaller);
+  const request = peerCallRequest.parse(rawRequest);
+  const decision = await createPeerCallResolver(env.CONTROL_PLANE)(caller, request.vertical);
+  if (decision.outcome === 'refused') {
+    return {
+      ok: false,
+      status: STATUS_BY_CODE[decision.code] ?? 403,
+      code: decision.code,
+      message: decision.message,
+    };
+  }
+  if (!env.DISPATCH) {
+    return { ok: false, status: 503, code: 'unavailable', message: 'this router cannot dispatch peer calls' };
+  }
+  // The TARGET's own dispatch parameters, one hop deeper: a call the target makes while
+  // serving this one carries `depth + 1`, which is what makes A→B→A terminate.
+  const policy: OutboundPolicy = {
+    slug: decision.vertical,
+    tenant: decision.tenantId,
+    hosts: decision.outboundHosts,
+    scope: decision.scopeId,
+    calls: decision.calls,
+    depth: decision.depth,
+  };
+  const target = env.DISPATCH.get(decision.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
+  const response = await target.fetch(
+    new Request('https://vertical/internal/vertical-invoke', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        // The same wire constant `kickDrain` hardcodes, for the same reason: the router does
+        // not depend on the kernel. A public request can never carry it — this router strips
+        // every `x-substrat-*` header before it forwards one.
+        'x-substrat-platform': secret,
+      },
+      body: JSON.stringify({
+        caller: { vertical: caller.vertical, scope: caller.scopeId },
+        tenantId: decision.tenantId,
+        scopeId: decision.scopeId,
+        operation: request.operation,
+        ...(request.input === undefined ? {} : { input: request.input }),
+        ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
+      }),
+    }),
+  );
+  const body = (await response.json().catch(() => null)) as { result?: unknown; error?: unknown } | null;
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      code: 'refused',
+      message: typeof body?.error === 'string' ? body.error : `the call was refused (${response.status})`,
+    };
+  }
+  return { ok: true, result: body?.result ?? null };
+}
+
+/** What the entrypoint answers: a result, or a refusal with the status the caller sees. */
+export type PeerCallOutcome =
+  | { ok: true; result: unknown }
+  | { ok: false; status: number; code: string; message: string };
+
+/** One mapping from the resolver's refusal to a status, so egress renders it consistently. */
+const STATUS_BY_CODE: Record<string, number> = {
+  not_found: 404,
+  conflict: 409,
+  forbidden: 403,
+  unavailable: 503,
 };
