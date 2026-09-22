@@ -359,10 +359,31 @@ const switchSqlOf = (db: Database.Database): SwitchSql => ({
   },
 });
 
+/**
+ * How many scopes may hold a read connection at once (#1624). Every open scope keeps its
+ * write connection for the life of the host, so an uncapped reader per scope would double
+ * the file handles a node deployment holds — and the lake drain alone reads every scope.
+ * Past the cap the least recently read scope's reader is closed, and reopened on its next
+ * read, which costs well under a millisecond.
+ */
+const READER_CAP = 32;
+
 interface ScopeRuntime {
   tenantId: TenantId;
   scopeId: ScopeId;
+  /** The scope's file — what `db` opened, and what `reader` opens beside it. */
+  file: string;
   db: Database.Database;
+  /**
+   * #1624: a `{ readonly: true }` connection on the same file, for the `HostAdmin` reads.
+   * Opened on the first read, closed with `db` — and dropped by the reader cap
+   * (`READER_CAP`) when it is the least recently used — so null is its resting state.
+   *
+   * It exists because `invoke` holds a `BEGIN IMMEDIATE` open on `db` across its awaits,
+   * so a read on `db` from outside the actor sees that invocation's uncommitted rows. The
+   * file is WAL, so this connection sees the last COMMITTED state and nothing else.
+   */
+  reader: Database.Database | null;
   actor: ScopeActor;
   appliedMigrations: Set<string>;
   /**
@@ -1199,6 +1220,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly directory: Database.Database;
   private readonly scopes = new Map<string, ScopeRuntime>();
   private readonly scopesById = new Map<string, ScopeRuntime>();
+  /** The runtimes holding an open `reader` (#1624), least recently read first — `READER_CAP`'s LRU. */
+  private readonly readers = new Map<string, ScopeRuntime>();
   /** Per-tenant relational stores (#301), opened lazily and cached by `ref` (the bare
    *  `.sqlite` filename). The pure-adapter analogue of a per-tenant D1 — one file per
    *  (tenant, vertical, binding), physically separate from the scope DBs. */
@@ -2977,13 +3000,8 @@ export class SqliteScopeHost implements ScopeHost {
       );
     }
     // Close and evict the runtime handle before touching the file.
-    const key = `${tenantId}/${scopeId}`;
-    const rt = this.scopes.get(key);
-    if (rt) {
-      rt.db.close();
-      this.scopes.delete(key);
-      this.scopesById.delete(scopeId);
-    }
+    const rt = this.scopes.get(`${tenantId}/${scopeId}`);
+    if (rt) this.closeRuntime(rt);
     // Order is the retry story: hostnames first (a reaped preview URL must stop
     // resolving), then the STORAGE, then the directory row — so a crash mid-way leaves
     // a visible row over empty storage (re-running deleteSnapshot converges), never
@@ -3338,7 +3356,33 @@ export class SqliteScopeHost implements ScopeHost {
     // before. A scope switched OFF reports every schedule `skipped`, never `failed`, and
     // does not touch its cadence rows — so a restore fires a due schedule on the next pass.
     const nowIso = this.clock();
-    const state = systemScheduleState(switchSqlOf(rt.db), moduleId, nowIso);
+    // The whole gate — the switch state and every cadence row — is ONE turn, on the write
+    // connection (#1624). Outside a turn it saw a suspended operation's uncommitted grant,
+    // revoke or cadence row, and fired (or skipped) on a state its rollback was about to
+    // undo. Not the read connection either: these reads decide a write (a fire, then its
+    // cadence row), and a snapshot read ahead of the write's turn is the split #1678 closed.
+    // One turn rather than one per read, because the first turn already waits out any
+    // stranger; nothing but this loop writes a `kind = 'schedule'` row, so reading them all
+    // up front answers what reading each just before its fire did.
+    //
+    // #1288: each schedule's own row. `kind` is what makes that true even when the operation
+    // is spelled `freshness:<eventType>` — without it, the cadence gate read the evaluator's
+    // last recorded verdict as a run of this operation.
+    const gate = await rt.actor.turn(() => {
+      const switched = systemScheduleState(switchSqlOf(rt.db), moduleId, nowIso);
+      const lastRuns = new Map<string, string | null>();
+      if (switched !== 'on') return { state: switched, lastRuns };
+      const read = rt.db.prepare(
+        `SELECT last_run_at FROM _substrat_schedule_state
+          WHERE kind = 'schedule' AND schedule_op = ?`,
+      );
+      for (const schedule of mod.schedules) {
+        const row = read.get(schedule.operation) as { last_run_at: string | null } | undefined;
+        lastRuns.set(schedule.operation, row?.last_run_at ?? null);
+      }
+      return { state: switched, lastRuns };
+    });
+    const state = gate.state;
     if (state === 'ungranted') return report;
     if (state === 'off') {
       for (const schedule of mod.schedules) {
@@ -3357,16 +3401,8 @@ export class SqliteScopeHost implements ScopeHost {
 
     const now = Date.parse(nowIso);
     for (const schedule of mod.schedules) {
-      // #1288: this schedule's own row. `kind` is what makes that true even when the
-      // operation is spelled `freshness:<eventType>` — without it, the cadence gate
-      // below read the evaluator's last recorded verdict as a run of this operation.
-      const row = rt.db
-        .prepare(
-          `SELECT last_run_at FROM _substrat_schedule_state
-            WHERE kind = 'schedule' AND schedule_op = ?`,
-        )
-        .get(schedule.operation) as { last_run_at: string | null } | undefined;
-      const lastRun = row?.last_run_at ? Date.parse(row.last_run_at) : null;
+      const lastRunAt = gate.lastRuns.get(schedule.operation) ?? null;
+      const lastRun = lastRunAt ? Date.parse(lastRunAt) : null;
       const dueAt = lastRun === null ? -Infinity : lastRun + schedule.cadence.everyMinutes * 60_000;
       if (now < dueAt) {
         report.skipped += 1;
@@ -3720,9 +3756,7 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   async close(): Promise<void> {
-    for (const { db } of this.scopes.values()) db.close();
-    this.scopes.clear();
-    this.scopesById.clear();
+    for (const rt of [...this.scopes.values()]) this.closeRuntime(rt);
     this.directory.close();
   }
 
@@ -4125,7 +4159,7 @@ export class SqliteScopeHost implements ScopeHost {
     // "not granted" where the checker answers allow — a read-back that disagrees with
     // enforcement is worse than none, since it is the read an operator would trust.
     const rows = [
-      ...(rt.db
+      ...(this.readDb(rt)
         .prepare(
           `SELECT subject, relation, expires_at FROM _substrat_tuples
            WHERE subject LIKE 'connection:%' AND relation LIKE 'granted:%'
@@ -4214,7 +4248,7 @@ export class SqliteScopeHost implements ScopeHost {
   async executorDeadLetters(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDeadLetter[]> {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    const rows = rt.db
+    const rows = this.readDb(rt)
       .prepare(
         `SELECT d.event_id, d.consumer_module, d.attempts, d.error, d.delivered_at, o.type
          FROM _substrat_deliveries d
@@ -4245,7 +4279,7 @@ export class SqliteScopeHost implements ScopeHost {
   async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]> {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    const rows = rt.db
+    const rows = this.readDb(rt)
       .prepare(
         `SELECT ${PLATFORM_REQUEST_COLUMNS}
            FROM _substrat_platform_requests WHERE status = 'pending' ORDER BY id`,
@@ -4263,7 +4297,7 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     const q = platformRequestHistoryQuery(filter);
-    return (rt.db.prepare(q.sql).all(...q.params) as PlatformRequestRawRow[]).map(
+    return (this.readDb(rt).prepare(q.sql).all(...q.params) as PlatformRequestRawRow[]).map(
       platformRequestOf,
     );
   }
@@ -6236,7 +6270,11 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
-        const db = this.scopeDbFor(tenantId, scopeId);
+        // The COMMITTED outbox (#1624). On the shared connection this read saw an in-flight
+        // operation's uncommitted event, the drain shipped it, and the rollback left the lake
+        // — which is append-only — holding an event the scope never had. The mark that
+        // follows needs no such care: it stamps only rows that exist and are undrained.
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const page = db.prepare(
           `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ? OFFSET ?`,
         );
@@ -6323,8 +6361,9 @@ export class SqliteScopeHost implements ScopeHost {
         // an access row — the count itself as the result count, which is the fact an
         // auditor asking "who counted this tenant's outbox, and how much was there" wants.
         if (countOnly) {
+          // The committed count (#1624): a stranger's uncommitted drain mark is not a fact yet.
           const redrainable = (
-            db
+            this.scopeReadDbFor(tenantId, scopeId)
               .prepare(
                 `SELECT COUNT(*) AS c FROM _substrat_outbox
                   WHERE drained_at IS NOT NULL AND drained_at < ?`,
@@ -6377,7 +6416,7 @@ export class SqliteScopeHost implements ScopeHost {
       facetEvents: async (actor, tenantId, scopeId, input) => {
         // `facetEvents` is the sanctioned read: an erased payload yields the same
         // NULL a missing field does, and only the helper counts them apart.
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const result = facetEvents({ sql: scopedSql(db) }, input);
         this.recordAccess(actor, 'facetEvents', { tenantId, scopeId }, input, result.buckets.length);
         return result;
@@ -6387,7 +6426,7 @@ export class SqliteScopeHost implements ScopeHost {
         // only one that decodes the envelope's nullable facts (an erased payload, an
         // unrecorded authorization chain, nobody impersonating) as facts rather than
         // as missing data.
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const page = readHistory(
           { sql: scopedSql(db) },
           { entityType: input.entityType, entityId: input.entityId },
@@ -6406,7 +6445,7 @@ export class SqliteScopeHost implements ScopeHost {
         // #1237: the sanctioned walk. The helper owns the one distinction the whole
         // view rests on — a null cause with an operation is the beginning of the
         // chain, a null cause without one is the trail running out.
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const result = walkEventCause({ sql: scopedSql(db) }, input.eventId, input.maxDepth);
         this.recordAccess(
           actor,
@@ -6420,27 +6459,27 @@ export class SqliteScopeHost implements ScopeHost {
       eventEffects: async (actor, tenantId, scopeId, input) => {
         // #1237 forward: the helper owns the two delivery traps — `delivered_at`
         // meaning two different things, and an empty list being ambiguous.
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const tree = walkEventEffects({ sql: scopedSql(db) }, input.eventId, input.maxNodes);
         this.recordAccess(actor, 'eventEffects', { tenantId, scopeId }, { eventId: input.eventId }, tree.count);
         return tree;
       },
       invocationEvents: async (actor, tenantId, scopeId, input) => {
         // #1237: one call's events, siblings included — what neither walk reaches.
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const read = readInvocation({ sql: scopedSql(db) }, input.invocationId, input.limit);
         this.recordAccess(actor, 'invocationEvents', { tenantId, scopeId }, { invocationId: input.invocationId }, read.events.length);
         return read;
       },
       deadLetters: async (actor, tenantId, scopeId, input) => {
         // #1525: every delivery that gave up, scope-wide — what the walks reach only by event.
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const page = readDeadLetters({ sql: scopedSql(db) }, { limit: input.limit, cursor: input.cursor });
         this.recordAccess(actor, 'deadLetters', { tenantId, scopeId }, null, page.entries.length);
         return page;
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const rows = db
           .prepare(
             `SELECT module_id, version, applied_at FROM _substrat_migrations
@@ -6469,7 +6508,7 @@ export class SqliteScopeHost implements ScopeHost {
       scopeDatabaseSize: async (actor, tenantId, scopeId) => {
         // #1524: the SQLite twin of a DO's `databaseSize`. It counts allocated pages,
         // free ones included, which is what the file costs on disk, not the live row bytes.
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const pages = db.pragma('page_count', { simple: true }) as number;
         const pageSize = db.pragma('page_size', { simple: true }) as number;
         const bytes = pages * pageSize;
@@ -6782,7 +6821,7 @@ export class SqliteScopeHost implements ScopeHost {
       listScopeTables: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeTable[]> => {
         // K-3: the (tenantId, scopeId) pair is cross-checked before we open anything;
         // a scope under a different tenant is unreachable, never another tenant's DB.
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const names = (
           db
             .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
@@ -6802,7 +6841,7 @@ export class SqliteScopeHost implements ScopeHost {
         scopeId: ScopeId,
         input: ReadScopeTableInput,
       ): Promise<ScopeTablePage> => {
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         // Validate the table against the LIVE schema — an unknown name throws, it is
         // never interpolated blind. That validated name is the only thing that reaches
         // the query, so the quoted identifier below carries no user input.
@@ -6831,7 +6870,7 @@ export class SqliteScopeHost implements ScopeHost {
         scopeId: ScopeId,
         input: QueryScopeInput,
       ): Promise<ScopeQueryResult> => {
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         // Layer 1, shared: the kernel's textual gate (single statement, read verbs
         // only) — the checked statement is the one that runs.
         const sql = assertReadOnlyQuery(input.sql);
@@ -6869,7 +6908,7 @@ export class SqliteScopeHost implements ScopeHost {
         scopeId: ScopeId,
         filter?: DenialFilter,
       ): Promise<PermissionDenial[]> => {
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const q = denialListQuery(filter);
         const rows = (db.prepare(q.sql).all(...q.params) as DenialRow[]).map(mapDenialRow);
         this.recordAccess(actor, 'listDenials', { tenantId, scopeId }, filter ?? null, rows.length);
@@ -6881,7 +6920,7 @@ export class SqliteScopeHost implements ScopeHost {
         scopeId: ScopeId,
         filter?: DenialFilter,
       ): Promise<DenialSummary> => {
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         const b = denialSummaryQuery(filter);
         // Grouped as the filter asked (#1456), and the answer says which way.
         const grouped = mapDenialSummaryBuckets(b.groupBy, db.prepare(b.sql).all(...b.params));
@@ -6907,7 +6946,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       exportScope: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeDump> => {
         // K-3: cross-check the pair before opening anything (same as the introspection reads).
-        const db = this.scopeDbFor(tenantId, scopeId);
+        const db = this.scopeReadDbFor(tenantId, scopeId);
         // Every real table, keeping the `_substrat_*` spine but dropping SQLite's own
         // `sqlite_*` internals — those are auto-managed and `CREATE TABLE sqlite_*` is
         // rejected on reload. `sql` is the CREATE statement, replayed to rebuild the schema.
@@ -7066,13 +7105,10 @@ export class SqliteScopeHost implements ScopeHost {
               `unbind it before reaping (reap wipes storage and cannot be undone)`,
           );
         }
-        const key = `${tenantId}/${scopeId}`;
-        const rt = this.scopes.get(key);
-        if (rt) {
-          rt.db.close();
-          this.scopes.delete(key);
-          this.scopesById.delete(scopeId);
-        }
+        // The reader goes with the writer (#1624): an open handle on a removed file keeps
+        // reading the unlinked bytes, which is the reaped data answering as if it were live.
+        const rt = this.scopes.get(`${tenantId}/${scopeId}`);
+        if (rt) this.closeRuntime(rt);
         rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
         // The recoverable copy the caller stored first (#493), named in the audit entry so
         // the trail answers "was there a backup" without correlating two timestamps.
@@ -9384,6 +9420,70 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
+   * The connection a `HostAdmin` READ runs on (#1624) — `scopeDbFor`'s twin, with the
+   * same K-3 and reap gate in front of it.
+   *
+   * From OUTSIDE the scope's actor it is the scope's read-only connection. `invoke` holds
+   * a `BEGIN IMMEDIATE` open on the shared connection across its awaits, so a read there
+   * saw a stranger's uncommitted rows: a lake drain shipped an event that then rolled
+   * back — permanently, since the lake is append-only — and an export captured one into a
+   * backup. The file is WAL, so the reader sees exactly what was committed.
+   *
+   * From INSIDE one of the scope's actor tasks (an executor handed `HostAdmin`, reading
+   * its own scope) it is the shared connection, as before. The only transaction open
+   * there is the caller's own unit — the actor serializes everything else — so reading
+   * it is reading your own writes, which is the answer the caller is owed and the one it
+   * had. `ScopeActor.turn` makes the same call for the writers (#1678).
+   */
+  private scopeReadDbFor(tenantId: TenantId, scopeId: ScopeId): Database.Database {
+    this.assertScopeReachable(tenantId, scopeId);
+    return this.readDb(this.runtime(tenantId, scopeId));
+  }
+
+  /**
+   * `scopeReadDbFor` without the directory gate, for the host-side reads that already
+   * resolved their runtime — the platform-intent drain's `listPlatformRequests` among them,
+   * where a stranger's uncommitted intent was a platform effect about to be carried out for
+   * an operation that then rolled back.
+   */
+  private readDb(rt: ScopeRuntime): Database.Database {
+    if (rt.actor.holds()) return rt.db;
+    const key = `${rt.tenantId}/${rt.scopeId}`;
+    if (rt.reader) {
+      // Most recently used goes to the back of the insertion order, which is the cap's LRU.
+      this.readers.delete(key);
+      this.readers.set(key, rt);
+      return rt.reader;
+    }
+    // `runtime()` opened the writer first, in WAL, so the file and its `-shm` exist.
+    rt.reader = new Database(rt.file, { readonly: true, fileMustExist: true });
+    this.readers.set(key, rt);
+    // The cap: a lake drain sweeps every scope, and without it every open scope would end
+    // up holding two connections. The oldest reader is closed; the next read reopens it.
+    while (this.readers.size > READER_CAP) {
+      const [oldest, victim] = this.readers.entries().next().value as [string, ScopeRuntime];
+      this.readers.delete(oldest);
+      victim.reader?.close();
+      victim.reader = null;
+    }
+    return rt.reader;
+  }
+
+  /**
+   * Close a scope's connections and forget its runtime — the reader with the writer, so
+   * neither outlives the file a reap or a snapshot delete is about to remove.
+   */
+  private closeRuntime(rt: ScopeRuntime): void {
+    const key = `${rt.tenantId}/${rt.scopeId}`;
+    rt.reader?.close();
+    rt.reader = null;
+    this.readers.delete(key);
+    rt.db.close();
+    this.scopes.delete(key);
+    this.scopesById.delete(rt.scopeId);
+  }
+
+  /**
    * The additive spine-column migrations, shared by `runtime()` and the dump replay.
    * KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before a column keeps the
    * old shape — and so does a table a DUMP replay just recreated from legacy DDL,
@@ -9460,7 +9560,10 @@ export class SqliteScopeHost implements ScopeHost {
     const key = `${tenantId}/${scopeId}`;
     const existing = this.scopes.get(key);
     if (existing) return existing;
-    const db = new Database(join(this.dir, `${tenantId}__${scopeId}.sqlite`));
+    const file = join(this.dir, `${tenantId}__${scopeId}.sqlite`);
+    const db = new Database(file);
+    // WAL is also what the read connection rests on (#1624): a reader sees the last
+    // committed snapshot and never blocks, or is blocked by, the writer.
     db.pragma('journal_mode = WAL');
     db.exec(KERNEL_DDL);
     this.ensureSpineColumns(db);
@@ -9485,7 +9588,9 @@ export class SqliteScopeHost implements ScopeHost {
     const created: ScopeRuntime = {
       tenantId,
       scopeId,
+      file,
       db,
+      reader: null,
       actor: new ScopeActor(),
       appliedMigrations,
       mintEventId,
