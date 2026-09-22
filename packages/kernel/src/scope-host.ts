@@ -137,6 +137,7 @@ import type {
   IssueStatus,
   IssueStatusInput,
 } from '@substrat-run/contracts';
+import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
 import { substratError } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
@@ -2992,8 +2993,14 @@ export interface HostAdmin {
    * Record that a connection worked, or did not (§3.7). Written by the connector
    * runtime; read by a console. Not audited — it is telemetry about a machine
    * read, not a control-plane mutation.
+   *
+   * #1691: the settlement may also carry the call's timing (`durationMs`, `status`,
+   * `timedOut` — all optional, so a caller that knows none of them records the line
+   * exactly as before). Each host hands the call, alongside the line, to its
+   * `ConnectorCallRecorder` — one data point per call, fire-and-forget; see
+   * `connector-calls.ts`.
    */
-  recordConnectionUse(id: ConnectionId, outcome: { ok: true } | { ok: false; error: string }): Promise<void>;
+  recordConnectionUse(id: ConnectionId, outcome: ConnectionUseOutcome): Promise<void>;
 
   /**
    * Durable, connection-scoped state a connector keeps for itself — the home a

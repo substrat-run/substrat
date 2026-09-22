@@ -192,6 +192,27 @@ export interface SweepRunsQuery extends PageQuery {
 }
 
 /**
+ * `GET /connections/calls` (#1691) — connector calls to one provider inside one bucket,
+ * sampling-weighted, split by outcome: `ok` green, `class4xx` yellow, and the rest
+ * (`class5xx` + `timeouts` + `failed`) red. The three sum to `calls`. Mirrors
+ * `ConnectorCallsBucket` in `@substrat-run/control-plane-api`; an empty bucket is omitted.
+ */
+export interface ConnectorCallsBucket {
+  provider: string;
+  start: string;
+  bucketMinutes: number;
+  calls: number;
+  errors: number;
+  ok: number;
+  class4xx: number;
+  class5xx: number;
+  timeouts: number;
+  failed: number;
+  durationP50: number;
+  durationP95: number;
+}
+
+/**
  * `GET /connections/health` (#1690) — `status` is the DERIVED health state. No `order`:
  * the walk is ascending by connection id only, and the route refuses `desc`.
  */
@@ -509,6 +530,11 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // derived health, refresh-expiry warning, and connector dead letters per provider.
     listConnectionHealth: (q: ConnectionHealthQuery = {}) =>
       call<ConnectionHealthPage>(`/connections/health${query({ ...q })}`),
+
+    // Connector calls per provider over a window (#1691) — the trend behind the health
+    // line. 501s where the control plane names no connector-call dataset.
+    connectorCalls: (q: { hours: number; provider?: string }) =>
+      call<{ hours: number; buckets: ConnectorCallsBucket[] }>(`/connections/calls${query({ ...q })}`),
 
     // Failures grouped by fingerprint (#1233) — counted defects with a lifecycle.
     // `{ entries }` alone: the server sends no cursor, deliberately.

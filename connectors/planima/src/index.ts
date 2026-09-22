@@ -11,6 +11,7 @@ import {
   type ConnectionId,
 } from '@substrat-run/contracts';
 import type { ConnectorConnection, FetchLike, HostAdmin, ScopeHost } from '@substrat-run/kernel';
+import { settleConnectionUse } from '@substrat-run/kernel';
 import { PlanimaApi, PlanimaApiError, PLANIMA_API_BASE, planimaSecret } from './api.js';
 import {
   actionFactIn,
@@ -924,18 +925,20 @@ async function openPlanimaConnection(
   return {
     ...open,
     fetch: async (input, init) => {
+      // #1691: timed, so the host's per-call data point carries a duration.
+      const started = Date.now();
       try {
         const res = await fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
         await admin.recordConnectionUse(
           open.id,
-          res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status} from planima` },
+          settleConnectionUse('planima', Date.now() - started, { response: res }),
         );
         return res;
       } catch (err) {
-        await admin.recordConnectionUse(open.id, {
-          ok: false,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        await admin.recordConnectionUse(
+          open.id,
+          settleConnectionUse('planima', Date.now() - started, { error: err }),
+        );
         throw err;
       }
     },
