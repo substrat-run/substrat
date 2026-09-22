@@ -250,8 +250,15 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
 
     describe('tenant-bound', () => {
       it('the door fails closed on a scope of another tenant, named under this one', async () => {
-        await expect(refusal(asPeer(caller, su, t))).resolves.toBeInstanceOf(Error);
-        await expect(refusal(host.peerCovers(t, su, PEER_CALLER, [READ]))).resolves.toBeInstanceOf(Error);
+        // K-3's pair check, and it refuses in the words every other door refuses in — a scope
+        // of another tenant reads as one that does not exist. (#1714 review: a typed
+        // `not_found` would be better, and it is a change to all 25 sites that share this
+        // wording on both adapters, not to this door alone.)
+        for (const refused of [refusal(asPeer(caller, su, t)), refusal(host.peerCovers(t, su, PEER_CALLER, [READ]))]) {
+          const err = await refused;
+          expect(err).toBeInstanceOf(Error);
+          expect(String((err as Error).message)).toMatch(/unknown scope/);
+        }
       });
 
       it('twin: that scope, under its own tenant, is a door like any other', async () => {

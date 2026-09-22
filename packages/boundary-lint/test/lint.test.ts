@@ -283,11 +283,101 @@ describe('R9 — the local peer broker (#1706)', () => {
     expect(rules(lint(root)).sort()).toEqual(['R2', 'R9']);
   });
 
+  it('a dynamic import is the same reach — worker.ts is R9 either way', () => {
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      'src/worker.ts': `
+        export async function boot() {
+          const { createLocalVerticalBroker } = await import('@substrat-run/adapter-sqlite/vertical-broker');
+          return createLocalVerticalBroker({});
+        }
+      `,
+      'src/module.ts': 'export const x = 1;',
+    });
+    expect(rules(lint(root))).toEqual(['R9']);
+  });
+
+  it('so is require() — the form a .mjs harness would reach for', () => {
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      'src/worker.ts': `const broker = require('@substrat-run/adapter-sqlite/vertical-broker');\nexport default broker;`,
+      'src/module.ts': 'export const x = 1;',
+    });
+    expect(rules(lint(root))).toEqual(['R9']);
+  });
+
+  it('twin: server.ts may reach it dynamically too — the exemption is the file, not the syntax', () => {
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      'src/server.ts': `export const b = await import('@substrat-run/adapter-sqlite/vertical-broker');`,
+      'src/module.ts': 'export const x = 1;',
+    });
+    expect(lint(root)).toEqual([]);
+  });
+
+  it('the exemption is the package-relative PATH: a nested server.ts is not a composition root', () => {
+    const broker = `import { createLocalVerticalBroker } from '@substrat-run/adapter-sqlite/vertical-broker';\nexport const b = createLocalVerticalBroker({});`;
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      'src/jobs/server.ts': broker,
+    });
+    // Module code, so the adapter import is R2 as well — but R9 is the one that would have
+    // been missing while the exemption matched only the basename.
+    expect(rules(lint(root)).sort()).toEqual(['R2', 'R9']);
+
+    // …and the real composition root at the package's own root stays exempt.
+    const root2 = project({ 'package.json': VERTICAL_PKG, 'src/server.ts': broker });
+    expect(lint(root2)).toEqual([]);
+  });
+
   it('the pure host itself is not the broker — importing the adapter root in server.ts stays clean', () => {
     const root = project({
       'package.json': VERTICAL_PKG,
       'src/worker.ts': `import type { ScopeHost } from '@substrat-run/kernel';\nexport type H = ScopeHost;`,
       'src/server.ts': `import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';\nexport const H = SqliteScopeHost;`,
+    });
+    expect(lint(root)).toEqual([]);
+  });
+});
+
+describe('a dynamic import is an import (#1706 review)', () => {
+  // `importsOf` matched static syntax only, so every ban built on it — R1, R2, R3 and R9 —
+  // was evaded by one rewrite. Each ban gets its dynamic form here, beside a clean twin.
+  it('R2: module code cannot reach the adapter or node through import() or require()', () => {
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      'src/ops.ts': `
+        export async function read() {
+          const db = await import('better-sqlite3');
+          const fs = require('node:fs');
+          return [db, fs];
+        }
+      `,
+    });
+    expect(rules(lint(root)).sort()).toEqual(['R2', 'R2']);
+  });
+
+  it('R3: module code cannot reach an HTTP client dynamically either', () => {
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      'src/ops.ts': `export const send = async () => (await import('axios')).default;`,
+    });
+    expect(rules(lint(root))).toEqual(['R3']);
+  });
+
+  it('R1: an engine cannot dynamically import a sibling engine', () => {
+    const root = project({
+      'package.json': JSON.stringify({ name: '@substrat-run/engine-workorder', type: 'module' }),
+      'boundary-lint.config.json': JSON.stringify({ packages: [{ src: 'src', engine: true }] }),
+      'src/ops.ts': `export const x = async () => import('@substrat-run/engine-invoicing');`,
+    });
+    expect(rules(lint(root))).toEqual(['R1']);
+  });
+
+  it('twin: naming a permitted package dynamically is not a violation', () => {
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      'src/ops.ts': `export const x = async () => import('@substrat-run/contracts');`,
     });
     expect(lint(root)).toEqual([]);
   });
