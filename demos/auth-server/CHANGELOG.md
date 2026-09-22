@@ -1,5 +1,48 @@
 # @substrat-run/demo-auth-server
 
+## 0.8.0
+
+### Minor Changes
+
+- d7eb089: The auth server mints tokens for the MCP endpoints of the verticals that sign in with it, so an MCP client reaches a vertical with nothing configured by hand.
+
+  An MCP client asks for a token for the endpoint it discovered, as an RFC 8707 `resource`. The auth server refused every such request with `invalid_target … is not configured`, before any login page, because nothing ever registered a vertical's endpoint as a resource. The platform now does: the dashboard delivers `substrat:resources:<app scope>` through `/internal/configure`, and the auth server turns it into exactly that app's set of registered resources. A repeat delivery writes nothing. An empty one un-registers, and from then on the resource can be neither minted nor refreshed. A resource an operator registered is never changed or removed by it. A delivery is one transaction: a malformed one is refused whole, and a write that fails halfway rolls back everything the delivery did.
+
+  Two policy changes come with it. Any client of the issuer may now request a token for any registered resource (`enforcePerClientResources: false`). Every MCP client registers itself and none is ever linked to a resource, so leaving the per-client check on would refuse all of them. What protects a resource is the user's own sign-in and consent, the resource server's `aud` check, and the resource server's own permissions. And managing resources through the plugin's server-side admin API now needs an administrator, as managing clients already did. Left unset, it accepted any signed-in session.
+
+  Discovery now also carries `resource_parameter_supported: true`. It is not an IANA-registered metadata name, so a client that does not know it ignores it.
+
+### Patch Changes
+
+- fe39977: The auth server moves to Better Auth 1.7.5, and an issuer that already ran 1.7.0–1.7.2 upgrades itself on the next boot.
+
+  Better Auth 1.7.0–1.7.2 added a required `issuer` column to `account` and keyed an account by `(issuer, accountId)`. 1.7.3 took both back: an account is again `(providerId, accountId)`, as it was in 1.6, and nothing writes `issuer` any more. On a store that had the column, every new sign-up and account link — the password ones too — failed with `NOT NULL constraint failed: account.issuer`, leaving a user with no account behind. The boot-time upgrade now drops the column and its index, and keeps every account, credential and link. A store from 1.6 never had the column and is left alone. One case is refused rather than dropped: if two rows share `(provider_id, account_id)` and differ only by issuer, the boot stops with an error naming the providers and leaves `account` untouched, because the issuer is the only thing that tells those rows apart. Resolve them (or roll the deploy back) and boot again.
+
+  Two visible changes. `GET /api/admin/users/:userId/sign-in-methods` no longer returns `issuer` on each method (nothing in the console read it; `provider` and `accountId` are the key now). And a custom OIDC upstream's account is namespaced by its provider id rather than by the upstream's own issuer, so removing and re-adding an upstream keeps its people only under the same id.
+
+- 6d3fe0e: The auth server answers the platform's reconcile, so its installs stop being asked again on every sweep pass.
+
+  Since a promote of a listed vertical re-runs provisioning on its installs, the control plane sends every auth-server install a `POST /internal/reconcile`. There was no such route: the `/internal/*` catch-all answered `501`, the sweep counted each install `unsupported`, wrote no receipt for it, and asked the same install again on the next pass and every one after. Each ask took a slot of the pass's batch.
+
+  The route wakes the install's issuer, which brings its schema to the served version, and answers `200 { tenantId, scopeId }` when the issuer knows the install. It writes nothing: a reconcile carries no `slug` or `name`, so re-running the provision would have blanked what the provision recorded. An install the issuer never recorded, or one recorded for another tenant, answers `409`, as vertical-host's reconcile does, so the sweep records no receipt for a provision that never happened. It stays a failure the sweep reports, not a silent skip.
+
+  The workerd suite this change adds is the demo's first: it compares every table of an issuer's SQLite after one provision and after a second provision plus two reconciles, and they are identical. Every other `/internal/*` verb the demo does not implement still answers `501`.
+
+- Updated dependencies [6504a99]
+- Updated dependencies [aabc227]
+- Updated dependencies [fb37a3e]
+- Updated dependencies [44299a1]
+- Updated dependencies [4ef164c]
+- Updated dependencies [d7eb089]
+- Updated dependencies [269fa7a]
+- Updated dependencies [105a4c3]
+- Updated dependencies [a8c2c64]
+- Updated dependencies [02c181a]
+- Updated dependencies [2fa5147]
+- Updated dependencies [1f223f5]
+  - @substrat-run/contracts@0.117.0
+  - @substrat-run/kernel@0.117.0
+
 ## 0.7.12
 
 ### Patch Changes
