@@ -3053,7 +3053,17 @@ export class ControlPlaneDO extends DurableObject {
       .toArray() as unknown as ConnectionGrantDoRow[];
   }
 
-  recordConnectionUse(id: string, error: string | null, at: string): void {
+  /**
+   * Settle the health line, and answer with the row's identity (#1691) — the coordinator
+   * records one connector-call data point from it, and must take the tenant, vertical and
+   * provider from the ROW rather than from anything its caller handed it. `null` when no
+   * row has that id.
+   */
+  recordConnectionUse(
+    id: string,
+    error: string | null,
+    at: string,
+  ): { tenantId: string; vertical: string; provider: string } | null {
     if (error === null) {
       this.sql.exec(
         `UPDATE _substrat_connections
@@ -3063,17 +3073,21 @@ export class ControlPlaneDO extends DurableObject {
         at,
         id,
       );
-      return;
+    } else {
+      this.sql.exec(
+        `UPDATE _substrat_connections
+         SET last_error = ?, last_error_at = ?,
+             status = CASE WHEN status = 'revoked' THEN status ELSE 'error' END
+         WHERE id = ?`,
+        error.slice(0, 2000),
+        at,
+        id,
+      );
     }
-    this.sql.exec(
-      `UPDATE _substrat_connections
-       SET last_error = ?, last_error_at = ?,
-           status = CASE WHEN status = 'revoked' THEN status ELSE 'error' END
-       WHERE id = ?`,
-      error.slice(0, 2000),
-      at,
-      id,
-    );
+    const row = this.sql
+      .exec('SELECT tenant_id, vertical, provider FROM _substrat_connections WHERE id = ?', id)
+      .toArray()[0] as { tenant_id: string; vertical: string; provider: string } | undefined;
+    return row ? { tenantId: row.tenant_id, vertical: row.vertical, provider: row.provider } : null;
   }
 
   putConnectorState(id: string, key: string, value: string, at: string): void {

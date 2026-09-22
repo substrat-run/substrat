@@ -374,6 +374,12 @@ import {
   readUndrainedOutbox,
   undrainedEventsOf,
   type UndrainedEvents,
+  connectorCallRecord,
+  noopConnectorCallRecorder,
+  recordConnectorCall,
+  settleConnectionUse,
+  type ConnectionUseOutcome,
+  type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -496,6 +502,14 @@ export interface SqliteScopeHostOptions {
    * provider will not produce on demand.
    */
   fetch?: FetchLike;
+  /**
+   * #1691: where each connector call's data point goes, beside the health line
+   * `recordConnectionUse` settles. Defaults to the no-op recorder, so self-host keeps
+   * the identical shape with nothing written; the hosted platform hands the Cloudflare
+   * host an Analytics Engine recorder instead. Fire-and-forget — never awaited, and a
+   * throw is swallowed.
+   */
+  connectorCalls?: ConnectorCallRecorder;
   /**
    * What `ctx.now()` reads (#812). Defaults to the wall clock.
    *
@@ -1314,6 +1328,7 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly systemPrincipal: PrincipalId = principalId.parse(ulid());
   private readonly secretBox: SecretBox;
   private readonly fetchImpl: FetchLike;
+  private readonly connectorCalls: ConnectorCallRecorder;
   private readonly clock: Clock;
   private readonly versionId: string | null;
   // The mint for event ids (#956) is NOT here: it lives on `ScopeRuntime`, one per
@@ -1325,6 +1340,7 @@ export class SqliteScopeHost implements ScopeHost {
   constructor(options: SqliteScopeHostOptions) {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.fetchImpl = options.fetch ?? globalFetch;
+    this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
     this.dir = options.dir;
@@ -2034,6 +2050,9 @@ export class SqliteScopeHost implements ScopeHost {
           // request pending across a rotation still opens.
           unseal: async (sealed) => openSealed(await this.openSealingKeys(open.id), sealed),
           fetch: async (input, init) => {
+            // #1691: timed here, where the call is made, so the data point the host
+            // records beside the health line carries a duration.
+            const started = Date.now();
             try {
               const res = await fetchImpl(input, {
                 ...init,
@@ -2042,20 +2061,16 @@ export class SqliteScopeHost implements ScopeHost {
               // A 5xx is the provider failing; a 4xx is usually us. Both are
               // worth recording, because "the connection stopped working" is the
               // question a health view answers.
-              if (!res.ok) {
-                await admin.recordConnectionUse(open.id, {
-                  ok: false,
-                  error: `HTTP ${res.status} from ${provider}`,
-                });
-              } else {
-                await admin.recordConnectionUse(open.id, { ok: true });
-              }
+              await admin.recordConnectionUse(
+                open.id,
+                settleConnectionUse(provider, Date.now() - started, { response: res }),
+              );
               return res;
             } catch (err) {
-              await admin.recordConnectionUse(open.id, {
-                ok: false,
-                error: err instanceof Error ? err.message : String(err),
-              });
+              await admin.recordConnectionUse(
+                open.id,
+                settleConnectionUse(provider, Date.now() - started, { error: err }),
+              );
               throw err;
             }
           },
@@ -8226,10 +8241,7 @@ export class SqliteScopeHost implements ScopeHost {
         };
       },
 
-      recordConnectionUse: async (
-        id: ConnectionId,
-        outcome: { ok: true } | { ok: false; error: string },
-      ) => {
+      recordConnectionUse: async (id: ConnectionId, outcome: ConnectionUseOutcome) => {
         const now = new Date().toISOString();
         if (outcome.ok) {
           this.directory
@@ -8240,16 +8252,30 @@ export class SqliteScopeHost implements ScopeHost {
                WHERE id = ?`,
             )
             .run(now, id);
-          return;
+        } else {
+          this.directory
+            .prepare(
+              `UPDATE _substrat_connections
+               SET last_error = ?, last_error_at = ?,
+                   status = CASE WHEN status = 'revoked' THEN status ELSE 'error' END
+               WHERE id = ?`,
+            )
+            .run(outcome.error.slice(0, 2000), now, id);
         }
-        this.directory
-          .prepare(
-            `UPDATE _substrat_connections
-             SET last_error = ?, last_error_at = ?,
-                 status = CASE WHEN status = 'revoked' THEN status ELSE 'error' END
-             WHERE id = ?`,
-          )
-          .run(outcome.error.slice(0, 2000), now, id);
+        // #1691: the line is settled — now the data point, off the row's own identity
+        // (never the caller's input), fire-and-forget.
+        const row = this.directory
+          .prepare('SELECT tenant_id, vertical, provider FROM _substrat_connections WHERE id = ?')
+          .get(id) as { tenant_id: string; vertical: string; provider: string } | undefined;
+        if (row) {
+          recordConnectorCall(
+            this.connectorCalls,
+            connectorCallRecord(
+              { tenantId: row.tenant_id, vertical: row.vertical, provider: row.provider },
+              outcome,
+            ),
+          );
+        }
       },
 
       putConnectorState: async (id: ConnectionId, key: string, value: unknown) => {
