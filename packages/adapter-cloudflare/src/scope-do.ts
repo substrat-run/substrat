@@ -179,6 +179,7 @@ import {
   assertNoSecret,
   CAPABILITY_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
+  capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
   exchangeCapability,
   guardSecrets,
@@ -660,6 +661,12 @@ function concurrencyRefOf(
   }
   return { entityType: guarded.entity, entityId: id };
 }
+
+/**
+ * What a capability attachment verb (#1686) answers: its value, or its failure as DATA —
+ * `invoke`'s envelope discipline, since a throw across the RPC keeps only its message.
+ */
+export type CapabilityAttachmentReply<T> = { value: T; failure?: undefined } | { failure: WireFailure };
 
 function attachSubject(principal: PrincipalId, connectionId?: string): CheckSubject {
   return connectionId ? { kind: 'connection', id: connectionId } : { kind: 'principal', id: principal };
@@ -2523,6 +2530,131 @@ export function defineScopeDO(
         // records none — so the deliveries it drains name no call rather than a wrong one.
         await this.settleCommitted(tenantId, scopeId, liveSince, null);
         return record;
+      });
+    }
+
+    // -- attachments through a capability (#1686) -------------------------------
+    // The coordinator hashed the session token; only the hash arrives. Each verb resolves it
+    // INSIDE the queue, as `invoke` does, so nothing can revoke between the resolution and
+    // the check — and a revoke or an expiry refuses the very next call. Reads are the
+    // ordinary checker's, as `{ capability }`: its keys, its subtree, its minter's authority
+    // now. Writes are refused whatever the keys say. No verb here takes a use.
+
+    /**
+     * Resolve the session and run `fn` as the capability; a refused check lands in the
+     * denial log against `{ capability }`. A dead session throws before `fn` (no K-35 row).
+     *
+     * THE ORDER, for every verb: the session (here), then the target lookup, then the
+     * check. So `attachmentGate` is only ever called inside `fn`: a dead link is told
+     * `unauthenticated` and learns nothing about which entity types take attachments.
+     *
+     * The answer is an ENVELOPE, `invoke`'s: a failure travels as a value (`toWireFailure`)
+     * because a throw across this boundary keeps only its message, and the caller has to
+     * tell `permission_denied` from `unauthenticated` from `forbidden` — a 403, a 401 and a
+     * 403 of a different kind to whoever is downloading.
+     */
+    private asCapability<T>(
+      sessionHash: string,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      operation: string,
+      fn: (ctx: OperationContext, capability: CapabilityId) => Promise<T>,
+    ): Promise<CapabilityAttachmentReply<T>> {
+      return this.queue.enqueue(async () => {
+        let capability: CapabilityId;
+        try {
+          capability = resolveCapabilitySession(
+            doSpineSql(this.sql),
+            sessionHash,
+            instant.parse(new Date().toISOString()),
+            operation,
+          );
+        } catch (err) {
+          return { failure: toWireFailure(err) };
+        }
+        try {
+          const ctx = this.operationContext(
+            // A placeholder the subject never reads, as on the invoke path: `capabilityId`
+            // is what the context acts as.
+            capability as unknown as PrincipalId,
+            tenantId, scopeId, undefined, undefined, undefined, undefined, undefined, operation,
+            capability,
+          );
+          return { value: await fn(ctx, capability) };
+        } catch (err) {
+          if (err instanceof PermissionDenied) {
+            this.recordDenial({ kind: 'capability', id: capability }, tenantId, operation, err, null);
+          }
+          return { failure: toWireFailure(err) };
+        }
+      });
+    }
+
+    async capabilityAttachmentList(
+      entity: EntityRef,
+      sessionHash: string,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+    ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>> {
+      await this.ensureMigrations();
+      return this.asCapability(sessionHash, tenantId, scopeId, 'attachments.list', async (ctx) => {
+        const gate = this.attachmentGate(entity.entityType);
+        assertAllowed(await ctx.check(gate.read, entity));
+        const rows = this.sql
+          .exec(
+            `SELECT id FROM _substrat_attachments WHERE entity_type = ? AND entity_id = ?
+             ORDER BY id DESC`,
+            entity.entityType,
+            entity.entityId,
+          )
+          .toArray() as unknown as { id: string }[];
+        return rows
+          .map((r) => this.attachmentRow(r.id))
+          .filter((r): r is AttachmentRecord => r !== null);
+      });
+    }
+
+    /** The record of an attachment the capability may read, or null for an unknown id. */
+    async capabilityAttachmentOpen(
+      attachmentId: string,
+      sessionHash: string,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+    ): Promise<CapabilityAttachmentReply<AttachmentRecord | null>> {
+      await this.ensureMigrations();
+      return this.asCapability(sessionHash, tenantId, scopeId, 'attachments.open', async (ctx) => {
+        const record = this.attachmentRow(attachmentId);
+        if (!record) return null;
+        const gate = this.attachmentGate(record.entity.entityType);
+        assertAllowed(await ctx.check(gate.read, record.entity));
+        return record;
+      });
+    }
+
+    /**
+     * Refuse an upload or a remove through a capability, and record it. Throws for an
+     * unknown attachment id too — the same answer either way — but only a known target has
+     * a write key for the denial log to record.
+     */
+    async capabilityAttachmentRefuseWrite(
+      sessionHash: string,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      operation: 'attachments.upload' | 'attachments.remove',
+      target: { entityType: string } | { attachmentId: string },
+    ): Promise<CapabilityAttachmentReply<never>> {
+      await this.ensureMigrations();
+      return this.asCapability(sessionHash, tenantId, scopeId, operation, async (_ctx, capability) => {
+        const entityType =
+          'entityType' in target
+            ? target.entityType
+            : this.attachmentRow(target.attachmentId)?.entity.entityType;
+        throw capabilityAttachmentWriteRefused(
+          capability,
+          operation,
+          { tenantId, scopeId },
+          entityType === undefined ? undefined : this.attachmentGate(entityType).write,
+        );
       });
     }
 

@@ -742,6 +742,15 @@ interface AdminEntry {
   at: string;
 }
 
+/** A capability attachment verb's answer (#1686) — the ScopeDO's `CapabilityAttachmentReply`. */
+type CapabilityAttachmentReply<T> = { value: T; failure?: undefined } | { failure: WireFailure };
+
+/** Rethrow a capability attachment verb's failure, rebuilt with its code; else its value. */
+function unwrapCapabilityReply<T>(reply: CapabilityAttachmentReply<T>): T {
+  if (reply.failure) throw fromWireFailure(reply.failure);
+  return reply.value as T;
+}
+
 interface ScopeStubRpc {
   /** The applied-migration count if this call applied any, else null (nothing changed). */
   migrate(): Promise<number | null>;
@@ -1026,6 +1035,31 @@ interface ScopeStubRpc {
     scopeId: ScopeId,
     connectionId?: string,
   ): Promise<AttachmentRecord | null>;
+  /**
+   * #1686: the capability session's reads — `sessionHash` resolved inside the DO's queue.
+   * Each answers an envelope whose failure is DATA (`invoke`'s discipline): a throw across
+   * this boundary would keep its message and lose its code.
+   */
+  capabilityAttachmentList(
+    entity: EntityRef,
+    sessionHash: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>>;
+  capabilityAttachmentOpen(
+    attachmentId: string,
+    sessionHash: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<CapabilityAttachmentReply<AttachmentRecord | null>>;
+  /** #1686: always a failure — the refusal of a write through a capability, recorded (K-35). */
+  capabilityAttachmentRefuseWrite(
+    sessionHash: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    operation: 'attachments.upload' | 'attachments.remove',
+    target: { entityType: string } | { attachmentId: string },
+  ): Promise<CapabilityAttachmentReply<never>>;
   /** Scope-local projection (scope-local-permissions.md): replace the tenant's roles + tuples and flip to local.
    *  `entitlements` (#304) rides the same snapshot — preserve-on-undefined, so a role-only re-projection
    *  leaves projected entitlements untouched. */
@@ -2559,13 +2593,46 @@ export class CloudflareScopeHost implements ScopeHost {
    * attributed to the connection, not a laundered principal). Bytes never cross the DO boundary.
    */
   private buildAttachmentSurface(
-    subject: { principal: PrincipalId } | { connectionId: ConnectionId },
+    subject:
+      | { principal: PrincipalId }
+      | { connectionId: ConnectionId }
+      | { capabilitySession: string },
     tenantId: TenantId,
     scopeId: ScopeId,
     store: TenantBlobStore,
     /** The delivery admitting this surface's reads (#726 remedy B), when there is one. */
     forEvent?: { eventId: string },
   ): ScopeAttachments {
+    const stub = this.scopeStub(scopeId);
+    if ('capabilitySession' in subject) {
+      // #1686: a capability session. Its own ScopeDO verbs rather than a trailing argument
+      // on the principal ones, so a DO that predates them fails the call (no such RPC
+      // method) instead of ignoring the session and checking as someone else. Writes go to
+      // the DO only to be refused and recorded — never to the blob store.
+      const hash = subject.capabilitySession;
+      return {
+        upload: async (input) =>
+          unwrapCapabilityReply(
+            await stub.capabilityAttachmentRefuseWrite(hash, tenantId, scopeId, 'attachments.upload', {
+              entityType: input.entity.entityType,
+            }),
+          ),
+        list: async (entity) =>
+          unwrapCapabilityReply(await stub.capabilityAttachmentList(entity, hash, tenantId, scopeId)),
+        open: async (attachmentId) => {
+          const record = unwrapCapabilityReply(
+            await stub.capabilityAttachmentOpen(attachmentId, hash, tenantId, scopeId),
+          );
+          return record ? this.openAttachmentBytes(store, scopeId, record) : null;
+        },
+        remove: async (attachmentId) =>
+          unwrapCapabilityReply(
+            await stub.capabilityAttachmentRefuseWrite(hash, tenantId, scopeId, 'attachments.remove', {
+              attachmentId,
+            }),
+          ),
+      };
+    }
     const connectionId = 'connectionId' in subject ? subject.connectionId : undefined;
     const createdBy = 'principal' in subject ? subject.principal : subject.connectionId;
     // The DO needs SOME principal-shaped value for `ctx.principal`; for a connection it is
@@ -2574,11 +2641,6 @@ export class CloudflareScopeHost implements ScopeHost {
     const asPrincipalId = ('principal' in subject
       ? subject.principal
       : (subject.connectionId as unknown as PrincipalId)) as PrincipalId;
-    const stub = this.scopeStub(scopeId);
-    const sha256Hex = async (body: Uint8Array): Promise<string> => {
-      const digest = await crypto.subtle.digest('SHA-256', body);
-      return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    };
     return {
       upload: async (input) => {
         const id = ulid();
@@ -2615,18 +2677,7 @@ export class CloudflareScopeHost implements ScopeHost {
           connectionId,
           forEvent?.eventId,
         );
-        if (!record) return null;
-        const obj = await store.get(attachmentBlobKey(scopeId, record.id));
-        if (!obj) {
-          throw new Error(
-            `attachment ${record.id}: bytes missing from the blob store — the metadata row ` +
-              `survived something the object did not (rewind/reap); see the #473 integrity notes`,
-          );
-        }
-        if ((await sha256Hex(obj.body)) !== record.sha256) {
-          throw new Error(`attachment ${record.id}: bytes do not match the recorded sha256`);
-        }
-        return { record, body: obj.body, contentType: obj.contentType ?? record.contentType };
+        return record ? this.openAttachmentBytes(store, scopeId, record) : null;
       },
       remove: async (attachmentId) => {
         const removed = await stub.attachmentRemove(
@@ -2640,6 +2691,29 @@ export class CloudflareScopeHost implements ScopeHost {
         return removed;
       },
     };
+  }
+
+  /**
+   * The bytes of an attachment the ScopeDO has already AUTHORIZED, read from the blob store
+   * and held to the record's sha256 — one path for every subject, so a capability's download
+   * meets the same integrity checks a principal's does.
+   */
+  private async openAttachmentBytes(
+    store: TenantBlobStore,
+    scopeId: ScopeId,
+    record: AttachmentRecord,
+  ): Promise<OpenedAttachment> {
+    const obj = await store.get(attachmentBlobKey(scopeId, record.id));
+    if (!obj) {
+      throw new Error(
+        `attachment ${record.id}: bytes missing from the blob store — the metadata row ` +
+          `survived something the object did not (rewind/reap); see the #473 integrity notes`,
+      );
+    }
+    if ((await sha256Hex(obj.body)) !== record.sha256) {
+      throw new Error(`attachment ${record.id}: bytes do not match the recorded sha256`);
+    }
+    return { record, body: obj.body, contentType: obj.contentType ?? record.contentType };
   }
 
   async importScope(
@@ -2943,6 +3017,27 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.migrateAndRecord(scopeId);
     const hash = await capabilityTokenHash(sessionToken);
     return this.buildStub(tenantId, scopeId, undefined, undefined, undefined, options, undefined, hash);
+  }
+
+  /**
+   * The capability's attachment door (#1686) — `getCapabilityScope`'s gate, then the
+   * attachment surface with only the session's HASH going on to the ScopeDO. The DO
+   * resolves it inside its queue on every call, checks each read as `{ capability }` and
+   * refuses each write; the bytes stay on this side, as on every attachment path.
+   */
+  async getCapabilityAttachments(
+    sessionToken: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ScopeAttachments> {
+    if (!plausibleSessionToken(sessionToken)) {
+      throw substratError('unauthenticated', 'not a capability session token');
+    }
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    const store = await this.resolveAttachmentStore(tenantId);
+    const capabilitySession = await capabilityTokenHash(sessionToken);
+    return this.buildAttachmentSurface({ capabilitySession }, tenantId, scopeId, store);
   }
 
   /**
@@ -6577,6 +6672,12 @@ export class CloudflareScopeHost implements ScopeHost {
       await this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, new Date().toISOString()),
     );
   }
+}
+
+/** SHA-256 hex of an attachment's bytes — what `AttachmentRecord.sha256` holds. */
+async function sha256Hex(body: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', body);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /** A ledger row -> the wire entry, the attribution re-nested (#1054). */

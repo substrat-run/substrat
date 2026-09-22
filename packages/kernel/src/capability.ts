@@ -30,6 +30,7 @@ import {
   type EntityRef,
   type Instant,
   type MintedCapability,
+  type Node,
   type PermissionKey,
   type PlatformActorId,
   type PrincipalId,
@@ -748,6 +749,35 @@ export function resolveCapabilitySession(
     }
   }
   return capabilityIdSchema.parse(row.id);
+}
+
+/**
+ * The refusal of an attachment WRITE through a capability (#1686) — an upload or a remove,
+ * whatever keys the capability carries. The ONE refusal for it: both adapters' capability
+ * attachment surfaces throw this, so "a link share cannot write a file" has one wording.
+ *
+ * Why not the write key's own check: a capability that carries `writePermission` would pass
+ * it. A link share's use is delivering files to whoever holds the link; letting it put bytes
+ * into the tenant's store, or take them out, is a different grant that nothing has designed
+ * — so the surface refuses it structurally, and the key never gets a say.
+ *
+ * It IS a K-35 denial when the target's write key is known: the session was live, the call
+ * was an ordinary attempt, and the log should show the capability trying. `permission` is
+ * that key; left out (a remove naming an id this scope does not know) the refusal still
+ * throws — the same answer either way, so a holder cannot learn which ids exist — but
+ * carries no key, and the denial log records only enforced checks.
+ */
+export function capabilityAttachmentWriteRefused(
+  capability: CapabilityId,
+  operation: 'attachments.upload' | 'attachments.remove',
+  node: { tenantId: Node['tenantId']; scopeId: Node['scopeId'] },
+  permission?: PermissionKey,
+): PermissionDenied {
+  return new PermissionDenied(
+    `capability ${capability} may not ${operation === 'attachments.upload' ? 'upload' : 'remove'} ` +
+      'an attachment — a link share reads files, it never writes them',
+    permission === undefined ? undefined : { permission, node },
+  );
 }
 
 /** Is `token` shaped like a session token at all? Checked before it is hashed or sent anywhere. */

@@ -358,6 +358,41 @@ return { link: `${origin}/#share=${secret}` }; // a fragment: never sent to a se
   secret verbatim to an event, to its own tables or to a platform intent. That catches a
   mistake; it cannot stop a module that means to leak its own secret.
 
+### Files through a link
+
+A link to a folder can also deliver the files under it. `mountLinkShareDownload` from
+`@substrat-run/vertical-host` mounts `GET /api/capability/attachments/:attachmentId`. The
+request carries only the session cookie, and the route acts as the capability first. With no
+cookie, it falls back to the signed-in visitor, as `linkShareStub` does.
+
+```ts
+mountCapabilityExchange(app, { host: () => host, node: (c) => nodeOf(c) });
+mountLinkShareDownload(app, {
+  host: () => host,
+  node: (c) => nodeOf(c),
+  principal: (c) => signedInPrincipal(c), // optional: without it, links only
+});
+```
+
+- **A file is read as its entity is.** The download checks the attachment target's
+  `readPermission` on the file's entity, as the capability, through the same checker. A
+  file outside the capability's subtree is refused, and so is one its minter can no longer
+  read. Both refusals are recorded against the capability.
+- **A link never writes a file.** Through a capability, `upload` and `remove` are refused
+  even when the capability carries the write key, and the refusal is recorded.
+- **A download is not a use.** `maxUses` still counts exchanges only.
+- **A capability minted with `operations` can't read attachments.** An allowlist names
+  operations, and no attachment verb is one, so a narrowed link reaches its operations and
+  no files.
+- **Nothing about the response is cacheable or executable.** It is sent
+  `Cache-Control: private, no-store`, always as `Content-Disposition: attachment`, with
+  `nosniff` and a `sandbox` content security policy.
+
+To build a listing or a route of your own, use `linkShareAttachments(c, host, node, principal)`.
+It returns the same surface with the same precedence. The host method under it,
+`getCapabilityAttachments`, is optional on `ScopeHost`. On a host without it, a request that
+carries the cookie is refused rather than answered as the signed-in visitor.
+
 ## Assigning a role: `ctx.canAssign`
 
 Reviewing role *definitions* protects nothing on its own. Nothing in a checkpoint over

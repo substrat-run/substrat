@@ -21,6 +21,7 @@ import {
 import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
+  capabilityAttachmentContractSuite,
   capabilityContractSuite,
   impersonationContractSuite,
   billedMod,
@@ -114,6 +115,39 @@ capabilityContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #1686: attachments through a capability, on the DO path — the ScopeDO resolves the
+// session hash inside its queue and checks each read as `{ capability }`; the coordinator
+// holds the bytes. The per-tenant bucket is an in-memory `R2Bucket` slice and the bucket
+// manager a stub, as in `attachments.test.ts`: what is under test is the gate, not R2.
+capabilityAttachmentContractSuite('adapter-cloudflare', async () => {
+  const objs = new Map<string, { body: Uint8Array; contentType?: string }>();
+  const bucket = {
+    put: async (key: string, value: Uint8Array, options?: { httpMetadata?: { contentType?: string } }) => {
+      objs.set(key, { body: new Uint8Array(value), contentType: options?.httpMetadata?.contentType });
+    },
+    get: async (key: string) => {
+      const o = objs.get(key);
+      if (!o) return null;
+      return {
+        arrayBuffer: async () => o.body.buffer.slice(o.body.byteOffset, o.body.byteOffset + o.body.byteLength),
+        httpMetadata: o.contentType ? { contentType: o.contentType } : undefined,
+      };
+    },
+    delete: async (key: string) => {
+      objs.delete(key);
+    },
+    list: async () => ({ objects: [...objs.keys()].map((key) => ({ key })), truncated: false as const }),
+  };
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    blobStores: { create: async (name) => name, remove: async () => {} },
+    attachmentBuckets: () => bucket,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };

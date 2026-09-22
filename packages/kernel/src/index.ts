@@ -118,6 +118,7 @@ export {
   CAPABILITY_SESSION_PRUNE_BATCH,
   WITHHELD_SECRET,
   assertNoSecret,
+  capabilityAttachmentWriteRefused,
   capabilityByIdQuery,
   capabilityExchangeable,
   capabilityGrantOf,

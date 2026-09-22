@@ -7,6 +7,7 @@ import {
   grantExpiryContractSuite,
   facetRecencyContractSuite,
   impersonationContractSuite,
+  capabilityAttachmentContractSuite,
   capabilityContractSuite,
   capabilityExpiryContractSuite,
   connectorTestFetch,
@@ -141,6 +142,23 @@ atomicContractSuite('adapter-sqlite', async () => {
 // authority of its own, and an allow-all checker would make that pass for the wrong reason.
 capabilityContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-cap-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1686: attachments through a capability — the same checker branch, reached through the
+// attachment surface. The per-tenant blob store is the directory store the suite provisions.
+capabilityAttachmentContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-cap-att-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
