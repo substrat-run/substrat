@@ -19,7 +19,18 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { createControlPlaneApi, DEV_ACTOR_HEADER, UNSAFE_devPlatformActorAuth, VerticalClient } from '../src/index.js';
+import {
+  createControlPlaneApi,
+  firstBuilderAuth,
+  mintPushToken,
+  pushActorFor,
+  pushTokenBuilderAuth,
+  tenantTokenAuth,
+  DEV_ACTOR_HEADER,
+  SERVICE_TOKEN_HEADER,
+  UNSAFE_devPlatformActorAuth,
+  VerticalClient,
+} from '../src/index.js';
 
 /**
  * A preview's own login, over HTTP (#1704).
@@ -84,6 +95,8 @@ class FakeIssuers {
   afterMint: ((clientId: string, body: Record<string, unknown>) => Promise<void>) | null = null;
   /** Awaited just before a retire runs. */
   beforeRetire: ((body: Record<string, unknown>) => Promise<void>) | null = null;
+  /** Awaited after a check answers — before the caller can mint. */
+  afterCheck: (() => Promise<void>) | null = null;
   private gen = 0;
   private n = 0;
 
@@ -123,7 +136,9 @@ class FakeIssuers {
       [...inst.clients.values()].some((c) => !c.disabled && c.redirectUris.some((u) => b.parentRedirectUris.includes(u)));
 
     if (url.pathname === `${PREVIEW_CLIENT_PATH}/check`) {
-      return json(200, { claimed: claims(previewClientCheck.parse(body)) });
+      const claimed = claims(previewClientCheck.parse(body));
+      if (this.afterCheck) await this.afterCheck();
+      return json(200, { claimed });
     }
     if (method === 'POST') {
       const b = previewClientMint.parse(body);
@@ -591,6 +606,20 @@ describe('concurrent pushes to one preview (#1704)', () => {
     expect(issuers.tagged(issuerScope, base.scopeId)).toContain(out.auth.clientId);
   });
 
+  it('a push whose version was re-bound before it minted mints nothing at all', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    const tagged = issuers.tagged(issuerScope, base.scopeId);
+    issuers.afterCheck = async () => {
+      await host.admin.bindScopeVersion(staff, tenant, base.scopeId, versions[3]!);
+    };
+    const from = issuers.calls.length;
+    const out = await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(out.auth.status).toBe('superseded');
+    expect(issuers.calls.slice(from).filter((c) => c.method !== 'POST' || c.path !== `${PREVIEW_CLIENT_PATH}/check`)).toEqual([]);
+    expect(issuers.tagged(issuerScope, base.scopeId)).toEqual(tagged);
+    expect(deployments.stores.get(versions[2]!)?.get(base.scopeId)).toBeUndefined();
+  });
+
   it('a client that vanished while its version is still bound is retried, and converges', async () => {
     const base = await created({ tag: 'pr-7', versionId: versions[1] });
     // A same-version sibling's retire removes this push's client just before it retires.
@@ -619,49 +648,56 @@ describe('concurrent pushes to one preview (#1704)', () => {
 });
 
 describe('only whoever may create the preview triggers any of it (#1704)', () => {
-  const builderApp = () =>
-    api({
-      authenticateBuilder: (req: Request) => {
-        const t = req.headers.get(BUILDER_HEADER);
-        if (t === tenant) return { actor: platformActorId.parse(ulid()), tenantId: tenant, tenantSlug: 'acme' };
-        if (t === 'stranger') return { actor: platformActorId.parse(ulid()), tenantId: strangerTenant, tenantSlug: 'stranger' };
-        return null;
-      },
-    });
+  const TENANT_SECRET = 'test-tenant-token-secret';
+  const PUSH_SECRET = 'test-push-token-secret';
+  const serviceActor = platformActorId.parse(ulid());
   let strangerTenant: TenantId;
+  let asStranger: Record<string, string>;
+  let asOwner: Record<string, string>;
 
   beforeEach(async () => {
+    app = api({
+      authenticateTenantService: tenantTokenAuth(TENANT_SECRET, serviceActor),
+      authenticateBuilder: firstBuilderAuth(pushTokenBuilderAuth(PUSH_SECRET)),
+      tenantTokenSecret: TENANT_SECRET,
+      pushTokenSecret: PUSH_SECRET,
+    });
     strangerTenant = tenantId.parse(ulid());
     await host.admin.createTenant(staff, { id: strangerTenant, slug: 'stranger', name: 'Stranger' });
+    // The dashboard's tenant token of ANOTHER team: confined, and it may name any slug —
+    // so it is the caller that actually reaches the preview gate with someone else's app.
+    const minted = await app.request('/tenant-tokens', { method: 'POST', headers: asStaff, body: JSON.stringify({ tenantId: strangerTenant }) });
+    expect(minted.status).toBe(201);
+    asStranger = { [SERVICE_TOKEN_HEADER]: ((await minted.json()) as { token: string }).token, 'content-type': 'application/json' };
+    const push = await mintPushToken(PUSH_SECRET, { actor: await pushActorFor(tenant), tenantId: tenant, tenantSlug: 'acme' });
+    asOwner = { [SERVICE_TOKEN_HEADER]: push, 'content-type': 'application/json' };
   });
 
-  it('another tenant’s builder is refused before any issuer is asked; the owner is the positive twin', async () => {
-    app = builderApp();
-    const stranger = await app.request(`/verticals/${encodeURIComponent(APP)}/previews`, {
-      method: 'POST',
-      headers: { [BUILDER_HEADER]: 'stranger', 'content-type': 'application/json' },
-      body: JSON.stringify({ tag: 'pr-7', versionId: versions[1] }),
-    });
-    expect([403, 404]).toContain(stranger.status);
+  it('another team is refused before any issuer is asked; the owner’s push token is the positive twin', async () => {
+    const stranger = await create({ tag: 'pr-7', versionId: versions[1] }, asStranger);
+    expect(stranger.status).toBe(403);
     expect(issuers.calls).toEqual([]);
+    expect((await host.admin.listScopes(staff, { tenantId: tenant })).some((s) => s.kind === 'preview')).toBe(false);
 
     const owner = await app.request('/verticals/desk/previews', {
       method: 'POST',
-      headers: { [BUILDER_HEADER]: tenant, 'content-type': 'application/json' },
+      headers: asOwner,
       body: JSON.stringify({ tag: 'pr-7', versionId: versions[1] }),
     });
     expect(owner.status).toBe(201);
     expect(((await owner.json()) as Created).auth.status).toBe('wired');
   });
 
-  it('no builder can reach an issuer’s preview-client route through the control plane', async () => {
-    app = builderApp();
+  it('another team cannot reap the preview, so it cannot delete its client either', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    const del = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStranger });
+    expect(del.status).toBe(403);
+    expect(issuers.tagged(issuerScope, out.scopeId)).toHaveLength(1);
+  });
+
+  it('no builder reaches a configure delivery or an issuer route through the control plane', async () => {
     for (const path of [`/tenants/${tenant}/scopes/${issuerScope}/configure`, '/internal/preview-client']) {
-      const res = await app.request(path, {
-        method: 'POST',
-        headers: { [BUILDER_HEADER]: tenant, 'content-type': 'application/json' },
-        body: JSON.stringify({}),
-      });
+      const res = await app.request(path, { method: 'POST', headers: asOwner, body: JSON.stringify({}) });
       expect([403, 404]).toContain(res.status);
     }
     expect(issuers.calls).toEqual([]);
