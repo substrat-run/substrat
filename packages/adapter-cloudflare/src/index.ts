@@ -18,6 +18,7 @@ export type {
   CloudflareScopeHostOptions,
   ConnectorDelegation,
   EventDrainDelegation,
+  PeerSwitchDelegation,
   SystemSwitchDelegation,
 } from './host.js';
 export { defineScopeDO } from './scope-do.js';

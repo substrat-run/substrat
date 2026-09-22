@@ -51,6 +51,7 @@ import {
   defineScopeDO,
   type ConnectorDelegation,
   type EventDrainDelegation,
+  type PeerSwitchDelegation,
   type SystemSwitchDelegation,
 } from '@substrat-run/adapter-cloudflare';
 import {
@@ -799,6 +800,34 @@ function systemSwitchDelegationFor(env: Env): SystemSwitchDelegation | undefined
 }
 
 /**
+ * The peer kill switch's platform half (#1706): `revokeFromPeer` / `restoreToPeer` land on
+ * the host below, whose own `SCOPE` namespace is the module-less placeholder — a hosted
+ * scope's `vertical:<slug>` grants, which decide what another of the tenant's apps may do
+ * here, live in its vertical's dispatch deployment. This is the reach, over the same
+ * `/internal/*` seam and the same serving-ref → bound-version → prod ladder the schedule
+ * switch uses. Undefined without DISPATCH/PLATFORM_SECRET, and then the host refuses a
+ * scope served elsewhere outright — never a peer reported cut off while its calls keep
+ * being admitted.
+ */
+function peerSwitchDelegationFor(env: Env): PeerSwitchDelegation | undefined {
+  if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
+  return {
+    switch: async (a) => {
+      const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+      const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId);
+      const client = rec?.vertical ? await resolveVerticalForScopeFor(env)(rec) : undefined;
+      if (!client) {
+        throw new Error(
+          `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — ` +
+            `cannot switch peer '${a.vertical}' ${a.to}`,
+        );
+      }
+      return client.peerSwitch({ scopeId: a.scopeId, vertical: a.vertical, to: a.to });
+    },
+  };
+}
+
+/**
  * The Tier-2 drain's platform half (#1334): the sweep's `readUndrainedEvents` and
  * `markEventsDrained` land on the host below, whose own `SCOPE` namespace is the
  * module-less placeholder — a hosted scope's outbox lives in its vertical's dispatch
@@ -888,6 +917,9 @@ function hostFor(env: Env): CloudflareScopeHost {
     // The schedule kill switch (#1666): moved in the deployment serving the scope, for
     // the same reason again — and audited here.
     systemSwitchDelegation: systemSwitchDelegationFor(env),
+    // The peer kill switch (#1706): the same seam once more, for the grants that decide
+    // what another of the tenant's apps may do in this scope.
+    peerSwitchDelegation: peerSwitchDelegationFor(env),
     // #1691: one data point per connector call, beside the health line. Absent binding ⇒
     // the host's no-op default.
     ...(env.CONNECTOR_ANALYTICS

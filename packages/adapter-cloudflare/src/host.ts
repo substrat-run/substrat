@@ -1319,6 +1319,31 @@ export interface SystemSwitchDelegation {
 }
 
 /**
+ * The PEER kill switch's reach into the deployment actually serving a scope (#1706).
+ *
+ * `SystemSwitchDelegation` with the subject swapped, and it exists for the identical
+ * reason: a hosted scope's `vertical:<slug>` grants — what one vertical may do when it
+ * calls another's operations — live in its vertical's dispatch deployment, and the shared
+ * control plane's own `SCOPE` namespace is the module-less placeholder. A switch written
+ * there tombstones nothing a peer call will ever read, so the tenant would be told the peer
+ * was cut off while every call it makes keeps being admitted. That is the one failure this
+ * switch must never have.
+ *
+ * Separate from `SystemSwitchDelegation` rather than folded into it: they cross the same
+ * `/internal/*` seam but answer about different subjects, and a deployment old enough to
+ * serve one route and not the other must be able to say so per route. The audit rows for
+ * both stay on this side. Set only on the shared control plane's host.
+ */
+export interface PeerSwitchDelegation {
+  switch(args: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    vertical: string;
+    to: 'on' | 'off';
+  }): Promise<SwitchOutcome>;
+}
+
+/**
  * The Tier-2 drain's reach into the deployment actually serving a scope (#1334).
  *
  * The same problem `ConnectorDelegation` solves, for the other direction: on the shared
@@ -1456,6 +1481,13 @@ export interface CloudflareScopeHostOptions {
    * unset and switches in its own scope DO.
    */
   systemSwitchDelegation?: SystemSwitchDelegation;
+  /**
+   * #1706: route the peer kill switch (`revokeFromPeer` / `restoreToPeer`) to the deployment
+   * actually serving the scope. Set only on the shared control plane's host, exactly like
+   * `systemSwitchDelegation` and for the same reason; unset, a scope served elsewhere is
+   * refused `unavailable` rather than switched in the placeholder namespace.
+   */
+  peerSwitchDelegation?: PeerSwitchDelegation;
   /**
    * #1334: route the Tier-2 drain's read and stamp to the deployment actually serving
    * the scope. Set only on the shared control plane's host, exactly like
@@ -1604,6 +1636,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly eventDrainDelegation?: EventDrainDelegation;
   /** #1666: the schedule kill switch's reach into the deployment serving a scope. */
   private readonly systemSwitchDelegation?: SystemSwitchDelegation;
+  /** #1706: the peer kill switch's reach into the deployment serving a scope. */
+  private readonly peerSwitchDelegation?: PeerSwitchDelegation;
 
   /**
    * MUST be constructed per request. Never cache an instance across requests.
@@ -1632,6 +1666,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.connectorDelegation = options.connectorDelegation;
     this.eventDrainDelegation = options.eventDrainDelegation;
     this.systemSwitchDelegation = options.systemSwitchDelegation;
+    this.peerSwitchDelegation = options.peerSwitchDelegation;
     this.admin = this.buildAdmin();
   }
 
@@ -3260,7 +3295,9 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   private get servesScopesElsewhere(): boolean {
-    return Boolean(this.connectorDelegation || this.systemSwitchDelegation || this.eventDrainDelegation);
+    return Boolean(
+      this.connectorDelegation || this.systemSwitchDelegation || this.peerSwitchDelegation || this.eventDrainDelegation,
+    );
   }
 
   /**
@@ -3794,9 +3831,10 @@ export class CloudflareScopeHost implements ScopeHost {
      */
     /**
      * #1706: move one PEER's kill switch on one scope — see `HostAdmin.revokeFromPeer`. The
-     * schedule switch's audit discipline (intent first, outcome after, every attempt). Reaches
-     * the scope's own ScopeDO; on the SHARED control plane a scope served by a vertical's own
-     * deployment is refused `unavailable` (`peerScopeGate`) until the verb is delegated there.
+     * schedule switch's audit discipline (intent first, outcome after, every attempt) and,
+     * since part 3, its delegation: a scope served by a vertical's own deployment is switched
+     * THERE, over `PeerSwitchDelegation`. Without one configured the scope is still refused
+     * `unavailable` (`peerScopeGate`) rather than switched in the placeholder namespace.
      */
     const switchPeerAt = async (
       actor: PlatformActorId,
@@ -3811,15 +3849,32 @@ export class CloudflareScopeHost implements ScopeHost {
         if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
         vertical = rec.vertical;
       }
-      await this.peerScopeGate(tenantId, scopeId, to === 'off' ? 'revokeFromPeer' : 'restoreToPeer');
-      const operationId = ulid();
       const action = to === 'off' ? 'revokeFromPeer' : 'restoreToPeer';
+      // Where the write lands is the whole point of this branch (#1706 part 3, mirroring
+      // #1666). A scope bound to a vertical is served by that vertical's own deployment, and
+      // its `vertical:<slug>` grants live there; switching it in the shared control plane's
+      // placeholder namespace would tombstone nothing and report a peer cut off while every
+      // call it makes kept being admitted. A scope bound to NO vertical has its store here,
+      // so it switches here — delegating it would throw "no deployment serving scope".
+      // With no delegation configured the old refusal stands, loudly, rather than a write
+      // into the wrong namespace.
+      const delegation = this.cpLess || vertical !== null ? this.peerSwitchDelegation : undefined;
+      if (delegation) {
+        // The gate's lifecycle half still runs (a suspended tenant or scope cannot be
+        // switched); its `scopeStub` half is what the delegation replaces.
+        await this.cp.validateScopeAccess(tenantId, scopeId);
+      } else {
+        await this.peerScopeGate(tenantId, scopeId, action);
+      }
+      const operationId = ulid();
       const target = { tenantId, scopeId, vertical };
       const base = { operationId, vertical: input.vertical, calls: to };
       await this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
       let outcome: SwitchOutcome;
       try {
-        outcome = await this.scopeStub(scopeId).switchPeer(input.vertical, scopeId, to, new Date().toISOString());
+        outcome = delegation
+          ? await delegation.switch({ tenantId, scopeId, vertical: input.vertical, to })
+          : await this.scopeStub(scopeId).switchPeer(input.vertical, scopeId, to, new Date().toISOString());
       } catch (err) {
         await this.recordAdmin(actor, action, target, null, {
           ...base,
