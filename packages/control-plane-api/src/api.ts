@@ -1745,7 +1745,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // per provider that has (or had) a live connection anywhere in the fleet — the same
     // derivation the dead-letter count above uses, since that kind only exists for a
     // provider some connection actually names.
-    const providers = [...new Set((await admin.listConnections(c.get('actor'))).map((r) => r.provider))];
+    const providers = [...new Set((await admin.listConnections(c.get('actor'), { includeRevoked: true })).map((r) => r.provider))];
     const kinds = [
       PROVISION_SIBLING_KIND,
       ARCHIVE_SCOPE_KIND,

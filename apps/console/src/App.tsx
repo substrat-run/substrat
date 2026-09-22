@@ -159,6 +159,7 @@ export function App() {
   useEffect(() => {
     const onPop = () => {
       const n = readNav();
+      setFailuresQuery(undefined);
       setView(n.view);
       setOpenTenant(n.tenant);
       setOpenScope(n.scope);
@@ -408,6 +409,7 @@ export function App() {
           onOpen={setOpenVertical}
           onBack={() => setOpenVertical(undefined)}
           onOpenFailures={(slug) => {
+            setFailuresQuery(undefined);
             setFailuresVertical(slug);
             setFailuresFingerprint(undefined);
             setView('failures');
@@ -443,6 +445,7 @@ export function App() {
           api={api}
           onToast={notify}
           onExemplars={(fp) => {
+            setFailuresQuery(undefined);
             setFailuresFingerprint(fp);
             setFailuresVertical(undefined);
             setView('failures');

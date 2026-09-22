@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { PlatformRequestBacklog, SweepRunEntry } from '@substrat-run/contracts';
 import { Badge, Button, Card } from '../components';
-import { ApiError, walkAll, type Api, type ServiceMetricsRow } from '../lib/api';
+import { ApiError, walkAll, type Api } from '../lib/api';
+import { countTrailingPromotes, PROMOTE_TRAILING_MINUTES } from '../lib/services';
 
 export interface ServicesProps {
   api: Api;
@@ -31,15 +32,6 @@ function TileBody<T>({ tile, render }: { tile: Tile<T>; render: (data: T) => Rea
   if (tile.status === 'unavailable') return <span style={{ ...muted, color: 'var(--status-danger-fg)' }}>unavailable</span>;
   return <>{render(tile.data)}</>;
 }
-
-/**
- * A promote's in-place serve runs inside the SAME request that moves the channel pointer
- * (`POST /verticals/:slug/channels/:channel/promote`), so `servingVersionId` and
- * `versionId` disagreeing for a few seconds is just that request in flight — flagging on
- * disagreement alone would light up on every ordinary deploy. "Trailing" means the
- * disagreement has outlived any promote request, not that one is merely in progress.
- */
-const PROMOTE_TRAILING_MINUTES = 10;
 
 /**
  * Health → Services (#1690 §2): one overview composed entirely from reads the other Health,
@@ -105,20 +97,7 @@ export function Services({
     void (async () => {
       try {
         const verticals = await walkAll((p) => api.listVerticals(p));
-        const now = Date.now();
-        let count = 0;
-        for (const v of verticals) {
-          // Only a vertical that serves in place (#286) has a `servingVersionId` to trail —
-          // one on legacy per-version dispatch has nothing here to compare.
-          if (!v.servingRef) continue;
-          // A vertical has exactly one channel (`prod` — dev/staging were retired, #509),
-          // so the default page always holds it whole.
-          const channels = await api.listChannels(v.slug);
-          const prod = channels.entries.find((c) => c.channel === 'prod');
-          if (!prod || prod.servingVersionId === prod.versionId) continue;
-          const ageMinutes = (now - Date.parse(prod.updatedAt)) / 60_000;
-          if (ageMinutes > PROMOTE_TRAILING_MINUTES) count += 1;
-        }
+        const count = await countTrailingPromotes(verticals, (slug) => api.listChannels(slug), Date.now());
         if (live) setStuck({ status: 'ready', data: count });
       } catch {
         if (live) setStuck({ status: 'unavailable' });

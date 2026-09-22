@@ -31,6 +31,7 @@ describe('GET /platform-requests/backlog (#1690)', () => {
   const staff = platformActorId.parse(ulid());
   const serviceActor = platformActorId.parse('01JZ00000000000000000000SV');
   const acme = tenantId.parse(ulid());
+  const scrive = connectionId.parse(ulid());
   const asStaff = { [DEV_ACTOR_HEADER]: staff };
   let asTenant: Record<string, string>;
   let asBuilder: Record<string, string>;
@@ -75,7 +76,7 @@ describe('GET /platform-requests/backlog (#1690)', () => {
     // A `connector:<provider>` kind only exists for a provider some connection names —
     // this is what the route derives the provider half of its kind list from.
     await host.admin.createConnection(staff, {
-      id: connectionId.parse(ulid()),
+      id: scrive,
       tenantId: acme,
       vertical: 'callout',
       provider: 'scrive',
@@ -123,6 +124,15 @@ describe('GET /platform-requests/backlog (#1690)', () => {
     });
 
     it('sums terminal intent failures across every known kind', async () => {
+      const body = await read();
+      expect(body.total).toBe(3);
+      expect(body.capped).toBe(false);
+    });
+
+    it('keeps recent failures after the last live connection is revoked', async () => {
+      expect((await read()).total).toBe(3);
+      await host.admin.revokeConnection(staff, scrive);
+      expect(await host.admin.listConnections(staff)).toEqual([]);
       const body = await read();
       expect(body.total).toBe(3);
       expect(body.capped).toBe(false);
