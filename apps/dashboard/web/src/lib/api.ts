@@ -1,5 +1,6 @@
 import { problemDetail } from '@substrat-run/contracts';
 import { tenantLogsQuery } from './logs-query';
+import type { PromoteReviewWire } from './promote-review';
 import type { CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
@@ -1703,6 +1704,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ channel, versionId, ...(acknowledge ? { acknowledge } : {}) }),
     }),
+  /** What promoting `versionId` to prod changes in the permission surface (#1677): the
+   *  registry prod serves now against the incoming one. A failed read rejects — it is never
+   *  an empty review — so a promote can not proceed on a diff that was never drawn. */
+  promoteReview: (slug: string, versionId: string) =>
+    call<PromoteReviewWire>(
+      `/deployments/${encodeURIComponent(slug)}/promote-review?versionId=${encodeURIComponent(versionId)}`,
+    ),
   /** Remove one of my verticals (versions + channels included). Refused while any app
    *  still runs it — delete the apps first — and for a published vertical (staff-only). */
   deleteDeployment: (slug: string) =>

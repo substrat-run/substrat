@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type EffectsTree, type EffectsTerminal, type EventEffects, type EventDelivery, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type TrafficSeries } from '../lib/api';
+import { diffRegistries, hasRegistryChange } from '../lib/registry-diff';
 import { actorLabel, authorizationLabel, callButtonTitle, callLogsButtonTitle, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
@@ -1083,43 +1084,6 @@ function rolesHolding(reg: PermissionRegistry, key: string): string[] {
   return reg.roles.filter((r) => r.permissions.includes(key)).map((r) => r.key);
 }
 
-interface RegistryDiff {
-  addedKeys: string[];
-  removedKeys: string[];
-  changedKeys: string[];
-  /** Only roles that actually changed: gained/lost permissions, or appeared/vanished. */
-  roleChanges: Array<{ key: string; added: string[]; removed: string[]; isNew: boolean; isGone: boolean }>;
-}
-
-/**
- * The version-to-version permission diff (#336): what the declared surface would gain, lose,
- * or re-describe if this app updated from `from` to `to`. The security-relevant signal is a
- * WIDENED role (one that gains permissions) or a genuinely new permission key — the reasons
- * the promotion checkpoint asks a human to look before an update lands.
- */
-function diffRegistries(from: PermissionRegistry, to: PermissionRegistry): RegistryDiff {
-  const fromKeys = new Map(from.permissions.map((p) => [p.key, p.description]));
-  const toKeys = new Map(to.permissions.map((p) => [p.key, p.description]));
-  const fromRoles = new Map(from.roles.map((r) => [r.key, r.permissions]));
-  const toRoles = new Map(to.roles.map((r) => [r.key, r.permissions]));
-  const roleChanges: RegistryDiff['roleChanges'] = [];
-  for (const key of new Set([...fromRoles.keys(), ...toRoles.keys()])) {
-    const before = fromRoles.get(key);
-    const after = toRoles.get(key);
-    const added = (after ?? []).filter((p) => !(before ?? []).includes(p));
-    const removed = (before ?? []).filter((p) => !(after ?? []).includes(p));
-    const isNew = !before && !!after;
-    const isGone = !!before && !after;
-    if (added.length || removed.length || isNew || isGone) roleChanges.push({ key, added, removed, isNew, isGone });
-  }
-  return {
-    addedKeys: [...toKeys.keys()].filter((k) => !fromKeys.has(k)),
-    removedKeys: [...fromKeys.keys()].filter((k) => !toKeys.has(k)),
-    changedKeys: [...toKeys.entries()].filter(([k, d]) => fromKeys.has(k) && fromKeys.get(k) !== d).map(([k]) => k),
-    roleChanges,
-  };
-}
-
 /**
  * Field coverage (#1321): which declared fields is any operation even capable of
  * returning, and which of those are erasable — a retention argument, not just
@@ -1331,7 +1295,7 @@ function Permissions({ app }: { app: AppRow }) {
   const reg = view.running.registry;
   const update = view.update;
   const diff = update?.registry && reg ? diffRegistries(reg, update.registry) : null;
-  const diffChanged = !!diff && (diff.addedKeys.length > 0 || diff.removedKeys.length > 0 || diff.changedKeys.length > 0 || diff.roleChanges.length > 0);
+  const diffChanged = !!diff && hasRegistryChange(diff);
 
   // Group the keys by declaring engine (declaredBy) — the console's §1 grouping, so a reader
   // sees "what does workorder let this app do" without re-deriving ownership from prefixes.
@@ -1374,6 +1338,18 @@ function Permissions({ app }: { app: AppRow }) {
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {rc.added.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-info-fg)' }}>+{p}</span>)}
                   {rc.removed.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-danger-fg)' }}>−{p}</span>)}
+                </span>
+              </div>
+            ))}
+            {diff!.grantChanges.map((gc) => (
+              <div key={gc.entityType} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Pill kind={gc.isGone ? 'neutral' : gc.added.length > 0 || gc.isNew ? 'warning' : 'neutral'}>
+                  {gc.isNew ? 'new grant shape' : gc.isGone ? 'grant shape removed' : gc.added.length > 0 ? 'grant shape widened' : 'grant shape narrowed'}
+                </Pill>
+                <MonoTag>{gc.entityType}</MonoTag>
+                <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {gc.added.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-info-fg)' }}>+{p}</span>)}
+                  {gc.removed.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-danger-fg)' }}>−{p}</span>)}
                 </span>
               </div>
             ))}

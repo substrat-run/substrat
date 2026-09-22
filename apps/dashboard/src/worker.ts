@@ -4404,6 +4404,32 @@ app.post('/api/deployments/:slug/promote', async (c) => {
 });
 
 /**
+ * What promoting `versionId` to `prod` would change in the permission surface (#1677): the
+ * registry of the version `prod` serves now against the registry of the one being
+ * promoted, so the dashboard can show the diff BEFORE it promotes rather than a digest pair
+ * after a refusal. It only reads — the acknowledgement stays the registry's gate on the
+ * promote below, and this route is how a human reads what they are acknowledging.
+ *
+ * A read that fails FAILS the route (the plane's own status, 502 when unreachable). It
+ * never degrades to "no registry": the dashboard reads `null` as "cannot diff, ask for an
+ * acknowledgement", and a transport error must not be able to spell that.
+ *
+ * Owner-checked like the rest of `/api/deployments/:slug`; open to any role, like the other
+ * reads — a `viewer` may see what they may not touch.
+ */
+app.get('/api/deployments/:slug/promote-review', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug');
+  const versionId = c.req.query('versionId');
+  if (!versionId) throw new HTTPException(400, { message: 'versionId is required' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  await assertOwnedFromCp(cp, slug);
+  return c.json(await cp.promotionReview(slug, versionId));
+});
+
+/**
  * One channel's promotion timeline (newest first) — the rollback picker. Each entry is a
  * recorded go-live moment: version, what it replaced, who, and exactly when (the instant
  * a PITR restore would rewind the data to). Owned-slug-checked like promote above.

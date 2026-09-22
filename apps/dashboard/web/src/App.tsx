@@ -3,11 +3,13 @@ import { Toast, Dialog, Input, SupportWidget, useAutoRefresh } from '@substrat-r
 import { api, signIn, signOut, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
 import { removalRefusalDetail } from './lib/bound-scopes';
+import { promoteWithCheckpoint, type Acks, type Checkpoint } from './lib/promote-review';
 import { navigate as go, obsPath, setTeamSlug, teamPath } from './lib/router';
 import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
 import { CommandPalette } from './components/CommandPalette';
 import { NotificationsPopover } from './components/NotificationsPopover';
+import { PromoteDialog } from './components/PromoteDialog';
 import { SignIn, Interstitial, InviteBlocked } from './views/SignIn';
 import { Onboarding } from './views/Onboarding';
 import { Apps } from './views/Apps';
@@ -380,6 +382,19 @@ export function App() {
     [reloadApps],
   );
 
+  // The promote checkpoint's open question (#1677): what the dialog is showing, and the
+  // promise the promote flow is waiting on. `round` remounts the dialog per question so a
+  // tick never carries from one checkpoint to the next.
+  const [promoteAsk, setPromoteAsk] = useState<{
+    slug: string;
+    servingLabel: string | null;
+    incomingLabel: string;
+    checkpoint: Checkpoint;
+    round: number;
+    resolve: (answer: Acks | null) => void;
+  } | null>(null);
+  const promoteRound = useRef(0);
+
   const deletingRef = useRef(false);
   const deleteApp = useCallback(
     async (app: AppRow) => {
@@ -475,17 +490,36 @@ export function App() {
             ),
           );
         } else {
-          try {
-            await api.promoteDeployment(slug, channel, versionId);
-          } catch (e) {
-            // The registry refuses a promotion that changes the permission or migration
-            // surface until the change is acknowledged (the §4 checkpoint). Surface the
-            // refusal verbatim and let the person acknowledge it deliberately — the same
-            // dialog the staff console shows, one confirm instead of a silent flag.
-            const msg = e instanceof Error ? e.message : String(e);
-            if (!msg.includes('acknowledge it explicitly')) throw e;
-            if (!window.confirm(`${msg}\n\nPromote anyway?`)) throw new Error('Promotion cancelled — the change was not acknowledged.');
-            await api.promoteDeployment(slug, channel, versionId, { permissionChange: true, migrationChange: true });
+          // The §4 checkpoint (#1677): read what the promotion changes BEFORE promoting, put
+          // it in a dialog, and send only the acknowledgements the person gave, one per kind.
+          // No change → no dialog, and the promote is the request it always was.
+          const d = deployments.find((x) => x.slug === slug);
+          const label = (id: string) => d?.versions.find((v) => v.id === id)?.version ?? id;
+          // The version prod serves is the registry's answer, not this page's copy of the
+          // channels — the copy can be a reload behind, the answer is what the gate compares.
+          let serving: string | null = null;
+          const outcome = await promoteWithCheckpoint({
+            review: async () => {
+              const r = await api.promoteReview(slug, versionId);
+              serving = r.serving?.versionId ?? null;
+              return r;
+            },
+            promote: (acknowledge) => api.promoteDeployment(slug, channel, versionId, acknowledge),
+            ask: (checkpoint) =>
+              new Promise<Acks | null>((resolve) => {
+                setPromoteAsk({
+                  slug,
+                  servingLabel: serving ? label(serving) : null,
+                  incomingLabel: label(versionId),
+                  checkpoint,
+                  round: ++promoteRound.current,
+                  resolve,
+                });
+              }),
+          });
+          if (outcome === 'cancelled') {
+            setToast({ status: 'danger', title: 'Promotion cancelled', detail: 'The changes were not acknowledged, so nothing was promoted.' });
+            return;
           }
           await reloadDeployments();
         }
@@ -496,7 +530,7 @@ export function App() {
         setPromoting(false);
       }
     },
-    [promoting, reloadDeployments],
+    [promoting, reloadDeployments, deployments],
   );
 
   // Remove a pushed vertical (versions + channels included). The registry refuses while
@@ -946,6 +980,20 @@ export function App() {
           <Input label="Team name" placeholder="Acme Inc" value={newTeamName} onChange={(e) => setNewTeamName(e.target.value)} />
         </div>
       </Dialog>
+
+      {promoteAsk && (
+        <PromoteDialog
+          key={promoteAsk.round}
+          slug={promoteAsk.slug}
+          servingLabel={promoteAsk.servingLabel}
+          incomingLabel={promoteAsk.incomingLabel}
+          checkpoint={promoteAsk.checkpoint}
+          onAnswer={(answer) => {
+            promoteAsk.resolve(answer);
+            setPromoteAsk(null);
+          }}
+        />
+      )}
 
       {toast && (
         <div style={{ position: 'fixed', right: 24, bottom: 24, zIndex: 60 }}>
