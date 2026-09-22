@@ -11,12 +11,23 @@
  * ## Why the record cannot carry a secret
  *
  * The shape is closed, not filtered. Every field is either an identifier the host read
- * off the connection row (`provider`, `tenantId`, `vertical` — never the caller's input),
- * a member of the closed {@link CONNECTOR_CALL_OUTCOMES} enum, or a number. There is no
- * field a URL, a header, a request body, a credential or an error message could land in,
- * because the classifier ({@link connectorCallOutcome}) reads only a status code and an
- * error's `name`, and emits an enum member. A free-text "error class" would have been the
- * one door a provider's error body — which routinely echoes the request — walks through.
+ * off the connection row (provider, tenant, vertical — never the caller's input), a member
+ * of the closed {@link CONNECTOR_CALL_ERROR_TYPES} enum, or a number. There is no field a
+ * URL, a header, a request body, a credential or an error message could land in, because
+ * the classifier ({@link connectorCallErrorType}) reads only a status code and an error's
+ * `name`, and emits an enum member. A free-text "error class" would have been the one
+ * door a provider's error body — which routinely echoes the request — walks through. For
+ * the same reason there is deliberately no `server.address` and no `url.*`: a URL is
+ * where a provider puts an access token.
+ *
+ * ## The names are OpenTelemetry's
+ *
+ * The record is keyed by OpenTelemetry semantic-convention names (checked against
+ * `@opentelemetry/semantic-conventions` 1.43.0, where all three standard names below are
+ * STABLE), with a `substrat.*` namespace for the fields OTel has no name for. So this
+ * Analytics Engine row, a future custom span, and a future self-host OTel metric share one
+ * vocabulary, and an OTLP exporter maps the record 1:1 — including the duration's unit,
+ * which is SECONDS, OTel's unit for `http.client.request.duration`.
  *
  * ## Why it cannot fail or slow the call
  *
@@ -27,28 +38,24 @@
  */
 
 /**
- * The outcome classes, closed. Grow-only like the ordinals below: a stored point keeps
- * the string it was written with, so a member is never renamed or reused.
+ * The `error.type` values this instrumentation reports — closed, as OTel asks ("low
+ * cardinality … instrumentations SHOULD document the list of errors they report").
+ * Grow-only like the ordinals below: a stored point keeps the string it was written with,
+ * so a member is never renamed or reused. A SUCCESS has no `error.type` at all (OTel:
+ * "SHOULD NOT set `error.type`" on success), which the data point writes as `''`.
  *
- * - `ok` — the provider answered 2xx.
- * - `http_4xx` / `http_5xx` — the provider answered with that class. A 4xx is usually
- *   us (a revoked grant, a malformed call); a 5xx is usually them.
- * - `http_other` — a non-ok status outside 4xx/5xx (an unfollowed 3xx, say).
- * - `timeout` — the call was aborted by the host's timeout.
+ * - `4xx` / `5xx` — the provider answered with that class. A 4xx is usually us (a revoked
+ *   grant, a malformed call); a 5xx is usually them. The exact code is
+ *   `http.response.status_code`, OTel's domain-specific attribute beside it.
+ * - `other_status` — a non-ok status outside 4xx/5xx (an unfollowed 3xx, say).
+ * - `timeout` — the call was aborted by the host's timeout (OTel's own example value).
  * - `network` — the call threw before any status arrived.
- * - `unknown` — an error recorded without either of the facts above (a caller that
- *   only knew "it failed"). Counted as an error; never guessed into a better class.
+ * - `_OTHER` — OTel's fallback value: an error recorded without either of the facts above
+ *   (a caller that only knew "it failed"). Counted as an error; never guessed into a
+ *   better class.
  */
-export const CONNECTOR_CALL_OUTCOMES = [
-  'ok',
-  'http_4xx',
-  'http_5xx',
-  'http_other',
-  'timeout',
-  'network',
-  'unknown',
-] as const;
-export type ConnectorCallOutcome = (typeof CONNECTOR_CALL_OUTCOMES)[number];
+export const CONNECTOR_CALL_ERROR_TYPES = ['4xx', '5xx', 'other_status', 'timeout', 'network', '_OTHER'] as const;
+export type ConnectorCallErrorType = (typeof CONNECTOR_CALL_ERROR_TYPES)[number];
 
 /**
  * What a connector call's settlement may say about itself, beyond ok/error: how long it
@@ -68,16 +75,26 @@ export type ConnectionUseOutcome =
   | ({ ok: true } & ConnectionUseTiming)
   | ({ ok: false; error: string } & ConnectionUseTiming);
 
-/** One call, as the recorder receives it. Every field is closed or read off the row. */
+/**
+ * One call, as the recorder receives it — keyed by OpenTelemetry names (see the module
+ * header). Every field is closed or read off the connection row.
+ */
 export interface ConnectorCallRecord {
-  tenantId: string;
-  vertical: string;
-  provider: string;
-  outcome: ConnectorCallOutcome;
-  /** Milliseconds, or null when the caller did not time the call. */
-  durationMs: number | null;
-  /** The provider's HTTP status, or null when none arrived. */
-  status: number | null;
+  /** The tenant's id (a ULID), off the connection row. */
+  'substrat.tenant.id': string;
+  /** The vertical's SLUG (e.g. `callout`) — the connection row's namespace, not an id. */
+  'substrat.vertical': string;
+  /** The provider slug the connection is for (`scrive`, `fortnox`, …). */
+  'substrat.connection.provider': string;
+  /** OTel `error.type`: absent on success, else one of {@link CONNECTOR_CALL_ERROR_TYPES}. */
+  'error.type'?: ConnectorCallErrorType;
+  /** OTel `http.response.status_code`: absent when no status arrived. */
+  'http.response.status_code'?: number;
+  /**
+   * OTel `http.client.request.duration`, in SECONDS (OTel's unit for it). Absent when the
+   * caller did not time the call — the data point writes that as `-1`.
+   */
+  'http.client.request.duration'?: number;
 }
 
 export interface ConnectorCallRecorder {
@@ -92,17 +109,17 @@ export const noopConnectorCallRecorder: ConnectorCallRecorder = { record() {} };
  * Classify a settled call. Reads a status and a boolean — never the error text, which is
  * the point: the class is derived from facts that cannot carry a payload.
  */
-export function connectorCallOutcome(outcome: ConnectionUseOutcome): ConnectorCallOutcome {
-  if (outcome.ok) return 'ok';
+export function connectorCallErrorType(outcome: ConnectionUseOutcome): ConnectorCallErrorType | undefined {
+  if (outcome.ok) return undefined;
   const status = outcome.status;
   if (typeof status === 'number' && Number.isFinite(status)) {
-    if (status >= 500 && status < 600) return 'http_5xx';
-    if (status >= 400 && status < 500) return 'http_4xx';
-    return 'http_other';
+    if (status >= 500 && status < 600) return '5xx';
+    if (status >= 400 && status < 500) return '4xx';
+    return 'other_status';
   }
   if (outcome.timedOut === true) return 'timeout';
   if (outcome.timedOut === false) return 'network';
-  return 'unknown';
+  return '_OTHER';
 }
 
 /**
@@ -139,19 +156,18 @@ export function connectorCallRecord(
   row: { tenantId: string; vertical: string; provider: string },
   outcome: ConnectionUseOutcome,
 ): ConnectorCallRecord {
-  const durationMs =
-    typeof outcome.durationMs === 'number' && Number.isFinite(outcome.durationMs) && outcome.durationMs >= 0
-      ? outcome.durationMs
-      : null;
-  const status =
-    typeof outcome.status === 'number' && Number.isFinite(outcome.status) ? outcome.status : null;
+  const timed =
+    typeof outcome.durationMs === 'number' && Number.isFinite(outcome.durationMs) && outcome.durationMs >= 0;
+  const status = typeof outcome.status === 'number' && Number.isFinite(outcome.status) ? outcome.status : undefined;
+  const errorType = connectorCallErrorType(outcome);
   return {
-    tenantId: row.tenantId,
-    vertical: row.vertical,
-    provider: row.provider,
-    outcome: connectorCallOutcome(outcome),
-    durationMs,
-    status,
+    'substrat.tenant.id': row.tenantId,
+    'substrat.vertical': row.vertical,
+    'substrat.connection.provider': row.provider,
+    ...(errorType ? { 'error.type': errorType } : {}),
+    ...(status !== undefined ? { 'http.response.status_code': status } : {}),
+    // The settlement is timed in ms (where `Date.now()` is); OTel's unit is seconds.
+    ...(timed ? { 'http.client.request.duration': outcome.durationMs! / 1000 } : {}),
   };
 }
 
@@ -175,28 +191,40 @@ export interface AnalyticsEngineDatasetLike {
 }
 
 /**
- * The data point a record becomes. **A published shape** — the read in
- * `packages/control-plane-api/src/cf-observability.ts` indexes into it by ordinal, beside
- * the router's — so it only ever GROWS, never reorders:
+ * Where each OTel-named field lands in an Analytics Engine data point. **A published
+ * shape** — the read in `packages/control-plane-api/src/cf-observability.ts` indexes into
+ * it by ordinal, beside the router's — so it only ever GROWS: a new field takes the next
+ * ordinal, and no position is ever reordered, renamed or reused. `absent` is what the
+ * position holds when the record has no value for it.
  *
- * - `index1` tenantId
- * - `blob1` provider, `blob2` vertical, `blob3` outcome ({@link CONNECTOR_CALL_OUTCOMES})
- * - `double1` durationMs (`-1` when the call was not timed), `double2` HTTP status (`0`
- *   when none arrived)
- *
- * Its own dataset, never the router's: the router's `blob1` is a vertical and its
- * `blob4` a status class, and a point of this shape written there would be counted as
- * requests by every tenant-traffic read.
+ * Its own dataset, never the router's: the router's `blob1` is a vertical and its `blob4`
+ * a status class, and a point of this shape written there would be counted as requests by
+ * every tenant-traffic read.
  */
+export const CONNECTOR_CALL_DATA_POINT_LAYOUT = {
+  indexes: [{ ordinal: 'index1', name: 'substrat.tenant.id', unit: null, absent: null }],
+  blobs: [
+    { ordinal: 'blob1', name: 'substrat.connection.provider', unit: null, absent: null },
+    { ordinal: 'blob2', name: 'substrat.vertical', unit: null, absent: null },
+    { ordinal: 'blob3', name: 'error.type', unit: null, absent: '' },
+  ],
+  doubles: [
+    { ordinal: 'double1', name: 'http.client.request.duration', unit: 's', absent: -1 },
+    { ordinal: 'double2', name: 'http.response.status_code', unit: null, absent: 0 },
+  ],
+} as const;
+
+/** The data point a record becomes — built from {@link CONNECTOR_CALL_DATA_POINT_LAYOUT}. */
 export function connectorCallDataPoint(call: ConnectorCallRecord): {
   indexes: string[];
   blobs: string[];
   doubles: number[];
 } {
+  const L = CONNECTOR_CALL_DATA_POINT_LAYOUT;
   return {
-    indexes: [call.tenantId],
-    blobs: [call.provider, call.vertical, call.outcome],
-    doubles: [call.durationMs ?? -1, call.status ?? 0],
+    indexes: L.indexes.map((f) => call[f.name]),
+    blobs: L.blobs.map((f) => call[f.name] ?? f.absent ?? ''),
+    doubles: L.doubles.map((f) => call[f.name] ?? f.absent),
   };
 }
 

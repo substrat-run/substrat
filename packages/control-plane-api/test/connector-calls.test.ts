@@ -57,7 +57,8 @@ describe('cf observability connectorCallsSeries (#1691)', () => {
     expect(sql).toContain(`blob1 = 'fortnox'`); // blob1 = provider
     expect(sql).toContain('sum(_sample_interval) AS calls'); // weighted, never count()
     expect(sql).not.toMatch(/count\(\)/);
-    expect(sql).toContain(`sum(if(blob3 = 'ok', _sample_interval, 0)) AS ok`); // blob3 = outcome
+    expect(sql).toContain(`sum(if(blob3 = '', _sample_interval, 0)) AS ok`); // blob3 = error.type, '' on success
+    expect(sql).toContain(`sum(if(blob3 = '5xx', _sample_interval, 0)) AS class5xx`);
     // An untimed call (double1 = -1) weighs nothing in the latency quantiles…
     expect(sql).toContain('quantileWeighted(0.5)(double1, if(double1 >= 0, _sample_interval, 0))');
     expect(sql).toContain('quantileWeighted(0.95)(double1, if(double1 >= 0, _sample_interval, 0))');
@@ -89,8 +90,9 @@ describe('cf observability connectorCallsSeries (#1691)', () => {
         class4xx: '4',
         class5xx: '3',
         timeouts: '1',
-        durationP50: 120,
-        durationP95: 900,
+        // double1 is seconds (OTel's unit); the API answers milliseconds.
+        durationP50: 0.12,
+        durationP95: 0.9,
       },
       // A bucket of only untimed calls: the quantile has nothing to weigh.
       { provider: 'fortnox', start: '2026-09-22 10:00:00', calls: '2', ok: '2', class4xx: '0', class5xx: '0', timeouts: '0', durationP50: Number.NaN, durationP95: -1 },

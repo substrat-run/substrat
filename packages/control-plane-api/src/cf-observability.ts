@@ -629,21 +629,37 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
    *
    * ## The connector-call dataset's published ordinals
    *
-   * Written by the kernel's `connectorCallDataPoint` (`packages/kernel/src/connector-calls.ts`),
-   * from the control plane's `CONNECTOR_ANALYTICS` binding — its OWN dataset, never the
-   * router's, because the two shapes' ordinals mean different things:
+   * Written by the kernel's `connectorCallDataPoint` from `CONNECTOR_CALL_DATA_POINT_LAYOUT`
+   * (`packages/kernel/src/connector-calls.ts`), through the control plane's
+   * `CONNECTOR_ANALYTICS` binding — its OWN dataset, never the router's, because the two
+   * shapes' ordinals mean different things. Each position carries an OpenTelemetry
+   * semantic-convention name (checked against `@opentelemetry/semantic-conventions` 1.43.0,
+   * where `error.type`, `http.response.status_code` and `http.client.request.duration` are
+   * all stable), so an OTLP exporter maps them 1:1, units included:
    *
-   *   index1 tenantId
-   *   blob1  provider      blob2 vertical      blob3 outcome class (closed enum)
-   *   double1 durationMs (-1 = not timed)      double2 HTTP status (0 = none arrived)
+   *   ordinal  OTel name                      unit  absent
+   *   index1   substrat.tenant.id             —     —
+   *   blob1    substrat.connection.provider   —     —
+   *   blob2    substrat.vertical (the slug)   —     —
+   *   blob3    error.type (closed enum)       —     ''  (success sets no error.type)
+   *   double1  http.client.request.duration   s     -1  (the call was not timed)
+   *   double2  http.response.status_code      —     0   (no status arrived)
    *
    * Like the router's, that shape only ever GROWS — a new field takes the next ordinal and
-   * no ordinal is ever reordered or reused — and so does the outcome enum: a stored point
-   * keeps the string it was written with. Nothing in it can carry a credential, URL or
-   * payload: every blob is a row identifier or an enum member.
+   * no ordinal is ever reordered, renamed or reused — and so does the `error.type` enum:
+   * a stored point keeps the string it was written with. Nothing in it can carry a
+   * credential, URL or payload: every blob is a row identifier or an enum member, and there
+   * is deliberately no `server.address` or `url.*`.
+   *
+   * The JSON this read answers keeps its own readable field names (`calls`, `ok`,
+   * `class4xx`, `durationP50` in MILLISECONDS…) rather than the OTel names: it is a chart's
+   * API, not a telemetry record. The mapping: `ok` = blob3 `''`; `class4xx`/`class5xx`/
+   * `timeouts` = blob3 `4xx`/`5xx`/`timeout`; `failed` = everything else that is an error;
+   * `durationP50`/`P95` = the weighted quantiles of double1 × 1000.
    *
    * The quantiles weigh an untimed call (`double1 = -1`) at zero, so a caller that did not
-   * time its call cannot drag the latency line down to nothing.
+   * time its call cannot drag the latency line down to nothing — while every COUNT still
+   * includes it.
    */
   async function queryConnectorCallsSeries(
     dataset: string,
@@ -659,9 +675,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         blob1 AS provider,
         toStartOfInterval(timestamp, INTERVAL '${bucketMinutes}' MINUTE) AS start,
         sum(_sample_interval) AS calls,
-        sum(if(blob3 = 'ok', _sample_interval, 0)) AS ok,
-        sum(if(blob3 = 'http_4xx', _sample_interval, 0)) AS class4xx,
-        sum(if(blob3 = 'http_5xx', _sample_interval, 0)) AS class5xx,
+        sum(if(blob3 = '', _sample_interval, 0)) AS ok,
+        sum(if(blob3 = '4xx', _sample_interval, 0)) AS class4xx,
+        sum(if(blob3 = '5xx', _sample_interval, 0)) AS class5xx,
         sum(if(blob3 = 'timeout', _sample_interval, 0)) AS timeouts,
         quantileWeighted(0.5)(double1, ${timedWeight}) AS durationP50,
         quantileWeighted(0.95)(double1, ${timedWeight}) AS durationP95
@@ -703,9 +719,10 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           // any status, an unclassed error, a non-4xx/5xx status. Derived, so the three
           // chart segments always sum to `calls`.
           failed: Math.max(0, calls - ok - class4xx - class5xx - timeouts),
-          // A bucket with no timed call has no latency; NaN would poison a chart's scale.
-          durationP50: Number.isFinite(p50) && p50 >= 0 ? p50 : 0,
-          durationP95: Number.isFinite(p95) && p95 >= 0 ? p95 : 0,
+          // double1 is seconds (OTel's unit); the chart's API speaks ms. A bucket with no
+          // timed call has no latency — NaN would poison a chart's scale.
+          durationP50: Number.isFinite(p50) && p50 >= 0 ? p50 * 1000 : 0,
+          durationP95: Number.isFinite(p95) && p95 >= 0 ? p95 * 1000 : 0,
         },
       ];
     });

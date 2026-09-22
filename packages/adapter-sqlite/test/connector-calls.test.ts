@@ -145,30 +145,31 @@ describe('connector calls into the recorder (#1691)', () => {
       expect(JSON.stringify(points)).not.toContain(SECRET.apiToken);
     });
 
-    it('classifies each call from its status or its abort — the closed outcome enum', async () => {
+    it('classifies each call from its status or its abort — OTel error.type, closed enum', async () => {
       const { points, recorder } = capture();
       const w = await world(recorder);
       await w.call('/ok');
       await w.call('/fail');
       await w.call('/throw');
       await w.call('/hang', 30);
-      expect(points.map((p) => p.blobs![2])).toEqual(['ok', 'http_5xx', 'network', 'timeout']);
+      // A success sets no error.type — the empty blob.
+      expect(points.map((p) => p.blobs![2])).toEqual(['', '5xx', 'network', 'timeout']);
       expect(points.map((p) => p.doubles![1])).toEqual([200, 500, 0, 0]);
-      // Timed where the call is made: a real duration, never the "untimed" sentinel.
+      // Timed where the call is made: a real duration (seconds), never the untimed -1.
       for (const p of points) expect(p.doubles![0]).toBeGreaterThanOrEqual(0);
     });
   });
 
   describe('an untimed settlement is still a call (#1691)', () => {
-    it('writes the -1 duration sentinel but keeps its outcome, so it counts in calls and errors', async () => {
+    it('writes the -1 duration sentinel but keeps its error.type, so it counts in calls and errors', async () => {
       const { points, recorder } = capture();
       const w = await world(recorder);
       // The shape the connect-time probe and any legacy caller use: no duration, no status.
       await w.host.admin.recordConnectionUse(w.id, { ok: true });
       await w.host.admin.recordConnectionUse(w.id, { ok: false, error: 'provider refused' });
       expect(points).toEqual([
-        { indexes: [w.t], blobs: ['scrive', 'docs', 'ok'], doubles: [-1, 0] },
-        { indexes: [w.t], blobs: ['scrive', 'docs', 'unknown'], doubles: [-1, 0] },
+        { indexes: [w.t], blobs: ['scrive', 'docs', ''], doubles: [-1, 0] },
+        { indexes: [w.t], blobs: ['scrive', 'docs', '_OTHER'], doubles: [-1, 0] },
       ]);
     });
   });

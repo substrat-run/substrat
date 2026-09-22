@@ -88,8 +88,8 @@ describe('connector calls into the recorder, hosted (#1691)', () => {
 
     expect(points.map((p) => p.indexes)).toEqual([[w.t], [w.t], [w.t]]);
     expect(points.map((p) => p.blobs)).toEqual([
-      ['scrive', 'docs', 'ok'],
-      ['scrive', 'docs', 'http_5xx'],
+      ['scrive', 'docs', ''],
+      ['scrive', 'docs', '5xx'],
       ['scrive', 'docs', 'network'],
     ]);
     const written = JSON.stringify(points);
