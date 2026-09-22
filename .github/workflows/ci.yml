@@ -55,6 +55,11 @@ jobs:
       # from DEFAULT_HARNESS and only the post-release job found out.
       - run: node tools/boundary-lint.mjs
       - run: pnpm run lint:wrangler-config
+      # scripts/secrets.mjs only enforces a secret it KNOWS about — this reads each
+      # platform worker's own Env interface for one it declares "must be set" and
+      # refuses if scripts/secrets.mjs never learned the name (#1602's TENANT_TOKEN_SECRET
+      # shipped exactly this way: declared, read, documented, and absent from the map).
+      - run: pnpm run lint:secrets-coverage
       # Every module a package references must be one it DECLARED
       # (docs/architecture/dependency-policy.md). Needs the build above, because the
       # sharp half of the check reads emitted `.d.ts`: TypeScript writes the

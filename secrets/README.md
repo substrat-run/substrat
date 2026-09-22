@@ -111,6 +111,7 @@ The env file holds one canonical key; the tool sets it under each worker's own n
 | `CP_SESSION_SECRET` | `SESSION_SECRET` | — | — |
 | `DASH_SESSION_SECRET` | — | `SESSION_SECRET` | — |
 | `CP_PUSH_TOKEN_SECRET` | `PUSH_TOKEN_SECRET` | — | — |
+| `CP_TENANT_TOKEN_SECRET` | `TENANT_TOKEN_SECRET` | — | — |
 | `CF_API_TOKEN` | `CF_API_TOKEN` | — | — |
 | `CF_ACCOUNT_ID` | `CF_ACCOUNT_ID` | — | — |
 | `CF_SAAS_ZONE_ID` | `CF_SAAS_ZONE_ID` | — | — |
