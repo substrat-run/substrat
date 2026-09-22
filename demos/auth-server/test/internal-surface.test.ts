@@ -32,6 +32,11 @@ function fakeAuth() {
   const touched: string[] = [];
   /** The paths the worker forwarded to the DO's `fetch` (the `/__*` control surface). */
   const forwarded: string[] = [];
+  /** Preview-client verbs (#1704) that reached a DO, and what the next one answers. */
+  const previewCalls: Array<{ doName: string; verb: string; input: unknown }> = [];
+  const previewAnswer: { next: { ok: true; value: unknown } | { ok: false; status: 400 | 403 | 409; error: string } } = {
+    next: { ok: true, value: { claimed: true } },
+  };
   const namespace = {
     idFromName: (name: string) => name,
     get(id: unknown): AuthServerStub {
@@ -73,10 +78,34 @@ function fakeAuth() {
         destroyStorage: async () => {
           destroyed.push(doName);
         },
+        checkPreviewClient: async (input) => {
+          previewCalls.push({ doName, verb: 'check', input });
+          return previewAnswer.next as never;
+        },
+        mintPreviewClient: async (input) => {
+          previewCalls.push({ doName, verb: 'mint', input });
+          return previewAnswer.next as never;
+        },
+        retirePreviewClients: async (input) => {
+          previewCalls.push({ doName, verb: 'retire', input });
+          return previewAnswer.next as never;
+        },
       };
     },
   };
-  return { namespace, provisioned, configured, reconciled, introspected, exported, destroyed, touched, forwarded };
+  return {
+    namespace,
+    provisioned,
+    configured,
+    reconciled,
+    introspected,
+    exported,
+    destroyed,
+    touched,
+    forwarded,
+    previewCalls,
+    previewAnswer,
+  };
 }
 
 let auth: ReturnType<typeof fakeAuth>;
@@ -330,6 +359,73 @@ describe('/internal/delete-scope (#590 — the wipe half of a reap or carried re
     expect((await del({ scopeId: 'not-a-ulid' }, PLATFORM_SECRET)).status).toBe(400);
     expect((await del({}, PLATFORM_SECRET)).status).toBe(400);
     expect(auth.destroyed).toHaveLength(0);
+  });
+});
+
+describe('/internal/preview-client (#1704 — a preview’s own client)', () => {
+  const call = (method: string, path: string, body: unknown, secret?: string) =>
+    Promise.resolve(app.request(
+      path,
+      {
+        method,
+        headers: {
+          'content-type': 'application/json',
+          ...(secret ? { 'x-substrat-platform': secret } : {}),
+        },
+        body: JSON.stringify(body),
+      },
+      env,
+    ));
+  const address = () => ({ tenantId: ulid(), scopeId: ulid() });
+  const parent = { parentScopeId: ulid(), parentRedirectUris: ['https://desk-acme.global.substrat.run/api/auth/callback'] };
+  const mintBody = () => ({
+    ...address(),
+    ...parent,
+    previewScopeId: ulid(),
+    redirectUri: 'https://desk-acme--pr-7.global.substrat.run/api/auth/callback',
+    postLogoutRedirectUri: 'https://desk-acme--pr-7.global.substrat.run/',
+    clientName: 'Desk (pr-7)',
+  });
+
+  it.each([
+    ['POST', '/internal/preview-client/check', () => ({ ...address(), ...parent }), 'check', 200],
+    ['POST', '/internal/preview-client', mintBody, 'mint', 201],
+    ['DELETE', '/internal/preview-client', () => ({ ...address(), previewScopeId: ulid() }), 'retire', 200],
+  ] as const)('%s %s reaches the BODY-named issuer DO (%s)', async (method, path, body, verb, status) => {
+    const b = body();
+    auth.previewAnswer.next = { ok: true, value: { answered: verb } };
+    const res = await call(method, path, b, PLATFORM_SECRET);
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual({ answered: verb });
+    expect(auth.previewCalls).toEqual([{ doName: b.scopeId, verb, input: b }]);
+  });
+
+  it.each([
+    ['POST', '/internal/preview-client/check'],
+    ['POST', '/internal/preview-client'],
+    ['DELETE', '/internal/preview-client'],
+  ])('%s %s refuses a call without the platform secret, before touching any DO', async (method, path) => {
+    const res = await call(method, path, mintBody());
+    expect(res.status).toBe(403);
+    expect(auth.touched).toEqual([]);
+  });
+
+  it('answers a DO refusal with its own status — a foreign tenant is a 403, an unclaimed parent a 409', async () => {
+    auth.previewAnswer.next = { ok: false, status: 403, error: 'scope x is not an issuer of tenant y' };
+    const foreign = await call('POST', '/internal/preview-client', mintBody(), PLATFORM_SECRET);
+    expect(foreign.status).toBe(403);
+    expect(((await foreign.json()) as { error: string }).error).toContain('not an issuer of tenant');
+    auth.previewAnswer.next = { ok: false, status: 409, error: 'does not sign in scope' };
+    expect((await call('POST', '/internal/preview-client', mintBody(), PLATFORM_SECRET)).status).toBe(409);
+  });
+
+  it('parses before it addresses — a malformed body never reaches a DO', async () => {
+    expect((await call('POST', '/internal/preview-client', { ...mintBody(), scopeId: 'nope' }, PLATFORM_SECRET)).status).toBe(400);
+    expect((await call('POST', '/internal/preview-client', { ...mintBody(), redirectUri: 'javascript:alert(1)' }, PLATFORM_SECRET)).status).toBe(400);
+    expect(
+      (await call('DELETE', '/internal/preview-client', { ...address(), previewScopeId: ulid(), keep: 'a', only: 'b' }, PLATFORM_SECRET)).status,
+    ).toBe(400);
+    expect(auth.touched).toEqual([]);
   });
 });
 

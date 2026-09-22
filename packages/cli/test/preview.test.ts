@@ -5,6 +5,8 @@ import {
   createPreview,
   deletePreview,
   listPreviews,
+  formatPreviewLogin,
+  type PreviewCreated,
   type PreviewRow,
 } from '../src/preview.js';
 
@@ -39,6 +41,41 @@ describe('formatPreviews', () => {
     expect(out).toContain('pr-7');
     expect(out).toContain('h--pr-7.global.substrat.run');
     expect(out).toContain('expires 2026-08-01T00:00:00Z');
+  });
+});
+
+describe('formatPreviewLogin (#1704) — a preview without a working login is never silent', () => {
+  const created = (over: Partial<PreviewCreated> = {}): PreviewCreated => ({
+    scopeId: 'S1',
+    hostname: 'desk--pr-7.global.substrat.run',
+    url: 'https://desk--pr-7.global.substrat.run',
+    versionId: 'V1',
+    reused: false,
+    ...over,
+  });
+  const callbackUrl = 'https://desk--pr-7.global.substrat.run/api/auth/callback';
+
+  it('prints the control plane’s note for a wired login, unmarked, and every carried-over note', () => {
+    const lines = formatPreviewLogin(
+      created({
+        auth: { status: 'wired', callbackUrl, issuer: 'https://auth.acme.test', clientId: 'c1', note: 'Sign-in: wired at auth.acme.test' },
+        notes: ['Settings: not carried over'],
+      }),
+    );
+    expect(lines).toEqual(['  Sign-in: wired at auth.acme.test', '  Settings: not carried over']);
+  });
+
+  it.each(['unregistered', 'ambiguous', 'unknown'] as const)('marks %s with a warning', (status) => {
+    const lines = formatPreviewLogin(created({ auth: { status, callbackUrl, note: `Sign-in: ${status}, register ${callbackUrl}` } }));
+    expect(lines[0]).toMatch(/^ {2}⚠ Sign-in:/);
+    expect(lines[0]).toContain(callbackUrl);
+  });
+
+  it('a control plane that predates it still gets a line naming the callback — never nothing', () => {
+    const lines = formatPreviewLogin(created());
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('predates preview logins');
+    expect(lines[0]).toContain(callbackUrl);
   });
 });
 
