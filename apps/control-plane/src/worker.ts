@@ -38,6 +38,8 @@ import {
   PlatformCallError,
   webCryptoSecretBox,
   globalFetch,
+  analyticsEngineConnectorCallRecorder,
+  type AnalyticsEngineDatasetLike,
   type SecretBox,
 } from '@substrat-run/kernel';
 import {
@@ -288,6 +290,18 @@ interface Env extends StaffAuthEnv, ConnectorEnv {
    */
   ROUTER_ANALYTICS_DATASET?: string;
   /**
+   * #1691: one Analytics Engine data point per connector call, written by the host
+   * `hostFor` builds (kernel `connector-calls.ts`). Absent (local dev) ⇒ the no-op
+   * recorder, and connector calls are unchanged.
+   */
+  CONNECTOR_ANALYTICS?: AnalyticsEngineDatasetLike;
+  /**
+   * The name of the dataset CONNECTOR_ANALYTICS writes, for the staff read of it —
+   * per environment and never defaulted, for ROUTER_ANALYTICS_DATASET's reason. Unset ⇒
+   * `GET /connections/calls` 501s.
+   */
+  CONNECTOR_ANALYTICS_DATASET?: string;
+  /**
    * Head sampling rate (0–1) for Workers automatic tracing on pushed verticals (#858).
    * Unset ⇒ pushed scripts declare no `traces` block and emit logs only, which is every
    * push to date. Set to `1` on TEST to answer whether tracing reaches dispatch-namespace
@@ -529,6 +543,8 @@ function observabilityFor(env: Env) {
     // reader exposes no `tenantMetrics` and the route 501s, which is the honest answer;
     // the alternative was TEST quietly charting production's traffic as a tenant's own.
     routerDataset: env.ROUTER_ANALYTICS_DATASET,
+    // #1691: the same never-defaulted rule for the connector-call dataset.
+    connectorCallsDataset: env.CONNECTOR_ANALYTICS_DATASET,
   });
 }
 
@@ -870,6 +886,19 @@ function hostFor(env: Env): CloudflareScopeHost {
     // The schedule kill switch (#1666): moved in the deployment serving the scope, for
     // the same reason again — and audited here.
     systemSwitchDelegation: systemSwitchDelegationFor(env),
+    // #1691: one data point per connector call, beside the health line. Absent binding ⇒
+    // the host's no-op default.
+    ...(env.CONNECTOR_ANALYTICS
+      ? {
+          connectorCalls: analyticsEngineConnectorCallRecorder(env.CONNECTOR_ANALYTICS, {
+            // Counted by the recorder; said once per request here so a dead dataset is
+            // visible in the worker's logs rather than only as a flat chart.
+            onDrop: (dropped) => {
+              if (dropped === 1) console.warn('connector-calls: Analytics Engine write failed; dropped');
+            },
+          }),
+        }
+      : {}),
   });
 }
 
