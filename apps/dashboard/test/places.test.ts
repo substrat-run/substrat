@@ -39,12 +39,14 @@ const row = (over: Partial<DashboardAppRow>): DashboardAppRow =>
 const isIssuer = (a: DashboardAppRow) => a.vertical_slug === 'auth-server';
 
 /** A tenant-narrowed control plane that records deliveries and can be told to fail one. */
-function controlPlane(opts: { live?: Record<string, string[]>; down?: Set<string> } = {}) {
+function controlPlane(opts: { live?: Record<string, string[]>; down?: Set<string>; unreadable?: Set<string> } = {}) {
   const deliveries: Array<{ scope: string; key: string; value: string }> = [];
   return {
     deliveries,
-    listHostnames: async (scope: string) =>
-      (opts.live?.[scope] ?? []).map((hostname) => ({ hostname, status: 'active' })) as never,
+    listHostnames: async (scope: string) => {
+      if (opts.unreadable?.has(scope)) throw new Error('directory unavailable');
+      return (opts.live?.[scope] ?? []).map((hostname) => ({ hostname, status: 'active' })) as never;
+    },
     configureInstance: async (scope: string, entries: Array<{ key: string; value: string }>) => {
       if (opts.down?.has(scope)) throw new Error('issuer unreachable');
       for (const e of entries) deliveries.push({ scope, ...e });
@@ -139,6 +141,33 @@ describe('reconcilePlaces', () => {
     expect(outcome.aborted).toContain('module unavailable');
     expect(placesConverged(outcome)).toBe(false);
     expect(cp.deliveries).toEqual([]);
+  });
+
+  it("delivers nothing while an auth-server's hostnames cannot be read, and is retried (#1683's rule)", async () => {
+    // Issuer A's stored hostname is gone and its live read fails: it exists, but nobody can
+    // say which origins are its. The desk, bound to it, would match no issuer and be dropped.
+    const unlocated = { ...authA, hostname: null };
+    const cp = controlPlane({ unreadable: new Set([authA.app_scope_id]) });
+    const logged: string[] = [];
+    const outcome = await reconcilePlaces({
+      tenantId: TEAM,
+      apps: [unlocated, authB, desk, crm],
+      isIssuer,
+      authOf,
+      controlPlane: cp,
+      log: (l) => logged.push(l),
+    });
+    expect(outcome.aborted).toContain(authA.app_scope_id);
+    expect(placesConverged(outcome)).toBe(false);
+    expect(cp.deliveries).toEqual([]);
+    expect(logged).toHaveLength(1);
+
+    // The twin: the same auth-server with NO bindings, read fine, is simply not an issuer this
+    // pass — an empty answer is an answer — and the rest converges.
+    const empty = controlPlane();
+    const settled = await reconcilePlaces({ tenantId: TEAM, apps: [unlocated, authB, desk, crm], isIssuer, authOf, controlPlane: empty });
+    expect(placesConverged(settled)).toBe(true);
+    expect(lastTo(empty, authB.app_scope_id)).toEqual([expect.objectContaining({ appScopeId: crm.app_scope_id })]);
   });
 
   it('finds the hostname live when the stored one is null', async () => {

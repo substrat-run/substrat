@@ -6,7 +6,7 @@ import {
   type PlaceRegistration,
 } from '@substrat-run/contracts';
 import type { TenantNarrowedControlPlane } from './authority.js';
-import { issuerFor, teamIssuers } from './mcp-resources.js';
+import { discoverTeamIssuers, issuerFor } from './mcp-resources.js';
 import type { DashboardAppRow } from './module.js';
 
 /**
@@ -140,7 +140,16 @@ export async function reconcilePlaces(deps: PlacesReconcileDeps): Promise<Places
 
 async function placesPass(deps: PlacesReconcileDeps): Promise<PlacesReconcileOutcome> {
   const outcome: PlacesReconcileOutcome = { delivered: [], unchanged: [], failed: [], skipped: [] };
-  const issuers = await teamIssuers(deps.apps, deps.isIssuer, deps.controlPlane);
+  // The same discovery, and the same rule, as the MCP pass (#1683): an auth-server whose
+  // origins cannot be read this pass is NOT "the team has no such issuer". Every app bound to
+  // it would match no issuer and drop out of the sets, so nothing is delivered and the pass
+  // reports itself unconverged, to be retried by the next load. An EMPTY set is a real
+  // answer: with no team auth-server there is nowhere to deliver.
+  const { issuers, unresolved } = await discoverTeamIssuers(deps.apps, deps.isIssuer, deps.controlPlane);
+  if (unresolved.length > 0) {
+    outcome.aborted = `auth-server hostnames could not be read: ${unresolved.join(', ')}`;
+    return outcome;
+  }
   if (issuers.length === 0) return outcome;
 
   const byIssuer = new Map<string, PlaceRegistration[]>(issuers.map((i) => [i.scopeId, []]));
