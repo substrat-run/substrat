@@ -114,8 +114,10 @@ so a payload holding a person's data would otherwise outlive their erasure indef
 and in every copy taken from the scope afterwards. `HostAdmin.shredSubject` therefore redacts
 this table alongside the outbox, on the same Tier-1 line (kernel-design.md §13.1): the payload
 is replaced by an obviously-redacted tombstone rather than nulled, because the column is `NOT
-NULL`; `last_error` goes with it; a still-`pending` intent is settled `failed` in the same
-statement, so nothing is ever handed a tombstone to drain; and the row itself stays, so the
+NULL`; `last_error` goes with it; so does a non-NULL `result` — a connector handler's return is
+the provider's answer about this person — replaced by the same tombstone, and `last_failure` is
+nulled so the redaction note is not captioned as the provider's words (#1632); a still-`pending`
+intent is settled `failed` in the same statement, so nothing is ever handed a tombstone to drain; and the row itself stays, so the
 journal still shows that something was asked of the platform, by whom and when. Which intents
 are selected is the outbox's own predicate applied to whatever `DomainEvent` the payload
 embeds — which today means the `connector:<provider>` family, the one kind that carries a whole

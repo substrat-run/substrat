@@ -222,16 +222,25 @@ export {
 export type { PlatformRequestRawRow } from './platform-request-query.js';
 export {
   CANCELLED_INTENT_NOTE,
+  CANCELLED_JOB_NOTE,
+  DELIVERY_ERROR_REDACTION_SQL,
   intentPayloadCarriesSubject,
+  JOB_RUN_REDACTION_SQL,
+  JOB_STEP_REDACTION_SQL,
   PLATFORM_REQUEST_REDACTION_SQL,
   platformRequestRedactionParams,
   platformRequestRedactionQuery,
+  REDACTED_DELIVERY_NOTE,
   REDACTED_INTENT_MARKER,
   REDACTED_INTENT_NOTE,
+  REDACTED_JOB_NOTE,
   redactedIntentPayload,
+  redactSubjectJobRuns,
 } from './subject-redaction.js';
 export type {
+  LegacySubjectRedactionCounts,
   PlatformRequestRedactionCandidate,
+  RedactionSql,
   SubjectRedactionCounts,
 } from './subject-redaction.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
@@ -317,6 +326,8 @@ export {
 } from './idempotency.js';
 export {
   JOB_RUN_DDL,
+  JOB_RUN_PATCH_SQL,
+  JOB_STEP_RECORD_SQL,
   JOB_DRIVE_LIMIT,
   JOB_DRIVE_SCAN_MAX,
   JOB_RUN_LIST_LIMIT,
