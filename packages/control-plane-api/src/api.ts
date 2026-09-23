@@ -1,3 +1,4 @@
+import { resolveObservabilityWindow } from './observability-window.js';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import {
@@ -5433,13 +5434,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         scopeId: z.string().min(1).max(64).optional(),
         vertical: z.string().min(1).max(200).optional(),
         hours: z.coerce.number().int().min(1).max(72).default(24),
+        since: z.string().datetime({ offset: true }).optional(),
+        until: z.string().datetime({ offset: true }).optional(),
       })
       .parse({
         tenantId,
         scopeId: c.req.query('scopeId') || undefined,
         vertical: c.req.query('vertical') || undefined,
-        hours: c.req.query('hours'),
+        hours: c.req.query('hours'), since: c.req.query('since'), until: c.req.query('until'),
       });
+    try { resolveObservabilityWindow(input); } catch (e) { throw new ControlPlaneError(400, (e as Error).message); }
+    if (input.since !== undefined && !options.observability.absoluteTenantWindows) {
+      throw new ControlPlaneError(501, 'absolute tenant telemetry windows are not supported by this backend');
+    }
     return c.json(await options.observability.tenantMetrics(input));
   });
 
@@ -5463,8 +5470,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // zero rows rather than somebody else's, so no ownership check is needed here.
         scopeIds: z.array(z.string().min(1).max(64)).min(1).max(TENANT_SERIES_SCOPE_CAP),
         hours: z.coerce.number().int().min(1).max(72).default(24),
+        since: z.string().datetime({ offset: true }).optional(),
+        until: z.string().datetime({ offset: true }).optional(),
       })
-      .parse({ tenantId, scopeIds, hours: c.req.query('hours') });
+      .parse({ tenantId, scopeIds, hours: c.req.query('hours'), since: c.req.query('since'), until: c.req.query('until') });
+    try { resolveObservabilityWindow(input); } catch (e) { throw new ControlPlaneError(400, (e as Error).message); }
+    if (input.since !== undefined && !options.observability.absoluteTenantWindows) {
+      throw new ControlPlaneError(501, 'absolute tenant telemetry windows are not supported by this backend');
+    }
     return c.json(await options.observability.tenantMetricsSeries(input));
   });
 

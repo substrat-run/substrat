@@ -231,13 +231,13 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
 
     // Reached the end: the plane answered with no cursor left.
     const done = harness(200, page(3, null));
-    await expect(done.cp.readOpsFailures({ since: '2026-09-10T00:00:00.000Z', limit: 400 })).resolves.toMatchObject({
+    await expect(done.cp.readOpsFailures({ since: '2026-09-10T00:00:00.000Z', until: '2026-09-11T00:00:00.000Z', limit: 400 })).resolves.toMatchObject({
       complete: true,
       failed: false,
     });
     // `since` is forwarded — the window the rollup asked for, not the whole record.
     expect(done.calls[0]!.url).toBe(
-      `https://cp/api/ops-failures?tenantId=${T}&since=${encodeURIComponent('2026-09-10T00:00:00.000Z')}&limit=200`,
+      `https://cp/api/ops-failures?tenantId=${T}&since=${encodeURIComponent('2026-09-10T00:00:00.000Z')}&until=${encodeURIComponent('2026-09-11T00:00:00.000Z')}&limit=200`,
     );
 
     // Stopped at the cap with a cursor still pending: a window, not the record.

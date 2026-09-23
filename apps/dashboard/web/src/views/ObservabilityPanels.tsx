@@ -1,3 +1,4 @@
+import { exactTime, type ObsQuery } from '../lib/observability-query';
 import { useEffect, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
 import { type EventFacetResult, api, ApiError, type ObservabilityLogEvent, type TenantMetricsRow } from '../lib/api';
@@ -36,7 +37,7 @@ function windowLabel(hours: number): string {
  * claims and a panel answering the second must not caption itself with the first.
  */
 function cursorLabel(w: { from: string; to: string }): string {
-  const t = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const t = exactTime;
   return `${t(w.from)}–${t(w.to)}`;
 }
 
@@ -53,7 +54,7 @@ function cursorLabel(w: { from: string; to: string }): string {
  * code — for an app running someone else's vertical the code is not this team's, and for
  * one this team publishes the link below goes where that question is already answered.
  */
-export function TenantTrafficTable({ scopeId, hours, nonce }: { scopeId: string; hours: number; nonce: number }) {
+export function TenantTrafficTable({ scopeId, hours, nonce, window }: { scopeId: string; hours: number; nonce: number; window?: { since: string; until: string } }) {
   const [rows, setRows] = useState<TenantMetricsRow[] | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'absent' | 'error'>('loading');
   // `false` only when the per-app deployments read says the vertical is someone else's.
@@ -96,7 +97,7 @@ export function TenantTrafficTable({ scopeId, hours, nonce }: { scopeId: string;
     setRows(null);
     void (async () => {
       try {
-        const r = DEV_MOCK ? MOCK_TENANT_METRICS : await api.appTenantMetrics(scopeId, hours);
+        const r = DEV_MOCK ? MOCK_TENANT_METRICS : await api.appTenantMetrics(scopeId, hours, window);
         if (!live) return;
         setRows(r);
         setState('ready');
@@ -108,12 +109,12 @@ export function TenantTrafficTable({ scopeId, hours, nonce }: { scopeId: string;
     return () => {
       live = false;
     };
-  }, [scopeId, hours, nonce]);
+  }, [scopeId, hours, nonce, window?.since, window?.until]);
 
   if (state === 'absent') {
     return (
       <div style={{ padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
-        Observability is not configured on this platform.
+        Traffic queries are not available on this platform for this window.
       </div>
     );
   }
@@ -124,7 +125,7 @@ export function TenantTrafficTable({ scopeId, hours, nonce }: { scopeId: string;
     <div style={{ display: 'grid', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          What the router dispatched to this app in the {windowLabel(hours)}, by the surface that answered.
+          What the router dispatched to this app in {window ? `${exactTime(window.since)} – ${exactTime(window.until)}` : windowLabel(hours)}, by the surface that answered. P50 is median latency; P95 is the 95th percentile. These are sampled estimates.
         </span>
         <div style={{ flex: 1 }} />
         {fleetPath && (
@@ -186,6 +187,7 @@ export function TenantTrafficTable({ scopeId, hours, nonce }: { scopeId: string;
  * shows is the subset written while serving THIS app, which is the viewing team's to read.
  */
 export function TenantLogs({
+  filters, onFilters,
   scopeId,
   hours,
   nonce,
@@ -193,6 +195,8 @@ export function TenantLogs({
   window: cursor,
 }: {
   scopeId: string;
+  filters?: ObsQuery;
+  onFilters?: (filters: Partial<ObsQuery>) => void;
   hours: number;
   nonce: number;
   /** Whether the page's chart saw any request for this app in the window. It decides
@@ -204,9 +208,13 @@ export function TenantLogs({
    *  end at now and would silently overrule an instant in the past. */
   window?: { from: string; to: string };
 }) {
-  const [level, setLevel] = useState(LEVELS[0]);
+  const [localLevel, setLevel] = useState(LEVELS[0]);
+  const level = filters ? (filters.level || LEVELS[0]) : localLevel;
   const [query, setQuery] = useState('');
-  const [search, setSearch] = useState('');
+  const [localSearch, setSearch] = useState('');
+  const search = filters ? (filters.search ?? '') : localSearch;
+  const [invocation, setInvocation] = useState(filters?.invocationId ?? '');
+  useEffect(() => { setQuery(search); setInvocation(filters?.invocationId ?? ''); }, [search, filters?.invocationId]);
   const [logs, setLogs] = useState<ObservabilityLogEvent[] | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
 
@@ -235,6 +243,7 @@ export function TenantLogs({
               // which always ends at now, overrule the instant the reader clicked on.
               ...(cursor ? { since: cursor.from, until: cursor.to } : { hours }),
               limit: 100,
+              invocationId: filters?.invocationId,
             });
         if (live) setLogs(events);
       } catch (e) {
@@ -254,7 +263,7 @@ export function TenantLogs({
     return () => {
       live = false;
     };
-  }, [scopeId, level, search, hours, nonce, cursor?.from, cursor?.to]);
+  }, [scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, filters?.invocationId]);
 
   return (
     <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
@@ -262,26 +271,29 @@ export function TenantLogs({
         <span style={{ fontSize: 13, fontWeight: 600 }}>Logs</span>
         <MonoTag>this app</MonoTag>
         <Select
-          aria-label="Level"
+          ariaLabel="Level"
           options={LEVELS}
           value={level}
-          onChange={(e) => setLevel(e.target.value)}
+          onChange={(e) => onFilters ? onFilters({ level: e.target.value === LEVELS[0] ? undefined : e.target.value }) : setLevel(e.target.value)}
           style={{ width: 110 }}
         />
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            setSearch(query.trim());
+            if (onFilters) onFilters({ search: query.trim() || undefined, invocationId: invocation.trim() || undefined });
+            else setSearch(query.trim());
           }}
           style={{ display: 'flex', gap: 8, flex: 1, minWidth: 220 }}
         >
           <Input
-            aria-label="Search messages"
-            placeholder="Filter messages…"
+            ariaLabel="Search messages"
+            placeholder="Message contains (case-sensitive)…"
+            maxLength={200}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             style={{ flex: 1 }}
           />
+          {onFilters && <Input ariaLabel="Invocation ID" placeholder="Invocation ULID (optional)" pattern="[0-7][0-9A-HJKMNP-TV-Z]{25}" value={invocation} onChange={(e) => setInvocation(e.target.value)} />}
           {/* No explicit type: the native default inside a form is `submit`. */}
           <Button variant="ghost" size="sm">
             Search
@@ -291,6 +303,8 @@ export function TenantLogs({
           {cursor ? `around ${cursorLabel(cursor)}` : `${windowLabel(hours)}, newest 100`}
         </span>
       </div>
+      <p style={{ padding: '0 14px', fontSize: 12 }}>Up to 100 recent lines from bounded invocation discovery (40 invocations, normally 20 lines each). Filters search that bounded coverage, not an exhaustive log archive. Empty results do not establish that no matching event occurred. Retention and sampling depend on the backend.</p>
+      {onFilters && <button style={{ margin: '0 14px 10px' }} onClick={() => onFilters({ level: undefined, search: undefined, invocationId: undefined })}>Clear log filters</button>}
       {logsError ? (
         <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>{logsError}</div>
       ) : logs === null ? (
@@ -310,7 +324,7 @@ export function TenantLogs({
             : 'No log events in this window.'}
         </div>
       ) : (
-        <LogList events={logs} />
+        <LogList events={logs} onFilter={onFilters} />
       )}
     </div>
   );
@@ -382,6 +396,7 @@ interface AppliedFacet {
  * not shown must not read as a tail that does not exist.
  */
 export function EventExplorer({
+  nonce = 0, query, onQuery,
   scopeId,
   hours,
   focusEventType,
@@ -390,12 +405,15 @@ export function EventExplorer({
   scopeId: string;
   hours: number;
   focusEventType?: string;
+  nonce?: number;
+  query?: ObsQuery;
+  onQuery?: (q: Partial<ObsQuery>) => void;
   /** The page's time cursor. Its facet read already spoke in two instants, so this is
    *  only a question of WHICH two — and of the header naming the one it answered. */
   window?: { from: string; to: string };
 }) {
-  const [groupBy, setGroupBy] = useState('type');
-  const [field, setField] = useState('');
+  const [groupBy, setGroupBy] = useState(query?.groupBy ?? 'type');
+  const [field, setField] = useState(query?.field ?? '');
   // Seeded from the flow map's deep link when there is one. A type arriving this way is
   // ALREADY applied — the reader asked for it by following the link, so making them press
   // Group again would be asking the same question twice.
@@ -418,13 +436,14 @@ export function EventExplorer({
   // HERE, at submit, so the window is the one the reader chose and not one that slides
   // out from under the answer on the next render.
   const [applied, setApplied] = useState<AppliedFacet>(() => ({
-    groupBy: 'type',
-    field: '',
-    type: focusEventType ?? '',
+    groupBy: query?.groupBy ?? 'type',
+    field: query?.field ?? '',
+    type: query?.type ?? focusEventType ?? '',
     hours,
     ...facetWindow(hours, cursor),
   }));
-  const submit = () =>
+  const submit = () => {
+    onQuery?.({ groupBy, field: field.trim() || undefined, type: type.trim() || undefined });
     setApplied({
       groupBy,
       field: field.trim(),
@@ -432,14 +451,16 @@ export function EventExplorer({
       hours,
       ...facetWindow(hours, cursor),
     });
+  };
 
-  // A second link followed while the panel is open changes the prop and nothing else —
-  // without this the controls would update and the counts would stay the first type's.
   useEffect(() => {
-    if (focusEventType === undefined) return;
-    setType(focusEventType);
-    setApplied((a) => (a.type === focusEventType ? a : { ...a, type: focusEventType, field: '' }));
-  }, [focusEventType]);
+    const nextType = query?.type ?? focusEventType ?? '';
+    const nextGroupBy = query?.groupBy ?? 'type';
+    const nextField = query?.field ?? '';
+    setType(nextType); setGroupBy(nextGroupBy); setField(nextField);
+    setApplied((a) => a.type === nextType && a.groupBy === nextGroupBy && a.field === nextField
+      ? a : { ...a, type: nextType, groupBy: nextGroupBy, field: nextField });
+  }, [query?.type, query?.groupBy, query?.field, focusEventType]);
 
   // The page's range moved, so the standing question is re-asked over the new window
   // rather than left captioned with the old one: a range control and a count on the same
@@ -490,7 +511,7 @@ export function EventExplorer({
     return () => {
       live = false;
     };
-  }, [scopeId, applied]);
+  }, [scopeId, applied, nonce]);
 
   const widest = Math.max(1, ...(result?.buckets ?? []).map((b) => b.count));
 
@@ -526,7 +547,7 @@ export function EventExplorer({
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <Select
-          aria-label="Group by dimension"
+          ariaLabel="Group by dimension"
           options={[
             { value: 'type', label: 'Event type' },
             { value: 'operation', label: 'Operation' },
@@ -547,7 +568,7 @@ export function EventExplorer({
         />
         <Input
           mono
-          aria-label="Group by payload field"
+          ariaLabel="Group by payload field"
           value={field}
           onChange={(e) => setField(e.target.value)}
           placeholder="…or a top-level payload field"
@@ -555,7 +576,7 @@ export function EventExplorer({
         />
         <Input
           mono
-          aria-label="Narrow to one event type"
+          ariaLabel="Narrow to one event type"
           value={type}
           onChange={(e) => setType(e.target.value)}
           placeholder="event type (optional)"

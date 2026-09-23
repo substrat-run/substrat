@@ -86,6 +86,7 @@ const HIT = 24;
  */
 export function TrafficChart({
   buckets,
+  plotWindow, onInspect,
   markers,
   bucketMinutes,
   height = 96,
@@ -96,6 +97,8 @@ export function TrafficChart({
   cursor,
 }: {
   buckets: TrafficBucket[];
+  plotWindow?: { since: string; until: string };
+  onInspect?: (index: number | null) => void;
   markers: ReleaseMarker[];
   /** The series' bucket width — the unit the x axis is drawn in. */
   bucketMinutes: number;
@@ -118,7 +121,9 @@ export function TrafficChart({
 
   // A viewBox in bucket units: the SVG scales to its container, so the chart is
   // responsive without measuring anything.
-  const W = buckets.length;
+  const firstStart = Date.parse(buckets[0]!.start);
+  const offset = plotWindow ? (Date.parse(plotWindow.since) - firstStart) / (bucketMinutes * 60_000) : 0;
+  const W = plotWindow ? (Date.parse(plotWindow.until) - Date.parse(plotWindow.since)) / (bucketMinutes * 60_000) : buckets.length;
   const H = 100;
   const peak = Math.max(
     1,
@@ -132,10 +137,10 @@ export function TrafficChart({
   // common case, since the newest bucket is the one still filling — would be drawn
   // outside the viewBox entirely.
   const widthMs = Math.max(1, bucketMinutes * 60_000);
-  const xOf = (iso: string): number => Math.min(W, Math.max(0, (Date.parse(iso) - first) / widthMs));
+  const xOf = (iso: string): number => Math.min(offset + W, Math.max(offset, (Date.parse(iso) - first) / widthMs));
 
   const fmt = (iso: string) =>
-    new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    new Date(iso).toISOString().replace('T', ' ').replace('.000Z', ' UTC');
 
   const shownLines = lines?.slice(0, LEGEND_CAP) ?? [];
   const hiddenLines = (lines?.length ?? 0) - shownLines.length;
@@ -157,7 +162,7 @@ export function TrafficChart({
   // land on the same x, and drawn flat they would be one dot claiming one failure.
   const stacks = new Map<number, OverlayMarker[]>();
   for (const m of overlayMarkers) {
-    const slot = Math.min(W - 1, Math.floor(xOf(m.at)));
+    const slot = Math.min(buckets.length - 1, Math.floor(xOf(m.at)));
     stacks.set(slot, [...(stacks.get(slot) ?? []), m]);
   }
   const stackRows = Math.max(0, ...[...stacks.values()].map((s) => Math.min(s.length, STACK_CAP)));
@@ -175,15 +180,16 @@ export function TrafficChart({
 
   /** A marker's x as a percentage of the plot's width — the release markers' own mapping,
    *  rescaled because the glyph layer is drawn in px rather than bucket units. */
-  const pctOf = (iso: string): string => `${(xOf(iso) / W) * 100}%`;
+  const pctOf = (iso: string): string => `${((xOf(iso) - offset) / W) * 100}%`;
 
   return (
     <div style={{ display: 'grid', gap: 6 }}>
       <svg
-        viewBox={`0 0 ${W} ${H}`}
+        data-traffic-plot
+        viewBox={`${offset} 0 ${W} ${H}`}
         preserveAspectRatio="none"
-        style={{ width: '100%', height, display: 'block', overflow: 'visible' }}
-        role="img"
+        style={{ width: '100%', height, display: 'block', overflow: 'hidden', touchAction: 'none', userSelect: 'none' }}
+        role="group"
         aria-label={
           (lines
             ? `Requests over ${buckets.length} buckets, one line for each of ${lines.length} apps`
@@ -268,6 +274,8 @@ export function TrafficChart({
                         tabIndex: 0,
                         'aria-label': `Show ${label}`,
                         style: { cursor: 'pointer' },
+                        onFocus: () => onInspect?.(i),
+                        onBlur: () => onInspect?.(null),
                         onClick: () => onBucket(b.start, bucketMinutes),
                         onKeyDown: (e: KeyboardEvent<SVGGElement>) => {
                           if (e.key !== 'Enter' && e.key !== ' ') return;
@@ -314,6 +322,7 @@ export function TrafficChart({
                 </g>
               );
             })}
+        {lines && onBucket && buckets.map((b, i) => <rect key={b.start} x={i} y={0} width={1} height={H} fill="transparent" role="button" tabIndex={0} aria-label={`Inspect ${fmt(b.start)}`} onFocus={() => onInspect?.(i)} onBlur={() => onInspect?.(null)} onClick={() => onBucket(b.start, bucketMinutes)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onBucket(b.start, bucketMinutes); } }} />)}
         {markers.map((m) => (
           <line
             key={`${m.kind}:${m.versionId}:${m.at}`}
@@ -326,7 +335,7 @@ export function TrafficChart({
             strokeDasharray={m.kind === 'pushed' ? '1 1' : undefined}
             vectorEffect="non-scaling-stroke"
           >
-            <title>{`${m.version} ${m.kind === 'went-live' ? 'went live' : 'pushed'} — ${fmt(m.at)}`}</title>
+            <title>{`${m.version} ${m.kind === 'went-live' ? 'promoted to prod' : 'version registered'} — ${fmt(m.at)}`}</title>
           </line>
         ))}
       </svg>
@@ -369,6 +378,7 @@ export function TrafficChart({
                     {...(onMarker
                       ? {
                           role: 'button',
+                          'aria-label': title,
                           tabIndex: 0,
                           style: { cursor: 'pointer' },
                           onClick: () => onMarker(m),
@@ -412,9 +422,9 @@ export function TrafficChart({
           ))}
         </svg>
       )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-        <span>{fmt(buckets[0]!.start)}</span>
-        <span>{fmt(buckets[buckets.length - 1]!.start)}</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+        <span>{fmt(plotWindow?.since ?? buckets[0]!.start)}</span>
+        <span>{fmt(plotWindow?.until ?? buckets[buckets.length - 1]!.start)}</span>
       </div>
       {classTotals && (
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--text-tertiary)' }}>
@@ -459,7 +469,7 @@ export function TrafficChart({
                 }}
               />
               <span style={{ fontFamily: 'var(--font-mono)' }}>{m.version}</span>
-              <span>{m.kind === 'went-live' ? 'live' : 'pushed'}</span>
+              <span>{m.kind === 'went-live' ? 'promoted to prod' : 'registered'}</span>
             </span>
           ))}
         </div>

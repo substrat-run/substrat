@@ -1,3 +1,4 @@
+import { resolveObservabilityWindow, observabilityBucketMinutes } from './observability-window.js';
 import type {
   ObservabilityReader,
   ObservedEgressRow,
@@ -90,6 +91,7 @@ function describeInvocation(e: RecentLogEvent): RecentLogEvent {
         : (status ?? '—');
   return {
     ...e,
+    invocationId: typeof source['invocationId'] === 'string' ? source['invocationId'] : null,
     message: `${method} ${path} → ${outcome}${ms === null ? '' : ` (${ms} ms)`}`,
     // Surfaced as the level it reads as, so the list's own colouring is honest about
     // which rows are failures without the caller having to filter for them.
@@ -249,6 +251,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     });
 
   return {
+    absoluteTenantWindows: true,
     async serviceMetrics({ hours }) {
       const to = new Date();
       const from = new Date(to.getTime() - hours * 3_600_000);
@@ -497,11 +500,15 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       scopeId?: string;
       vertical?: string;
       hours: number;
+      since?: string;
+      until?: string;
     },
   ): Promise<TenantMetricsRow[]> {
+    const window = resolveObservabilityWindow(input);
     const where = [
       `index1 = ${aeLiteral(input.tenantId)}`,
-      `timestamp > now() - INTERVAL '${Math.max(1, Math.floor(input.hours))}' HOUR`,
+      `timestamp >= toDateTime(${Math.ceil(Date.parse(window.since) / 1000)})`,
+      `timestamp < toDateTime(${Math.ceil(Date.parse(window.until) / 1000)})`,
     ];
     if (input.scopeId) where.push(`blob2 = ${aeLiteral(input.scopeId)}`);
     if (input.vertical) where.push(`blob1 = ${aeLiteral(input.vertical)}`);
@@ -565,14 +572,14 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
    */
   async function queryTenantMetricsSeries(
     dataset: string,
-    input: { tenantId: string; scopeIds: string[]; hours: number },
+    input: { tenantId: string; scopeIds: string[]; hours: number; since?: string; until?: string },
   ): Promise<TenantMetricsBucket[]> {
     // An empty list narrows to nothing, and says so without a query: an unfiltered read
     // would be "every scope of this tenant", which is a widening the caller did not ask
     // for and the contract does not offer.
     if (input.scopeIds.length === 0) return [];
-    const hours = Math.max(1, Math.floor(input.hours));
-    const bucketMinutes = hours <= 6 ? 15 : 60;
+    const window = resolveObservabilityWindow(input);
+    const bucketMinutes = observabilityBucketMinutes(window);
     const scopes = input.scopeIds.map((s) => aeLiteral(s)).join(', ');
     const sql = `
       SELECT
@@ -587,7 +594,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
       FROM ${aeDataset(dataset)}
       WHERE index1 = ${aeLiteral(input.tenantId)}
-        AND timestamp > now() - INTERVAL '${hours}' HOUR
+        AND timestamp >= toDateTime(${Math.ceil(Date.parse(window.since) / 1000)})
+        AND timestamp < toDateTime(${Math.ceil(Date.parse(window.until) / 1000)})
         AND blob2 IN (${scopes})
       GROUP BY scopeId, start
       ORDER BY start ASC

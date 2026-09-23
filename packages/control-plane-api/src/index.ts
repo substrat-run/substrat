@@ -182,3 +182,6 @@ export type { DirectoryBackupOptions, DirectoryBackupResult } from './directory-
 export { maskDump, maskRecords, MASKED } from './mask.js';
 export { createPseudonymizer, kindOf, kindUnder } from './pseudonymize.js';
 export type { PiiKind, Pseudonymizer } from './pseudonymize.js';
+
+export { resolveObservabilityWindow, observabilityBucketMinutes } from './observability-window.js';
+export type { ObservabilityWindow, ObservabilityWindowInput } from './observability-window.js';

@@ -242,6 +242,7 @@ export interface ReleaseMarker {
 }
 
 export interface TrafficSeries {
+  window?: { since: string; until: string };
   buckets: TrafficBucket[];
   markers: ReleaseMarker[];
   bucketMinutes: number;
@@ -273,8 +274,13 @@ export function bucketMinutesFor(hours: number): number {
  * first column is a whole bucket, and a sibling read that windowed from the exact
  * request time would drop every fact in that column's opening minutes.
  */
-export function bucketGrid(bucketMinutes: number, hours: number, now: Date): BucketGrid {
+export function bucketGrid(bucketMinutes: number, hours: number, now: Date, window?: { since: string; until: string }): BucketGrid {
   const widthMs = bucketMinutes * 60_000;
+  if (window) return {
+    widthMs,
+    start: Math.floor(Date.parse(window.since) / widthMs) * widthMs,
+    end: Math.floor((Date.parse(window.until) - 1) / widthMs) * widthMs,
+  };
   const end = Math.floor(now.getTime() / widthMs) * widthMs;
   return { widthMs, start: end - hours * 3_600_000, end };
 }
@@ -375,18 +381,19 @@ export function deriveTrafficSeries(input: {
    */
   prodHistory: Array<{ versionId: string; at: string }>;
   hours: number;
+  window?: { since: string; until: string };
   /** The window's end — the caller's clock, so the series and its markers agree. */
   now: Date;
 }): TrafficSeries {
   const { buckets, releases, prodHistory, hours, now } = input;
-  const bucketMinutes = buckets?.[0]?.bucketMinutes ?? bucketMinutesFor(hours);
-  const grid = bucketGrid(bucketMinutes, hours, now);
+  const bucketMinutes = buckets?.[0]?.bucketMinutes ?? bucketMinutesFor(input.window ? (Date.parse(input.window.until) - Date.parse(input.window.since)) / 3_600_000 : hours);
+  const grid = bucketGrid(bucketMinutes, hours, now, input.window);
   const plotted = fillGrid(buckets ?? [], grid);
 
   const markers: ReleaseMarker[] = [];
   const inWindow = (iso: string): boolean => {
     const t = Date.parse(iso);
-    return !Number.isNaN(t) && t >= grid.start && t <= now.getTime();
+    return !Number.isNaN(t) && t >= (input.window ? Date.parse(input.window.since) : grid.start) && t < (input.window ? Date.parse(input.window.until) : now.getTime() + 1);
   };
   for (const r of releases) {
     if (inWindow(r.pushedAt)) {
@@ -404,7 +411,7 @@ export function deriveTrafficSeries(input: {
   }
   markers.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 
-  return { buckets: plotted, markers, bucketMinutes, available: buckets !== null };
+  return { ...(input.window ? { window: input.window } : {}), buckets: plotted, markers, bucketMinutes, available: buckets !== null };
 }
 
 /** One time bucket of ONE installed app's traffic, as the tenant series read delivers it. */
@@ -419,6 +426,7 @@ export interface TeamTrafficLine {
 }
 
 export interface TeamTrafficSeries {
+  window?: { since: string; until: string };
   /** Every scope asked for, in the order asked. */
   series: TeamTrafficLine[];
   bucketMinutes: number;
@@ -447,17 +455,19 @@ export function deriveTeamSeries(input: {
   /** The scopes the caller asked about — each one gets a line whether it has rows or not. */
   scopeIds: string[];
   hours: number;
+  window?: { since: string; until: string };
   /** The window's end — the caller's clock, so every line shares one axis. */
   now: Date;
 }): TeamTrafficSeries {
   const { buckets, scopeIds, hours, now } = input;
-  const bucketMinutes = buckets?.[0]?.bucketMinutes ?? bucketMinutesFor(hours);
-  const grid = bucketGrid(bucketMinutes, hours, now);
+  const bucketMinutes = buckets?.[0]?.bucketMinutes ?? bucketMinutesFor(input.window ? (Date.parse(input.window.until) - Date.parse(input.window.since)) / 3_600_000 : hours);
+  const grid = bucketGrid(bucketMinutes, hours, now, input.window);
 
   const rowsByScope = new Map<string, TenantTrafficBucketInput[]>();
   for (const b of buckets ?? []) rowsByScope.set(b.scopeId, [...(rowsByScope.get(b.scopeId) ?? []), b]);
 
   return {
+    ...(input.window ? { window: input.window } : {}),
     series: [...new Set(scopeIds)].map((scopeId) => ({
       scopeId,
       buckets: fillGrid(rowsByScope.get(scopeId) ?? [], grid),

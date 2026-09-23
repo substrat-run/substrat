@@ -704,6 +704,7 @@ describe('cf tenant logs — filtered to one invocation', () => {
   it('returns a call of the caller’s own tenant, with the lines its handler wrote', async () => {
     const { reader } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
     const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 50 });
+    expect(events.find((e) => e.invocationId === A1)).toMatchObject({ invocationId: A1, requestId: 'req-A1' });
     expect(messages(events)).toEqual(['POST /api/orders → 200 (42 ms)', 'charge declined']);
   });
 
@@ -807,5 +808,26 @@ describe('cf tenant logs — filtered to one invocation', () => {
     const { reader } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
     const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, level: 'error', hours: 24, limit: 50 });
     expect(messages(events)).toEqual(['charge declined']);
+  });
+});
+
+describe('absolute tenant metrics', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('queries the historic half-open interval at both grains, preserving tenant and scope predicates', async () => {
+    const sent: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body: string }) => { sent.push(init.body); return new Response(JSON.stringify({ data: [] })); }));
+    const reader = createCfObservabilityReader({ accountId: 'acct', apiToken: 't', routerDataset: 'router_test' });
+    const window = { since: '2026-09-01T10:07:00Z', until: '2026-09-01T10:29:00Z' };
+    await reader.tenantMetrics!({ tenantId: 'tenant-a', scopeId: 'scope-a', hours: 72, ...window });
+    await reader.tenantMetricsSeries!({ tenantId: 'tenant-a', scopeIds: ['scope-a'], hours: 72, ...window });
+    for (const sql of sent) {
+      expect(sql).toContain("index1 = 'tenant-a'");
+      expect(sql).toContain(`timestamp >= toDateTime(${Date.parse(window.since) / 1000})`);
+      expect(sql).toContain(`timestamp < toDateTime(${Date.parse(window.until) / 1000})`);
+      expect(sql).not.toContain('now()');
+    }
+    expect(sent[0]).toContain("blob2 = 'scope-a'");
+    expect(sent[1]).toContain("blob2 IN ('scope-a')");
+    expect(sent[1]).toContain("INTERVAL '15' MINUTE");
   });
 });
