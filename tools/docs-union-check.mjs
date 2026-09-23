@@ -103,11 +103,11 @@ function* fences(text) {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const opening = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)\r?$/.exec(lines[i]);
-    if (!opening) continue;
+    if (!opening || (opening[1][0] === '`' && opening[2].includes('`'))) continue;
     const start = i + 1;
     const closing = new RegExp(`^ {0,3}${opening[1][0]}{${opening[1].length},}\\s*$`);
     while (++i < lines.length && !closing.test(lines[i])) { /* consume this fence */ }
-    yield { language: opening[2].trim(), code: lines.slice(start, i).join('\n'), offset: start };
+    yield { language: opening[2].trim().split(/\s+/)[0], code: lines.slice(start, i).join('\n'), offset: start };
   }
 }
 

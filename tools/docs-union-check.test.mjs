@@ -123,3 +123,15 @@ test('unreadable named sketches and explicitly mapped nonliteral fields refuse',
   assert.match(problems(t, sketch("status: 'active' | ;")), /example.md:5: cannot parse TypeScript sketch/);
   assert.match(problems(t, sketch("status: Status; // docs-union-source: tenancy.ts#scope.status")), /unsupported sketch union member/);
 });
+
+test('TypeScript fence metadata does not hide union drift', (t) => {
+  for (const language of ['ts', 'typescript']) {
+    const doc = sketch("status: 'active';").replace('```ts', '```' + language + ' title="tenancy.ts"');
+    assert.match(problems(t, doc), /example.md:5: Scope.status:.*missing \["archived", "reaped"\]/);
+  }
+});
+
+test('backticks in an invalid opener cannot consume a later TypeScript fence', (t) => {
+  const doc = '```foo```\n\n' + sketch("status: 'active';");
+  assert.match(problems(t, doc), /example.md:7: Scope.status:.*missing \["archived", "reaped"\]/);
+});
