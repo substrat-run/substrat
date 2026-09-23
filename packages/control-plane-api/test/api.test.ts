@@ -6266,6 +6266,8 @@ describe('control-plane API — custom-hostname issuance (#305)', () => {
     });
     await host.admin.createTenant(staff, { id: t1, slug: 'acme-co', name: 'Acme Co' });
     await host.provisionScope(staff, { tenantId: t1, scopeId: s1, vertical: 'demo-vert' });
+    // Issuance tests serve a ready scope; hostname activation alone is not readiness (#1713).
+    await host.admin.activateScope(staff, t1, s1);
   });
 
   afterAll(async () => {
