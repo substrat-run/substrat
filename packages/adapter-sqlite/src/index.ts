@@ -3102,7 +3102,7 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<void> {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!existing) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+    if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
     await this.loadDump(tenantId, scopeId, dump.tables);
     this.recordAdmin(
       actor,
@@ -3120,7 +3120,7 @@ export class SqliteScopeHost implements ScopeHost {
     opts?: { kind?: string; expiresAt?: string },
   ): Promise<ScopeId> {
     const source = await this.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!source) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+    if (!source) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
     const dump = await this.admin.exportScope(actor, tenantId, scopeId);
     const snapshotId = ulid() as ScopeId;
     await this.importScope(
@@ -3149,7 +3149,7 @@ export class SqliteScopeHost implements ScopeHost {
     // a FORK (`forkedFrom` set) or a clean-room preview (`kind === 'preview'`, source-less,
     // #509 ask (b)). A PRIMARY scope keeps the platform's tombstone-only rule (archive it).
     const rec = await this.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!rec) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+    if (!rec) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
     if (!rec.forkedFrom && rec.kind !== 'preview') {
       throw new Error(
         `scope ${scopeId} is not a fork or preview — only previews may be deleted; ` +
@@ -3184,7 +3184,7 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
       .get(scopeId) as { tenant_id: string; status: string } | undefined;
     if (!row || row.tenant_id !== tenantId) {
-      throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
 
     // Lifecycle gates (control-plane.md §4.1/§4.2), all the K-3 fail-closed path.
@@ -3249,7 +3249,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (!scope || scope.tenant_id !== conn.tenant_id) {
       // Same wording as the principal path: a scope in another tenant is
       // indistinguishable from one that does not exist.
-      throw new Error(`unknown scope for connection: ${scopeId}`);
+      throw substratError('not_found', `unknown scope for connection: ${scopeId}`);
     }
     if (scope.vertical !== conn.vertical) {
       throw new Error(
@@ -3283,7 +3283,7 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT tenant_id, vertical, status FROM scopes WHERE scope_id = ?')
       .get(scopeId) as { tenant_id: string; vertical: string | null; status: string } | undefined;
     if (!scope || scope.tenant_id !== conn.tenant_id) {
-      throw new Error(`unknown scope for connection: ${scopeId}`);
+      throw substratError('not_found', `unknown scope for connection: ${scopeId}`);
     }
     if (scope.vertical !== conn.vertical) {
       throw new Error(
@@ -3330,7 +3330,7 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
       .get(scopeId) as { tenant_id: string; status: string } | undefined;
     if (!scope || scope.tenant_id !== tenantId) {
-      throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
     if (scope.status !== 'active') {
       throw new Error(`scope not active (status: ${scope.status}): ${scopeId}`);
@@ -3356,7 +3356,7 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
       .get(scopeId) as { tenant_id: string; status: string } | undefined;
     if (!scope || scope.tenant_id !== tenantId) {
-      throw new Error(`unknown scope: ${scopeId}`);
+      throw substratError('not_found', `unknown scope: ${scopeId}`);
     }
     if (scope.status !== 'active') {
       throw new Error(`scope not active (status: ${scope.status}): ${scopeId}`);
@@ -4742,7 +4742,7 @@ export class SqliteScopeHost implements ScopeHost {
       .get(scopeId) as { tenant_id: string; status: string } | undefined;
     // K-3: a scope under another tenant is indistinguishable from one that does not exist.
     if (!row || row.tenant_id !== tenantId) {
-      throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
     // `provisioning` allowed — a scope stuck there on a failed migration is a
     // sweep target. Suspended/archived are deliberate states; not disturbed.
@@ -5121,7 +5121,7 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
       .get(scopeId) as { tenant_id: string } | undefined;
     if (!rec || rec.tenant_id !== tenantId) {
-      throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
   }
 
@@ -5518,7 +5518,7 @@ export class SqliteScopeHost implements ScopeHost {
         .prepare('SELECT tenant_id, status, vertical FROM scopes WHERE scope_id = ?')
         .get(scopeId) as { tenant_id: string; status: string; vertical: string | null } | undefined;
       if (!row || row.tenant_id !== tenantId) {
-        throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
       }
       if (!from.includes(row.status as ScopeStatus)) {
         throw new Error(
@@ -6067,7 +6067,7 @@ export class SqliteScopeHost implements ScopeHost {
               .prepare('SELECT tenant_id, vertical FROM scopes WHERE scope_id = ?')
               .get(grant.node.scopeId) as { tenant_id: string; vertical: string | null } | undefined;
             if (!scope || scope.tenant_id !== grant.node.tenantId) {
-              throw new Error(`unknown scope ${grant.node.scopeId} in tenant ${grant.node.tenantId}`);
+              throw substratError('not_found', `unknown scope ${grant.node.scopeId} in tenant ${grant.node.tenantId}`);
             }
             if (scope.vertical !== conn.vertical) {
               throw new Error(
@@ -6263,7 +6263,7 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT tenant_id, vertical FROM scopes WHERE scope_id = ?')
           .get(parsed.scopeId) as { tenant_id: string; vertical: string | null } | undefined;
         if (!scope || scope.tenant_id !== parsed.tenantId) {
-          throw new Error(`unknown scope ${parsed.scopeId} in tenant ${parsed.tenantId}`);
+          throw substratError('not_found', `unknown scope ${parsed.scopeId} in tenant ${parsed.tenantId}`);
         }
         const existing = this.directory
           .prepare(
@@ -6952,7 +6952,7 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT tenant_id, kind, vertical_version_id FROM scopes WHERE scope_id = ?')
           .get(scopeId) as { tenant_id: string; kind: string; vertical_version_id: string | null } | undefined;
         if (!scope || scope.tenant_id !== tenantId) {
-          throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+          throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         }
         // The refusal this registry exists for. Without it, "a push lands pending"
         // is a convention, and D-30's argument is that we cannot afford conventions
@@ -6993,7 +6993,7 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
           .get(scopeId) as { tenant_id: string } | undefined;
         if (!scope || scope.tenant_id !== tenantId) {
-          throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+          throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         }
         this.directory
           .prepare('UPDATE scopes SET provisioned_version_id = ? WHERE scope_id = ?')
@@ -7049,7 +7049,7 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT tenant_id, serving_ref FROM scopes WHERE scope_id = ?')
           .get(scopeId) as { tenant_id: string; serving_ref: string | null } | undefined;
         if (!scope || scope.tenant_id !== tenantId) {
-          throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+          throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         }
         this.directory
           .prepare('UPDATE scopes SET serving_ref = ? WHERE scope_id = ?')
@@ -7067,7 +7067,7 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT tenant_id, expires_at FROM scopes WHERE scope_id = ?')
           .get(scopeId) as { tenant_id: string; expires_at: string | null } | undefined;
         if (!scope || scope.tenant_id !== tenantId) {
-          throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+          throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         }
         this.directory
           .prepare('UPDATE scopes SET expires_at = ? WHERE scope_id = ?')
@@ -7334,7 +7334,7 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
           .get(scopeId) as { tenant_id: string } | undefined;
         if (!scope || scope.tenant_id !== tenantId) {
-          throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+          throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         }
         // No PITR on plain SQLite — an empty list, not an error: there is simply
         // nothing to offer. The backup/restore path (#278) is this host's rewind.
@@ -7915,7 +7915,7 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
           .get(scopeId) as { tenant_id: string; status: string } | undefined;
         if (!rec || rec.tenant_id !== tenantId) {
-          throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+          throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
         }
         if (rec.status !== 'archived') {
           throw new Error(
@@ -10272,7 +10272,7 @@ export class SqliteScopeHost implements ScopeHost {
     const r = this.directory.prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?').get(scopeId) as
       | { tenant_id: string; status: string }
       | undefined;
-    if (!r || r.tenant_id !== tenantId) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    if (!r || r.tenant_id !== tenantId) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     if (r.status === 'reaped') {
       throw new Error(`scope ${scopeId} is reaped — its storage is gone and cannot be read`);
     }
