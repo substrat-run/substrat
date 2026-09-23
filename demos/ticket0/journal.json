@@ -69,6 +69,11 @@
       "version": "0014",
       "slug": "add-ticket0_conversations-snoozed_at-and-1-more",
       "sql": "ALTER TABLE ticket0_conversations ADD COLUMN snoozed_at TEXT;\n\nALTER TABLE ticket0_conversations ADD COLUMN snoozed_ms INTEGER;\n\nDROP INDEX ticket0_conversations_resolution_running;\n\nCREATE INDEX ticket0_conversations_resolution_running ON ticket0_conversations (resolution_breached_at, resolution_due_at, id)\n  WHERE resolution_due_at IS NOT NULL AND resolution_breached_at IS NULL AND resolved_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL AND snoozed_at IS NULL;"
+    },
+    {
+      "version": "0015",
+      "slug": "index-reaper-and-assistant-health",
+      "sql": "CREATE INDEX ticket0_ai_turns_conversation_outcome ON ticket0_ai_turns (conversation_id, outcome);\n\nCREATE INDEX ticket0_ai_turns_created_outcome ON ticket0_ai_turns (created_at, outcome);\n\nCREATE INDEX ticket0_ai_turns_outcome_created ON ticket0_ai_turns (outcome, created_at, id);\n\nCREATE INDEX ticket0_messages_desk_reply ON ticket0_messages (conversation_id, created_at)\n  WHERE visibility = 'public' AND author_kind != 'contact';"
     }
   ]
 }
