@@ -6455,6 +6455,8 @@ export class SqliteScopeHost implements ScopeHost {
       resolveHostname: async (raw: string) => {
         // The router's per-request read. No actor, not logged — same carve-out as
         // resolveIdentity (K-24): this is a machine path, not a staff read.
+        // Like readRoute in Cloudflare, require an active binding, correctly paired
+        // active scope and active owning tenant. Refusal leaves the binding intact.
         const hostname = raw.toLowerCase();
         // Join the scope's dispatch script in the same read (orchestration.md §5.4).
         // A scope on the stable serving script (#286) routes THERE; falls back to the
@@ -6470,11 +6472,13 @@ export class SqliteScopeHost implements ScopeHost {
                          THEN json_extract(sv.manifest_json, '$.outbound')
                          ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json
                FROM hostnames h
-               LEFT JOIN scopes s ON s.scope_id = h.scope_id
+               JOIN scopes s ON s.scope_id = h.scope_id AND s.tenant_id = h.tenant_id
+               JOIN tenants t ON t.tenant_id = s.tenant_id
                LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
                LEFT JOIN verticals vr ON vr.slug = s.vertical
                LEFT JOIN vertical_versions sv ON sv.id = vr.serving_version_id
-              WHERE h.hostname = ? AND h.status = 'active'`,
+              WHERE h.hostname = ? AND h.status = 'active'
+                AND s.status = 'active' AND t.status = 'active'`,
           )
           .get(hostname) as
           | {

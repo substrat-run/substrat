@@ -334,6 +334,30 @@ describe('router', () => {
     expect((await worker.fetch(get('https://bikes.example.com/'), env)).status).toBe(200);
   });
 
+  it('returns the neutral 404 without dispatch when the directory withdraws a route (#1713)', async () => {
+    // Lifecycle policy is exercised against the real DO in hostname-lifecycle.test.ts.
+    // Here the boundary is the directory's undefined result, without new wire fields.
+    const readRoute = vi.fn().mockResolvedValue(row({ deployment_ref: 'active-script' }));
+    const fetch = vi.fn(async () => new Response('active'));
+    const dispatch = vi.fn(() => ({ fetch }));
+    const env = {
+      ROUTER_SECRET: SECRET,
+      CONTROL_PLANE: {
+        idFromName: () => 'control-plane', get: () => ({ readRoute }),
+      },
+      DISPATCH: { get: dispatch },
+    } as unknown as Env;
+    expect(await (await worker.fetch(get('https://lifecycle.example.com/'), env)).text()).toBe('active');
+    readRoute.mockResolvedValue(undefined);
+    dispatch.mockClear();
+    fetch.mockClear();
+    const response = await worker.fetch(get('https://lifecycle.example.com/'), env);
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe('No application is configured for this hostname.');
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('404s an unknown hostname', async () => {
     const env = { ROUTER_SECRET: SECRET, CONTROL_PLANE:directory({}) } as unknown as Env;
     expect((await worker.fetch(get('https://nobody.example.com/'), env)).status).toBe(404);

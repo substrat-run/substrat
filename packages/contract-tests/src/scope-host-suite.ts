@@ -5336,6 +5336,54 @@ export function scopeHostContractSuite(
     // §4.2 provisions a scope; this is what finally gives it a URL. The router
     // resolves against these rows before dispatching to a vertical's worker.
 
+    it('gates hostname routing on scope and tenant lifecycle without changing bindings (#1713)', async () => {
+      const tenant = tenantId.parse(ulid());
+      const otherTenant = tenantId.parse(ulid());
+      const target = scopeId.parse(ulid());
+      const sibling = scopeId.parse(ulid());
+      const other = scopeId.parse(ulid());
+      for (const id of [tenant, otherTenant]) {
+        await host.admin.createTenant(staff, { id, slug: `route-${id.toLowerCase()}`, name: 'Routing' });
+      }
+      for (const [t, sc] of [[tenant, target], [tenant, sibling], [otherTenant, other]] as const) {
+        await host.provisionScope(staff, { tenantId: t, scopeId: sc });
+        await host.admin.bindHostname(staff, {
+          hostname: `${sc.toLowerCase()}.example.com`, tenantId: t, scopeId: sc,
+          surface: 'app', region: null, canonical: true,
+        });
+        await host.admin.setHostnameStatus(staff, `${sc.toLowerCase()}.example.com`, 'active');
+      }
+      const resolve = (sc: ScopeId) => host.admin.resolveHostname(`${sc.toLowerCase()}.example.com`);
+      const binding = () => host.admin.listHostnames(staff, { scopeId: target });
+      const original = await binding();
+      expect(original[0]?.status).toBe('active');
+      expect(await resolve(target)).toBeUndefined(); // provisioning, despite active binding
+      for (const [t, sc] of [[tenant, target], [tenant, sibling], [otherTenant, other]] as const) {
+        await host.admin.activateScope(staff, t, sc);
+      }
+      const active = await resolve(target);
+      expect(active).toMatchObject({ tenantId: tenant, scopeId: target, deploymentRef: null });
+      await host.admin.suspendScope(staff, tenant, target);
+      expect(await resolve(target)).toBeUndefined();
+      expect(await resolve(sibling)).toBeDefined();
+      expect(await resolve(other)).toBeDefined();
+      expect(await binding()).toEqual(original);
+      await host.admin.unsuspendScope(staff, tenant, target);
+      expect(await resolve(target)).toEqual(active);
+      for (const status of ['suspended', 'deleting'] as const) {
+        await host.admin.setTenantStatus(staff, tenant, status);
+        expect(await resolve(target)).toBeUndefined();
+        expect(await resolve(sibling)).toBeUndefined();
+        expect(await resolve(other)).toBeDefined();
+        expect(await binding()).toEqual(original);
+        await host.admin.setTenantStatus(staff, tenant, 'active');
+        expect(await resolve(target)).toEqual(active);
+      }
+      await host.admin.archiveScope(staff, tenant, target);
+      expect(await resolve(target)).toBeUndefined();
+      expect(await binding()).toEqual(original);
+    });
+
     it('binds a hostname as pending, and resolves nothing until it is active', async () => {
       await host.admin.bindHostname(staff, {
         hostname: 'acme.example.com',
@@ -5364,7 +5412,7 @@ export function scopeHostContractSuite(
       // A hostname routes to exactly one place, so a rebind that would move another
       // scope's traffic is refused — unless the holder is archived or reaped, which is
       // how a deleted app's name becomes claimable again. Both adapters read the
-      // holder's scope status to decide, and neither reads it on the router's path.
+      // holder's scope status to decide; routing independently requires active lifecycle.
       const holder = scopeId.parse(ulid());
       const claimant = scopeId.parse(ulid());
       for (const sc of [holder, claimant]) {
@@ -5398,6 +5446,7 @@ export function scopeHostContractSuite(
       // the row, then the read-back 400d at the Zod boundary and the app got no URL.
       const sc = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t1, scopeId: sc, vertical: 't-acme/crm', jurisdiction: 'eu' });
+      await host.admin.activateScope(staff, t1, sc);
       await host.admin.bindHostname(staff, {
         hostname: 'crm-acme.global.example.com',
         tenantId: t1,
