@@ -1468,6 +1468,8 @@ const TTL_CHOICES = [
   { value: '0', label: 'Keep until deleted' },
 ] as const;
 
+const TEST_ENVIRONMENT_CREATION_COPY = 'An environment created here starts empty.';
+
 /**
  * Test environment: a persistent preview at your own domain. Previews created here
  * start empty at the production version, or the first admitted version if none is
@@ -1698,7 +1700,7 @@ function TestEnvironment({ app }: { app: AppRow }) {
           )}
         </div>
         <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-          An environment created here starts empty at the <strong>production version</strong>, or the first admitted version if none is in production.
+          {TEST_ENVIRONMENT_CREATION_COPY} Its initial version is the <strong>production version</strong>, or the first admitted version if none is in production.
           Existing test environments may contain copied data. You can attach your own domain.
           Update it explicitly with a preview push or scope bind; production deploys do not advance its binding.
         </div>
@@ -1709,7 +1711,12 @@ function TestEnvironment({ app }: { app: AppRow }) {
               {busy ? 'Creating…' : 'Create test environment'}
             </Button>
             {!seedVersion && (
-              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>No production or admitted version is available to start this environment.</span>
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                No production or admitted version is available.{' '}
+                {dep.listed
+                  ? 'Push a version if needed, then ask the Substrat team to review it for admission.'
+                  : 'Push a new version of this private vertical; private versions are admitted automatically.'}
+              </span>
             )}
             {DEV_MOCK && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Available against a live control plane.</span>}
           </div>
@@ -1732,7 +1739,7 @@ function TestEnvironment({ app }: { app: AppRow }) {
               )}
             </div>
             <HonestyBanner>
-              An environment created here starts empty — for a short window after it comes up, the first person to sign in at its address claims ownership (first-run setup), exactly like a fresh install; after that, the owner seat below mints a claim link.
+              {TEST_ENVIRONMENT_CREATION_COPY} For a short window after it comes up, the first person to sign in at its address claims ownership (first-run setup), exactly like a fresh install; after that, the owner seat below mints a claim link.
               An older environment may still serve production code through an existing serving pin; its bound version alone does not verify the running code.
             </HonestyBanner>
             <ScopeOwnerSeat key={env.scopeId} scopeId={env.scopeId} versionId={env.versionId ?? null} active={!!env.url} />
