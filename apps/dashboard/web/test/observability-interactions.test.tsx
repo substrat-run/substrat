@@ -1,6 +1,7 @@
 import { act, useEffect, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TrafficChart } from '../src/components/TrafficChart';
 import { InspectableTraffic } from '../src/components/InspectableTraffic';
 import { LogList } from '../src/components/LogList';
 import { Observability } from '../src/views/Observability';
@@ -256,7 +257,9 @@ it('preserves URL event grouping and type through refresh without remounting con
       />,
     ),
   );
+  expect(facets).toHaveBeenCalledTimes(1);
   await act(async () => click(button('Refresh')));
+  expect(facets).toHaveBeenCalledTimes(2);
   expect(facets).toHaveBeenLastCalledWith(
     'app-a',
     expect.objectContaining({ groupBy: 'operation', type: 'receipt.sent', ...windowRange }),
@@ -291,4 +294,33 @@ it('all-app drag uses the shared interval without choosing a tenant scope', asyn
   pointer(target, 'pointerup', 300);
   expect(traffic).toHaveBeenCalledWith({ hours: 24, ...windowRange });
   expect(onNav).toHaveBeenCalledWith({ from: '2026-09-01T10:15:00.000Z', to: '2026-09-01T10:45:00.000Z' });
+});
+
+it('relative presets retain hours-only requests for legacy readers and shared cache keys', async () => {
+  const traffic = vi.spyOn(api, 'appTraffic').mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15 });
+  const overlays = vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
+  const metrics = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
+  vi.spyOn(api, 'appDeployments').mockRejectedValue(new Error('unavailable'));
+  const team = vi.spyOn(api, 'teamTraffic').mockResolvedValue({ series: [], available: true, bucketMinutes: 60 });
+  const props = { apps: [{ app_scope_id: 'app-a', name: 'App A' } as AppRow], view: 'traffic', focusEventType: null, cursor: null, onNav: vi.fn() };
+  await act(async () => root.render(<Observability {...props} query="app=app-a&hours=24" scopeId="app-a" />));
+  expect(traffic).toHaveBeenLastCalledWith('app-a', 24, undefined);
+  expect(overlays).toHaveBeenLastCalledWith('app-a', 24, undefined);
+  expect(metrics).toHaveBeenLastCalledWith('app-a', 24, undefined);
+  await act(async () => click(button('Refresh')));
+  expect(traffic).toHaveBeenLastCalledWith('app-a', 24, undefined);
+  await act(async () => root.render(<Observability {...props} query="hours=24" scopeId={null} />));
+  expect(team).toHaveBeenLastCalledWith({ hours: 24 });
+});
+
+it('partial-window marker stacks keep separate buckets independently visible', async () => {
+  const markers = [16, 17, 31, 32].map((minute) => ({
+    at: `2026-09-01T10:${minute}:00.000Z`, kind: 'failure' as const, label: `Failure ${minute}`, detail: null,
+  }));
+  await act(async () => root.render(<TrafficChart buckets={buckets.slice(0, 3)} markers={[]} bucketMinutes={15}
+    plotWindow={{ since: '2026-09-01T10:07:00.000Z', until: '2026-09-01T10:37:00.000Z' }}
+    overlays={{ markers, spans: [], truncated: false }} onMarker={vi.fn()} />));
+  const overlay = container.querySelector('svg[aria-label^="Overlay markers:"]')!;
+  expect(overlay.querySelectorAll('[role="button"]')).toHaveLength(4);
+  expect(overlay.textContent).not.toContain('+1');
 });

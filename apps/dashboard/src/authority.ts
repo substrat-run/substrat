@@ -84,7 +84,7 @@ export interface ListRead<T> {
   failed: boolean;
 }
 
-/** Filter for the ops-failure record. `since` windows it; the plane matches `at >= since`. */
+/** Filter for the ops-failure record. `since` is inclusive and `until` exclusive on `at`. */
 export interface OpsFailureRead {
   vertical?: string;
   /**
@@ -94,6 +94,7 @@ export interface OpsFailureRead {
    */
   scopeId?: string;
   since?: string;
+  until?: string;
   limit?: number;
 }
 
@@ -1450,7 +1451,7 @@ export class TenantNarrowedControlPlane {
   readOpsFailures(filter: OpsFailureRead = {}): Promise<ListRead<OpsFailureEntry>> {
     return this.walkList<OpsFailureEntry>(
       '/ops-failures',
-      { vertical: filter.vertical, scopeId: filter.scopeId, since: filter.since },
+      { vertical: filter.vertical, scopeId: filter.scopeId, since: filter.since, until: filter.until },
       filter.limit,
     );
   }

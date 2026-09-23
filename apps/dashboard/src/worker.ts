@@ -4580,7 +4580,7 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
     cp.readSweepRuns({ scopeId: scope, kind: 'schedule', outcome: 'failed', since, until: window?.until, limit: 500 }).then((r) => sourceRows('failed schedules', r)).catch(() => { unavailableSources.push('failed schedules'); return []; }),
     // Narrowed to THIS installation at the plane — a team may run the same vertical
     // twice, and a per-vertical page could fill with the other one's rows.
-    cp.readOpsFailures({ vertical: appRow.vertical_slug, scopeId: scope, since, limit: 400 }).then((r) => sourceRows('recorded failures (recent bounded history)', r)).catch(() => { unavailableSources.push('recorded failures'); return []; }),
+    cp.readOpsFailures({ vertical: appRow.vertical_slug, scopeId: scope, since, until: window?.until, limit: 400 }).then((r) => sourceRows('recorded failures', r)).catch(() => { unavailableSources.push('recorded failures'); return []; }),
     // Freshness, PER UNIT, in two reads that partition time at the window's start: the
     // verdict in force when the window began (newest row strictly before it — one row,
     // however long ago it was written) and every change inside the window. Rows are

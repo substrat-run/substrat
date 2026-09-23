@@ -438,7 +438,7 @@ export function EventExplorer({
   const [applied, setApplied] = useState<AppliedFacet>(() => ({
     groupBy: query?.groupBy ?? 'type',
     field: query?.field ?? '',
-    type: focusEventType ?? '',
+    type: query?.type ?? focusEventType ?? '',
     hours,
     ...facetWindow(hours, cursor),
   }));
@@ -455,8 +455,11 @@ export function EventExplorer({
 
   useEffect(() => {
     const nextType = query?.type ?? focusEventType ?? '';
-    setType(nextType); setGroupBy(query?.groupBy ?? 'type'); setField(query?.field ?? '');
-    setApplied((a) => ({ ...a, type: nextType, groupBy: query?.groupBy ?? 'type', field: query?.field ?? '' }));
+    const nextGroupBy = query?.groupBy ?? 'type';
+    const nextField = query?.field ?? '';
+    setType(nextType); setGroupBy(nextGroupBy); setField(nextField);
+    setApplied((a) => a.type === nextType && a.groupBy === nextGroupBy && a.field === nextField
+      ? a : { ...a, type: nextType, groupBy: nextGroupBy, field: nextField });
   }, [query?.type, query?.groupBy, query?.field, focusEventType]);
 
   // The page's range moved, so the standing question is re-asked over the new window

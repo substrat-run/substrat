@@ -162,7 +162,7 @@ export function TrafficChart({
   // land on the same x, and drawn flat they would be one dot claiming one failure.
   const stacks = new Map<number, OverlayMarker[]>();
   for (const m of overlayMarkers) {
-    const slot = Math.min(W - 1, Math.floor(xOf(m.at)));
+    const slot = Math.min(buckets.length - 1, Math.floor(xOf(m.at)));
     stacks.set(slot, [...(stacks.get(slot) ?? []), m]);
   }
   const stackRows = Math.max(0, ...[...stacks.values()].map((s) => Math.min(s.length, STACK_CAP)));

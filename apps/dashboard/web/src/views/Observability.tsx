@@ -107,6 +107,9 @@ export function Observability({
     catch (e) { return { window: queryWindow({}), error: (e as Error).message }; }
   }, [q.hours, q.from, q.to, nonce]);
   const window = resolved.window;
+  // Relative presets retain the hours-only cache and work with older readers.
+  // Explicit selections always send exact bounds, including partial edge buckets.
+  const requestWindow = q.from && q.to ? window : undefined;
   const panelWindow = { from: window.since, to: window.until };
   const [overlayError, setOverlayError] = useState(false);
   const [series, setSeries] = useState<TeamTrafficSeries | null>(null);
@@ -150,13 +153,13 @@ export function Observability({
     // One app is the per-app route's question, and it answers the release markers with
     // the series — the team route cannot, because it plots several verticals at once.
     const read: Promise<ChartRead> = scopeId
-      ? api.appTraffic(scopeId, hours, window).then((traffic) => ({
+      ? api.appTraffic(scopeId, hours, requestWindow).then((traffic) => ({
           // Adapted to the team shape here rather than branching every reader below —
           // the rows and totals under the chart are written against one series type.
           series: { window: traffic.window, series: [{ scopeId, buckets: traffic.buckets }], bucketMinutes: traffic.bucketMinutes, available: traffic.available },
           markers: traffic.markers,
         }))
-      : api.teamTraffic({ hours, ...window }).then((s) => ({ series: s, markers: [] }));
+      : api.teamTraffic({ hours, ...requestWindow }).then((s) => ({ series: s, markers: [] }));
     // The overlays ride a SECOND route, started beside the first and never awaited with
     // it: the chart draws the moment the series lands, and the glyphs arrive when they
     // arrive. Joining the two would let a slow overlay source hold the chart at
@@ -164,7 +167,7 @@ export function Observability({
     // exists to remove. A failure costs the glyphs and nothing else.
     if (scopeId) {
       api
-        .appOverlays(scopeId, hours, window)
+        .appOverlays(scopeId, hours, requestWindow)
         .then((o) => live && setOverlays(o))
         .catch(() => live && setOverlayError(true));
     }
@@ -184,7 +187,7 @@ export function Observability({
     return () => {
       live = false;
     };
-  }, [scopeId, hours, nonce, window.since, window.until, resolved.error]);
+  }, [scopeId, hours, nonce, requestWindow?.since, requestWindow?.until, resolved.error]);
 
   const appName = (id: string): string => apps.find((a) => a.app_scope_id === id)?.name ?? id.slice(-8);
 
@@ -360,7 +363,7 @@ export function Observability({
       {/* A Health row promises its sweep record, which lives on the Schedules sub-view —
           landing on the default Traffic panel would hide the very reason the row exists. */}
       {active === 'health' && <FleetHealth key={nonce} onOpen={(s) => onNav({ app: s, view: 'schedules' })} />}
-      {scopeId && active === 'traffic' && <TenantTrafficTable scopeId={scopeId} hours={hours} nonce={nonce} window={window} />}
+      {scopeId && active === 'traffic' && <TenantTrafficTable scopeId={scopeId} hours={hours} nonce={nonce} window={requestWindow} />}
       {scopeId && active === 'logs' && (
         <TenantLogs
           scopeId={scopeId}
