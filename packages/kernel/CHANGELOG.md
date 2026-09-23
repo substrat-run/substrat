@@ -1,5 +1,12 @@
 # @substrat-run/kernel
 
+## 0.120.0
+
+### Patch Changes
+
+- 1de077d: Require an active hostname, correctly paired active scope and active owning tenant for hostname resolution. Non-active lifecycle now returns no route (the router's existing neutral 404), preserving bindings for restoration. Active previews and embedded routes remain supported. This gates new directory lookups only; CP-less background/internal calls and existing connections remain outside this change.
+  - @substrat-run/contracts@0.120.0
+
 ## 0.119.0
 
 ### Minor Changes
@@ -4992,7 +4999,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

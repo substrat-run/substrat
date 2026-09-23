@@ -1,5 +1,15 @@
 # @substrat-run/contract-tests
 
+## 0.120.0
+
+### Patch Changes
+
+- 96e0ad5: Exclude every preview-kind scope from production adoption and promotion rebinding, and return 409 for explicit preview adopt-serving requests, including already-pinned previews. Clean-room test environments now require explicit preview push or scope bind to advance instead of automatically following production. Existing production serving pins and their data are not repaired by this change.
+- 1de077d: Require an active hostname, correctly paired active scope and active owning tenant for hostname resolution. Non-active lifecycle now returns no route (the router's existing neutral 404), preserving bindings for restoration. Active previews and embedded routes remain supported. This gates new directory lookups only; CP-less background/internal calls and existing connections remain outside this change.
+- Updated dependencies [1de077d]
+  - @substrat-run/kernel@0.120.0
+  - @substrat-run/contracts@0.120.0
+
 ## 0.119.0
 
 ### Minor Changes
@@ -4682,7 +4692,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

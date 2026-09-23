@@ -1,5 +1,11 @@
 # @substrat-run/ui
 
+## 0.3.2
+
+### Patch Changes
+
+- a82ab51: Add absolute, tenant-confined telemetry windows and dashboard drag-to-zoom with shareable time and filter state. Add accessible chart inspection, registration/promotion timelines, change-source coverage, and configurable log columns and details. Retain bounded log discovery and provider bucket resolution; promotion markers do not claim serving completion. Compact inputs now support accessible names and native field constraints.
+
 ## 0.3.1
 
 ### Patch Changes
