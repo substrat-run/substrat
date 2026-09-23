@@ -2119,9 +2119,11 @@ export interface HostAdmin {
    * involved. K-24's access log records who *read the directory*, and a router
    * dispatching traffic is not that.
    *
-   * Returns only `active` bindings. It does **not** re-check tenant or scope
-   * suspension: `getScope` already fails closed there (§7), and a second
-   * enforcement point is a second thing that can disagree.
+   * Returns only active bindings whose correctly paired scope and owning tenant
+   * are both active (#1713). Otherwise returns undefined, without changing the
+   * binding. Active previews and embedded scopes without a deployment still resolve.
+   * This uncached request-path gate does not cover direct/background CP-less calls
+   * or requests already dispatched. CP-backed `getScope` retains its own gate.
    */
   resolveHostname(hostname: string): Promise<RouteTarget | undefined>;
 

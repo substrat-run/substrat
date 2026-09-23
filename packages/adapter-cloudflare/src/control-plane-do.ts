@@ -2031,23 +2031,11 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
-   * The router's read: hostname → route target, or nothing.
-   *
-   * `h.status = 'active'` is in the SQL, not in the caller, so this adapter and
-   * adapter-sqlite's `resolveHostname` answer "what resolves" the same way — a row
-   * that must not be served is never handed out in the first place.
-   *
-   * It deliberately carries NO scope status. The router does not re-check tenant or
-   * scope suspension (`getScope` owns that, inside the vertical), and a column it can
-   * read is an invitation to a second enforcement point that can disagree with the
-   * first.
-   */
-  /**
    * "The instance of vertical Y in tenant T" (#1706) — the directory's half of addressing a
    * peer by slug. Reads every scope of that tenant bound to that vertical and hands them to the
    * kernel's one rule (`resolveVerticalInstanceFrom`: primary, active, exactly one), so this,
-   * the pure host and any future caller cannot disagree about what resolves. Unlike
-   * `readRoute`, this one DOES read scope status: a suspended or archived instance is not a
+   * the pure host and any future caller cannot disagree about what resolves. Like
+   * `readRoute`, this reads scope status: a suspended or archived instance is not a
    * callable one, and nothing downstream of this answer re-checks it on the hosted path (#1713).
    */
   resolveVerticalInstance(tenantId: string, vertical: string): VerticalResolution {
@@ -2158,6 +2146,12 @@ export class ControlPlaneDO extends DurableObject {
     };
   }
 
+  /**
+   * Uncached request-path gate: only an active hostname, correctly paired active
+   * scope and active owning tenant resolve (#1713). No lifecycle fields cross the
+   * wire: refusal is the existing unresolved route. CP-less direct/background calls
+   * and already-dispatched requests are outside this gate.
+   */
   readRoute(hostname: string): RouteRow | undefined {
     // Join the scope's dispatch script, so the router resolves it in the same one
     // directory read (orchestration.md §5.4). A scope whose data lives in the stable
@@ -2185,11 +2179,13 @@ export class ControlPlaneDO extends DurableObject {
                      THEN json_extract(sv.manifest_json, '$.calls')
                      ELSE json_extract(vv.manifest_json, '$.calls') END AS calls_json
            FROM hostnames h
-           LEFT JOIN scopes s ON s.scope_id = h.scope_id
+           JOIN scopes s ON s.scope_id = h.scope_id AND s.tenant_id = h.tenant_id
+           JOIN tenants t ON t.tenant_id = s.tenant_id
            LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
            LEFT JOIN verticals vr ON vr.slug = s.vertical
            LEFT JOIN vertical_versions sv ON sv.id = vr.serving_version_id
-          WHERE h.hostname = ? AND h.status = 'active'`,
+          WHERE h.hostname = ? AND h.status = 'active'
+            AND s.status = 'active' AND t.status = 'active'`,
         hostname,
       )
       .toArray()[0] as unknown as RouteRow | undefined;

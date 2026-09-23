@@ -611,9 +611,20 @@ dispatches to the vertical's worker.
 The map half is built: `bindHostname` / `setHostnameStatus` / `setHostnameIssuance` /
 `listHostnames` on `HostAdmin`, and `resolveHostname` — which takes **no actor and is not
 logged**, the same machine-path carve-out `resolveIdentity` gets (K-24), because it runs
-once per request. It resolves only `active` bindings, and deliberately does **not**
-re-check suspension: `getScope` owns that, and a second enforcement point is a second
-thing that can disagree.
+once per request. It resolves only active bindings whose correctly paired scope and
+owning tenant are active (#1713). The uncached directory read returns no route for
+any non-active lifecycle state; the router returns its existing neutral 404. Bindings
+are preserved, so restoring lifecycle needs no rebind. Active previews and embedded
+scopes without a deployment still resolve, with stable/per-version selection unchanged.
+
+This corrects the earlier getScope-only rationale: CP-less deployments do not consult
+the directory in `getScope`. CP-backed `getScope` retains its own gate. Suspension
+takes effect on the next directory lookup, not requests already dispatched, existing
+long-lived connections, or direct internal traffic. CP-less schedules and retries
+remain outside this request-path correction; #1713 remains open for that decision.
+No schema, route wire shape, cache, or stored-data change is needed. Mixed rollouts
+can retain the old behavior on old directory implementations; reverting the gate
+restores the suspension gap. Deployment and rollback are separate operator actions.
 
 The **issuance** half is built too (#305). A custom-domain bind no longer stops at a
 `pending` row a human flips: the control plane calls Cloudflare for SaaS

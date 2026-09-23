@@ -50,7 +50,7 @@ export type RouteResolver = (hostname: string) => Promise<RouteTarget | undefine
 /** A hostname row → what the router dispatches on. Shared with `CloudflareScopeHost`
  * so the two cannot drift on what "resolvable" means. */
 export function toRouteTarget(row: RouteRowLike | undefined): RouteTarget | undefined {
-  // No status check here: `readRoute` filters `h.status = 'active'` in SQL, the same
+  // No status check here: `readRoute` gates hostname, scope and tenant lifecycle in SQL, the same
   // way adapter-sqlite's `resolveHostname` does. One place decides what resolves.
   if (!row) return undefined;
   // The declared outbound surface rides as JSON text from the directory read (#303).
@@ -100,9 +100,10 @@ export const normalizeHostname = (hostname: string): string => hostname.toLowerC
  * carve-out `resolveIdentity` has (K-24). Only `active` bindings resolve, so a
  * hostname still validating DNS or one whose certificate failed is simply unknown.
  *
- * It does **not** re-check tenant suspension. `getScope` owns that, inside the
- * vertical, and a second enforcement point is a second thing that can disagree with
- * the first. The router's job is to find the door, not to decide who may open it.
+ * The directory requires an active hostname, correctly paired active scope and
+ * active owning tenant (#1713). CP-less verticals rely on this request-path gate;
+ * CP-backed `getScope` retains its own check. No lifecycle state crosses the wire.
+ * Direct/background calls and already-dispatched requests remain outside this gate.
  *
  * Uncached, per request, on purpose: K-26 defers cache invalidation to open
  * question 5 rather than answering it twice, because a cached route that keeps

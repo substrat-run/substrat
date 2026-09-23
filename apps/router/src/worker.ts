@@ -370,7 +370,7 @@ export default {
 
     const target = await resolverFor(env)(hostname);
     if (!target) {
-      // Unknown, still validating, or failed — all the same from outside. Which of
+      // Unknown, non-active lifecycle, still validating, or failed — all the same from outside. Which of
       // those it is belongs in the console, not in a response to an anonymous caller.
       // Not metered either: with no resolved tenant there is no index to write under.
       return new Response('No application is configured for this hostname.', {
