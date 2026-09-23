@@ -1469,18 +1469,17 @@ const TTL_CHOICES = [
 ] as const;
 
 /**
- * Test environment (auto-follow main): a pinned, clean-room preview scope at your own
- * domain. Because it carries no `forkedFrom`, the prod-promote cascade advances it to
- * every newly promoted version (proven by api.test.ts "auto-follows prod across a
- * promote") — and since a merge to main promotes prod, the environment tracks main with
- * no per-push step. This is the persistent, addressable sibling of the ephemeral data-fork
- * Previews below: it runs the SAME code as production against its own isolated, empty data.
+ * Test environment: a persistent clean-room preview at your own domain. It starts
+ * at the chosen production version with empty data. Subsequent updates require an
+ * explicit preview push or scope bind; production promotion does not advance previews.
+ * The displayed version is the directory binding, not verified running code: an older
+ * environment may still carry a production serving pin pending separate repair.
  *
  * Owner-only: the deployment-previews routes are narrowed to a vertical THIS team owns, so
  * for an installed-only app (or a host with no shared control plane) the panel renders
  * nothing and the snapshot Previews stand alone.
  */
-/** Dev-preview sample: one pinned, prod-following test env + a pending custom domain. */
+/** Dev-preview sample: one persistent test env + a pending custom domain. */
 const MOCK_TEST_ENV: VerticalPreview[] = [
   {
     scopeId: '01J2Q8Z3V9K4W7X2M5N6P7ENV1',
@@ -1596,7 +1595,7 @@ function TestEnvironment({ app }: { app: AppRow }) {
 
   const prodVersionId = dep.channels?.find((c) => c.channel === 'prod')?.versionId ?? null;
   const seedVersion = prodVersionId ?? dep.versions.find((v) => v.admission === 'admitted')?.id ?? null;
-  const runningVer = env ? dep.versions.find((v) => v.id === env.versionId)?.version ?? null : null;
+  const boundVer = env ? dep.versions.find((v) => v.id === env.versionId)?.version ?? null : null;
   const customDomains = (hostView?.bindings ?? []).filter((h) => h.hostname !== hostView?.defaultHostname);
   const statusKind = (s: string) => (s === 'active' ? 'success' : s === 'failed' ? 'danger' : 'info');
 
@@ -1605,10 +1604,10 @@ function TestEnvironment({ app }: { app: AppRow }) {
     setBusy(true);
     setNote(null);
     try {
-      // Clean-room + pinned: the shape that rides prod. Seeded at the current prod version,
-      // it then follows every promote automatically.
+      // Clean-room + no expiry: starts at the chosen version and keeps its binding
+      // until an explicit preview push or scope bind.
       await api.createPreview(dep.slug, { tag: 'test', versionId: seedVersion, empty: true, ttlHours: null });
-      setNote('Test environment created — it now tracks production. Attach a custom domain below.');
+      setNote('Test environment created at the chosen version. Push or bind explicitly to update it. Attach a custom domain below.');
       setNonce((n) => n + 1);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
@@ -1689,7 +1688,7 @@ function TestEnvironment({ app }: { app: AppRow }) {
       <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <Eyebrow>Test environment</Eyebrow>
-          {env && <Pill kind="success">tracks production</Pill>}
+          {env && <Pill kind="success">explicit updates</Pill>}
           <div style={{ flex: 1 }} />
           {env && (
             <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmDelete(true)} style={{ color: 'var(--status-danger-fg)' }}>
@@ -1698,8 +1697,8 @@ function TestEnvironment({ app }: { app: AppRow }) {
           )}
         </div>
         <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-          Runs your app’s <strong>production code</strong> — which tracks <span style={{ fontFamily: 'var(--font-mono)' }}>main</span> — against its own isolated,
-          empty data, at your own domain. Every deploy to production flows to it automatically; there’s nothing to click per release.
+          Starts at the chosen <strong>production version</strong> with its own empty data, at your own domain.
+          Update it explicitly with a preview push or scope bind; production deploys do not advance its binding.
         </div>
 
         {!env ? (
@@ -1708,7 +1707,7 @@ function TestEnvironment({ app }: { app: AppRow }) {
               {busy ? 'Creating…' : 'Create test environment'}
             </Button>
             {!seedVersion && (
-              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Promote a version to production first — the environment tracks it.</span>
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Promote a version to production first — the environment starts there.</span>
             )}
             {DEV_MOCK && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Available against a live control plane.</span>}
           </div>
@@ -1724,15 +1723,15 @@ function TestEnvironment({ app }: { app: AppRow }) {
                 <span style={{ color: 'var(--text-tertiary)' }}>provisioning…</span>
               )}
               {env.url && <CopyButton text={env.url} size={12} />}
-              {runningVer && (
+              {boundVer && (
                 <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                  Running <MonoTag>{runningVer}</MonoTag>
+                  Bound version <MonoTag>{boundVer}</MonoTag>
                 </span>
               )}
             </div>
             <HonestyBanner>
               A new environment starts empty — for a short window after it comes up, the first person to sign in at its address claims ownership (first-run setup), exactly like a fresh install; after that, the owner seat below mints a claim link.
-              It runs the same code as production but never receives production traffic or data.
+              An older environment may still serve production code through an existing serving pin; its bound version alone does not verify the running code.
             </HonestyBanner>
             <ScopeOwnerSeat key={env.scopeId} scopeId={env.scopeId} versionId={env.versionId ?? null} active={!!env.url} />
 
@@ -1887,7 +1886,7 @@ function Previews({ app }: { app: AppRow }) {
   };
 
   const COLS = '1.2fr 2fr 1fr 1.2fr 1fr';
-  // The persistent, prod-following test environment renders first (owner-only, self-hiding);
+  // The persistent test environment renders first (owner-only, self-hiding);
   // the ephemeral data-fork Previews follow, even while they load or fail to load.
   const snapshotSection = err ? (
     <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load previews — {err}</div>

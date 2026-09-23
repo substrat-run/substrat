@@ -5249,6 +5249,54 @@ export function scopeHostContractSuite(
       expect((await host.admin.getScopeRecord(staff, t2, appScope))?.verticalVersionId).toBe(v3);
     });
 
+    it('embedded prod promotion leaves previews and real forks intact beside advancing installs (#1724)', async () => {
+      const slug = 'tenant-a/preview-prevention';
+      await host.admin.registerVertical(staff, { slug, name: 'Preview prevention', source: 'cli', ownerTenant: t2 });
+      const first = await publishPrivate(slug, '1.0.0');
+      const next = await publishPrivate(slug, '1.0.1');
+      const make = async (kind: 'preview' | 'production', tenant = t2, active = true) => {
+        const id = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: id, vertical: slug, kind });
+        if (active) await host.admin.activateScope(staff, tenant, id);
+        await host.admin.bindScopeVersion(staff, tenant, id, first);
+        return id;
+      };
+      const install = await make('production');
+      const clean = await make('preview');
+      const pinned = await make('preview');
+      await host.admin.setScopeServingRef(staff, t2, pinned, 'historical-serving-script');
+      const suspended = await make('production');
+      await host.admin.suspendScope(staff, t2, suspended);
+      const provisioning = await make('production', t2, false);
+      const foreign = await make('production', t1);
+      await (await host.getScope(alice, t2, clean)).invoke('test/write-marker', { v: 'preview-data' });
+      // An actual snapshot copies data and records forkedFrom, rather than naming a fork in the title.
+      const fork = await host.snapshotScope(staff, t2, clean);
+      expect((await host.admin.getScopeRecord(staff, t2, fork))?.forkedFrom).toBe(clean);
+      const frozen = [clean, pinned, fork, suspended, provisioning];
+      const before = await Promise.all(frozen.map((id) => host.admin.getScopeRecord(staff, t2, id)));
+      const dataBefore = await host.admin.readScopeTable(staff, t2, clean, { table: 'marker', limit: 200, offset: 0 });
+      const hostname = `preview-${clean.toLowerCase()}.example.test`;
+      await host.admin.bindHostname(staff, { hostname, tenantId: t2, scopeId: clean, surface: 'app', region: null, canonical: false });
+      await host.admin.setHostnameStatus(staff, hostname, 'active');
+      const routeBefore = await host.admin.resolveHostname(hostname);
+      expect(routeBefore).toMatchObject({ scopeId: clean, deploymentRef: null });
+      for (let retry = 0; retry < 2; retry++) {
+        await host.admin.promoteVersion(staff, slug, 'prod', next);
+        expect((await host.admin.getScopeRecord(staff, t2, install))?.verticalVersionId).toBe(next);
+        expect(await Promise.all(frozen.map((id) => host.admin.getScopeRecord(staff, t2, id)))).toEqual(before);
+        expect((await host.admin.getScopeRecord(staff, t1, foreign))?.verticalVersionId).toBe(first);
+        expect(await host.admin.resolveHostname(hostname)).toEqual(routeBefore);
+        expect(await host.admin.readScopeTable(staff, t2, clean, { table: 'marker', limit: 200, offset: 0 })).toEqual(dataBefore);
+        expect(await host.admin.readScopeTable(staff, t2, fork, { table: 'marker', limit: 200, offset: 0 })).toEqual(dataBefore);
+      }
+      // Listing retains the existing opt-in update behavior for ordinary installs too.
+      await host.admin.admitVersion(staff, next);
+      await host.admin.setVerticalListed(staff, slug, true);
+      await host.admin.promoteVersion(staff, slug, 'prod', first);
+      expect((await host.admin.getScopeRecord(staff, t2, install))?.verticalVersionId).toBe(next);
+    });
+
     it('publish refuses an auto-admitted prod version until a staff admit vouches for it', async () => {
       // Listing is the moment OTHER tenants start trusting this code, so the version
       // they would install needs a recorded human decision — the auto-admission note

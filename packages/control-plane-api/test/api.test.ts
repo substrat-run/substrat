@@ -5824,10 +5824,12 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     if (!s) scripts.set(ref, (s = new Map()));
     return s;
   };
+  const dispatchCalls: string[] = [];
   const clientFor = (ref: string) =>
     ({
-      exportScope: async (sc: string) => ensure(ref).get(sc) ?? [],
+      exportScope: async (sc: string) => { dispatchCalls.push('export'); return ensure(ref).get(sc) ?? []; },
       restoreScope: async (_t: string, sc: string, tables: ScopeDumpTable[]) => {
+        dispatchCalls.push('restore');
         ensure(ref).set(sc, tables);
         return { tables: tables.length };
       },
@@ -5842,7 +5844,7 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       // A clean-room environment derives its `--<tag>` hostname from the tenant-app
-      // convention, which needs a platform base domain (the follow-on-promote test below
+      // convention, which needs a platform base domain (the preview-isolation test below
       // creates one). Harmless to the legacy-scope tests, which mint no previews.
       platformBaseDomains: ['global.substrat.run'],
       deployVertical: async (ref, bundle) => {
@@ -6065,45 +6067,131 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     expect(prod.servingVersionId).toBe(v1.id);
   });
 
-  // The dashboard's "test environment" (auto-follow main): a pinned clean-room preview with a
-  // custom domain. It must track prod without any per-push action — the load-bearing claim the
-  // Environments UI is built on. Because a clean-room scope carries NO `forkedFrom`, the
-  // adopt-on-promote cascade advances it to each newly promoted version exactly like a real
-  // install; a FORK, being a point-in-time copy, is deliberately left pinned by a promote.
-  it('auto-follows prod across a promote for a clean-room env, but leaves a fork pinned', async () => {
-    const t = tenantId.parse(ulid());
-    await host.admin.createTenant(staff, { id: t, slug: 'follow-co', name: 'follow-co' });
-    const v1res = await (await push('follow-co', manifest({ version: '0.1.0' }))).json();
-    const slug = v1res.verticalSlug as string;
-    const v1 = v1res.id as string;
-    expect((await promote(slug, v1)).status).toBe(200); // serving := v1, a stable script exists
+  it('keeps every preview frozen across prod promotes and bulk adoption, while real installs advance (#1724)', async () => {
+    const { t, slug, sc: prod, v1 } = await legacyScope('preview-co');
+    await host.admin.bindHostname(staff, { hostname: 'preview-co.global.substrat.run', tenantId: t, scopeId: prod, surface: 'app', region: null, canonical: true });
+    const stable = stableDeploymentRefFor(slug);
+    const original = deploymentRefFor(slug, v1);
+    const previews: { scopeId: string; hostname: string }[] = [];
+    // Source-less per-build and persistent dashboard previews, plus a REAL data fork.
+    for (const extra of [
+      { tag: 'test', empty: true, ttlHours: null },
+      { tag: 'build', empty: true, ttlHours: 24 },
+      { tag: 'fork', ttlHours: null },
+      { tag: 'old-pin', empty: true, ttlHours: null },
+    ]) {
+      const res = await app.request(`/verticals/${encodeURIComponent(slug)}/previews`, {
+        method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ versionId: v1, ...extra }),
+      });
+      const preview = await res.json();
+      expect(res.status, JSON.stringify(preview)).toBe(201);
+      previews.push(preview);
+      if (extra.tag === 'fork') {
+        expect((await host.admin.getScopeRecord(staff, t, preview.scopeId))?.forkedFrom).toBe(prod);
+        expect(scripts.get(original)?.get(preview.scopeId)).toEqual([customers]);
+      }
+      ensure(original).set(preview.scopeId, [customers]);
+    }
+    const pinned = previews[3]!;
+    // Simulate historical adoption. Prevention must neither advance nor repair this pin.
+    await host.admin.setScopeServingRef(staff, t, pinned.scopeId, stable);
+    ensure(stable).set(pinned.scopeId, [customers]);
+    const before = await Promise.all(previews.map((p) => host.admin.getScopeRecord(staff, t, p.scopeId)));
+    const foreignTenant = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: foreignTenant, slug: 'other-preview-co', name: 'Other' });
+    const excluded = [];
+    for (const [tenant, status] of [[t, 'suspended'], [t, 'provisioning'], [foreignTenant, 'active']] as const) {
+      const id = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: tenant, scopeId: id, vertical: slug });
+      await host.admin.bindScopeVersion(staff, tenant, id, v1);
+      if (status !== 'provisioning') await host.admin.activateScope(staff, tenant, id);
+      if (status === 'suspended') await host.admin.suspendScope(staff, tenant, id);
+      excluded.push({ tenant, id, before: await host.admin.getScopeRecord(staff, tenant, id) });
+    }
 
-    // A real install scope with data — the fork's source (and proof the env is isolated from it).
-    const prod = scopeId.parse(ulid());
-    await host.provisionScope(staff, { tenantId: t, scopeId: prod, vertical: slug });
-    await host.admin.activateScope(staff, t, prod);
-    await host.admin.bindScopeVersion(staff, t, prod, v1);
-    ensure(stableDeploymentRefFor(slug)).set(prod, [customers]); // lives on the serving script
-
-    // The clean-room environment the UI creates: empty, pinned until deleted (ttlHours null).
-    const envRes = await app.request(`/verticals/${encodeURIComponent(slug)}/previews`, {
-      method: 'POST',
-      headers: { ...auth, 'content-type': 'application/json' },
-      body: JSON.stringify({ tag: 'test', versionId: v1, empty: true, ttlHours: null }),
-    });
-    expect(envRes.status).toBe(201);
-    const env = (await envRes.json()) as { scopeId: string };
-    // Born on v1 — the version it was pinned to at creation.
-    expect((await host.admin.getScopeRecord(staff, t, env.scopeId))?.verticalVersionId).toBe(v1);
-
-    // Ship main: push v2, promote to prod.
-    const v2 = (await (await push('follow-co', manifest({ version: '0.2.0' }))).json()).id as string;
-    expect((await promote(slug, v2)).status).toBe(200);
-
-    // The guarantee: the clean-room env advanced to v2 with no per-push action (auto-follow main),
-    // exactly like the real install alongside it.
-    expect((await host.admin.getScopeRecord(staff, t, env.scopeId))?.verticalVersionId).toBe(v2);
+    const v2 = (await (await push('preview-co', manifest({ version: '0.2.0' }))).json()).id as string;
+    for (let retry = 0; retry < 2; retry++) {
+      expect((await promote(slug, v2)).status).toBe(200);
+      const bulk = await app.request(`/verticals/${encodeURIComponent(slug)}/adopt-serving`, {
+        method: 'POST', headers: auth,
+      });
+      expect(bulk.status).toBe(200);
+      expect(await bulk.json()).toMatchObject({ adopted: [], alreadyAdopted: [prod] });
+      for (const [i, preview] of previews.entries()) {
+        const rec = await host.admin.getScopeRecord(staff, t, preview.scopeId);
+        expect(rec).toEqual(before[i]);
+        const ref = preview === pinned ? stable : original;
+        const route = await host.admin.resolveHostname(preview.hostname);
+        expect(route).toMatchObject({ scopeId: preview.scopeId, deploymentRef: ref });
+        // Read from the resolved deployment, not just the reported version pointer.
+        expect(scripts.get(route!.deploymentRef!)?.get(preview.scopeId)).toEqual([customers]);
+        if (preview !== pinned) expect(scripts.get(stable)?.has(preview.scopeId) ?? false).toBe(false);
+      }
+      expect(await host.admin.getScopeRecord(staff, t, prod)).toMatchObject({
+        verticalVersionId: v2, servingRef: stable,
+      });
+      expect(scripts.get(stable)?.get(prod)).toEqual([customers]);
+      for (const other of excluded) {
+        expect(await host.admin.getScopeRecord(staff, other.tenant, other.id)).toEqual(other.before);
+        expect(scripts.get(stable)?.has(other.id) ?? false).toBe(false);
+      }
+    }
+    // The public/listed promotion path still leaves installs opted into their version.
+    await host.admin.admitVersion(staff, v2);
+    await host.admin.setVerticalListed(staff, slug, true);
+    expect((await promote(slug, v1)).status).toBe(200);
     expect((await host.admin.getScopeRecord(staff, t, prod))?.verticalVersionId).toBe(v2);
+    await host.admin.setVerticalListed(staff, slug, false);
+  });
+
+  it('bulk adoption still adopts an install beside previews and refuses explicit preview adoption before side effects (#1724)', async () => {
+    const { t, slug, sc, v1 } = await legacyScope('preview-adopt-co');
+    const stable = stableDeploymentRefFor(slug);
+    // Register an already-serving vertical without invoking the promote cascade first.
+    await host.admin.setVerticalServing(staff, slug, { ref: stable, versionId: v1, doClasses: ['ScopeDO'], migrationTag: 'v1' });
+    const previews = [];
+    for (const pinned of [false, true]) {
+      const id = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: id, vertical: slug, kind: 'preview' });
+      await host.admin.activateScope(staff, t, id);
+      await host.admin.bindScopeVersion(staff, t, id, v1);
+      if (pinned) await host.admin.setScopeServingRef(staff, t, id, stable);
+      previews.push(id);
+    }
+    const bulk = await app.request(`/verticals/${encodeURIComponent(slug)}/adopt-serving`, { method: 'POST', headers: auth });
+    expect(bulk.status).toBe(200);
+    expect(await bulk.json()).toMatchObject({ adopted: [sc], alreadyAdopted: [] });
+    expect(scripts.get(stable)?.get(sc)).toEqual([customers]);
+
+    const pinSpy = vi.spyOn(host.admin, 'setScopeServingRef');
+    const servingSpy = vi.spyOn(host.admin, 'verticalServing');
+    const bindSpy = vi.spyOn(host.admin, 'bindScopeVersion');
+    const callsBefore = dispatchCalls.length;
+    try {
+      for (const id of previews) {
+        const before = await host.admin.getScopeRecord(staff, t, id);
+        const res = await app.request(`/tenants/${t}/scopes/${id}/adopt-serving`, { method: 'POST', headers: auth });
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toMatch(/preview/);
+        expect(await host.admin.getScopeRecord(staff, t, id)).toEqual(before);
+      }
+      for (const [tenant, id] of [[t, ulid()], [tenantId.parse(ulid()), previews[0]!]]) {
+        const res = await app.request(`/tenants/${tenant}/scopes/${id}/adopt-serving`, { method: 'POST', headers: auth });
+        expect(res.status).toBe(404);
+      }
+      expect(dispatchCalls).toHaveLength(callsBefore);
+      expect(pinSpy).not.toHaveBeenCalled();
+      expect(servingSpy).not.toHaveBeenCalled();
+      expect(bindSpy).not.toHaveBeenCalled();
+      const install = await app.request(`/tenants/${t}/scopes/${sc}/adopt-serving`, { method: 'POST', headers: auth });
+      expect(install.status).toBe(200);
+      expect(await install.json()).toMatchObject({ servingRef: stable, alreadyAdopted: true });
+    } finally {
+      pinSpy.mockRestore();
+      servingSpy.mockRestore();
+      bindSpy.mockRestore();
+    }
   });
 
   // #389 — the cross-lineage rebind: retire one lineage's install onto another, data carried.

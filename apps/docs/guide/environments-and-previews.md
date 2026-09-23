@@ -21,12 +21,13 @@ RFC](https://github.com/substrat-run/substrat/blob/main/docs/architecture/previe
 | Primitive | Mutability | Git analogy |
 |---|---|---|
 | **version id** → a `deploymentRef` | **immutable** — a pushed build never changes | a commit **sha** |
-| **binding** (`bindScopeVersion`) — which version a scope runs | **mutable** by design | a **branch ref** |
+| **binding** (`bindScopeVersion`) — the scope’s selected version | **mutable** by design | a **branch ref** |
 | **hostname** → resolves to a **scope** | stable; names a scope, never a version | a checkout path |
 
 A running app is a **scope bound to a version**, fronted by a hostname. The router resolves
-`hostname → scope`, then dispatches on *whatever version that scope is currently bound to*. Nothing
-more names an environment.
+`hostname → scope`, then uses its production serving pin when present, otherwise its bound version’s
+deployment. New previews have no serving pin; older previews may still have one, as described
+in the existing-pin warning below. The binding alone is not proof of running code.
 
 This is why **prod is already a moving target**: the prod hostname points at the prod scope, and a
 [promote](/guide/deploying#promote-to-prod) rebinds that scope to a new version. "test" and "prod"
@@ -35,8 +36,8 @@ differs is **what triggers the rebind, and how gated it is**:
 
 - **prod** — the binding moves on an explicit, acknowledged [promote](/guide/deploying#promote-to-prod);
   across a shared vertical's tenants it cascades.
-- **test** — the binding moves automatically on every merge to `main`, on one scope, ungated,
-  driven from CI.
+- **test** — the binding moves through an explicit preview push or scope bind. CI can run
+  that step on every merge to `main`; production promotion does not do it.
 
 <InstanceResolution />
 
@@ -131,6 +132,21 @@ It follows the tenant-app hostname convention (`<vertical>-<tenant>--<tag>.<base
 source URL to derive from. This is the "empty / seed data → clean-room preview" cell of the model —
 a first environment before any prod exists (#514).
 
+Production promotion and bulk serving adoption exclude every preview, including clean-room
+`test` environments with no expiry. Explicit `adopt-serving` on a preview returns **409**.
+Advance a preview with an explicit preview push or `scope bind`; its tag and TTL do not enable
+production auto-follow. The dashboard creates a test environment at the chosen production version
+and displays its **bound version**, not a verification of the code serving its URL.
+
+::: warning Existing production serving pins are not repaired
+A preview adopted before this prevention change may still carry a `servingRef` and serve production
+code even while its bound version stays unchanged. A directory version or dashboard label alone
+cannot prove what that URL runs. This change neither clears those pins nor moves existing data.
+The existing preview push path carries data before clearing the pin; `scope bind` alone does not
+clear it. Inventory and repair of already-adopted previews remain separate work in #1724, and old
+script retention and erasure remain #1722. Do not clear a pin without a reviewed data-carry plan.
+:::
+
 ## Sticky-per-PR **and** per-build URLs
 
 Because a hostname names a *scope*, and the router serves *that scope's current binding*, two URLs on
@@ -197,7 +213,8 @@ rebound on every merge**, fronted by a custom domain. Nothing new — three prim
    The bind moves the test scope's data into the version it binds, the same way a push to a preview
    does, with the same caveat: a write made to the test environment while the bind runs may be lost.
 
-That is the whole thing. `crm-test.ahero.se` always serves the head of `main`; migrations roll forward
+For a preview without an existing production serving pin, each successful merge-job bind makes
+`crm-test.ahero.se` serve that pushed version; migrations roll forward
 on its accumulated data, rehearsing every prod migration a merge earlier; and prod stays behind its
 gated promote. All of it is manageable from the [dashboard](/platform/dashboard#previews-environments)
 too — pin a preview, attach a domain, and (per app) bind a version — no CLI required.
