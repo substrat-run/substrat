@@ -641,6 +641,7 @@ export interface ReleaseMarker {
 }
 
 export interface TrafficSeries {
+  window?: { since: string; until: string };
   buckets: TrafficBucket[];
   markers: ReleaseMarker[];
   bucketMinutes: number;
@@ -666,6 +667,8 @@ export interface OverlaySpan {
 }
 
 export interface AppOverlays {
+  unavailableSources?: string[];
+  incompleteSources?: string[];
   markers: OverlayMarker[];
   spans: OverlaySpan[];
   /** True = markers were dropped to the cap; the legend says so rather than hiding it. */
@@ -679,6 +682,7 @@ export interface TeamTrafficLine {
 }
 
 export interface TeamTrafficSeries {
+  window?: { since: string; until: string };
   /** Every scope asked for, in the order asked. */
   series: TeamTrafficLine[];
   bucketMinutes: number;
@@ -1381,6 +1385,8 @@ export interface ObservabilityLogEvent {
   invocation: string | null;
   entrypoint: string | null;
   requestId: string | null;
+  /** Substrat stamped invocation ID; distinct from a provider request ID. */
+  invocationId?: string | null;
   cpuTimeMs: number | null;
   wallTimeMs: number | null;
   /** The backend's full event — powers the per-row expand-to-JSON drill-down. */
@@ -1683,8 +1689,8 @@ export const api = {
   // asks about an app running someone else's vertical, which the reads above cannot
   // answer at all: an installed vertical has no owned service ref and comes back empty.
   // Narrowed to this app's scope by the worker, never by this client.
-  appTenantMetrics: (scopeId: string, hours = 24) =>
-    call<TenantMetricsRow[]>(`/apps/${encodeURIComponent(scopeId)}/observability/metrics?hours=${hours}`),
+  appTenantMetrics: (scopeId: string, hours = 24, window?: { since: string; until: string }) =>
+    call<TenantMetricsRow[]>(`/apps/${encodeURIComponent(scopeId)}/observability/metrics?${new URLSearchParams({ hours: String(hours), ...window })}`),
   /**
    * The same traffic bucketed over time, across MY apps (#1447): one series per app, in
    * one read. No `scopeIds` means every app this team has installed — resolved by the
@@ -1702,10 +1708,12 @@ export const api = {
    * series per app, every scope asked for present whether it served or not. No
    * `scopeIds` means every app this team has installed — resolved by the worker.
    */
-  teamTraffic: (q: { scopeIds?: string[]; hours?: number } = {}) => {
+  teamTraffic: (q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) => {
     const p = new URLSearchParams();
     for (const s of q.scopeIds ?? []) p.append('scopeId', s);
     if (q.hours) p.set('hours', String(q.hours));
+    if (q.since) p.set('since', q.since);
+    if (q.until) p.set('until', q.until);
     const qs = p.toString();
     return call<TeamTrafficSeries>(`/observability/traffic${qs ? `?${qs}` : ''}`);
   },
@@ -1821,8 +1829,8 @@ export const api = {
    * one axis from the multi-scope series instead, so never call this once per app to
    * build that.
    */
-  appTraffic: (scopeId: string, hours: number) =>
-    call<TrafficSeries>(`/apps/${encodeURIComponent(scopeId)}/traffic?hours=${hours}`),
+  appTraffic: (scopeId: string, hours: number, window?: { since: string; until: string }) =>
+    call<TrafficSeries>(`/apps/${encodeURIComponent(scopeId)}/traffic?${new URLSearchParams({ hours: String(hours), ...window })}`),
 
   /**
    * The declared facts drawn over that series (#1447) — migrations applied, failed
@@ -1830,8 +1838,8 @@ export const api = {
    * its own route: the chart must draw on the series alone, and these arriving late or
    * not at all costs the overlays and nothing else.
    */
-  appOverlays: (scopeId: string, hours: number) =>
-    call<AppOverlays>(`/apps/${encodeURIComponent(scopeId)}/overlays?hours=${hours}`),
+  appOverlays: (scopeId: string, hours: number, window?: { since: string; until: string }) =>
+    call<AppOverlays>(`/apps/${encodeURIComponent(scopeId)}/overlays?${new URLSearchParams({ hours: String(hours), ...window })}`),
 
   /** When this app's migrations actually ran (#1236) — its schema history. */
   appMigrations: (scopeId: string) =>

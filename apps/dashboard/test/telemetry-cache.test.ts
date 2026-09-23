@@ -77,3 +77,10 @@ describe('telemetry cache', () => {
     expect(store.entries.size).toBe(1);
   });
 });
+
+it('absolute bounds and tenant identity each separate cached answers', () => {
+  const base = { scopeIds: ['a'], hours: 24, since: '2026-09-01T10:00:00Z', until: '2026-09-01T11:00:00Z' };
+  const key = telemetryKey('tenant-a', 'tenant-metrics-series', base);
+  expect(telemetryKey('tenant-a', 'tenant-metrics-series', { ...base, until: '2026-09-01T12:00:00Z' })).not.toBe(key);
+  expect(telemetryKey('tenant-b', 'tenant-metrics-series', base)).not.toBe(key);
+});

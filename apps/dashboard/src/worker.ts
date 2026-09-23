@@ -1,3 +1,4 @@
+import { resolveObservabilityWindow } from '@substrat-run/control-plane-api';
 /**
  * The Dashboard — the tenant-facing self-service surface, as a Cloudflare Worker.
  * See docs/architecture/dashboard.md. Sign up → your own tenant is bootstrapped →
@@ -4324,9 +4325,10 @@ app.get('/api/apps/:scopeId/observability/metrics', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   const hours = Number(c.req.query('hours') ?? '24');
   const h = Number.isFinite(hours) ? hours : 24;
+  const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
   return c.json(
-    await telemetry(c, node.tenantId, 'tenant-metrics', { scopeId: appRow.app_scope_id, hours: h }, () =>
-      cpObservability(() => cp.tenantMetrics({ scopeId: appRow.app_scope_id, hours: h })),
+    await telemetry(c, node.tenantId, 'tenant-metrics', { scopeId: appRow.app_scope_id, hours: h, ...window }, () =>
+      cpObservability(() => cp.tenantMetrics({ scopeId: appRow.app_scope_id, hours: h, ...window })),
     ),
   );
 });
@@ -4364,9 +4366,10 @@ app.get('/api/observability/tenant-metrics-series', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   const hours = Number(c.req.query('hours') ?? '24');
   const h = Number.isFinite(hours) ? hours : 24;
+  const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
   return c.json(
-    await telemetry(c, node.tenantId, 'tenant-metrics-series', { scopeIds, hours: h }, () =>
-      cpObservability(() => cp.tenantMetricsSeries({ scopeIds, hours: h })),
+    await telemetry(c, node.tenantId, 'tenant-metrics-series', { scopeIds, hours: h, ...window }, () =>
+      cpObservability(() => cp.tenantMetricsSeries({ scopeIds, hours: h, ...window })),
     ),
   );
 });
@@ -4392,9 +4395,10 @@ app.get('/api/observability/traffic', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
   const hours = chartHours(c.req.query('hours'));
+  const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
   const now = new Date();
   // No apps at all still shapes an answer — an empty chart with a real axis, not a 501.
-  if (scopeIds.length === 0) return c.json(deriveTeamSeries({ buckets: [], scopeIds, hours, now }));
+  if (scopeIds.length === 0) return c.json(deriveTeamSeries({ buckets: [], scopeIds, hours, now, window }));
   const cp = controlPlaneFor(c.env, node.tenantId);
   // ONLY the plane's 501 is tolerated to null — that is the platform's shape for "no
   // bucketed reader is configured", and the chart says so. Everything else — a refused
@@ -4404,13 +4408,13 @@ app.get('/api/observability/traffic', async (c) => {
   // Shares its entry with the raw series route above: same read, same key. The 501's
   // null is never remembered (the cache skips an empty answer), so a backend that comes
   // up is seen on the next load.
-  const buckets = await telemetry(c, node.tenantId, 'tenant-metrics-series', { scopeIds, hours }, () =>
-    cp.tenantMetricsSeries({ scopeIds, hours }).catch((e: unknown) => {
+  const buckets = await telemetry(c, node.tenantId, 'tenant-metrics-series', { scopeIds, hours, ...window }, () =>
+    cp.tenantMetricsSeries({ scopeIds, hours, ...window }).catch((e: unknown) => {
       if (e instanceof ControlPlaneError && e.status === 501) return null;
       throw e;
     }),
   );
-  return c.json(deriveTeamSeries({ buckets, scopeIds, hours, now }));
+  return c.json(deriveTeamSeries({ buckets, scopeIds, hours, now, window }));
 });
 
 app.get('/api/apps/:scopeId/observability/logs', async (c) => {
@@ -4452,6 +4456,12 @@ app.get('/api/apps/:scopeId/observability/logs', async (c) => {
  * unparsable value falls back to the default — `?hours=0` is a real request that clamps
  * to one hour, not a missing one that silently becomes a day (`|| 24` read it as that).
  */
+function chartWindow(since: string | undefined, until: string | undefined, hours: number) {
+  if (since === undefined && until === undefined) return undefined;
+  try { return resolveObservabilityWindow({ hours, since, until }); }
+  catch (e) { throw new HTTPException(400, { message: (e as Error).message }); }
+}
+
 function chartHours(raw: string | undefined, fallback = 24): number {
   const parsed = raw === undefined ? fallback : Number(raw);
   return Math.min(72, Math.max(1, Math.round(Number.isFinite(parsed) ? parsed : fallback)));
@@ -4479,11 +4489,12 @@ app.get('/api/apps/:scopeId/traffic', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const hours = chartHours(c.req.query('hours'));
+  const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
   const cp = controlPlaneFor(c.env, node.tenantId);
   const [buckets, deployment] = await Promise.all([
     // Null = the plane cannot bucket; the chart says so rather than drawing a flat line
     // that reads as silence.
-    cp.tenantMetricsSeries({ scopeIds: [appRow.app_scope_id], hours }).catch(() => null),
+    cp.tenantMetricsSeries({ scopeIds: [appRow.app_scope_id], hours, ...window }).catch((e: unknown) => { if (e instanceof ControlPlaneError && e.status === 501) return null; throw e; }),
     // The registry read is the publisher's, so it is attempted and tolerated: an installed
     // vertical simply is not among this team's own deployments. Narrowed to this one slug
     // — ownership is one list read, and only the match is hydrated — so a sparkline
@@ -4513,6 +4524,7 @@ app.get('/api/apps/:scopeId/traffic', async (c) => {
       releases,
       prodHistory,
       hours,
+      window,
       now: new Date(),
     }),
   );
@@ -4537,30 +4549,38 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const hours = chartHours(c.req.query('hours'));
+  const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
   const now = new Date();
   // The series' own grid, not `now - hours`: the chart's first column starts on a bucket
   // boundary, and a read windowed from the request time would miss that column's
   // opening minutes (see `overlayWindow`).
-  const since = new Date(overlayWindow(hours, now).start).toISOString();
+  const since = new Date(overlayWindow(hours, now, window).start).toISOString();
   const cp = controlPlaneFor(c.env, node.tenantId);
   const scope = scopeId.parse(appRow.app_scope_id);
   // The freshness units are the RUNNING version's declared expectations, resolved as the
   // schedules panel resolves them, so the two views name the same units. A declaration
   // that cannot be read costs the stale spans and nothing else.
+  const unavailableSources: string[] = [];
+  const incompleteSources: string[] = [];
+  const sourceRows = <T,>(name: string, result: { entries: T[]; failed: boolean; complete: boolean }): T[] => {
+    if (result.failed) unavailableSources.push(name);
+    else if (!result.complete) incompleteSources.push(name);
+    return result.entries;
+  };
   const freshTypes = await runningDeclarations(cp, scope, appRow.vertical_slug)
     .then((d) => d.freshTypes)
-    .catch((): string[] => []);
+    .catch((): string[] => { unavailableSources.push('freshness declarations'); return []; });
   const [migrations, failedRuns, failures, ...freshnessPerUnit] = await Promise.all([
     // Each read is tolerated on its own: an overlay source that cannot answer costs its
     // kind, not the chart. `appliedMigrations` already answers null for a failed read.
-    cp.appliedMigrations(scope),
+    cp.appliedMigrations(scope).then((rows) => { if (rows === null) unavailableSources.push('migrations'); return rows; }),
     // Only the failed schedule runs, and only in the window: the derivation draws nothing
     // else from this kind, and one shared page would let a busy schedule's `ok` rows
     // crowd out the failures the chart exists to show.
-    cp.listSweepRuns({ scopeId: scope, kind: 'schedule', outcome: 'failed', since, limit: 500 }).catch(() => []),
+    cp.readSweepRuns({ scopeId: scope, kind: 'schedule', outcome: 'failed', since, until: window?.until, limit: 500 }).then((r) => sourceRows('failed schedules', r)).catch(() => { unavailableSources.push('failed schedules'); return []; }),
     // Narrowed to THIS installation at the plane — a team may run the same vertical
     // twice, and a per-vertical page could fill with the other one's rows.
-    cp.listOpsFailures({ vertical: appRow.vertical_slug, scopeId: scope, since, limit: 400 }).catch(() => []),
+    cp.readOpsFailures({ vertical: appRow.vertical_slug, scopeId: scope, since, limit: 400 }).then((r) => sourceRows('recorded failures (recent bounded history)', r)).catch(() => { unavailableSources.push('recorded failures'); return []; }),
     // Freshness, PER UNIT, in two reads that partition time at the window's start: the
     // verdict in force when the window began (newest row strictly before it — one row,
     // however long ago it was written) and every change inside the window. Rows are
@@ -4571,21 +4591,22 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
     ...freshTypes.flatMap((t) => {
       const unit = `${scope}:${t}`;
       return [
-        cp.listSweepRuns({ kind: 'freshness', unit, until: since, limit: 1 }).catch(() => []),
-        cp.listSweepRuns({ kind: 'freshness', unit, since, limit: 200 }).catch(() => []),
+        cp.readSweepRuns({ kind: 'freshness', unit, until: since, limit: 1 }).then((r) => { if (r.failed) unavailableSources.push('freshness history'); return r.entries; }).catch(() => { unavailableSources.push('freshness history'); return []; }),
+        cp.readSweepRuns({ kind: 'freshness', unit, since, until: window?.until, limit: 200 }).then((r) => sourceRows('freshness changes', r)).catch(() => { unavailableSources.push('freshness changes'); return []; }),
       ];
     }),
   ]);
 
   return c.json(
-    deriveAppOverlays({
+    { ...deriveAppOverlays({
       migrations: migrations ?? [],
       sweepRuns: [...failedRuns, ...freshnessPerUnit.flat()],
       failures,
       scopeId: scope,
       hours,
+      window,
       now,
-    }),
+    }), unavailableSources: [...new Set(unavailableSources)], incompleteSources: [...new Set(incompleteSources)] },
   );
 });
 

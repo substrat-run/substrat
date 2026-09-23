@@ -938,6 +938,7 @@ export function App() {
         <AuditLog apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} />
       ) : route.section === 'observability' ? (
         <Observability
+          query={window.location.search}
           apps={apps}
           scopeId={route.app ?? null}
           view={route.view ?? null}

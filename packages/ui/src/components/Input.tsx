@@ -3,6 +3,10 @@ import type { ChangeEvent, CSSProperties } from 'react';
 
 export interface InputProps {
   label?: string;
+  /** Accessible name for compact filter controls without a visible label. */
+  ariaLabel?: string;
+  maxLength?: number;
+  pattern?: string;
   /** Helper text under the field. */
   hint?: string;
   /** Error message; also paints the border red. */
@@ -28,6 +32,7 @@ const heights: Record<NonNullable<InputProps['size']>, string> = {
 
 export function Input({
   label,
+  ariaLabel, maxLength, pattern,
   hint,
   error,
   prefix,
@@ -98,6 +103,9 @@ export function Input({
         )}
         <input
           type={type}
+          aria-label={label ? undefined : ariaLabel}
+          maxLength={maxLength}
+          pattern={pattern}
           placeholder={placeholder}
           value={value}
           onChange={onChange}

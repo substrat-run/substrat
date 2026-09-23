@@ -62,6 +62,8 @@ export interface RecentLogEvent {
   entrypoint: string | null;
   /** Correlates events from the same invocation — the key to grouping a request's lines. */
   requestId: string | null;
+  /** Substrat stamped invocation ID; distinct from a provider request ID. */
+  invocationId?: string | null;
   /** CPU / wall time for the invocation, milliseconds (Tier-3: sampled, approximate). */
   cpuTimeMs: number | null;
   wallTimeMs: number | null;
@@ -231,6 +233,8 @@ export interface ConnectorCallsBucket {
 }
 
 export interface ObservabilityReader {
+  /** Opt-in: tenant metrics honor explicit absolute windows rather than ignoring them. */
+  absoluteTenantWindows?: boolean;
   /** Per-service invocation metrics for the trailing window (fleet + builder views). */
   serviceMetrics(input: { hours: number }): Promise<ServiceMetricsRow[]>;
 
@@ -254,6 +258,8 @@ export interface ObservabilityReader {
     scopeId?: string;
     vertical?: string;
     hours: number;
+    since?: string;
+    until?: string;
   }): Promise<TenantMetricsRow[]>;
 
   /**
@@ -271,7 +277,7 @@ export interface ObservabilityReader {
    * which is also what keeps the answer bounded (scopes × buckets). The backend picks the
    * bucket width from the window and reports it on every row.
    */
-  tenantMetricsSeries?(input: { tenantId: string; scopeIds: string[]; hours: number }): Promise<TenantMetricsBucket[]>;
+  tenantMetricsSeries?(input: { tenantId: string; scopeIds: string[]; hours: number; since?: string; until?: string }): Promise<TenantMetricsBucket[]>;
 
   /**
    * Connector calls per provider, bucketed over time (#1691) — a STAFF read, fleet-wide

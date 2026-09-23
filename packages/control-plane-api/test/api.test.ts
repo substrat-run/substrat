@@ -5727,6 +5727,17 @@ describe('control-plane API — observability proxy', () => {
         expect(res.status).toBe(501);
       });
 
+      it('validates absolute bounds, refuses an old reader, and keeps the principal tenant', async () => {
+        const bounds = new URLSearchParams({ since: '2026-09-01T10:00:00Z', until: '2026-09-01T10:30:00Z' });
+        const path = `/observability/tenant-metrics-series?scopeId=01SCOPE&${bounds}`;
+        expect((await appWith(seriesReader).request(path, { headers: asBuilder })).status).toBe(501);
+        const app = appWith({ ...seriesReader, absoluteTenantWindows: true });
+        const foreign = tenantId.parse(ulid());
+        expect((await app.request(`${path}&tenantId=${foreign}`, { headers: asBuilder })).status).toBe(200);
+        expect(seen.at(-1)).toMatchObject({ tenantId: builderTenant, since: bounds.get('since'), until: bounds.get('until'), scopeIds: ['01SCOPE'] });
+        expect((await app.request('/observability/tenant-metrics-series?scopeId=01SCOPE&since=2026-09-01T10:00:00Z', { headers: asBuilder })).status).toBe(400);
+      });
+
       it('answers a bucketed series for the named scopes, tenant from the principal', async () => {
         const app = appWith(seriesReader);
         const res = await app.request('/observability/tenant-metrics-series?scopeId=01SCOPE&scopeId=01OTHER&hours=6', {

@@ -38,3 +38,24 @@ a:hover {
     transform: rotate(360deg);
   }
 }
+
+/* Compact inspection controls share the dashboard's tokens and visible keyboard focus. */
+.obs-controls button {
+  font: inherit;
+  padding: 5px 9px;
+  margin: 2px 4px 2px 0;
+  color: var(--text-secondary);
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.obs-controls button:hover { background: var(--surface-hover); color: var(--text-primary); }
+.obs-controls button:disabled { opacity: .45; cursor: default; }
+.obs-controls :is(button, summary, input, [role="button"]):focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 3px;
+}
+.obs-controls summary { cursor: pointer; }
+.obs-controls fieldset label { display: inline-flex; gap: 4px; align-items: center; }
+.obs-controls th { position: sticky; top: 0; background: var(--surface-card); z-index: 1; }

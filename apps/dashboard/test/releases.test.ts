@@ -451,3 +451,11 @@ describe('deriveTeamSeries (#1447) — one line per installed app', () => {
     expect(team.series.every((s) => s.buckets.every((b) => b.requests === 0))).toBe(true);
   });
 });
+
+it('queries and plots a historical interval without a spurious bucket at the exclusive end', () => {
+  const window = { since: '2026-09-01T10:07:00.000Z', until: '2026-09-01T10:30:00.000Z' };
+  const result = deriveTeamSeries({ buckets: [], scopeIds: ['app-a'], hours: 72, now: new Date('2026-09-23T12:00:00Z'), window });
+  expect(result.window).toEqual(window);
+  expect(result.bucketMinutes).toBe(15);
+  expect(result.series[0]!.buckets.map((b) => b.start)).toEqual(['2026-09-01T10:00:00.000Z', '2026-09-01T10:15:00.000Z']);
+});

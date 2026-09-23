@@ -36,6 +36,8 @@ export interface AppOverlays {
   spans: OverlaySpan[];
   /** True = markers were dropped to the cap; the legend says so rather than hiding it. */
   truncated: boolean;
+  unavailableSources?: string[];
+  incompleteSources?: string[];
 }
 
 /**
@@ -57,7 +59,8 @@ const DETAIL_CHARS = 120;
  * chart. `end` is the clock, since no recorded instant lies past it. The worker windows
  * its reads with this too, so what is fetched and what is drawn agree.
  */
-export function overlayWindow(hours: number, now: Date): { start: number; end: number } {
+export function overlayWindow(hours: number, now: Date, window?: { since: string; until: string }): { start: number; end: number } {
+  if (window) return { start: Date.parse(window.since), end: Date.parse(window.until) };
   return { start: bucketGrid(bucketMinutesFor(hours), hours, now).start, end: now.getTime() };
 }
 
@@ -76,15 +79,16 @@ export function deriveAppOverlays(input: {
   /** The app the chart is about. The reads are narrowed to it upstream; this is the check that they were. */
   scopeId: string;
   hours: number;
+  window?: { since: string; until: string };
   /** The window's end — the caller's clock, so the overlays and the series agree. */
   now: Date;
 }): AppOverlays {
   const { migrations, sweepRuns, failures, scopeId, hours, now } = input;
-  const { start, end } = overlayWindow(hours, now);
+  const { start, end } = overlayWindow(hours, now, input.window);
   const at = (iso: string | null): number => (iso === null ? NaN : Date.parse(iso));
   const inWindow = (iso: string | null): boolean => {
     const t = at(iso);
-    return !Number.isNaN(t) && t >= start && t <= end;
+    return !Number.isNaN(t) && t >= start && (input.window ? t < end : t <= end);
   };
 
   const markers: OverlayMarker[] = [];

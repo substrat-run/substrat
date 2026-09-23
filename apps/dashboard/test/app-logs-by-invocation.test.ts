@@ -92,7 +92,7 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
           const u = new URL(String(url));
           const path = u.pathname.replace(/^\/api/, '');
           if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
-          if (path === '/observability/tenant-logs') {
+          if (path === '/observability/tenant-logs' || path === '/observability/tenant-metrics' || path === '/observability/tenant-metrics-series') {
             logReads.push(u);
             return Response.json([]);
           }
@@ -142,4 +142,22 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
     expect((await read(stranger, `?invocationId=${CALL}`)).status).toBe(404);
     expect(logReads).toEqual([]);
   });
+  it('forwards an absolute metric window and confines both aggregate and chart reads to owned apps', async () => {
+    const bounds = new URLSearchParams({ since: '2026-09-01T10:07:00Z', until: '2026-09-01T10:29:00Z', hours: '72' });
+    for (const path of [`/api/apps/${appScope}/observability/metrics`, '/api/observability/traffic']) {
+      const response = await app.request(`${path}?${bounds}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+      expect(response.status).toBe(200);
+      const sent = logReads.at(-1)!;
+      expect(sent.searchParams.get('since')).toBe('2026-09-01T10:07:00.000Z');
+      expect(sent.searchParams.get('until')).toBe('2026-09-01T10:29:00.000Z');
+      expect(sent.searchParams.get('tenantId')).toBe(tenant);
+      expect(sent.searchParams.getAll('scopeId')).toEqual([appScope]);
+    }
+    const count = logReads.length;
+    const foreign = scopeId.parse(ulid());
+    expect((await app.request(`/api/observability/traffic?${bounds}&scopeId=${foreign}`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
+    expect(logReads).toHaveLength(count);
+    expect((await app.request(`/api/observability/traffic?since=bad&until=bad`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(400);
+  });
+
 });

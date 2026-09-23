@@ -1,3 +1,4 @@
+import { OBS_KEYS, type ObsQuery } from './observability-query';
 /**
  * Client navigation for the History-API router. The dashboard runs on real paths
  * (`/verticals`, `/apps/<id>/overview`) rather than hash fragments — the worker's
@@ -38,14 +39,10 @@ export function teamPath(path: string): string {
  * `/observability` stays the page's own address.
  */
 export function obsPath(
-  q: { app?: string; view?: string; type?: string; from?: string; to?: string } = {},
+  q: ObsQuery = {},
 ): string {
   const p = new URLSearchParams();
-  if (q.app) p.set('app', q.app);
-  if (q.view) p.set('view', q.view);
-  if (q.type) p.set('type', q.type);
-  if (q.from) p.set('from', q.from);
-  if (q.to) p.set('to', q.to);
+  for (const k of OBS_KEYS) if (q[k]) p.set(k, q[k]!);
   const qs = p.toString();
   return `/observability${qs ? `?${qs}` : ''}`;
 }

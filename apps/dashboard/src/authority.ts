@@ -1158,6 +1158,7 @@ export class TenantNarrowedControlPlane {
       invocation: string | null;
       entrypoint: string | null;
       requestId: string | null;
+      invocationId?: string | null;
       cpuTimeMs: number | null;
       wallTimeMs: number | null;
       raw: unknown;
@@ -1189,6 +1190,7 @@ export class TenantNarrowedControlPlane {
           invocation?: unknown;
           entrypoint?: unknown;
           requestId?: unknown;
+          invocationId?: unknown;
           cpuTimeMs?: unknown;
           wallTimeMs?: unknown;
           raw?: unknown;
@@ -1210,6 +1212,7 @@ export class TenantNarrowedControlPlane {
       invocation: str(e.invocation),
       entrypoint: str(e.entrypoint),
       requestId: str(e.requestId),
+      ...(e.invocationId === undefined ? {} : { invocationId: str(e.invocationId) }),
       cpuTimeMs: num(e.cpuTimeMs),
       wallTimeMs: num(e.wallTimeMs),
       raw: e.raw,
@@ -1232,7 +1235,7 @@ export class TenantNarrowedControlPlane {
    * session. A caller here cannot widen it — there is no parameter for that — which is
    * the same posture as the rest of this class, one layer further down.
    */
-  async tenantMetrics(input: { scopeId?: string; vertical?: string; hours: number }): Promise<
+  async tenantMetrics(input: { scopeId?: string; vertical?: string; hours: number; since?: string; until?: string }): Promise<
     Array<{
       scopeId: string;
       vertical: string | null;
@@ -1247,6 +1250,8 @@ export class TenantNarrowedControlPlane {
     }>
   > {
     const q = new URLSearchParams({ tenantId: this.tenantId, hours: String(input.hours) });
+    if (input.since !== undefined) q.set('since', input.since);
+    if (input.until !== undefined) q.set('until', input.until);
     if (input.scopeId) q.set('scopeId', input.scopeId);
     if (input.vertical) q.set('vertical', input.vertical);
     const num = (v: unknown) => (typeof v === 'number' ? v : 0);
@@ -1280,7 +1285,7 @@ export class TenantNarrowedControlPlane {
    * scopes it named (the plane refuses a saturated page rather than trimming it), so the
    * merge loses nothing.
    */
-  async tenantMetricsSeries(input: { scopeIds: string[]; hours: number }): Promise<
+  async tenantMetricsSeries(input: { scopeIds: string[]; hours: number; since?: string; until?: string }): Promise<
     Array<{
       scopeId: string;
       start: string;
@@ -1305,6 +1310,8 @@ export class TenantNarrowedControlPlane {
     const pages = await Promise.all(
       batches.map((ids) => {
         const q = new URLSearchParams({ tenantId: this.tenantId, hours: String(input.hours) });
+    if (input.since !== undefined) q.set('since', input.since);
+    if (input.until !== undefined) q.set('until', input.until);
         for (const s of ids) q.append('scopeId', s);
         return this.call<Array<Record<string, unknown>>>(`/observability/tenant-metrics-series?${q.toString()}`);
       }),
@@ -1350,6 +1357,7 @@ export class TenantNarrowedControlPlane {
       invocation: string | null;
       entrypoint: string | null;
       requestId: string | null;
+      invocationId?: string | null;
       cpuTimeMs: number | null;
       wallTimeMs: number | null;
       raw: unknown;
@@ -1386,6 +1394,7 @@ export class TenantNarrowedControlPlane {
       invocation: str(e['invocation']),
       entrypoint: str(e['entrypoint']),
       requestId: str(e['requestId']),
+      ...(e['invocationId'] === undefined ? {} : { invocationId: str(e['invocationId']) }),
       cpuTimeMs: num(e['cpuTimeMs']),
       wallTimeMs: num(e['wallTimeMs']),
       raw: e['raw'],
