@@ -1,5 +1,27 @@
 # @substrat-run/dashboard
 
+## 0.36.0
+
+### Minor Changes
+
+- a82ab51: Add absolute, tenant-confined telemetry windows and dashboard drag-to-zoom with shareable time and filter state. Add accessible chart inspection, registration/promotion timelines, change-source coverage, and configurable log columns and details. Retain bounded log discovery and provider bucket resolution; promotion markers do not claim serving completion. Compact inputs now support accessible names and native field constraints.
+
+### Patch Changes
+
+- Updated dependencies [a82ab51]
+- Updated dependencies [96e0ad5]
+- Updated dependencies [1de077d]
+  - @substrat-run/control-plane-api@0.120.0
+  - @substrat-run/adapter-cloudflare@0.120.0
+  - @substrat-run/kernel@0.120.0
+  - @substrat-run/demo-callout@0.3.38
+  - @substrat-run/contracts@0.120.0
+  - @substrat-run/connector-fortnox@0.4.22
+  - @substrat-run/engine-protocol@0.13.4
+  - @substrat-run/engine-invites@0.8.4
+  - @substrat-run/engine-invoicing@0.11.4
+  - @substrat-run/engine-workorder@0.12.4
+
 ## 0.35.10
 
 ### Patch Changes

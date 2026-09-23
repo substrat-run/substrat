@@ -1,5 +1,18 @@
 # @substrat-run/control-plane-api
 
+## 0.120.0
+
+### Minor Changes
+
+- a82ab51: Add absolute, tenant-confined telemetry windows and dashboard drag-to-zoom with shareable time and filter state. Add accessible chart inspection, registration/promotion timelines, change-source coverage, and configurable log columns and details. Retain bounded log discovery and provider bucket resolution; promotion markers do not claim serving completion. Compact inputs now support accessible names and native field constraints.
+
+### Patch Changes
+
+- 96e0ad5: Exclude every preview-kind scope from production adoption and promotion rebinding, and return 409 for explicit preview adopt-serving requests, including already-pinned previews. Clean-room test environments now require explicit preview push or scope bind to advance instead of automatically following production. Existing production serving pins and their data are not repaired by this change.
+- Updated dependencies [1de077d]
+  - @substrat-run/kernel@0.120.0
+  - @substrat-run/contracts@0.120.0
+
 ## 0.119.0
 
 ### Minor Changes

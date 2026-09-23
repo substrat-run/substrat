@@ -1,5 +1,21 @@
 # @substrat-run/demo-bike-shop
 
+## 0.1.38
+
+### Patch Changes
+
+- Updated dependencies [96e0ad5]
+- Updated dependencies [1de077d]
+- Updated dependencies [09acfdd]
+  - @substrat-run/adapter-sqlite@0.120.0
+  - @substrat-run/kernel@0.120.0
+  - @substrat-run/contracts@0.120.0
+  - @substrat-run/vertical-host@0.120.0
+  - @substrat-run/engine-protocol@0.13.4
+  - @substrat-run/engine-invoicing@0.11.4
+  - @substrat-run/engine-workorder@0.12.4
+  - @substrat-run/dev-issuer@0.2.2
+
 ## 0.1.37
 
 ### Patch Changes

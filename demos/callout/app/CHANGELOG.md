@@ -1,5 +1,11 @@
 # @substrat-run/demo-callout-app
 
+## 0.0.33
+
+### Patch Changes
+
+- @substrat-run/contracts@0.120.0
+
 ## 0.0.32
 
 ### Patch Changes
