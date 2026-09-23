@@ -10,6 +10,13 @@
  * public, who a conversation belongs to, and what a token costs.
  */
 import {
+  REAP_ABANDONED_SQL,
+  ASSISTANT_HEALTH_COUNTS_SQL,
+  ASSISTANT_HEALTH_RECENT_SQL,
+  ASSISTANT_HEALTH_WAITING_TOTAL_SQL,
+  ASSISTANT_HEALTH_WAITING_SQL,
+} from './health-queries.js';
+import {
   addDecimal,
   assertTransition,
   LIST_PAGE_DEFAULT,
@@ -3627,15 +3634,7 @@ const operations = {
     assertAllowed(await ctx.check(T0_PERM.conversationResolve));
     const cutoff = shiftDays(ctx.now(), -abandonedAfter(ctx));
     const abandoned = ctx.sql.query<ConversationRow>(
-      `SELECT * FROM ticket0_conversations c
-        WHERE c.state = 'new'
-          AND c.merged_into IS NULL
-          AND c.updated_at <= ?
-          AND NOT EXISTS (
-                SELECT 1 FROM ticket0_ai_turns t
-                 WHERE t.conversation_id = c.id AND t.outcome = 'drafted'
-              )
-        ORDER BY c.updated_at LIMIT ?`,
+      REAP_ABANDONED_SQL,
       [cutoff, REAP_BATCH],
     );
     for (const conversation of abandoned) {
@@ -4364,11 +4363,7 @@ const operations = {
     assertAllowed(await ctx.check(T0_PERM.deskConfigure));
     const since = new Date(new Date(ctx.now()).getTime() - HEALTH_WINDOW_MS).toISOString();
     const counts = ctx.sql.query<{ turns: number; failed: number | null; drafted: number | null }>(
-      `SELECT COUNT(*) AS turns,
-              SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS failed,
-              SUM(CASE WHEN outcome = 'drafted' THEN 1 ELSE 0 END) AS drafted
-         FROM ticket0_ai_turns
-        WHERE created_at >= ?`,
+      ASSISTANT_HEALTH_COUNTS_SQL,
       [since],
     )[0];
     const recent = ctx.sql.query<{
@@ -4379,12 +4374,7 @@ const operations = {
       error: string | null;
       created_at: string;
     }>(
-      `SELECT t.id, t.conversation_id, c.subject, t.model, t.error, t.created_at
-         FROM ticket0_ai_turns t
-         JOIN ticket0_conversations c ON c.id = t.conversation_id
-        WHERE t.outcome = 'failed'
-        ORDER BY t.created_at DESC, t.id DESC
-        LIMIT ?`,
+      ASSISTANT_HEALTH_RECENT_SQL,
       [HEALTH_RECENT],
     );
     /**
@@ -4401,17 +4391,7 @@ const operations = {
      * clear it. `author_kind != 'contact'` because the CUSTOMER writing back is not the
      * desk answering; it is the thing that makes an unsent draft worse.
      */
-    const WAITING = `FROM ticket0_ai_turns t
-         JOIN ticket0_conversations c ON c.id = t.conversation_id
-        WHERE t.outcome = 'drafted'
-          AND NOT EXISTS (
-                SELECT 1 FROM ticket0_messages m
-                 WHERE m.conversation_id = t.conversation_id
-                   AND m.visibility = 'public'
-                   AND m.author_kind != 'contact'
-                   AND m.created_at >= t.created_at
-              )`;
-    const waitingTotal = ctx.sql.query<{ n: number }>(`SELECT COUNT(*) AS n ${WAITING}`, [])[0];
+    const waitingTotal = ctx.sql.query<{ n: number }>(ASSISTANT_HEALTH_WAITING_TOTAL_SQL, [])[0];
     const waiting = ctx.sql.query<{
       id: string;
       conversation_id: string;
@@ -4419,9 +4399,7 @@ const operations = {
       model: string;
       created_at: string;
     }>(
-      `SELECT t.id, t.conversation_id, c.subject, t.model, t.created_at ${WAITING}
-        ORDER BY t.created_at DESC, t.id DESC
-        LIMIT ?`,
+      ASSISTANT_HEALTH_WAITING_SQL,
       [HEALTH_RECENT],
     );
     return {

@@ -366,4 +366,18 @@ export const ticket0Migrations: SqlMigration[] = [
         WHERE resolution_due_at IS NOT NULL AND resolution_breached_at IS NULL AND resolved_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL AND snoozed_at IS NULL;
     `,
   },
+  {
+    // index-reaper-and-assistant-health
+    version: '0015',
+    sql: `
+      CREATE INDEX ticket0_ai_turns_conversation_outcome ON ticket0_ai_turns (conversation_id, outcome);
+
+      CREATE INDEX ticket0_ai_turns_created_outcome ON ticket0_ai_turns (created_at, outcome);
+
+      CREATE INDEX ticket0_ai_turns_outcome_created ON ticket0_ai_turns (outcome, created_at, id);
+
+      CREATE INDEX ticket0_messages_desk_reply ON ticket0_messages (conversation_id, created_at)
+        WHERE visibility = 'public' AND author_kind != 'contact';
+    `,
+  },
 ];
