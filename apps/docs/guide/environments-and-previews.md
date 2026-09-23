@@ -135,8 +135,10 @@ a first environment before any prod exists (#514).
 Production promotion and bulk serving adoption exclude every preview, including clean-room
 `test` environments with no expiry. Explicit `adopt-serving` on a preview returns **409**.
 Advance a preview with an explicit preview push or `scope bind`; its tag and TTL do not enable
-production auto-follow. The dashboard creates a test environment at the chosen production version
-and displays its **bound version**, not a verification of the code serving its URL.
+production auto-follow. A test environment created through the dashboard starts empty at the
+production version, or the first admitted version if none is in production. The dashboard also
+displays existing tagged previews, which may contain copied data. It shows the **bound version**,
+not a verification of the code serving the URL.
 
 ::: warning Existing production serving pins are not repaired
 A preview adopted before this prevention change may still carry a `servingRef` and serve production
