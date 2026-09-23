@@ -36,6 +36,9 @@ importers:
 
   .:
     devDependencies:
+      '@babel/parser':
+        specifier: ^7.29.7
+        version: 7.29.7
       '@changesets/cli':
         specifier: ^2.31.0
         version: 2.31.0(@types/node@24.13.3)
