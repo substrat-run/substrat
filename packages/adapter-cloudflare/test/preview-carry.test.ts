@@ -7,6 +7,7 @@ import {
   createControlPlaneApi,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
+  stableDeploymentRefFor,
   type VerticalClient,
 } from '@substrat-run/control-plane-api';
 import { CloudflareScopeHost } from '../src/host.js';
@@ -111,6 +112,13 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await dir.admin.publishVersion(staff, {
         id, verticalSlug: slug, version: `1.0.${v.slice(1)}`,
         manifestDigest: `m-${v}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: ref,
+        manifestJson: JSON.stringify({
+          version: `1.0.${v.slice(1)}`, entry: 'worker.js', compatibilityDate: '2025-01-01',
+          doClasses: ['ScopeDO'],
+          bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
+          digests: { manifest: `m-${v}`, permission: 'p', migration: 'g' },
+          registry: { permissions: [], roles: [], entityGrants: [] },
+        }),
       });
       version[v] = id;
       refOf.set(id, ref);
@@ -121,6 +129,11 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       authenticate: UNSAFE_devPlatformActorAuth(),
       platformBaseDomains: ['global.substrat.run'],
       provisionRetryDelaysMs: [1],
+      // Upload is a seam; directory, routing and all data transfers use real workerd DOs.
+      deployVertical: async () => {},
+      fetchVerticalModules: async () => [
+        { name: 'worker.js', content: new Uint8Array([1]), contentType: 'application/javascript+module' },
+      ],
       resolveVerticalVersion: async (s, versionId) => {
         const ref = s === slug ? refOf.get(versionId) : undefined;
         return ref ? clientFor(ref) : undefined;
@@ -135,6 +148,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       hostname: 'carry-acme.global.substrat.run',
       tenantId: t, scopeId: prod, surface: 'app', region: null, canonical: true,
     });
+    await dir.admin.setHostnameStatus(staff, 'carry-acme.global.substrat.run', 'active');
     await hostFor('v1').restoreScopeLocal(prod, notes('from prod'));
   });
 
@@ -219,4 +233,41 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     expect(res.status).toBe(200);
     expect(await served(created.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['from prod', 'qa data'] });
   });
+
+  it('production adoption leaves preview routes and real namespace data unchanged (#1724)', async () => {
+    const stable = stableDeploymentRefFor(slug);
+    // Use the third, independently stored namespace as the stable script for this test.
+    hostOf.set(stable, hostFor('v3'));
+    const clean = await push('clean-room', 'v1', { empty: true, ttlHours: null });
+    const fork = await push('real-fork', 'v1');
+    const pinned = await push('historical-pin', 'v1', { empty: true });
+    for (const created of [clean, fork, pinned]) expect(created.status).toBe(201);
+    expect((await dir.admin.getScopeRecord(staff, t, fork.body.scopeId))?.forkedFrom).toBe(prod);
+    await hostFor('v1').restoreScopeLocal(clean.body.scopeId, notes('clean-room write'));
+    await dir.admin.setScopeServingRef(staff, t, pinned.body.scopeId, stable);
+    await hostOf.get(stable)!.restoreScopeLocal(pinned.body.scopeId, notes('historically adopted'));
+    const previews = [clean, fork, pinned];
+    const records = await Promise.all(previews.map((p) => dir.admin.getScopeRecord(staff, t, p.body.scopeId)));
+    const routes = await Promise.all(previews.map((p) => served(p.body.hostname)));
+    expect(routes).toEqual([
+      { ref: refOf.get(version.v1), bodies: ['clean-room write'] },
+      { ref: refOf.get(version.v1), bodies: ['from prod'] },
+      { ref: stable, bodies: ['historically adopted'] },
+    ]);
+    for (let retry = 0; retry < 2; retry++) {
+      const promoted = await api.request(`/verticals/${slug}/channels/prod/promote`, {
+        method: 'POST', headers: auth, body: JSON.stringify({ versionId: version.v2 }),
+      });
+      expect(promoted.status).toBe(200);
+      const adopted = await api.request(`/verticals/${slug}/adopt-serving`, { method: 'POST', headers: auth });
+      expect(adopted.status).toBe(200);
+      expect(await adopted.json()).toMatchObject({ adopted: [], alreadyAdopted: [prod] });
+      expect(await Promise.all(previews.map((p) => dir.admin.getScopeRecord(staff, t, p.body.scopeId)))).toEqual(records);
+      expect(await Promise.all(previews.map((p) => served(p.body.hostname)))).toEqual(routes);
+      expect(await served('carry-acme.global.substrat.run')).toEqual({ ref: stable, bodies: ['from prod'] });
+      expect((await dir.admin.getScopeRecord(staff, t, prod))?.verticalVersionId).toBe(version.v2);
+      expect(bodiesIn(await hostOf.get(stable)!.exportScopeLocal(clean.body.scopeId))).toEqual([]);
+    }
+  });
+
 });

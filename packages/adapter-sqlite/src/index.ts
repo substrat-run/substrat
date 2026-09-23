@@ -6840,8 +6840,8 @@ export class SqliteScopeHost implements ScopeHost {
         // promote) is a complete deploy and a rollback promote reaches the running
         // app. D-30's lockstep concern is a SHARED vertical's many tenants, which a
         // private vertical cannot have — this fires for no one else. Snapshots and
-        // forks (forked_from set) keep their frontier untouched, and a rebind that
-        // crosses a migration digest snapshots first (fork-before-promote, §4).
+        // forks (forked_from set) and all previews keep their frontier untouched. A rebind
+        // that crosses a migration digest snapshots first (fork-before-promote, §4).
         //
         // EXCEPTION (#321): a DISPATCH-BACKED vertical (its version has a
         // `deploymentRef`) serves in place off a stable script. Rebinding a legacy
@@ -6857,7 +6857,7 @@ export class SqliteScopeHost implements ScopeHost {
             const bound = this.directory
               .prepare(
                 `SELECT scope_id, tenant_id, vertical_version_id FROM scopes
-                 WHERE vertical = ? AND tenant_id = ? AND status = 'active' AND forked_from IS NULL`,
+                 WHERE vertical = ? AND tenant_id = ? AND status = 'active' AND forked_from IS NULL AND kind != 'preview'`,
               )
               .all(verticalSlug, owning.ownerTenant) as {
               scope_id: string;

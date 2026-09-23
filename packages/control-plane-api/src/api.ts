@@ -2146,7 +2146,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * current dispatch — resolved BEFORE any version rebind), restore into the serving
    * script (which re-projects the vertical's roles), and only then `setScopeServingRef` +
    * advance the version pointer. A crash before the flip leaves the scope serving its old
-   * script intact, and the adopt retries idempotently. Already-adopted scopes short-circuit.
+   * script intact, and the adopt retries idempotently. Previews are refused; already-adopted
+   * installs short-circuit.
    * Throws `ControlPlaneError` so callers surface an actionable status, never a bare 500.
    */
   const adoptScopeOntoServing = async (
@@ -2158,6 +2159,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) {
       throw new ControlPlaneError(404, `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    }
+    if (scope.kind === 'preview') {
+      throw new ControlPlaneError(409, 'preview scopes cannot adopt the production serving script');
     }
     if (scope.servingRef) return { servingRef: scope.servingRef, alreadyAdopted: true };
     if (!scope.vertical) {
@@ -2190,8 +2194,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * pointer to the promoted version so Update stops offering a crossing already made.
    *
    * Gated exactly where the host cascade would have run: PRIVATE (owned, unlisted) only,
-   * active non-fork scopes only. Runs only when a serving script exists — i.e. the serve
-   * actually happened (dispatch-backed + deploy configured); for an embedded vertical the
+   * active non-fork, non-preview scopes only. Runs only when a serving script exists —
+   * i.e. the serve actually happened (dispatch-backed + deploy configured); for an embedded vertical the
    * host cascade already rebound, and `verticalServing` is null, so this is a no-op.
    * Idempotent and retry-safe: the host cascade never rebound these scopes, so their data
    * is still findable on a retry after a failed serve.
@@ -2208,7 +2212,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!v || v.ownerTenant === null || v.listed) return; // private only, like the host cascade
     const owned = (
       await admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug, status: ['active'] })
-    ).filter((s) => !s.forkedFrom);
+    ).filter((s) => !s.forkedFrom && s.kind !== 'preview');
     for (const s of owned) {
       if (!s.servingRef) {
         // Adopt: export from the scope's current (un-rebound) dispatch → serving script,
@@ -3962,7 +3966,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const owned = (
       await admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug })
-    ).filter((s) => !s.forkedFrom && s.status === 'active');
+    ).filter((s) => !s.forkedFrom && s.kind !== 'preview' && s.status === 'active');
     const adopted: string[] = [];
     const alreadyAdopted: string[] = [];
     try {
