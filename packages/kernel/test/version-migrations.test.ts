@@ -10,6 +10,7 @@ import {
   writeVersionMigrations,
   type SwitchSql,
 } from '../src/index.js';
+import { UNSPLIT_IDS_SQL, UNSPLIT_PROBE_SQL } from '../src/version-migrations.js';
 
 /**
  * #1764: a version's SQL migrations, stored apart from its manifest, executed against a real
@@ -165,13 +166,15 @@ describe('version migrations stored apart (#1764)', () => {
       expect(sql.all(`SELECT COUNT(*) AS n FROM vertical_version_migrations WHERE version_id = ?`, ids[1]!)).toEqual([{ n: 1 }]);
     });
 
-    it('finds the versions left through the partial index, not a scan of every manifest', () => {
+    it('the two reads that find unsplit versions are answered from the partial index, not a scan', () => {
       const { sql } = fresh();
       seed(sql, 3);
-      const plan = sql.all(
-        'EXPLAIN QUERY PLAN SELECT id, manifest_json FROM vertical_versions WHERE migrations_split IS NULL ORDER BY id LIMIT 26',
-      ) as { detail: string }[];
-      expect(plan.map((p) => p.detail).join(' ')).toMatch(/vertical_versions_unsplit/);
+      for (const [query, params] of [[UNSPLIT_IDS_SQL, [26]], [UNSPLIT_PROBE_SQL, []]] as const) {
+        const plan = (sql.all(`EXPLAIN QUERY PLAN ${query}`, ...params) as { detail: string }[]).map((p) => p.detail);
+        expect(plan.join(' | ')).toMatch(/USING (COVERING )?INDEX vertical_versions_unsplit/);
+        // Answered by the index alone: no scan of the table, and no sort for the ORDER BY.
+        expect(plan.join(' | ')).not.toMatch(/SCAN vertical_versions(?! USING)|TEMP B-TREE/);
+      }
     });
   });
 });

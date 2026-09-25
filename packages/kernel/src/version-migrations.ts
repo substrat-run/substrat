@@ -119,6 +119,14 @@ export function writeVersionMigrations(
   });
 }
 
+/**
+ * The two reads that find unsplit versions. Named so the kernel's test can EXPLAIN these
+ * exact strings: each must be answered from `vertical_versions_unsplit`, never by a scan of
+ * every version's row (and its manifest's overflow pages).
+ */
+export const UNSPLIT_IDS_SQL = 'SELECT id FROM vertical_versions WHERE migrations_split IS NULL ORDER BY id LIMIT ?';
+export const UNSPLIT_PROBE_SQL = 'SELECT 1 AS present FROM vertical_versions WHERE migrations_split IS NULL LIMIT 1';
+
 /** How many versions one backfill batch moves at most. */
 const BATCH_VERSIONS = 25;
 /**
@@ -147,10 +155,7 @@ export function splitVersionMigrationsBatch(
   limit: number = BATCH_VERSIONS,
 ): { moved: number; more: boolean } {
   // The ids come off the partial index alone; each manifest is read only when it is moved.
-  const ids = db.all(
-    'SELECT id FROM vertical_versions WHERE migrations_split IS NULL ORDER BY id LIMIT ?',
-    limit,
-  ) as { id: string }[];
+  const ids = db.all(UNSPLIT_IDS_SQL, limit) as { id: string }[];
   let moved = 0;
   let chars = 0;
   for (const { id } of ids) {
@@ -178,7 +183,7 @@ export function splitVersionMigrationsBatch(
 
 /** Whether any version still waits for the backfill. One probe of the partial index. */
 export function versionsAwaitSplit(db: SwitchSql): boolean {
-  return db.all('SELECT 1 AS present FROM vertical_versions WHERE migrations_split IS NULL LIMIT 1').length > 0;
+  return db.all(UNSPLIT_PROBE_SQL).length > 0;
 }
 
 /**
