@@ -1769,7 +1769,7 @@ export const api = {
     slug: string,
     channel: 'prod',
     versionId: string,
-    acknowledge?: { permissionChange?: boolean; migrationChange?: boolean },
+    acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean },
   ) =>
     call<void>(`/deployments/${encodeURIComponent(slug)}/promote`, {
       method: 'POST',

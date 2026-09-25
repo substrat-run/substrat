@@ -31,6 +31,7 @@ import type {
   StorageMeterReading,
   PeerGrantsStatusEntry,
   PeerSwitchResult,
+  ExportBreak,
   EdgeHealthReport,
   ImportCursorMove,
   ImportCursorMoved,
@@ -672,6 +673,12 @@ export function createApi(actor: string | null, baseUrl = '/api') {
         versionId,
         acknowledge,
       }),
+    // #1705 PR 3: which installed apps promoting `versionId` would break, read before promoting
+    // so the dialog can ask for the export-break acknowledgement up front. Staff see every app.
+    promotionImpact: (slug: string, channel: ChannelName, versionId: string) =>
+      call<{ affected: ExportBreak[]; otherTenants?: number }>(
+        `/verticals/${encodeURIComponent(slug)}/channels/${channel}/promote-impact?versionId=${encodeURIComponent(versionId)}`,
+      ),
     // Pin a scope to a version — what the router dispatches on (orchestration.md §5.4).
     // Refuses a non-admitted version below the seam.
     bindScopeVersion: (tenantId: TenantId, scopeId: ScopeId, versionId: string) =>

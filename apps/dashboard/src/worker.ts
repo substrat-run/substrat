@@ -765,7 +765,7 @@ const promoteBody = z.object({
   channel: z.enum(['prod']),
   versionId: z.string().min(1),
   acknowledge: z
-    .object({ permissionChange: z.boolean().optional(), migrationChange: z.boolean().optional() })
+    .object({ permissionChange: z.boolean().optional(), migrationChange: z.boolean().optional(), exportBreak: z.boolean().optional() })
     .optional(),
 });
 

@@ -47,7 +47,7 @@ import type {
   OwnerClaimLink,
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
-import { readPromotionReview, type PromotionReview } from './promotion-review.js';
+import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
 import { LIST_PAGE_MAX, denialQuery, problemDetail } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-api';
 
@@ -827,6 +827,16 @@ export class TenantNarrowedControlPlane {
           }
           return res.registry ?? null;
         },
+        exportBreaks: async (id) => {
+          const res = await this.call<ExportBreaks | undefined>(
+            `/verticals/${encodeURIComponent(verticalSlug)}/channels/prod/promote-impact?versionId=${encodeURIComponent(id)}`,
+          );
+          // An OK answer with no listing is not "breaks nothing" — it is no answer.
+          if (!res || typeof res !== 'object' || !Array.isArray(res.affected)) {
+            throw new ControlPlaneError(502, `whom promoting ${id} would break could not be read`);
+          }
+          return res;
+        },
       },
       versionId,
     );
@@ -1417,7 +1427,7 @@ export class TenantNarrowedControlPlane {
     verticalSlug: string,
     channel: string,
     versionId: string,
-    acknowledge?: { permissionChange?: boolean; migrationChange?: boolean },
+    acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean },
   ): Promise<void> {
     return this.post(
       `/verticals/${encodeURIComponent(verticalSlug)}/channels/${encodeURIComponent(channel)}/promote`,

@@ -18,13 +18,28 @@ export interface PromoteReviewWire {
   incoming: { versionId: string };
   servingRegistry: RegistryLike | null;
   incomingRegistry: RegistryLike | null;
+  /** #1705 PR 3: whom the promotion breaks (this tenant's apps by name, others as a count). */
+  exportBreaks?: ExportBreakListing | null;
+}
+
+/** The installed apps a promotion breaks, as the plane lists them to this tenant. */
+export interface ExportBreakListing {
+  affected: { scopeId: string; vertical: string; type: string; schemaVersion: number; incoming: number | null }[];
+  otherTenants?: number;
 }
 
 /** The acknowledgements a promote may carry. A flag is present only when it is `true`. */
 export interface Acks {
   permissionChange?: true;
   migrationChange?: true;
+  exportBreak?: true;
 }
+
+/**
+ * #1705 PR 3: the export-break half. `listing` is the review's (read before promoting); a refusal
+ * the review did not foresee carries only the gate's own sentence, which counts and names no one.
+ */
+export type ExportBreakSection = { kind: 'listing'; listing: ExportBreakListing } | { kind: 'server-reported'; summary: string };
 
 /** Why a permission diff could not be drawn. */
 export type Unverifiable = 'serving-has-no-registry' | 'incoming-has-no-registry' | 'neither-has-a-registry';
@@ -53,8 +68,17 @@ export interface MigrationSection {
 export interface Checkpoint {
   permission: PermissionSection | null;
   migration: MigrationSection | null;
+  /** #1705 PR 3. Optional so a checkpoint built before it existed reads as "nothing breaks". */
+  exportBreak?: ExportBreakSection | null;
   /** Kinds already acknowledged in this promote — shown as such, not asked for again. */
   acknowledged: Acks;
+}
+
+/** The export-break section a review yields before anything is sent, or null when nothing breaks. */
+export function planExportBreak(review: PromoteReviewWire): ExportBreakSection | null {
+  const listing = review.exportBreaks ?? null;
+  if (listing === null) return null;
+  return listing.affected.length > 0 || (listing.otherTenants ?? 0) > 0 ? { kind: 'listing', listing } : null;
 }
 
 /**
@@ -81,10 +105,12 @@ export function planPermission(review: PromoteReviewWire): PermissionSection | n
   return hasRegistryChange(diff) ? { kind: 'diff', diff, from, to } : null;
 }
 
-/** A refusal the registry's digest gate made, read out of its message. */
-export type Refusal = { kind: 'permission' | 'migration'; digests: string | null };
+/** A refusal the registry's gate made, read out of its message. */
+export type Refusal = { kind: 'permission' | 'migration'; digests: string | null } | { kind: 'export-break'; summary: string };
 
 const NEEDS_ACK = 'acknowledge it explicitly';
+/** How the export-break refusal begins (`EXPORT_BREAK_REFUSAL`, #1705 PR 3). */
+const EXPORT_BREAK = 'promotion drops or re-versions';
 
 /**
  * Read the gate's refusal (`promotion changes the permission surface (a → b) — acknowledge
@@ -94,6 +120,8 @@ const NEEDS_ACK = 'acknowledge it explicitly';
  * guess is the click-through this file exists to end.
  */
 export function classifyRefusal(message: string): Refusal | 'unrecognised' | null {
+  const at = message.indexOf(EXPORT_BREAK);
+  if (at >= 0) return { kind: 'export-break', summary: message.slice(at) };
   if (!message.includes(NEEDS_ACK)) return null;
   const digests = /\(([^()]*→[^()]*)\)/.exec(message)?.[1]?.trim() ?? null;
   if (message.includes('changes the permission surface')) return { kind: 'permission', digests };
@@ -102,10 +130,11 @@ export function classifyRefusal(message: string): Refusal | 'unrecognised' | nul
 }
 
 /** Whether a checkpoint asks for something no one has acknowledged yet. */
-export function outstanding(c: Checkpoint): { permission: boolean; migration: boolean } {
+export function outstanding(c: Checkpoint): { permission: boolean; migration: boolean; exportBreak: boolean } {
   return {
     permission: c.permission !== null && c.acknowledged.permissionChange !== true,
     migration: c.migration !== null && c.acknowledged.migrationChange !== true,
+    exportBreak: (c.exportBreak ?? null) !== null && c.acknowledged.exportBreak !== true,
   };
 }
 
@@ -118,6 +147,7 @@ export function honour(c: Checkpoint, answer: Acks): Acks {
   const out: Acks = { ...c.acknowledged };
   if (c.permission !== null && answer.permissionChange === true) out.permissionChange = true;
   if (c.migration !== null && answer.migrationChange === true) out.migrationChange = true;
+  if ((c.exportBreak ?? null) !== null && answer.exportBreak === true) out.exportBreak = true;
   return out;
 }
 
@@ -150,7 +180,12 @@ const messageOf = (e: unknown): string => (e instanceof Error ? e.message : Stri
 export async function promoteWithCheckpoint(deps: PromoteDeps): Promise<PromoteOutcome> {
   const review = await deps.review();
 
-  let checkpoint: Checkpoint = { permission: planPermission(review), migration: null, acknowledged: {} };
+  let checkpoint: Checkpoint = {
+    permission: planPermission(review),
+    migration: null,
+    exportBreak: planExportBreak(review),
+    acknowledged: {},
+  };
 
   // A section is acknowledged only when the dialog shows it and the person ticks it; the
   // rest of the function never sets a flag any other way.
@@ -159,26 +194,31 @@ export async function promoteWithCheckpoint(deps: PromoteDeps): Promise<PromoteO
     if (answer === null) return false;
     checkpoint = { ...checkpoint, acknowledged: honour(checkpoint, answer) };
     const left = outstanding(checkpoint);
-    return !left.permission && !left.migration;
+    return !left.permission && !left.migration && !left.exportBreak;
   };
 
-  if (checkpoint.permission !== null && !(await confirm())) return 'cancelled';
+  if ((checkpoint.permission !== null || checkpoint.exportBreak !== null) && !(await confirm())) return 'cancelled';
 
-  // Two kinds exist, so a third refusal is not a next step but a loop.
-  for (let round = 0; round < 3; round++) {
+  // Three kinds exist, so a fourth refusal is not a next step but a loop.
+  for (let round = 0; round < 4; round++) {
     const sent = { ...checkpoint.acknowledged };
     try {
-      await deps.promote(sent.permissionChange || sent.migrationChange ? sent : undefined);
+      await deps.promote(sent.permissionChange || sent.migrationChange || sent.exportBreak ? sent : undefined);
       return 'promoted';
     } catch (e) {
       const refusal = classifyRefusal(messageOf(e));
       if (refusal === null || refusal === 'unrecognised') throw e;
-      const flag = refusal.kind === 'permission' ? 'permissionChange' : 'migrationChange';
-      if (sent[flag] === true) throw e;
-      checkpoint =
-        refusal.kind === 'permission'
-          ? { ...checkpoint, permission: { kind: 'server-reported', digests: refusal.digests } }
-          : { ...checkpoint, migration: { digests: refusal.digests } };
+      if (refusal.kind === 'export-break') {
+        if (sent.exportBreak === true) throw e;
+        checkpoint = { ...checkpoint, exportBreak: { kind: 'server-reported', summary: refusal.summary } };
+      } else {
+        const flag = refusal.kind === 'permission' ? 'permissionChange' : 'migrationChange';
+        if (sent[flag] === true) throw e;
+        checkpoint =
+          refusal.kind === 'permission'
+            ? { ...checkpoint, permission: { kind: 'server-reported', digests: refusal.digests } }
+            : { ...checkpoint, migration: { digests: refusal.digests } };
+      }
       if (!(await confirm())) return 'cancelled';
     }
   }

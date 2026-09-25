@@ -362,6 +362,8 @@ describe('the edge health route (#1705 PR 3)', () => {
 
 describe('the promote refusal over HTTP: who is named to whom (#1705 PR 3)', () => {
   const PUSH_SECRET = 'test-push-token-secret';
+  const TENANT_SECRET = 'test-tenant-token-secret';
+  const serviceActor = platformActorId.parse('01JZ00000000000000000000SV');
   const t = tenantId.parse(ulid());
   const u = tenantId.parse(ulid());
   const staff = platformActorId.parse(ulid());
@@ -414,6 +416,8 @@ describe('the promote refusal over HTTP: who is named to whom (#1705 PR 3)', () 
       authenticate: UNSAFE_devPlatformActorAuth(),
       authenticateBuilder: firstBuilderAuth(pushTokenBuilderAuth(PUSH_SECRET)),
       pushTokenSecret: PUSH_SECRET,
+      authenticateTenantService: tenantTokenAuth(TENANT_SECRET, serviceActor),
+      tenantTokenSecret: TENANT_SECRET,
     });
     await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
     await host.admin.createTenant(staff, { id: u, slug: 'umbra', name: 'Umbra' });
@@ -460,6 +464,29 @@ describe('the promote refusal over HTTP: who is named to whom (#1705 PR 3)', () 
     const body = (await res.json()) as Refused;
     expect(body.exportBreaks.affected.map((b) => b.tenantId).sort()).toEqual([t, u].sort());
     expect(body.exportBreaks.otherTenants).toBeUndefined();
+  });
+
+  it('the impact read, before promoting, names the same apps narrowed the same way — and moves nothing', async () => {
+    const impact = (headers: Record<string, string>, slug: string) =>
+      app.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote-impact?versionId=${v2}`, { headers });
+    const own = await impact(asBuilder, 'feed');
+    // A builder is not on the impact route's allowlist: the push token promotes from the CLI,
+    // whose 409 carries the listing. The dashboard's tenant credential and staff read it.
+    expect(own.status).toBe(403);
+    const asStaffRead = await impact(asStaff, FEED);
+    expect(asStaffRead.status).toBe(200);
+    const body = (await asStaffRead.json()) as { affected: { tenantId: string }[]; otherTenants?: number };
+    expect(body.affected.map((b) => b.tenantId).sort()).toEqual([t, u].sort());
+    // The dashboard's credential: its own tenant's app named, the other tenant a count, never an id.
+    const minted = await app.request('/tenant-tokens', { method: 'POST', headers: asStaff, body: JSON.stringify({ tenantId: t }) });
+    const asTenant = { [SERVICE_TOKEN_HEADER]: ((await minted.json()) as { token: string }).token };
+    const tenantRead = await impact(asTenant, FEED);
+    expect(tenantRead.status).toBe(200);
+    const text = await tenantRead.text();
+    expect(JSON.parse(text)).toMatchObject({ otherTenants: 1 });
+    expect((JSON.parse(text) as { affected: { tenantId: string }[] }).affected.map((b) => b.tenantId)).toEqual([t]);
+    expect(text).not.toContain(u);
+    expect((await host.admin.listChannels(staff, FEED)).find((c) => c.channel === 'prod')?.versionId).toBe(v1);
   });
 
   it('acknowledged, it promotes, and the response still narrows the listing', async () => {

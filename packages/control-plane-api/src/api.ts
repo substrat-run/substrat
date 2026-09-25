@@ -993,6 +993,7 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/verticals\/[^/]+\/channels$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/, pin: 'owner' },
   { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote-impact$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/previews$/, pin: 'owner' },
   { method: 'POST', re: /\/verticals\/[^/]+\/previews$/, pin: 'owner' },
   { method: 'DELETE', re: /\/verticals\/[^/]+\/previews\/[^/]+$/, pin: 'owner' },
@@ -4874,6 +4875,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return { minted: [], error: message };
     }
   };
+
+  // #1705 PR 3: which installed apps promoting `?versionId=` would break (an export they import,
+  // dropped or re-versioned), BEFORE promoting, so a dialog can show it and ask for the
+  // acknowledgement up front, as it does for the digests. The promote's own 409 carries the same
+  // listing. Narrowed to the caller exactly as that 409 is. Owner-checked like the promote.
+  app.get('/verticals/:slug/channels/:channel/promote-impact', async (c) => {
+    const p = c.get('principal');
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
+    const channel = channelName.parse(c.req.param('channel'));
+    const versionId = z.string().min(1).parse(c.req.query('versionId'));
+    const pin = confinedTenant(p);
+    if (pin) {
+      const v = await verticalOf(p.actor, slug);
+      if (!v || v.ownerTenant !== pin) return c.json({ error: 'forbidden' }, 403);
+    }
+    const breaks = await admin.promotionImpact(c.get('actor'), slug, channel, versionId);
+    const { visible, otherTenants } = narrowToCaller(breaks, pin);
+    return c.json({ affected: visible, ...(otherTenants ? { otherTenants } : {}) });
+  });
 
   app.post('/verticals/:slug/channels/:channel/promote', async (c) => {
     const p = c.get('principal');
