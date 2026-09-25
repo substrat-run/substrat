@@ -469,7 +469,13 @@ describe('the providers admin surface', () => {
       );
       const res = await addAcme(cookie);
       expect(res.status, key).toBe(400);
-      expect(((await res.json()) as { error: string }).error, key).toContain(key);
+      const error = ((await res.json()) as { error: string }).error;
+      expect(error, key).toContain(key);
+      // The upstream document's value never reaches the admin form.
+      expect(error, key).not.toContain('localhost:9999');
+      // The two refused here (the others by `readDiscovery`, whose message names only the
+      // issuer's own discovery URL) carry no URL at all.
+      if (key === 'userinfo_endpoint' || key === 'end_session_endpoint') expect(error, key).not.toMatch(/https?:\/\//);
     }
     // `jwks_uri` is required, as every platform relying party requires it.
     const { jwks_uri: _omit, ...noJwks } = ACME_DISCOVERY;

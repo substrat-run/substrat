@@ -45,7 +45,9 @@ export async function resolveIssuerEndpoints(input: string): Promise<ProviderEnd
     const value = doc[key];
     if (value === undefined) continue;
     if (typeof value !== 'string' || !isAllowedEndpoint(issuer, value)) {
-      throw new Error(`the discovery document's ${key} must be https (or http on loopback, for a loopback issuer): ${String(value)}`);
+      // The value is the upstream document's, not the operator's, and this message reaches the
+      // admin form — so it names the field and never repeats what the document put in it.
+      throw new Error(`the discovery document's ${key} must be https (or http on loopback, for a loopback issuer)`);
     }
   }
   return {
