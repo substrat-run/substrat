@@ -206,9 +206,13 @@ test('a base that is not in the checkout is exit 2, never read as "new file" —
   const res = spawnSync('npx', ['tsx', TOOL, '--base', baseSha, '--root', shallow], { encoding: 'utf8' });
   assert.equal(res.status, 2, res.stderr);
   assert.match(res.stderr, /not in this checkout.*shallow clone/);
-  const missing = spawnSync('npx', ['tsx', TOOL, '--base', 'refs/heads/no-such-base'], { cwd: dir, encoding: 'utf8' });
+  // The temporary repository, named with --root, and run from this one so npx finds its tsx.
+  const missing = spawnSync('npx', ['tsx', TOOL, '--base', 'refs/heads/no-such-base', '--root', dir], {
+    cwd: REPO,
+    encoding: 'utf8',
+  });
   assert.equal(missing.status, 2, missing.stderr);
-  assert.match(missing.stderr, /cannot run/);
+  assert.match(missing.stderr, /cannot run.*'refs\/heads\/no-such-base' is not in this checkout/);
   // The twin: with the base present, the same break is found (exit 1), not skipped.
   assert.deepEqual(run(baseSha, dir).map((v) => v.rule), ['removed']);
 });
