@@ -85,8 +85,10 @@ import {
   migrationsOnTop,
 } from '@substrat-run/contracts';
 import type {
+  BindAcknowledgement,
   Connection,
   ConnectionActivity,
+  ExportBreak,
   ConnectionActivitySource,
   ConnectionCredential,
   ConnectionHealthPage,
@@ -508,6 +510,22 @@ function outsideTenant(p: Principal, tenantId: TenantId): boolean {
 }
 
 /**
+ * #1756: a move refused because it would break apps in the scope's own tenant. Carries the
+ * listing, because every route that moves a scope pins that tenant in its path, so the caller may
+ * read it whole; the counted sentence is the host's (`bindExportBreakRefusal`).
+ */
+class ExportBreakRefused extends ControlPlaneError {
+  constructor(readonly breaks: ExportBreak[]) {
+    super(409, bindExportBreakRefusal(breaks));
+  }
+}
+
+/** The body a route answers an `ExportBreakRefused` with: the sentence and the listing. */
+function exportBreakBody(e: ControlPlaneError): { error: string; exportBreaks?: { affected: ExportBreak[] } } {
+  return { error: e.message, ...(e instanceof ExportBreakRefused ? { exportBreaks: { affected: e.breaks } } : {}) };
+}
+
+/**
  * A fleet-wide report, narrowed to what a caller may see: a confined caller gets its own
  * tenant's rows and a COUNT of the other tenants, never their ids (K-3's forced filter, held on
  * reports that have to be computed fleet-wide). Staff (`pin === null`) get every row.
@@ -669,7 +687,13 @@ const rebindScopeVerticalBody = z.object({
   // backout copy exactly as in a carried rebind. The scope must be re-provisioned
   // on the target afterwards (`/verticals/:slug/instances` is idempotent, K-31).
   abandonData: z.boolean().optional(),
+  // #1756: within one lineage the rebind is an adopt, refused when it breaks an app in the tenant.
+  acknowledge: bindAcknowledgement.optional(),
 });
+
+// #1756: an adopt moves the scope onto what its vertical serves, and is refused when that breaks
+// an app in the tenant. The body is optional, as it always was.
+const adoptServingBody = z.object({ acknowledge: bindAcknowledgement.optional() });
 
 // A snapshot request (preview-and-snapshots.md §3/§9). `expiresAt` opts into the GC
 // sweep; absent = pinned until deliberately deleted. `kind` defaults to 'archive'.
@@ -1354,6 +1378,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (err instanceof z.ZodError) {
       return problem(c, { status: 400, body: toProblem(err, c.req.path) });
     }
+    if (err instanceof ExportBreakRefused) return c.json(exportBreakBody(err), 409);
     const { status, body } = mapError(err);
     // A 5xx is the PLATFORM failing — an unmapped throw, or a downstream vertical's
     // own 5xx passing through (a DO storage fault during a preview restore is the
@@ -2197,6 +2222,32 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
+   * #1756: refuse, BEFORE any data moves, a move of this scope that would break apps in its
+   * tenant, unless acknowledged. The host refuses the same move whoever calls; this is what keeps
+   * a route that exports, restores or snapshots first from doing so for a move that is refused.
+   * `servingRef` is the route the scope takes in the same act (an adopt).
+   */
+  const refuseOnBreaks = async (
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    versionId: string,
+    opts: { servingRef?: string | null; acknowledge?: BindAcknowledgement },
+  ): Promise<void> => {
+    if (opts.acknowledge?.exportBreak) return;
+    const breaks = await admin.bindingImpact(
+      actor, tenantId, scopeId, versionId,
+      opts.servingRef !== undefined ? { servingRef: opts.servingRef } : undefined,
+    );
+    if (breaks.length > 0) throw new ExportBreakRefused(breaks);
+  };
+  /** The host's own export-break refusal (the move changed since it was asked), as the same 409. */
+  const relayHostRefusal = (err: unknown): never => {
+    if (isBindExportBreakRefusal(err)) throw new ControlPlaneError(409, err.message);
+    throw err;
+  };
+
+  /**
    * Move ONE legacy scope's data off its per-version dispatch script onto its vertical's
    * stable serving script (#286/#321), then flip routing. The one primitive behind both
    * the explicit `adopt-serving` endpoint and the automatic adoption a prod promote runs.
@@ -2213,6 +2264,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     c: { get: (k: 'actor') => PlatformActorId },
     tenantId: TenantId,
     scopeId: ScopeId,
+    opts: { acknowledge?: BindAcknowledgement } = {},
   ): Promise<{ servingRef: string; alreadyAdopted?: boolean; tables?: number }> => {
     const actor = c.get('actor');
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
@@ -2239,6 +2291,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         `vertical '${scope.vertical}' has no serving script yet — promote a version to prod first`,
       );
     }
+    // #1756: onto the serving script, the scope runs the served version from the moment routing
+    // flips — whatever its own version exported. Asked before the export below moves anything.
+    await refuseOnBreaks(actor, tenantId, scopeId, serving.versionId, {
+      servingRef: serving.ref,
+      acknowledge: opts.acknowledge,
+    });
     const source = await verticalForScope(c, scope);
     const dest = await options.resolveVerticalRef?.(serving.ref);
     if (!source || !dest) {
@@ -2247,8 +2305,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const dump = await source.exportScope(scopeId);
     const restored = await retryTransient(() => dest.restoreScope(tenantId, scopeId, dump));
     // Data landed — only now flip routing and move the version pointer.
-    await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
-    await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
+    await admin
+      .setScopeServingRef(actor, tenantId, scopeId, serving.ref, { acknowledge: opts.acknowledge })
+      .catch(relayHostRefusal);
+    await admin
+      .bindScopeVersion(actor, tenantId, scopeId, serving.versionId, { acknowledge: opts.acknowledge })
+      .catch(relayHostRefusal);
     // #1674: the scope now routes to a different store, so put the directory's recorded
     // OFF positions back there — cheap and idempotent when the dump carried them.
     await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
@@ -2272,6 +2334,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     c: { get: (k: 'actor') => PlatformActorId },
     slug: string,
     versionId: string,
+    // #1756: the promote's own acknowledgement. An install adopted here goes from ITS version to
+    // the promoted one, which the promote gate judged only from the channel's previous version:
+    // an install lagging behind that is judged again, and passes on the promote's ack or not at all.
+    acknowledge?: BindAcknowledgement,
   ): Promise<void> => {
     const actor = c.get('actor');
     const serving = await admin.verticalServing(actor, slug);
@@ -2286,12 +2352,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // Adopt: export from the scope's current (un-rebound) dispatch → serving script,
         // then bind to the serving version. Data-first, so a failure here leaves the
         // scope intact on its old script for the next promote to retry.
-        await adoptScopeOntoServing(c, s.tenantId, s.id);
+        await adoptScopeOntoServing(c, s.tenantId, s.id, { acknowledge });
       } else if (s.verticalVersionId !== versionId) {
         // Already on the serving script (born there, or adopted earlier): routing is
         // pinned to servingRef, so advancing the version pointer only affects Update
         // offers. Snapshot on a migration-digest crossing (fork-before-promote, §4).
-        await admin.bindScopeVersion(actor, s.tenantId, s.id, versionId, { snapshot: true });
+        await admin.bindScopeVersion(actor, s.tenantId, s.id, versionId, { snapshot: true, acknowledge });
       }
     }
   };
@@ -2316,7 +2382,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     tenantId: TenantId,
     scopeId: ScopeId,
     target: string,
-    opts: { ackMigrations?: boolean; abandonData?: boolean },
+    opts: { ackMigrations?: boolean; abandonData?: boolean; acknowledge?: BindAcknowledgement },
   ): Promise<{
     servingRef: string;
     versionId: string;
@@ -2347,13 +2413,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
       return { servingRef: serving.ref, versionId: serving.versionId, alreadyBound: true };
     }
+    // #1756: within one lineage this is an adopt, and judged as one before anything moves. A
+    // crossing is not judged (`bindExportBreaksOf`): the producer's slug itself changes.
+    await refuseOnBreaks(actor, tenantId, scopeId, serving.versionId, {
+      servingRef: serving.ref,
+      acknowledge: opts.acknowledge,
+    });
+    const move = { acknowledge: opts.acknowledge };
     if (opts.abandonData) {
       // Directory-only crossing: no bytes move, so the frontier gate has nothing to
       // protect — the target provisions its own schema from scratch. The source
       // script's copy is untouched and remains the backout, same as a carried rebind.
       // The scope serves nothing until `/verticals/:slug/instances` re-provisions it.
-      await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
-      await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
+      await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref, move).catch(relayHostRefusal);
+      await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId, move).catch(relayHostRefusal);
       return { servingRef: serving.ref, versionId: serving.versionId, dataAbandoned: true };
     }
     // The frontier gate. Digest equality proves the target's migration set is exactly
@@ -2386,8 +2459,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited. No
     // extra snapshot here (adopt-serving's precedent): the source script's copy is the
     // pre-migration state, and it is never deleted — that copy is the backout.
-    await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
-    await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
+    await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref, move).catch(relayHostRefusal);
+    await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId, move).catch(relayHostRefusal);
     // #1674: re-assert the recorded OFF positions in the store the scope now routes to.
     await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
     return { servingRef: serving.ref, versionId: serving.versionId, tables: restored.tables };
@@ -4017,12 +4090,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/tenants/:tenantId/scopes/:scopeId/adopt-serving', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const { acknowledge } = adoptServingBody.parse(await c.req.json().catch(() => ({})));
     try {
-      const r = await adoptScopeOntoServing(c, tenantId, scopeId);
+      const r = await adoptScopeOntoServing(c, tenantId, scopeId, { acknowledge });
       return c.json({ adopted: scopeId, ...r });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json(exportBreakBody(e), e.status as ContentfulStatusCode);
       }
       throw e;
     }
@@ -4050,16 +4124,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const owned = (
       await admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug })
     ).filter((s) => !s.forkedFrom && s.kind !== 'preview' && s.status === 'active');
+    const { acknowledge } = adoptServingBody.parse(await c.req.json().catch(() => ({})));
     const adopted: string[] = [];
     const alreadyAdopted: string[] = [];
     try {
       for (const s of owned) {
-        const r = await adoptScopeOntoServing(c, s.tenantId, s.id);
+        const r = await adoptScopeOntoServing(c, s.tenantId, s.id, { acknowledge });
         (r.alreadyAdopted ? alreadyAdopted : adopted).push(s.id);
       }
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message, adopted, alreadyAdopted }, e.status as ContentfulStatusCode);
+        return c.json({ ...exportBreakBody(e), adopted, alreadyAdopted }, e.status as ContentfulStatusCode);
       }
       throw e;
     }
@@ -4074,18 +4149,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/tenants/:tenantId/scopes/:scopeId/rebind-vertical', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
-    const { vertical, ackMigrations, abandonData } = rebindScopeVerticalBody.parse(
+    const { vertical, ackMigrations, abandonData, acknowledge } = rebindScopeVerticalBody.parse(
       await c.req.json(),
     );
     try {
       const r = await rebindScopeOntoVertical(c, tenantId, scopeId, vertical, {
         ackMigrations,
         abandonData,
+        acknowledge,
       });
       return c.json({ rebound: scopeId, vertical, ...r });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json(exportBreakBody(e), e.status as ContentfulStatusCode);
       }
       throw e;
     }
@@ -4109,17 +4185,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { versionId, snapshot, acknowledge } = bindScopeVersionBody.parse(await c.req.json());
     const actor = c.get('actor');
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
-    // #1756: the apps in this tenant the bind would break. Every break is in the tenant the
-    // path pins, so the caller may read the listing whole. Asked BEFORE the carry and the
-    // snapshot below, which move data: the host refuses too, whoever calls, but by then a
-    // refusal would land after the bytes had moved. An unknown scope has no impact to read,
-    // and the bind below refuses it as it always has.
-    if (scope && !acknowledge?.exportBreak) {
-      const breaks = await admin.bindingImpact(actor, tenantId, scopeId, versionId);
-      if (breaks.length > 0) {
-        return c.json({ error: bindExportBreakRefusal(breaks), exportBreaks: { affected: breaks } }, 409);
-      }
-    }
+    // #1756: the apps in this tenant the bind would break, asked BEFORE the carry and the
+    // snapshot below, which move data. The host refuses too, whoever calls, but by then a
+    // refusal would land after the bytes had moved. An unknown scope has no impact to read, and
+    // the bind below refuses it as it always has.
+    if (scope) await refuseOnBreaks(actor, tenantId, scopeId, versionId, { acknowledge });
     // A refusal throws a ControlPlaneError, which the app's error boundary relays with its
     // status and records as an ops failure. An unknown scope carries nothing, and the bind
     // below refuses it as it always has.
@@ -4133,14 +4203,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     };
     // The host's own refusal, should the impact have changed since it was read above (a
     // promote landing in between): relayed as the same 409, never as a 500.
-    const bind = async (opts: Parameters<typeof admin.bindScopeVersion>[4]): Promise<void> => {
-      try {
-        await admin.bindScopeVersion(actor, tenantId, scopeId, versionId, opts);
-      } catch (err) {
-        if (!isBindExportBreakRefusal(err)) throw err;
-        throw new ControlPlaneError(409, err.message);
-      }
-    };
+    const bind = (opts: Parameters<typeof admin.bindScopeVersion>[4]): Promise<void> =>
+      admin.bindScopeVersion(actor, tenantId, scopeId, versionId, opts).catch(relayHostRefusal);
     if (snapshot) {
       if (!scope) {
         return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
@@ -5093,11 +5157,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // dispatch-backed vertical (#321), in the correct order (serve → adopt → rebind),
         // so a legacy scope's data survives the promote instead of being stranded on a
         // fresh per-version script. Retry-safe: nothing rebound these scopes yet.
-        await adoptAndRebindOwnedScopes(c, slug, versionId);
+        await adoptAndRebindOwnedScopes(c, slug, versionId, acknowledge);
         // #825: and mint whatever THIS version newly declares for the tenants already
         // installed — after the serve, so the declaration being read is the one now live.
         backfill = await backfillFleetStores(c, slug);
       } catch (e) {
+        // #1756: served, but an owned install still on its own version would break apps in its
+        // tenant if moved onto the serving script — a move the promote gate never judged, since
+        // that install was not on the channel's previous version. Promoting again with the
+        // acknowledgement moves it; nothing was moved without it.
+        if (e instanceof ExportBreakRefused || isBindExportBreakRefusal(e)) {
+          const refused = e instanceof ExportBreakRefused ? e : new ControlPlaneError(409, (e as Error).message);
+          const body = exportBreakBody(refused);
+          return c.json(
+            {
+              ...body,
+              error:
+                `promoted and served, but an app still on its own version was not moved onto the serving script: ` +
+                `${body.error}. Promote again with the export-break acknowledgement to move it`,
+            },
+            409,
+          );
+        }
         const detail = e instanceof Error ? e.message : String(e);
         console.error('serve.inplace.failed', { slug, versionId, detail });
         return c.json(

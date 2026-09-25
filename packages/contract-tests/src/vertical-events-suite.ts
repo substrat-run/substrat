@@ -1488,6 +1488,57 @@ export function verticalEventsContractSuite(
       expect((await fx.consumer.admin.bindingImpact(staff, t, pt, dropped)).map((b) => b.scopeId)).toEqual([ct]);
     });
 
+    it('moving a scope onto its serving script is judged like a bind: it runs the served version from that moment (#1756)', async () => {
+      const tag = ulid().slice(-8).toLowerCase();
+      const producer = `acme/ax-${tag}`;
+      const consumer = `acme/ai-${tag}`;
+      for (const slug of [producer, consumer]) {
+        await fx.consumer.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+      }
+      const v1 = await publishManifest(producer, exportingJson(1));
+      const kept = await publishManifest(producer, exportingJson(1));
+      const dropped = await publishManifest(producer, exportingJson(null));
+      const consumerVersion = await publishManifest(consumer, importingJson(producer));
+      const t = await newTenant();
+      const pt = await bindAt(t, producer, v1);
+      const ct = await bindAt(t, consumer, consumerVersion);
+      const routeOf = async (sc: ScopeId) => (await fx.consumer.admin.getScopeRecord(staff, t, sc))?.servingRef ?? null;
+
+      // The vertical serves a version that drops the export. Routing the scope there is the
+      // break, before its pointer moves at all: this is what an adopt does first.
+      const ref = `serving-${tag}`;
+      await fx.consumer.admin.setVerticalServing(staff, producer, { ref, versionId: dropped, doClasses: [], migrationTag: 'g' });
+      const refused = await refusal(fx.consumer.admin.setScopeServingRef(staff, t, pt, ref));
+      expect(String(refused)).toMatch(/this bind drops or re-versions 1 exported event type/);
+      expect(await routeOf(pt)).toBeNull();
+      // The listing asks the same move: bound where it is, routed onto the serving script.
+      expect(await fx.consumer.admin.bindingImpact(staff, t, pt, v1, { servingRef: ref })).toMatchObject([
+        { scopeId: ct, incoming: null },
+      ]);
+      // A scope that has never been active has never delivered: provisioning, it is not judged.
+      const provisioning = scopeId.parse(ulid());
+      await fx.consumer.provisionScope(staff, { tenantId: t, scopeId: provisioning, vertical: producer });
+      await fx.consumer.admin.bindScopeVersion(staff, t, provisioning, v1);
+      await fx.consumer.admin.setScopeServingRef(staff, t, provisioning, ref);
+      expect(await routeOf(provisioning)).toBe(ref);
+      // Acknowledged, it moves, and the admin log says so. Binding it to the served version
+      // after that changes nothing it runs.
+      await fx.consumer.admin.setScopeServingRef(staff, t, pt, ref, { acknowledge: { exportBreak: true } });
+      expect(await routeOf(pt)).toBe(ref);
+      await fx.consumer.admin.bindScopeVersion(staff, t, pt, dropped);
+      const log = await fx.consumer.admin.auditLog(staff, { action: 'setScopeServingRef' });
+      expect(log.some((e) => e.scopeId === pt && JSON.stringify(e.after).includes('"exportBreak":true'))).toBe(true);
+
+      // The twin: a vertical serving a version that keeps the export takes the scope unasked.
+      const other = await newTenant();
+      const po = await bindAt(other, producer, v1);
+      await bindAt(other, consumer, consumerVersion);
+      await fx.consumer.admin.setVerticalServing(staff, producer, { ref, versionId: kept, doClasses: [], migrationTag: 'g' });
+      await expect(fx.consumer.admin.bindingImpact(staff, other, po, v1, { servingRef: ref })).resolves.toEqual([]);
+      await fx.consumer.admin.setScopeServingRef(staff, other, po, ref);
+      expect((await fx.consumer.admin.getScopeRecord(staff, other, po))?.servingRef).toBe(ref);
+    });
+
     it("a private vertical's promote rebinds its owned scopes past the bind gate: the promote already judged the break (#1756)", async () => {
       const tag = ulid().slice(-8).toLowerCase();
       const producer = `acme/px-${tag}`;

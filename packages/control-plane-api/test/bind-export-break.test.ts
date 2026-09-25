@@ -15,6 +15,8 @@ import {
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
   UNSAFE_devPlatformActorAuth,
+  deploymentRefFor,
+  stableDeploymentRefFor,
   type VerticalClient,
 } from '../src/index.js';
 
@@ -220,9 +222,220 @@ describe('the bind gate route (#1756)', () => {
     expect(await boundTo()).toBe(dropped);
   });
 
+  describe('a move onto the serving script is judged before any data moves', () => {
+    // The vertical serves a version, and a scope still on its own version adopts onto it. The
+    // route flips first and binds second, so this is where the reviewer's bypass lived: the
+    // bind is refused, then the adopt used to move the scope onto the same code unasked.
+    const SERVING = 'acme-ledger-serving';
+    const serve = (versionId: string) =>
+      host.admin.setVerticalServing(staff, PRODUCER, { ref: SERVING, versionId, doClasses: [], migrationTag: 'g' });
+    // Legacy: routed by its own version's script. A scope provisioned while the vertical serves
+    // in place is born on the serving script, so the route is cleared back, as a pre-#286 one's is.
+    const legacy = async (): Promise<ScopeId> => {
+      const s = await install(t, PRODUCER, v1);
+      await host.admin.setScopeServingRef(staff, t, s, null);
+      storeOf(refOf.get(v1)!).set(s, table('legacy-row'));
+      return s;
+    };
+    const post = (path: string, headers: Record<string, string>, body?: object) =>
+      app.request(path, { method: 'POST', headers, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const recordOf = async (s: ScopeId) => {
+      const r = await host.admin.getScopeRecord(staff, t, s);
+      return { servingRef: r?.servingRef ?? null, verticalVersionId: r?.verticalVersionId };
+    };
+
+    it('a bind refused is not an adopt allowed: adopt-serving refuses the same move, and moves nothing', async () => {
+      await serve(dropped);
+      const s = await legacy();
+      expect((await bind(asStaff, { versionId: dropped }, t, s)).status).toBe(409);
+
+      calls.length = 0;
+      const adopt = await post(`/tenants/${t}/scopes/${s}/adopt-serving`, asStaff);
+      expect(adopt.status).toBe(409);
+      const said = (await adopt.json()) as { error: string; exportBreaks: { affected: { scopeId: string }[] } };
+      expect(said.error).toMatch(/^this bind drops or re-versions/);
+      expect(said.exportBreaks.affected.map((b) => b.scopeId)).toEqual([consumerScope]);
+      expect(calls).toEqual([]);
+      expect(await recordOf(s)).toMatchObject({ servingRef: null, verticalVersionId: v1 });
+
+      // Acknowledged, the data moves and so does the scope.
+      const acked = await post(`/tenants/${t}/scopes/${s}/adopt-serving`, asStaff, { acknowledge: { exportBreak: true } });
+      expect(acked.status).toBe(200);
+      expect(await recordOf(s)).toMatchObject({ servingRef: SERVING, verticalVersionId: dropped });
+      expect(storeOf(SERVING).get(s)?.[0]?.rows).toEqual([['legacy-row']]);
+    });
+
+    it('a tenant can adopt, so a tenant is asked too', async () => {
+      await serve(dropped);
+      const s = await legacy();
+      const refused = await post(`/tenants/${t}/scopes/${s}/adopt-serving`, asTenant);
+      expect(refused.status).toBe(409);
+      expect(await recordOf(s)).toMatchObject({ servingRef: null });
+      const acked = await post(`/tenants/${t}/scopes/${s}/adopt-serving`, asTenant, { acknowledge: { exportBreak: true } });
+      expect(acked.status).toBe(200);
+    });
+
+    it('rebind-vertical within one lineage is an adopt, and refused the same way', async () => {
+      await serve(dropped);
+      const s = await legacy();
+      calls.length = 0;
+      const refused = await post(`/tenants/${t}/scopes/${s}/rebind-vertical`, asStaff, { vertical: PRODUCER });
+      expect(refused.status).toBe(409);
+      expect(((await refused.json()) as { exportBreaks?: unknown }).exportBreaks).toBeDefined();
+      expect(calls).toEqual([]);
+      expect(await recordOf(s)).toMatchObject({ servingRef: null, verticalVersionId: v1 });
+      const acked = await post(`/tenants/${t}/scopes/${s}/rebind-vertical`, asStaff, {
+        vertical: PRODUCER,
+        acknowledge: { exportBreak: true },
+      });
+      expect(acked.status).toBe(200);
+      expect(await recordOf(s)).toMatchObject({ servingRef: SERVING, verticalVersionId: dropped });
+    });
+
+    it('the twin: a vertical serving a version that keeps the export adopts unasked', async () => {
+      await serve(kept);
+      const s = await legacy();
+      const adopt = await post(`/tenants/${t}/scopes/${s}/adopt-serving`, asStaff);
+      expect(adopt.status).toBe(200);
+      expect(await recordOf(s)).toMatchObject({ servingRef: SERVING, verticalVersionId: kept });
+    });
+  });
+
   it('an acknowledgement of something a bind has no gate for is refused as a malformed body', async () => {
-    const res = await bind(asStaff, { versionId: v1, acknowledge: { permissionChange: true } });
+    const before = await boundTo();
+    const res = await bind(asStaff, { versionId: kept, acknowledge: { permissionChange: true } });
     expect(res.status).toBe(400);
-    expect(await boundTo()).toBe(dropped);
+    expect(await boundTo()).toBe(before);
+  });
+});
+
+/**
+ * The promote's own adopt (#321's cascade) under the bind gate (#1756). A private, dispatch-backed
+ * vertical's prod promote adopts every owned install still on its own version onto the serving
+ * script. The promote gate judged the channel's previous version against the new one; an install
+ * lagging behind that was never judged. So the adopt is: refused without an acknowledgement, with
+ * nothing moved, and carried by the promote's acknowledgement when one is given.
+ */
+describe("the promote's adopt of a lagging install (#1756)", () => {
+  const staff = platformActorId.parse(ulid());
+  const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  const TYPE = 'crm.customer-created';
+  let dir: string;
+  let host: SqliteScopeHost;
+  let app: ReturnType<typeof createControlPlaneApi>;
+  const scripts = new Map<string, Map<string, ScopeDumpTable[]>>();
+  const ensure = (ref: string) => {
+    if (!scripts.has(ref)) scripts.set(ref, new Map());
+    return scripts.get(ref)!;
+  };
+  const clientFor = (ref: string) =>
+    ({
+      exportScope: async (sc: string) => ensure(ref).get(sc) ?? [],
+      restoreScope: async (_t: string, sc: string, tables: ScopeDumpTable[]) => {
+        ensure(ref).set(sc, tables);
+        return { tables: tables.length };
+      },
+    }) as unknown as VerticalClient;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-bind-cascade-'));
+    host = new SqliteScopeHost({ dir });
+    app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      deployVertical: async (ref) => {
+        ensure(ref);
+      },
+      fetchVerticalModules: async () => [
+        { name: 'worker.js', content: new Uint8Array([1]), contentType: 'application/javascript+module' },
+      ],
+      resolveVerticalRef: async (ref) => clientFor(ref),
+      resolveVerticalVersion: async (slug, versionId) => clientFor(deploymentRefFor(slug, versionId)),
+    });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const manifest = (version: string, exported: boolean) => ({
+    version,
+    entry: 'worker.js',
+    compatibilityDate: '2025-01-01',
+    doClasses: ['ScopeDO'],
+    bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
+    digests: { manifest: `m-${version}`, permission: `p-${version}`, migration: 'g1' },
+    registry: {
+      permissions: [{ key: 'customer:read', description: 'read customers', declaredBy: ['@test/crm'] }],
+      roles: [],
+      entityGrants: [],
+      ...(exported ? { exports: [{ type: TYPE, schemaVersion: 1, readPermission: 'customer:read', declaredBy: ['@test/crm'] }] } : {}),
+    },
+  });
+  const push = async (pin: string, m: object): Promise<{ id: string; verticalSlug: string }> => {
+    const fd = new FormData();
+    fd.set('manifest', JSON.stringify(m));
+    fd.set('tenant', pin);
+    fd.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
+    const res = await app.request('/verticals/crm/deploy', { method: 'POST', headers: { [DEV_ACTOR_HEADER]: staff }, body: fd });
+    expect(res.status).toBeLessThan(300);
+    return (await res.json()) as { id: string; verticalSlug: string };
+  };
+  const promote = (slug: string, versionId: string, acknowledge?: object) =>
+    app.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ versionId, ...(acknowledge ? { acknowledge } : {}) }),
+    });
+
+  it('refuses the adopt the promote never judged, moves nothing, and a promote with the acknowledgement moves it', async () => {
+    const pin = `cascade-${ulid().slice(-6).toLowerCase()}`;
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: pin, name: pin });
+    // A private vertical's install, still on its own version, which exports TYPE…
+    const v1 = await push(pin, manifest('0.1.0', true));
+    const slug = v1.verticalSlug;
+    const sc = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: sc, vertical: slug });
+    await host.admin.activateScope(staff, t, sc);
+    await host.admin.bindScopeVersion(staff, t, sc, v1.id);
+    ensure(deploymentRefFor(slug, v1.id)).set(sc, [
+      { name: 'customers', ddl: 'CREATE TABLE customers(name TEXT)', columns: ['name'], rows: [['Acme AB']] },
+    ]);
+    // …beside an app in the same tenant that imports it.
+    const desk = `${pin}/desk`;
+    await host.admin.registerVertical(staff, { slug: desk, name: 'desk', source: 'cli' });
+    const deskVersion = ulid();
+    await host.admin.publishVersion(staff, {
+      id: deskVersion, verticalSlug: desk, version: '1.0.0', manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g',
+      deploymentRef: null,
+      manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], imports: [{ from: slug, type: TYPE, schemaVersion: 1, declaredBy: ['@test/desk'] }] } }),
+    });
+    await host.admin.admitVersion(staff, deskVersion);
+    const deskScope = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: deskScope, vertical: desk });
+    await host.admin.activateScope(staff, t, deskScope);
+    await host.admin.bindScopeVersion(staff, t, deskScope, deskVersion);
+
+    // The first prod promote of a version that drops the export: the promote gate has no previous
+    // channel version to judge against, so it passes, and the adopt is what finds the break.
+    const v2 = await push(pin, manifest('0.2.0', false));
+    const refused = await promote(slug, v2.id);
+    expect(refused.status).toBe(409);
+    const said = (await refused.json()) as { error: string; exportBreaks?: { affected: { scopeId: string }[] } };
+    expect(said.error).toMatch(/^promoted and served, but an app still on its own version was not moved/);
+    expect(said.exportBreaks?.affected.map((b) => b.scopeId)).toEqual([deskScope]);
+    const stable = stableDeploymentRefFor(slug);
+    const unmoved = await host.admin.getScopeRecord(staff, t, sc);
+    expect(unmoved?.servingRef ?? null).toBeNull();
+    expect(unmoved?.verticalVersionId).toBe(v1.id);
+    expect(scripts.get(stable)?.has(sc)).toBeFalsy();
+
+    // The promote's acknowledgement carries to the adopt.
+    const acked = await promote(slug, v2.id, { exportBreak: true });
+    expect(acked.status).toBe(200);
+    const moved = await host.admin.getScopeRecord(staff, t, sc);
+    expect(moved).toMatchObject({ servingRef: stable, verticalVersionId: v2.id });
+    expect(scripts.get(stable)?.get(sc)?.[0]?.rows).toEqual([['Acme AB']]);
   });
 });

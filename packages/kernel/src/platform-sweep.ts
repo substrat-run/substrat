@@ -1869,38 +1869,50 @@ export function bindExportBreakRefusal(breaks: readonly ExportBreak[]): string {
 }
 
 /**
- * Whom pointing `scope` at `incoming` breaks (#1756): the promote gate's question
- * (`exportBreaksOf`), asked of ONE install in its own tenant, since an edge never crosses one.
+ * Whom moving `scope` breaks (#1756): the promote gate's question (`exportBreaksOf`), asked of
+ * ONE install in its own tenant, since an edge never crosses one.
  *
- * Judged on what the producer RUNS before and after, by the same rule the consumers are judged
- * on (`runningVersionOf`), because exports leave from the code that runs, not from the pointer:
+ * A scope's exports leave from the code it RUNS, and `runningVersionOf` names that code from two
+ * inputs: the version pointer and the serving ref. So a move is either or both of them changing —
+ * a bind (`next.versionId`), or a route onto or off a serving script (`next.servingRef`, which is
+ * how an adopt moves a scope before its pointer ever does). Both are judged by the same rule, on
+ * the running version before against the running version after, the rule the consumers are judged
+ * on too:
  *
- * - **A scope on its vertical's serving script** runs the serving version whatever its pointer
- *   says, so re-pointing it changes no export and is never refused. The change reached it when
- *   the serving script was replaced — at a promote, which judged every tenant then. That is
- *   what exempts the promote's own rebind of a private vertical's scopes, the adopt onto a
- *   serving script, and a tenant's Update of an install already on one, with no flag.
+ * - **Re-pointing a scope that stays on its vertical's serving script** changes nothing it runs,
+ *   so it is never refused. The change reached it when the serving script was replaced — at a
+ *   promote, which judged every tenant then. A route ONTO the serving script is not that case:
+ *   the scope goes from its own version to whatever is served, and that is judged.
  * - **A fork or a preview** is never an edge's producer (`resolveVerticalInstanceFrom` takes the
  *   primary install only), so nothing it runs can break an edge.
+ * - **A scope still provisioning** has never been active, so no edge has ever delivered from it.
  * - **A first bind** runs nothing before it, so it promised nothing.
  * - **A lineage crossing** (the version belongs to another vertical than the scope's) is not
- *   judged here: the producer's slug itself changes, which `rebind-vertical`'s own
- *   acknowledgements govern.
+ *   judged here, and nothing else judges it either: every consumer importing `from` the old slug
+ *   loses its producer, and `rebind-vertical`'s acknowledgements are about migrations, not about
+ *   that. A known gap, older than this gate.
  */
 export async function bindExportBreaksOf(input: {
   admin: Pick<HostAdmin, 'listScopes' | 'listVerticals'>;
   actor: PlatformActorId;
-  scope: Pick<Scope, 'tenantId' | 'forkedFrom' | 'kind' | 'vertical' | 'verticalVersionId' | 'servingRef'>;
+  scope: Pick<Scope, 'tenantId' | 'forkedFrom' | 'kind' | 'status' | 'vertical' | 'verticalVersionId' | 'servingRef'>;
+  /** The version the scope is bound to after the move (its vertical's slug beside it). */
   incoming: { id: string; verticalSlug: string };
+  /** The serving ref it routes by after the move. Omitted: unchanged. */
+  servingRef?: string | null;
   /** The serving pointer of the scope's vertical, or null when nothing is served in place. */
   serving: ServingPointer | null;
   readExports: (versionId: string) => Promise<ManifestExports>;
   readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>;
 }): Promise<ExportBreak[]> {
   const { scope } = input;
-  if (!isPrimaryScope(scope) || scope.vertical === null || scope.vertical !== input.incoming.verticalSlug) return [];
+  if (!isPrimaryScope(scope) || scope.status === 'provisioning') return [];
+  if (scope.vertical === null || scope.vertical !== input.incoming.verticalSlug) return [];
   const before = runningVersionOf(scope, input.serving);
-  const after = runningVersionOf({ verticalVersionId: input.incoming.id, servingRef: scope.servingRef }, input.serving);
+  const after = runningVersionOf(
+    { verticalVersionId: input.incoming.id, servingRef: input.servingRef === undefined ? scope.servingRef : input.servingRef },
+    input.serving,
+  );
   if (before === null || after === null || before === after) return [];
   const [outgoing, incoming] = await Promise.all([input.readExports(before), input.readExports(after)]);
   return exportBreaksOf({

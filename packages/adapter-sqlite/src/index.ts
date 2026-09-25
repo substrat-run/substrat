@@ -3699,12 +3699,17 @@ export class SqliteScopeHost implements ScopeHost {
 
   /**
    * #1756: the bind gate's question for one install (`bindExportBreaksOf`), from the directory.
-   * The serving pointer is read only for a scope on a serving script, the one case it decides
-   * anything.
+   * The serving pointer is read only when the scope is on a serving script before or after the
+   * move, the one case it decides anything.
    */
-  private bindBreaks(actor: PlatformActorId, scope: Scope, incoming: { id: string; verticalSlug: string }): Promise<ExportBreak[]> {
+  private bindBreaks(
+    actor: PlatformActorId,
+    scope: Scope,
+    incoming: { id: string; verticalSlug: string },
+    servingRef?: string | null,
+  ): Promise<ExportBreak[]> {
     const vertical =
-      scope.vertical && scope.servingRef
+      scope.vertical && (scope.servingRef || servingRef)
         ? (this.directory
             .prepare('SELECT serving_ref, serving_version_id FROM verticals WHERE slug = ?')
             .get(scope.vertical) as { serving_ref: string | null; serving_version_id: string | null } | undefined)
@@ -3713,7 +3718,8 @@ export class SqliteScopeHost implements ScopeHost {
       admin: this.admin,
       actor,
       scope,
-      incoming,
+      incoming: { id: incoming.id, verticalSlug: incoming.verticalSlug },
+      ...(servingRef !== undefined ? { servingRef } : {}),
       serving:
         vertical?.serving_ref && vertical.serving_version_id
           ? { ref: vertical.serving_ref, versionId: vertical.serving_version_id }
@@ -7274,10 +7280,10 @@ export class SqliteScopeHost implements ScopeHost {
           }),
         );
       },
-      bindingImpact: async (actor, tenantId, scopeId, versionId: string): Promise<ExportBreak[]> => {
+      bindingImpact: async (actor, tenantId, scopeId, versionId: string, opts): Promise<ExportBreak[]> => {
         const { v, scope } = bindTarget(tenantId, scopeId, versionId);
-        const breaks = await this.bindBreaks(actor, mapScope(scope), v);
-        this.recordAccess(actor, 'bindingImpact', { tenantId, scopeId }, { versionId }, breaks.length);
+        const breaks = await this.bindBreaks(actor, mapScope(scope), v, opts?.servingRef);
+        this.recordAccess(actor, 'bindingImpact', { tenantId, scopeId }, { versionId, ...opts }, breaks.length);
         return breaks;
       },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
@@ -7388,12 +7394,18 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'versionMigrations', {}, { verticalSlug, versionId }, v.migrations?.length ?? 0);
         return v.migrations;
       },
-      setScopeServingRef: async (actor, tenantId, scopeId, servingRef) => {
-        const scope = this.directory
-          .prepare('SELECT tenant_id, serving_ref FROM scopes WHERE scope_id = ?')
-          .get(scopeId) as { tenant_id: string; serving_ref: string | null } | undefined;
+      setScopeServingRef: async (actor, tenantId, scopeId, servingRef, opts) => {
+        const scope = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as ScopeRow | undefined;
         if (!scope || scope.tenant_id !== tenantId) {
           throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        }
+        const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
+        // #1756: onto (or off) a serving script, the scope runs other code before its pointer
+        // moves. Judged here, so no caller that routes first and binds second passes unasked.
+        const bound = scope.vertical_version_id ? readVersion(scope.vertical_version_id) : undefined;
+        if (!ack.exportBreak && bound) {
+          const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
+          if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
         this.directory
           .prepare('UPDATE scopes SET serving_ref = ? WHERE scope_id = ?')
@@ -7403,7 +7415,7 @@ export class SqliteScopeHost implements ScopeHost {
           'setScopeServingRef',
           { tenantId, scopeId },
           { servingRef: scope.serving_ref },
-          { servingRef },
+          { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) },
         );
       },
       setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {

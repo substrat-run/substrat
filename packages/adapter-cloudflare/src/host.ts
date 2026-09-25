@@ -5159,10 +5159,10 @@ export class CloudflareScopeHost implements ScopeHost {
           }),
         );
       },
-      bindingImpact: async (actor, tenantId, scopeId, versionId: string): Promise<ExportBreak[]> => {
+      bindingImpact: async (actor, tenantId, scopeId, versionId: string, opts): Promise<ExportBreak[]> => {
         const { v, scope } = await bindTarget(tenantId, scopeId, versionId);
-        const breaks = await this.bindBreaks(actor, mapScope(scope), v);
-        await this.recordAccess(actor, 'bindingImpact', { tenantId, scopeId }, { versionId }, breaks.length);
+        const breaks = await this.bindBreaks(actor, mapScope(scope), v, opts?.servingRef);
+        await this.recordAccess(actor, 'bindingImpact', { tenantId, scopeId }, { versionId, ...opts }, breaks.length);
         return breaks;
       },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
@@ -5263,16 +5263,24 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'versionMigrations', {}, { verticalSlug, versionId }, v.migrations?.length ?? 0);
         return v.migrations;
       },
-      setScopeServingRef: async (actor, tenantId, scopeId, servingRef) => {
+      setScopeServingRef: async (actor, tenantId, scopeId, servingRef, opts) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
+        // #1756: onto (or off) a serving script, the scope runs other code before its pointer
+        // moves. Judged here, so no caller that routes first and binds second passes unasked.
+        const bound = scope.vertical_version_id ? await this.cp.readVersion(scope.vertical_version_id) : undefined;
+        if (!ack.exportBreak && bound) {
+          const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
+          if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
+        }
         await this.cp.setScopeServingRef(scopeId, servingRef);
         await this.recordAdmin(
           actor,
           'setScopeServingRef',
           { tenantId, scopeId },
           { servingRef: scope.serving_ref ?? null },
-          { servingRef },
+          { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) },
         );
       },
       setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {
@@ -7740,16 +7748,23 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * #1756: the bind gate's question for one install (`bindExportBreaksOf`), from the directory.
-   * The serving pointer is read only for a scope on a serving script, the one case it decides
-   * anything, and the incoming version's manifest comes from the row the caller already holds.
+   * The serving pointer is read only when the scope is on a serving script before or after the
+   * move, the one case it decides anything, and the incoming version's manifest comes from the
+   * row the caller already holds.
    */
-  private async bindBreaks(actor: PlatformActorId, scope: Scope, incoming: VersionRow): Promise<ExportBreak[]> {
-    const vertical = scope.vertical && scope.servingRef ? await this.cp.readVertical(scope.vertical) : undefined;
+  private async bindBreaks(
+    actor: PlatformActorId,
+    scope: Scope,
+    incoming: VersionRow,
+    servingRef?: string | null,
+  ): Promise<ExportBreak[]> {
+    const vertical = scope.vertical && (scope.servingRef || servingRef) ? await this.cp.readVertical(scope.vertical) : undefined;
     return bindExportBreaksOf({
       admin: this.admin,
       actor,
       scope,
       incoming: { id: incoming.id, verticalSlug: incoming.vertical_slug },
+      ...(servingRef !== undefined ? { servingRef } : {}),
       serving:
         vertical?.serving_ref && vertical.serving_version_id
           ? { ref: vertical.serving_ref, versionId: vertical.serving_version_id }

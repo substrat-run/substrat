@@ -253,15 +253,21 @@ export async function adoptScopeServing(opts: {
   header: Record<string, string>;
   tenantId: string;
   scopeId: string;
+  /** #1756: adopt even though what the vertical serves drops an export another app here imports. */
+  ackExportBreak?: boolean;
 }): Promise<void> {
   const res = await fetch(
     `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
       `/scopes/${encodeURIComponent(opts.scopeId)}/adopt-serving`,
-    { method: 'POST', headers: { ...opts.header, 'content-type': 'application/json' } },
+    {
+      method: 'POST',
+      headers: { ...opts.header, 'content-type': 'application/json' },
+      body: JSON.stringify(ackBody(opts.ackExportBreak)),
+    },
   );
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(problemDetail(body) ?? `adopt-serving refused: ${res.status} ${res.statusText}`);
+    throw new Error(refusalText(body, `adopt-serving refused: ${res.status} ${res.statusText}`));
   }
   const body = await readJson<{ servingRef?: string; alreadyAdopted?: boolean; tables?: number }>(res, res.url);
   if (body.alreadyAdopted) {
@@ -380,6 +386,13 @@ export async function scopeStatus(opts: {
   }
 }
 
+/** #1756: the ack a move sends when asked, and a refusal's own words plus the apps it breaks. */
+const ackBody = (ackExportBreak?: boolean) => (ackExportBreak ? { acknowledge: { exportBreak: true } } : {});
+function refusalText(body: unknown, fallback: string): string {
+  const breaks = (body as { exportBreaks?: ExportBreaks } | null)?.exportBreaks;
+  return (problemDetail(body) ?? fallback) + (breaks ? exportBreakListing(breaks) : '');
+}
+
 /**
  * `substrat scope bind <scopeId> --version <id>` — pin ONE scope to a specific version of the
  * SAME vertical (issue #509 ask (c)). This is the platform's most general rollout primitive
@@ -408,16 +421,15 @@ export async function bindScopeVersion(opts: {
       body: JSON.stringify({
         versionId: opts.versionId,
         snapshot: opts.snapshot || undefined,
-        acknowledge: opts.ackExportBreak ? { exportBreak: true } : undefined,
+        ...ackBody(opts.ackExportBreak),
       }),
     },
   );
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { exportBreaks?: ExportBreaks } | null;
     // An export-break refusal (#1756) carries the apps it would break: named here, so the
     // acknowledgement is an informed answer rather than a flag tried to see what happens.
-    const listing = body?.exportBreaks ? exportBreakListing(body.exportBreaks) : '';
-    throw new Error((problemDetail(body) ?? `bind refused: ${res.status} ${res.statusText}`) + listing);
+    const body = await res.json().catch(() => null);
+    throw new Error(refusalText(body, `bind refused: ${res.status} ${res.statusText}`));
   }
   const record = await readJson<{ verticalVersionId: string | null; vertical: string | null; servingRef?: string | null }>(
     res,
@@ -443,6 +455,8 @@ export async function rebindScopeVertical(opts: {
   vertical: string;
   ackMigrations: boolean;
   abandonData?: boolean;
+  /** #1756: within one lineage the rebind is an adopt, refused when it breaks an app here. */
+  ackExportBreak?: boolean;
 }): Promise<void> {
   const res = await fetch(
     `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
@@ -454,12 +468,13 @@ export async function rebindScopeVertical(opts: {
         vertical: opts.vertical,
         ackMigrations: opts.ackMigrations || undefined,
         abandonData: opts.abandonData || undefined,
+        ...ackBody(opts.ackExportBreak),
       }),
     },
   );
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(problemDetail(body) ?? `rebind refused: ${res.status} ${res.statusText}`);
+    throw new Error(refusalText(body, `rebind refused: ${res.status} ${res.statusText}`));
   }
   const body = await readJson<{
     servingRef?: string;
@@ -488,10 +503,15 @@ export async function adoptVerticalServing(opts: {
   controlPlaneUrl: string;
   header: Record<string, string>;
   slug: string;
+  ackExportBreak?: boolean;
 }): Promise<void> {
   const res = await fetch(
     `${opts.controlPlaneUrl}/verticals/${encodeURIComponent(opts.slug)}/adopt-serving`,
-    { method: 'POST', headers: { ...opts.header, 'content-type': 'application/json' } },
+    {
+      method: 'POST',
+      headers: { ...opts.header, 'content-type': 'application/json' },
+      body: JSON.stringify(ackBody(opts.ackExportBreak)),
+    },
   );
   const body = (await res.json().catch(() => null)) as
     | { adopted?: string[]; alreadyAdopted?: string[] }
@@ -499,7 +519,7 @@ export async function adoptVerticalServing(opts: {
   if (!res.ok) {
     // A per-scope failure reports what it managed before stopping — a re-run resumes.
     const done = (body?.adopted?.length ?? 0) + (body?.alreadyAdopted?.length ?? 0);
-    throw new Error(`${problemDetail(body) ?? `adopt-serving refused: ${res.status}`}${done ? ` (adopted ${done} before stopping)` : ''}`);
+    throw new Error(`${refusalText(body, `adopt-serving refused: ${res.status}`)}${done ? ` (adopted ${done} before stopping)` : ''}`);
   }
   const adopted = body?.adopted ?? [];
   const already = body?.alreadyAdopted ?? [];
