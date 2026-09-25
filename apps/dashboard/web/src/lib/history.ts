@@ -1,4 +1,4 @@
-import type { Actor, EmittedEntity, HistoryEntry } from '@substrat-run/contracts';
+import type { Actor, EmittedEntity, EmittedLifecycle, HistoryEntry } from '@substrat-run/contracts';
 
 /**
  * How a record's history reads on screen (#1235) — the presentation decisions of
@@ -75,8 +75,20 @@ export function authorizationLabel(authorization: HistoryEntry['authorization'])
  * an erasure is a supported result and not an error — rendering it blank would
  * read as an event that said nothing, which is a different claim.
  */
-export function payloadText(payload: unknown): string {
+export function payloadText(payload: unknown, decodeError?: string): string {
+  if (payload == null && decodeError !== undefined && payloadUndecodable({ payload, decodeError }))
+    return `payload could not be read (${decodeError})`;
   return payload == null ? 'payload erased' : JSON.stringify(payload);
+}
+
+/**
+ * True when a null payload is null because the stored column would not decode (#1636),
+ * not because it was erased. Both read `null`; `decodeError` names each column that
+ * failed as `<column>: <why>`, joined by `; `, so the payload is judged by its own entry
+ * — an actor that failed beside an erased payload leaves the payload erased.
+ */
+export function payloadUndecodable(e: { payload: unknown; decodeError?: string }): boolean {
+  return e.payload == null && e.decodeError !== undefined && /(^|;\s*)payload(\.[^:;]*)?:/.test(e.decodeError);
 }
 
 /**
@@ -210,6 +222,11 @@ export interface TimelineTarget {
   readonly entityType: string;
   /** The column holding the id to read it with. */
   readonly idColumn: string;
+  /**
+   * The payload key the entity's declared lifecycle moves (#1767), when it declares one —
+   * what lets the Event history tell a transition from any other change without guessing.
+   */
+  readonly stateField?: string;
 }
 
 /**
@@ -231,14 +248,18 @@ export interface TimelineTarget {
  * happened" about a record that has a history, and a missing link is the better
  * failure of the two.
  */
-export function timelineTargets(entities: Record<string, EmittedEntity>): Record<string, TimelineTarget> {
+export function timelineTargets(
+  entities: Record<string, EmittedEntity>,
+  lifecycles?: Record<string, EmittedLifecycle>,
+): Record<string, TimelineTarget> {
   const byTable: Record<string, TimelineTarget> = {};
   for (const [entityType, def] of Object.entries(entities)) {
     const table = (def as { table?: string }).table;
     if (!table) continue;
     const key = def.primaryKey?.length ? def.primaryKey : ['id'];
     if (key.length !== 1) continue;
-    byTable[table] = { entityType, idColumn: key[0]! };
+    const stateField = lifecycles?.[entityType]?.field;
+    byTable[table] = stateField ? { entityType, idColumn: key[0]!, stateField } : { entityType, idColumn: key[0]! };
   }
   return byTable;
 }
