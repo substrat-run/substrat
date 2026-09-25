@@ -73,7 +73,9 @@ describe('substrat promote — a refusal prints both diffs (#1677)', () => {
 
   it('a migration refusal with no SQL carried says so, naming the digest', async () => {
     plane({ refusal: MIG_REFUSAL, migrations: null });
-    expect(await refusalOf()).toContain('SQL not available for this version — the migration digest changed');
+    const text = await refusalOf();
+    expect(text).toContain('SQL not available for this version — the migration digest changed');
+    expect(text).toMatch(/pushed by a CLI older than migrations in the manifest, or its migrations were over the size/);
   });
 
   it('a diff that cannot be read is said so, and the refusal is still what is thrown', async () => {

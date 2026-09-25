@@ -813,6 +813,10 @@ export class TenantNarrowedControlPlane {
           const channels = await this.listAll<{ channel: string; versionId: string }>(
             `/verticals/${encodeURIComponent(verticalSlug)}/channels`,
           );
+          // The channel's `versionId`, not its `servingVersionId`: the gate compares against
+          // the version the pointer names (`promoteVersion` reads the channel), so the review
+          // must too. The two differ only after an in-place serve failed; #1661 is where
+          // reconcile follows the running one instead, and that is not the checkpoint.
           return channels.find((c) => c.channel === 'prod')?.versionId ?? null;
         },
         registry: async (id) => {

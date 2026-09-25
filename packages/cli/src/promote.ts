@@ -85,6 +85,8 @@ export async function explainRefusal(opts: PromoteOptions, migrationRefused: boo
     const channels = await readAllEntries(`${base}/channels`, (u) =>
       get<{ entries: { channel: string; versionId: string }[]; nextCursor: string | null }>(u),
     );
+    // The channel's `versionId`, as the gate compares — not `servingVersionId`, which only
+    // differs after a failed in-place serve (#1661 follows that one for reconcile).
     const serving = channels.find((c) => c.channel === opts.channel)?.versionId;
     if (!serving) return ['(nothing serves this channel yet, so there is nothing to diff against)'];
     const registry = (id: string) =>
@@ -153,7 +155,8 @@ export function formatRegistryDiff(from: PermissionRegistry | null, to: Permissi
 export function formatMigrationDiff(diff: MigrationDiff | null, digestMoved: boolean): string[] {
   if (!diff) {
     return [
-      `SQL not available for this version${digestMoved ? ' — the migration digest changed' : ''}. Read the migrations in the repository.`,
+      `SQL not available for this version${digestMoved ? ' — the migration digest changed' : ''}: it was pushed by a CLI ` +
+        'older than migrations in the manifest, or its migrations were over the size a manifest carries. Read them in the repository.',
     ];
   }
   const entry = (mark: string, m: MigrationEntry) => [
