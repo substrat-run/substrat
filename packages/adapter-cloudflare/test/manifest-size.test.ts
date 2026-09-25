@@ -220,6 +220,7 @@ describe('the version list reads no manifest (#1677)', () => {
 describe('the #1764 backfill: bounded, resumable, and right before, during and after', () => {
   type Directory = ControlPlaneDO & {
     readVersionMigrations(id: string): { verticalSlug: string; migrations: unknown[] | null } | undefined;
+    backfillArmed: Promise<void>;
     exportDump(): ScopeDumpTable[];
     importDump(tables: ScopeDumpTable[]): Promise<void>;
   };
@@ -291,6 +292,7 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
     await inDirectory(async (_instance, state) => {
       await state.storage.deleteAlarm();
       const deployed = new ControlPlaneDO(state, env) as Directory;
+      await deployed.backfillArmed;
       // The construction built the #1764 schema over the old directory…
       expect(schemaOf(state)).toEqual({
         objects: ['vertical_version_migrations', 'vertical_versions_unsplit'],
@@ -326,7 +328,7 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
       for (const m of manifests) expect(m.manifest_json ?? '').not.toContain('CREATE TABLE');
       expect(manifests.map((m) => m.manifest_json)).toContain('not json');
       // The next construction finds nothing to do and arms nothing.
-      new ControlPlaneDO(state, env);
+      await (new ControlPlaneDO(state, env) as Directory).backfillArmed;
       expect(await state.storage.getAlarm()).toBeNull();
     });
   });
@@ -364,6 +366,9 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
 describe('the #1764 backfill survives a failing batch', () => {
   type Directory = ControlPlaneDO & {
     readVersionMigrations(id: string): { verticalSlug: string; migrations: unknown[] | null } | undefined;
+    backfillArmed: Promise<void>;
+    exportDump(): ScopeDumpTable[];
+    importDump(tables: ScopeDumpTable[]): Promise<void>;
   };
   const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`version-backfill-fails-${ulid()}`));
   const inDirectory = <R>(fn: (d: Directory, state: DurableObjectState) => R | Promise<R>) =>
@@ -461,6 +466,28 @@ describe('the #1764 backfill survives a failing batch', () => {
       expect(platformActorId.safeParse(capped!.actor).success).toBe(true); // the console's read parses it
       expect(capped!.fingerprint).toBe(`${BACKFILL_OPERATION}\u001fbackoff-capped\u001f`);
       expect(capped!.message).toMatch(/12 time\(s\) in a row.*injected/);
+    });
+  });
+
+  it('a construction or a restore keeps a pending backoff alarm, and arms one only when none is set', async () => {
+    await inDirectory(async (_d, state) => {
+      expect(unsplit(state)).toBeGreaterThan(0); // the poisoned version still waits
+      const far = Date.now() + 60 * 60 * 1000;
+      await state.storage.setAlarm(far);
+      // An ordinary request after an eviction constructs the DO: the hour-long retry stands.
+      const again = new ControlPlaneDO(state, env) as Directory;
+      await again.backfillArmed;
+      expect(await state.storage.getAlarm()).toBe(far);
+      // So does a restore, which re-checks for unsplit versions.
+      await again.importDump(again.exportDump());
+      expect(await state.storage.getAlarm()).toBe(far);
+      // With none set, the construction arms the next batch, a pause away.
+      await state.storage.deleteAlarm();
+      const armedBefore = Date.now();
+      await (new ControlPlaneDO(state, env) as Directory).backfillArmed;
+      const armed = (await state.storage.getAlarm())!;
+      expect(armed - armedBefore).toBeGreaterThanOrEqual(1000);
+      expect(armed).toBeLessThan(far);
     });
   });
 

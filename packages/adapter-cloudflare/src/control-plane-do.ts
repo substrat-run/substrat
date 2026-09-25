@@ -1146,12 +1146,15 @@ export class ControlPlaneDO extends DurableObject {
   private readonly sql: SqlStorage;
   /** The directory's store as the kernel's SQL handle — the switch record's helpers (#1674). */
   private readonly kernelSql: ReturnType<typeof switchSqlOver>;
+  /** Settles once the constructor's #1764 backfill check has run (awaited by the tests). */
+  readonly backfillArmed: Promise<void>;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
     this.sql = ctx.storage.sql;
     this.kernelSql = switchSqlOver(this.sql);
     this.applyDirectorySchema();
+    this.backfillArmed = ctx.blockConcurrencyWhile(() => this.armVersionMigrationsBackfill());
   }
 
   /**
@@ -1163,8 +1166,12 @@ export class ControlPlaneDO extends DurableObject {
    * thousand. The alarm then moves a bounded batch per run. Also reached after a directory
    * restore, so a dump taken before the backfill is moved again.
    */
-  private armVersionMigrationsBackfill(): void {
-    if (versionsAwaitSplit(this.kernelSql)) void this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
+  private async armVersionMigrationsBackfill(): Promise<void> {
+    if (!versionsAwaitSplit(this.kernelSql)) return;
+    // An alarm already set is kept: it is the backfill's own next run, and a backoff retry
+    // pulled forward to 1 s by any ordinary request would make the backoff meaningless.
+    if ((await this.ctx.storage.getAlarm()) !== null) return;
+    await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
   }
 
   /**
@@ -1232,7 +1239,6 @@ export class ControlPlaneDO extends DurableObject {
     this.ensureDirectoryColumns();
     // #1764's, held back by `planDirectoryDdl`: its index names a column added just above.
     for (const stmt of DIRECTORY_DDL_PLAN.afterColumns) this.sql.exec(stmt);
-    this.armVersionMigrationsBackfill();
     if (switchRecordIsNew) {
       this.ctx.storage.transactionSync(() => {
         for (const stmt of splitSqlStatements(SYSTEM_SWITCHES_DDL)) this.sql.exec(stmt);
@@ -1546,6 +1552,8 @@ export class ControlPlaneDO extends DurableObject {
     // schema assertions, and an ALTER that has to be tolerated (duplicate column) must
     // not take the restore's data down with it.
     this.applyDirectorySchema();
+    // A dump taken before the #1764 backfill lands unsplit versions, so it runs again.
+    await this.armVersionMigrationsBackfill();
   }
 
   // -- tenant registry (control-plane.md §4.1) --------------------------------
