@@ -116,6 +116,116 @@ describe('placesReporter', () => {
   });
 });
 
+/**
+ * #1771: the report carries the client secret, and where it goes is named by the issuer's own
+ * discovery document. A fake issuer that names `endpoint` (any URL), and can answer it with a 30x.
+ */
+function namesEndpoint(issuerUrl: string, endpoint: string, reportStatus = 204) {
+  const calls: Array<{ url: string; redirect?: string; body?: string }> = [];
+  const fetch: FetchLike = async (url, init) => {
+    calls.push({ url, redirect: (init as { redirect?: string } | undefined)?.redirect, body: init?.body as string | undefined });
+    const answer = (status: number, body?: unknown) =>
+      ({ ok: status >= 200 && status < 300, status, json: async () => body, text: async () => '', arrayBuffer: async () => new ArrayBuffer(0) }) as Awaited<ReturnType<FetchLike>>;
+    if (url === `${issuerUrl}/.well-known/substrat-places`) return answer(200, { report_endpoint: endpoint });
+    return answer(reportStatus);
+  };
+  const reports = () => calls.filter((c) => c.body !== undefined);
+  return { fetch, calls, reports };
+}
+
+describe('where the client secret may go (#1771)', () => {
+  const logs: string[] = [];
+  const log = (l: string) => void logs.push(l);
+  beforeEach(() => void (logs.length = 0));
+  const via = (endpoint: string, iss = ISSUER, status = 204) => {
+    const fake = namesEndpoint(iss, endpoint, status);
+    const reporter = placesReporter({ identity: { ...identity, issuer: iss }, fetch: fake.fetch, log })!;
+    return { fake, reporter };
+  };
+
+  it('sends nothing to another origin, and says so once without the path or query', async () => {
+    const { fake, reporter } = via('https://collector.example.net/report?token=abc');
+    const r = await reporter.present(SCOPE, 'sub-ann');
+    expect(r).toMatchObject({ outcome: 'failed' });
+    await reporter.absent(SCOPE, 'sub-ann');
+    expect(fake.reports()).toEqual([]);
+    expect(fake.calls.some((c) => c.url.includes('collector'))).toBe(false);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain('https://collector.example.net');
+    expect(logs[0]).not.toContain('abc');
+    expect(logs[0]).not.toContain('desk-secret');
+  });
+
+  it('refuses the same host on another port, another subdomain, and embedded credentials', async () => {
+    for (const ep of [`${ISSUER}:8443/r`, 'https://evil.auth.acme.test/r', 'https://user:pw@auth.acme.test/r']) {
+      resetPlacesMemo();
+      const { fake, reporter } = via(ep);
+      expect(await reporter.present(SCOPE, 's')).toMatchObject({ outcome: 'failed' });
+      expect(fake.reports(), ep).toEqual([]);
+    }
+  });
+
+  it('refuses a downgrade to http on the issuer\'s own host', async () => {
+    const { fake, reporter } = via('http://auth.acme.test/api/places/report');
+    expect(await reporter.present(SCOPE, 's')).toMatchObject({ outcome: 'failed' });
+    expect(fake.reports()).toEqual([]);
+  });
+
+  it('refuses an http issuer that is not loopback, even at its own origin', async () => {
+    const { fake, reporter } = via('http://auth.acme.test/r', 'http://auth.acme.test');
+    expect(await reporter.present(SCOPE, 's')).toMatchObject({ outcome: 'failed' });
+    expect(fake.reports()).toEqual([]);
+  });
+
+  it('sends to its own https origin, with redirect: manual', async () => {
+    const { fake, reporter } = via(`${ISSUER}/api/places/report`);
+    expect(await reporter.present(SCOPE, 's')).toEqual({ outcome: 'sent' });
+    expect(fake.reports()).toHaveLength(1);
+    expect(fake.reports()[0]!.redirect).toBe('manual');
+    expect(logs).toEqual([]);
+  });
+
+  it('allows http on a loopback issuer, the dev case', async () => {
+    for (const host of ['http://localhost:8879', 'http://127.0.0.1:8879']) {
+      resetPlacesMemo();
+      const { fake, reporter } = via(`${host}/api/places/report`, host);
+      expect(await reporter.present(SCOPE, 's')).toEqual({ outcome: 'sent' });
+      expect(fake.reports()).toHaveLength(1);
+    }
+  });
+
+  it('treats a 30x from its own endpoint as a failure and never follows it', async () => {
+    for (const status of [301, 302, 307, 308, 0]) {
+      resetPlacesMemo();
+      const { fake, reporter } = via(`${ISSUER}/api/places/report`, ISSUER, status);
+      expect(await reporter.present(SCOPE, 's'), String(status)).toMatchObject({ outcome: 'failed' });
+      // One POST, to the endpoint, and no second request to wherever the redirect pointed.
+      expect(fake.reports()).toHaveLength(1);
+      expect(fake.calls.filter((c) => c.url !== `${ISSUER}/.well-known/substrat-places`)).toHaveLength(1);
+    }
+  });
+
+  it('never lets a redirect-following runtime carry the secret: the fetch is asked not to follow', async () => {
+    // A fetch that honours `redirect` like the runtime does: 'follow' would re-POST to the target.
+    const target = 'https://collector.example.net/r';
+    const seen: Array<{ url: string; body?: string }> = [];
+    const fetch: FetchLike = async (url, init) => {
+      seen.push({ url, body: init?.body as string | undefined });
+      const res = (status: number, body?: unknown) =>
+        ({ ok: status < 300, status, json: async () => body, text: async () => '', arrayBuffer: async () => new ArrayBuffer(0) }) as Awaited<ReturnType<FetchLike>>;
+      if (url.endsWith('/.well-known/substrat-places')) return res(200, { report_endpoint: `${ISSUER}/api/places/report` });
+      if (url === `${ISSUER}/api/places/report`) {
+        if ((init as { redirect?: string }).redirect !== 'manual') return fetch(target, init);
+        return res(307);
+      }
+      return res(204);
+    };
+    const r = await placesReporter({ identity, fetch, log })!.present(SCOPE, 's');
+    expect(r).toMatchObject({ outcome: 'failed' });
+    expect(seen.some((c) => c.url === target)).toBe(false);
+  });
+});
+
 describe('observePlace', () => {
   it('reports a resolve once per state, and again when the state flips', async () => {
     const iss = issuer();

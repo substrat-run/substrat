@@ -3,7 +3,7 @@ import {
   PLACES_DISCOVERY_PATH,
   placesDiscovery,
 } from '@substrat-run/contracts';
-import { globalFetch, type FetchLike } from '@substrat-run/kernel';
+import { globalFetch, type ConnectorRequestInit, type FetchLike } from '@substrat-run/kernel';
 import type { AuthChoice } from './instance-auth.js';
 import type { IdentityStub } from './identity-do.js';
 
@@ -29,6 +29,15 @@ import type { IdentityStub } from './identity-do.js';
  *   - **`unbindMember`**, which removes a binding and reports it gone in the same call.
  *   - **`reportScopeMembers`**, the repair: the whole set bound in the scope, which drops every
  *     entry it does not name. Run it from the platform's reconcile.
+ *
+ * ## Where the secret goes
+ *
+ * The report carries the install's `client_secret`, and the endpoint comes out of a document the
+ * issuer serves. So the endpoint is held to the issuer's own ORIGIN (scheme, host and port,
+ * exactly), to `https:` (`http:` only on a loopback issuer, which is what the dev issuer is), and
+ * to no embedded credentials; and the POST is made with `redirect: 'manual'`, so a 30x is a
+ * failure and never a second hop for the secret. A refused endpoint sends nothing, is reported as
+ * `failed` like an unreachable issuer, and is logged once with its origin only (#1771).
  *
  * Every report is best-effort and **never throws**: a login must never fail because the index
  * could not be told. A lost report is what the repair exists for.
@@ -64,6 +73,29 @@ const DISCOVERY_TTL_MS = 10 * 60_000;
 /** Per isolate: issuer → where it takes reports (null = it keeps no index), and until when. */
 const discovered = new Map<string, { endpoint: string | null; until: number }>();
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** Why `endpoint` may not receive the client secret of `issuer`, or null when it may. */
+function endpointRefusal(issuer: string, endpoint: string): string | null {
+  let e: URL;
+  let i: URL;
+  try {
+    e = new URL(endpoint);
+    i = new URL(issuer);
+  } catch {
+    return 'not a URL';
+  }
+  if (e.origin !== i.origin) return `origin ${e.origin} is not the issuer's ${i.origin}`;
+  if (e.username || e.password) return 'carries credentials';
+  if (e.protocol !== 'https:' && !(e.protocol === 'http:' && LOOPBACK_HOSTS.has(e.hostname))) {
+    return `scheme ${e.protocol} is not https`;
+  }
+  return null;
+}
+
+/** Per isolate: the refusals already logged, so a request path that repeats does not flood. */
+const refusalLogged = new Set<string>();
+
 const reasonOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 async function reportEndpointOf(issuer: string, fetchImpl: FetchLike, now: number): Promise<string | null> {
@@ -93,12 +125,14 @@ export function placesReporter(opts: {
   identity: AuthChoice | null;
   fetch?: FetchLike;
   now?: () => number;
+  log?: (line: string) => void;
 }): PlacesReporter | null {
   const identity = opts.identity;
   if (!identity?.issuer || !identity.clientId || !identity.clientSecret) return null;
   const { issuer, clientId, clientSecret } = identity;
   const fetchImpl = opts.fetch ?? globalFetch;
   const now = opts.now ?? Date.now;
+  const log = opts.log ?? ((line: string) => console.warn(line));
 
   /** A report, less the client credentials `send` adds: what the contracts' `placeReport` takes. */
   type ReportBody = { scope_id: string } & ({ op: 'present' | 'absent'; sub: string } | { op: 'replace'; subs: string[] });
@@ -107,11 +141,29 @@ export function placesReporter(opts: {
     try {
       const endpoint = await reportEndpointOf(issuer, fetchImpl, now());
       if (!endpoint) return { outcome: 'no-index' };
-      const res = await fetchImpl(endpoint, {
+      const refusal = endpointRefusal(issuer, endpoint);
+      if (refusal) {
+        // Logged with the endpoint's origin only: its path and query are the issuer's to keep.
+        const shown = new URL(endpoint).origin;
+        if (!refusalLogged.has(`${issuer}|${shown}`)) {
+          refusalLogged.add(`${issuer}|${shown}`);
+          log(`vertical-auth: places report to ${shown} refused — ${refusal}; the client secret was not sent`);
+        }
+        return { outcome: 'failed', reason: `places report endpoint refused: ${refusal}` };
+      }
+      // `redirect` is a field the runtime's fetch reads and `ConnectorRequestInit` does not name.
+      const init: ConnectorRequestInit & { redirect: 'manual' } = {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, ...body }),
-      });
+        redirect: 'manual',
+      };
+      const res = await fetchImpl(endpoint, init);
+      // Manual: a 30x (or the opaque redirect a browser-like runtime hands back, status 0) is a
+      // failure, never followed — following is how the secret would reach a host nobody checked.
+      if (res.status === 0 || (res.status >= 300 && res.status < 400)) {
+        return { outcome: 'failed', reason: `places report endpoint redirected (${res.status}); not followed` };
+      }
       if (res.status === 204 || res.ok) return { outcome: 'sent' };
       if (res.status >= 400 && res.status < 500) return { outcome: 'refused', status: res.status };
       return { outcome: 'failed', reason: `places report answered ${res.status}` };
@@ -228,4 +280,5 @@ export async function reportScopeMembers(
 export function resetPlacesMemo(): void {
   discovered.clear();
   observed.clear();
+  refusalLogged.clear();
 }
