@@ -60,6 +60,7 @@ import {
 } from '@substrat-run/adapter-cloudflare';
 import {
   globalFetch,
+  EXPORTED_EVENTS_HEADER,
   PLATFORM_REQUEST_HEADER,
   readRoutedNode,
   RouterAssertionError,
@@ -492,6 +493,9 @@ async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
     // (the desk's `model-usage` line) runs in `waitUntil` after the response has gone,
     // through `serviceStub`, and still waits for the sweep.
     onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
+    // #1705: an event another of the tenant's apps imports was committed; the same kick then
+    // delivers it in seconds instead of at the next sweep.
+    onExportedEvents: () => c.header(EXPORTED_EVENTS_HEADER, '1'),
   });
 }
 

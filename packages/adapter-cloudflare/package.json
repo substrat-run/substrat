@@ -39,6 +39,8 @@
     "@cloudflare/workers-types": "catalog:",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
+    "@substrat-run/vertical-host": "workspace:^",
+    "hono": "^4.6.0",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

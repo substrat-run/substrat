@@ -1680,6 +1680,12 @@ importers:
       '@substrat-run/control-plane-api':
         specifier: workspace:^
         version: link:../control-plane-api
+      '@substrat-run/vertical-host':
+        specifier: workspace:^
+        version: link:../vertical-host
+      hono:
+        specifier: 4.13.8
+        version: 4.13.8
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

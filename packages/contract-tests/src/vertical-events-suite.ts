@@ -271,6 +271,20 @@ export interface VerticalEventsFixture {
   producer: ScopeHost;
   consumer: ScopeHost;
   cleanup: () => Promise<void>;
+  /**
+   * How the phase reaches the two scopes of an edge (#1705 PR 2). Absent, each scope is
+   * reached through the host serving it, in process. The hosted fixture passes the control
+   * plane's own reach instead, over each deployment's `/internal` surface, so every claim
+   * below is also held across the wire. The suite keeps its own `candidates`, which scope
+   * each test's passes to the tenants it created.
+   */
+  transport?: Omit<CrossVerticalReach, 'candidates'>;
+  /**
+   * Called once a scope is installed through the directory (#1705 PR 2): the half of a hosted
+   * install the vertical's own deployment does (`/internal/provision`). Absent, installing
+   * through the directory is the whole install.
+   */
+  afterInstall?: (tenantId: TenantId, scopeId: ScopeId, vertical: string) => Promise<void>;
 }
 
 const noFetch: FetchLike = async () => new Response('unused', { status: 200 });
@@ -326,11 +340,17 @@ export function verticalEventsContractSuite(
     // fills from the registry, so the suite also proves that a scope it drops is never called.
     const current = new Set<string>();
     beforeEach(() => current.clear());
-    const reach: CrossVerticalReach = {
-      candidates: (scopes) => scopes.filter((s) => current.has(s.tenantId)),
+    const inProcess: Omit<CrossVerticalReach, 'candidates'> = {
       importState: async (t, s) => (await hostOf(t, s)).admin.importState(staff, t, s),
       readExports: async (t, s, input) => (await hostOf(t, s)).admin.readExportedEvents(staff, t, s, input),
       deliver: async (t, s, batch) => (await hostOf(t, s)).deliverToPeer(t, s, batch),
+    };
+    // Resolved per call, because the fixture is built in `beforeAll`.
+    const reach: CrossVerticalReach = {
+      candidates: (scopes) => scopes.filter((s) => current.has(s.tenantId)),
+      importState: (t, s) => (fx.transport ?? inProcess).importState(t, s),
+      readExports: (t, s, input) => (fx.transport ?? inProcess).readExports(t, s, input),
+      deliver: (t, s, batch) => (fx.transport ?? inProcess).deliver(t, s, batch),
     };
 
     const newTenant = async (): Promise<TenantId> => {
@@ -355,6 +375,7 @@ export function verticalEventsContractSuite(
           grantedBy: writer,
         });
       }
+      await fx.afterInstall?.(t, s, vertical);
       return s;
     };
     const crm = async (t: TenantId, s: ScopeId, op: string, input: unknown): Promise<unknown> =>
@@ -412,6 +433,26 @@ export function verticalEventsContractSuite(
       expect(again.length).toBeGreaterThan(0);
       expect(again.every((e) => e.state === 'idle' && e.delivered === 0)).toBe(true);
       expect((await board(t, c)).associations).toHaveLength(2);
+    });
+
+    it('the stub reports a committed exported type, and nothing else — the router kick\'s signal (#1705 PR 2)', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      await install(t, BOARD_VERTICAL);
+      const seen: number[] = [];
+      const stub = await fx.producer.getScope(writer, t, p, { onExportedEvents: (n) => seen.push(n) });
+      const id = ((await stub.invoke('crm/create', { name: 'Kicked' })) as { id: string }).id;
+      expect(seen).toEqual([1]);
+      // A type crm emits but does not export is no reason to run its edges.
+      await stub.invoke('crm/note', { id });
+      expect(seen).toEqual([1]);
+      // Nor is an invoke that committed nothing: refused before it could emit.
+      const refused = await fx.producer.getScope(reader, t, p, { onExportedEvents: (n) => seen.push(n) });
+      await expect(refused.invoke('crm/create', { name: 'Refused' })).rejects.toThrow();
+      expect(seen).toEqual([1]);
+      // Each exported type counts, whichever operation committed it.
+      await stub.invoke('crm/touch', { id });
+      expect(seen).toEqual([1, 1]);
     });
 
     it('never crosses a tenant: each consumer receives its own tenant\'s producer, and none from another', async () => {

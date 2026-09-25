@@ -5,11 +5,13 @@ import {
   isPrimaryScope,
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,
+  registryImportCandidates,
+  runCrossVerticalFrom,
   runningVersionOf,
   runPlatformSweep,
   startPlatformSweeper,
 } from '../src/platform-sweep.js';
-import type { ConnectorSweeper, PlatformSweepOptions } from '../src/platform-sweep.js';
+import type { ConnectorSweeper, CrossVerticalReach, PlatformSweepOptions } from '../src/platform-sweep.js';
 import type { FetchLike, MigrateScopeOutcome, ScopeHost } from '../src/scope-host.js';
 
 /**
@@ -1769,5 +1771,222 @@ describe('runPlatformSweep · cross-vertical cost (#1705)', () => {
     const paused = await runPlatformSweep(host, { ...quiet, crossVertical: { maxConsumers: 0 } });
     expect(calls).toEqual([]); // 0 is the pause switch
     expect(paused.crossVertical).toMatchObject({ candidates: 5, deferred: 5 });
+  });
+});
+
+/**
+ * #1705 PR 2 — the control plane's narrowing. On the hosted path every scope call is a Durable
+ * Object wake plus an `/internal` hop, so which scopes the phase calls is decided from the
+ * version registry, one read per distinct running version, and never by asking a scope.
+ */
+describe('registryImportCandidates (#1705 PR 2)', () => {
+  const V1 = '01JZ0000000000000000000V01';
+  const V2 = '01JZ0000000000000000000V02';
+  const manifestImporting = (from: string[]) =>
+    JSON.stringify({
+      registry: {
+        permissions: [],
+        roles: [],
+        imports: from.map((f) => ({ from: f, type: 'crm.a', schemaVersion: 1, declaredBy: ['@x/board'] })),
+      },
+    });
+  const scopesOn = (n: number, versionId: string, extra: object = {}) =>
+    Array.from({ length: n }, () => ({
+      id: sid(),
+      tenantId: T,
+      status: 'active',
+      vertical: 'acme/board',
+      verticalVersionId: versionId,
+      kind: 'app',
+      forkedFrom: null,
+      ...extra,
+    })) as unknown as Scope[];
+  /** A directory whose versions carry the given manifests, counting its reads. */
+  const registry = (manifests: Record<string, string | null>, verticals: object[] = []) => {
+    const reads: string[] = [];
+    const admin = {
+      listVerticals: async () => {
+        reads.push('listVerticals');
+        return verticals;
+      },
+      versionManifest: async (_a: unknown, _slug: string, versionId: string) => {
+        reads.push(`versionManifest:${versionId}`);
+        return manifests[versionId] ?? null;
+      },
+    };
+    return { admin: admin as never, reads };
+  };
+  const importsOf = (json: string | null) => {
+    if (!json) return [];
+    const imports = (JSON.parse(json) as { registry?: { imports?: { from: string }[] } }).registry?.imports;
+    return imports ?? [];
+  };
+  const hostWith = (scopes: Scope[]) => {
+    const called: string[] = [];
+    const host = { admin: { listScopes: async () => scopes, listConnections: async () => [] } } as unknown as ScopeHost;
+    const reachOver = (candidates: CrossVerticalReach['candidates']): CrossVerticalReach => ({
+      candidates,
+      importState: async (_t, s) => {
+        called.push(s);
+        return { consumes: [], cursors: [] };
+      },
+      readExports: async () => {
+        throw new Error('no edge here');
+      },
+      deliver: async () => {
+        throw new Error('no edge here');
+      },
+    });
+    return { host, called, reachOver };
+  };
+  const quiet: Omit<PlatformSweepOptions, 'crossVertical'> = {
+    actor: ACTOR,
+    fetch: FETCH,
+    sweepers: {},
+    drainRetries: false,
+    gcSnapshots: false,
+    reconcileMigrations: false,
+    runSchedules: false,
+  };
+
+  it('a fleet whose running versions import nothing makes zero scope calls, and one registry read per version', async () => {
+    const scopes = [...scopesOn(250, V1), ...scopesOn(250, V2)];
+    const { admin, reads } = registry({ [V1]: manifestImporting([]), [V2]: null });
+    const { host, called, reachOver } = hostWith(scopes);
+    const report = await runPlatformSweep(host, {
+      ...quiet,
+      crossVertical: { reach: reachOver(registryImportCandidates({ admin, actor: ACTOR, importsOf })) },
+    });
+    expect(called).toEqual([]);
+    expect(report.crossVertical).toMatchObject({ candidates: 0, edges: [] });
+    // Cached for the pass: 500 scopes, two versions, two reads. No serving script, no listVerticals.
+    expect(reads.sort()).toEqual([`versionManifest:${V1}`, `versionManifest:${V2}`]);
+  });
+
+  it('only the scopes whose running version imports are called', async () => {
+    const importing = scopesOn(3, V1);
+    const scopes = [...importing, ...scopesOn(40, V2)];
+    const { admin } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: manifestImporting([]) });
+    const { host, called, reachOver } = hostWith(scopes);
+    await runPlatformSweep(host, {
+      ...quiet,
+      crossVertical: { reach: reachOver(registryImportCandidates({ admin, actor: ACTOR, importsOf })) },
+    });
+    expect(new Set(called)).toEqual(new Set(importing.map((s) => s.id)));
+  });
+
+  it('follows the version a scope RUNS: a serving script that serves an importing version counts', async () => {
+    // Bound to V2 (imports nothing), but on the serving script, which now serves V1 (imports).
+    const scopes = scopesOn(2, V2, { servingRef: 'serving-board' });
+    const { admin, reads } = registry(
+      { [V1]: manifestImporting(['acme/crm']), [V2]: manifestImporting([]) },
+      [{ slug: 'acme/board', servingRef: 'serving-board', servingVersionId: V1 }],
+    );
+    const narrow = registryImportCandidates({ admin, actor: ACTOR, importsOf });
+    expect(await narrow(scopes)).toHaveLength(2);
+    expect(reads).toEqual(['listVerticals', `versionManifest:${V1}`]);
+  });
+
+  it('with a `from` hint, a scope that imports only from someone else is dropped', async () => {
+    const fromCrm = scopesOn(1, V1);
+    const fromOther = scopesOn(1, V2);
+    const { admin } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: manifestImporting(['acme/other']) });
+    const narrow = registryImportCandidates({ admin, actor: ACTOR, importsOf });
+    expect((await narrow([...fromCrm, ...fromOther], { from: 'acme/crm' })).map((s) => s.id)).toEqual([fromCrm[0]!.id]);
+    expect(await narrow([...fromCrm, ...fromOther])).toHaveLength(2);
+  });
+});
+
+/**
+ * #1705 PR 2 — the router kick's half: ONE producer's outgoing edges, now. Narrowed to the
+ * producer's tenant, to edges whose producer resolves to the named scope, and to consumers that
+ * import from it, under the same cap as the sweep.
+ */
+describe('runCrossVerticalFrom (#1705 PR 2)', () => {
+  const U = tenantId.parse(genId());
+  const scope = (vertical: string, extra: object = {}) =>
+    ({ id: sid(), tenantId: T, status: 'active', vertical, kind: 'app', forkedFrom: null, ...extra }) as unknown as Scope;
+  const crm = scope('acme/crm');
+  const other = scope('acme/other');
+  const board = scope('acme/board');
+  const all = [crm, other, board];
+  const setup = (scopes: Scope[]) => {
+    const listed: unknown[] = [];
+    const reads: string[] = [];
+    const host = {
+      admin: {
+        listScopes: async (_a: unknown, filter: { tenantId?: string }) => {
+          listed.push(filter);
+          return scopes.filter((s) => !filter.tenantId || s.tenantId === filter.tenantId);
+        },
+      },
+    } as unknown as ScopeHost;
+    const reach: CrossVerticalReach = {
+      candidates: (s, hint) => {
+        reads.push(`candidates:${hint?.from ?? '-'}`);
+        return s.filter((x) => x.vertical === 'acme/board');
+      },
+      importState: async () => ({
+        consumes: [
+          { from: 'acme/crm', type: 'crm.a', schemaVersion: 1 },
+          { from: 'acme/other', type: 'other.a', schemaVersion: 1 },
+        ] as never,
+        cursors: [],
+      }),
+      readExports: async (_t, s) => {
+        reads.push(`read:${s}`);
+        return { events: [], withheld: [], unexported: [], paused: null, next: null, more: false };
+      },
+      deliver: async () => {
+        throw new Error('nothing is new, so nothing is delivered');
+      },
+    };
+    return { host, reach, listed, reads };
+  };
+
+  it('runs only the named producer\'s edges, reading only its tenant', async () => {
+    const { host, reach, listed, reads } = setup(all);
+    const out = await runCrossVerticalFrom(host, { actor: ACTOR, crossVertical: { reach } }, { tenantId: T, scopeId: crm.id });
+    expect(listed).toEqual([{ status: 'active', tenantId: T }]);
+    // Asked for consumers of acme/crm, and read crm, never acme/other.
+    expect(reads).toEqual(['candidates:acme/crm', `read:${crm.id}`]);
+    expect(out.crossVertical.edges).toEqual([
+      expect.objectContaining({ state: 'idle', producer: { vertical: 'acme/crm', scopeId: crm.id } }),
+    ]);
+    expect(out.errors).toEqual([]);
+  });
+
+  it('a kick naming a scope that is not the producer\'s resolved install runs nothing', async () => {
+    const fork = scope('acme/crm', { forkedFrom: crm.id });
+    const second = scope('acme/crm');
+    const foreign = { ...crm, tenantId: U } as Scope;
+    for (const [scopes, named] of [
+      [[...all, fork], fork], // a fork is never a producer
+      [[...all, second], crm], // two primary installs: ambiguous, refused rather than guessed
+      [all, scope('acme/crm')], // not listed (not active, or not in the directory)
+      [all, foreign], // the right id under another tenant
+    ] as [Scope[], Scope][]) {
+      const { host, reach, reads } = setup(scopes);
+      const out = await runCrossVerticalFrom(
+        host,
+        { actor: ACTOR, crossVertical: { reach } },
+        { tenantId: named.tenantId, scopeId: named.id },
+      );
+      expect(reads).toEqual([]);
+      expect(out.crossVertical.edges).toEqual([]);
+    }
+  });
+
+  it('keeps the per-pass consumer cap', async () => {
+    const boards = [scope('acme/board'), scope('acme/board'), scope('acme/board')];
+    const { host, reach } = setup([crm, ...boards]);
+    // Two primary boards would be ambiguous as CONSUMERS, which is the edge's business, not the
+    // cap's. The cap is what is asserted: two of three visited, one deferred.
+    const out = await runCrossVerticalFrom(
+      host,
+      { actor: ACTOR, crossVertical: { reach, maxConsumers: 2, rng: () => 0 } },
+      { tenantId: T, scopeId: crm.id },
+    );
+    expect(out.crossVertical).toMatchObject({ candidates: 3, deferred: 1 });
   });
 });

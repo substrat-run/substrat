@@ -6,7 +6,7 @@ import { platformActorId, principalId, tenantId } from '@substrat-run/contracts'
 import { ulid } from '@substrat-run/kernel';
 import { mintSession, type OidcEnv } from '@substrat-run/oidc-rp';
 import { d1StaffRoster, listStaff } from '../src/staff-roster.js';
-import { platformStoreClients } from '../src/worker.js';
+import { drainKickOf, platformStoreClients } from '../src/worker.js';
 
 /**
  * Slice 1's definition of done, as an automated workerd test (first-flow.md §4):
@@ -341,6 +341,23 @@ describe('router kick — /internal/drain-scope', () => {
       body: JSON.stringify({ tenantId: ulid(), scopeId: ulid() }),
     });
     expect(res.status).toBe(403);
+  });
+
+  it('refuses an exported-events kick the same way (#1705 PR 2)', async () => {
+    const res = await SELF.fetch('https://cp.test/internal/drain-scope', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
+      body: JSON.stringify({ tenantId: ulid(), scopeId: ulid(), platformRequests: false, exports: true }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('reads what the kick asks for: a legacy router means the intent drain, and only `true` runs edges', () => {
+    expect(drainKickOf({})).toEqual({ intents: true, exports: false });
+    expect(drainKickOf({ platformRequests: true, exports: false })).toEqual({ intents: true, exports: false });
+    expect(drainKickOf({ platformRequests: false, exports: true })).toEqual({ intents: false, exports: true });
+    expect(drainKickOf({ platformRequests: true, exports: true })).toEqual({ intents: true, exports: true });
+    expect(drainKickOf({ platformRequests: false, exports: 'yes' })).toEqual({ intents: false, exports: false });
   });
 });
 

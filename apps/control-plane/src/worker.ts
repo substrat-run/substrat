@@ -1136,6 +1136,19 @@ export function assertReconcileReaches(scopeId: ScopeId, expected: string, reach
 }
 
 /**
+ * What one router kick asks for (#1705 PR 2), read off `/internal/drain-scope`'s body. The
+ * router says which flags the vertical's response raised: `platformRequests` (drain the scope's
+ * intents) and `exports` (run the scope's outgoing cross-vertical edges). A router that predates
+ * the flags sends neither and means the intent drain, which is all a kick used to be. Only a
+ * literal `true` asks for the edges: they cost a directory read and scope calls, so anything else
+ * is read as not asking.
+ */
+export function drainKickOf(body: { platformRequests?: unknown; exports?: unknown }): { intents: boolean; exports: boolean } {
+  const legacy = body.platformRequests === undefined && body.exports === undefined;
+  return { intents: legacy || body.platformRequests === true, exports: body.exports === true };
+}
+
+/**
  * A vertical's 501 from `/internal/reconcile` means "I implement no reconcile" — a vertical
  * without the route answers it from its `/internal/*` catch-all, and one that keeps no
  * owner-of-record answers it from `mountPlatformSurface` (#1653). The sweep counts that as
@@ -1690,10 +1703,7 @@ export default {
       if (!ids.success || !sids.success) {
         return c.json({ error: 'tenantId and scopeId (ULIDs) are required' }, 400);
       }
-      // #1705 PR 2: what the response that prompted the kick flagged. A router that predates
-      // the flags sends neither, and means the intent drain, which is all a kick used to be.
-      const exportsKick = body.exports === true;
-      const intentsKick = body.platformRequests === true || body.exports === undefined;
+      const { intents: intentsKick, exports: exportsKick } = drainKickOf(body);
       // Runs inline: the router backgrounds this call with `ctx.waitUntil`, so completing the
       // drain here is what keeps the subrequest alive long enough to actually settle the intents.
       const report = intentsKick

@@ -48,6 +48,7 @@ import {
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
 import {
+  EXPORTED_EVENTS_HEADER,
   PLATFORM_REQUEST_HEADER,
   readRoutedNode,
   RouterAssertionError,
@@ -226,6 +227,9 @@ async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
     // enqueued at least one intent, so it costs nothing until then, and without it every
     // platform intent waits up to a quarter of an hour.
     onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
+    // #1705: an event another of the tenant's apps imports was committed; the same kick then
+    // delivers it in seconds instead of at the next sweep.
+    onExportedEvents: () => c.header(EXPORTED_EVENTS_HEADER, '1'),
   });
 }
 

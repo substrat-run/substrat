@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  importsOfManifestJson,
   buildPermissionRegistry,
   eventsExportedBy,
   moduleManifest,
@@ -155,5 +156,32 @@ describe('sweep runs: an edge row is the platform\'s, never a scope batch\'s (#1
       entries: [{ kind: 'vertical-events', outcome: 'ok', at: '2026-09-22T00:00:00.000Z' }],
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+/**
+ * #1705 PR 2 — which scopes the hosted sweep calls at all is read from each running version's
+ * stored manifest. Anything that is not a well-formed `imports` row must read as importing
+ * nothing: reading it as "something" would put every legacy install back on every pass.
+ */
+describe('importsOfManifestJson (#1705 PR 2)', () => {
+  const row = { from: 'acme/crm', type: 'crm.customer-created', schemaVersion: 1, declaredBy: ['@acme/board'] };
+  it('lifts the registry\'s imports rows', () => {
+    expect(importsOfManifestJson(JSON.stringify({ registry: { permissions: [], roles: [], imports: [row] } }))).toEqual([
+      { from: 'acme/crm', type: 'crm.customer-created', schemaVersion: 1 },
+    ]);
+  });
+  it.each([
+    ['no manifest', null],
+    ['unparseable JSON', '{not json'],
+    ['no registry', JSON.stringify({ outbound: [] })],
+    ['a registry predating imports', JSON.stringify({ registry: { permissions: [], roles: [] } })],
+    ['imports that are not a list', JSON.stringify({ registry: { imports: { from: 'acme/crm' } } })],
+  ])('%s imports nothing', (_why, json) => {
+    expect(importsOfManifestJson(json)).toEqual([]);
+  });
+  it('drops a malformed row rather than trusting it', () => {
+    const json = JSON.stringify({ registry: { imports: [row, { from: 'acme/crm' }, { ...row, schemaVersion: 0 }] } });
+    expect(importsOfManifestJson(json)).toHaveLength(1);
   });
 });
