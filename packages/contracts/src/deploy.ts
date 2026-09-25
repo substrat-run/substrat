@@ -784,6 +784,30 @@ export const declaredEventSurface = z.object({
 });
 export type DeclaredEventSurface = z.infer<typeof declaredEventSurface>;
 
+/** How many SQL migrations a manifest carries at most (#1677). */
+export const DECLARED_MIGRATIONS_MAX = 2000;
+/** How many bytes of SQL (UTF-8, summed over every migration) a manifest carries at most. */
+export const DECLARED_MIGRATIONS_SQL_BYTES_MAX = 2 * 1024 * 1024;
+
+/**
+ * One SQL migration a module ships (#1677): the `(module, version)` pair the kernel journals
+ * it under, and its SQL verbatim. Carried so a promote can show WHICH migrations it would run
+ * and what they do, rather than only that a digest moved.
+ */
+export const declaredMigration = z.object({
+  moduleId,
+  /** The module's `SqlMigration.version`, e.g. `0001-init`. Unique per module. */
+  version: z.string().min(1).max(200),
+  sql: z.string(),
+});
+export type DeclaredMigration = z.infer<typeof declaredMigration>;
+
+/** The UTF-8 size of every migration's SQL, summed — what the byte cap is measured in. */
+export function sqlBytes(migrations: readonly { sql: string }[]): number {
+  const enc = new TextEncoder();
+  return migrations.reduce((n, m) => n + enc.encode(m.sql).length, 0);
+}
+
 export const deployManifest = z.object({
   version: z.string().min(1),
   /** Display name for a first-time register; defaults to the slug. */
@@ -926,6 +950,26 @@ export const deployManifest = z.object({
    *  dashboard's declared-vs-observed read needs it. Metadata, in no digest, optional
    *  twice over. */
   freshness: z.array(freshnessSpec.extend({ moduleId })).optional(),
+  /**
+   * Every SQL migration the vertical's modules ship (#1677), module by module in
+   * registration order and each module's own order, with its SQL verbatim. It is what the
+   * promote dialog and `substrat promote` read to show the migrations a promote would run.
+   *
+   * Metadata, and in NO digest: `digests.migration` is what the promotion gate compares,
+   * and this field does not change what it is computed from. Readable only by the owner,
+   * because SQL describes a schema.
+   *
+   * `[]` means the modules ship no SQL migrations. ABSENT means the version was pushed
+   * before the field existed, or the set was over the caps below and the push left it out.
+   * A reader must treat absence as "cannot show", never as "no migrations".
+   */
+  migrations: z
+    .array(declaredMigration)
+    .max(DECLARED_MIGRATIONS_MAX)
+    .refine((ms) => sqlBytes(ms) <= DECLARED_MIGRATIONS_SQL_BYTES_MAX, {
+      message: `migrations carry more than ${DECLARED_MIGRATIONS_SQL_BYTES_MAX} bytes of SQL`,
+    })
+    .optional(),
   /** The vertical's declared permission surface (D-39/D-41): keys+descriptions, role templates,
    *  entity-grant shapes — the machine-readable twin of PERMISSIONS.md, derived at push from the
    *  vertical's `definePermissions(...)` entry. REQUIRED: a deployable vertical must declare its
