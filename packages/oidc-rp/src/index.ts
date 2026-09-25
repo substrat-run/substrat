@@ -101,6 +101,29 @@ async function pkceChallenge(verifier: string): Promise<string> {
   return b64url(await crypto.subtle.digest('SHA-256', enc.encode(verifier)));
 }
 
+/** How many same-origin redirects a discovery fetch follows (a trailing-slash bounce, say). */
+const DISCOVERY_MAX_REDIRECTS = 3;
+
+/**
+ * GET the discovery document, following a redirect only while it stays on the origin it
+ * started at: the document is what names the token endpoint and the keys, so where it is
+ * served from is the trust root, and a redirect off that origin is a failure.
+ */
+async function fetchDiscovery(url: string): Promise<Response> {
+  const origin = new URL(url).origin;
+  let target = url;
+  for (let hop = 0; ; hop++) {
+    const res = await fetch(target, { redirect: 'manual' });
+    if (res.status < 300 || res.status >= 400) return res;
+    const location = res.headers.get('location');
+    const next = location ? new URL(location, target) : null;
+    if (!next || next.origin !== origin || hop >= DISCOVERY_MAX_REDIRECTS) {
+      throw new Error(`OIDC discovery at ${url} redirected away from its origin`);
+    }
+    target = next.toString();
+  }
+}
+
 // Discovery + JWKS, cached per issuer for the life of the isolate.
 const discoveryCache = new Map<string, Promise<Discovery>>();
 function discover(issuer: string): Promise<Discovery> {
@@ -114,10 +137,17 @@ function discover(issuer: string): Promise<Discovery> {
   // login replays that rejection after the issuer has recovered. Federated logout makes
   // that reachable in a way it was not before: it degrades to a local sign-out, so the
   // request that poisoned the cache is the one that looked like it worked.
-  const pending: Promise<Discovery> = fetch(url)
+  const pending: Promise<Discovery> = fetchDiscovery(url)
     .then(async (r) => {
       if (!r.ok) throw new Error(`OIDC discovery failed (${r.status}) at ${url}`);
-      return (await r.json()) as Discovery;
+      const d = (await r.json()) as Discovery;
+      // OIDC Discovery §4.3: the `issuer` the document states MUST be the one it was fetched
+      // for. The ID token is checked against `d.issuer` and its keys come from `d.jwks_uri`, so
+      // without this the document vouches for itself. Fail closed, and (below) do not cache it.
+      if (typeof d.issuer !== 'string' || d.issuer.replace(/\/$/, '') !== key) {
+        throw new Error(`OIDC discovery at ${url} names a different issuer`);
+      }
+      return d;
     })
     .catch((err: unknown) => {
       if (discoveryCache.get(key) === pending) discoveryCache.delete(key);
@@ -212,7 +242,12 @@ export async function completeLogin(
   if (flow.s !== state) throw new Error('state mismatch');
 
   const d = await discover(env.OIDC_ISSUER);
+  // The code, the PKCE verifier and the client secret go to this URL: https (or loopback for a
+  // dev issuer), and never through a redirect. It is NOT required to share the issuer's
+  // origin: real providers serve the token endpoint from another host than their issuer.
+  if (!isHttpsOrLoopback(new URL(d.token_endpoint))) throw new Error('token endpoint is not https');
   const res = await fetch(d.token_endpoint, {
+    redirect: 'manual',
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -309,6 +344,7 @@ async function withUserInfo(
   let claims: { sub?: unknown; email?: unknown; name?: unknown; email_verified?: unknown };
   try {
     const res = await fetch(d.userinfo_endpoint, {
+      redirect: 'manual',
       headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
       signal: AbortSignal.timeout(USERINFO_TIMEOUT_MS),
     });
