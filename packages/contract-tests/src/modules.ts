@@ -620,6 +620,16 @@ const linkUndeclared: OperationHandler<undefined, void> = (ctx) => {
   ctx.link({ entityType: 'box', entityId: 'b1' }, { entityType: 'item', entityId: 'i1' });
 };
 
+/**
+ * Run whatever SQL the caller hands over, through the connection module code holds (#1741).
+ * The SQL-limits suite drives the same statement through both adapters with these and
+ * compares the refusal — so the statement is the input, and the module judges nothing.
+ */
+const sqlQuery: OperationHandler<{ sql: string; params?: never[] }, unknown[]> = (ctx, input) =>
+  ctx.sql.query(input.sql, input.params ?? []);
+const sqlExec: OperationHandler<{ sql: string; params?: never[] }, number> = (ctx, input) =>
+  ctx.sql.exec(input.sql, input.params ?? []).changes;
+
 const readJournal: OperationHandler<undefined, { module_id: string; version: string }[]> = (ctx) =>
   ctx.sql.query('SELECT module_id, version FROM _substrat_migrations ORDER BY module_id');
 
@@ -1078,6 +1088,9 @@ export const testMod: ModuleRegistration = {
     'testmod/add': addItem as OperationHandler<never, unknown>,
     'testmod/relink': relinkItem as OperationHandler<never, unknown>,
     'testmod/link-undeclared': linkUndeclared as OperationHandler<never, unknown>,
+    // #1741 — the SQL limits' fixtures.
+    'testmod/sql-query': sqlQuery as OperationHandler<never, unknown>,
+    'testmod/sql-exec': sqlExec as OperationHandler<never, unknown>,
     'testmod/read-journal': readJournal as OperationHandler<never, unknown>,
     'testmod/read-tuples': readTuples as OperationHandler<never, unknown>,
     // #954 — the spine guard's fixtures.

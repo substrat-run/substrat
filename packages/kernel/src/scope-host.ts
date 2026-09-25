@@ -204,6 +204,26 @@ export interface PageParams {
 
 export type SqlValue = string | number | bigint | Uint8Array | null;
 
+/**
+ * The SQL door a module holds: `ctx.sql`.
+ *
+ * **The node adapter refuses what a Durable Object refuses, for three limits** (#1741): a
+ * statement over one gets the hosted message, so a vertical's own suite fails where production
+ * would (`DO_SQL_LIMITS`, measured in `adapter-cloudflare/test/do-sql-limits.test.ts`). The
+ * fourth, the `LIKE`/`GLOB` pattern, is a limit of the hosted database only — see the last item.
+ *
+ * - **5** terms in one compound `SELECT` (`UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT`; a
+ *   subquery or CTE body counts its own; multi-row `VALUES` is not a compound);
+ * - **100** bound parameters in one statement (the highest number, `?N` included) — bind a
+ *   list of unknown length as ONE JSON array and read it with `json_each`;
+ * - **100 000 bytes** of statement, UTF-8, the whole string;
+ * - **50 bytes** of `LIKE`/`GLOB` pattern, UTF-8 — NOT enforced by an adapter: node's SQLite
+ *   allows 50 000, and only this repository's suites emulate the limit
+ *   (`tools/vitest/like-pattern-limit.cjs`). Doing it in the adapter would replace `like()` on
+ *   every connection: a JavaScript call per row, and no `LIKE` prefix index for self-hosters.
+ *
+ * Only module-facing SQL is judged; see `guardSqlLimits`.
+ */
 export interface ScopedSql {
   query<T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): T[];
   exec(sql: string, params?: readonly SqlValue[]): { changes: number };

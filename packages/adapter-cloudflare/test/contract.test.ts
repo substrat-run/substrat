@@ -43,6 +43,7 @@ import {
   permMod,
   inputParseContractSuite,
   spineGuardContractSuite,
+  sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
 
@@ -2594,6 +2595,18 @@ inputParseContractSuite('adapter-cloudflare', async () => {
 // the guard has to hold on, since a vertical is written against the pure adapter
 // and deployed onto the DO.
 spineGuardContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #1741: the same statements, refused with the same messages — here by the DO's own SQLite,
+// which is where the limits come from. The node twin is in adapter-sqlite's contract.test.ts.
+sqlLimitsContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
