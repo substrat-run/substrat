@@ -1,27 +1,3 @@
-  // Behaves as the runtime does: a redirect is followed unless the caller says `manual`, so a
-  // caller that forgets to ask is exactly what lands on the attacker's document.
-  const stub = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const url = String(input instanceof Request ? input.url : input);
-    requests.push(url);
-    if (url === `${issuer}/.well-known/openid-configuration`) {
-      if (discovery === 'down') return new Response('down', { status: 503 });
-      if (discovery === 'redirect-off-origin') {
-        const location = 'https://evil.test/.well-known/openid-configuration';
-        if (init?.redirect !== 'manual') return stub(location, init);
-        return new Response(null, { status: 302, headers: { location } });
-      }
-      return Response.json({ issuer, jwks_uri: `${issuer}/jwks`, ...doc });
-    }
-    if (url === 'https://evil.test/.well-known/openid-configuration') {
-      return Response.json({ issuer, jwks_uri: 'https://evil.test/jwks' });
-    }
-    if (url === `${issuer}/jwks`) return Response.json(goodJwks);
-    if (url === 'https://evil.test/jwks') return Response.json(evilJwks);
-    throw new Error(`unexpected fetch in test: ${url}`);
-  };
-  vi.stubGlobal('fetch', stub as typeof fetch);
-});
-
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 import { oidcAuthProvider } from '../src/oidc.js';
@@ -58,13 +34,17 @@ beforeEach(() => {
   doc = {};
   discovery = 'doc';
   requests = [];
-  vi.stubGlobal('fetch', (async (input: RequestInfo | URL) => {
+  // Behaves as the runtime does: a redirect is followed unless the caller says `manual`, so a
+  // caller that forgets to ask is exactly what lands on the attacker's document.
+  const stub = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input instanceof Request ? input.url : input);
     requests.push(url);
     if (url === `${issuer}/.well-known/openid-configuration`) {
       if (discovery === 'down') return new Response('down', { status: 503 });
       if (discovery === 'redirect-off-origin') {
-        return new Response(null, { status: 302, headers: { location: 'https://evil.test/.well-known/openid-configuration' } });
+        const location = 'https://evil.test/.well-known/openid-configuration';
+        if (init?.redirect !== 'manual') return stub(location, init);
+        return new Response(null, { status: 302, headers: { location } });
       }
       return Response.json({ issuer, jwks_uri: `${issuer}/jwks`, ...doc });
     }
@@ -74,7 +54,8 @@ beforeEach(() => {
     if (url === `${issuer}/jwks`) return Response.json(goodJwks);
     if (url === 'https://evil.test/jwks') return Response.json(evilJwks);
     throw new Error(`unexpected fetch in test: ${url}`);
-  }) as typeof fetch);
+  };
+  vi.stubGlobal('fetch', stub as typeof fetch);
 });
 
 afterEach(() => vi.unstubAllGlobals());
