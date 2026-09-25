@@ -1,13 +1,11 @@
 import { exactTime, type ObsQuery } from '../lib/observability-query';
 import { useEffect, useState } from 'react';
 import { Button, Input } from '@substrat-run/ui';
-import { type EventFacetResult, api, ApiError, type ObservabilityLogEvent, type TenantMetricsRow } from '../lib/api';
-import { DEV_MOCK, MOCK_INSTALLED_APP_SCOPE, MOCK_TENANT_METRICS } from '../lib/mock';
+import { type EventFacetResult, api, ApiError, type ObservabilityLogEvent } from '../lib/api';
+import { DEV_MOCK } from '../lib/mock';
 import { MOCK_LOG_LINES } from '../lib/mock-pulse';
-import { GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
 import { LogList } from '../components/LogList';
-import { navigate, teamPath } from '../lib/router';
 import { EVENT_GROUPS, bucketRows, dimensionLabel, type BucketRow, type EventGroup } from '../lib/log-stream';
 import { mockEventFacets } from '../lib/mock-events';
 
@@ -40,145 +38,6 @@ function windowLabel(hours: number): string {
 function cursorLabel(w: { from: string; to: string }): string {
   const t = exactTime;
   return `${t(w.from)}–${t(w.to)}`;
-}
-
-/**
- * One installed app's traffic, split by the surface that answered — the tenant grain
- * (observability.md §3 view 4).
- *
- * This is narrower than the fleet numbers a vertical's builder reads, and more accurate
- * here for exactly that reason: it is keyed on this installation rather than on a script
- * shared with every other team that installed the same vertical. Two teams running the
- * same vertical see two different tables.
- *
- * What is deliberately absent is the per-version breakdown. A version is a fact about the
- * code — for an app running someone else's vertical the code is not this team's, and for
- * one this team publishes the link below goes where that question is already answered.
- */
-export function TenantTrafficTable({ scopeId, hours, nonce, window }: { scopeId: string; hours: number; nonce: number; window?: { since: string; until: string } }) {
-  const [rows, setRows] = useState<TenantMetricsRow[] | null>(null);
-  const [state, setState] = useState<'loading' | 'ready' | 'absent' | 'error'>('loading');
-  // `false` only when the per-app deployments read says the vertical is someone else's.
-  // That is what decides whether there is a fleet view to offer at all.
-  const [owned, setOwned] = useState<boolean | null>(null);
-  const [slug, setSlug] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (DEV_MOCK) {
-      // Fixture-driven rather than a flat `true`: one mock scope runs another team's
-      // vertical (`MOCK_INSTALLED_APP_SCOPE`), which is the only way the dev preview can
-      // show this panel both with and without its fleet link.
-      setOwned(scopeId !== MOCK_INSTALLED_APP_SCOPE);
-      setSlug('acme/helpdesk');
-      return;
-    }
-    let live = true;
-    setOwned(null);
-    setSlug(null);
-    api
-      .appDeployments(scopeId)
-      .then((d) => {
-        if (!live) return;
-        setOwned(d.owned !== false);
-        setSlug(d.slug);
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [scopeId]);
-
-  useEffect(() => {
-    let live = true;
-    setState('loading');
-    // Cleared with the state, not left in place: the loader only shows over an EMPTY
-    // table, so keeping the old rows would leave one app's totals on screen under the
-    // heading of another until the new read lands — the misreading this page exists
-    // to prevent.
-    setRows(null);
-    void (async () => {
-      try {
-        const r = DEV_MOCK ? MOCK_TENANT_METRICS : await api.appTenantMetrics(scopeId, hours, window);
-        if (!live) return;
-        setRows(r);
-        setState('ready');
-      } catch (e) {
-        if (!live) return;
-        setState(e instanceof ApiError && e.status === 501 ? 'absent' : 'error');
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, [scopeId, hours, nonce, window?.since, window?.until]);
-
-  if (state === 'absent') {
-    return (
-      <div style={{ padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
-        Traffic queries are not available on this platform for this window.
-      </div>
-    );
-  }
-
-  const fleetPath = owned === true && slug ? `/verticals/${encodeURIComponent(slug)}` : null;
-
-  return (
-    <div style={{ display: 'grid', gap: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          What the router dispatched to this app in {window ? `${exactTime(window.since)} – ${exactTime(window.until)}` : windowLabel(hours)}, by the surface that answered. P50 is median latency; P95 is the 95th percentile. These are sampled estimates.
-        </span>
-        <div style={{ flex: 1 }} />
-        {fleetPath && (
-          // The builder's question — how is the CODE doing across every team that installed
-          // it — is answered on the vertical, not here. This page is one installation, for
-          // its publisher too; the link is what makes that a narrowing rather than a loss.
-          <a
-            href={teamPath(fleetPath)}
-            onClick={(e) => {
-              e.preventDefault();
-              navigate(fleetPath);
-            }}
-            style={{ color: 'var(--text-brand)', fontSize: 12.5, whiteSpace: 'nowrap' }}
-          >
-            ↑ Fleet view on the vertical
-          </a>
-        )}
-      </div>
-
-      {state === 'error' ? (
-        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
-          Traffic data is unavailable right now.
-        </div>
-      ) : state === 'loading' && rows === null ? (
-        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>Loading…</div>
-      ) : rows && rows.length === 0 ? (
-        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
-          No traffic recorded in this window.
-        </div>
-      ) : (
-        <GridTable
-          columns="0.8fr 1fr 0.8fr 0.9fr 0.9fr 0.9fr"
-          header={['Surface', 'Requests', 'Errors', 'Error rate', 'P50', 'P95']}
-        >
-          {(rows ?? []).map((r, i) => (
-            <Row key={`${r.scopeId}:${r.surface}`} columns="0.8fr 1fr 0.8fr 0.9fr 0.9fr 0.9fr" last={i === (rows ?? []).length - 1}>
-              <MonoTag>{r.surface ?? '—'}</MonoTag>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{r.requests.toLocaleString('en-US')}</span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: r.errors > 0 ? 'var(--status-danger-fg)' : undefined }}>
-                {r.errors.toLocaleString('en-US')}
-              </span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>
-                {r.requests === 0 ? '—' : `${((r.errors / r.requests) * 100).toFixed(2)}%`}
-              </span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{Math.round(r.durationP50)} ms</span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{Math.round(r.durationP95)} ms</span>
-            </Row>
-          ))}
-        </GridTable>
-      )}
-    </div>
-  );
 }
 
 /**

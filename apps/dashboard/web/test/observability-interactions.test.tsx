@@ -2,7 +2,6 @@ import { act, useEffect, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TrafficChart } from '../src/components/TrafficChart';
-import { InspectableTraffic } from '../src/components/InspectableTraffic';
 import { LogList } from '../src/components/LogList';
 import { Observability } from '../src/views/Observability';
 import { api, type ObservabilityLogEvent, type AppRow, type AppHealthRow } from '../src/lib/api';
@@ -61,65 +60,6 @@ function key(target: Element, key: string) {
     target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key }));
   });
 }
-
-describe('real DOM chart gestures and inspection', () => {
-  it('reverse drag queries exact bounds once, suppresses click, and Escape/cancel do not query', async () => {
-    const onRange = vi.fn(),
-      onBucket = vi.fn();
-    await act(async () =>
-      root.render(
-        <InspectableTraffic
-          buckets={buckets}
-          markers={[]}
-          bucketMinutes={15}
-          window={windowRange}
-          onRange={onRange}
-          onBucket={onBucket}
-        />,
-      ),
-    );
-    const plot = container.querySelector('[data-traffic-plot]')!,
-      rect = plot.querySelector('rect')!;
-    pointer(rect, 'pointerdown', 300);
-    pointer(rect, 'pointermove', 100);
-    pointer(rect, 'pointerup', 100);
-    click(rect);
-    expect(onRange).toHaveBeenCalledExactlyOnceWith({
-      from: '2026-09-01T10:15:00.000Z',
-      to: '2026-09-01T10:45:00.000Z',
-    });
-    expect(onBucket).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain('Pinned');
-    pointer(rect, 'pointerdown', 50);
-    pointer(rect, 'pointermove', 150);
-    key(rect, 'Escape');
-    pointer(rect, 'pointerup', 150);
-    pointer(rect, 'pointerdown', 50);
-    pointer(rect, 'pointercancel', 50);
-    pointer(rect, 'pointerup', 250);
-    expect(onRange).toHaveBeenCalledTimes(1);
-  });
-  it('touch release outside the plot clamps, while keyboard activation pins details', async () => {
-    const onRange = vi.fn();
-    await act(async () =>
-      root.render(
-        <InspectableTraffic buckets={buckets} markers={[]} bucketMinutes={15} window={windowRange} onRange={onRange} />,
-      ),
-    );
-    const bucket = container.querySelector('[data-traffic-plot] [role="button"]')!;
-    pointer(bucket, 'pointerdown', 200, 'touch');
-    pointer(bucket, 'pointermove', 600, 'touch');
-    pointer(bucket, 'pointerup', 600, 'touch');
-    expect(onRange).toHaveBeenCalledWith({ from: '2026-09-01T10:30:00.000Z', to: windowRange.until });
-    // A fresh gesture resets click suppression; keyboard should always work independently.
-    pointer(bucket, 'pointerdown', 10);
-    pointer(bucket, 'pointerup', 10);
-    key(bucket, 'Enter');
-    expect(container.textContent).toContain('Pinned');
-    key(bucket, 'Escape');
-    expect(container.textContent).not.toContain('Pinned');
-  });
-});
 
 it('a Lines row opens its fields as JSON, and an underlined value adds that filter', async () => {
   const onFilter = vi.fn();

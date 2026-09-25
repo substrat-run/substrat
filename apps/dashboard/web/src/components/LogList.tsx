@@ -16,6 +16,12 @@ import { ULID, shortId } from '../lib/logs-chips';
 export type LogFilter = { level?: string; search?: string; invocationId?: string };
 
 const GRID = '3px 100px 34px 196px 76px minmax(0,1fr) 100px';
+/**
+ * Inside another panel (an event's "Logs for this call"): every line is the same call, so
+ * the invocation column says nothing and outcome is the call's, not the line's. Both go,
+ * and the message wraps rather than truncating in what is left of a narrow column.
+ */
+const COMPACT_GRID = '3px 100px 34px 160px minmax(0,1fr)';
 
 const LEVEL: Record<string, { tag: string; color: string; msg: string }> = {
   error: { tag: 'ERR', color: 'var(--status-danger-fg)', msg: 'var(--text-primary)' },
@@ -58,13 +64,18 @@ function filterFor(key: (typeof FIELDS)[number], e: ObservabilityLogEvent): LogF
 
 export function LogList({
   events,
-  maxHeight = 620,
+  maxHeight,
   onFilter,
+  compact = false,
 }: {
   events: ObservabilityLogEvent[];
+  /** A box of its own, for a list nested in another panel. Absent — the Logs page — the
+   *  lines render in page flow and scroll with it, as the design's stream does. */
   maxHeight?: number;
   onFilter?: (filter: LogFilter) => void;
+  compact?: boolean;
 }) {
+  const grid = compact ? COMPACT_GRID : GRID;
   const [open, setOpen] = useState<number | null>(null);
   // A new read is a new list: an index kept across it would open a different line.
   useEffect(() => setOpen(null), [events]);
@@ -75,18 +86,18 @@ export function LogList({
   };
 
   return (
-    <div role="table" aria-label="Log lines" style={{ maxHeight, overflow: 'auto' }}>
+    <div role="table" aria-label="Log lines" style={maxHeight ? { maxHeight, overflow: 'auto' } : undefined}>
       <div
         role="row"
-        style={{ display: 'grid', gridTemplateColumns: GRID, gap: '0 8px', alignItems: 'center', height: 28, paddingRight: 12, fontSize: 10.5, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)', position: 'sticky', top: 0, background: 'var(--surface-card)', zIndex: 1 }}
+        style={{ display: 'grid', gridTemplateColumns: grid, gap: '0 8px', alignItems: 'center', height: 28, paddingRight: 12, fontSize: 10.5, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)', ...(maxHeight ? { position: 'sticky' as const, top: 0, background: 'var(--surface-card)', zIndex: 1 } : {}) }}
       >
         <span />
         <span role="columnheader" style={{ paddingLeft: 8 }}>Time</span>
         <span role="columnheader">Lvl</span>
         <span role="columnheader">Operation</span>
-        <span role="columnheader">Outcome</span>
+        {!compact && <span role="columnheader">Outcome</span>}
         <span role="columnheader">Message</span>
-        <span role="columnheader" style={{ textAlign: 'right' }}>Invocation</span>
+        {!compact && <span role="columnheader" style={{ textAlign: 'right' }}>Invocation</span>}
       </div>
       {events.map((e, i) => {
         const lv = (e.level && LEVEL[e.level]) || UNKNOWN_LEVEL;
@@ -111,15 +122,15 @@ export function LogList({
                 } else if (k.key === 'Escape' && on) close(i);
               }}
               className="log-row"
-              style={{ display: 'grid', gridTemplateColumns: GRID, gap: '0 8px', alignItems: 'center', height: 28, paddingRight: 12, fontFamily: 'var(--font-mono)', fontSize: 12, cursor: 'pointer', color: 'var(--text-primary)', ...(on ? { background: 'var(--surface-active)' } : {}) }}
+              style={{ display: 'grid', gridTemplateColumns: grid, gap: '0 8px', alignItems: 'center', ...(compact ? { minHeight: 28, padding: '5px 12px 5px 0' } : { height: 28, paddingRight: 12 }), fontFamily: 'var(--font-mono)', fontSize: 12, cursor: 'pointer', color: 'var(--text-primary)', ...(on ? { background: 'var(--surface-active)' } : {}) }}
             >
-              <span aria-hidden style={{ alignSelf: 'stretch', background: lv.color }} />
+              <span aria-hidden style={{ alignSelf: 'stretch', background: lv.color, ...(compact ? { margin: '-5px 0' } : {}) }} />
               <span style={{ paddingLeft: 8, color: 'var(--text-tertiary)' }}>{lineTime(e.timestamp)}</span>
               <span style={{ color: lv.color, fontWeight: 500 }}>{lv.tag}</span>
               <span style={ellipsis} title={e.trigger ?? undefined}>{e.trigger ?? e.entrypoint ?? e.invocation ?? '—'}</span>
-              <span style={{ ...ellipsis, color: e.outcome && e.outcome !== 'ok' ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}>{e.outcome ?? '—'}</span>
-              <span style={{ ...ellipsis, color: lv.msg }} title={e.message ?? undefined}>{e.message ?? '—'}</span>
-              {invocation && onFilter ? (
+              {!compact && <span style={{ ...ellipsis, color: e.outcome && e.outcome !== 'ok' ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}>{e.outcome ?? '—'}</span>}
+              <span style={compact ? { color: lv.msg, overflowWrap: 'anywhere', minWidth: 0 } : { ...ellipsis, color: lv.msg }} title={compact ? undefined : (e.message ?? undefined)}>{e.message ?? '—'}</span>
+              {compact ? null : invocation && onFilter ? (
                 <button
                   type="button"
                   title={`Only invocation ${invocation}`}

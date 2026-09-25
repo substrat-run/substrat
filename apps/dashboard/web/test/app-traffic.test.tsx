@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppTraffic } from '../src/views/AppTraffic';
-import { InspectableTraffic } from '../src/components/InspectableTraffic';
+import { Pulse } from '../src/views/Pulse';
 import { api, type TrafficSeries } from '../src/lib/api';
 import { StatusBand } from '../src/views/StatusBand';
 import { useTenantMetrics } from '../src/lib/use-tenant-metrics';
@@ -199,18 +199,87 @@ describe('App › Overview traffic card (#1767)', () => {
 
   it('shares one overlay switch across charts, and persists it for the viewer', async () => {
     await mount();
+    vi.spyOn(api, 'fleetHealth').mockResolvedValue({ rows: [] });
+    vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
+    vi.spyOn(api, 'appSchedules').mockRejectedValue(new Error('unavailable'));
+    // Two live charts over the same day: the app page's traffic card and Pulse's one-clock
+    // card, each with its own row of chips.
     await act(async () =>
       root.render(
         <>
           <AppTraffic scopeId="app-a" surfaces={[]} />
-          <InspectableTraffic buckets={hourly} markers={series.markers} bucketMinutes={60} window={day} onRange={vi.fn()} />
+          <Pulse
+            apps={[{ app_scope_id: 'app-a', name: 'App A', vertical_slug: 'helpdesk', status: 'active' } as AppRow]}
+            scopeId="app-a"
+            hours={24}
+            window={{ from: day.since, to: day.until }}
+            requestWindow={day}
+            cursor={null}
+            nonce={0}
+            timeError=""
+            onNav={vi.fn()}
+            onRange={vi.fn()}
+            onPreset={vi.fn()}
+            onApp={vi.fn()}
+            onRefresh={vi.fn()}
+            onMarker={vi.fn()}
+          />
         </>,
       ),
     );
-    expect(pushedGlyphs()).toHaveLength(2);
+    const pulsePushes = () => container.querySelectorAll('[data-pulse-card] button[aria-label*=" pushed "]');
+    const pulseLines = () => container.querySelectorAll('[data-deploy-line="pushed"]');
+    expect(container.querySelectorAll('[aria-label="Chart overlays"]')).toHaveLength(2);
+    expect(pushedGlyphs()).toHaveLength(1);
+    expect(pulsePushes()).toHaveLength(1);
+    expect(pulseLines()).toHaveLength(1);
+    // One chip, on the app card: the kind leaves both charts.
     act(() => buttonNamed('Pushed')!.click());
     expect(pushedGlyphs()).toHaveLength(0);
+    expect(pulsePushes()).toHaveLength(0);
+    expect(pulseLines()).toHaveLength(0);
     expect(JSON.parse(localStorage.getItem(OVERLAY_PREFS_KEY)!)).toMatchObject({ pushed: false, live: true });
+  });
+
+  it('a reverse drag queries its exact bounds once and pins nothing; Escape or a cancel mid-drag query nothing', async () => {
+    const { traffic } = await mount();
+    const calls = traffic.mock.calls.length;
+    const plot = container.querySelector('[data-traffic-plot] rect')!;
+    await act(async () => {
+      pointer(plot, 'pointerdown', 280);
+      pointer(plot, 'pointermove', 240);
+      pointer(plot, 'pointerup', 240);
+    });
+    act(() => plot.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(traffic).toHaveBeenCalledTimes(calls + 1);
+    expect(traffic).toHaveBeenLastCalledWith('app-a', 24, { since: '2026-09-01T12:00:00.000Z', until: '2026-09-01T14:00:00.000Z' });
+    expect(buttonNamed('Open logs for this window')).toBeUndefined();
+    const zoomed = container.querySelector('[data-traffic-plot] rect')!;
+    pointer(zoomed, 'pointerdown', 50);
+    pointer(zoomed, 'pointermove', 150);
+    act(() => zoomed.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' })));
+    pointer(zoomed, 'pointerup', 150);
+    pointer(zoomed, 'pointerdown', 50);
+    pointer(zoomed, 'pointermove', 150);
+    pointer(zoomed, 'pointercancel', 150);
+    pointer(zoomed, 'pointerup', 250);
+    expect(traffic).toHaveBeenCalledTimes(calls + 1);
+  });
+
+  it('the keyboard pins a bar and Escape lets go; a release past the plot clamps to its edge', async () => {
+    const { traffic } = await mount();
+    const bar = container.querySelector('[data-traffic-plot] [role="button"]')!;
+    act(() => bar.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' })));
+    expect(buttonNamed('Open logs for this window')).toBeDefined();
+    act(() => bar.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' })));
+    expect(buttonNamed('Open logs for this window')).toBeUndefined();
+    const plot = container.querySelector('[data-traffic-plot] rect')!;
+    await act(async () => {
+      pointer(plot, 'pointerdown', 360);
+      pointer(plot, 'pointermove', 900);
+      pointer(plot, 'pointerup', 900);
+    });
+    expect(traffic).toHaveBeenLastCalledWith('app-a', 24, { since: '2026-09-01T18:00:00.000Z', until: day.until });
   });
 
   it('says so when the overlays cannot be read, and names partial or unavailable sources', async () => {
