@@ -3,9 +3,10 @@ import { readObsQuery, type ObsQuery } from './observability-query';
 /**
  * The Observability menu's children (#1767), and which of the page's sub-views each one
  * owns. The redesign (#1752) splits the one page into Pulse · Processes · Logs (Findings
- * joins when #1748 gives it a store). Until each gets its own layout, a child is a named
- * group of the sub-views that already exist — so every link into `?view=…` still lands,
- * and the menu is what tells the reader where they are.
+ * joins when #1748 gives it a store). Each child now has its own layout, but it is still
+ * addressed by the sub-views it grew out of — so every link into `?view=…` still lands
+ * (`traffic`, `health` and `schedules` all open Pulse), and the menu is what tells the
+ * reader where they are.
  *
  * The section is derived from `view`, never stored beside it: a URL that carried both
  * could disagree with itself, and the old links carry only `view`.

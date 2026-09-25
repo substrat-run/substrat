@@ -5,10 +5,9 @@ import { TrafficChart } from '../src/components/TrafficChart';
 import { InspectableTraffic } from '../src/components/InspectableTraffic';
 import { LogList } from '../src/components/LogList';
 import { Observability } from '../src/views/Observability';
-import { api, type ObservabilityLogEvent, type AppRow } from '../src/lib/api';
+import { api, type ObservabilityLogEvent, type AppRow, type AppHealthRow } from '../src/lib/api';
 import { obsPath } from '../src/lib/router';
 import { readObsQuery } from '../src/lib/observability-query';
-import { LOG_COLUMNS_KEY } from '../src/lib/log-columns';
 
 const windowRange = { since: '2026-09-01T10:00:00.000Z', until: '2026-09-01T11:00:00.000Z' };
 const buckets = [0, 15, 30, 45].map((minute) => ({
@@ -122,7 +121,7 @@ describe('real DOM chart gestures and inspection', () => {
   });
 });
 
-it('persists only column IDs, reorders/reset columns and provides keyboard log details/actions', async () => {
+it('a Lines row opens its fields as JSON, and an underlined value adds that filter', async () => {
   const onFilter = vi.fn();
   const event: ObservabilityLogEvent = {
     timestamp: Date.parse(windowRange.since),
@@ -130,102 +129,128 @@ it('persists only column IDs, reorders/reset columns and provides keyboard log d
     message: 'failure',
     service: 'service',
     outcome: 'exception',
-    trigger: null,
+    trigger: 'POST /api/orders',
     invocation: 'fetch',
     entrypoint: null,
-    requestId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    requestId: 'provider-request-1',
+    invocationId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
     cpuTimeMs: 2,
     wallTimeMs: 12,
-    raw: { privateExample: 'not-persisted' },
+    raw: { privateExample: 'raw' },
   };
   await act(async () => root.render(<LogList events={[event]} onFilter={onFilter} />));
-  const wall = [...container.querySelectorAll('label')]
-    .find((l) => l.textContent === 'Wall time')!
-    .querySelector('input')!;
-  click(wall);
-  expect(localStorage.getItem(LOG_COLUMNS_KEY)).toContain('wallTimeMs');
-  click(container.querySelector('[aria-label="Move Wall time left"]')!);
-  expect(JSON.parse(localStorage.getItem(LOG_COLUMNS_KEY)!)).toEqual([
-    'timestamp',
-    'level',
-    'message',
-    'outcome',
-    'wallTimeMs',
-    'cpuTimeMs',
-  ]);
-  click(button('Inspect'));
-  expect(container.querySelector('[aria-label="Log details"]')).not.toBeNull();
-  click(button('Include this level'));
-  expect(onFilter).toHaveBeenCalledWith({ level: 'error' });
-  expect(localStorage.getItem(LOG_COLUMNS_KEY)).not.toContain('not-persisted');
-  key(button('Close log details'), 'Escape');
+  const row = container.querySelector<HTMLElement>('[role="row"][aria-expanded]')!;
+  // The dense row: UTC clock to the millisecond, the level tag, the trigger as the operation.
+  expect(row.textContent).toContain('10:00:00.000');
+  expect(row.textContent).toContain('ERR');
+  expect(row.textContent).toContain('POST /api/orders');
   expect(container.querySelector('[aria-label="Log details"]')).toBeNull();
-  click(button('Reset columns'));
-  expect(JSON.parse(localStorage.getItem(LOG_COLUMNS_KEY)!)).not.toContain('wallTimeMs');
+  click(row);
+  const details = container.querySelector('[aria-label="Log details"]')!;
+  expect(row.getAttribute('aria-expanded')).toBe('true');
+  // Only the fields the line carried: `entrypoint` was null, so it is not listed as one.
+  expect(details.textContent).toContain('"wallTimeMs":12');
+  expect(details.textContent).not.toContain('entrypoint');
+  // Filterable values are links; the rest are plain text.
+  const values = [...details.querySelectorAll('button[title^="Filter by"]')].map((b) => b.getAttribute('title'));
+  expect(values).toEqual(['Filter by level', 'Filter by message', 'Filter by invocationId']);
+  click(details.querySelector('button[title="Filter by level"]')!);
+  expect(onFilter).toHaveBeenLastCalledWith({ level: 'error' });
+  click(details.querySelector('button[title="Filter by message"]')!);
+  expect(onFilter).toHaveBeenLastCalledWith({ search: 'failure' });
+  // The row's invocation link filters without toggling the row it sits in.
+  click(row.querySelector('button')!);
+  expect(onFilter).toHaveBeenLastCalledWith({ invocationId: '01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+  expect(row.getAttribute('aria-expanded')).toBe('true');
+  key(details, 'Escape');
+  expect(container.querySelector('[aria-label="Log details"]')).toBeNull();
 });
 
-it('a zoom re-queries traffic and logs with the same historical bounds; URL replay and refresh preserve filters', async () => {
-  const traffic = vi
-    .spyOn(api, 'appTraffic')
-    .mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15, window: windowRange });
-  vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
+/** The page as the app mounts it: URL in, navigation out, re-rendered on popstate. */
+function UrlPage({ apps = [{ app_scope_id: 'app-a', name: 'App A' } as AppRow] }: { apps?: AppRow[] }) {
+  const [search, setSearch] = useState(window.location.search);
+  useEffect(() => {
+    const read = () => setSearch(window.location.search);
+    window.addEventListener('popstate', read);
+    return () => window.removeEventListener('popstate', read);
+  }, []);
+  const q = readObsQuery(search);
+  return (
+    <Observability
+      apps={apps}
+      query={search}
+      scopeId={q.app ?? null}
+      view={q.view ?? null}
+      focusEventType={q.type ?? null}
+      cursor={q.from && q.to ? { from: q.from, to: q.to } : null}
+      onNav={(next) => {
+        window.history.pushState(null, '', obsPath(next));
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      }}
+    />
+  );
+}
+
+it('Logs reads the URL window and filters; refresh and URL replay preserve them, and it reads no traffic', async () => {
+  const traffic = vi.spyOn(api, 'appTraffic');
   const logs = vi.spyOn(api, 'appTenantLogs').mockResolvedValue([]);
-  const initial = obsPath({
-    app: 'app-a',
-    view: 'logs',
-    from: windowRange.since,
-    to: windowRange.until,
-    level: 'error',
-    search: 'failure',
-  });
-  window.history.replaceState(null, '', initial);
-  function Page() {
-    const [search, setSearch] = useState(window.location.search);
-    useEffect(() => {
-      const read = () => setSearch(window.location.search);
-      window.addEventListener('popstate', read);
-      return () => window.removeEventListener('popstate', read);
-    }, []);
-    const q = readObsQuery(search);
-    return (
-      <Observability
-        apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
-        query={search}
-        scopeId={q.app ?? null}
-        view={q.view ?? null}
-        focusEventType={q.type ?? null}
-        cursor={q.from && q.to ? { from: q.from, to: q.to } : null}
-        onNav={(next) => {
-          window.history.pushState(null, '', obsPath(next));
-          window.dispatchEvent(new PopStateEvent('popstate'));
-        }}
-      />
-    );
-  }
-  await act(async () => root.render(<Page />));
-  const target = container.querySelector('[data-traffic-plot] rect')!;
-  await act(async () => {
-    pointer(target, 'pointerdown', 100);
-    pointer(target, 'pointermove', 300);
-    pointer(target, 'pointerup', 300);
-  });
   const next = { since: '2026-09-01T10:15:00.000Z', until: '2026-09-01T10:45:00.000Z' };
-  expect(traffic).toHaveBeenLastCalledWith('app-a', 24, next);
-  expect(logs).toHaveBeenLastCalledWith(
-    'app-a',
-    expect.objectContaining({ ...next, level: 'error', search: 'failure' }),
-  );
+  const initial = obsPath({ app: 'app-a', view: 'logs', from: windowRange.since, to: windowRange.until, level: 'error', search: 'failure' });
+  window.history.replaceState(null, '', initial);
+  await act(async () => root.render(<UrlPage />));
+  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...windowRange, level: 'error', search: 'failure' }));
+  // A narrower window — what a bar click on the app page links here with.
+  await act(async () => {
+    window.history.pushState(null, '', obsPath({ app: 'app-a', view: 'logs', from: next.since, to: next.until, level: 'error', search: 'failure' }));
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
+  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...next, level: 'error', search: 'failure' }));
+  const calls = logs.mock.calls.length;
   await act(async () => click(button('Refresh')));
-  expect(logs).toHaveBeenLastCalledWith(
-    'app-a',
-    expect.objectContaining({ ...next, level: 'error', search: 'failure' }),
-  );
+  expect(logs.mock.calls.length).toBe(calls + 1);
+  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...next, level: 'error', search: 'failure' }));
   await act(async () => {
     window.history.replaceState(null, '', initial);
     window.dispatchEvent(new PopStateEvent('popstate'));
   });
-  expect(traffic).toHaveBeenLastCalledWith('app-a', 24, windowRange);
-  expect(container.querySelector<HTMLInputElement>('[aria-label="Search messages"]')!.value).toBe('failure');
+  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...windowRange, level: 'error', search: 'failure' }));
+  // The filters are chips, read back from the URL.
+  expect(container.querySelector('[data-chip="message"]')!.textContent).toContain('failure');
+  expect(container.querySelector('[data-chip="level"]')!.textContent).toContain('error');
+  // The traffic chart went with the shared header: Logs asks for lines, not traffic.
+  expect(traffic).not.toHaveBeenCalled();
+});
+
+it('Logs filter chips round-trip the URL: Enter adds one, × removes it, Clear removes them all', async () => {
+  const logs = vi.spyOn(api, 'appTenantLogs').mockResolvedValue([]);
+  vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
+  window.history.replaceState(null, '', obsPath({ app: 'app-a', view: 'logs', hours: '1' }));
+  await act(async () => root.render(<UrlPage />));
+  const input = () => container.querySelector<HTMLInputElement>('[aria-label="Search messages"]')!;
+  const type = async (text: string) => {
+    await act(async () => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      set.call(input(), text);
+      input().dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => key(input(), 'Enter'));
+  };
+  await type('timeout');
+  expect(readObsQuery(window.location.search)).toEqual({ app: 'app-a', view: 'logs', hours: '1', search: 'timeout' });
+  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ search: 'timeout' }));
+  await type('level:warn');
+  expect(readObsQuery(window.location.search)).toMatchObject({ search: 'timeout', level: 'warn' });
+  expect(container.querySelectorAll('[data-chip]')).toHaveLength(2);
+  await act(async () => click(container.querySelector('[aria-label="Remove message filter"]')!));
+  expect(readObsQuery(window.location.search)).toEqual({ app: 'app-a', view: 'logs', hours: '1', level: 'warn' });
+  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ level: 'warn', search: undefined }));
+  // A malformed filter is refused with its reason, and the URL does not move.
+  await type('invocation:nope');
+  expect(container.querySelector('[role="alert"]')!.textContent).toContain('ULID');
+  expect(readObsQuery(window.location.search)).toEqual({ app: 'app-a', view: 'logs', hours: '1', level: 'warn' });
+  await act(async () => click(button('Clear')));
+  expect(readObsQuery(window.location.search)).toEqual({ app: 'app-a', view: 'logs', hours: '1' });
+  expect(container.querySelector('[data-chip]')).toBeNull();
 });
 
 it('preserves URL event grouping and type through refresh without remounting controls', async () => {
@@ -270,10 +295,13 @@ it('preserves URL event grouping and type through refresh without remounting con
   );
 });
 
-it('all-app drag uses the shared interval without choosing a tenant scope', async () => {
+it('a drag across a Pulse sparkline narrows the whole card to that interval, without choosing an app', async () => {
   const traffic = vi
     .spyOn(api, 'teamTraffic')
     .mockResolvedValue({ series: [{ scopeId: 'app-a', buckets }], available: true, bucketMinutes: 15 });
+  vi.spyOn(api, 'fleetHealth').mockResolvedValue({ rows: [] });
+  vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 400, height: 32, right: 400, bottom: 32, x: 0, y: 0, toJSON: () => ({}) });
   const onNav = vi.fn();
   await act(async () =>
     root.render(
@@ -288,25 +316,68 @@ it('all-app drag uses the shared interval without choosing a tenant scope', asyn
       />,
     ),
   );
-  const target = container.querySelector('[data-traffic-plot] [role="button"]')!;
+  const target = container.querySelector('[data-pulse-axis]')!;
   pointer(target, 'pointerdown', 100);
   pointer(target, 'pointermove', 300);
+  expect(container.querySelector('[data-pulse-brush]')).not.toBeNull();
   pointer(target, 'pointerup', 300);
+  click(target);
   expect(traffic).toHaveBeenCalledWith({ hours: 24, ...windowRange });
-  expect(onNav).toHaveBeenCalledWith({ from: '2026-09-01T10:15:00.000Z', to: '2026-09-01T10:45:00.000Z' });
+  expect(onNav).toHaveBeenCalledExactlyOnceWith({ from: '2026-09-01T10:15:00.000Z', to: '2026-09-01T10:45:00.000Z' });
+  expect(container.querySelector('[data-pulse-brush]')).toBeNull();
+});
+
+it('Pulse draws one row per app — its numbers, its verdict in words — and a row narrows the page to it', async () => {
+  // Inside the page's trailing 24h, where the sparkline column is.
+  const recent = [3, 2, 1].map((h) => ({ start: new Date(Date.now() - h * 3_600_000).toISOString(), requests: 12, errors: 1 }));
+  vi.spyOn(api, 'teamTraffic').mockResolvedValue({ series: [{ scopeId: 'app-a', buckets: recent }, { scopeId: 'app-b', buckets: recent }], available: true, bucketMinutes: 60 });
+  vi.spyOn(api, 'fleetHealth').mockResolvedValue({
+    rows: [
+      { scopeId: 'app-a', state: 'ok', reason: 'Swept, nothing failing.' } as AppHealthRow,
+      { scopeId: 'app-b', state: 'failing', reason: '2 failures recorded.' } as AppHealthRow,
+    ],
+  });
+  const metrics = vi.spyOn(api, 'appMetrics').mockResolvedValue({
+    available: true,
+    cap: null,
+    rows: [
+      { scopeId: 'app-a', requests: 3344, errors: 3, p95: 140 },
+      { scopeId: 'app-b', requests: 412, errors: 8, p95: 1240 },
+    ],
+  });
+  const onNav = vi.fn();
+  const apps = [
+    { app_scope_id: 'app-a', name: 'App A', vertical_slug: 'helpdesk', status: 'active' },
+    { app_scope_id: 'app-b', name: 'App B', vertical_slug: 'crm', status: 'active' },
+  ] as AppRow[];
+  await act(async () =>
+    root.render(<Observability apps={apps} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={onNav} />),
+  );
+  expect(metrics).toHaveBeenCalledWith(24);
+  const rows = [...container.querySelectorAll<HTMLAnchorElement>('[data-pulse-card] a[role="row"]')];
+  // Worst first — the failing app above the healthy one, whatever its traffic.
+  expect(rows.map((r) => [...r.querySelectorAll('[role="cell"]')].map((c) => c.textContent))).toEqual([
+    ['App Bcrm', '412', '1.9%', '1.2 s', '', 'Failing'],
+    ['App Ahelpdesk', '3.3k', '<0.1%', '140 ms', '', 'OK'],
+  ]);
+  // Each row carries its own sparkline, drawn from its own series.
+  expect(rows[0]!.querySelector('svg path')).not.toBeNull();
+  click(rows[0]!);
+  expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-b' }));
 });
 
 it('relative presets retain hours-only requests for legacy readers and shared cache keys', async () => {
   const traffic = vi.spyOn(api, 'appTraffic').mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15 });
   const overlays = vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
-  const metrics = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
-  vi.spyOn(api, 'appDeployments').mockRejectedValue(new Error('unavailable'));
+  const metrics = vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
+  vi.spyOn(api, 'fleetHealth').mockResolvedValue({ rows: [] });
+  vi.spyOn(api, 'appSchedules').mockRejectedValue(new Error('unavailable'));
   const team = vi.spyOn(api, 'teamTraffic').mockResolvedValue({ series: [], available: true, bucketMinutes: 60 });
   const props = { apps: [{ app_scope_id: 'app-a', name: 'App A' } as AppRow], view: 'traffic', focusEventType: null, cursor: null, onNav: vi.fn() };
   await act(async () => root.render(<Observability {...props} query="app=app-a&hours=24" scopeId="app-a" />));
   expect(traffic).toHaveBeenLastCalledWith('app-a', 24, undefined);
   expect(overlays).toHaveBeenLastCalledWith('app-a', 24, undefined);
-  expect(metrics).toHaveBeenLastCalledWith('app-a', 24, undefined);
+  expect(metrics).toHaveBeenLastCalledWith(24);
   await act(async () => click(button('Refresh')));
   expect(traffic).toHaveBeenLastCalledWith('app-a', 24, undefined);
   await act(async () => root.render(<Observability {...props} query="hours=24" scopeId={null} />));
