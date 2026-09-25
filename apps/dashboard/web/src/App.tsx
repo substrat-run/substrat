@@ -7,6 +7,7 @@ import { promoteWithCheckpoint, type Acks, type Checkpoint } from './lib/promote
 import { navigate as go, obsPath, setTeamSlug, teamPath } from './lib/router';
 import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
+import { defaultView, sectionLabel, sectionOf } from './lib/obs-sections';
 import { CommandPalette } from './components/CommandPalette';
 import { NotificationsPopover } from './components/NotificationsPopover';
 import { PromoteDialog } from './components/PromoteDialog';
@@ -838,7 +839,12 @@ export function App() {
     crumbs.push({ label: 'Verticals', onClick: route.vertical ? () => go('/verticals') : undefined });
     if (openVertical) crumbs.push({ label: openVertical.name });
   }
-  if (['observability', 'audit', 'domains', 'team', 'integrations', 'billing', 'settings'].includes(route.section)) {
+  const obsSection = sectionOf(route.view);
+  if (route.section === 'observability') {
+    crumbs.push({ label: 'Observability', onClick: () => go(obsPath({ ...(route.app ? { app: route.app } : {}) })) });
+    crumbs.push({ label: sectionLabel(obsSection) });
+  }
+  if (['audit', 'domains', 'team', 'integrations', 'billing', 'settings'].includes(route.section)) {
     crumbs.push({ label: route.section.charAt(0).toUpperCase() + route.section.slice(1) });
   }
 
@@ -846,6 +852,10 @@ export function App() {
     <DashShell
       active={activeNav}
       onNav={(k) => go(`/${k}`)}
+      obsSection={obsSection}
+      // Switching child keeps the app filter and the time window: "what was happening at
+      // 09:13 in this app" is one question asked of several pages.
+      onObsNav={(s) => go(obsPath({ ...(route.app ? { app: route.app } : {}), view: defaultView(s), ...(route.from && route.to ? { from: route.from, to: route.to } : {}) }))}
       org={org}
       teams={me.teams ?? []}
       currentTeamId={me.currentTeamId}
