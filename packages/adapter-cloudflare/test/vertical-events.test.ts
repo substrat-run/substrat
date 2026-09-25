@@ -362,6 +362,33 @@ describe('a producer deployment that predates the cross-vertical routes (#1705 P
     });
   }
 
+  // The consumer's two routes, on an old CONSUMER deployment: each is a 501 saying to redeploy,
+  // from the route itself (`host-predates`) or from the client reading the 404 (`routes-predate`).
+  // Never "imports nothing" or a batch reported as applied.
+  for (const era of ['routes-predate', 'host-predates'] as const) {
+    it(`${era} consumer: import-state and import-events answer 501, naming the redeploy`, async () => {
+      const old = deployment(env.BOARD_SCOPE, boardImportMod, BOARD_OWNER, era);
+      const said = era === 'routes-predate' ? /predates cross-vertical events/ : /cannot import events.*redeploy it/;
+      const batch = {
+        source: { vertical: CRM_VERTICAL, scopeId: p },
+        after: null,
+        next: eventId.parse(ulid()),
+        events: [],
+        withheld: [],
+      };
+      for (const call of [
+        () => old.client.importState({ tenantId: t, scopeId: c }),
+        () => old.client.importEvents({ tenantId: t, scopeId: c, batch }),
+      ]) {
+        const e = (await call().then(() => null, (err: unknown) => err)) as ControlPlaneError;
+        expect(e).toBeInstanceOf(ControlPlaneError);
+        expect(e.status).toBe(501);
+        expect(e.message).toMatch(said);
+      }
+      expect(old.paths).toEqual(['/internal/import-state', '/internal/import-events']);
+    });
+  }
+
   it('the same edge, once the producer is redeployed, delivers the backlog', async () => {
     const edge = await sweepWith(current);
     expect(edge).toMatchObject({ state: 'delivered', delivered: 1 });
