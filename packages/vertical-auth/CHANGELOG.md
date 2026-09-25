@@ -1,5 +1,18 @@
 # @substrat-run/vertical-auth
 
+## 0.15.3
+
+### Patch Changes
+
+- 5799e32: The places reporter now sends the install's client secret only to the issuer's own origin. The report endpoint an issuer's discovery document names must match the issuer's scheme, host and port exactly, must be `https` (`http` only on a loopback issuer, as the dev issuer is), and must carry no credentials. The report is sent with `redirect: 'manual'`, so a redirect is a failed report and is never followed. A refused endpoint sends nothing, is reported as `failed` like an unreachable issuer, and is logged once with its origin only. The issuer the real auth-server names is its own origin, so nothing deployed changes.
+- Updated dependencies [a235648]
+- Updated dependencies [6fc9950]
+- Updated dependencies [48fea30]
+- Updated dependencies [a6f4db1]
+- Updated dependencies [45b927e]
+  - @substrat-run/contracts@0.121.0
+  - @substrat-run/kernel@0.121.0
+
 ## 0.15.2
 
 ### Patch Changes
