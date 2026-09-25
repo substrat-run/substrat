@@ -1847,22 +1847,41 @@ export class ControlPlaneDO extends DurableObject {
   /**
    * The getScope gate (control-plane.md §4.1/§4.2): validate the scope belongs
    * to the tenant and both records are active, or throw the fail-closed reason.
+   *
+   * Kept for a coordinator from before #1718, which still calls it. The current one
+   * calls `scopeAccessRefusal` instead, because a throw from here reaches it untyped.
    */
   validateScopeAccess(tenantId: string, scopeId: string): void {
+    const refusal = this.scopeAccessRefusal(tenantId, scopeId);
+    if (refusal) throw new Error(refusal.message);
+  }
+
+  /**
+   * The same gate, answering its refusal as DATA (#1718). An error thrown in a Durable
+   * Object arrives at the coordinator flattened, its code gone, so a typed throw here
+   * would still reach the caller untyped (#1714 measured it). A record crosses intact, so
+   * the coordinator throws the refusal itself, typed. `code` is set only where a code is
+   * known; the lifecycle refusals keep their bare messages. Null means access is allowed.
+   */
+  scopeAccessRefusal(
+    tenantId: string,
+    scopeId: string,
+  ): { code: 'not_found' | null; message: string } | null {
+    const refuse = (message: string) => ({ code: null, message });
     const row = this.sql
       .exec('SELECT tenant_id, status FROM scopes WHERE scope_id = ?', scopeId)
       .toArray()[0] as { tenant_id: string; status: string } | undefined;
     if (!row || row.tenant_id !== tenantId) {
-      throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      return { code: 'not_found', message: `unknown scope for tenant: (${tenantId}, ${scopeId})` };
     }
     const tenantRow = this.sql
       .exec('SELECT status FROM tenants WHERE tenant_id = ?', tenantId)
       .toArray()[0] as { status: string } | undefined;
     if (!tenantRow) {
-      throw new Error(`scope has no tenant record: (${tenantId}, ${scopeId})`);
+      return refuse(`scope has no tenant record: (${tenantId}, ${scopeId})`);
     }
     if (tenantRow.status !== 'active') {
-      throw new Error(`tenant not active (status: ${tenantRow.status}): ${tenantId}`);
+      return refuse(`tenant not active (status: ${tenantRow.status}): ${tenantId}`);
     }
     if (row.status !== 'active') {
       // A scope stuck in provisioning because its migrations failed must say so.
@@ -1878,13 +1897,14 @@ export class ControlPlaneDO extends DurableObject {
         | { migration_failed_version: string | null; migration_error: string | null }
         | undefined;
       if (failure?.migration_failed_version) {
-        throw new Error(
+        return refuse(
           `migration failed for ${failure.migration_failed_version} — scope fails closed: ` +
             `${failure.migration_error ?? 'unknown error'}`,
         );
       }
-      throw new Error(`scope not active (status: ${row.status}): ${scopeId}`);
+      return refuse(`scope not active (status: ${row.status}): ${scopeId}`);
     }
+    return null;
   }
 
   /**
@@ -1892,6 +1912,9 @@ export class ControlPlaneDO extends DurableObject {
    * illegal one), flip the status. Returns the previous status AND the scope's
    * vertical — both for the audit entry, sparing the coordinator a read
    * round-trip. `action` rides along only to name the illegal-transition message.
+   *
+   * Kept for a coordinator from before #1718, which still calls it. The current one
+   * calls `transitionScopeOrRefusal` instead, because a throw from here reaches it untyped.
    */
   transitionScope(
     tenantId: string,
@@ -1900,17 +1923,40 @@ export class ControlPlaneDO extends DurableObject {
     to: ScopeStatus,
     action: string,
   ): { status: string; vertical: string | null } {
+    const outcome = this.transitionScopeOrRefusal(tenantId, scopeId, from, to, action);
+    if (!outcome.ok) throw new Error(outcome.message);
+    return { status: outcome.status, vertical: outcome.vertical };
+  }
+
+  /**
+   * The same transition, answering its refusal as DATA (#1718) — for the reason
+   * `scopeAccessRefusal` does. The pair check has to be answered HERE, in the same
+   * synchronous read as the write it guards: a coordinator-side pre-read cannot stand in
+   * for it, since the row can be deleted (`deleteScopeDirectory`) between the two.
+   */
+  transitionScopeOrRefusal(
+    tenantId: string,
+    scopeId: string,
+    from: string[],
+    to: ScopeStatus,
+    action: string,
+  ):
+    | { ok: true; status: string; vertical: string | null }
+    | { ok: false; code: 'not_found' | null; message: string } {
     const row = this.sql
       .exec('SELECT tenant_id, status, vertical FROM scopes WHERE scope_id = ?', scopeId)
       .toArray()[0] as { tenant_id: string; status: string; vertical: string | null } | undefined;
     if (!row || row.tenant_id !== tenantId) {
-      throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      return { ok: false, code: 'not_found', message: `unknown scope for tenant: (${tenantId}, ${scopeId})` };
     }
     if (!from.includes(row.status)) {
-      throw new Error(
-        `illegal scope transition for ${action}: ${row.status} → ${to} ` +
+      return {
+        ok: false,
+        code: null,
+        message:
+          `illegal scope transition for ${action}: ${row.status} → ${to} ` +
           `(allowed from: ${from.join('|')})`,
-      );
+      };
     }
     // Stamp/clear archived_at so the reap sweep can age scopes. Entering `archived`
     // records when; `unarchive` (→ active, a restore per §4.2) clears it so a later
@@ -1931,7 +1977,7 @@ export class ControlPlaneDO extends DurableObject {
     } else {
       this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
     }
-    return { status: row.status, vertical: row.vertical };
+    return { ok: true, status: row.status, vertical: row.vertical };
   }
 
   // -- roles (checker rule 1) -------------------------------------------------
