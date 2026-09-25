@@ -21,7 +21,6 @@ import {
   systemSwitchRecordsOf,
   systemSwitchesTableExists,
   VERSION_MIGRATIONS_DDL,
-  isVersionMigrationsDdl,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
   versionsAwaitSplit,
@@ -1055,6 +1054,9 @@ const DIRECTORY_DDL = `
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
 `;
 
+/** `DIRECTORY_DDL`, split once into what runs before the column additions and after (#1764). */
+export const DIRECTORY_DDL_PLAN = planDirectoryDdl(DIRECTORY_DDL);
+
 /** The scope columns added after the directory's first shape shipped. */
 const SCOPE_COLUMNS_ADDED = [
   'parent_scope_id TEXT',
@@ -1074,6 +1076,27 @@ const SCOPE_COLUMNS_ADDED = [
   'serving_ref TEXT',
   'archived_at TEXT',
 ] as const;
+
+/**
+ * A directory DDL's statements in the order `applyDirectorySchema` runs them: `loop` before
+ * the column additions, `afterColumns` after. `VERSION_MIGRATIONS_DDL` indexes a column a
+ * directory from before #1764 gets only from those additions, so its statements are held back.
+ *
+ * Held back by EXACT statement, never by a name a statement contains: a later statement that
+ * merely mentions the table runs in the loop like any other, rather than being skipped. And
+ * `missing` names any held-back statement the DDL does not carry, which would mean the
+ * fragment and the DDL had parted company (its test holds it empty).
+ */
+export function planDirectoryDdl(ddl: string): { loop: string[]; afterColumns: string[]; missing: string[] } {
+  const all = splitSqlStatements(ddl);
+  const afterColumns = splitSqlStatements(VERSION_MIGRATIONS_DDL);
+  const held = new Set(afterColumns);
+  return {
+    loop: all.filter((stmt) => !held.has(stmt)),
+    afterColumns,
+    missing: afterColumns.filter((stmt) => !all.includes(stmt)),
+  };
+}
 
 /**
  * The pause before each #1764 backfill batch. A batch holds the directory DO, which every
@@ -1150,14 +1173,13 @@ export class ControlPlaneDO extends DurableObject {
    */
   private applyDirectorySchema(): void {
     const switchRecordIsNew = !systemSwitchesTableExists(this.kernelSql);
-    for (const stmt of splitSqlStatements(DIRECTORY_DDL)) {
+    for (const stmt of DIRECTORY_DDL_PLAN.loop) {
       if (switchRecordIsNew && stmt.includes('_substrat_system_switches')) continue;
-      // Its index names a column a directory from before #1764 gets only below.
-      if (isVersionMigrationsDdl(stmt)) continue;
       this.sql.exec(stmt);
     }
     this.ensureDirectoryColumns();
-    for (const stmt of splitSqlStatements(VERSION_MIGRATIONS_DDL)) this.sql.exec(stmt);
+    // #1764's, held back by `planDirectoryDdl`: its index names a column added just above.
+    for (const stmt of DIRECTORY_DDL_PLAN.afterColumns) this.sql.exec(stmt);
     this.armVersionMigrationsBackfill();
     if (switchRecordIsNew) {
       this.ctx.storage.transactionSync(() => {

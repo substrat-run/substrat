@@ -16,9 +16,15 @@ import {
   platformActorId,
   sqlBytes,
 } from '@substrat-run/contracts';
-import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
+import { ulid, UNSAFE_allowAllChecker, VERSION_MIGRATIONS_DDL, webCryptoSecretBox } from '@substrat-run/kernel';
 import type { ScopeDumpTable } from '@substrat-run/contracts';
-import { ControlPlaneDO, backfillBackoffMs } from '../src/control-plane-do.js';
+import {
+  ControlPlaneDO,
+  DIRECTORY_DDL_PLAN,
+  backfillBackoffMs,
+  planDirectoryDdl,
+} from '../src/control-plane-do.js';
+import { splitSqlStatements } from '../src/scope-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -410,5 +416,33 @@ describe('the #1764 backfill survives a failing batch', () => {
   it('the backoff doubles from the pause and is capped at an hour', () => {
     expect([0, 1, 2, 3].map(backfillBackoffMs)).toEqual([1000, 2000, 4000, 8000]);
     expect(backfillBackoffMs(40)).toBe(60 * 60 * 1000);
+  });
+});
+
+/**
+ * #1764 review: the directory DDL holds back #1764's statements by EXACT match, so a later
+ * statement that only mentions the table is never skipped silently, and the held-back set
+ * cannot drift from what the DDL carries.
+ */
+describe('the directory DDL plan holds back exactly #1764\'s statements', () => {
+  it('the real DDL: the fragment\'s statements run after the columns, every other statement in the loop', () => {
+    const fragment = splitSqlStatements(VERSION_MIGRATIONS_DDL);
+    expect(DIRECTORY_DDL_PLAN.afterColumns).toEqual(fragment);
+    expect(DIRECTORY_DDL_PLAN.missing).toEqual([]);
+    for (const stmt of fragment) expect(DIRECTORY_DDL_PLAN.loop).not.toContain(stmt);
+    // Nothing else is held back: the loop is every other statement, the table's own neighbours included.
+    expect(DIRECTORY_DDL_PLAN.loop.some((s) => s.includes('CREATE TABLE IF NOT EXISTS vertical_versions'))).toBe(true);
+  });
+
+  it('a statement that only names the table or the index runs in the loop, and a missing one is named', () => {
+    const extra = [
+      'CREATE INDEX IF NOT EXISTS vvm_module ON vertical_version_migrations (module_id)',
+      "SELECT 'vertical_versions_unsplit'",
+    ];
+    const plan = planDirectoryDdl(`${VERSION_MIGRATIONS_DDL};\n${extra.join(';\n')};`);
+    expect(plan.loop).toEqual(extra);
+    expect(plan.missing).toEqual([]);
+    // A DDL that no longer carries the fragment says so, rather than quietly running it twice.
+    expect(planDirectoryDdl(extra.join(';\n')).missing).toEqual(splitSqlStatements(VERSION_MIGRATIONS_DDL));
   });
 });

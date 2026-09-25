@@ -305,7 +305,6 @@ export type {
 } from './system-switch-record.js';
 export {
   VERSION_MIGRATIONS_DDL,
-  isVersionMigrationsDdl,
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,

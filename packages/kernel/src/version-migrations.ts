@@ -54,11 +54,6 @@ export const VERSION_MIGRATIONS_DDL = `
     ON vertical_versions (id) WHERE migrations_split IS NULL;
 `;
 
-/** True for a DDL statement the adapters hold back until `vertical_versions` has its columns. */
-export function isVersionMigrationsDdl(statement: string): boolean {
-  return statement.includes('vertical_version_migrations') || statement.includes('vertical_versions_unsplit');
-}
-
 /** A manifest with its SQL taken out, and the SQL. */
 export interface SplitManifest {
   /** The manifest to store: without `migrations`, or exactly as given when there was nothing to take. */
