@@ -1292,6 +1292,52 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect((await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated')).toHaveLength(1);
   });
 
+  it('an Update that drops an export another app here imports is refused, and acknowledged it updates (#1756)', async () => {
+    const acme = await bootstrap('acme-export-break');
+    const TYPE = 'meridian.absence-approved';
+    const registry = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
+    const publish = async (slug: string, manifestJson: string): Promise<string> => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: slug, version: `0.1.${id.slice(-4).toLowerCase()}`, manifestDigest: 'm', permissionDigest: 'p',
+        migrationDigest: 'g', deploymentRef: null, manifestJson,
+      });
+      await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    // Idempotent on an identical registration, which the update test above also makes.
+    await host.admin.registerVertical(staff, { slug: 'meridian', name: 'Meridian', source: 'builtin' });
+    const exporting = await publish('meridian', registry({ exports: [{ type: TYPE, schemaVersion: 1, readPermission: 'absence:read', declaredBy: ['@t/x'] }] }));
+    const dropping = await publish('meridian', registry({}));
+    const desk = `acme/desk-${ulid().slice(-6).toLowerCase()}`;
+    await host.admin.registerVertical(staff, { slug: desk, name: desk, source: 'cli' });
+    const deskVersion = await publish(desk, registry({ imports: [{ from: 'meridian', type: TYPE, schemaVersion: 1, declaredBy: ['@t/y'] }] }));
+
+    // The app runs the exporting version, and another app in the same team imports from it.
+    const appScopeId = scopeId.parse(ulid());
+    await createApp(host, {
+      node: acme, appScopeId, verticalSlug: 'meridian', name: 'People',
+      appEntitlements: ['meridian', 'protocol'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+    });
+    await host.admin.bindScopeVersion(staff, acme.tenantId, appScopeId, exporting);
+    const deskScope = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: acme.tenantId, scopeId: deskScope, vertical: desk });
+    await host.admin.activateScope(staff, acme.tenantId, deskScope);
+    await host.admin.bindScopeVersion(staff, acme.tenantId, deskScope, deskVersion);
+    // Prod moves to the version that drops the export. The promote is itself gated, and
+    // acknowledged here; it does not move this app, which a listed vertical's Update does.
+    await host.admin.promoteVersion(staff, 'meridian', 'prod', dropping, { exportBreak: true });
+
+    await expect(updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian' })).rejects.toThrow(
+      /this bind drops or re-versions 1 exported event type\(s\) that 1 installed app\(s\) in this tenant/,
+    );
+    expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))?.verticalVersionId).toBe(exporting);
+
+    const r = await updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian', ackExportBreak: true });
+    expect(r.updated).toBe(true);
+    expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))?.verticalVersionId).toBe(dropping);
+  });
+
   it('heals the row’s lineage after a staff rebind-vertical (#389): the directory’s slug wins', async () => {
     const acme = await bootstrap('acme-rebind');
     const appScopeId = scopeId.parse(ulid());

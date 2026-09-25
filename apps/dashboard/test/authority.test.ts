@@ -370,6 +370,10 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     await cp.bindScopeVersion(S, '01JVERSION');
     expect(calls[0]!.url).toBe(`https://cp/api/tenants/${T}/scopes/${S}/version`);
     expect((calls[0]!.body as { versionId: string }).versionId).toBe('01JVERSION');
+    // #1756: no acknowledgement unless asked, and then exactly the one a bind has.
+    expect(calls[0]!.body).toEqual({ versionId: '01JVERSION' });
+    await cp.bindScopeVersion(S, '01JVERSION', { acknowledge: { exportBreak: true } });
+    expect(calls[1]!.body).toEqual({ versionId: '01JVERSION', acknowledge: { exportBreak: true } });
   });
 
   it('createPreview posts to the vertical previews route with the version + pin/empty flags (#509)', async () => {
