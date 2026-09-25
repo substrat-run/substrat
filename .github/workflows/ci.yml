@@ -123,11 +123,13 @@ jobs:
       # if no vertical declares entities, so the checkpoint can never pass by
       # scanning nothing.
       - run: pnpm lint:model --check
-      # D-22 for exported events (#1705 PR 3): each exported type's payload schema, which the
-      # gate above holds in model.json, compared with the base branch's. At an unchanged
-      # schemaVersion a removed, retyped, newly required or no-longer-required field is red:
-      # another vertical's deployed code parses it. The tool's own tests run first, so a rule
-      # that stopped refusing is red too.
+      # D-22 for exported events (#1705 PR 3): each exported type's payload schema in model.json,
+      # compared with the base branch's. At an unchanged schemaVersion a removed, retyped, newly
+      # required or no-longer-required field is red: another vertical's deployed code parses it.
+      # The schema is there because lint:permissions refuses a vertical whose manifest exports a
+      # type its model.json does not carry, and lint:model --check holds model.json to the code.
+      # No vertical exports yet, so this passes over nothing until the first one does. The
+      # tool's own tests run first, so a rule that stopped refusing is red too.
       #
       # The base must be IN the checkout (fetch-depth 0 above fetches it, and the fetch below
       # makes that explicit rather than incidental). A base the tool cannot read is exit 2, never

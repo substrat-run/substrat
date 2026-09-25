@@ -152,7 +152,10 @@ attributable.
   does not know who is asking. The promote route lists the affected apps: a confined caller sees
   its own tenant's apps and the rest as a count, as the store backfill does.
 - **CI.** Each exported type's payload JSON Schema is in the checked-in `model.json`
-  (`exportedEventSchemasOf` → `emitModel`'s `exports`, gated by `lint:model --check`).
+  (`exportedEventSchemasOf` → `emitModel`'s `exports`, held to the code by `lint:model --check`).
+  That it is there at all is enforced: `lint:permissions` refuses (exit 2) a vertical whose
+  manifest exports a (type, schemaVersion) its `model.json` does not carry. No vertical in the repo
+  exports yet, so the three gates pass over nothing today. The first export is held by all three.
   `lint:export-schemas` compares it with the merge-base. At an unchanged schemaVersion it refuses a
   removed, retyped, newly required or no-longer-required field, and a version that went down. A
   newly required field is a break even though the producer always sends it now, because events
