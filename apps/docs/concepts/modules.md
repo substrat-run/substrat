@@ -202,6 +202,12 @@ module on that scope is refused. **Restore is the lever; a grant is not.** Resto
 exactly the grants the switch took, so a grant revoked separately before the switch was pulled
 stays revoked.
 
+The switch also holds through a scope losing its storage. The platform records each switch
+outside the scope, so a scope that is wiped and provisioned again, or restored from a backup
+taken before the switch was pulled, is switched off again once provisioning has run. That
+record only ever switches a module off. If the scope says off and the record says on, the
+scope wins, and restore is still the only way back.
+
 `cadence` is a floor, not a guarantee of exact timing: a schedule fires no more often
 than `everyMinutes`, and the sweep is what actually runs it (typically every couple of
 minutes), so sub-sweep cadences round up. It is optional and additive like every field
