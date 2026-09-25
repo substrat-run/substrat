@@ -138,9 +138,15 @@ describe('search-kb with a source filter over a hundred hits', () => {
 });
 
 describe('the blocklist probe with an address the sender wrote', () => {
-  // 120 labels: within the 253 characters a domain may be, and far past 100 parameters.
-  const LABELS = Array.from({ length: 120 }, (_, i) => `a${i}`);
+  // 120 one-character labels, and a domain of at most 253 characters (DNS's limit), so an
+  // address a real relay would deliver: far past 100 parameters, one per label.
+  const LABELS = Array.from({ length: 120 }, () => 'a');
   const domain = `${LABELS.join('.')}.example`;
+
+  it('is a domain a relay could deliver', () => {
+    expect(domain.length).toBeLessThanOrEqual(253);
+    expect(domain.split('.').length).toBeGreaterThan(100);
+  });
 
   it('accepts the mail', async () => {
     const relay = await at('relay');
