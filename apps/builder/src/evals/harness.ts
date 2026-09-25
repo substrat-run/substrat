@@ -560,7 +560,7 @@ export async function prepareProject(
 	}
 	// Retry: a straggling git writer under .git makes one rm -rf fail ENOTEMPTY (#1761).
 	// The trailing test makes the last attempt's failure the exit code, not `sleep`'s.
-	const dirArg = JSON.stringify(projectDir);
+	const dirArg = `'${projectDir.replace(/'/g, `'\\''`)}'`;
 	const wipe = await ws.exec(
 		`for i in 1 2 3 4 5; do rm -rf ${dirArg} && break; sleep 0.2; done; [ ! -e ${dirArg} ]`,
 	);
@@ -569,7 +569,12 @@ export async function prepareProject(
 	}
 	const ensured = await ensureVerticalRepo(ws, projectDir);
 	// Eval repos only: no background gc/maintenance racing the next wipe (#1761).
-	await ws.exec('git config gc.auto 0 && git config maintenance.auto false', { cwd: projectDir });
+	const cfg = await ws.exec('git config gc.auto 0 && git config maintenance.auto false', {
+		cwd: projectDir,
+	});
+	if (cfg.exitCode !== 0) {
+		throw new Error(`git config failed in ${projectDir}: ${cfg.stderr || cfg.stdout}`);
+	}
 	if (ensured.mode !== 'project') {
 		throw new Error(`${projectDir} came up in ${ensured.mode} mode — expected a fresh project repo`);
 	}

@@ -6,6 +6,7 @@
  * expectation grading, and the usage accounting (§9.6 — the metric is token
  * usage per PASSING build, so the accounting is load-bearing).
  */
+import { chmodSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -120,21 +121,31 @@ describe('prepareProject', () => {
 		const ws = await scratchRoot();
 		const dir = `${EVAL_PROJECT_PREFIX}stuck`;
 		await ws.mkdir(dir, { recursive: true });
-		// rm cannot remove what is immutable: shadow it with a function that always fails.
-		const stuck = await ws.exec(
-			`rm() { return 1; }; for i in 1 2; do rm -rf "${dir}" && break; done; [ ! -e "${dir}" ]`,
-		);
-		expect(stuck.exitCode).not.toBe(0);
-		const failing = new Proxy(ws, {
-			get(t, k, r) {
-				if (k !== 'exec') return Reflect.get(t, k, r);
-				return async (cmd: string, o?: never) =>
-					cmd.includes('rm -rf')
-						? { exitCode: 1, stdout: '', stderr: 'Directory not empty' }
-						: t.exec(cmd, o);
-			},
-		});
-		await expect(prepareProject(failing, dir, FIXTURE)).rejects.toThrow(/could not remove/);
+		// A read-only parent makes the real rm -rf fail on every attempt.
+		const parent = join(roots[roots.length - 1]!, '.builder/projects');
+		chmodSync(parent, 0o555);
+		try {
+			await expect(prepareProject(ws, dir, FIXTURE)).rejects.toThrow(/could not remove/);
+		} finally {
+			chmodSync(parent, 0o755);
+		}
+	});
+
+	it('retries a wipe that fails at first and then succeeds', async () => {
+		const ws = await scratchRoot();
+		const dir = `${EVAL_PROJECT_PREFIX}flaky`;
+		await ws.mkdir(dir, { recursive: true });
+		const parent = join(roots[roots.length - 1]!, '.builder/projects');
+		chmodSync(parent, 0o555);
+		// Unblocked while the loop is between attempts (0.2s sleeps).
+		const t = setTimeout(() => chmodSync(parent, 0o755), 300);
+		try {
+			await prepareProject(ws, dir, FIXTURE);
+		} finally {
+			clearTimeout(t);
+			chmodSync(parent, 0o755);
+		}
+		expect(await ws.exists(`${dir}/.git`)).toBe(true);
 	});
 
 	it('refuses to wipe outside the eval namespace', async () => {
