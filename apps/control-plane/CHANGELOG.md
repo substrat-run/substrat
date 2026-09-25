@@ -1,5 +1,80 @@
 # @substrat-run/control-plane
 
+## 0.13.39
+
+### Patch Changes
+
+- a235648: Cross-vertical events now reach hosted verticals, and arrive in seconds rather than at the next sweep (#1705).
+
+  `@substrat-run/vertical-host`'s platform surface gains three platform-secret-gated routes: `POST /internal/exported-events` (the producer's release after a watermark), `GET /internal/import-state` (the consumer's imports and watermarks) and `POST /internal/import-events` (a batch, applied under the watermark's compare-and-set). They call three new optional `VerticalScopeHost` members: `exportedEventsLocal`, `importStateLocal` and `importEventsLocal`. A host without them answers 501, naming the redeploy.
+
+  `@substrat-run/adapter-cloudflare` implements the three far ends. Before answering, each proves the scope was provisioned in this deployment for this tenant, and refuses `conflict` otherwise. A CP-less deployment has no directory, and an unprovisioned Durable Object would answer with a plausible empty result. The coordinator also fires the new `ScopeStubOptions.onExportedEvents` when an invoke commits an exported type.
+
+  `@substrat-run/control-plane-api` adds `VerticalClient.exportedEvents`, `importState` and `importEvents`. A deployment that predates the routes (a 404, or its SPA shell) is a 501 that says to redeploy, so it is never an empty answer. It also adds `hostedCrossVerticalReach`, the control plane's reach for the phase. That reach decides which scopes to call from the version registry, so a fleet with no importer makes no `/internal` call. A consumer's `imports` reach the registry only from `substrat` CLI **0.34.0** on. A version pushed by an older CLI reads as importing nothing, and its scopes are not asked until it is pushed again. A version the registry cannot answer for (an unknown version, an unparseable manifest, or a scope bound to no version) keeps its scopes as candidates. They are asked once per sweep tick, never on a kick, and it is reported.
+
+  `@substrat-run/kernel` adds `EXPORTED_EVENTS_HEADER`, `ScopeStubOptions.onExportedEvents`, and `kickFlags(setHeader)`, which returns both kick callbacks for a worker to spread into `getScope`'s options. It also adds `runCrossVerticalFrom`, which runs one producer's outgoing edges for the router kick; `registryImportCandidates`, the registry-backed narrowing; and a `{ from }` hint on `CrossVerticalReach.candidates`. `@substrat-run/adapter-sqlite` fires `onExportedEvents` too. `@substrat-run/contracts` adds `importsOfManifestJson`, which answers `none`, `imports` or `unreadable`. The adapter-cloudflare host adds `versionImports`, the unaudited registry read the narrowing uses.
+
+  `@substrat-run/contract-tests`: a `VerticalEventsFixture` may pass a `transport` and an `afterInstall`, which is how the suite now also runs over the hosted transport on workerd.
+
+  The scaffold's worker wires both flags with `kickFlags`, so its responses also carry `x-substrat-exported-events`. The router passes that flag on its drain kick. The control plane then asks the producer's kick coalescer, a new `CrossVerticalKickDO`, one per producer scope, built with adapter-cloudflare's new `defineKickCoalescerDO`. The coalescer runs at most one pass per `CROSS_VERTICAL_KICK_WINDOW_MS` (5 s) per producer, plus one trailing pass per burst, fleet-wide. The control plane's wrangler config gains a `v2` migration for the class. The control plane runs the phase on its scheduled sweep, with `CROSS_VERTICAL_CONSUMERS_PER_PASS` as the per-pass cap (`0` pauses).
+
+- 6fc9950: Cross-vertical events gain a replay lever, an edge-health view, a payload-schema rule in CI, and a promote refusal (#1705).
+
+  **The replay lever.** `HostAdmin.moveImportCursor(actor, tenantId, scopeId, move)` moves a consumer's watermark on the edge from one producer vertical. `mode: 'replay'` re-delivers after a point (`after: null` is the whole history). It needs `acknowledge: 'rerun-handlers'`, because every importing handler runs again, and anything they send or call outside the app happens again (`REPLAY_EFFECT`). `mode: 'skip'` passes events over up to a point (`through: 'now'`). It needs `acknowledge: 'skip-events'`, and a later replay can reach back to what it skipped. A replay moves the replayed range's delivery and journal rows into the new spine table `_substrat_import_replays`, under the act's `replayId`, rather than deleting them. The producer is resolved from the directory in the consumer's tenant, never taken from the caller. `@substrat-run/control-plane-api` serves it as `POST /tenants/:t/scopes/:s/import-cursor` to staff and to the tenant's own credential, and refuses a missing acknowledgement in those words. `@substrat-run/vertical-host` adds `POST /internal/import-cursor` (optional `importCursorLocal`, 501 when absent), and `VerticalClient.importCursorMove` reaches it. On the control plane, `CloudflareScopeHostOptions.importCursorDelegation` routes the move to the deployment serving the scope.
+
+  **Edge health.** `crossVerticalHealth(host, { actor, tenantId, crossVertical })` reads every edge of one tenant live, through the sweep's own reach: `caught-up`, `behind` (with the oldest waiting event's lag), `paused` (by the producer's grant or the consumer's door), `unresolved`, or `unavailable` when a side could not be asked. `unavailable` never renders as healthy. Each edge carries its last delivering sweep pass and the last one that did not deliver. `GET /tenants/:t/cross-vertical/edges` serves it. The dashboard shows it per app, and the console per scope, both with the lever behind a ticked acknowledgement.
+
+  **D-22 for exported events.** `exportedEventSchemasOf(operations, eventsExportedBy(…))` derives each exported type's payload as JSON Schema, and `emitModel(…, { exports })` carries it in `model.json` (omitted when empty, so no existing model changes). `pnpm lint:export-schemas --base <ref>` compares it with the merge-base. At an unchanged schemaVersion it refuses a removed, retyped, newly required or no-longer-required field, and a schemaVersion that went down. A base the checkout lacks is exit 2, never read as a new file. CI runs it on every PR and push.
+
+  **The promote refusal.** `promoteVersion` refuses a version that drops or re-versions an exported (type, schemaVersion) the outgoing version promised and a running consumer imports, unless acknowledged with `exportBreak` (`substrat promote --ack-export-break`). The refusal counts the break and names no tenant. `HostAdmin.promotionImpact` lists the affected apps, and the promote route returns that list with a 409: a confined caller sees its own tenant's apps and a count of the rest. `@substrat-run/contracts` adds `exportsOfManifestJson` and `exportBreak`.
+
+- 48fea30: The schedule kill switch (#1666) is now recorded in the directory as well as in the scope,
+  so a switch survives a wiped or restored scope, and the fleet can be asked what is off.
+
+  The directory keeps one row per (tenant, scope, module) in a new `_substrat_system_switches`
+  table: the position the switch was last moved to, who moved it, why, and when. `revokeFromSystem`
+  writes it after the scope's switch held; `restoreToSystem` writes it before the scope moves,
+  and puts it back if the move fails. Both adapters build the table from one kernel fragment,
+  `SYSTEM_SWITCHES_DDL`, and backfill it once from the admin log, from the latest applied
+  `revokeFromSystem` / `restoreToSystem` per module, on the run that creates it.
+
+  `GET /system-switches` (staff and the service token only) is the fleet read: every scope with a
+  module switched off, paged by `operationId`, filterable by tenant, scope, module and vertical,
+  with `position=on` or `position=all` for the rest. `HostAdmin.listSystemSwitches` is the read
+  underneath it.
+
+  When the scope and the record disagree, OFF wins from either side, and the record never turns
+  anything on. `HostAdmin.reassertSystemSwitches` switches every module the record holds `off` back
+  off on one scope, after provisioning's seat, so the grants a wiped scope just had seated are the
+  ones it tombstones and a later `restoreToSystem` gives them back. It runs after a CP-full
+  `provisionScope`, after every hosted reconcile (the sweep, the repair route and the
+  set-entitlements drain), and after a staff restore. For a hosted scope it reaches the deployment
+  over the existing `/internal/system-switch` route, so no vertical needs redeploying. It is audited
+  as a new `reassertSystemSwitch` admin action, only when something moved.
+
+  The per-scope status read (`GET /tenants/:t/scopes/:s/system-grants`) gains `recorded` on each
+  entry, the directory's position beside the scope's own, and now also lists a module the record
+  holds that a wiped scope no longer reports, as `ungranted`.
+
+  `HostAdmin.listSystemSwitches` and `HostAdmin.reassertSystemSwitches` are required members: any
+  `HostAdmin` implementation outside this repository needs both.
+
+- Updated dependencies [fcfbbc3]
+- Updated dependencies [a3216e6]
+- Updated dependencies [a235648]
+- Updated dependencies [6fc9950]
+- Updated dependencies [48fea30]
+- Updated dependencies [a6f4db1]
+- Updated dependencies [45b927e]
+- Updated dependencies [f890c1b]
+  - @substrat-run/control-plane-api@0.121.0
+  - @substrat-run/connector-scrive@0.14.26
+  - @substrat-run/connector-fortnox@0.4.23
+  - @substrat-run/connector-planima@0.2.18
+  - @substrat-run/contracts@0.121.0
+  - @substrat-run/kernel@0.121.0
+  - @substrat-run/adapter-cloudflare@0.121.0
+
 ## 0.13.38
 
 ### Patch Changes
