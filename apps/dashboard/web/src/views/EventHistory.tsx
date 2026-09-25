@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from '@substrat-run/ui';
 import { api, type CauseChain, type CauseTerminal, type EffectsTree, type EffectsTerminal, type EventEffects, type HistoryEntry, type InvocationEvents } from '../lib/api';
-import { actorLabel, authorizationLabel, callButtonTitle, callLogsButtonTitle, impersonationLabel, operationLabel, payloadText } from '../lib/history';
+import { actorLabel, authorizationLabel, callButtonTitle, callLogsButtonTitle, impersonationLabel, operationLabel, payloadText, payloadUndecodable } from '../lib/history';
 import { causeChips, deliveryStatus, eventSummary, eventTime, newestFirst, payloadRows, stateChangingIds, type CauseChip, type Tone } from '../lib/event-history';
 import { shortId } from '../lib/format';
 import { DEV_MOCK } from '../lib/mock';
@@ -19,7 +19,7 @@ import { InvocationLogsStrip } from './InvocationLogsStrip';
  */
 const reads = {
   history: (scopeId: string, entityType: string, entityId: string, cursor?: string) =>
-    DEV_MOCK ? Promise.resolve(mockEntityHistory()) : api.appEntityHistory(scopeId, entityType, entityId, cursor),
+    DEV_MOCK ? Promise.resolve(mockEntityHistory(entityId)) : api.appEntityHistory(scopeId, entityType, entityId, cursor),
   cause: (scopeId: string, eventId: string): Promise<CauseChain> =>
     DEV_MOCK ? Promise.resolve(mockEventCause(eventId)) : api.appEventCause(scopeId, eventId),
   effects: (scopeId: string, eventId: string): Promise<EffectsTree> =>
@@ -305,9 +305,11 @@ function Payload({ e, previous }: { e: HistoryEntry; previous?: HistoryEntry }) 
         {anyWas && <span style={quiet}>struck through: what the previous event said</span>}
       </div>
       {rows === null ? (
-        // Null after an erasure is a supported result, not an error, and says so.
-        <div style={{ ...mono, fontSize: 12, color: e.payload == null ? 'var(--text-tertiary)' : 'var(--text-primary)', wordBreak: 'break-word' }}>
-          {payloadText(e.payload)}
+        // Null after an erasure is a supported result, not an error, and says so. Null
+        // because the stored payload would not DECODE is the opposite — a read failure —
+        // and is said as one.
+        <div style={{ ...mono, fontSize: 12, color: payloadUndecodable(e) ? 'var(--status-warning-fg)' : e.payload == null ? 'var(--text-tertiary)' : 'var(--text-primary)', wordBreak: 'break-word' }}>
+          {payloadText(e.payload, e.decodeError)}
         </div>
       ) : rows.length === 0 ? (
         <div style={{ ...mono, fontSize: 12, color: 'var(--text-tertiary)' }}>{'{}'}</div>
@@ -375,6 +377,10 @@ export function EntityTimeline({
     walk.current = `${scopeId}|${entityType}|${entityId}`;
     setEntries(null);
     setCursor(null);
+    // A page read for the previous record may still be in flight. Its `finally` is
+    // guarded by the old walk and will never clear this, so the new walk starts clear —
+    // or its "Read later events" would stay disabled for good.
+    setReading(false);
     setErr(null);
     setOpen(null);
     reads

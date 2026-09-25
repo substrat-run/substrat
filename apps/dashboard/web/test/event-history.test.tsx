@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { causeChips, deliveryStatus, eventSummary, eventTime, newestFirst, payloadRows, stateChangingIds } from '../src/lib/event-history';
 import { EntityTimeline } from '../src/views/EventHistory';
 import { api, type HistoryEntry } from '../src/lib/api';
+import { payloadText, payloadUndecodable } from '../src/lib/history';
+import { MOCK_HISTORY_ENTITY, mockEntityHistory } from '../src/lib/mock-timeline';
 
 const entry = (id: string, over: Partial<Record<keyof HistoryEntry, unknown>> = {}) =>
   ({
@@ -55,6 +57,20 @@ describe('event history derivations (#1767)', () => {
     expect(deliveryStatus({ state: 'delivered', at: '2026-07-20T10:00:02.100Z', attempts: 1 }, at)).toEqual({ glyph: '✓', text: '+2.1 s', tone: 'success' });
     expect(deliveryStatus({ state: 'retrying', at: '2026-07-20T10:05:00Z', attempts: 2 }, at)).toMatchObject({ text: 'retrying · 2 attempts so far', tone: 'warning' });
     expect(deliveryStatus({ state: 'dead', at, attempts: 1 }, at)).toMatchObject({ text: 'gave up after 1 attempt', tone: 'danger' });
+  });
+
+  it('tells a payload that would not decode from an erased one', () => {
+    expect(payloadText(null)).toBe('payload erased');
+    expect(payloadText(null, 'payload: not valid JSON')).toBe('payload could not be read (payload: not valid JSON)');
+    expect(payloadUndecodable({ payload: null, decodeError: 'actor: not valid JSON; payload.x: expected string' })).toBe(true);
+    // Another column failing beside an erased payload leaves the payload erased.
+    expect(payloadText(null, 'actor: not valid JSON')).toBe('payload erased');
+    expect(payloadUndecodable({ payload: null, decodeError: 'payload_hash: bad' })).toBe(false);
+  });
+
+  it('the preview answers with the history of the record asked for, and no other', () => {
+    expect(mockEntityHistory(MOCK_HISTORY_ENTITY).entries.length).toBeGreaterThan(0);
+    expect(mockEntityHistory('01JZ…B2').entries).toEqual([]);
   });
 
   it('names a beginning only when the chain reached one', () => {
@@ -114,6 +130,35 @@ describe('EntityTimeline', () => {
     // The previous event's value is struck, the new one follows it.
     const struck = [...container.querySelectorAll('span')].find((s) => s.style.textDecoration === 'line-through');
     expect(struck?.textContent).toBe('new');
+  });
+
+  it('says an undecodable payload could not be read, never that it was erased', async () => {
+    const broken = entry('01C', { type: 'account.updated', operation: 'm/update', decodeError: 'payload: not valid JSON' });
+    vi.spyOn(api, 'appEntityHistory').mockResolvedValue({ entries: [broken], nextCursor: null } as never);
+    vi.spyOn(api, 'appEventCause').mockResolvedValue({ chain: [broken], terminal: 'operation' });
+    vi.spyOn(api, 'appEventEffects').mockResolvedValue({ root: { event: broken, deliveries: [], effects: [] }, terminal: 'complete', count: 1 } as never);
+    await act(async () => root.render(<EntityTimeline scopeId="s" entityType="account" entityId="a1" onClose={() => undefined} />));
+    await click(container.querySelector('[data-event-id="01C"] button[aria-expanded]')!);
+    expect(container.textContent).toContain('payload could not be read (payload: not valid JSON)');
+    expect(container.textContent).not.toContain('payload erased');
+  });
+
+  it('a record opened while the previous one was reading can still read its own later events', async () => {
+    const pending = new Promise<never>(() => undefined);
+    const history = vi.spyOn(api, 'appEntityHistory').mockImplementation(async (_s, _t, id, cursor) => {
+      if (cursor === 'c1') return pending; // the first record's page never comes back
+      return { entries: [entry(id === 'a1' ? '01A' : '01B')], nextCursor: id === 'a1' ? 'c1' : 'c2' } as never;
+    });
+    const later = () => [...container.querySelectorAll('button')].find((b) => /Read later events|Reading…/.test(b.textContent ?? ''))!;
+    await act(async () => root.render(<EntityTimeline scopeId="s" entityType="account" entityId="a1" onClose={() => undefined} />));
+    await click(later());
+    expect(later().disabled).toBe(true);
+
+    await act(async () => root.render(<EntityTimeline scopeId="s" entityType="account" entityId="a2" onClose={() => undefined} />));
+    expect(later().textContent).toBe('Read later events');
+    expect(later().disabled).toBe(false);
+    await click(later());
+    expect(history).toHaveBeenLastCalledWith('s', 'account', 'a2', 'c2');
   });
 
   it('says the newest events are missing when the walk has more pages', async () => {

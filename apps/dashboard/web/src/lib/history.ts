@@ -75,8 +75,20 @@ export function authorizationLabel(authorization: HistoryEntry['authorization'])
  * an erasure is a supported result and not an error — rendering it blank would
  * read as an event that said nothing, which is a different claim.
  */
-export function payloadText(payload: unknown): string {
+export function payloadText(payload: unknown, decodeError?: string): string {
+  if (payload == null && decodeError !== undefined && payloadUndecodable({ payload, decodeError }))
+    return `payload could not be read (${decodeError})`;
   return payload == null ? 'payload erased' : JSON.stringify(payload);
+}
+
+/**
+ * True when a null payload is null because the stored column would not decode (#1636),
+ * not because it was erased. Both read `null`; `decodeError` names each column that
+ * failed as `<column>: <why>`, joined by `; `, so the payload is judged by its own entry
+ * — an actor that failed beside an erased payload leaves the payload erased.
+ */
+export function payloadUndecodable(e: { payload: unknown; decodeError?: string }): boolean {
+  return e.payload == null && e.decodeError !== undefined && /(^|;\s*)payload(\.[^:;]*)?:/.test(e.decodeError);
 }
 
 /**

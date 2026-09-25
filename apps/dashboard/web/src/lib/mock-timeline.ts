@@ -139,8 +139,15 @@ const RENAMED = ev({
 const HISTORY: HistoryEntry[] = [INVITED, ACTIVATED, ROLE, SUSPENDED, REACTIVATED, RENAMED];
 const ALL = [...HISTORY, QUEUED, SENT, SIGNED_IN];
 
-export function mockEntityHistory(): Page<HistoryEntry> {
-  return { entries: HISTORY, nextCursor: null } as Page<HistoryEntry>;
+/**
+ * The history is Ada's, so only Ada's row answers with it. The Data tab's other accounts
+ * get what the read gives a record nothing has happened to — an empty page — rather than
+ * Ada's story under their id.
+ */
+export const MOCK_HISTORY_ENTITY = '01JZ…A1';
+
+export function mockEntityHistory(entityId: string): Page<HistoryEntry> {
+  return { entries: entityId === MOCK_HISTORY_ENTITY ? HISTORY : [], nextCursor: null } as Page<HistoryEntry>;
 }
 
 export function mockEventCause(eventId: string): CauseChain {
