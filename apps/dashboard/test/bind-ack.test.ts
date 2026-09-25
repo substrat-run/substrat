@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { BIND_EXPORT_BREAK_REFUSAL, bindExportBreakRefusal } from '@substrat-run/kernel';
+import { scopeId, tenantId } from '@substrat-run/contracts';
+import { BIND_EXPORT_BREAK_REFUSAL, bindExportBreakRefusal, ulid } from '@substrat-run/kernel';
 import { BIND_EXPORT_BREAK, bindExportBreakOf, sendWithExportBreakAck } from '../web/src/lib/bind-ack.js';
 
 /**
@@ -11,7 +12,7 @@ describe('sendWithExportBreakAck', () => {
   // The sentence the plane actually sends, from the kernel that writes it, as the dashboard
   // worker relays it (behind whatever prefix the relay adds).
   const refusal = bindExportBreakRefusal([
-    { tenantId: 't', scopeId: 's', vertical: 'acme/desk', version: 'v', type: 'ledger.entry-made', schemaVersion: 1, incoming: null },
+    { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'acme/desk', version: 'v', type: 'ledger.entry-made', schemaVersion: 1, incoming: null },
   ]);
 
   it('reads the prefix the kernel writes, so a reworded refusal cannot silently stop being recognised', () => {
