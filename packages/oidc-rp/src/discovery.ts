@@ -73,6 +73,18 @@ function issuerKey(issuer: string): string | null {
   }
 }
 
+/**
+ * Why `issuer` cannot be a configured issuer, or null when it can: it is a valid issuer
+ * identifier (no query, fragment or userinfo) and `https`, or a loopback `http` dev issuer.
+ * The one predicate for every place an issuer is accepted, so a save-time check can never
+ * admit what discovery then refuses.
+ */
+export function issuerRefusal(issuer: string): string | null {
+  if (!issuerKey(issuer)) return 'OIDC issuer is not a valid issuer identifier';
+  if (!isHttpsOrLoopback(new URL(issuer))) return 'OIDC issuer is not https';
+  return null;
+}
+
 /** How long a failed discovery is answered from memory instead of asked again. */
 export const DISCOVERY_FAILURE_TTL_MS = 30_000;
 const failures = new Map<string, { error: unknown; until: number }>();
@@ -89,8 +101,8 @@ const discoveryCache = new Map<string, Promise<Discovery>>();
 export function discoverIssuer(issuer: string): Promise<Discovery> {
   const key = issuerKey(issuer);
   // Not cached, either refusal: nothing was asked of anyone.
-  if (!key) return Promise.reject(new Error('OIDC issuer is not a valid issuer identifier'));
-  if (!isHttpsOrLoopback(new URL(issuer))) return Promise.reject(new Error('OIDC issuer is not https'));
+  const refusal = issuerRefusal(issuer);
+  if (refusal || !key) return Promise.reject(new Error(refusal ?? 'OIDC issuer is not a valid issuer identifier'));
   const cached = discoveryCache.get(key);
   if (cached) return cached;
   // A failure is remembered only briefly (below): long enough that a bad or unreachable issuer
