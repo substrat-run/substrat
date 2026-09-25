@@ -515,6 +515,12 @@ Local-only demos with a `server.ts` harness and no worker entry are out of scope
 no router fronts them and no request carries an asserted tenant),
 `lint:like-pattern` (`tools/like-pattern-length.mjs`: a `LIKE`/`GLOB` pattern written into
 source is at most 50 bytes, the limit a Durable Object enforces and node does not, #1655),
+`lint:export-schemas --base <ref>` (`tools/export-schema-diff.mts`: D-22 for exported events,
+#1705. Each exported type's payload schema, which `lint:model --check` holds in `model.json`, is
+compared with the merge-base. At an unchanged schemaVersion a removed, retyped, newly required or
+no-longer-required field is red, because another vertical's deployed code parses it. A base the
+checkout does not hold is exit 2, never "every model.json is new". CI runs the tool's own tests
+first),
 `lint:module-inputs` (`tools/module-inputs.mjs`: a `ModuleRegistration` that declares
 `operations:` hands the host `operationInputs: operationInputsOf(ops)` — the mechanism behind
 the "parse, don't trust" rule above. The kernel field is **optional**, so that rule held only
