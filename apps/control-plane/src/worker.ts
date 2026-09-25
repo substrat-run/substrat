@@ -32,10 +32,11 @@ import {
   SWEEP_RUNS_KIND,
   connectorDispatchKind,
 } from '@substrat-run/contracts';
-import type { ManifestImports, PlatformActorId, TenantId, ScopeId } from '@substrat-run/contracts';
+import type { ManifestImports, PlatformActorId, Scope, TenantId, ScopeId } from '@substrat-run/contracts';
 import {
   runPlatformSweep,
   runCrossVerticalFrom,
+  isPrimaryScope,
   assertPlatformCall,
   PlatformCallError,
   webCryptoSecretBox,
@@ -169,6 +170,16 @@ async function runCrossVerticalPass(env: Env, producer: { tenantId: TenantId; sc
   );
   await Promise.allSettled(recorded);
   if (out.errors.length > 0) console.log('cross-vertical kick', { scopeId: producer.scopeId, errors: out.errors });
+}
+
+/**
+ * May a kick for this directory record reach a coalescer at all (#1737 review): an active,
+ * primary install bound to a vertical. The pass would refuse anything else anyway (it re-resolves
+ * the producer). Checking here means a scope that could never be a producer creates no Durable
+ * Object and runs no pass, however many requests name one.
+ */
+export function isKickableProducer(rec: Scope | undefined): rec is Scope {
+  return rec !== undefined && rec.status === 'active' && rec.vertical !== null && isPrimaryScope(rec);
 }
 
 /**
@@ -1789,6 +1800,13 @@ export default {
       // as it likes. The coalescer runs at most one pass per window for the producer, and a
       // lost kick costs latency, never an event (the sweep is the backstop).
       if (!kick.exports) return c.json(report);
+      // The directory first, before any coalescer is touched (#1737 review). PLATFORM_SECRET
+      // proves only "a platform script", and every pushed vertical holds it. Without this, a
+      // secret-holder naming a fresh scope id per request would mint a new coalescer, and a
+      // pass, each time. Now a scope that is not an active, primary install of a vertical costs
+      // this one read and nothing else.
+      const rec = await hostFor(c.env).admin.getScopeRecord(SWEEP_ACTOR, ids.data, sids.data).catch(() => undefined);
+      if (!isKickableProducer(rec)) return c.json({ ...report, crossVertical: 'not-a-producer' });
       return c.json({ ...report, crossVertical: await kickCrossVertical(c.env, { tenantId: ids.data, scopeId: sids.data }) });
     });
 
