@@ -2003,10 +2003,11 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
-   * `applyDirectorySchema`, plus the one-time backfill of the schedule switch's record
-   * (#1674) from the admin log. Whether the table exists is asked BEFORE the DDL creates
-   * it, so the backfill runs on the one application that creates the table and never
-   * again — including after a directory restore that lands a dump from before it.
+   * `applyDirectorySchema`, plus the backfill of the schedule switch's record (#1674) from
+   * the admin log. Whether the table exists is asked BEFORE the DDL creates it, so the
+   * backfill runs only on an application that creates the table: once on a directory that
+   * never had it, and again after a directory restore whose dump predates it (from that
+   * dump's own log). A directory that already holds the table is never backfilled over.
    */
   private ensureDirectorySchema(): void {
     const switchRecordIsNew = !systemSwitchesTableExists(switchSqlOf(this.directory));
