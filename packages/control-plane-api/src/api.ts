@@ -837,6 +837,20 @@ const tenantRoleAssignmentBody = z
  */
 const systemSwitchBody = systemSwitch.pick({ moduleId: true, reason: true }).strict();
 
+/**
+ * The fleet read's filter (#1674). `position` defaults to `off` — "what is switched off
+ * across the fleet" is the question the route exists for — and `all` asks for both. Paged
+ * by `operationId`, ascending by default (oldest switch first, as the admin log reads).
+ */
+const systemSwitchesQuery = z.object({
+  position: z.enum(['on', 'off', 'all']).default('off'),
+  tenantId: tenantIdSchema.optional(),
+  scopeId: scopeIdSchema.optional(),
+  moduleId: systemSwitch.shape.moduleId.optional(),
+  vertical: z.string().min(1).optional(),
+  ...listPageQuery.shape,
+});
+
 /** The peer kill switch's body (#1706) — the tenant and scope come from the path. */
 const peerSwitchBody = peerSwitch.pick({ vertical: true, reason: true }).strict();
 
@@ -2679,6 +2693,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // but unmigrated database fails as loudly as an absent one.
         ...(tenantStores.length ? { tenantStores } : {}),
       });
+      // #1674: a reconcile seats a wiped scope's system grants live again, so what the
+      // directory records as switched OFF goes back off now, after that seat. Before the
+      // receipt: a scope left on must not be marked provisioned.
+      await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
       // #1172: the reconcile succeeded, so record WHICH version it ran against. Without
       // this the sweep would come back and do it again on the next pass — the console
       // button and the automatic phase have to write the same receipt, or pressing the
@@ -3844,6 +3862,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await host.restoreScope(actor, tenantId, scopeId, landing);
       const vertical = await verticalForScope(c, scope);
       if (vertical) await retryTransient(() => vertical.restoreScope(tenantId, scopeId, tables));
+      // #1674: a backup taken before a module was switched off carries its grants live and
+      // no marker, so the restore just switched it back on. The directory's record puts it
+      // back off, now, rather than at the next reconcile.
+      await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
       return c.json({ restored: scopeId, tables: tables.length });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
@@ -6543,6 +6565,37 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     }
     return c.json(await admin.systemGrantsStatus(actor, { tenantId, scopeId }));
+  });
+
+  // The fleet read (#1674): every scope with a module switched off, from the directory's
+  // record of the switch, so it needs no walk of every scope's store. The record is not the
+  // gate; the per-scope read above is where a drift between the two shows (`recorded`).
+  //
+  // **Staff and the platform service token ONLY.** Outside `/tenants/:id`, and in neither
+  // BUILDER_ROUTES nor TENANT_ROUTES, so a builder and a tenant credential are both refused
+  // by default-deny before this runs. The `confinedTenant` check is the second lock, not
+  // the first: a fleet-wide read is exactly what a confined credential must never make, and
+  // it must not start answering if this path is ever allowlisted for a narrowed read.
+  app.get('/system-switches', async (c) => {
+    if (confinedTenant(c.get('principal')) !== null) {
+      return c.json({ error: 'forbidden: the schedule switch is staff-only' }, 403);
+    }
+    const q = systemSwitchesQuery.parse({
+      position: c.req.query('position'),
+      tenantId: c.req.query('tenantId'),
+      scopeId: c.req.query('scopeId'),
+      moduleId: c.req.query('moduleId'),
+      vertical: c.req.query('vertical'),
+      limit: c.req.query('limit'),
+      cursor: c.req.query('cursor'),
+      order: c.req.query('order'),
+    });
+    const { position, ...rest } = q;
+    const entries = await admin.listSystemSwitches(c.get('actor'), {
+      ...rest,
+      ...(position === 'all' ? {} : { position }),
+    });
+    return c.json(pageOf(entries, q.limit, (e) => e.operationId));
   });
 
   // -- the peer kill switch (#1706) ------------------------------------------

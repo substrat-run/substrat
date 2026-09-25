@@ -57,6 +57,7 @@ import type {
   SystemGrant,
   PeerGrantsStatusEntry,
   SystemGrantsStatusEntry,
+  SystemSwitchRecord,
   SystemSwitch,
   SystemSwitchResult,
   PeerCoverage,
@@ -143,6 +144,7 @@ import type { CapabilityVerbs } from './capability.js';
 import { substratError } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { SealedSecret } from './secret-box.js';
+import type { SystemSwitchRecordFilter } from './system-switch-record.js';
 import type { SearchHit, SearchOptions } from './search-index.js';
 import type { EntityVersion } from './entity-version.js';
 import type { UndrainedEvents } from './outbox-event.js';
@@ -1606,6 +1608,36 @@ export interface HostAdmin {
     actor: PlatformActorId,
     node: { tenantId: TenantId; scopeId: ScopeId },
   ): Promise<SystemGrantsStatusEntry[]>;
+  /**
+   * The fleet read (#1674): the directory's record of the schedule switch, across every
+   * scope. `revokeFromSystem` and `restoreToSystem` write it (`system-switch-record.ts`),
+   * so "which scopes have a module switched off" is one directory read, not a walk of every
+   * scope's store. Unset `position` means both. Access-logged (K-24).
+   *
+   * It is the RECORD, not the gate: the scope's own marker is what the runner reads, and
+   * `systemGrantsStatus` reports both side by side (`schedules` and `recorded`).
+   */
+  listSystemSwitches(actor: PlatformActorId, filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecord[]>;
+  /**
+   * Put the directory's OFF positions back into one scope (#1674), for a scope whose storage
+   * lost them: a wipe then re-provision, or a restore of a dump taken before the switch was
+   * pulled. Every module the record holds `off` on the scope is switched off again, through
+   * the same switch `revokeFromSystem` moves (delegated for a hosted scope exactly as that
+   * is). A module whose marker is already live answers `changed: false` and writes nothing,
+   * and one the scope does not hold at all (`held: false`) is left alone.
+   *
+   * Called AFTER provisioning's seat, never before: the seat recreates the grants a wipe
+   * lost, and OFF then tombstones exactly those and records them, so a later
+   * `restoreToSystem` gives them back. A record never turns a module ON.
+   *
+   * Audited as `reassertSystemSwitch`, only when something changed. Throws when a switch
+   * could not be reached, so a caller that records a receipt (the sweep's reconcile) does
+   * not record one for a scope left on.
+   */
+  reassertSystemSwitches(
+    actor: PlatformActorId,
+    node: { tenantId: TenantId; scopeId: ScopeId },
+  ): Promise<{ moduleId: string; held: boolean; changed: boolean }[]>;
 
   /**
    * The PEER kill switch (#1706): turn one calling vertical off on one scope — the tenant's lever

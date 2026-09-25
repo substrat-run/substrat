@@ -856,6 +856,9 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
         connectionGrants,
         connectionKeys,
       });
+      // #1674: after the reconcile's seat, what the directory records as switched OFF goes
+      // back off — every reconcile, whoever triggered it, as the grants above ride every one.
+      await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
     } catch (e) {
       if (e instanceof ControlPlaneError) return { status: 'pending', error: e.message };
       throw e;

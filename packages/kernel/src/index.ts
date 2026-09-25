@@ -282,6 +282,24 @@ export {
 } from './system-switch.js';
 export type { SwitchOutcome, SwitchSql, SystemGrantsEntry, SystemScheduleState } from './system-switch.js';
 export {
+  SYSTEM_SWITCHES_BACKFILL_SQL,
+  SYSTEM_SWITCHES_DDL,
+  listSystemSwitchRecords,
+  recordSystemSwitchedOff,
+  recordSystemSwitchedOn,
+  restoreSystemSwitchRecord,
+  switchedOffModulesOf,
+  systemSwitchRecordsOf,
+  systemSwitchesTableExists,
+  withRecorded,
+} from './system-switch-record.js';
+export type {
+  SystemSwitchRecordFilter,
+  SystemSwitchRecordPrior,
+  SystemSwitchRecordRow,
+  SystemSwitchRecordWrite,
+} from './system-switch-record.js';
+export {
   PEER_SUBJECT_PREFIX,
   admitPeer,
   collectPeers,

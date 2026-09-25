@@ -1191,7 +1191,7 @@ async function reconcileOneScope(
     SWEEP_ACTOR,
     { tenantId: t, id: s, vertical: rec.vertical },
   );
-  return reconcileOrUnsupported(() =>
+  const reconciled = await reconcileOrUnsupported(() =>
     client.reconcileInstance({
       tenantId: t,
       scopeId: s,
@@ -1201,6 +1201,11 @@ async function reconcileOneScope(
       connectionKeys: payload.connectionKeys as never,
     }),
   );
+  // #1674: after the reconcile's seat, what the directory records as switched OFF goes
+  // back off. A throw here fails the scope for this pass, so the sweep writes no receipt
+  // for a scope it left on and asks again next pass.
+  await host.admin.reassertSystemSwitches(SWEEP_ACTOR, { tenantId: t, scopeId: s });
+  return reconciled;
 }
 
 /**

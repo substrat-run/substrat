@@ -44,6 +44,7 @@ import {
   connectionSecret,
   systemGrant,
   systemSwitch,
+  systemSwitchRecord,
   peerSwitch,
   verticalCaller,
   verticalSlug as verticalSlugOf,
@@ -271,6 +272,17 @@ import {
   systemScheduleState,
   systemSwitchedOff,
   systemSwitchedOffMessage,
+  SYSTEM_SWITCHES_BACKFILL_SQL,
+  SYSTEM_SWITCHES_DDL,
+  listSystemSwitchRecords,
+  recordSystemSwitchedOff,
+  recordSystemSwitchedOn,
+  restoreSystemSwitchRecord,
+  switchedOffModulesOf,
+  systemSwitchRecordsOf,
+  systemSwitchesTableExists,
+  withRecorded,
+  type SystemSwitchRecordFilter,
   type SwitchOutcome,
   type SwitchSql,
   type PeerGrantsRow,
@@ -1396,7 +1408,7 @@ export class SqliteScopeHost implements ScopeHost {
     mkdirSync(this.dir, { recursive: true });
     this.directory = new Database(join(this.dir, '_directory.sqlite'));
     this.directory.pragma('journal_mode = WAL');
-    this.applyDirectorySchema();
+    this.ensureDirectorySchema();
     this.loadRoles();
     this.checker =
       options.checker ??
@@ -1853,6 +1865,7 @@ export class SqliteScopeHost implements ScopeHost {
         PRIMARY KEY (scope_id, subject_id)
       );
       ${IMPERSONATION_DDL}
+      ${SYSTEM_SWITCHES_DDL}
       CREATE TABLE IF NOT EXISTS _substrat_admin_log (
         id TEXT PRIMARY KEY,
         actor TEXT NOT NULL,
@@ -1985,6 +1998,18 @@ export class SqliteScopeHost implements ScopeHost {
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
+  }
+
+  /**
+   * `applyDirectorySchema`, plus the one-time backfill of the schedule switch's record
+   * (#1674) from the admin log. Whether the table exists is asked BEFORE the DDL creates
+   * it, so the backfill runs on the one application that creates the table and never
+   * again — including after a directory restore that lands a dump from before it.
+   */
+  private ensureDirectorySchema(): void {
+    const switchRecordIsNew = !systemSwitchesTableExists(switchSqlOf(this.directory));
+    this.applyDirectorySchema();
+    if (switchRecordIsNew) this.directory.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
   }
 
   registerExecutor(
@@ -2439,6 +2464,10 @@ export class SqliteScopeHost implements ScopeHost {
         const seat = seatScopeTuple(peer.subject, peer.relation, peer.object, null);
         rt.db.prepare(seat.sql).run(...seat.params);
       }
+      // #1674: what the directory records as switched OFF goes back off, AFTER the seat and
+      // in the same turn. A scope whose storage was wiped has just had its grants seated
+      // live, and this tombstones exactly those, so a later restore gives them back.
+      this.reassertSwitchesInTurn(rt, actor, input.tenantId, input.scopeId);
     });
     // Audit a real provision only; an idempotent re-provision changed nothing.
     if (!existing) {
@@ -2450,6 +2479,37 @@ export class SqliteScopeHost implements ScopeHost {
         record,
       );
     }
+  }
+
+  /**
+   * `HostAdmin.reassertSystemSwitches`' body (#1674), run inside a turn the caller already
+   * holds on the scope's actor: every module the directory records OFF on the scope is
+   * switched off again. Already off answers `changed: false` and writes nothing, and a
+   * module the scope does not hold is left alone. Audited only when something moved.
+   */
+  private reassertSwitchesInTurn(
+    rt: ScopeRuntime,
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): { moduleId: string; held: boolean; changed: boolean }[] {
+    const at = new Date().toISOString();
+    return switchedOffModulesOf(switchSqlOf(this.directory), tenantId, scopeId).map((moduleId) => {
+      const outcome = rt.db.transaction(() =>
+        switchSystemSchedules(switchSqlOf(rt.db), { moduleId, scopeId, to: 'off', at }),
+      )();
+      if (outcome.changed) {
+        this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, {
+          operationId: ulid(),
+          moduleId,
+          schedules: 'off',
+          phase: 'applied',
+          changed: true,
+          permissions: outcome.permissions,
+        });
+      }
+      return { moduleId, held: outcome.held, changed: outcome.changed };
+    });
   }
 
   async provisionTenantStore(
@@ -5668,6 +5728,13 @@ export class SqliteScopeHost implements ScopeHost {
       const target = { tenantId, scopeId };
       const base = { operationId, moduleId: input.moduleId, schedules: to };
       this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
+      // The directory's record (#1674), which a reconcile re-asserts OFF from. ON writes it
+      // BEFORE the scope moves and OFF only AFTER the scope held: either failure then leaves
+      // a record that is no more `off` than the scope, and the scope's marker wins.
+      const at = new Date().toISOString();
+      const directorySql = switchSqlOf(this.directory);
+      const record = { tenantId, scopeId, moduleId: input.moduleId, actor, reason: input.reason, operationId, at };
+      const prior = to === 'on' ? recordSystemSwitchedOn(directorySql, record) : null;
       let outcome: SwitchOutcome;
       try {
         // A turn on the scope actor (#1666 review), exactly as the job store (#1577): `invoke`
@@ -5678,15 +5745,11 @@ export class SqliteScopeHost implements ScopeHost {
         const rt = this.runtime(tenantId, scopeId);
         outcome = await rt.actor.turn(() =>
           rt.db.transaction(() =>
-            switchSystemSchedules(switchSqlOf(rt.db), {
-              moduleId: input.moduleId,
-              scopeId,
-              to,
-              at: new Date().toISOString(),
-            }),
+            switchSystemSchedules(switchSqlOf(rt.db), { moduleId: input.moduleId, scopeId, to, at }),
           )(),
         );
       } catch (err) {
+        restoreSystemSwitchRecord(directorySql, record, prior);
         try {
           this.recordAdmin(actor, action, target, null, {
             ...base,
@@ -5698,6 +5761,7 @@ export class SqliteScopeHost implements ScopeHost {
         }
         throw err;
       }
+      if (to === 'off' && outcome.held) recordSystemSwitchedOff(directorySql, record);
       this.recordAdmin(actor, action, target, null, {
         ...base,
         phase: outcome.held ? 'applied' : 'refused',
@@ -5868,10 +5932,12 @@ export class SqliteScopeHost implements ScopeHost {
       );
       const offModules = new Set(states.filter((s) => s.schedules === 'off').map((s) => s.moduleId));
       const explanations = offModules.size > 0 ? lastSwitchedOff(tenantId, scopeId, offModules) : new Map();
-      const result = states.map((s) => ({
+      const recorded = systemSwitchRecordsOf(switchSqlOf(this.directory), tenantId, scopeId);
+      const result = withRecorded(states, recorded).map((s) => ({
         moduleId: s.moduleId as ModuleId,
         schedules: s.schedules,
         switchedOff: explanations.get(s.moduleId) ?? null,
+        recorded: s.recorded,
       }));
       // K-24: reading the switch's position and any live incident reason is itself
       // access-logged, the same as every other HostAdmin read.
@@ -6198,6 +6264,30 @@ export class SqliteScopeHost implements ScopeHost {
       // #1674: the switch's status read — same gate, the admin log to explain an `off`
       // entry. Nothing to delegate here: the pure adapter's scope storage IS the store.
       systemGrantsStatus: systemGrantsStatusOf,
+      // #1674: the directory's record of the switch — the fleet read, and the re-assert a
+      // scope that lost its marker gets. `reassertSwitchesInTurn` is the one body; this is
+      // the directory check and the turn around it.
+      listSystemSwitches: async (actor: PlatformActorId, filter?: SystemSwitchRecordFilter) => {
+        const rows = listSystemSwitchRecords(switchSqlOf(this.directory), filter);
+        this.recordAccess(
+          actor,
+          'listSystemSwitches',
+          { tenantId: (filter?.tenantId as TenantId | undefined) ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows.map((r) => systemSwitchRecord.parse(r));
+      },
+      reassertSystemSwitches: async (actor: PlatformActorId, node: { tenantId: TenantId; scopeId: ScopeId }) => {
+        const scope = this.directory
+          .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+          .get(node.scopeId) as { tenant_id: string } | undefined;
+        if (!scope || scope.tenant_id !== node.tenantId) {
+          throw substratError('not_found', `unknown scope for tenant: (${node.tenantId}, ${node.scopeId})`);
+        }
+        const rt = this.runtime(node.tenantId, node.scopeId);
+        return rt.actor.turn(() => this.reassertSwitchesInTurn(rt, actor, node.tenantId, node.scopeId));
+      },
       peerGrantsStatus: peerGrantsStatusOf,
       // #1672 — the platform's two capability verbs, both a turn on the scope actor
       // (#1678: every scope-level admin write takes one, so none lands mid-invoke inside a
@@ -7887,7 +7977,7 @@ export class SqliteScopeHost implements ScopeHost {
         })();
         // Carry a copy taken before a directory migration forward to the running
         // code's shape — the same assertion a cold start makes.
-        this.applyDirectorySchema();
+        this.ensureDirectorySchema();
         // Roles are held in memory (`loadRoles`), so a restore that only rewrote the
         // table would leave every permission check reading the PRE-restore roles until
         // the process restarted — the exact silent-divergence a recovery must not have.

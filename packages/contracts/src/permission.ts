@@ -276,8 +276,36 @@ export const systemGrantsStatusEntry = systemScheduleEntry.extend({
       at: instant,
     })
     .nullable(),
+  /**
+   * The position the DIRECTORY records for this module on this scope (#1674), or null when
+   * it has no record. `schedules` is what the scope itself says, and it is what the runner
+   * gates on. When the two disagree, that is drift, and OFF wins from either side: a record
+   * of `off` is put back by the next reconcile, and a record never turns a module on.
+   */
+  recorded: z.enum(['on', 'off']).nullable(),
 });
 export type SystemGrantsStatusEntry = z.infer<typeof systemGrantsStatusEntry>;
+
+/**
+ * One row of the directory's switch record (#1674) — the fleet read's entry
+ * (`GET /system-switches`). Written by `revokeFromSystem` / `restoreToSystem` beside the
+ * scope's own marker, and kept for the one thing the scope's storage cannot do for itself:
+ * survive that storage being wiped. `operationId` is the switch call's (the admin-log pair
+ * that moved it), `at` when it moved, and `vertical` the scope's binding as the directory
+ * holds it now.
+ */
+export const systemSwitchRecord = z.object({
+  tenantId,
+  scopeId,
+  moduleId,
+  vertical: z.string().nullable(),
+  position: z.enum(['on', 'off']),
+  actor: platformActorId,
+  reason: z.string(),
+  operationId: z.string().min(1),
+  at: instant,
+});
+export type SystemSwitchRecord = z.infer<typeof systemSwitchRecord>;
 
 // ============================================================================
 // Evaluation representation — relationship tuples (design doc §4.2, plan D-23).
