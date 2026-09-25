@@ -176,6 +176,10 @@ function discover(issuer: string): Promise<Discovery> {
       if (typeof d.issuer !== 'string' || issuerKey(d.issuer) !== key) {
         throw new Error(`OIDC discovery at ${url} names a different issuer`);
       }
+      // The keys an ID token is verified against are fetched from here, so not in plaintext.
+      if (typeof d.jwks_uri !== 'string' || !isHttpsOrLoopbackUrl(d.jwks_uri)) {
+        throw new Error(`OIDC discovery at ${url} names a jwks_uri that is not https`);
+      }
       return d;
     })
     .catch((err: unknown) => {
@@ -369,6 +373,8 @@ async function withUserInfo(
 ): Promise<SessionUser> {
   if (user.email !== undefined && user.name !== undefined) return user;
   if (!d.userinfo_endpoint || !accessToken) return user;
+  // Best effort, and never over plaintext: the bearer would cross the wire in the clear.
+  if (!isHttpsOrLoopbackUrl(d.userinfo_endpoint)) return user;
 
   let claims: { sub?: unknown; email?: unknown; name?: unknown; email_verified?: unknown };
   try {
@@ -582,6 +588,14 @@ const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '
 /** HTTPS, or HTTP on a loopback host. The same rule the issuer applies to its own upstreams. */
 function isHttpsOrLoopback(url: URL): boolean {
   return url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
+}
+
+function isHttpsOrLoopbackUrl(value: string): boolean {
+  try {
+    return isHttpsOrLoopback(new URL(value));
+  } catch {
+    return false;
+  }
 }
 
 export interface MountOptions {

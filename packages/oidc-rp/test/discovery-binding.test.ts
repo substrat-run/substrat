@@ -209,6 +209,29 @@ describe('userinfo', () => {
   });
 });
 
+describe('what else the document names', () => {
+  it('refuses a plaintext jwks_uri, and does not cache the refusal', async () => {
+    doc = { jwks_uri: 'http://keys.example.test/jwks' };
+    await expect(login()).rejects.toThrow(/jwks_uri that is not https/);
+    expect(requests.some((r) => r.url.startsWith('http://keys.example.test'))).toBe(false);
+    doc = {};
+    expect((await login()).user.id).toBe('u-1');
+  });
+
+  it('accepts a jwks_uri on another https origin (positive twin)', async () => {
+    doc = { jwks_uri: 'https://keys.example.test/jwks' };
+    expect((await login()).user.id).toBe('u-1');
+  });
+
+  it('never sends the bearer to a plaintext userinfo endpoint; the login stands without it', async () => {
+    sparse = true;
+    doc = { userinfo_endpoint: 'http://userinfo.example.test/me' };
+    const { user } = await login();
+    expect(user.email).toBeUndefined();
+    expect(requests.some((r) => r.url.startsWith('http://userinfo.example.test'))).toBe(false);
+  });
+});
+
 describe('the discovery fetch', () => {
   it('does not follow a redirect off the issuer origin', async () => {
     discoveryRedirect = 'https://evil.test/.well-known/openid-configuration';
