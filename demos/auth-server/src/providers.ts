@@ -1,5 +1,6 @@
 import { socialProviderList } from 'better-auth/social-providers';
 import type { GenericOAuthConfig } from 'better-auth/plugins/generic-oauth';
+import { isAllowedEndpoint, issuerRefusal, sameIssuer } from '@substrat-run/oidc-rp/discovery';
 import type { SqlExec } from './introspect.js';
 
 /**
@@ -129,28 +130,17 @@ export function isReservedProviderId(providerId: string): boolean {
   return (socialProviderList as readonly string[]).includes(providerId);
 }
 
-/** Loopback hosts, where OAuth 2.1 still permits plain HTTP for local development. */
-export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-
 /**
- * The rule every URL an operator can point this issuer at must pass: HTTPS, or HTTP on a
- * loopback host so a local Keycloak works in dev. Applied to the issuer URL at save time AND
- * to every endpoint its discovery document declares — an HTTPS issuer must not be able to
- * route authorization codes or client credentials to a plain-HTTP endpoint.
+ * The issuer an operator's input names. Operators paste the ISSUER (what OIDC calls it, what a
+ * relying party is configured with, what this issuer's own dashboard displays about itself),
+ * but a pasted discovery URL is recognised and cut back to its issuer rather than doubled into
+ * `/.well-known/.well-known/…`. Trailing slashes go too. Discovery then derives the well-known
+ * URL from the issuer itself, so the document is always the one the issuer serves.
  */
-export function isHttpsOrLoopback(url: URL): boolean {
-  return url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
-}
-
-/**
- * The discovery document for an issuer URL. Operators paste the ISSUER (what OIDC calls it,
- * what a relying party is configured with, what this issuer's own dashboard displays about
- * itself) and the well-known suffix is derived — but a pasted discovery URL is recognised
- * rather than doubled into `/.well-known/.well-known/…`.
- */
-export function discoveryUrlOf(issuer: string): string {
-  const trimmed = issuer.replace(/\/+$/, '');
-  return trimmed.includes('/.well-known/') ? trimmed : `${trimmed}/.well-known/openid-configuration`;
+export function issuerOf(input: string): string {
+  const trimmed = input.trim().replace(/\/+$/, '');
+  const wellKnown = trimmed.indexOf('/.well-known/');
+  return wellKnown === -1 ? trimmed : trimmed.slice(0, wellKnown);
 }
 
 /**
@@ -279,9 +269,86 @@ export function deleteProvider(sql: SqlExec, providerId: string): void {
   sql.exec('DELETE FROM identity_provider WHERE provider_id = ?', providerId);
 }
 
-/** The rows that should actually be offered: enabled, and either in the catalogue or generic. */
+/**
+ * The endpoints of a discovery document a person, a code, the client secret or a token is sent
+ * to — judged at save time (`resolveIssuerEndpoints`) and again on a stored row (below). One
+ * list, so the two judgements can never cover different endpoints.
+ */
+export const CREDENTIALED_ENDPOINTS = ['authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'end_session_endpoint'] as const;
+
+/**
+ * Why a GENERIC row cannot be offered for login, or null when it can (and always null for a
+ * catalogue row). Discovery is judged at save time (`resolveIssuerEndpoints`), but a row keeps
+ * what it stored, so a row saved under an older, looser rule is judged again here, by the same
+ * rule: the issuer passes `issuerRefusal`, and every stored endpoint passes `isAllowedEndpoint`
+ * against the issuer its document stated. A row that fails is not offered — no button, nothing
+ * mounted, so nothing is sent to it — until it is saved again, which re-discovers. The reason
+ * never repeats a URL: the admin panel shows it, and a stored issuer may carry credentials.
+ */
+export function genericEndpointsRefusal(row: ProviderRow): string | null {
+  return judged(row).refusal;
+}
+
+type Judgement = { refusal: string; endpoints?: never } | { refusal: null; endpoints: ProviderEndpoints | null };
+/**
+ * Each row object is judged once. Better Auth is rebuilt per request, and every `*From` below
+ * reads through `live()`, so without this one row is parsed and judged several times a request.
+ * Keyed by the object `readProviders` returned, so an edited row is a new object and a new
+ * judgement.
+ */
+const judgements = new WeakMap<ProviderRow, Judgement>();
+function judged(row: ProviderRow): Judgement {
+  let j = judgements.get(row);
+  if (!j) {
+    j = judge(row);
+    judgements.set(row, j);
+  }
+  return j;
+}
+
+function judge(row: ProviderRow): Judgement {
+  if (!isGenericRow(row)) return { refusal: null, endpoints: null };
+  if (issuerRefusal(row.issuer!)) return { refusal: 'its issuer URL is not usable' };
+  if (!row.endpoints) return { refusal: 'no discovery document is stored for it' };
+  let stored: Partial<Record<keyof ProviderEndpoints, unknown>>;
+  try {
+    stored = JSON.parse(row.endpoints) as typeof stored;
+  } catch {
+    return { refusal: 'its stored discovery document is not readable' };
+  }
+  if (!stored || typeof stored !== 'object') return { refusal: 'its stored discovery document is not readable' };
+  const issuer = stored.issuer;
+  if (typeof issuer !== 'string' || issuerRefusal(issuer)) return { refusal: 'its stored issuer is not usable' };
+  // The document's issuer must be the configured one, as `readDiscovery` required at save time:
+  // a row edited or imported with the two apart is not the provider its endpoints belong to.
+  if (!sameIssuer(issuerOf(row.issuer!), issuer)) return { refusal: 'its stored issuer is not the configured one' };
+  if (typeof stored.authorization_endpoint !== 'string' || typeof stored.token_endpoint !== 'string') {
+    return { refusal: 'its stored endpoints are incomplete' };
+  }
+  for (const key of CREDENTIALED_ENDPOINTS) {
+    const value = stored[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || !isAllowedEndpoint(issuer, value)) return { refusal: `its stored ${key} is not https` };
+  }
+  return { refusal: null, endpoints: stored as ProviderEndpoints };
+}
+
+/** What the admin panel says about a row that is not offered, and what fixes it. */
+function attentionFor(row: ProviderRow): string | null {
+  const refusal = genericEndpointsRefusal(row);
+  return refusal ? `Not offered for sign-in: ${refusal}. Save the provider again to re-discover its endpoints.` : null;
+}
+
+/**
+ * The rows that should actually be offered: enabled, and either in the catalogue or a generic
+ * row whose stored discovery still passes the rule. Every consumer — the mounted config, the
+ * login buttons, the trusted list — reads through here, so a row is dropped from all of them
+ * at once, never mounted-but-hidden or shown-but-unmounted.
+ */
 function live(rows: ProviderRow[]): ProviderRow[] {
-  return rows.filter((row) => !row.disabled && (isGenericRow(row) || descriptorOf(row.provider_id)));
+  return rows.filter(
+    (row) => !row.disabled && (isGenericRow(row) ? genericEndpointsRefusal(row) === null : descriptorOf(row.provider_id)),
+  );
 }
 
 /**
@@ -312,6 +379,14 @@ export function socialProvidersFrom(rows: ProviderRow[]): Record<string, Record<
 }
 
 /**
+ * The row versions already warned about, so a stale row logs once per version. Bounded: an
+ * isolate that outlives many edits forgets them all past the cap, which costs one repeated
+ * warning per stale row, not memory.
+ */
+const warned = new Set<string>();
+const WARNED_CAP = 256;
+
+/**
  * The `genericOAuth` plugin config for the GENERIC rows — the other half of the split
  * `socialProvidersFrom` opens. The plugin registers these as first-class social providers
  * (same `/sign-in/social`, same `/callback/{id}`), so everything downstream — the login
@@ -339,13 +414,26 @@ export function socialProvidersFrom(rows: ProviderRow[]): Record<string, Record<
  * issuer with no generic upstream must not mount the plugin at all.
  */
 export function genericProvidersFrom(rows: ProviderRow[]): GenericOAuthConfig[] | undefined {
-  const enabled = live(rows).filter((row) => isGenericRow(row) && row.endpoints);
+  // A hosted install's console is not the operator's to read (see `sign-in-log.ts`); the
+  // admin panel's `attention` is what they see. This line is for whoever runs the process.
+  for (const row of rows) {
+    if (row.disabled) continue;
+    const refusal = genericEndpointsRefusal(row);
+    // Once per version of the row, not once per request: the config is rebuilt per request.
+    const seen = `${row.provider_id}@${row.updated_at ?? ''}`;
+    if (refusal && !warned.has(seen)) {
+      if (warned.size >= WARNED_CAP) warned.clear();
+      warned.add(seen);
+      console.warn('auth-server: provider not offered', { providerId: row.provider_id, reason: refusal, fix: 're-save to re-discover' });
+    }
+  }
+  const enabled = live(rows).filter(isGenericRow);
   if (!enabled.length) return undefined;
   // The annotation is load-bearing: a literal built inside `.map` is not checked for unknown
   // keys, and `accountIssuer` — removed in Better Auth 1.7.3 — went on compiling and silently
   // doing nothing until this line said what the element is.
   return enabled.map((row): GenericOAuthConfig => {
-    const endpoints = JSON.parse(row.endpoints!) as ProviderEndpoints;
+    const endpoints = judged(row).endpoints!;
     return {
       providerId: row.provider_id,
       name: row.label ?? row.provider_id,
@@ -384,6 +472,26 @@ export function trustedProvidersFrom(rows: ProviderRow[]): string[] {
     .map((row) => row.provider_id);
 }
 
+/**
+ * The issuer as the panel may show it. An issuer URL carrying credentials is refused at save
+ * time now, but a row saved before that could hold one, and the panel is not where a password
+ * should reappear — so userinfo is blanked, and a value that does not parse is not shown at
+ * all. The stored column is untouched: this is display, and such a row is not offered anyway.
+ */
+export function wireIssuer(issuer: string | null): string | null {
+  if (issuer === null) return null;
+  let url: URL;
+  try {
+    url = new URL(issuer);
+  } catch {
+    return '(not a valid URL)';
+  }
+  if (!url.username && !url.password) return issuer;
+  url.username = '';
+  url.password = '';
+  return url.toString();
+}
+
 /** One row for the dashboard. The secret is never here — only whether there is one. */
 export function toWireProvider(row: ProviderRow) {
   return {
@@ -391,12 +499,14 @@ export function toWireProvider(row: ProviderRow) {
     clientId: row.client_id,
     clientSecretSet: true,
     tenantId: row.tenant_id,
-    issuer: row.issuer,
+    issuer: wireIssuer(row.issuer),
     label: row.label,
     allowSignup: Boolean(row.allow_signup),
     trustEmail: Boolean(row.trust_email),
     disabled: Boolean(row.disabled),
     callbackPath: callbackPath(row.provider_id),
+    /** Set when the row is not offered for sign-in, saying why and what fixes it (no URL). */
+    attention: attentionFor(row),
     updatedAt: row.updated_at,
   };
 }

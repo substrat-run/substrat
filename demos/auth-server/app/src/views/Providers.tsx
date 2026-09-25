@@ -87,7 +87,7 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
                         {provider.issuer && <code className="client-id">{provider.issuer}</code>}
                       </td>
                       <td><code>{provider.clientId}</code></td>
-                      <td>{provider.disabled ? 'Disabled' : 'Enabled'}</td>
+                      <td>{provider.disabled ? 'Disabled' : provider.attention ? 'Not offered — save again' : 'Enabled'}</td>
                     </tr>
                   );
                 })}

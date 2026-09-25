@@ -959,6 +959,8 @@ export interface ConfiguredProvider {
   disabled: boolean;
   /** The redirect URI to register upstream, so the panel never makes anyone guess it. */
   callbackPath: string;
+  /** Set when the row is not offered for sign-in: why, and that saving it again re-discovers. */
+  attention: string | null;
   updatedAt: number | null;
 }
 
