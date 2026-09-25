@@ -29,5 +29,11 @@ declare module 'cloudflare:test' {
     PC_V2_SCOPE: DurableObjectNamespace;
     PC_V3_SCOPE: DurableObjectNamespace;
     PC_CONTROL_PLANE: DurableObjectNamespace;
+    /** #1705 PR 2: the kick coalescer (recording, throwing, real) and the log its passes write. */
+    KICK_TEST: DurableObjectNamespace;
+    KICK_THROW: DurableObjectNamespace;
+    KICK_REAL: DurableObjectNamespace;
+    KICK_LOG: DurableObjectNamespace;
+    KICK_SLOW: DurableObjectNamespace;
   }
 }

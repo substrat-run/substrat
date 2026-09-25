@@ -365,6 +365,8 @@ import {
   EXPORT_HOPS_SQL,
   IMPORT_CURSORS_SQL,
   IMPORT_CURSOR_OF_SQL,
+  OUTBOX_MARK_SQL,
+  exportedSinceQuery,
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
   CrossVerticalRegistry,
@@ -4055,6 +4057,11 @@ export class SqliteScopeHost implements ScopeHost {
         // harness only after the enqueue task resolves — i.e. after COMMIT — so a
         // rolled-back intent never signals.
         const signals = { platformRequests: 0 };
+        // #1705 PR 2: exported-type rows this invoke (and its consumers' tail) committed, for
+        // `onExportedEvents`. Counted only in a deployment that exports something, and never
+        // for a read-only session, which commits nothing.
+        const exportTypes = session?.mode === 'read-only' ? [] : this.crossVertical.exportTypes();
+        let exported = 0;
         // #129: read inside the transaction, reported after it commits — a tag
         // handed out for writes that were rolled back is a tag nobody may hold.
         let committedVersion: EntityVersion | null | undefined;
@@ -4068,6 +4075,10 @@ export class SqliteScopeHost implements ScopeHost {
           // `finally` so a later consumer carries none rather than the last caller's,
           // which is the leak `causedBy` had to be moved off the host to avoid.
           rt.invocationId = invokeOptions?.invocationId ?? null;
+          // The outbox's insertion mark, inside the actor task so nothing else writes between it
+          // and this invoke (`OUTBOX_MARK_SQL` says why rowid and not the id).
+          const exportMark =
+            exportTypes.length > 0 ? Number((rt.db.prepare(OUTBOX_MARK_SQL).get() as { mark: number }).mark) : null;
           try {
           // #1672: the capability door's session, re-resolved on EVERY invoke and inside the
           // actor task — so nothing can revoke between this read and the transaction below.
@@ -4222,6 +4233,10 @@ export class SqliteScopeHost implements ScopeHost {
             await this.dispatch(rt, rt.invocationId);
             await this.dispatchExecutors(rt, rt.invocationId);
           }
+          if (exportMark !== null && !replayed) {
+            const q = exportedSinceQuery(exportTypes, exportMark);
+            exported = Number((rt.db.prepare(q.sql).get(...q.params) as { n: number }).n);
+          }
           return structuredClone(result);
           } finally {
             // Cleared on BOTH paths, inside the task. The actor runs one task at a
@@ -4233,6 +4248,7 @@ export class SqliteScopeHost implements ScopeHost {
           }
         });
         if (signals.platformRequests > 0) options?.onPlatformRequests?.(signals.platformRequests);
+        if (exported > 0) options?.onExportedEvents?.(exported);
         if (committedVersion !== undefined) invokeOptions?.onEntityVersion?.(committedVersion);
         if (replayed) invokeOptions?.onIdempotentReplay?.();
         return invoked;

@@ -44,6 +44,8 @@ export { identityTenant, identityTenantsResponse } from './identity-tenants.js';
 export type { IdentityTenant } from './identity-tenants.js';
 export { VerticalClient } from './vertical-client.js';
 export { versionReachedAt } from './scope-deployment.js';
+// #1705 PR 2: the cross-vertical phase's reach for a control plane whose scopes live elsewhere.
+export { hostedCrossVerticalReach } from './cross-vertical.js';
 // A preview's own sign-in client (#1704): the create's wiring, and the reap's half the
 // platform sweep also runs when it garbage-collects an expired preview.
 export { retireAllPreviewClients, retireClientsOfReapedScope, tenantIssuers, wirePreviewAuth } from './preview-auth.js';

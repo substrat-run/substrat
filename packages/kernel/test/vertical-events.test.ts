@@ -70,6 +70,22 @@ describe('CrossVerticalRegistry — wiring refused at registration (#1705)', () 
     expect(() => r.register(exporting('@test/c', 'thing:admin'), undefined)).toThrow(/one export, one version, one key/);
     expect([...r.exports().values()]).toEqual([{ type: 'm.made', schemaVersion: 1, readPermission: 'thing:read' }]);
   });
+
+  it('exportTypes follows every registration, and a refused one adds nothing (#1705 PR 2)', () => {
+    const exporting = (id: string, type: string, key = 'thing:read') =>
+      manifest(id, {
+        emits: [{ type, schemaVersion: 1 }],
+        consumes: [],
+        exports: [{ type, schemaVersion: 1, readPermission: key }],
+      });
+    const r = new CrossVerticalRegistry();
+    expect(r.exportTypes()).toEqual([]);
+    r.register(exporting('@test/a', 'm.made'), undefined);
+    r.register(exporting('@test/b', 'm.sold'), undefined);
+    expect([...r.exportTypes()].sort()).toEqual(['m.made', 'm.sold']);
+    expect(() => r.register(exporting('@test/c', 'm.made', 'thing:admin'), undefined)).toThrow();
+    expect([...r.exportTypes()].sort()).toEqual(['m.made', 'm.sold']);
+  });
 });
 
 describe('exportReadPlan — the producer answers from its own exports (#1705)', () => {

@@ -145,6 +145,8 @@ import {
   EXPORT_HOPS_SQL,
   IMPORT_CURSORS_SQL,
   IMPORT_CURSOR_OF_SQL,
+  OUTBOX_MARK_SQL,
+  exportedSinceQuery,
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
   CrossVerticalRegistry,
@@ -1262,6 +1264,38 @@ export function defineScopeDO(
     }
 
     /**
+     * #1705 PR 2: does this DO hold a scope PROVISIONED here for `tenantId`?
+     *
+     * A CP-less deployment has no directory to ask whether it serves a scope. What it does
+     * have is what provisioning wrote: `provisionScopeLocal` projects the vertical's role
+     * definitions under the tenant (`_substrat_roles`), and a restore re-projects them. A scope
+     * this deployment never provisioned has none of that. Its DO is empty, and a cross-vertical
+     * verb answering from it is a wrong answer rather than a failure: a watermark of "never
+     * read", or a delivery journaled into a scope that is not the install. A scope provisioned
+     * for ANOTHER tenant has roles under that tenant's id only, so the same read is K-3's pair
+     * check too.
+     *
+     * Read without migrating, so asking about a foreign scope leaves its DO as empty as it found it.
+     */
+    async servesTenant(tenantId: TenantId): Promise<boolean> {
+      const hasRoles =
+        this.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_substrat_roles'`).toArray().length > 0;
+      if (!hasRoles) return false;
+      return this.sql.exec('SELECT 1 FROM _substrat_roles WHERE tenant_id = ? LIMIT 1', tenantId).toArray().length > 0;
+    }
+
+    /** #1705 PR 2: the outbox's insertion mark (`OUTBOX_MARK_SQL`). */
+    private outboxMark(): number {
+      return Number((this.sql.exec(OUTBOX_MARK_SQL).toArray()[0] as { mark: number } | undefined)?.mark ?? 0);
+    }
+
+    /** #1705 PR 2: exported-type rows added above `mark`. */
+    private exportedSince(types: readonly string[], mark: number): number {
+      const q = exportedSinceQuery(types, mark);
+      return Number((this.sql.exec(q.sql, ...q.params).toArray()[0] as { n: number } | undefined)?.n ?? 0);
+    }
+
+    /**
      * #1705: apply a batch another vertical exported. The pure adapter's `deliverToPeer`
      * body, on this scope's queue: the compare-and-set on the watermark, a dead letter per
      * importing module for each withheld event, one storage transaction per (event, module)
@@ -1827,6 +1861,8 @@ export function defineScopeDO(
       capability?: { honoured: boolean };
       /** #1706: set iff this DO understood `verticalCaller`. */
       vertical?: { honoured: boolean };
+      /** #1705 PR 2: exported-type rows this commit added. Absent means none. */
+      exported?: number;
     }> {
       if (!failureEnvelope) {
         // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
@@ -1909,6 +1945,8 @@ export function defineScopeDO(
       capability?: { honoured: boolean };
       /** #1706: the acknowledgement for `verticalCaller`, on the same reasoning. */
       vertical?: { honoured: boolean };
+      /** #1705 PR 2: exported-type rows this commit added. Absent means none. */
+      exported?: number;
     }> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
@@ -2050,6 +2088,11 @@ export function defineScopeDO(
          * which is the floor this whole surface sits on.
          */
         const liveSince = this.liveHighWaterMark();
+        // #1705 PR 2: the outbox's insertion mark, so the envelope can say whether this
+        // invoke (or a consumer in its tail) committed an exported type. Only in a deployment
+        // that exports something, and never for a read-only session, which commits nothing.
+        const exportTypes = impersonation?.mode === 'read-only' ? [] : this.crossVertical.exportTypes();
+        const exportMark = exportTypes.length > 0 ? this.outboxMark() : null;
         let result: unknown;
         let committedVersion: string | null = null;
         // #116: set when this invocation was answered from a recording rather
@@ -2209,9 +2252,14 @@ export function defineScopeDO(
         // #1525: still inside the queued body that set it, so these deliveries are this
         // call's own work — the same tail its consumers' emits are stamped in.
         if (!replayed) await this.settleCommitted(tenantId, scopeId, liveSince, this.invocationId);
+        // After the tail, so an exported type a consumer emitted in it counts too.
+        const exported = exportMark !== null && !replayed ? this.exportedSince(exportTypes, exportMark) : 0;
         return {
           result,
           platformRequests: signals.platformRequests,
+          // #1705 PR 2: the coordinator fires `onExportedEvents` from this. Omitted at 0, so
+          // the envelope of a deployment that exports nothing is byte-for-byte what it was.
+          ...(exported > 0 ? { exported } : {}),
           ...(impersonation ? { impersonation: { honoured: true } } : {}),
           // #1672: the acknowledgement the coordinator's skew check reads — see `invoke`.
           ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),

@@ -68,6 +68,14 @@ import {
   peerSwitchOutcome,
   systemSwitchOutcome,
   systemScheduleEntry,
+  exportedBatch,
+  importResult,
+  importState,
+  type ExportReadInput,
+  type ExportedBatch,
+  type ImportBatch,
+  type ImportResult,
+  type ImportState,
 } from '@substrat-run/contracts';
 import type { OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER, undrainedEventsOf } from '@substrat-run/kernel';
@@ -1196,6 +1204,84 @@ export class VerticalClient {
       'peer call',
     );
     return result;
+  }
+
+  /**
+   * The producer half of a cross-vertical edge (#1705 PR 2): what the deployment serving
+   * `scopeId` releases to `input.consumer` after its watermark, decided by its own exports.
+   *
+   * The skew rule is `systemSwitch`'s, and here it is the whole point: an EMPTY batch is a
+   * real answer (nothing new), so a deployment that cannot answer must never produce one. A
+   * 404 (the route does not exist) or a 200 that is not JSON (the SPA shell of a script that
+   * predates the route) is that deployment's own proof, and becomes a 501 saying to redeploy.
+   * The far end's own 501 (the route exists, the host method does not) passes through
+   * verbatim. A JSON 200 of the wrong shape is a 502, never a guess.
+   */
+  async exportedEvents(input: { tenantId: TenantId; scopeId: ScopeId; input: ExportReadInput }): Promise<ExportedBatch> {
+    return this.crossVerticalCall('exported-events', '/internal/exported-events', input.scopeId, exportedBatch, input);
+  }
+
+  /**
+   * The consumer half's first read (#1705 PR 2): the imports the deployment serving `scopeId`
+   * runs, and its watermark per producer. Same skew rule: a deployment that predates the route
+   * is told to redeploy, and never reads as "imports nothing" or "has read nothing", either of
+   * which a pass would act on.
+   */
+  async importState(input: { tenantId: TenantId; scopeId: ScopeId }): Promise<ImportState> {
+    const q = new URLSearchParams({ tenantId: input.tenantId, scopeId: input.scopeId });
+    return this.crossVerticalCall('import-state', `/internal/import-state?${q}`, input.scopeId, importState);
+  }
+
+  /**
+   * Hand a batch to the deployment serving the consumer scope (#1705 PR 2), which applies it
+   * under its watermark's compare-and-set. A lost answer is safe to repeat: a batch applied
+   * twice meets its own journal rows and runs nothing twice, and a stale one is refused.
+   */
+  async importEvents(input: { tenantId: TenantId; scopeId: ScopeId; batch: ImportBatch }): Promise<ImportResult> {
+    return this.crossVerticalCall('import-events', '/internal/import-events', input.scopeId, importResult, input);
+  }
+
+  /**
+   * The three cross-vertical verbs' one transport and skew rule (see `exportedEvents`): a POST
+   * of `body` when there is one, a GET otherwise.
+   */
+  private async crossVerticalCall<T>(
+    verb: string,
+    path: string,
+    scopeId: ScopeId,
+    schema: { safeParse(v: unknown): { success: true; data: T } | { success: false } },
+    body?: unknown,
+  ): Promise<T> {
+    const predates = (): ControlPlaneError =>
+      new ControlPlaneError(
+        501,
+        `the deployment serving scope ${scopeId} predates cross-vertical events (#1705) — redeploy the vertical. ` +
+          `Nothing was read or delivered; the edge's watermark holds.`,
+      );
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const secret = { [PLATFORM_SECRET_HEADER]: this.options.platformSecret };
+    const res = await this.reach(verb, () =>
+      this.options.fetch(
+        `${base}${path}`,
+        body === undefined
+          ? { method: 'GET', headers: secret }
+          : { method: 'POST', headers: { ...secret, 'content-type': 'application/json' }, body: JSON.stringify(body) },
+      ),
+    );
+    if (res.status === 404) throw predates();
+    if (!res.ok) throw await this.refusal(verb, res);
+    const text = await res.text();
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      throw predates();
+    }
+    const parsed = schema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape for scope ${scopeId}.`);
+    }
+    return parsed.data;
   }
 
   private async postInternal<T>(path: string, body: unknown, verb: string): Promise<T> {

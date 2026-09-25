@@ -250,6 +250,32 @@ export function exportsOf(
   return out;
 }
 
+/**
+ * The outbox's insertion mark (#1705 PR 2): the kick's "before", taken ahead of an invoke.
+ *
+ * `rowid`, not the event id. A ULID minted in the same millisecond as the newest row can sort
+ * BELOW it, so "ids above the newest id" can miss an event this invoke wrote. SQLite assigns a
+ * new row `max(rowid) + 1` while the newest row is still there. No code path deletes outbox rows
+ * inside an invoke: the only removals are a restore and a wipe, and they replace the whole table
+ * outside any invocation. So every row the invoke and its consumers add sits above the mark. If
+ * that ever stopped being true, the effect is bounded: an exported event would miss its kick and
+ * wait for the sweep, and no event would be lost or sent twice.
+ */
+export const OUTBOX_MARK_SQL = 'SELECT COALESCE(MAX(rowid), 0) AS mark FROM _substrat_outbox';
+
+/**
+ * How many rows of the exported `types` were added after `mark` (#1705 PR 2). This is the
+ * count `ScopeStubOptions.onExportedEvents` reports. A seek on the rowid, so it walks only
+ * what the invoke added. Callers skip it entirely when the deployment exports nothing.
+ */
+export function exportedSinceQuery(types: readonly string[], mark: number): { sql: string; params: unknown[] } {
+  if (types.length === 0) throw new Error('exportedSinceQuery: no types to count');
+  return {
+    sql: `SELECT COUNT(*) AS n FROM _substrat_outbox WHERE rowid > ? AND type IN (${types.map(() => '?').join(', ')})`,
+    params: [mark, ...types],
+  };
+}
+
 /** The consumer's watermark per producer, oldest source first. */
 export const IMPORT_CURSORS_SQL =
   'SELECT source_scope_id, source_vertical, cursor, updated_at FROM _substrat_import_cursors ORDER BY source_scope_id';
@@ -327,6 +353,8 @@ export class CrossVerticalRegistry {
   private readonly exportsByType = new Map<string, EventExport & { declaredBy: string }>();
   private readonly importVersion = new Map<string, { schemaVersion: number; declaredBy: string }>();
   private readonly registered: RegisteredImport[] = [];
+  /** `exportTypes()`, kept current by `register`: an invoke reads it, and must not rebuild a map to. */
+  private exportTypeList: string[] = [];
 
   register(
     manifest: Pick<ModuleManifest, 'id' | 'events'>,
@@ -375,6 +403,7 @@ export class CrossVerticalRegistry {
     for (const e of manifest.events.exports ?? []) {
       if (!this.exportsByType.has(e.type)) this.exportsByType.set(e.type, { ...e, declaredBy: manifest.id });
     }
+    this.exportTypeList = [...this.exportsByType.keys()];
     for (const [key, decl] of declared) {
       if (!this.importVersion.has(key)) this.importVersion.set(key, { schemaVersion: decl.schemaVersion, declaredBy: manifest.id });
     }
@@ -384,6 +413,11 @@ export class CrossVerticalRegistry {
   /** type → export, over every registered module: what this deployment releases. */
   exports(): Map<string, EventExport> {
     return new Map([...this.exportsByType].map(([t, { declaredBy: _, ...e }]) => [t, e]));
+  }
+
+  /** The exported type names (#1705 PR 2), for the per-invoke kick count. Empty: exports nothing. */
+  exportTypes(): readonly string[] {
+    return this.exportTypeList;
   }
 
   /** What this deployment imports, one row per (source, type), sorted. */

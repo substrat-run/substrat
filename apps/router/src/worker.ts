@@ -116,6 +116,15 @@ interface OutboundPolicy {
 /** Headers the router asserts. Any inbound copy is stripped before these are set. */
 const ASSERTED_PREFIX = 'x-substrat-';
 
+/**
+ * The two response flags that ask for a kick. The kernel's `PLATFORM_REQUEST_HEADER` and
+ * `EXPORTED_EVENTS_HEADER`, hardcoded like the other `x-substrat-*` names here, since the router
+ * does not depend on the kernel. Both sit under {@link ASSERTED_PREFIX}, so an inbound copy never
+ * reaches a vertical.
+ */
+const PLATFORM_REQUEST_HEADER = 'x-substrat-platform-request';
+const EXPORTED_EVENTS_HEADER = 'x-substrat-exported-events';
+
 const bindingNameFor = (slug: string): string =>
   `VERTICAL_${slug.toUpperCase().replace(/-/g, '_')}`;
 
@@ -271,7 +280,16 @@ function record(
  * defines (`PLATFORM_SECRET_HEADER`) — hardcoded here like the other `x-substrat-*` names
  * the router asserts, since the router does not depend on the kernel.
  */
-async function kickDrain(env: Env, target: RouteTarget): Promise<void> {
+async function kickDrain(
+  env: Env,
+  target: RouteTarget,
+  /**
+   * What the response flagged (#1705 PR 2): intents to drain, exported events whose producer's
+   * outgoing edges should run now, or both. Carried so the control plane does only the work the
+   * response asked for. A control plane that predates `exports` ignores it and drains intents.
+   */
+  flags: { platformRequests: boolean; exports: boolean },
+): Promise<void> {
   const cp = env.CONTROL_PLANE_KICK;
   if (!cp) return; // Not wired (dev / self-host) — the sweep is the backstop.
   const secret = env.PLATFORM_SECRET;
@@ -291,7 +309,7 @@ async function kickDrain(env: Env, target: RouteTarget): Promise<void> {
       new Request('https://control-plane/internal/drain-scope', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-substrat-platform': secret },
-        body: JSON.stringify({ tenantId: target.tenantId, scopeId: target.scopeId }),
+        body: JSON.stringify({ tenantId: target.tenantId, scopeId: target.scopeId, ...flags }),
       }),
     );
   } catch {
@@ -386,10 +404,18 @@ export default {
     try {
       const response = await dispatch(env, request, target, hostname);
       status = response.status;
-      // The vertical just enqueued a platform intent (it flagged the response). Drain that
-      // scope out of band so it runs in seconds — after we've returned, never blocking it.
-      if (ctx && response.headers.get('x-substrat-platform-request')) {
-        ctx.waitUntil(kickDrain(env, target));
+      // The vertical just enqueued a platform intent, or committed an event another vertical
+      // imports (#1705), and flagged the response. Kick the control plane out of band so it
+      // runs in seconds — after we've returned, never blocking it. Both flags are RESPONSE
+      // headers: a request can carry neither to the vertical, because `assertNode` strips every
+      // inbound `x-substrat-*`, and the kick names the scope this router resolved, never one
+      // the response names.
+      const flags = {
+        platformRequests: response.headers.get(PLATFORM_REQUEST_HEADER) !== null,
+        exports: response.headers.get(EXPORTED_EVENTS_HEADER) !== null,
+      };
+      if (ctx && (flags.platformRequests || flags.exports)) {
+        ctx.waitUntil(kickDrain(env, target, flags));
       }
       return response;
     } finally {

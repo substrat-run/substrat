@@ -43,6 +43,37 @@ for a non-human caller. Where a connection's stub stamps `{ connection }` on its
 system stub stamps `{ system: moduleId }` and checks against `system:<moduleId>` grants — so
 a scheduled operation is attributable to the schedule, and `ctx.check` stays its one gate.
 
+Two more doors follow the same shape. `getCapabilityScope` acts as a capability that someone
+exchanged a shared link for ([Sharing by link](/concepts/permissions#sharing-by-link-capabilities)).
+`getVerticalScope` acts as another app of the same tenant, which the platform identified
+([the peer door](/guide/architecture#calling-another-vertical-the-peer-door)). Each stamps its
+caller on what it emits, and `ctx.check` stays the one gate. `deliverToPeer` is the consumer
+half of [cross-vertical events](/guide/architecture#between-verticals-exports-and-imports):
+it applies a batch another app exported, entering through the peer door.
+
+### What the harness around a call can observe
+
+`getScope` takes a fourth argument, `ScopeStubOptions`, for the HTTP layer around an operation
+rather than for the module. Its observers fire only after an invoke **commits**:
+
+- **`onPlatformRequests(count)`** fires when the operation enqueued
+  [platform intents](/concepts/platform#platform-intents).
+- **`onExportedEvents(count)`** fires when the operation, or an in-scope consumer in its tail,
+  committed an event of a type this deployment exports to another app.
+
+A hosted vertical turns each into a response header. The router reads it and asks the platform
+to act on that scope now, instead of at the next sweep. `kickFlags` wires both with one call:
+
+```ts
+return host.getScope(principal, tenantId, scopeId, {
+  ...kickFlags((name, value) => c.header(name, value)),
+});
+```
+
+A vertical that leaves this out still works, and waits for the sweep. The flags carry no
+authority: the router strips every inbound `x-substrat-*` header, and the platform acts on the
+scope it resolved, never on one a response names.
+
 ### Preconditions travel per invocation, not in the input
 
 `invoke`'s third argument carries facts about the **request**, never about the domain. A
@@ -108,6 +139,8 @@ interface OperationContext {
   link(child: EntityRef, parent: EntityRef): void;
   grant(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
   revoke(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
+  canAssign(roleKey: string): Promise<Coverage>;
+  readonly capabilities: CapabilityVerbs;   // mint / revoke / list
   requestPlatform(request: PlatformRequestInput): PlatformRequestId;
   platformRequests(filter?: PlatformRequestFilter): PlatformRequest[];
   sealToConnection(provider: string, plaintext: string): Promise<SealedSecret>;
@@ -164,6 +197,13 @@ interface OperationContext {
   an app where a person shares their own record would need a membership table consulted by
   hand in every handler — the forgotten-`WHERE`-clause failure this platform exists to
   remove.
+- **`canAssign`** is the bound on handing out a role: the caller may assign (or remove) a
+  role only if it already holds every permission that role carries here. It is not the
+  permission check. The operation still opens with its own `ctx.check`, then asks this.
+- **`capabilities`** mints authority carried by a secret rather than held by a principal
+  ("anyone with this link may read this folder until Friday"). The rule is `grant`'s:
+  narrowed onto one entity, from keys the caller holds, and re-checked every time the
+  capability acts. See [Sharing by link](/concepts/permissions#sharing-by-link-capabilities).
 - **`requestPlatform`** / **`platformRequests`** enqueue a durable
   [platform intent](/concepts/platform#platform-intents) and read back what the platform did
   with it — the sandbox-clean way to ask for a privileged action, with no upward call and no
@@ -285,3 +325,9 @@ must be **idempotent**. Ordering is guaranteed only within one (scope, module) p
 
 The [invoicing engine](/engines/invoicing/) is the reference example: it consumes
 `workorder.completed` and rebuilds its own state from the event payload alone.
+
+A consumer can also take events from **another app of the same tenant**. It declares
+`consumes: [{ from, type, schemaVersion }]`, and its handlers go under the registration's
+`imports`, never `consumers`. Delivery keeps the same at-least-once journal, and the watermark
+lives in the consumer's own store. See
+[Between verticals: exports and imports](/guide/architecture#between-verticals-exports-and-imports).

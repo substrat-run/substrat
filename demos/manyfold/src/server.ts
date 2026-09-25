@@ -7,7 +7,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import Database from 'better-sqlite3';
 import type { ScopeStub } from '@substrat-run/kernel';
-import { PLATFORM_REQUEST_HEADER, ulid } from '@substrat-run/kernel';
+import { kickFlags, ulid } from '@substrat-run/kernel';
 import { platformActorId, principalId, z, type PlatformActorId, type PrincipalId, type ScopeId } from '@substrat-run/contracts';
 import { problemResponse } from '@substrat-run/vertical-host';
 import { devLogin, type DevCaller } from '@substrat-run/dev-issuer';
@@ -73,10 +73,11 @@ function siteScope(headers: Headers): ScopeId {
 
 async function stub(c: Context): Promise<ScopeStub> {
   const { principal } = await callerFor(c);
-  // #458 parity with the worker: flag responses whose operation enqueued a platform
-  // intent. No router locally, so the header is inert — but visible when driving the API.
+  // #458/#1705 parity with the worker: flag responses whose operation enqueued a platform
+  // intent or committed an exported event. No router locally, so the headers are inert — but
+  // visible when driving the API.
   return host.getScope(principal, world.t1, siteScope(c.req.raw.headers), {
-    onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
+    ...kickFlags((name, value) => c.header(name, value)),
   });
 }
 

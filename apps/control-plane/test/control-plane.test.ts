@@ -6,7 +6,7 @@ import { platformActorId, principalId, tenantId } from '@substrat-run/contracts'
 import { ulid } from '@substrat-run/kernel';
 import { mintSession, type OidcEnv } from '@substrat-run/oidc-rp';
 import { d1StaffRoster, listStaff } from '../src/staff-roster.js';
-import { platformStoreClients } from '../src/worker.js';
+import worker, { drainKickOf, kickCrossVertical, platformStoreClients } from '../src/worker.js';
 
 /**
  * Slice 1's definition of done, as an automated workerd test (first-flow.md §4):
@@ -341,6 +341,118 @@ describe('router kick — /internal/drain-scope', () => {
       body: JSON.stringify({ tenantId: ulid(), scopeId: ulid() }),
     });
     expect(res.status).toBe(403);
+  });
+
+  it('refuses an exported-events kick the same way (#1705 PR 2)', async () => {
+    const res = await SELF.fetch('https://cp.test/internal/drain-scope', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
+      body: JSON.stringify({ tenantId: ulid(), scopeId: ulid(), platformRequests: false, exports: true }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  /**
+   * #1705 PR 2, end to end through the route. The suite's own environment binds no platform
+   * secret, and must not (the refusals above depend on it), so these call the worker with that
+   * one variable added and every other binding real, the coalescer's namespace included.
+   */
+  describe('the exports branch (#1705 PR 2)', () => {
+    const SECRET = 'drain-kick-test-secret';
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const producers = [ulid(), ulid()];
+    let fork = '';
+    const kickRoute = (over: Record<string, unknown>, body: object) =>
+      worker.fetch(
+        new Request('https://cp.test/internal/drain-scope', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-substrat-platform': SECRET },
+          body: JSON.stringify(body),
+        }),
+        { ...env, PLATFORM_SECRET: SECRET, ...over } as never,
+      );
+    const exportsKick = (scopeId: string, tenant: string = t) => ({ tenantId: tenant, scopeId, platformRequests: false, exports: true });
+    /** A coalescer namespace that records whether it was ever asked for an object. */
+    const spyNamespace = () => {
+      const asked: string[] = [];
+      return {
+        asked,
+        ns: {
+          idFromName: (name: string) => {
+            asked.push(name);
+            return {};
+          },
+          get: () => ({ kick: async () => 'ran' }),
+        },
+      };
+    };
+
+    beforeAll(async () => {
+      // Real producers in this deployment's own directory: active, primary, bound to a vertical.
+      const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+      await host.admin.createTenant(staff, { id: t, slug: `kick-${t.toLowerCase()}`, name: 'Kick' });
+      for (const s of producers) {
+        await host.provisionScope(staff, { tenantId: t, scopeId: s as never, vertical: 'acme/crm' });
+        await host.admin.activateScope(staff, t, s as never);
+      }
+      fork = await host.snapshotScope(staff, t, producers[0] as never);
+    });
+
+    it("asks the producer's coalescer, and a second kick inside the window is deferred, not a second pass", async () => {
+      const first = await kickRoute({}, exportsKick(producers[0]!));
+      expect(first.status).toBe(200);
+      expect(await first.json()).toEqual({ drained: 0, done: 0, failed: 0, pending: 0, crossVertical: 'ran' });
+      expect(await (await kickRoute({}, exportsKick(producers[0]!))).json()).toMatchObject({ crossVertical: 'deferred' });
+      // Another producer is its own coalescer.
+      expect(await (await kickRoute({}, exportsKick(producers[1]!))).json()).toMatchObject({ crossVertical: 'ran' });
+    });
+
+    it('a scope that is not an active primary install never reaches a coalescer (#1737 review)', async () => {
+      for (const [scopeId, tenant] of [
+        [ulid(), t], // unknown to the directory: a secret-holder minting ids
+        [fork, t], // a fork is not the install
+        [producers[1]!, ulid()], // a real producer named under the wrong tenant
+      ] as const) {
+        const spy = spyNamespace();
+        const res = await kickRoute({ CROSS_VERTICAL_KICK: spy.ns }, exportsKick(scopeId, tenant));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ crossVertical: 'not-a-producer' });
+        expect(spy.asked).toEqual([]);
+      }
+      // The twin: a real producer does reach its coalescer.
+      const spy = spyNamespace();
+      await kickRoute({ CROSS_VERTICAL_KICK: spy.ns }, exportsKick(producers[1]!));
+      expect(spy.asked).toHaveLength(1);
+    });
+
+    it('a coalescer that is unavailable loses the kick quietly: 200, and the sweep is the backstop', async () => {
+      const broken = {
+        idFromName: () => ({}),
+        get: () => ({
+          kick: async () => {
+            throw new Error('Durable Object is overloaded');
+          },
+        }),
+      };
+      const res = await kickRoute({ CROSS_VERTICAL_KICK: broken }, exportsKick(producers[0]!));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ crossVertical: 'lost' });
+    });
+
+    it('an unbound coalescer runs nothing, and says so', async () => {
+      await expect(
+        kickCrossVertical({ CROSS_VERTICAL_KICK: undefined }, { tenantId: tenantId.parse(ulid()), scopeId: ulid() as never }),
+      ).resolves.toBe('unwired');
+    });
+  });
+
+  it('reads what the kick asks for: a legacy router means the intent drain, and only `true` runs edges', () => {
+    expect(drainKickOf({})).toEqual({ intents: true, exports: false });
+    expect(drainKickOf({ platformRequests: true, exports: false })).toEqual({ intents: true, exports: false });
+    expect(drainKickOf({ platformRequests: false, exports: true })).toEqual({ intents: false, exports: true });
+    expect(drainKickOf({ platformRequests: true, exports: true })).toEqual({ intents: true, exports: true });
+    expect(drainKickOf({ platformRequests: false, exports: 'yes' })).toEqual({ intents: false, exports: false });
   });
 });
 

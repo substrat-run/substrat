@@ -60,7 +60,7 @@ import {
 } from '@substrat-run/adapter-cloudflare';
 import {
   globalFetch,
-  PLATFORM_REQUEST_HEADER,
+  kickFlags,
   readRoutedNode,
   RouterAssertionError,
   ulid,
@@ -491,7 +491,7 @@ async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
     // Only a caller's own invoke can flag anything: the assistant's `record-answer`
     // (the desk's `model-usage` line) runs in `waitUntil` after the response has gone,
     // through `serviceStub`, and still waits for the sweep.
-    onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
+    ...kickFlags((name, value) => c.header(name, value)),
   });
 }
 

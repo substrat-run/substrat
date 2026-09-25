@@ -30,7 +30,7 @@ import {
 } from '@substrat-run/adapter-cloudflare';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import {
-  PLATFORM_REQUEST_HEADER,
+  kickFlags,
   readRoutedNode,
   RouterAssertionError,
   invocationLog,
@@ -321,7 +321,7 @@ async function stub(c: { env: Env; req: { raw: Request }; header?: (name: string
     // #458/#574: an invoke that enqueued platform intents — including a connector
     // delivery the inline drain just routed — flags the response so the router kicks
     // an immediate platform drain instead of waiting for the sweep.
-    onPlatformRequests: () => c.header?.(PLATFORM_REQUEST_HEADER, '1'),
+    ...kickFlags((name, value) => c.header?.(name, value)),
   });
 }
 

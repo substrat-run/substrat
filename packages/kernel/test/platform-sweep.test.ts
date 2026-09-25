@@ -1,16 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { platformActorId, connectionId, scopeId, tenantId } from '@substrat-run/contracts';
+import { platformActorId, connectionId, importsOfManifestJson, scopeId, tenantId } from '@substrat-run/contracts';
 import type { MigrationFailure, MigrationStraggler, Scope, Tenant } from '@substrat-run/contracts';
 import {
   isPrimaryScope,
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,
+  registryImportCandidates,
+  runCrossVerticalFrom,
   runningVersionOf,
   runPlatformSweep,
   startPlatformSweeper,
 } from '../src/platform-sweep.js';
-import type { ConnectorSweeper, PlatformSweepOptions } from '../src/platform-sweep.js';
-import type { FetchLike, MigrateScopeOutcome, ScopeHost } from '../src/scope-host.js';
+import type { ConnectorSweeper, CrossVerticalReach, PlatformSweepOptions } from '../src/platform-sweep.js';
+import type { FetchLike, MigrateScopeOutcome, ScopeHost, SweepRunInput } from '../src/scope-host.js';
 
 /**
  * The orchestration, with fakes — that the pass enumerates, drains, dispatches by
@@ -1683,6 +1685,17 @@ describe('runPlatformSweep · event drain skips (#1636, #1641)', () => {
  * Object wake (an `/internal` hop too, when hosted), so the phase must call no scope when nothing
  * imports, must call only candidates, and must cap what one pass visits.
  */
+/** Only the cross-vertical phase: every other phase off, so the fakes need nothing else. */
+const quiet: Omit<PlatformSweepOptions, 'crossVertical'> = {
+  actor: ACTOR,
+  fetch: FETCH,
+  sweepers: {},
+  drainRetries: false,
+  gcSnapshots: false,
+  reconcileMigrations: false,
+  runSchedules: false,
+};
+
 describe('runPlatformSweep · cross-vertical cost (#1705)', () => {
   const scopesOf = (n: number, vertical = 'acme/board') =>
     Array.from({ length: n }, () => ({
@@ -1707,15 +1720,6 @@ describe('runPlatformSweep · cross-vertical cost (#1705)', () => {
       ...(imports ? { registeredImports: imports } : {}),
     } as unknown as ScopeHost;
     return { host, calls };
-  };
-  const quiet: Omit<PlatformSweepOptions, 'crossVertical'> = {
-    actor: ACTOR,
-    fetch: FETCH,
-    sweepers: {},
-    drainRetries: false,
-    gcSnapshots: false,
-    reconcileMigrations: false,
-    runSchedules: false,
   };
 
   it('a host that imports nothing calls no scope at all, however large the fleet', async () => {
@@ -1769,5 +1773,359 @@ describe('runPlatformSweep · cross-vertical cost (#1705)', () => {
     const paused = await runPlatformSweep(host, { ...quiet, crossVertical: { maxConsumers: 0 } });
     expect(calls).toEqual([]); // 0 is the pause switch
     expect(paused.crossVertical).toMatchObject({ candidates: 5, deferred: 5 });
+  });
+});
+
+/**
+ * #1705 PR 2 — the control plane's narrowing. On the hosted path every scope call is a Durable
+ * Object wake plus an `/internal` hop, so which scopes the phase calls is decided from the
+ * version registry, one read per distinct running version, and never by asking a scope. Only a
+ * version that says it imports nothing is dropped; one the registry cannot answer for is kept.
+ */
+describe('registryImportCandidates (#1705 PR 2)', () => {
+  const V1 = '01JZ0000000000000000000V01';
+  const V2 = '01JZ0000000000000000000V02';
+  const BAD = '01JZ0000000000000000000BAD';
+  const manifestImporting = (from: string[]) =>
+    JSON.stringify({
+      registry: {
+        permissions: [],
+        roles: [],
+        imports: from.map((f) => ({ from: f, type: 'crm.a', schemaVersion: 1, declaredBy: ['@x/board'] })),
+      },
+    });
+  const manifestWithoutImports = JSON.stringify({ registry: { permissions: [], roles: [] } });
+  const scopesOn = (n: number, versionId: string | null, extra: object = {}) =>
+    Array.from({ length: n }, () => ({
+      id: sid(),
+      tenantId: T,
+      status: 'active',
+      vertical: 'acme/board',
+      verticalVersionId: versionId,
+      kind: 'app',
+      forkedFrom: null,
+      ...extra,
+    })) as unknown as Scope[];
+  /**
+   * A registry whose versions carry the given manifests (`BAD` throws, as an unknown version
+   * does), counting its reads and the most reads ever in flight at once.
+   */
+  const registry = (manifests: Record<string, string | null>, verticals: object[] = []) => {
+    const reads: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const admin = {
+      listVerticals: async () => {
+        reads.push('listVerticals');
+        return verticals;
+      },
+    };
+    const readImports = async (_slug: string, versionId: string) => {
+      reads.push(`read:${versionId}`);
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight -= 1;
+      if (versionId === BAD) throw new Error(`unknown version ${versionId} for vertical 'acme/board'`);
+      return importsOfManifestJson(manifests[versionId] ?? null);
+    };
+    return { admin: admin as never, readImports, reads, peak: () => peak };
+  };
+  const hostWith = (scopes: Scope[], consumes: (scopeId: string) => { from: string; type: string; schemaVersion: number }[] = () => []) => {
+    const called: string[] = [];
+    const host = { admin: { listScopes: async () => scopes, listConnections: async () => [] } } as unknown as ScopeHost;
+    const reachOver = (candidates: CrossVerticalReach['candidates']): CrossVerticalReach => ({
+      candidates,
+      importState: async (_t, s) => {
+        called.push(s);
+        return { consumes: consumes(s) as never, cursors: [] };
+      },
+      readExports: async () => ({ events: [], withheld: [], unexported: [], paused: null, next: null, more: false }),
+      deliver: async () => {
+        throw new Error('nothing is new, so nothing is delivered');
+      },
+    });
+    return { host, called, reachOver };
+  };
+  const sweep = async (host: ScopeHost, reach: CrossVerticalReach) => {
+    const runs: SweepRunInput[] = [];
+    const report = await runPlatformSweep(host, { ...quiet, recordSweepRun: (e) => runs.push(e), crossVertical: { reach } });
+    return { report, runs };
+  };
+
+  it('a fleet whose running versions import nothing makes zero scope calls, and one registry read per version', async () => {
+    const scopes = [...scopesOn(250, V1), ...scopesOn(250, V2)];
+    const { admin, readImports, reads } = registry({ [V1]: manifestWithoutImports, [V2]: null });
+    const { host, called, reachOver } = hostWith(scopes);
+    const { report, runs } = await sweep(host, reachOver(registryImportCandidates({ admin, actor: ACTOR, readImports })));
+    expect(called).toEqual([]);
+    expect(runs).toEqual([]);
+    expect(report.crossVertical).toMatchObject({ candidates: 0, edges: [] });
+    // 500 scopes, two versions, two reads. No serving script, so no listVerticals.
+    expect(reads.sort()).toEqual([`read:${V1}`, `read:${V2}`]);
+  });
+
+  it('only the scopes whose running version imports are called', async () => {
+    const importing = scopesOn(3, V1);
+    const { admin, readImports } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: manifestWithoutImports });
+    const { host, called, reachOver } = hostWith([...importing, ...scopesOn(40, V2)]);
+    await sweep(host, reachOver(registryImportCandidates({ admin, actor: ACTOR, readImports })));
+    expect(new Set(called)).toEqual(new Set(importing.map((s) => s.id)));
+  });
+
+  it('follows the version a scope RUNS: a serving script that serves an importing version counts', async () => {
+    // Bound to V2 (imports nothing), but on the serving script, which now serves V1 (imports).
+    const scopes = scopesOn(2, V2, { servingRef: 'serving-board' });
+    const { admin, readImports, reads } = registry(
+      { [V1]: manifestImporting(['acme/crm']), [V2]: manifestWithoutImports },
+      [{ slug: 'acme/board', servingRef: 'serving-board', servingVersionId: V1 }],
+    );
+    const narrow = registryImportCandidates({ admin, actor: ACTOR, readImports });
+    expect(await narrow(scopes)).toHaveLength(2);
+    expect(reads).toEqual(['listVerticals', `read:${V1}`]);
+  });
+
+  it('with a `from` hint, a scope that imports only from someone else is dropped', async () => {
+    const fromCrm = scopesOn(1, V1);
+    const fromOther = scopesOn(1, V2);
+    const { admin, readImports } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: manifestImporting(['acme/other']) });
+    const narrow = registryImportCandidates({ admin, actor: ACTOR, readImports });
+    expect((await narrow([...fromCrm, ...fromOther], { from: 'acme/crm' })).map((s) => s.id)).toEqual([fromCrm[0]!.id]);
+    expect(await narrow([...fromCrm, ...fromOther])).toHaveLength(2);
+  });
+
+  it('a version the registry cannot read keeps its scopes, is reported once, and never stops a good one', async () => {
+    const good = scopesOn(1, V1);
+    const bad = scopesOn(2, BAD);
+    const garbled = scopesOn(1, V2);
+    const { admin, readImports } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: '{not json' });
+    const { host, called, reachOver } = hostWith([...good, ...bad, ...garbled], () => [
+      { from: 'acme/crm', type: 'crm.a', schemaVersion: 1 },
+    ]);
+    const { report, runs } = await sweep(host, reachOver(registryImportCandidates({ admin, actor: ACTOR, readImports })));
+    // Every scope is asked: the good one because it imports, the others because nobody could say.
+    expect(new Set(called)).toEqual(new Set([...good, ...bad, ...garbled].map((s) => s.id)));
+    // The good edge ran; the phase did not stop on the bad version.
+    expect(report.crossVertical?.edges.map((e) => e.consumer.scopeId)).toContain(good[0]!.id);
+    expect(report.errors.filter((e) => e.id === 'candidates')).toEqual([]);
+    // One row per unreadable version (not per scope), naming it and why.
+    const doubts = runs.filter((r) => r.unit.startsWith('version:'));
+    expect(doubts.map((r) => [r.unit, r.outcome])).toEqual([
+      [`version:acme/board@${BAD}`, 'failed'],
+      [`version:acme/board@${V2}`, 'failed'],
+    ]);
+    expect(doubts[0]!.error).toMatch(/unknown version/);
+    expect(doubts[1]!.error).toMatch(/not JSON/);
+  });
+
+  it('a malformed imports row is doubt, not "imports nothing"', async () => {
+    const scopes = scopesOn(1, V1);
+    const { admin, readImports } = registry({
+      [V1]: JSON.stringify({ registry: { imports: [{ from: 'acme/crm' }] } }),
+    });
+    expect(await registryImportCandidates({ admin, actor: ACTOR, readImports })(scopes)).toHaveLength(1);
+  });
+
+  it('bounds the registry reads in flight', async () => {
+    const versions = Array.from({ length: 20 }, (_, i) => `01JZ00000000000000000V${String(i).padStart(4, '0')}`);
+    const scopes = versions.flatMap((v) => scopesOn(1, v));
+    const { admin, readImports, peak } = registry(Object.fromEntries(versions.map((v) => [v, manifestWithoutImports])));
+    await registryImportCandidates({ admin, actor: ACTOR, readImports, concurrency: 3 })(scopes);
+    expect(peak()).toBe(3);
+  });
+
+  it("a consumer whose imports cannot be read is a failed edge to '*', recorded", async () => {
+    const [only] = scopesOn(1, V1);
+    const { admin, readImports } = registry({ [V1]: manifestImporting(['acme/crm']) });
+    const { host, reachOver } = hostWith([only!]);
+    const reach = reachOver(registryImportCandidates({ admin, actor: ACTOR, readImports }));
+    reach.importState = async () => {
+      throw new Error('the deployment serving scope predates cross-vertical events (#1705) — redeploy the vertical');
+    };
+    const { report, runs } = await sweep(host, reach);
+    expect(runs).toEqual([
+      expect.objectContaining({ kind: 'vertical-events', unit: `${only!.id}:*`, outcome: 'failed', error: expect.stringMatching(/redeploy/) }),
+    ]);
+    expect(report.errors).toEqual([expect.objectContaining({ kind: 'vertical-events', id: `${only!.id}:*` })]);
+  });
+
+  it('a superset narrowing (a plain filter, which the contract allows) never turns "imports nothing" into a failure', async () => {
+    const scopes = scopesOn(3, V1);
+    const { host, called, reachOver } = hostWith(scopes);
+    const { report, runs } = await sweep(host, reachOver((all) => all.filter((s) => s.tenantId === T)));
+    expect(called).toHaveLength(3);
+    expect(runs).toEqual([]);
+    expect(report.errors).toEqual([]);
+  });
+
+  it('a registry that says "imports" against a deployment that says "nothing" is a failed edge; a doubted scope is not', async () => {
+    const definite = scopesOn(1, V1);
+    const doubted = scopesOn(1, V2);
+    const { admin, readImports } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: '{not json' });
+    const { host, reachOver } = hostWith([...definite, ...doubted]);
+    const { runs } = await sweep(host, reachOver(registryImportCandidates({ admin, actor: ACTOR, readImports })));
+    const edgeRows = runs.filter((r) => !r.unit.startsWith('version:'));
+    expect(edgeRows).toEqual([
+      expect.objectContaining({ unit: `${definite[0]!.id}:*`, outcome: 'failed', error: expect.stringMatching(/not running the version the registry names/) }),
+    ]);
+  });
+});
+
+/**
+ * #1705 PR 2 — the router kick's half: ONE producer's outgoing edges, now. Narrowed to the
+ * producer's tenant, to edges whose producer resolves to the named scope, and to consumers that
+ * import from it, under the same cap as the sweep.
+ */
+describe('runCrossVerticalFrom (#1705 PR 2)', () => {
+  const U = tenantId.parse(genId());
+  const scope = (vertical: string, extra: object = {}) =>
+    ({ id: sid(), tenantId: T, status: 'active', vertical, kind: 'app', forkedFrom: null, ...extra }) as unknown as Scope;
+  const crm = scope('acme/crm');
+  const other = scope('acme/other');
+  const board = scope('acme/board');
+  const all = [crm, other, board];
+  const setup = (scopes: Scope[]) => {
+    const listed: unknown[] = [];
+    const reads: string[] = [];
+    const host = {
+      admin: {
+        listScopes: async (_a: unknown, filter: { tenantId?: string }) => {
+          listed.push(filter);
+          return scopes.filter((s) => !filter.tenantId || s.tenantId === filter.tenantId);
+        },
+      },
+    } as unknown as ScopeHost;
+    const reach: CrossVerticalReach = {
+      candidates: (s, hint) => {
+        reads.push(`candidates:${hint?.from ?? '-'}`);
+        return s.filter((x) => x.vertical === 'acme/board');
+      },
+      importState: async () => ({
+        consumes: [
+          { from: 'acme/crm', type: 'crm.a', schemaVersion: 1 },
+          { from: 'acme/other', type: 'other.a', schemaVersion: 1 },
+        ] as never,
+        cursors: [],
+      }),
+      readExports: async (_t, s) => {
+        reads.push(`read:${s}`);
+        return { events: [], withheld: [], unexported: [], paused: null, next: null, more: false };
+      },
+      deliver: async () => {
+        throw new Error('nothing is new, so nothing is delivered');
+      },
+    };
+    return { host, reach, listed, reads };
+  };
+
+  it('runs only the named producer\'s edges, reading only its tenant', async () => {
+    const { host, reach, listed, reads } = setup(all);
+    const out = await runCrossVerticalFrom(host, { actor: ACTOR, crossVertical: { reach } }, { tenantId: T, scopeId: crm.id });
+    expect(listed).toEqual([{ status: 'active', tenantId: T }]);
+    // Asked for consumers of acme/crm, and read crm, never acme/other.
+    expect(reads).toEqual(['candidates:acme/crm', `read:${crm.id}`]);
+    expect(out.crossVertical.edges).toEqual([
+      expect.objectContaining({ state: 'idle', producer: { vertical: 'acme/crm', scopeId: crm.id } }),
+    ]);
+    expect(out.errors).toEqual([]);
+  });
+
+  it('a kick naming a scope that is not the producer\'s resolved install runs nothing', async () => {
+    const fork = scope('acme/crm', { forkedFrom: crm.id });
+    const second = scope('acme/crm');
+    const foreign = { ...crm, tenantId: U } as Scope;
+    for (const [scopes, named] of [
+      [[...all, fork], fork], // a fork is never a producer
+      [[...all, second], crm], // two primary installs: ambiguous, refused rather than guessed
+      [all, scope('acme/crm')], // not listed (not active, or not in the directory)
+      [all, foreign], // the right id under another tenant
+    ] as [Scope[], Scope][]) {
+      const { host, reach, reads } = setup(scopes);
+      const out = await runCrossVerticalFrom(
+        host,
+        { actor: ACTOR, crossVertical: { reach } },
+        { tenantId: named.tenantId, scopeId: named.id },
+      );
+      expect(reads).toEqual([]);
+      expect(out.crossVertical.edges).toEqual([]);
+    }
+  });
+
+  it('keeps the per-pass consumer cap', async () => {
+    const boards = [scope('acme/board'), scope('acme/board'), scope('acme/board')];
+    const { host, reach } = setup([crm, ...boards]);
+    // Two primary boards would be ambiguous as CONSUMERS, which is the edge's business, not the
+    // cap's. The cap is what is asserted: two of three visited, one deferred.
+    const out = await runCrossVerticalFrom(
+      host,
+      { actor: ACTOR, crossVertical: { reach, maxConsumers: 2, rng: () => 0 } },
+      { tenantId: T, scopeId: crm.id },
+    );
+    expect(out.crossVertical).toMatchObject({ candidates: 3, deferred: 1 });
+  });
+});
+
+/**
+ * Re-review item 1 (#1705 PR 2): a kick pass can run every few seconds for a busy producer, so it
+ * records only edges that moved or paused, and it does not ask a scope the registry could not
+ * judge. Standing failures and doubt are the scheduled sweep's to record, once per tick. Otherwise
+ * one broken consumer beside a busy producer would file a row per flagged response.
+ */
+describe('a kick pass leaves doubt and standing failures to the sweep (#1705 PR 2)', () => {
+  const V_IMPORTS = '01JZ0000000000000000000V11';
+  const V_BAD = '01JZ0000000000000000000V12';
+  const scope = (vertical: string, versionId: string | null) =>
+    ({ id: sid(), tenantId: T, status: 'active', vertical, verticalVersionId: versionId, kind: 'app', forkedFrom: null }) as unknown as Scope;
+  const crm = scope('acme/crm', null);
+  const definite = scope('acme/board', V_IMPORTS);
+  const doubtfulScope = scope('acme/doubt', V_BAD);
+  const broken = scope('acme/broken', V_IMPORTS);
+  const all = [crm, definite, doubtfulScope, broken];
+  const setup = () => {
+    const called: string[] = [];
+    const runs: SweepRunInput[] = [];
+    const host = {
+      admin: {
+        listScopes: async (_a: unknown, f: { tenantId?: string }) => all.filter((s) => !f.tenantId || s.tenantId === f.tenantId),
+        listConnections: async () => [],
+      },
+    } as unknown as ScopeHost;
+    const readImports = async (_slug: string, versionId: string) => {
+      if (versionId === V_BAD) throw new Error(`unknown version ${versionId}`);
+      return { kind: 'imports' as const, rows: [{ from: 'acme/crm', type: 'crm.a', schemaVersion: 1 }] };
+    };
+    const reach: CrossVerticalReach = {
+      candidates: registryImportCandidates({ admin: { listVerticals: async () => [] } as never, actor: ACTOR, readImports }),
+      importState: async (_t, s) => {
+        called.push(s);
+        if (s === broken.id) throw new Error('the deployment serving it predates cross-vertical events — redeploy it');
+        return { consumes: [{ from: 'acme/crm', type: 'crm.a', schemaVersion: 1 }] as never, cursors: [] };
+      },
+      readExports: async () => ({ events: [], withheld: [], unexported: [], paused: null, next: null, more: false }),
+      deliver: async () => {
+        throw new Error('nothing is new');
+      },
+    };
+    return { host, reach, called, runs };
+  };
+
+  it('a kick pass does not ask a doubtful scope, and writes no failure row', async () => {
+    const { host, reach, called, runs } = setup();
+    await runCrossVerticalFrom(host, { actor: ACTOR, recordSweepRun: (e) => runs.push(e), crossVertical: { reach } }, { tenantId: T, scopeId: crm.id });
+    expect(called).not.toContain(doubtfulScope.id);
+    expect(new Set(called)).toEqual(new Set([definite.id, broken.id]));
+    expect(runs).toEqual([]);
+  });
+
+  it('the scheduled sweep does both: asks the doubtful scope, and records the doubt and the failure', async () => {
+    const { host, reach, called, runs } = setup();
+    await runPlatformSweep(host, { ...quiet, recordSweepRun: (e) => runs.push(e), crossVertical: { reach } });
+    expect(called).toContain(doubtfulScope.id);
+    expect(runs.map((r) => [r.unit, r.outcome])).toEqual(
+      expect.arrayContaining([
+        [`version:acme/doubt@${V_BAD}`, 'failed'],
+        [`${broken.id}:*`, 'failed'],
+      ]),
+    );
   });
 });

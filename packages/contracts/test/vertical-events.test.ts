@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  importsOfManifestJson,
   buildPermissionRegistry,
   eventsExportedBy,
   moduleManifest,
@@ -155,5 +156,38 @@ describe('sweep runs: an edge row is the platform\'s, never a scope batch\'s (#1
       entries: [{ kind: 'vertical-events', outcome: 'ok', at: '2026-09-22T00:00:00.000Z' }],
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+/**
+ * #1705 PR 2 — which scopes the hosted sweep calls at all is read from each running version's
+ * stored manifest, in three answers. Only a manifest that genuinely declares no imports may
+ * drop a scope. Anything the parser cannot vouch for is `unreadable`, and the scope is kept:
+ * excluding a consumer wrongly would lose its edge with no trace.
+ */
+describe('importsOfManifestJson (#1705 PR 2)', () => {
+  const row = { from: 'acme/crm', type: 'crm.customer-created', schemaVersion: 1, declaredBy: ['@acme/board'] };
+  it("lifts the registry's imports rows", () => {
+    expect(importsOfManifestJson(JSON.stringify({ registry: { permissions: [], roles: [], imports: [row] } }))).toEqual({
+      kind: 'imports',
+      rows: [{ from: 'acme/crm', type: 'crm.customer-created', schemaVersion: 1 }],
+    });
+  });
+  it.each([
+    ['no manifest', null],
+    ['no registry', JSON.stringify({ outbound: [] })],
+    ['a registry with no imports key (a CLI before 0.34.0, or nothing imported)', JSON.stringify({ registry: { permissions: [], roles: [] } })],
+  ])('%s imports nothing', (_why, json) => {
+    expect(importsOfManifestJson(json)).toEqual({ kind: 'none' });
+  });
+  it.each([
+    ['unparseable JSON', '{not json', /not JSON/],
+    ['imports that are not a list', JSON.stringify({ registry: { imports: { from: 'acme/crm' } } }), /not a list/],
+    ['one malformed row among good ones', JSON.stringify({ registry: { imports: [row, { from: 'acme/crm' }] } }), /malformed/],
+    ['a row at version 0', JSON.stringify({ registry: { imports: [{ ...row, schemaVersion: 0 }] } }), /malformed/],
+  ])('%s is unreadable, never "imports nothing"', (_why, json, reason) => {
+    const out = importsOfManifestJson(json);
+    expect(out.kind).toBe('unreadable');
+    expect(out.kind === 'unreadable' && out.reason).toMatch(reason);
   });
 });

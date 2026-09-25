@@ -16,9 +16,10 @@ import type {
   ImportBatch,
   ImportResult,
   ImportState,
+  ManifestImports,
   WantedEvent,
 } from '@substrat-run/contracts';
-import type { ExecutorDrainReport, FetchLike, ScopeHost, SweepRunInput } from './scope-host.js';
+import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput } from './scope-host.js';
 import { backoffAt } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
@@ -521,6 +522,24 @@ export function runningVersionOf(
 }
 
 /**
+ * Every vertical's serving pointer, for `runningVersionOf` — one `listVerticals` read, and only
+ * when some scope is actually on a serving script, since nothing else can differ from its
+ * binding. Shared by the provision reconcile (#1653) and the cross-vertical narrowing (#1705).
+ */
+async function servingPointersFor(
+  admin: Pick<HostAdmin, 'listVerticals'>,
+  actor: PlatformActorId,
+  scopes: readonly Pick<Scope, 'servingRef'>[],
+): Promise<Map<string, ServingPointer>> {
+  const serving = new Map<string, ServingPointer>();
+  if (!scopes.some((s) => s.servingRef)) return serving;
+  for (const v of await admin.listVerticals(actor)) {
+    if (v.servingRef && v.servingVersionId) serving.set(v.slug, { ref: v.servingRef, versionId: v.servingVersionId });
+  }
+  return serving;
+}
+
+/**
  * This pass's share of the behind scopes: at most `batch`, as a contiguous window over
  * the id order, starting at `rng()` of the way round and wrapping. Deterministic for a
  * given `rng`, which is what makes the fairness claim testable.
@@ -650,6 +669,24 @@ export interface EventDrainSkipped {
   eventIds: string[];
 }
 
+/** What the phase tells `CrossVerticalReach.candidates` (#1705 PR 2). */
+export interface CandidatesHint {
+  /** Only this producer's edges run on this pass (the router kick). */
+  from?: string;
+  /**
+   * Report a unit the narrowing could not judge, and the scopes it kept as candidates for it.
+   * Such a scope answering that it imports nothing is an answer, not a disagreement.
+   */
+  doubt?(unit: string, reason: string, scopeIds: readonly ScopeId[]): void;
+  /**
+   * Report scopes the narrowing KNOWS import (their running code declares it). A candidate
+   * reported here that answers "imports nothing" disagrees with the registry, and is a failed
+   * edge. A candidate not reported (a superset `candidates`, which the contract allows, or a
+   * doubtful one) answering "nothing" has simply answered.
+   */
+  known?(scopeIds: readonly ScopeId[]): void;
+}
+
 /** How the cross-vertical phase reaches the two scopes of an edge (#1705). */
 export interface CrossVerticalReach {
   /**
@@ -666,8 +703,15 @@ export interface CrossVerticalReach {
    * (`ScopeHost.registeredImports`). A host that imports nothing gets no candidates; one that
    * does gets every listed scope, which is right where one host is the deployment for all of
    * them (a self-host). The control plane passes the registry's answer per scope.
+   *
+   * `hint.from` is set when only one producer's edges are being run (the router kick,
+   * `runCrossVerticalFrom`): a scope whose code imports nothing from that vertical may then be
+   * dropped too. Ignoring the hint is correct, only dearer: an edge from another producer is
+   * never run on such a pass anyway. `hint.doubt` is how a narrowing reports a unit it could not
+   * judge and so kept (a version whose manifest the registry cannot read). The phase records a
+   * failed `vertical-events` sweep-run row for it.
    */
-  candidates?(scopes: readonly Scope[]): Promise<readonly Scope[]> | readonly Scope[];
+  candidates?(scopes: readonly Scope[], hint?: CandidatesHint): Promise<readonly Scope[]> | readonly Scope[];
   /** The consumer's running imports and its watermark per producer. */
   importState(tenantId: TenantId, scopeId: ScopeId): Promise<ImportState>;
   /** The producer's release after a watermark, decided by the producer's own code. */
@@ -1002,16 +1046,7 @@ export async function runPlatformSweep(
     const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
       (s) => isPrimaryScope(s) && !failedThisPass.has(s.id),
     );
-    // One directory read for every vertical's serving pointer — and only when some scope
-    // is actually on a serving script, since nothing else can differ from its binding.
-    const serving = new Map<string, ServingPointer>();
-    if (scopes.some((s) => s.servingRef)) {
-      for (const v of await host.admin.listVerticals(options.actor)) {
-        if (v.servingRef && v.servingVersionId) {
-          serving.set(v.slug, { ref: v.servingRef, versionId: v.servingVersionId });
-        }
-      }
-    }
+    const serving = await servingPointersFor(host.admin, options.actor, scopes);
     const behind: { id: ScopeId; tenantId: TenantId; target: string }[] = [];
     for (const s of scopes) {
       const running = runningVersionOf(s, s.vertical ? serving.get(s.vertical) : null);
@@ -1382,10 +1417,12 @@ export async function runPlatformSweep(
  */
 async function sweepCrossVertical(
   host: ScopeHost,
-  options: PlatformSweepOptions,
+  options: Pick<PlatformSweepOptions, 'actor' | 'recordSweepRun' | 'concurrency'>,
   cv: CrossVerticalOptions,
   failedThisPass: ReadonlySet<string>,
-  report: PlatformSweepReport,
+  report: Pick<PlatformSweepReport, 'errors'>,
+  /** Run only this producer's outgoing edges (the router kick). Absent: every edge. */
+  only?: { tenantId: TenantId; scopeId: ScopeId },
 ): Promise<CrossVerticalReport> {
   const out: CrossVerticalReport = {
     edges: [],
@@ -1403,9 +1440,9 @@ async function sweepCrossVertical(
   };
   // The default narrowing: this host's own code. A host that predates `registeredImports`
   // imports nothing it could name, and is treated as importing nothing.
-  const candidatesOf =
+  const candidatesOf: NonNullable<CrossVerticalReach['candidates']> =
     reach.candidates?.bind(reach) ??
-    ((scopes: readonly Scope[]) => ((host.registeredImports?.() ?? []).length > 0 ? scopes : []));
+    ((scopes) => ((host.registeredImports?.() ?? []).length > 0 ? scopes : []));
   // Normalized for the eventDrainBatch reason: a fractional or NaN budget would reach a SQL
   // LIMIT, and every edge would fail every tick as though the fleet were broken.
   const configured = cv.budget ?? EVENT_DRAIN_BATCH;
@@ -1414,9 +1451,22 @@ async function sweepCrossVertical(
   // fork is a copy of somebody's data. Delivering into it would feed a copy as though it were
   // the install, and reading from it would publish a copy's history to another vertical. A
   // preview is not the install either.
-  const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
-    (s) => isPrimaryScope(s) && s.vertical !== null,
-  );
+  //
+  // A producer-scoped run reads only that tenant's scopes: both ends of an edge are in one
+  // tenant, so nothing outside it can be a consumer of this producer or change how it resolves.
+  const scopes = (
+    await host.admin.listScopes(options.actor, { status: 'active', ...(only ? { tenantId: only.tenantId } : {}) })
+  ).filter((s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null);
+  // The kick names a scope, and the edges run are the ones whose producer RESOLVES to it. A
+  // fork, a preview, a second install or a scope of another tenant is not a producer, so a
+  // kick naming one runs nothing (the sweep would resolve the same way).
+  let from: string | null = null;
+  if (only) {
+    const named = scopes.find((s) => s.id === only.scopeId && s.tenantId === only.tenantId);
+    const resolved = named ? resolveVerticalInstanceFrom(scopes, named.tenantId, named.vertical) : null;
+    if (!named || resolved?.outcome !== 'resolved' || resolved.instance.scopeId !== named.id) return out;
+    from = named.vertical;
+  }
 
   const record = (edge: CrossVerticalEdge): void => {
     out.edges.push(edge);
@@ -1433,6 +1483,11 @@ async function sweepCrossVertical(
     }
     // Idle writes no row: one green row per edge per tick would bury the ones that matter.
     if (edge.state === 'idle') return;
+    // A kick pass (`only`) can run every few seconds for a busy producer. It writes a row only
+    // for an edge that moved or paused. A standing failure (an old consumer, an unresolved
+    // producer) is the scheduled sweep's to record, once per tick, rather than once per kick:
+    // otherwise one broken consumer beside a busy producer files thousands of identical rows.
+    if (only && edge.state !== 'delivered' && edge.state !== 'paused') return;
     options.recordSweepRun?.({
       kind: 'vertical-events',
       unit: `${edge.consumer.scopeId}:${edge.producer.vertical}`,
@@ -1452,7 +1507,43 @@ async function sweepCrossVertical(
 
   // Narrowed BEFORE any scope is called, then capped. The resolution below still needs every
   // primary scope (a producer is any of them), and that is the one directory read above.
-  const candidates = await candidatesOf(scopes);
+  // Contained: the narrowing may read the version registry (the control plane's reach), and a
+  // failed read must cost this phase one pass, not sink the phases after it. No scope is called,
+  // every watermark holds, and the next pass asks again.
+  // Scopes kept only because the narrowing could not judge them: their "imports nothing" is an answer.
+  const doubtful = new Set<string>();
+  // Scopes the narrowing KNOWS import: their "imports nothing" contradicts the registry.
+  const knownImporters = new Set<string>();
+  let candidates: readonly Scope[];
+  try {
+    candidates = await candidatesOf(scopes, {
+      ...(from !== null ? { from } : {}),
+      known: (scopeIds) => {
+        for (const id of scopeIds) knownImporters.add(id);
+      },
+      doubt: (unit, reason, scopeIds) => {
+        for (const id of scopeIds) doubtful.add(id);
+        // A kick pass leaves doubt to the sweep: see the filter below and `record`.
+        if (only) return;
+        options.recordSweepRun?.({
+          kind: 'vertical-events',
+          unit: `version:${unit}`,
+          outcome: 'failed',
+          operation: 'sweep.vertical-events:narrowing',
+          error:
+            `the version registry cannot say whether ${unit} imports anything (${reason}); ` +
+            `its scopes are asked directly this pass`,
+        });
+      },
+    });
+  } catch (err) {
+    report.errors.push({ kind: 'vertical-events', id: 'candidates', error: message(err) });
+    return out;
+  }
+  // A kick pass calls only the consumers the registry KNOWS import from this producer. A scope
+  // kept as doubt is asked by the scheduled sweep, once per tick. Asking it on every kick would
+  // cost a call, and a row, per flagged response.
+  if (only) candidates = candidates.filter((c) => !doubtful.has(c.id));
   out.candidates = candidates.length;
   const configuredCap = cv.maxConsumers ?? CROSS_VERTICAL_CONSUMERS_PER_PASS;
   const cap = Number.isFinite(configuredCap) && configuredCap >= 0 ? Math.floor(configuredCap) : CROSS_VERTICAL_CONSUMERS_PER_PASS;
@@ -1461,15 +1552,42 @@ async function sweepCrossVertical(
 
   await mapBounded(visiting, options.concurrency ?? 8, async (consumer) => {
     if (failedThisPass.has(consumer.id)) return;
+    // The consumer side, failing before any producer is named: an edge to `*`, so it lands in
+    // the sweep-run rows under `<scope>:*` beside the per-producer edges, not only in `errors`.
+    const consumerFailed = (reason: string): void =>
+      record({
+        tenantId: consumer.tenantId,
+        consumer: { scopeId: consumer.id, vertical: consumer.vertical ?? '' },
+        producer: { vertical: '*', scopeId: null },
+        state: 'failed',
+        delivered: 0,
+        deadLettered: 0,
+        withheld: 0,
+        duplicates: 0,
+        reason,
+      });
     let state: ImportState;
     try {
       state = await reach.importState(consumer.tenantId, consumer.id);
     } catch (err) {
-      report.errors.push({ kind: 'vertical-events', id: consumer.id, error: message(err) });
+      consumerFailed(`could not read the consumer's imports: ${message(err)}`);
+      return;
+    }
+    // A scope the narrowing KNOWS imports (`hint.known`) whose deployment answers that it imports
+    // NOTHING: the two disagree, and the scope is not running the code the registry describes (a
+    // push that did not reach it, or a reconcile still owed). Said, not skipped: skipping would
+    // make every edge into this scope disappear without a trace. Any other candidate (a superset
+    // narrowing, which the contract allows, or a doubtful scope) answering "nothing" has answered.
+    if (state.consumes.length === 0 && knownImporters.has(consumer.id)) {
+      consumerFailed(
+        "the version registry says this scope's code imports events, but its deployment answers that it " +
+          'imports nothing — it is not running the version the registry names; redeploy or reconcile it',
+      );
       return;
     }
     const bySource = new Map<string, WantedEvent[]>();
     for (const c of state.consumes) {
+      if (from !== null && c.from !== from) continue;
       const list = bySource.get(c.from) ?? [];
       list.push({ type: c.type, schemaVersion: c.schemaVersion });
       bySource.set(c.from, list);
@@ -1481,6 +1599,101 @@ async function sweepCrossVertical(
     }
   });
   return out;
+}
+
+/**
+ * Run ONE producer's outgoing edges now (#1705 PR 2): the half of the router kick that makes a
+ * cross-vertical event arrive in seconds rather than at the next sweep.
+ *
+ * The same phase, under the same rules, narrowed. It reads the producer's tenant only, runs only
+ * edges whose producer RESOLVES to `producer` (so a fork, a preview or a second install runs
+ * nothing), asks `candidates` with `{ from }` so a consumer that imports nothing from this
+ * vertical is never called, and keeps the per-pass consumer cap. What it moves is exactly what
+ * the next sweep would have moved: the watermark's compare-and-set makes the two safe to overlap,
+ * and an edge a kick has taken reads as `idle` to the sweep that follows.
+ */
+export async function runCrossVerticalFrom(
+  host: ScopeHost,
+  options: Pick<PlatformSweepOptions, 'actor' | 'recordSweepRun' | 'concurrency'> & {
+    crossVertical: CrossVerticalOptions;
+  },
+  producer: { tenantId: TenantId; scopeId: ScopeId },
+): Promise<{ crossVertical: CrossVerticalReport; errors: PlatformSweepReport['errors'] }> {
+  const report: Pick<PlatformSweepReport, 'errors'> = { errors: [] };
+  const crossVertical = await sweepCrossVertical(host, options, options.crossVertical, new Set(), report, producer);
+  return { crossVertical, errors: report.errors };
+}
+
+/**
+ * The control plane's `CrossVerticalReach.candidates` (#1705 PR 2): narrow the listed scopes to
+ * those whose RUNNING version may import, read from the version registry and never from a scope.
+ *
+ * Per pass: one `listVerticals` (the serving pointers, only when some scope is on a serving
+ * script), and one `readImports` per DISTINCT running version, at most `concurrency` in flight.
+ * The control plane's reader is an unaudited directory read behind a cache keyed (slug,
+ * version), since a pushed version's manifest never changes. So after the first pass it costs
+ * no read at all.
+ *
+ * Only a version that says it imports nothing is dropped (`none`: no manifest, no registry, no
+ * `imports` key). A version the registry cannot answer for (`unreadable`: a manifest that does
+ * not parse, a malformed row, a version the registry does not know, a failed read) keeps its
+ * scopes as candidates, and the scope's own `importState` decides. Excluding a consumer wrongly
+ * loses its edge with no trace. Including one wrongly costs one call. Each such version is
+ * reported once per pass through `hint.doubt`, and a failure on one version never stops the
+ * others.
+ */
+export function registryImportCandidates(input: {
+  admin: Pick<HostAdmin, 'listVerticals'>;
+  actor: PlatformActorId;
+  readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>;
+  /** Registry reads in flight at once. Default 8, the phase's own concurrency. */
+  concurrency?: number;
+}): NonNullable<CrossVerticalReach['candidates']> {
+  return async (scopes, hint) => {
+    const serving = await servingPointersFor(input.admin, input.actor, scopes);
+    const keyed: { scope: Scope; key: string }[] = [];
+    const versions = new Map<string, { slug: string; versionId: string }>();
+    for (const s of scopes) {
+      if (!s.vertical) continue;
+      const running = runningVersionOf(s, serving.get(s.vertical));
+      const key = `${s.vertical}@${running ?? '(no version)'}`;
+      if (running && !versions.has(key)) versions.set(key, { slug: s.vertical, versionId: running });
+      keyed.push({ scope: s, key });
+    }
+    const facts = new Map<string, ManifestImports>();
+    await mapBounded([...versions], input.concurrency ?? 8, async ([key, v]) => {
+      try {
+        facts.set(key, await input.readImports(v.slug, v.versionId));
+      } catch (err) {
+        facts.set(key, { kind: 'unreadable', reason: message(err) });
+      }
+    });
+    const doubted = new Map<string, { reason: string; scopeIds: ScopeId[] }>();
+    const known: ScopeId[] = [];
+    const out: Scope[] = [];
+    for (const { scope, key } of keyed) {
+      const fact: ManifestImports = facts.get(key) ?? {
+        kind: 'unreadable',
+        reason: 'the scope names no version the registry could be asked about',
+      };
+      if (fact.kind === 'none') continue;
+      if (fact.kind === 'imports') {
+        const from = hint?.from;
+        if (from !== undefined ? fact.rows.some((r) => r.from === from) : fact.rows.length > 0) {
+          out.push(scope);
+          known.push(scope.id);
+        }
+        continue;
+      }
+      out.push(scope);
+      const d = doubted.get(key) ?? { reason: fact.reason, scopeIds: [] };
+      d.scopeIds.push(scope.id);
+      doubted.set(key, d);
+    }
+    for (const [key, d] of doubted) hint?.doubt?.(key, d.reason, d.scopeIds);
+    if (known.length > 0) hint?.known?.(known);
+    return out;
+  };
 }
 
 async function sweepEdge(

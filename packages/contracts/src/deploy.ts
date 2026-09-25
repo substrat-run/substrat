@@ -287,6 +287,46 @@ export function outboundOfManifestJson(manifestJson: string | null | undefined):
 }
 
 /**
+ * What a STORED manifest says about cross-vertical imports (#1705), in three answers:
+ *
+ * - `none`: no manifest, no registry, or a registry with no `imports` key. A version pushed
+ *   before manifests were retained, or by a `substrat` CLI older than 0.34.0 (which writes no
+ *   `imports` rows), or that simply
+ *   imports nothing. Nothing is being hidden, and the hosted sweep calls no scope for it.
+ * - `imports`: the rows, every one well formed.
+ * - `unreadable`: JSON that does not parse, an `imports` that is not a list, or ANY row of the
+ *   wrong shape. The hosted sweep keeps such a scope as a candidate and lets the scope's own
+ *   answer decide, because excluding a consumer wrongly loses its edge with no trace, where
+ *   including one wrongly costs one call.
+ */
+export type ManifestImports =
+  | { kind: 'none' }
+  | { kind: 'imports'; rows: { from: string; type: string; schemaVersion: number }[] }
+  | { kind: 'unreadable'; reason: string };
+
+export function importsOfManifestJson(manifestJson: string | null | undefined): ManifestImports {
+  if (!manifestJson) return { kind: 'none' };
+  let m: unknown;
+  try {
+    m = JSON.parse(manifestJson);
+  } catch {
+    return { kind: 'unreadable', reason: 'the stored manifest is not JSON' };
+  }
+  const registry = (m as { registry?: unknown } | null)?.registry;
+  if (registry === undefined || registry === null) return { kind: 'none' };
+  if (typeof registry !== 'object' || !('imports' in registry)) return { kind: 'none' };
+  const rows = (registry as { imports: unknown }).imports;
+  if (!Array.isArray(rows)) return { kind: 'unreadable', reason: "the manifest's registry.imports is not a list" };
+  const out: { from: string; type: string; schemaVersion: number }[] = [];
+  for (const r of rows) {
+    const p = permissionRegistryImport.safeParse(r);
+    if (!p.success) return { kind: 'unreadable', reason: "a row of the manifest's registry.imports is malformed" };
+    out.push({ from: p.data.from, type: p.data.type, schemaVersion: p.data.schemaVersion });
+  }
+  return { kind: 'imports', rows: out };
+}
+
+/**
  * The declared outgoing peer calls of a STORED manifest (#1706) — `outboundOfManifestJson`'s
  * sibling, and null on the same terms: no manifest, unparseable, or a version pushed before the
  * declaration existed. The directory read lifts it with the outbound surface, in one query, so
