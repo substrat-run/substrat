@@ -1,5 +1,5 @@
 import { isAllowedEndpoint, readDiscovery } from '@substrat-run/oidc-rp/discovery';
-import { issuerOf, type ProviderEndpoints } from './providers.js';
+import { CREDENTIALED_ENDPOINTS, issuerOf, type ProviderEndpoints } from './providers.js';
 
 /**
  * The auth adapter's discovery boundary — the ONE place this issuer fetches another issuer's
@@ -17,12 +17,9 @@ import { issuerOf, type ProviderEndpoints } from './providers.js';
  * The read itself is `@substrat-run/oidc-rp`'s, uncached — the same rules every platform
  * relying party holds a discovery document to, so this issuer acting as a relying party is
  * held to them too: an https issuer (loopback http in dev), same-origin redirects only, the
- * `issuer` the document states is the one asked for, and a `jwks_uri` that passes the endpoint
- * rule below.
+ * `issuer` the document states is the one asked for, and a required `jwks_uri` held to the
+ * same endpoint rule the loop below applies to the credentialed endpoints.
  */
-
-/** The endpoints a person, an authorization code, the client secret or a token is sent to. */
-const CREDENTIALED = ['authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'end_session_endpoint'] as const;
 
 /**
  * Fetch and validate an issuer's discovery document. Throws with an operator-readable reason;
@@ -44,7 +41,7 @@ export async function resolveIssuerEndpoints(input: string): Promise<ProviderEnd
   // loopback, and only when the issuer is itself a loopback dev issuer. An https upstream's
   // document must not be able to name a plaintext endpoint and have the client secret, a
   // code or a token sent there.
-  for (const key of CREDENTIALED) {
+  for (const key of CREDENTIALED_ENDPOINTS) {
     const value = doc[key];
     if (value === undefined) continue;
     if (typeof value !== 'string' || !isAllowedEndpoint(issuer, value)) {

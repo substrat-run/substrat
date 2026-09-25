@@ -130,9 +130,6 @@ export function isReservedProviderId(providerId: string): boolean {
   return (socialProviderList as readonly string[]).includes(providerId);
 }
 
-/** Loopback hosts, where OAuth 2.1 still permits plain HTTP for local development. */
-export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-
 /**
  * The issuer an operator's input names. Operators paste the ISSUER (what OIDC calls it, what a
  * relying party is configured with, what this issuer's own dashboard displays about itself),
@@ -272,8 +269,12 @@ export function deleteProvider(sql: SqlExec, providerId: string): void {
   sql.exec('DELETE FROM identity_provider WHERE provider_id = ?', providerId);
 }
 
-/** The stored endpoints a person, a code, the client secret or a token is sent to. */
-const STORED_ENDPOINTS = ['authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'end_session_endpoint'] as const;
+/**
+ * The endpoints of a discovery document a person, a code, the client secret or a token is sent
+ * to — judged at save time (`resolveIssuerEndpoints`) and again on a stored row (below). One
+ * list, so the two judgements can never cover different endpoints.
+ */
+export const CREDENTIALED_ENDPOINTS = ['authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'end_session_endpoint'] as const;
 
 /**
  * Why a GENERIC row cannot be offered for login, or null when it can (and always null for a
@@ -285,27 +286,48 @@ const STORED_ENDPOINTS = ['authorization_endpoint', 'token_endpoint', 'userinfo_
  * never repeats a URL: the admin panel shows it, and a stored issuer may carry credentials.
  */
 export function genericEndpointsRefusal(row: ProviderRow): string | null {
-  if (!isGenericRow(row)) return null;
-  if (issuerRefusal(row.issuer!)) return 'its issuer URL is not usable';
-  if (!row.endpoints) return 'no discovery document is stored for it';
-  let stored: Partial<Record<keyof ProviderEndpoints, unknown>> | null;
+  return judged(row).refusal;
+}
+
+type Judgement = { refusal: string; endpoints?: never } | { refusal: null; endpoints: ProviderEndpoints | null };
+/**
+ * Each row object is judged once. Better Auth is rebuilt per request, and every `*From` below
+ * reads through `live()`, so without this one row is parsed and judged several times a request.
+ * Keyed by the object `readProviders` returned, so an edited row is a new object and a new
+ * judgement.
+ */
+const judgements = new WeakMap<ProviderRow, Judgement>();
+function judged(row: ProviderRow): Judgement {
+  let j = judgements.get(row);
+  if (!j) {
+    j = judge(row);
+    judgements.set(row, j);
+  }
+  return j;
+}
+
+function judge(row: ProviderRow): Judgement {
+  if (!isGenericRow(row)) return { refusal: null, endpoints: null };
+  if (issuerRefusal(row.issuer!)) return { refusal: 'its issuer URL is not usable' };
+  if (!row.endpoints) return { refusal: 'no discovery document is stored for it' };
+  let stored: Partial<Record<keyof ProviderEndpoints, unknown>>;
   try {
     stored = JSON.parse(row.endpoints) as typeof stored;
   } catch {
-    stored = null;
+    return { refusal: 'its stored discovery document is not readable' };
   }
-  if (!stored || typeof stored !== 'object') return 'its stored discovery document is not readable';
+  if (!stored || typeof stored !== 'object') return { refusal: 'its stored discovery document is not readable' };
   const issuer = stored.issuer;
-  if (typeof issuer !== 'string' || issuerRefusal(issuer)) return 'its stored issuer is not usable';
+  if (typeof issuer !== 'string' || issuerRefusal(issuer)) return { refusal: 'its stored issuer is not usable' };
   if (typeof stored.authorization_endpoint !== 'string' || typeof stored.token_endpoint !== 'string') {
-    return 'its stored endpoints are incomplete';
+    return { refusal: 'its stored endpoints are incomplete' };
   }
-  for (const key of STORED_ENDPOINTS) {
+  for (const key of CREDENTIALED_ENDPOINTS) {
     const value = stored[key];
     if (value === undefined) continue;
-    if (typeof value !== 'string' || !isAllowedEndpoint(issuer, value)) return `its stored ${key} is not https`;
+    if (typeof value !== 'string' || !isAllowedEndpoint(issuer, value)) return { refusal: `its stored ${key} is not https` };
   }
-  return null;
+  return { refusal: null, endpoints: stored as ProviderEndpoints };
 }
 
 /** What the admin panel says about a row that is not offered, and what fixes it. */
@@ -353,6 +375,9 @@ export function socialProvidersFrom(rows: ProviderRow[]): Record<string, Record<
   return config;
 }
 
+/** The row versions already warned about, so a stale row logs once per version. */
+const warned = new Set<string>();
+
 /**
  * The `genericOAuth` plugin config for the GENERIC rows — the other half of the split
  * `socialProvidersFrom` opens. The plugin registers these as first-class social providers
@@ -386,7 +411,12 @@ export function genericProvidersFrom(rows: ProviderRow[]): GenericOAuthConfig[] 
   for (const row of rows) {
     if (row.disabled) continue;
     const refusal = genericEndpointsRefusal(row);
-    if (refusal) console.warn('auth-server: provider not offered', { providerId: row.provider_id, reason: refusal, fix: 're-save to re-discover' });
+    // Once per version of the row, not once per request: the config is rebuilt per request.
+    const seen = `${row.provider_id}@${row.updated_at ?? ''}`;
+    if (refusal && !warned.has(seen)) {
+      warned.add(seen);
+      console.warn('auth-server: provider not offered', { providerId: row.provider_id, reason: refusal, fix: 're-save to re-discover' });
+    }
   }
   const enabled = live(rows).filter(isGenericRow);
   if (!enabled.length) return undefined;
@@ -394,7 +424,7 @@ export function genericProvidersFrom(rows: ProviderRow[]): GenericOAuthConfig[] 
   // keys, and `accountIssuer` — removed in Better Auth 1.7.3 — went on compiling and silently
   // doing nothing until this line said what the element is.
   return enabled.map((row): GenericOAuthConfig => {
-    const endpoints = JSON.parse(row.endpoints!) as ProviderEndpoints;
+    const endpoints = judged(row).endpoints!;
     return {
       providerId: row.provider_id,
       name: row.label ?? row.provider_id,

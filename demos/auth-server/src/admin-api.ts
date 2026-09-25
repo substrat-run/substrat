@@ -14,7 +14,6 @@ import {
 } from './console-client.js';
 import {
   GENERIC_ID_PATTERN,
-  LOOPBACK_HOSTS,
   PROVIDER_CATALOGUE,
   deleteProvider,
   descriptorOf,
@@ -27,7 +26,7 @@ import {
   type ProviderEndpoints,
 } from './providers.js';
 import { resolveIssuerEndpoints } from './provider-discovery.js';
-import { issuerRefusal } from '@substrat-run/oidc-rp/discovery';
+import { isHttpsOrLoopback, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import { deleteBankIdConfig, putBankIdConfig, readBankIdConfig, toWireBankId } from './bankid.js';
 import { SIGN_IN_LOG_LIMIT, readSignInLog, signInLogQuery } from './sign-in-log.js';
 
@@ -341,7 +340,7 @@ function assertRedirectUri(value: string, applicationType: string): void {
     throw new HTTPException(400, { message: `'${value}' is not an absolute URI` });
   }
   if (url.hash) throw new HTTPException(400, { message: `'${value}' must not carry a fragment` });
-  if (applicationType === 'web' && url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) {
+  if (applicationType === 'web' && url.protocol === 'http:' && !isHttpsOrLoopback(url)) {
     throw new HTTPException(400, {
       message: `web clients require https redirect URIs on non-loopback hosts: ${value}`,
     });
