@@ -386,8 +386,11 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
         where.push('0 = 1');
         continue;
       }
-      where.push(`${column} IN (${value.map(() => '?').join(', ')})`);
-      args.push(...value);
+      // ONE bound JSON array, not a `?` per member: the set is the caller's, a Durable Object
+      // allows 100 bound parameters in a whole statement, and this one also carries the cursor
+      // and the page size (#1741). `json_each` yields the members with their own types.
+      where.push(`${column} IN (SELECT value FROM json_each(?))`);
+      args.push(JSON.stringify(value));
       continue;
     }
     where.push(`${column} = ?`);

@@ -282,6 +282,31 @@ describe('finding an item by what someone typed', () => {
     expect(found.results.map((r) => r.text)).toEqual(['juniper berries']);
   });
 
+  /**
+   * #1741. The widened ask is `TODO_SEARCH_MAX × SEARCH_OVERFETCH` = 25 × 4 = 100 hits, and the row
+   * read bound one parameter per hit PLUS the list id: 101, one over what a Durable Object
+   * allows. It passed here for as long as node allowed any number, and would have failed on
+   * a deployed list the first time a term matched a hundred items. The twin: a term matching
+   * few items, which every other test in this block already runs.
+   */
+  it('answers when the widened ask hits the kernel ceiling — a hundred matches', async () => {
+    const ada = await as('ada');
+    const bulk = (await ada.invoke<{ id: string }>('todo/create-list', { name: 'Bulk' })).id;
+    // 25 is the largest `limit` the operation accepts, and the widened ask is 4 × that.
+    for (let i = 0; i < 100; i += 1) {
+      await ada.invoke('todo/add-item', { listId: bulk, text: `zucchini ${i}` });
+    }
+    const found = await ada.invoke<{ results: unknown[]; capped: boolean }>('todo/search-list-items', {
+      listId: bulk,
+      q: 'zucchini',
+      limit: 25,
+    });
+    expect(found.results).toHaveLength(25);
+    expect(found.capped).toBe(true);
+    const across = await ada.invoke<{ results: unknown[] }>('todo/search-items', { q: 'zucchini', limit: 25 });
+    expect(across.results).toHaveLength(25);
+  });
+
   it('refuses a term too short to index, at the operation boundary', async () => {
     // `q: z.string().min(2)` refuses it before the kernel would, so the caller gets
     // a parse failure naming the field instead of a throw from inside the index.

@@ -179,10 +179,15 @@ real cause.
 things that are not module code: the router secret, a binding, an unset platform secret, a
 grant that was never made. Both trust boundaries fail closed, which means the symptom of a
 missing secret is a blanket refusal rather than a subtle misbehaviour. One exception sits in
-module code, because it is the engine and not the adapter: a Durable Object's SQLite refuses a
-`LIKE` or `GLOB` pattern longer than 50 bytes ("pattern too complex"), and node's allows
-50 000. A long literal pattern, or one built from a caller's unbounded input, passes every
-node test and fails only on the deployed host.
+module code, because it is the engine and not the adapter: a Durable Object's SQLite is
+tighter than node's. It refuses a compound `SELECT` of more than 5 terms, more than 100 bound
+parameters, a statement over 100 000 bytes, and a `LIKE` or `GLOB` pattern over 50 bytes. The
+node adapter enforces the first three on `ctx.sql` with the Durable Object's own messages, so
+a statement built from the model or from a caller's unbounded input fails in your own tests
+rather than on the deployed host. The `LIKE`/`GLOB` limit is the exception: node's SQLite still
+allows 50 000, and only this repository's own suites emulate the limit (a test preload), so a
+long pattern built from input still passes a vertical's own tests and fails deployed. The values and how they are counted are in
+[SQL limits on `ctx.sql`](/concepts/scope-host#sql-limits-on-ctx-sql).
 
 ## What is honestly not solved
 
