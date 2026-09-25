@@ -2061,7 +2061,8 @@ export async function crossVerticalHealth(
     return report;
   }
   const { scopes, candidates } = listed;
-  const focusVertical = 'focus' in listed ? listed.focus?.vertical : undefined;
+  const focusScope = 'focus' in listed ? listed.focus : undefined;
+  const focusVertical = focusScope?.vertical;
 
   // The history, newest first per edge (the read is already newest first).
   const lastOk = new Map<string, SweepRunEntry>();
@@ -2115,20 +2116,26 @@ export async function crossVerticalHealth(
         (err: unknown) => ({ ok: false as const, error: message(err) }),
       ),
     ]);
+    // A consumer that could not be asked names no producer ('*'). Seen from a focused PRODUCER,
+    // though, it is one of that producer's consumers (the narrowing named it for the focus's
+    // vertical), so it is tagged with the focus: a view of the producer must show the failure
+    // rather than filter out an edge whose other end is unknown.
+    const unasked = (reason: string): EdgeHealth =>
+      focusScope && consumer.id !== focusScope.id
+        ? edge(focusScope.vertical, { state: 'unavailable', reason, producer: { vertical: focusScope.vertical, scopeId: focusScope.id } })
+        : edge('*', { state: 'unavailable', reason });
     if (!stateRead.ok) {
-      report.edges.push(edge('*', { state: 'unavailable', reason: `could not ask this app what it imports: ${stateRead.error}` }));
+      report.edges.push(unasked(`could not ask this app what it imports: ${stateRead.error}`));
       return;
     }
     const state = stateRead.state;
     if (state.consumes.length === 0) {
       if (knownImporters.has(consumer.id)) {
         report.edges.push(
-          edge('*', {
-            state: 'unavailable',
-            reason:
-              "the version registry says this app's code imports events, but its deployment answers that it " +
+          unasked(
+            "the version registry says this app's code imports events, but its deployment answers that it " +
               'imports nothing — it is not running the version the registry names; redeploy or reconcile it',
-          }),
+          ),
         );
       }
       return;

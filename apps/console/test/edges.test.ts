@@ -44,6 +44,16 @@ describe('the console Edges card (#1705 PR 3)', () => {
     expect(edgesCardState(null, new ApiError(501, 'predates'), SCOPE)).toEqual({ kind: 'predates' });
   });
 
+  it('keeps an unreachable consumer on its producer\'s card, even as the only edge', () => {
+    const unreachable = edge({
+      consumer: { scopeId: '01J0000000000000000000OTH0' as EdgeHealth['consumer']['scopeId'], vertical: 'acme/board' },
+      producer: { vertical: 'acme/crm', scopeId: SCOPE as EdgeHealth['producer']['scopeId'] },
+      state: 'unavailable',
+      reason: 'could not ask this app what it imports',
+    });
+    expect(edgesCardState(report([unreachable]), null, SCOPE)).toEqual({ kind: 'ready', entries: [unreachable] });
+  });
+
   it("keeps only this scope's edges, in either direction", () => {
     const into = edge();
     const out = edge({

@@ -1142,6 +1142,30 @@ export function verticalEventsContractSuite(
       );
       // A scope that is no install at all has no edges, and asks nothing.
       expect((await focused(scopeId.parse(ulid()))).edges).toEqual([]);
+
+      // A consumer that cannot be asked stays on its PRODUCER's view, as a failure there: tagged
+      // with the producer, since it names none itself, so a per-app filter keeps it.
+      const unreachable = await crossVerticalHealth(fx.consumer, {
+        actor: staff,
+        tenantId: t,
+        focus: p,
+        crossVertical: {
+          reach: {
+            ...reach,
+            importState: (tt, s) =>
+              s === c ? Promise.reject(new Error('the board deployment is down')) : reach.importState(tt, s),
+          },
+        },
+        ...(fx.door ? { door: fx.door } : {}),
+      });
+      const out = unreachable.edges.find((e) => e.consumer.scopeId === c);
+      expect(out).toMatchObject({ state: 'unavailable', producer: { vertical: CRM_VERTICAL, scopeId: p } });
+      expect(out?.reason).toMatch(/board deployment is down/);
+      // Unfocused, the same failure names no producer: the tenant view shows it under '*'.
+      const tenantWide = await health(t, {
+        importState: (tt, s) => (s === c ? Promise.reject(new Error('down')) : reach.importState(tt, s)),
+      });
+      expect(tenantWide.edges.find((e) => e.consumer.scopeId === c)).toMatchObject({ producer: { vertical: '*', scopeId: null } });
     });
 
     it('edge health never crosses a tenant: one tenant\'s view names only its own edges', async () => {
