@@ -408,6 +408,7 @@ describe('the #1764 backfill survives a failing batch', () => {
         // Each failure on a NEW instance over the same storage, which is what an eviction is:
         // the count lives in storage, so the backoff keeps growing rather than restarting at 2 s.
         const evicted = new ControlPlaneDO(state, env) as Directory;
+        await evicted.backfillArmed; // the constructor's check settles before the alarm runs
         const before = Date.now();
         await expect(evicted.alarm()).resolves.toBeUndefined();
         expect(unsplit(state)).toBe(ids.length); // the batch rolled back whole
@@ -461,12 +462,17 @@ describe('the #1764 backfill survives a failing batch', () => {
       expect(rows(state).map((r) => r.stage)).toEqual(['first-failure', 'first-failure']);
       // The second episode is at 1 failure; the backoff caps at the 12th (1 s × 2^12 > 1 h).
       // Every one of them on a new instance: the cap is reached across evictions too.
-      const evicted = () => new ControlPlaneDO(state, env) as Directory;
-      for (let n = 2; n <= 11; n++) await evicted().alarm();
+      // The constructor's check settles before each alarm runs, as a real construction's would.
+      const evicted = async () => {
+        const instance = new ControlPlaneDO(state, env) as Directory;
+        await instance.backfillArmed;
+        return instance;
+      };
+      for (let n = 2; n <= 11; n++) await (await evicted()).alarm();
       expect(rows(state)).toHaveLength(2);
-      await evicted().alarm(); // the 12th
+      await (await evicted()).alarm(); // the 12th
       expect(rows(state).map((r) => r.stage)).toEqual(['first-failure', 'first-failure', 'backoff-capped']);
-      await evicted().alarm(); // the 13th: still capped, nothing new
+      await (await evicted()).alarm(); // the 13th: still capped, nothing new
       expect(rows(state)).toHaveLength(3);
       const [capped] = rows(state).slice(-1);
       expect(platformActorId.safeParse(capped!.actor).success).toBe(true); // the console's read parses it
