@@ -75,6 +75,7 @@ describe('bound parameters', () => {
   it('reads an extended $name as ONE token, the way SQLite tokenizes it (::, and a (…) suffix)', () => {
     // 60 distinct extended names is 60 variables. A scanner that stopped at `::` or `(` would
     // read each as two (`$ns1` and `:part1`) — 120 — and refuse this statement, which a Durable Object runs.
+    // (Agreement with a real Durable Object: adapter-cloudflare/test/do-sql-limits.test.ts.)
     const sql = `SELECT ${Array.from({ length: 60 }, (_, i) => `$ns${i}::part${i}(arg${i})`).join(' + ')}`;
     expect(() => assertWithinSqlLimits(sql)).not.toThrow();
     expect(() => assertWithinSqlLimits(`SELECT ${Array.from({ length: 60 }, () => '$a::b(c) + $a::b(c)').join(' + ')}`)).not.toThrow();

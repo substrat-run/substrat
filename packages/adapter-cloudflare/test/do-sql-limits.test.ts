@@ -106,11 +106,14 @@ describe('the SQL limits of a Durable Object: the boundary (#1741)', () => {
     expect(outcome).toBe('ok');
   });
 
-  it('an extended $name (:: and a (…) suffix) is one parameter, however often it is written', async () => {
-    const outcome = await run((sql) =>
-      attempt(sql, (n) => ({ sql: `SELECT ${Array.from({ length: n }, () => '$ns::part(arg)').join('+')}`, params: [1] }), 60),
-    );
-    expect(outcome).toBe('ok');
+  it('an extended $name (:: and a (…) suffix) is ONE parameter: 100 distinct ones run, 101 are refused', async () => {
+    const extended: Trial = (n) => ({
+      sql: `SELECT 1 WHERE 1 IN (${Array.from({ length: n }, (_, i) => `$ns${i}::part${i}(arg${i})`).join(',')})`,
+      params: Array(n).fill(1),
+    });
+    const [at, past] = await run((sql) => [attempt(sql, extended, boundParameters), attempt(sql, extended, boundParameters + 1)]);
+    expect(at).toBe('ok');
+    expect(past).toMatch(/^too many SQL variables at offset \d+: SQLITE_ERROR$/);
   });
 
   it('the way round the limit: one JSON array through json_each carries any number of values', async () => {
