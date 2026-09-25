@@ -378,8 +378,13 @@ export function socialProvidersFrom(rows: ProviderRow[]): Record<string, Record<
   return config;
 }
 
-/** The row versions already warned about, so a stale row logs once per version. */
+/**
+ * The row versions already warned about, so a stale row logs once per version. Bounded: an
+ * isolate that outlives many edits forgets them all past the cap, which costs one repeated
+ * warning per stale row, not memory.
+ */
 const warned = new Set<string>();
+const WARNED_CAP = 256;
 
 /**
  * The `genericOAuth` plugin config for the GENERIC rows — the other half of the split
@@ -417,6 +422,7 @@ export function genericProvidersFrom(rows: ProviderRow[]): GenericOAuthConfig[] 
     // Once per version of the row, not once per request: the config is rebuilt per request.
     const seen = `${row.provider_id}@${row.updated_at ?? ''}`;
     if (refusal && !warned.has(seen)) {
+      if (warned.size >= WARNED_CAP) warned.clear();
       warned.add(seen);
       console.warn('auth-server: provider not offered', { providerId: row.provider_id, reason: refusal, fix: 're-save to re-discover' });
     }
