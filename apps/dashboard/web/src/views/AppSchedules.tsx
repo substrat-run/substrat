@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { Badge } from '@substrat-run/ui';
 import { api, type AppSchedulesView } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
@@ -56,6 +56,7 @@ export function AppSchedules({
   focused = false,
   appName,
   onOpen,
+  embedded = false,
 }: {
   scopeId: string;
   window: { from: string; to: string };
@@ -63,6 +64,9 @@ export function AppSchedules({
   appName?: string;
   /** Narrow the page — the row's link. Absent: the row's href is followed as a plain navigation. */
   onOpen?: (q: ObsQuery) => void;
+  /** Drawn as a section of Pulse's one-clock card (#1767): no frame and no axis row of
+   *  its own, because the card's axis row already labels this column. */
+  embedded?: boolean;
 }) {
   const [view, setView] = useState<AppSchedulesView | null>(null);
 
@@ -101,9 +105,10 @@ export function AppSchedules({
     go: () => (onOpen ? onOpen(q) : navigate(obsPath({ app: scopeId, ...q }))),
   });
 
+  const Frame = embedded ? Fragment : SchedulesCard;
   return (
-    <div style={{ ...card, boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: GRID, alignItems: 'center', padding: '0 16px', height: 32, fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)' }}>
+    <Frame>
+      <div style={{ display: 'grid', gridTemplateColumns: GRID, alignItems: 'center', padding: '0 16px', height: 32, ...(embedded ? { borderTop: '1px solid var(--border-subtle)' } : {}), fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)' }}>
         <span>Schedules and freshness</span>
         <span style={num}>Last run</span>
         <span style={num}>Runs</span>
@@ -194,6 +199,7 @@ export function AppSchedules({
           </RowLink>
         );
       })}
+      {!embedded && (
       <div style={{ display: 'grid', gridTemplateColumns: GRID, padding: '0 16px', height: 28, borderTop: '1px solid var(--border-default)' }}>
         <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -229,8 +235,13 @@ export function AppSchedules({
         </span>
         <span />
       </div>
-    </div>
+      )}
+    </Frame>
   );
+}
+
+function SchedulesCard({ children }: { children: ReactNode }) {
+  return <div style={{ ...card, boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>{children}</div>;
 }
 
 const num: CSSProperties = { textAlign: 'right', paddingRight: 16 };
