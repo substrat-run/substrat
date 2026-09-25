@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
+import { DISCOVERY_FAILURE_TTL_MS } from '../src/discovery.js';
 import { mountOidcRoutes, LOGOUT_HINT_COOKIE, SESSION_COOKIE, type OidcEnv } from '../src/index.js';
 
 /**
@@ -39,6 +40,8 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  // Only the clock: the failure window is judged against `Date`.
+  vi.useFakeTimers({ toFake: ['Date'] });
   // Per-case issuer: discovery is cached per issuer for the life of the isolate, so a
   // shared one would hand the second case the first case's metadata.
   ISSUER = `https://issuer-logout-${++issuers}.test`;
@@ -79,7 +82,10 @@ beforeEach(() => {
   }) as typeof fetch);
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 function app(): Hono<{ Bindings: OidcEnv }> {
   const a = new Hono<{ Bindings: OidcEnv }>();
@@ -294,7 +300,9 @@ describe('federated logout', () => {
     const out = await a.request(`${APP}/api/auth/logout?federated&returnTo=/bye`, {}, env);
     expect(out.headers.get('location')).toBe('/bye');
 
+    // Remembered for the failure window only, so the issuer's recovery is seen after it.
     discoveryDown = false;
+    vi.setSystemTime(Date.now() + DISCOVERY_FAILURE_TTL_MS + 1);
     const jar = await signIn(a);
     expect(jar.get(SESSION_COOKIE)).toBeTruthy();
   });

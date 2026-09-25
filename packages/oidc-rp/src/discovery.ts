@@ -73,7 +73,11 @@ function issuerKey(issuer: string): string | null {
   }
 }
 
-// Discovery + JWKS, cached per issuer for the life of the isolate.
+/** How long a failed discovery is answered from memory instead of asked again. */
+export const DISCOVERY_FAILURE_TTL_MS = 30_000;
+const failures = new Map<string, { error: unknown; until: number }>();
+
+// Discovery, cached per issuer for the life of the isolate.
 const discoveryCache = new Map<string, Promise<Discovery>>();
 /**
  * The issuer's discovery document, held to what it is trusted with: it must come from an
@@ -89,11 +93,17 @@ export function discoverIssuer(issuer: string): Promise<Discovery> {
   if (!isHttpsOrLoopback(new URL(issuer))) return Promise.reject(new Error('OIDC issuer is not https'));
   const cached = discoveryCache.get(key);
   if (cached) return cached;
+  // A failure is remembered only briefly (below): long enough that a bad or unreachable issuer
+  // costs one discovery per window rather than one to four fetches per request, short enough
+  // that a recovered one is asked again within the minute.
+  const failed = failures.get(key);
+  if (failed && failed.until > Date.now()) return Promise.reject(failed.error);
   const url = `${key}/.well-known/openid-configuration`;
-  // A FAILURE IS NOT CACHED. Concurrent callers still share the one in-flight fetch, but
-  // the entry is evicted the moment it rejects — otherwise one lookup against an issuer
-  // that happened to be down poisons the isolate for its whole life, and every later
-  // login replays that rejection after the issuer has recovered. Federated logout makes
+  // A FAILURE IS NOT CACHED FOR LONG. Concurrent callers still share the one in-flight fetch,
+  // and the entry is evicted the moment it rejects, leaving only the short negative window
+  // above — otherwise one lookup against an issuer that happened to be down poisons the
+  // isolate for its whole life, and every later login replays that rejection after the
+  // issuer has recovered. Federated logout makes
   // that reachable in a way it was not before: it degrades to a local sign-out, so the
   // request that poisoned the cache is the one that looked like it worked.
   const pending: Promise<Discovery> = fetchDiscovery(url)
@@ -113,7 +123,10 @@ export function discoverIssuer(issuer: string): Promise<Discovery> {
       return d;
     })
     .catch((err: unknown) => {
-      if (discoveryCache.get(key) === pending) discoveryCache.delete(key);
+      if (discoveryCache.get(key) === pending) {
+        discoveryCache.delete(key);
+        failures.set(key, { error: err, until: Date.now() + DISCOVERY_FAILURE_TTL_MS });
+      }
       throw err;
     });
   discoveryCache.set(key, pending);

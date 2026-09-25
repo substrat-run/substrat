@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 import { beginLogin, completeLogin, type OidcEnv } from '../src/index.js';
+import { DISCOVERY_FAILURE_TTL_MS } from '../src/discovery.js';
 
 /**
  * What a discovery document is trusted with. It names the token endpoint the client secret
@@ -27,6 +28,7 @@ let evilJwks: { keys: object[] };
 /** What the stub does this round; every field has a well-behaved default in `beforeEach`. */
 let doc: Record<string, unknown>;
 let discoveryRedirect: string | null;
+let discovery: 'up' | 'down';
 let tokenBehaviour: 'ok' | 'redirect';
 let sparse: boolean;
 let signAs: { key: 'good' | 'evil'; iss: string };
@@ -43,6 +45,8 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  // Only the clock: a failed discovery is remembered for a window judged against `Date`.
+  vi.useFakeTimers({ toFake: ['Date'] });
   issuer = `https://issuer-${++n}.test`;
   env = {
     OIDC_ISSUER: issuer,
@@ -52,6 +56,7 @@ beforeEach(() => {
   };
   doc = {};
   discoveryRedirect = null;
+  discovery = 'up';
   tokenBehaviour = 'ok';
   sparse = false;
   signAs = { key: 'good', iss: issuer };
@@ -63,6 +68,7 @@ beforeEach(() => {
     // A runaway guard: a loop that lost its cap must FAIL here, not spin the event loop.
     if (requests.length > 50) throw new Error('runaway: more than 50 requests');
     if (url === `${issuer}/.well-known/openid-configuration`) {
+      if (discovery === 'down') return new Response('down', { status: 503 });
       if (discoveryRedirect !== null) {
         // A timer tick per hop: a microtask-only loop starves the runner's own timeout.
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -99,7 +105,12 @@ beforeEach(() => {
   }) as typeof fetch);
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+const pastTheFailureWindow = () => vi.setSystemTime(Date.now() + DISCOVERY_FAILURE_TTL_MS + 1);
 
 async function login() {
   const { location, flow } = await beginLogin(env, APP);
@@ -170,11 +181,24 @@ describe('discovery is bound to the configured issuer', () => {
     }
   });
 
-  it('does not cache the refusal: an issuer that is corrected is usable', async () => {
+  it('does not remember the refusal for long: a corrected issuer is usable once the window passes', async () => {
     doc = { issuer: 'https://other.test' };
     await expect(login()).rejects.toThrow(/different issuer/);
     doc = {};
+    pastTheFailureWindow();
     expect((await login()).user.id).toBe('u-1');
+  });
+});
+
+describe('a failing issuer is asked once per window, not once per request', () => {
+  it('answers N failing requests from one discovery, and asks again after the window', async () => {
+    discovery = 'down';
+    for (let i = 0; i < 5; i++) await expect(beginLogin(env, APP)).rejects.toThrow(/discovery failed \(503\)/);
+    expect(requests.filter((r) => r.url.includes('openid-configuration'))).toHaveLength(1);
+    discovery = 'up';
+    await expect(beginLogin(env, APP)).rejects.toThrow(/discovery failed \(503\)/);
+    pastTheFailureWindow();
+    expect((await beginLogin(env, APP)).location).toContain('/authorize');
   });
 });
 
@@ -236,6 +260,7 @@ describe('what else the document names', () => {
     await expect(login()).rejects.toThrow(/jwks_uri that is not https/);
     expect(requests.some((r) => r.url.startsWith('http://keys.example.test'))).toBe(false);
     doc = {};
+    pastTheFailureWindow();
     expect((await login()).user.id).toBe('u-1');
   });
 

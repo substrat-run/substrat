@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
+import { DISCOVERY_FAILURE_TTL_MS } from '@substrat-run/oidc-rp/discovery';
 import { oidcAuthProvider } from '../src/oidc.js';
 
 /**
@@ -30,6 +31,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
   issuer = `https://bearer-issuer-${++n}.test`;
   doc = {};
   discovery = 'doc';
@@ -58,7 +60,10 @@ beforeEach(() => {
   vi.stubGlobal('fetch', stub as typeof fetch);
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 const token = (key: CryptoKey, iss = issuer) =>
   new SignJWT({})
@@ -101,6 +106,15 @@ describe('a bearer verifier looks its keys up through the bound discovery', () =
     discovery = 'down';
     expect(await resolve(provider, await token(goodKey))).toBeNull();
     discovery = 'doc';
+    vi.setSystemTime(Date.now() + DISCOVERY_FAILURE_TTL_MS + 1);
     expect(await resolve(provider, await token(goodKey))).toBe('user-1');
+  });
+
+  it('asks a failing issuer once per window however many bearers arrive', async () => {
+    discovery = 'down';
+    const provider = oidcAuthProvider({ issuer });
+    const t = await token(goodKey);
+    for (let i = 0; i < 6; i++) expect(await resolve(provider, t)).toBeNull();
+    expect(requests.filter((r) => r.includes('openid-configuration'))).toHaveLength(1);
   });
 });
