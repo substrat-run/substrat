@@ -632,7 +632,7 @@ describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 P
     await expect(kick(coalescer(env.KICK_THROW, t, s), t, s)).resolves.toBe('ran');
   });
 
-  it('holds no authority: a kick naming a fork, or another tenant, runs no edge through the real pass', async () => {
+  it('holds no authority: a kick naming a fork, a preview, or another tenant, runs no edge through the real pass', async () => {
     const staff = platformActorId.parse(ulid());
     const t = tenantId.parse(ulid());
     const u = tenantId.parse(ulid());
@@ -648,12 +648,20 @@ describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 P
     await dir.provisionScope(staff, { tenantId: t, scopeId: p, vertical: CRM_VERTICAL });
     await dir.admin.activateScope(staff, t, p);
     const fork = await dir.snapshotScope(staff, t, p);
+    // A CLEAN-ROOM preview: fresh, not forked, so only its kind says it is not the install.
+    // (A snapshot preview is also a fork, and the fork rule would refuse it first.)
+    const preview = scopeId.parse(ulid());
+    await dir.provisionScope(staff, { tenantId: t, scopeId: preview, vertical: CRM_VERTICAL, kind: 'preview' });
+    await dir.admin.activateScope(staff, t, preview);
+    expect(await dir.admin.getScopeRecord(staff, t, preview)).toMatchObject({ kind: 'preview', forkedFrom: null });
     const lines = async (s: string) => (await log().lines()).filter((l) => l.includes(s));
 
     await kick(coalescer(env.KICK_REAL, t, fork), t, fork);
+    await kick(coalescer(env.KICK_REAL, t, preview), t, preview);
     await kick(coalescer(env.KICK_REAL, u, p), u, p);
-    // Each pass ran, and neither got as far as asking for a consumer.
+    // Each pass ran, and none got as far as asking for a consumer.
     expect(await lines(fork)).toEqual([`pass:${fork}`]);
+    expect(await lines(preview)).toEqual([`pass:${preview}`]);
     expect((await lines(p)).filter((l) => l.startsWith('candidates:'))).toEqual([]);
 
     // The twin: the real producer, under its own tenant, is resolved and its consumers asked for.
