@@ -18,6 +18,7 @@ import {
   PROVIDER_CATALOGUE,
   deleteProvider,
   descriptorOf,
+  genericEndpointsRefusal,
   isReservedProviderId,
   readProvider,
   readProviders,
@@ -521,8 +522,10 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
       // `resolveIssuerEndpoints` for why that is load-bearing). Re-resolved when the issuer
       // changes and kept otherwise, so flipping a toggle does not depend on the upstream
       // being reachable at that moment.
+      // A stored document that no longer passes the rule is re-discovered too, so saving the
+      // row is what brings a provider back once its upstream serves a usable document.
       const issuerChanged = input.issuer.trim() !== existing?.issuer;
-      if (issuerChanged || !existing?.endpoints) {
+      if (issuerChanged || !existing?.endpoints || genericEndpointsRefusal(existing) !== null) {
         try {
           endpoints = await resolveIssuerEndpoints(input.issuer.trim());
         } catch (e) {

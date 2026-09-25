@@ -9,6 +9,7 @@ import { buildAuth, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
 import {
   PROVIDER_CATALOGUE,
+  genericEndpointsRefusal,
   genericProvidersFrom,
   isReservedProviderId,
   issuerOf,
@@ -96,6 +97,7 @@ interface WireProvider {
   trustEmail: boolean;
   disabled: boolean;
   callbackPath: string;
+  attention: string | null;
 }
 
 const listProviders = async (cookie: string): Promise<WireProvider[]> =>
@@ -243,7 +245,7 @@ const supabaseRow = (over: Partial<ProviderRow> = {}): ProviderRow =>
  */
 const discoveryHits: string[] = [];
 /** Per-test discovery answers, by URL — checked before the fixed ones below. */
-const served = new Map<string, () => Response>();
+const served = new Map<string, () => unknown>();
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   discoveryHits.length = 0;
@@ -253,7 +255,7 @@ beforeEach(() => {
     if (target.includes('/.well-known/openid-configuration')) {
       discoveryHits.push(target);
       const answer = served.get(target);
-      if (answer) return answer();
+      if (answer) return answer() as Response;
       if (target === 'https://id.acme.test/.well-known/openid-configuration') {
         return Response.json(ACME_DISCOVERY);
       }
@@ -723,6 +725,43 @@ describe('rows becoming Better Auth config', () => {
     );
   });
 
+  it('offers no STORED row whose discovery no longer passes the rule: no config, no button, no trust', () => {
+    // Rows saved before the rule was decided against the issuer, or otherwise unusable now.
+    const stale: [string, Partial<ProviderRow>][] = [
+      ['plaintext loopback token endpoint', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, token_endpoint: 'http://localhost:9999/token' }) }],
+      ['plaintext loopback userinfo', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, userinfo_endpoint: 'http://127.0.0.1/userinfo' }) }],
+      ['plaintext end-session', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, end_session_endpoint: 'http://id.acme.test/logout' }) }],
+      ['issuer carrying credentials', { issuer: 'https://user:hunter2@id.acme.test' }],
+      ['stored issuer not usable', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, issuer: 'http://id.acme.test' }) }],
+      ['nothing stored', { endpoints: null }],
+      ['unreadable', { endpoints: '{not json' }],
+    ];
+    for (const [name, over] of stale) {
+      const row = genericRow({ trust_email: 1, ...over });
+      expect(genericEndpointsRefusal(row), name).not.toBeNull();
+      expect(genericProvidersFrom([row]), name).toBeUndefined();
+      expect(publicProvidersFrom([row]), name).toEqual([]);
+      expect(trustedProvidersFrom([row]), name).toEqual([]);
+      // The reason names no URL: the admin panel shows it, and an issuer may carry a password.
+      expect(genericEndpointsRefusal(row), name).not.toMatch(/https?:|hunter2/);
+    }
+    // The positive twins: a valid stored row is offered everywhere, and a loopback dev issuer's
+    // own plaintext loopback endpoints are still valid.
+    const valid = genericRow({ trust_email: 1 });
+    expect(genericEndpointsRefusal(valid)).toBeNull();
+    expect(genericProvidersFrom([valid])?.map((c) => c.providerId)).toEqual(['acme']);
+    expect(publicProvidersFrom([valid])).toEqual([{ id: 'acme', label: 'Acme SSO' }]);
+    expect(trustedProvidersFrom([valid])).toEqual(['acme']);
+    const dev = 'http://localhost:8080/realms/dev';
+    const loopback = genericRow({
+      issuer: dev,
+      endpoints: JSON.stringify({ issuer: dev, authorization_endpoint: `${dev}/auth`, token_endpoint: `${dev}/token` }),
+    });
+    expect(genericEndpointsRefusal(loopback)).toBeNull();
+    // A catalogue row is never judged by this.
+    expect(genericEndpointsRefusal(row())).toBeNull();
+  });
+
   it('treats a generic provider like any other for trust and the login screen', () => {
     expect(trustedProvidersFrom([genericRow({ trust_email: 1 })])).toEqual(['acme']);
     expect(publicProvidersFrom([genericRow()])).toEqual([{ id: 'acme', label: 'Acme SSO' }]);
@@ -788,6 +827,45 @@ describe('the login screen', () => {
     expect(authorize.searchParams.get('scope')).toContain('openid');
     // OAuth 2.1's PKCE, pinned in `genericProvidersFrom` rather than left to a default.
     expect(authorize.searchParams.get('code_challenge')).toBeTruthy();
+  });
+
+  it('does not start a sign-in at a stored row that no longer passes the rule, and a re-save brings it back', async () => {
+    const cookie = await signInAs(ADMIN);
+    expect((await addAcme(cookie)).status).toBe(201);
+    // A row as an older save stored it: an https upstream whose document named a plaintext
+    // loopback token endpoint, which the rule then admitted endpoint by endpoint.
+    db.prepare('UPDATE identity_provider SET endpoints = ? WHERE provider_id = ?').run(
+      JSON.stringify({ ...ACME_DISCOVERY, token_endpoint: 'http://localhost:9999/token' }),
+      'acme',
+    );
+    auth = rebuild();
+    const refused = await call('/api/auth/sign-in/social', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'acme', callbackURL: '/' }),
+    });
+    expect(refused.status).not.toBe(200);
+
+    // The admin panel says so, names the provider, says what fixes it, and repeats no URL.
+    const [stale] = await listProviders(cookie);
+    expect(stale).toMatchObject({ id: 'acme' });
+    expect(stale!.attention).toContain('Save the provider again');
+    expect(stale!.attention).not.toMatch(/https?:/);
+
+    // Saving it again, issuer unchanged, re-discovers — and the upstream now serves a valid
+    // document, so the provider is offered again.
+    discoveryHits.length = 0;
+    expect((await addAcme(cookie)).status).toBe(200);
+    expect(discoveryHits).toEqual(['https://id.acme.test/.well-known/openid-configuration']);
+    const [fixed] = await listProviders(cookie);
+    expect(fixed!.attention).toBeNull();
+    auth = rebuild();
+    const ok = await call('/api/auth/sign-in/social', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'acme', callbackURL: '/' }),
+    });
+    expect(ok.status).toBe(200);
   });
 
   it('sends the browser to the Supabase project a named catalogue row configured', async () => {

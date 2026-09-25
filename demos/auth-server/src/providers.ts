@@ -1,5 +1,6 @@
 import { socialProviderList } from 'better-auth/social-providers';
 import type { GenericOAuthConfig } from 'better-auth/plugins/generic-oauth';
+import { isAllowedEndpoint, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import type { SqlExec } from './introspect.js';
 
 /**
@@ -271,9 +272,58 @@ export function deleteProvider(sql: SqlExec, providerId: string): void {
   sql.exec('DELETE FROM identity_provider WHERE provider_id = ?', providerId);
 }
 
-/** The rows that should actually be offered: enabled, and either in the catalogue or generic. */
+/** The stored endpoints a person, a code, the client secret or a token is sent to. */
+const STORED_ENDPOINTS = ['authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'end_session_endpoint'] as const;
+
+/**
+ * Why a GENERIC row cannot be offered for login, or null when it can (and always null for a
+ * catalogue row). Discovery is judged at save time (`resolveIssuerEndpoints`), but a row keeps
+ * what it stored, so a row saved under an older, looser rule is judged again here, by the same
+ * rule: the issuer passes `issuerRefusal`, and every stored endpoint passes `isAllowedEndpoint`
+ * against the issuer its document stated. A row that fails is not offered — no button, nothing
+ * mounted, so nothing is sent to it — until it is saved again, which re-discovers. The reason
+ * never repeats a URL: the admin panel shows it, and a stored issuer may carry credentials.
+ */
+export function genericEndpointsRefusal(row: ProviderRow): string | null {
+  if (!isGenericRow(row)) return null;
+  if (issuerRefusal(row.issuer!)) return 'its issuer URL is not usable';
+  if (!row.endpoints) return 'no discovery document is stored for it';
+  let stored: Partial<Record<keyof ProviderEndpoints, unknown>> | null;
+  try {
+    stored = JSON.parse(row.endpoints) as typeof stored;
+  } catch {
+    stored = null;
+  }
+  if (!stored || typeof stored !== 'object') return 'its stored discovery document is not readable';
+  const issuer = stored.issuer;
+  if (typeof issuer !== 'string' || issuerRefusal(issuer)) return 'its stored issuer is not usable';
+  if (typeof stored.authorization_endpoint !== 'string' || typeof stored.token_endpoint !== 'string') {
+    return 'its stored endpoints are incomplete';
+  }
+  for (const key of STORED_ENDPOINTS) {
+    const value = stored[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || !isAllowedEndpoint(issuer, value)) return `its stored ${key} is not https`;
+  }
+  return null;
+}
+
+/** What the admin panel says about a row that is not offered, and what fixes it. */
+function attentionFor(row: ProviderRow): string | null {
+  const refusal = genericEndpointsRefusal(row);
+  return refusal ? `Not offered for sign-in: ${refusal}. Save the provider again to re-discover its endpoints.` : null;
+}
+
+/**
+ * The rows that should actually be offered: enabled, and either in the catalogue or a generic
+ * row whose stored discovery still passes the rule. Every consumer — the mounted config, the
+ * login buttons, the trusted list — reads through here, so a row is dropped from all of them
+ * at once, never mounted-but-hidden or shown-but-unmounted.
+ */
 function live(rows: ProviderRow[]): ProviderRow[] {
-  return rows.filter((row) => !row.disabled && (isGenericRow(row) || descriptorOf(row.provider_id)));
+  return rows.filter(
+    (row) => !row.disabled && (isGenericRow(row) ? genericEndpointsRefusal(row) === null : descriptorOf(row.provider_id)),
+  );
 }
 
 /**
@@ -331,7 +381,14 @@ export function socialProvidersFrom(rows: ProviderRow[]): Record<string, Record<
  * issuer with no generic upstream must not mount the plugin at all.
  */
 export function genericProvidersFrom(rows: ProviderRow[]): GenericOAuthConfig[] | undefined {
-  const enabled = live(rows).filter((row) => isGenericRow(row) && row.endpoints);
+  // A hosted install's console is not the operator's to read (see `sign-in-log.ts`); the
+  // admin panel's `attention` is what they see. This line is for whoever runs the process.
+  for (const row of rows) {
+    if (row.disabled) continue;
+    const refusal = genericEndpointsRefusal(row);
+    if (refusal) console.warn('auth-server: provider not offered', { providerId: row.provider_id, reason: refusal, fix: 're-save to re-discover' });
+  }
+  const enabled = live(rows).filter(isGenericRow);
   if (!enabled.length) return undefined;
   // The annotation is load-bearing: a literal built inside `.map` is not checked for unknown
   // keys, and `accountIssuer` — removed in Better Auth 1.7.3 — went on compiling and silently
@@ -389,6 +446,8 @@ export function toWireProvider(row: ProviderRow) {
     trustEmail: Boolean(row.trust_email),
     disabled: Boolean(row.disabled),
     callbackPath: callbackPath(row.provider_id),
+    /** Set when the row is not offered for sign-in, saying why and what fixes it (no URL). */
+    attention: attentionFor(row),
     updatedAt: row.updated_at,
   };
 }
