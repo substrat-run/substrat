@@ -5557,6 +5557,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // than somebody else's, and needs no ownership check of its own to be safe.
         scopeId: z.string().min(1).max(64).optional(),
         vertical: z.string().min(1).max(200).optional(),
+        // A coarser grouping of the same rows (#1767) — never a wider read.
+        grain: z.enum(['surface', 'scope']).optional(),
         hours: z.coerce.number().int().min(1).max(72).default(24),
         since: z.string().datetime({ offset: true }).optional(),
         until: z.string().datetime({ offset: true }).optional(),
@@ -5565,6 +5567,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         tenantId,
         scopeId: c.req.query('scopeId') || undefined,
         vertical: c.req.query('vertical') || undefined,
+        grain: c.req.query('grain') || undefined,
         hours: c.req.query('hours'), since: c.req.query('since'), until: c.req.query('until'),
       });
     try { resolveObservabilityWindow(input); } catch (e) { throw new ControlPlaneError(400, (e as Error).message); }

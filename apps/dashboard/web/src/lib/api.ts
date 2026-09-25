@@ -435,6 +435,22 @@ export type { HistoryEntry, CauseChain, CauseTerminal, EffectsTree, EventEffects
  * `silent` and `ok` are different answers: nothing having checked an app is not
  * the same as nothing being wrong with it.
  */
+/** One traffic row per app for the Apps table (#1767) — mirrors `src/app-metrics.ts`. */
+export interface AppMetricsRow {
+  scopeId: string;
+  /** Null when this app's traffic was not read — beyond the view's `cap`. */
+  requests: number | null;
+  errors: number | null;
+  /** Milliseconds; null when not measured (no traffic, or a plane that cannot group by app). */
+  p95: number | null;
+}
+export interface AppMetricsView {
+  available: boolean;
+  /** Set when the read came back full: a null `requests` is an app not in the top `cap`. */
+  cap: number | null;
+  rows: AppMetricsRow[];
+}
+
 export interface AppHealthRow {
   scopeId: string;
   /** The app's own name and vertical slug — whose app this is, on the row itself. */
@@ -1905,6 +1921,7 @@ export const api = {
 
   /** Every app's health, worst first (#1238) — the rollup, not a per-app read. */
   fleetHealth: () => call<{ rows: AppHealthRow[] }>('/fleet-health'),
+  appMetrics: (hours = 24) => call<AppMetricsView>(`/observability/app-metrics?hours=${hours}`),
 
   /** Field coverage for the running version (#1321) — declared vs returnable. */
   /** Declared-vs-observed findings (#1234) — what this app promises against what it has done. */

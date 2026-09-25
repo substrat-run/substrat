@@ -17,7 +17,7 @@ import { navigate } from '../lib/router';
 import { Page, GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
 import { AppSchedules } from './AppSchedules';
-import { FleetHealth } from './Apps';
+import { FleetHealth } from './FleetHealth';
 import { Flow } from './Flow';
 import { EventExplorer, TenantLogs, TenantTrafficTable } from './ObservabilityPanels';
 import { SECTION_VIEWS, defaultView, sectionLabel, sectionOf, type ObsSection } from '../lib/obs-sections';
@@ -374,7 +374,7 @@ export function Observability({
       )}
       {/* A Health row promises its sweep record, which lives on the Schedules sub-view —
           landing on the default Traffic panel would hide the very reason the row exists. */}
-      {active === 'health' && <FleetHealth key={nonce} onOpen={(s) => onNav({ app: s, view: 'schedules' })} />}
+      {active === 'health' && <FleetHealth key={nonce} apps={apps} onOpen={(s) => onNav({ app: s, view: 'schedules' })} />}
       {scopeId && active === 'traffic' && <TenantTrafficTable scopeId={scopeId} hours={hours} nonce={nonce} window={requestWindow} />}
       {scopeId && active === 'logs' && (
         <TenantLogs

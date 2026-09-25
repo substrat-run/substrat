@@ -204,6 +204,14 @@ export interface TenantMetricsBucket {
 export const TENANT_SERIES_SCOPE_CAP = 50;
 
 /**
+ * The most rows one `tenantMetrics` read answers, busiest first. A reader stops there,
+ * so an answer holding exactly this many rows may have left scopes out — and a scope
+ * missing from a full answer is UNREAD, not quiet. A caller that zero-fills the scopes
+ * it expected must only do so when the answer came back short of this (#1767).
+ */
+export const TENANT_METRICS_LIMIT = 200;
+
+/**
  * Connector calls to ONE provider inside ONE time bucket (#1691) — the trend behind the
  * connection-health line, fleet-wide. Read from the connector-call dataset the control
  * plane writes (kernel `connector-calls.ts`), never the router's.
@@ -257,6 +265,14 @@ export interface ObservabilityReader {
     tenantId: string;
     scopeId?: string;
     vertical?: string;
+    /**
+     * `surface` (the default) answers one row per (scope, vertical, surface). `scope`
+     * answers one row per scope, `surface` AND `vertical` null (#1767). A p95 cannot be
+     * recombined from per-surface p95s, so a per-app latency has to be grouped at the
+     * source rather than folded afterwards — and by the scope alone, since a scope
+     * rebound to another vertical mid-window would otherwise answer twice.
+     */
+    grain?: 'surface' | 'scope';
     hours: number;
     since?: string;
     until?: string;
