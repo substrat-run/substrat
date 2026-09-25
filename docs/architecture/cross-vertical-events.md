@@ -261,6 +261,12 @@ coalescer** to run its outgoing edges (`runCrossVerticalFrom`). Delivery then ta
   by alarm. So a burst costs one pass plus one trailing pass, fleet-wide, whatever the tenant
   sends. The trailing pass is what keeps coalescing lossless: an event committed after the first
   pass read the outbox still moves within one window.
+- **A platform-secret holder cannot mint coalescers either.** Every pushed vertical holds
+  `PLATFORM_SECRET`, and could call `/internal/drain-scope` itself. So the route reads the
+  directory first. A scope that is not an active, primary install of a vertical is answered
+  `not-a-producer`, at the cost of that one read, with no Durable Object and no pass. A real
+  producer named this way is held to its own coalescer's bound, the same as a flagged response.
+  The secret still identifies no caller, exactly as for the intent drain beside it.
 - **The coalescer holds no authority.** Its pass is the sweep's own, with the same reach and
   gates, and it re-resolves the producer as its tenant's primary instance. It is handed only
   the scope the router resolved.
