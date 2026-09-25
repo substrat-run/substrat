@@ -1476,6 +1476,11 @@ async function sweepCrossVertical(
     }
     // Idle writes no row: one green row per edge per tick would bury the ones that matter.
     if (edge.state === 'idle') return;
+    // A kick pass (`only`) can run every few seconds for a busy producer. It writes a row only
+    // for an edge that moved or paused. A standing failure (an old consumer, an unresolved
+    // producer) is the scheduled sweep's to record, once per tick, rather than once per kick:
+    // otherwise one broken consumer beside a busy producer files thousands of identical rows.
+    if (only && edge.state !== 'delivered' && edge.state !== 'paused') return;
     options.recordSweepRun?.({
       kind: 'vertical-events',
       unit: `${edge.consumer.scopeId}:${edge.producer.vertical}`,
@@ -1506,6 +1511,8 @@ async function sweepCrossVertical(
       ...(from !== null ? { from } : {}),
       doubt: (unit, reason, scopeIds) => {
         for (const id of scopeIds) doubtful.add(id);
+        // A kick pass leaves doubt to the sweep: see the filter below and `record`.
+        if (only) return;
         options.recordSweepRun?.({
           kind: 'vertical-events',
           unit: `version:${unit}`,
@@ -1521,6 +1528,10 @@ async function sweepCrossVertical(
     report.errors.push({ kind: 'vertical-events', id: 'candidates', error: message(err) });
     return out;
   }
+  // A kick pass calls only the consumers the registry KNOWS import from this producer. A scope
+  // kept as doubt is asked by the scheduled sweep, once per tick. Asking it on every kick would
+  // cost a call, and a row, per flagged response.
+  if (only) candidates = candidates.filter((c) => !doubtful.has(c.id));
   out.candidates = candidates.length;
   const configuredCap = cv.maxConsumers ?? CROSS_VERTICAL_CONSUMERS_PER_PASS;
   const cap = Number.isFinite(configuredCap) && configuredCap >= 0 ? Math.floor(configuredCap) : CROSS_VERTICAL_CONSUMERS_PER_PASS;

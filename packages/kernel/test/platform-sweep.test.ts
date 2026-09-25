@@ -2055,3 +2055,68 @@ describe('runCrossVerticalFrom (#1705 PR 2)', () => {
     expect(out.crossVertical).toMatchObject({ candidates: 3, deferred: 1 });
   });
 });
+
+/**
+ * Re-review item 1 (#1705 PR 2): a kick pass can run every few seconds for a busy producer, so it
+ * records only edges that moved or paused, and it does not ask a scope the registry could not
+ * judge. Standing failures and doubt are the scheduled sweep's to record, once per tick. Otherwise
+ * one broken consumer beside a busy producer would file a row per flagged response.
+ */
+describe('a kick pass leaves doubt and standing failures to the sweep (#1705 PR 2)', () => {
+  const V_IMPORTS = '01JZ0000000000000000000V11';
+  const V_BAD = '01JZ0000000000000000000V12';
+  const scope = (vertical: string, versionId: string | null) =>
+    ({ id: sid(), tenantId: T, status: 'active', vertical, verticalVersionId: versionId, kind: 'app', forkedFrom: null }) as unknown as Scope;
+  const crm = scope('acme/crm', null);
+  const definite = scope('acme/board', V_IMPORTS);
+  const doubtfulScope = scope('acme/doubt', V_BAD);
+  const broken = scope('acme/broken', V_IMPORTS);
+  const all = [crm, definite, doubtfulScope, broken];
+  const setup = () => {
+    const called: string[] = [];
+    const runs: SweepRunInput[] = [];
+    const host = {
+      admin: {
+        listScopes: async (_a: unknown, f: { tenantId?: string }) => all.filter((s) => !f.tenantId || s.tenantId === f.tenantId),
+        listConnections: async () => [],
+      },
+    } as unknown as ScopeHost;
+    const readImports = async (_slug: string, versionId: string) => {
+      if (versionId === V_BAD) throw new Error(`unknown version ${versionId}`);
+      return { kind: 'imports' as const, rows: [{ from: 'acme/crm', type: 'crm.a', schemaVersion: 1 }] };
+    };
+    const reach: CrossVerticalReach = {
+      candidates: registryImportCandidates({ admin: { listVerticals: async () => [] } as never, actor: ACTOR, readImports }),
+      importState: async (_t, s) => {
+        called.push(s);
+        if (s === broken.id) throw new Error('the deployment serving it predates cross-vertical events — redeploy it');
+        return { consumes: [{ from: 'acme/crm', type: 'crm.a', schemaVersion: 1 }] as never, cursors: [] };
+      },
+      readExports: async () => ({ events: [], withheld: [], unexported: [], paused: null, next: null, more: false }),
+      deliver: async () => {
+        throw new Error('nothing is new');
+      },
+    };
+    return { host, reach, called, runs };
+  };
+
+  it('a kick pass does not ask a doubtful scope, and writes no failure row', async () => {
+    const { host, reach, called, runs } = setup();
+    await runCrossVerticalFrom(host, { actor: ACTOR, recordSweepRun: (e) => runs.push(e), crossVertical: { reach } }, { tenantId: T, scopeId: crm.id });
+    expect(called).not.toContain(doubtfulScope.id);
+    expect(new Set(called)).toEqual(new Set([definite.id, broken.id]));
+    expect(runs).toEqual([]);
+  });
+
+  it('the scheduled sweep does both: asks the doubtful scope, and records the doubt and the failure', async () => {
+    const { host, reach, called, runs } = setup();
+    await runPlatformSweep(host, { ...quiet, recordSweepRun: (e) => runs.push(e), crossVertical: { reach } });
+    expect(called).toContain(doubtfulScope.id);
+    expect(runs.map((r) => [r.unit, r.outcome])).toEqual(
+      expect.arrayContaining([
+        [`version:acme/doubt@${V_BAD}`, 'failed'],
+        [`${broken.id}:*`, 'failed'],
+      ]),
+    );
+  });
+});
