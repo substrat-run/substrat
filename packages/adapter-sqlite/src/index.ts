@@ -2009,11 +2009,17 @@ export class SqliteScopeHost implements ScopeHost {
    * backfill runs only on an application that creates the table: once on a directory that
    * never had it, and again after a directory restore whose dump predates it (from that
    * dump's own log). A directory that already holds the table is never backfilled over.
+   *
+   * One transaction (Copilot review, #1674): the table and its backfill commit together, so
+   * a backfill that fails leaves no table behind, and the next start tries again rather than
+   * reading an empty table as already migrated.
    */
   private ensureDirectorySchema(): void {
-    const switchRecordIsNew = !systemSwitchesTableExists(switchSqlOf(this.directory));
-    this.applyDirectorySchema();
-    if (switchRecordIsNew) this.directory.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+    this.directory.transaction(() => {
+      const switchRecordIsNew = !systemSwitchesTableExists(switchSqlOf(this.directory));
+      this.applyDirectorySchema();
+      if (switchRecordIsNew) this.directory.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+    })();
   }
 
   registerExecutor(
