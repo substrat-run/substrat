@@ -584,4 +584,69 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     }
     expect(scripts.get(stable)?.get(legacy)?.[0]?.rows).toEqual([['Acme AB']]);
   });
+
+  it('an install refused after the serve is left where it is; every other install still moves, and the backfill still runs', async () => {
+    const pin = `lag-${ulid().slice(-6).toLowerCase()}`;
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: pin, name: pin });
+    // `old` exports TYPE and is never promoted; the channel starts at `served`, which does not.
+    const old = await push(pin, manifest('0.1.0', true));
+    const slug = old.verticalSlug;
+    const served = await push(pin, manifest('0.1.1', false));
+    expect((await promote(slug, served.id)).status).toBe(200);
+    const stable = stableDeploymentRefFor(slug);
+    const install = async (versionId: string) => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: slug });
+      await host.admin.activateScope(staff, t, s);
+      await host.admin.bindScopeVersion(staff, t, s, versionId);
+      return s;
+    };
+    const onServing = await install(served.id);
+    // A legacy install still on `old`, which exports TYPE, beside an app that imports it.
+    const lagging = await install(old.id);
+    await host.admin.setScopeServingRef(staff, t, lagging, null, { acknowledge: { exportBreak: true } });
+    ensure(deploymentRefFor(slug, old.id)).set(lagging, [
+      { name: 'customers', ddl: 'CREATE TABLE customers(name TEXT)', columns: ['name'], rows: [['Acme AB']] },
+    ]);
+    const desk = `${pin}/desk`;
+    await host.admin.registerVertical(staff, { slug: desk, name: 'desk', source: 'cli' });
+    const deskVersion = ulid();
+    await host.admin.publishVersion(staff, {
+      id: deskVersion, verticalSlug: desk, version: '1.0.0', manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g',
+      deploymentRef: null,
+      manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], imports: [{ from: slug, type: TYPE, schemaVersion: 1, declaredBy: ['@test/desk'] }] } }),
+    });
+    await host.admin.admitVersion(staff, deskVersion);
+    const deskScope = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: deskScope, vertical: desk });
+    await host.admin.activateScope(staff, t, deskScope);
+    await host.admin.bindScopeVersion(staff, t, deskScope, deskVersion);
+
+    // The channel's previous version exports nothing, so the promote gate passes; the adopt of the
+    // lagging install is what breaks the desk.
+    const next = await push(pin, manifest('0.2.0', false));
+    const listScopes = vi.spyOn(host.admin, 'listScopes');
+    let res: Response;
+    try {
+      res = await promote(slug, next.id, { permissionChange: true });
+      expect(listScopes.mock.calls.some(([, f]) => f?.vertical === slug && Array.isArray(f.status) && f.status.includes('provisioning'))).toBe(true);
+    } finally {
+      listScopes.mockRestore();
+    }
+    expect(res.status).toBe(409);
+    const said = (await res.json()) as { error: string; exportBreaks?: { affected: { scopeId: string }[] } };
+    expect(said.error).toMatch(/^promoted and served, but an app still on its own version was not moved/);
+    expect(said.exportBreaks?.affected.map((b) => b.scopeId)).toEqual([deskScope]);
+    // The install on the serving script moved on; the lagging one did not move at all.
+    expect(await host.admin.getScopeRecord(staff, t, onServing)).toMatchObject({ servingRef: stable, verticalVersionId: next.id });
+    const still = await host.admin.getScopeRecord(staff, t, lagging);
+    expect(still?.servingRef ?? null).toBeNull();
+    expect(still?.verticalVersionId).toBe(old.id);
+    expect(scripts.get(stable)?.has(lagging)).toBeFalsy();
+
+    // The twin: promoting again acknowledged moves it.
+    expect((await promote(slug, next.id, { exportBreak: true })).status).toBe(200);
+    expect(await host.admin.getScopeRecord(staff, t, lagging)).toMatchObject({ servingRef: stable, verticalVersionId: next.id });
+  });
 });

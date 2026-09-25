@@ -107,6 +107,7 @@ import type {
 import type { CrossVerticalOptions, OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import {
+  BIND_EXPORT_BREAK_REFUSAL,
   bindExportBreakRefusal,
   crossVerticalHealth,
   isBindExportBreakRefusal,
@@ -2338,28 +2339,42 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // the promoted one, which the promote gate judged only from the channel's previous version:
     // an install lagging behind that is judged again, and passes on the promote's ack or not at all.
     acknowledge?: BindAcknowledgement,
-  ): Promise<void> => {
+  ): Promise<{ refused: ExportBreak[]; refusal?: string }> => {
     const actor = c.get('actor');
+    const none = { refused: [] };
     const serving = await admin.verticalServing(actor, slug);
-    if (!serving) return; // embedded / not dispatch-backed — the host cascade handled rebinds
+    if (!serving) return none; // embedded / not dispatch-backed — the host cascade handled rebinds
     const v = await verticalOf(actor, slug);
-    if (!v || v.ownerTenant === null || v.listed) return; // private only, like the host cascade
+    if (!v || v.ownerTenant === null || v.listed) return none; // private only, like the host cascade
     const owned = (
       await admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug, status: ['active'] })
     ).filter((s) => !s.forkedFrom && s.kind !== 'preview');
+    // An install refused for what it would break is left where it is, and the rest still move:
+    // one lagging app must not keep every other install's pointer, or the store backfill after
+    // this, from happening. The caller answers with what was refused.
+    const refused: ExportBreak[] = [];
+    let refusal: string | undefined;
     for (const s of owned) {
-      if (!s.servingRef) {
-        // Adopt: export from the scope's current (un-rebound) dispatch → serving script,
-        // then bind to the serving version. Data-first, so a failure here leaves the
-        // scope intact on its old script for the next promote to retry.
-        await adoptScopeOntoServing(c, s.tenantId, s.id, { acknowledge });
-      } else if (s.verticalVersionId !== versionId) {
-        // Already on the serving script (born there, or adopted earlier): routing is
-        // pinned to servingRef, so advancing the version pointer only affects Update
-        // offers. Snapshot on a migration-digest crossing (fork-before-promote, §4).
-        await admin.bindScopeVersion(actor, s.tenantId, s.id, versionId, { snapshot: true, acknowledge });
+      try {
+        if (!s.servingRef) {
+          // Adopt: export from the scope's current (un-rebound) dispatch → serving script,
+          // then bind to the serving version. Data-first, so a failure here leaves the
+          // scope intact on its old script for the next promote to retry.
+          await adoptScopeOntoServing(c, s.tenantId, s.id, { acknowledge });
+        } else if (s.verticalVersionId !== versionId) {
+          // Already on the serving script (born there, or adopted earlier): routing is
+          // pinned to servingRef, so advancing the version pointer only affects Update
+          // offers. Snapshot on a migration-digest crossing (fork-before-promote, §4).
+          await admin.bindScopeVersion(actor, s.tenantId, s.id, versionId, { snapshot: true, acknowledge });
+        }
+      } catch (e) {
+        if (e instanceof ExportBreakRefused) refused.push(...e.breaks);
+        else if (isBindExportBreakRefusal(e) || (e instanceof ControlPlaneError && e.message.startsWith(BIND_EXPORT_BREAK_REFUSAL))) {
+          refusal ??= e.message; // the host's own refusal (the answer moved under us): counts only
+        } else throw e;
       }
     }
+    return { refused, ...(refusal ? { refusal } : {}) };
   };
 
   /**
@@ -5190,6 +5205,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A failed serve is NOT a failed promote: the channel moved (audited), old code
     // still serves, and promoting again retries the upload.
     let backfill: { minted: MintedStore[]; error?: string } = { minted: [] };
+    let adopted: { refused: ExportBreak[]; refusal?: string } = { refused: [] };
     if (channel === 'prod') {
       try {
         await serveVersionInPlace(c.get('actor'), slug, versionId);
@@ -5200,28 +5216,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // fresh per-version script. Retry-safe: nothing rebound these scopes yet.
         // Only the export-break acknowledgement is the adopt's to carry: the digest ones are the
         // promote's own, and a bind's strict acknowledgement refuses them (#1756).
-        await adoptAndRebindOwnedScopes(c, slug, versionId, acknowledge?.exportBreak ? { exportBreak: true } : undefined);
+        adopted = await adoptAndRebindOwnedScopes(c, slug, versionId, acknowledge?.exportBreak ? { exportBreak: true } : undefined);
         // #825: and mint whatever THIS version newly declares for the tenants already
         // installed — after the serve, so the declaration being read is the one now live.
         backfill = await backfillFleetStores(c, slug);
       } catch (e) {
-        // #1756: served, but an owned install still on its own version would break apps in its
-        // tenant if moved onto the serving script — a move the promote gate never judged, since
-        // that install was not on the channel's previous version. Promoting again with the
-        // acknowledgement moves it; nothing was moved without it.
-        if (e instanceof ExportBreakRefused || isBindExportBreakRefusal(e)) {
-          const refused = e instanceof ExportBreakRefused ? e : new ControlPlaneError(409, (e as Error).message);
-          const body = exportBreakBody(refused);
-          return c.json(
-            {
-              ...body,
-              error:
-                `promoted and served, but an app still on its own version was not moved onto the serving script: ` +
-                `${body.error}. Promote again with the export-break acknowledgement to move it`,
-            },
-            409,
-          );
-        }
         const detail = e instanceof Error ? e.message : String(e);
         console.error('serve.inplace.failed', { slug, versionId, detail });
         return c.json(
@@ -5232,6 +5231,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           502,
         );
       }
+    }
+    // #1756: served, and every install that could move has moved and been backfilled, but one
+    // still on its own version would break apps in its tenant if moved onto the serving script —
+    // a move the promote gate never judged, since that install was not on the channel's previous
+    // version. It is left where it is. Promoting again acknowledged moves it.
+    if (adopted.refused.length > 0 || adopted.refusal) {
+      const sentence = adopted.refused.length > 0 ? bindExportBreakRefusal(adopted.refused) : adopted.refusal!;
+      return c.json(
+        {
+          error:
+            `promoted and served, but an app still on its own version was not moved onto the serving script: ` +
+            `${sentence}. Promote again with the export-break acknowledgement to move it`,
+          ...(adopted.refused.length > 0 ? { exportBreaks: { affected: adopted.refused } } : {}),
+          // Narrowed as the success answer's is: a builder never reads another tenant's id here.
+          ...(backfill.minted.length || backfill.error
+            ? (() => {
+                const { visible, otherTenants } = narrowToCaller(backfill.minted, confinedTenant(c.get('principal')));
+                return {
+                  storeBackfill: {
+                    minted: visible,
+                    ...(otherTenants ? { otherTenants } : {}),
+                    ...(backfill.error ? { error: backfill.error } : {}),
+                  },
+                };
+              })()
+            : {}),
+        },
+        409,
+      );
     }
     const promoted = (await admin.listChannels(c.get('actor'), slug)).find(
       (ch) => ch.channel === channel,
