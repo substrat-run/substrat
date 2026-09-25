@@ -31,9 +31,9 @@
  * Exit 0: no breaking change. 1: at least one (each printed). 2: could not run.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -274,7 +274,24 @@ export function run(ref: string, cwd: string = ROOT): Violation[] {
   return out;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+/**
+ * Whether this module is the one node was asked to run. Compared as URLs of REAL paths: a path with
+ * a space or a `%` is percent-encoded in import.meta.url and raw in argv, and node resolves the
+ * main module through symlinks (macOS's /tmp is one). A mismatch here would run nothing and exit 0.
+ */
+function isMain(): boolean {
+  const arg = process.argv[1];
+  if (arg === undefined) return false;
+  let real: string;
+  try {
+    real = realpathSync(resolve(arg));
+  } catch {
+    return false;
+  }
+  return fileURLToPath(import.meta.url) === real || import.meta.url === pathToFileURL(real).href;
+}
+
+if (isMain()) {
   const arg = (name: string) => {
     const i = process.argv.indexOf(name);
     return i >= 0 ? process.argv[i + 1] : undefined;

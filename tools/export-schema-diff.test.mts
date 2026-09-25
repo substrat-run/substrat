@@ -1,13 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyExports, run } from './export-schema-diff.mts';
 
 const TOOL = resolve(dirname(fileURLToPath(import.meta.url)), 'export-schema-diff.mts');
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({
   type: 'object',
@@ -210,6 +211,17 @@ test('a base that is not in the checkout is exit 2, never read as "new file" —
   assert.match(missing.stderr, /cannot run/);
   // The twin: with the base present, the same break is found (exit 1), not skipped.
   assert.deepEqual(run(baseSha, dir).map((v) => v.rule), ['removed']);
+});
+
+test('run from a path with a space in it, the tool still runs (and refuses without --base), never a silent 0', (t) => {
+  const spaced = mkdtempSync(join(tmpdir(), 'export schema diff '));
+  t.after(() => rmSync(spaced, { recursive: true, force: true }));
+  const copy = join(spaced, 'export-schema-diff.mts');
+  writeFileSync(copy, readFileSync(TOOL, 'utf8'));
+  // From the repository, so npx finds the workspace's tsx.
+  const res = spawnSync('npx', ['tsx', copy], { cwd: REPO, encoding: 'utf8' });
+  assert.equal(res.status, 2, res.stderr);
+  assert.match(res.stderr, /--base <ref> is required/);
 });
 
 test('no --base is exit 2', () => {
