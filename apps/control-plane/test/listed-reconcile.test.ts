@@ -6,6 +6,7 @@ import {
   VerticalClient,
   provisionSiblingHandler,
   provisionTenantHandler,
+  setEntitlementsHandler,
 } from '@substrat-run/control-plane-api';
 import {
   platformActorId,
@@ -22,6 +23,7 @@ import {
   assertReconcileReaches,
   parseReconcileBatch,
   reconcileOrUnsupported,
+  reconcileReachedScope,
 } from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -368,6 +370,38 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     await host.admin.createTenant(staff, { id: managerTenant, slug: `mgr-${suffix}`, name: 'Manager' });
     await host.provisionScope(staff, { tenantId: managerTenant, scopeId: managerScope, vertical: MANAGER });
     await host.admin.activateScope(staff, managerTenant, managerScope);
+  });
+
+  describe('the sweep reconcile (`reconcileReachedScope`)', () => {
+    const payload = { entitlements: [], identityLinks: [], connectionGrants: [], connectionKeys: [] };
+    it('a switched-off scope whose storage was wiped comes back OFF', async () => {
+      const s = await wipedScope(t, true);
+      await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
+      expect(store.get(s)).toBe('off');
+    });
+    it('twin: with no record, the scope comes back on', async () => {
+      const s = await wipedScope(t, false);
+      await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
+      expect(store.get(s)).toBe('on');
+    });
+  });
+
+  describe('the set-entitlements drain (a reconcile)', () => {
+    const drain = (s: ScopeId) =>
+      setEntitlementsHandler(deps(host))(
+        { tenantId: managerTenant, scopeId: managerScope, vertical: MANAGER },
+        drainIntent('set-entitlements', { tenantId: t, authScopeId: s, plan: 'pro', entitlements: [{ key: 'tick', plan: 'pro' }] }),
+      );
+    it('a switched-off scope whose storage was wiped comes back OFF', async () => {
+      const s = await wipedScope(t, true);
+      expect((await drain(s)).status).toBe('done');
+      expect(store.get(s)).toBe('off');
+    });
+    it('twin: with no record, the scope comes back on', async () => {
+      const s = await wipedScope(t, false);
+      expect((await drain(s)).status).toBe('done');
+      expect(store.get(s)).toBe('on');
+    });
   });
 
   describe('the provision-sibling drain, re-drained onto the sibling an earlier pass minted', () => {

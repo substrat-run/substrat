@@ -1192,12 +1192,25 @@ async function reconcileOneScope(
     SWEEP_ACTOR,
     { tenantId: t, id: s, vertical: rec.vertical },
   );
-  // #1674: a re-assert failure fails the scope for this pass, so no receipt is written.
-  return reconcileThenReassert(host.admin, SWEEP_ACTOR, { tenantId: t, scopeId: s }, () =>
+  return reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, client, payload);
+}
+
+/**
+ * The sweep's reconcile once a deployment is reached (#1172): the reconcile call, then the
+ * directory's recorded OFF positions put back after its seat (#1674). A re-assert failure
+ * fails the scope for this pass, so the sweep writes no receipt for a scope it left on.
+ * Exported so the sweep's own path is tested, not only the helper it goes through.
+ */
+export function reconcileReachedScope(
+  admin: Parameters<typeof reconcileThenReassert>[0],
+  node: { tenantId: TenantId; scopeId: ScopeId },
+  client: Pick<VerticalClient, 'reconcileInstance'>,
+  payload: Awaited<ReturnType<typeof reconcilePayloadFor>>,
+): Promise<void | 'unsupported'> {
+  return reconcileThenReassert(admin, SWEEP_ACTOR, node, () =>
     reconcileOrUnsupported(() =>
       client.reconcileInstance({
-        tenantId: t,
-        scopeId: s,
+        ...node,
         entitlements: payload.entitlements as never,
         identityLinks: payload.identityLinks as never,
         connectionGrants: payload.connectionGrants as never,
