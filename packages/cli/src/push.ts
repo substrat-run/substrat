@@ -298,11 +298,15 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
         // The entry, plus the vertical's OWN kernel (#1677), imported where the vertical
         // resolves it: `packages: 'external'` keeps the specifier, so it loads from the
         // vertical's node_modules. Optional — a vertical with none still reads as data.
+        // Both absolute: a CI job names the dir relatively (`substrat push demos/ticket0`), and
+        // a relative path written as an import specifier is a BARE one — `packages: 'external'`
+        // then keeps `demos/…` as a package named `demos`, which Node cannot find. `join` also
+        // strips a leading `./`, so spelling the dir `./demos/…` would not have saved it.
         stdin: {
           contents:
-            `export * from ${JSON.stringify(entryPath)};\n` +
+            `export * from ${JSON.stringify(resolve(entryPath))};\n` +
             `export const __substratKernel = await import('@substrat-run/kernel').catch(() => null);\n`,
-          resolveDir: dir,
+          resolveDir: resolve(dir),
           sourcefile: 'substrat-surface.mjs',
           loader: 'js',
         },

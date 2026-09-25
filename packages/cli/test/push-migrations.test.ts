@@ -211,6 +211,52 @@ describe.runIf(built && kernelBuilt)('push carries the derived index migrations 
   });
 });
 
+/**
+ * The deploy workflows name the vertical RELATIVELY (`substrat push demos/ticket0`). The
+ * declared surface is read through an esbuild stdin entry whose import specifier is the entry
+ * path, and a relative path written there is a bare specifier: `packages: 'external'` kept
+ * `demos/…` as a package called `demos`, and every such push failed in 0.35.0.
+ */
+describe.runIf(built)('the declared surface reads from a relative dir', () => {
+  const SURFACE = `
+const [pushJs, dir] = process.argv.slice(2);
+const { deriveDeclaredSurface } = await import(pushJs);
+const s = await deriveDeclaredSurface(dir);
+process.stdout.write('SURFACE ' + JSON.stringify({ permissions: s.registry.permissions.map((p) => p.key), migrations: s.migrations.migrations }) + '\\n');
+`;
+
+  function surfaceFrom(cwd: string, dir: string): { permissions: string[]; migrations: unknown } {
+    const scratch = mkdtempSync(join(tmpdir(), 'substrat-cli-surface-'));
+    const runner = join(scratch, 'run.mjs');
+    writeFileSync(runner, SURFACE);
+    const r = spawnSync(process.execPath, [runner, pushJs, dir], { cwd, encoding: 'utf8' });
+    const line = (r.stdout ?? '').split('\n').find((l) => l.startsWith('SURFACE '));
+    if (r.status !== 0 || !line) throw new Error(`surface not derived (${r.status}):\n${r.stdout}\n${r.stderr}`);
+    return JSON.parse(line.slice('SURFACE '.length));
+  }
+
+  // Nested one level down, the shape `demos/ticket0` has: `root/verticals/helpdesk`.
+  function nested(): { root: string; abs: string } {
+    const abs = vertical([{ id: 'helpdesk', migrations: [INIT] }]);
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'substrat-cli-root-')));
+    mkdirSync(join(root, 'verticals'));
+    symlinkSync(abs, join(root, 'verticals', 'helpdesk'), 'dir');
+    return { root, abs };
+  }
+
+  const expected = { permissions: ['helpdesk:read'], migrations: [{ moduleId: 'helpdesk', ...INIT }] };
+
+  it('named relative to the working directory, as a CI job names it', () => {
+    const { root } = nested();
+    expect(surfaceFrom(root, 'verticals/helpdesk')).toEqual(expected);
+  });
+
+  it('and still named absolutely', () => {
+    const { root, abs } = nested();
+    expect(surfaceFrom(root, abs)).toEqual(expected);
+  });
+});
+
 describe('flattenDeclaredMigrations', () => {
   const surface = (migrations: { version: string; sql: string }[]) => ({
     modules: [{ manifest: { id: 'helpdesk', permissions: [] }, migrations }],
