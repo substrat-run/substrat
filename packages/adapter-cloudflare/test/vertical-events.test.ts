@@ -217,7 +217,13 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
     afterInstall: async (t, s, vertical) => {
       await (vertical === CRM_VERTICAL ? crm : board).provision(t, s);
     },
-    cleanup: async () => {},
+    // The suite ran over the wire, not around it: every verb crossed its deployment's
+    // `/internal` surface. Without this, a suite that fell back to the in-process reach would
+    // pass here and prove nothing about the transport.
+    cleanup: async () => {
+      expect(crm.paths).toContain('/internal/exported-events');
+      expect(board.paths).toEqual(expect.arrayContaining(['/internal/import-state', '/internal/import-events']));
+    },
   };
 });
 
