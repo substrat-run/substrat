@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { moduleManifest, type EventExport } from '@substrat-run/contracts';
+import { moduleManifest, type EventExport, type ImportCursorMove } from '@substrat-run/contracts';
 import {
   CrossVerticalRegistry,
+  createUlid,
   exportReadPlan,
+  moveImportCursor,
+  ulid,
+  ulidCeiling,
   planExportBatch,
   type ExportRow,
   type ImportHandler,
@@ -184,5 +188,38 @@ describe('planExportBatch — what is released, what is withheld, where the wate
   it('with nothing walked, the watermark stays where it was', () => {
     const out = planExportBatch({ rows: [], wanted, hopsBefore: () => 0, after: row(9).id as never, limit: 10 });
     expect(out).toMatchObject({ events: [], withheld: [], next: row(9).id, more: false });
+  });
+});
+
+describe('moveImportCursor: where "skip to now" lands (#1705 PR 3)', () => {
+  const T = Date.parse('2026-09-25T12:00:00.123Z');
+  /** Just enough store for a skip: no watermark yet, and the write recorded. */
+  const store = () => {
+    const writes: (string | null)[][] = [];
+    const sql = { all: () => [], run: (_q: string, ...params: (string | null)[]) => void writes.push(params) };
+    return { sql, writes };
+  };
+  const skip = (through: string) =>
+    ({ mode: 'skip', from: 'acme/crm', through, acknowledge: 'skip-events', reason: 'r' }) as ImportCursorMove;
+  const source = { vertical: 'acme/crm', scopeId: '01J0000000000000000000PRD0' };
+  const imports = [{ from: 'acme/crm' }];
+
+  it("passes over every earlier millisecond, and never an event minted in the skip's own", () => {
+    const { sql } = store();
+    const moved = moveImportCursor(sql, { move: skip('now'), source, replayId: ulid(), now: T, imports });
+    const sameMillisecond = createUlid()(T);
+    const earlier = createUlid()(T - 1);
+    expect(moved.cursor! < sameMillisecond).toBe(true);
+    expect(moved.cursor! >= earlier).toBe(true);
+  });
+
+  it("refuses a watermark past now, or into the skip's own millisecond, as 'now' itself is bounded", () => {
+    const { sql } = store();
+    expect(() => moveImportCursor(sql, { move: skip(ulidCeiling(T + 1)), source, replayId: ulid(), now: T, imports })).toThrow(/at most now/);
+    // Typing this millisecond's ceiling in is no way around the boundary 'now' keeps.
+    expect(() => moveImportCursor(sql, { move: skip(ulidCeiling(T)), source, replayId: ulid(), now: T, imports })).toThrow(/at most now/);
+    // The twin: the previous millisecond's ceiling, which is exactly where 'now' lands.
+    expect(moveImportCursor(sql, { move: skip(ulidCeiling(T - 1)), source, replayId: ulid(), now: T, imports }).cursor).toBe(ulidCeiling(T - 1));
+    expect(moveImportCursor(sql, { move: skip('now'), source, replayId: ulid(), now: T, imports }).cursor).toBe(ulidCeiling(T - 1));
   });
 });

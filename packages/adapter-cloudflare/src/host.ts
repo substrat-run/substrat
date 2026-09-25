@@ -12,7 +12,15 @@ import {
   type ImportResult,
   type ImportState,
   importsOfManifestJson,
+  exportsOfManifestJson,
+  type ExportBreak,
   type ManifestImports,
+  importCursorMove,
+  importCursorMoveAt,
+  importCursorMoved,
+  type ImportCursorMove,
+  type ImportCursorMoveAt,
+  type ImportCursorMoved,
   accessLogEntry,
   adminLogEntry,
   opsFailureEntry,
@@ -51,6 +59,7 @@ import {
   systemSwitch,
   systemSwitchOutcome,
   systemScheduleEntry,
+  systemSwitchRecord,
   entitlementGrant,
   entitlementGrantInput,
   instant,
@@ -292,11 +301,20 @@ import {
   type UndrainedEvents,
   type UndrainedRead,
   type SwitchOutcome,
+  type SystemSwitchReassert,
+  type SystemSwitchRecordFilter,
+  type SystemSwitchRecordPrior,
+  type SystemSwitchRecordRow,
+  type SystemSwitchRecordWrite,
+  withRecorded,
   type SystemScheduleState,
   type PeerGrantsRow,
   type SystemGrantsEntry,
   systemSwitchedOffMessage,
   CrossVerticalRegistry,
+  importCursorSourceOf,
+  exportBreaksOf,
+  exportBreakRefusal,
   collectPeers,
   peerSeats,
   connectorCallRecord,
@@ -568,7 +586,7 @@ interface ControlPlaneStub {
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string): Promise<void>;
-  markScopeProvisioned(scopeId: string, versionId: string): Promise<void>;
+  markScopeProvisioned(scopeId: string, versionId: string | null): Promise<void>;
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
@@ -684,6 +702,16 @@ interface ControlPlaneStub {
     grantedAt: string;
   }): Promise<void>;
   listConnectionGrants(tenantId: string): Promise<ConnectionGrantDoRow[]>;
+  // #1674: the schedule switch's directory record — `system-switch-record.ts`.
+  recordSystemSwitchedOff(row: SystemSwitchRecordWrite): Promise<void>;
+  recordSystemSwitchedOn(row: SystemSwitchRecordWrite): Promise<SystemSwitchRecordPrior>;
+  restoreSystemSwitchRecord(
+    key: { tenantId: string; scopeId: string; moduleId: string; operationId: string },
+    prior: SystemSwitchRecordPrior,
+  ): Promise<void>;
+  listSystemSwitches(filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecordRow[]>;
+  systemSwitchRecordsOf(tenantId: string, scopeId: string): Promise<[string, 'on' | 'off'][]>;
+  switchedOffModulesOf(tenantId: string, scopeId: string): Promise<string[]>;
   recordConnectionUse(
     id: string,
     error: string | null,
@@ -1233,6 +1261,8 @@ interface ScopeStubRpc {
   importApply(batch: ImportBatch, tenantId: TenantId, scopeId: ScopeId): Promise<ImportResult>;
   /** #1705 PR 2: was this scope provisioned here for this tenant — read without migrating. */
   servesTenant(tenantId: TenantId): Promise<boolean>;
+  /** #1705 PR 3: the replay lever, on the scope's queue, in one transaction. */
+  importCursorMove(input: ImportCursorMoveAt & { now: number }): Promise<ImportCursorMoved>;
   redrainEvents(drainedBefore: string): Promise<number>;
   /** How many rows that reopen WOULD touch, touching none of them (#1545). */
   redrainCount(drainedBefore: string): Promise<number>;
@@ -1371,6 +1401,18 @@ export interface PeerSwitchDelegation {
    * admin log is the control plane's own store.
    */
   status(args: { tenantId: TenantId; scopeId: ScopeId }): Promise<PeerGrantsEntry[]>;
+}
+
+/**
+ * The replay lever's reach (#1705 PR 3): move a hosted consumer's watermark in the deployment
+ * that holds it. The shared control plane resolved the producer from its directory and wrote the
+ * intent row, and the far end moves the cursor and the journal rows under the given `replayId`.
+ * Set only on the shared control plane's host, like the switches. Unset, a scope served
+ * elsewhere is refused `unavailable` rather than moved in the placeholder namespace, where
+ * it would report a replay while the real watermark never moved.
+ */
+export interface ImportCursorDelegation {
+  move(args: { tenantId: TenantId; scopeId: ScopeId; at: ImportCursorMoveAt }): Promise<ImportCursorMoved>;
 }
 
 /**
@@ -1519,6 +1561,11 @@ export interface CloudflareScopeHostOptions {
    */
   peerSwitchDelegation?: PeerSwitchDelegation;
   /**
+   * #1705 PR 3: route the replay lever (`moveImportCursor`) to the deployment actually serving
+   * the consumer scope. Set only on the shared control plane's host, like the switches.
+   */
+  importCursorDelegation?: ImportCursorDelegation;
+  /**
    * #1334: route the Tier-2 drain's read and stamp to the deployment actually serving
    * the scope. Set only on the shared control plane's host, exactly like
    * `connectorDelegation` and for the same reason — its own `SCOPE` namespace holds no
@@ -1586,6 +1633,15 @@ function nullControlPlane(): ControlPlaneStub {
     recordAdmin: noop,
     recordAccess: noop,
     tenantHoldsEntitlement: async () => true,
+    // #1674: the schedule switch's record is a DIRECTORY store, and a CP-less host has no
+    // directory — the shared control plane that delegates here keeps it. Same posture as
+    // `recordAdmin`: nothing to write, nothing recorded to read back.
+    recordSystemSwitchedOff: noop,
+    recordSystemSwitchedOn: async () => null,
+    restoreSystemSwitchRecord: noop,
+    listSystemSwitches: async () => [],
+    systemSwitchRecordsOf: async () => [],
+    switchedOffModulesOf: async () => [],
   };
   return new Proxy({} as ControlPlaneStub, {
     get: (_t, prop) =>
@@ -1668,6 +1724,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly systemSwitchDelegation?: SystemSwitchDelegation;
   /** #1706: the peer kill switch's reach into the deployment serving a scope. */
   private readonly peerSwitchDelegation?: PeerSwitchDelegation;
+  /** #1705 PR 3: the replay lever's reach into the deployment serving a consumer scope. */
+  private readonly importCursorDelegation?: ImportCursorDelegation;
 
   /**
    * MUST be constructed per request. Never cache an instance across requests.
@@ -1697,6 +1755,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.eventDrainDelegation = options.eventDrainDelegation;
     this.systemSwitchDelegation = options.systemSwitchDelegation;
     this.peerSwitchDelegation = options.peerSwitchDelegation;
+    this.importCursorDelegation = options.importCursorDelegation;
     this.admin = this.buildAdmin();
   }
 
@@ -2489,6 +2548,13 @@ export class CloudflareScopeHost implements ScopeHost {
     // switched-off peer gets nothing seated.
     for (const seat of peerSeats(collectPeers(this.peerSources), input.scopeId)) {
       await this.scopeStub(input.scopeId).seatTuple(seat.subject, seat.relation, seat.object, null);
+    }
+    // #1674: re-assert the recorded OFF positions after the seat (`system-switch-record.ts`).
+    // Only where this seat landed in the scope's real store — a CP-less host, or a scope
+    // bound to no vertical. A scope a vertical's deployment serves is seated there, later,
+    // and re-asserted after that deployment's reconcile instead.
+    if (this.cpLess || record.vertical === null) {
+      await this.admin.reassertSystemSwitches(actor, { tenantId: input.tenantId, scopeId: input.scopeId });
     }
     // Audit a real provision only; an idempotent re-provision changed nothing.
     if (created) {
@@ -3315,7 +3381,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * and by the verbs that read a record of their own, so a caller never meets two of them.
    */
   private assertServedHere(record: { vertical: string | null }, scopeId: ScopeId, verb: string): void {
-    if (this.servesScopesElsewhere && record.vertical !== null) {
+    if (this.servesScopesElsewhereNow && record.vertical !== null) {
       throw substratError(
         'unavailable',
         `${verb} cannot reach scope ${scopeId}: it is served by the '${record.vertical}' deployment, ` +
@@ -3324,9 +3390,18 @@ export class CloudflareScopeHost implements ScopeHost {
     }
   }
 
-  private get servesScopesElsewhere(): boolean {
+  /** `ScopeHost.servesScopesElsewhere` (#1705 PR 3): any delegation set means the shared control plane. */
+  servesScopesElsewhere(): boolean {
+    return this.servesScopesElsewhereNow;
+  }
+
+  private get servesScopesElsewhereNow(): boolean {
     return Boolean(
-      this.connectorDelegation || this.systemSwitchDelegation || this.peerSwitchDelegation || this.eventDrainDelegation,
+      this.connectorDelegation ||
+        this.systemSwitchDelegation ||
+        this.peerSwitchDelegation ||
+        this.eventDrainDelegation ||
+        this.importCursorDelegation,
     );
   }
 
@@ -3341,7 +3416,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private async capabilityScopeStub(tenantId: TenantId, scopeId: ScopeId, verb: string) {
     const rec = await this.cp.getScopeRecord(tenantId, scopeId);
     if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
-    if (this.servesScopesElsewhere && rec.vertical !== null) {
+    if (this.servesScopesElsewhereNow && rec.vertical !== null) {
       throw substratError(
         'unavailable',
         `${verb} cannot reach scope ${scopeId}: it is served by the '${rec.vertical}' ` +
@@ -3961,6 +4036,29 @@ export class CloudflareScopeHost implements ScopeHost {
       };
     };
 
+    /**
+     * Where one scope's schedule switch lands — the ONE rule `switchSystem` and the #1674
+     * re-assert share, so a re-assert moves exactly the switch an operator's OFF would have.
+     * A scope bound to no vertical (#1666 review) has no deployment to delegate to: its store
+     * is the DO here, so the switch moves (or answers `held: false`) here too. Delegating it
+     * would throw "no deployment serving scope" instead. A scope WITH a vertical still
+     * delegates, and still fails loudly when none serves it.
+     */
+    const systemSwitchTarget = async (tenantId: TenantId, scopeId: ScopeId) => {
+      let vertical: string | null = null;
+      if (!this.cpLess) {
+        const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        vertical = rec.vertical;
+      }
+      const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
+      const move = (moduleId: ModuleId, to: 'on' | 'off', at: string): Promise<SwitchOutcome> =>
+        delegation
+          ? delegation.switch({ tenantId, scopeId, moduleId, to })
+          : this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, at);
+      return { vertical, move };
+    };
+
     const switchSystem = async (
       actor: PlatformActorId,
       raw: SystemSwitch,
@@ -3968,12 +4066,7 @@ export class CloudflareScopeHost implements ScopeHost {
     ): Promise<SystemSwitchResult> => {
       const input = systemSwitch.parse(raw);
       const { tenantId, scopeId } = input.node;
-      let vertical: string | null = null;
-      if (!this.cpLess) {
-        const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
-        vertical = rec.vertical;
-      }
+      const { vertical, move } = await systemSwitchTarget(tenantId, scopeId);
       // AUDIT FIRST (#1666 review): the intent row lands before anything moves, and the
       // outcome row after — every attempt, a repeat included. The scope's store and the
       // admin log are separate, so no order makes the pair atomic; this one fails toward
@@ -3984,37 +4077,88 @@ export class CloudflareScopeHost implements ScopeHost {
       const target = { tenantId, scopeId, vertical };
       const base = { operationId, moduleId: input.moduleId, schedules: to };
       await this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
-      // A scope bound to no vertical (#1666 review) has no deployment to delegate to: its
-      // store is the DO here, so the switch moves (or answers `held: false`) here too.
-      // Delegating it would throw "no deployment serving scope" instead. A scope WITH a
-      // vertical still delegates, and still fails loudly when none serves it.
-      const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
+      // The directory's record (#1674): ON before the scope moves, OFF after it held — see
+      // `recordSystemSwitchedOn` for why that order is the safe one.
+      const at = new Date().toISOString();
+      const record = { tenantId, scopeId, moduleId: input.moduleId, actor, reason: input.reason, operationId, at };
+      const errorOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
+      let prior: SystemSwitchRecordPrior = null;
+      if (to === 'on') {
+        try {
+          prior = await this.cp.recordSystemSwitchedOn(record);
+        } catch (err) {
+          // Nothing has moved: fail the call here, audited, rather than switch a scope on
+          // whose record still says off (the next reconcile would switch it back off).
+          await this.recordAdmin(actor, action, target, null, { ...base, phase: 'failed', error: errorOf(err) }).catch(
+            () => undefined,
+          );
+          throw err;
+        }
+      }
+      /**
+       * A record write AFTER the scope moved (review #5): retried once, and a failure of both
+       * is answered rather than swallowed — it lands on the outcome row as `recordError`, and
+       * the call does not report plain success. A lost OFF record is exactly what a wipe then
+       * turns into a module running again.
+       */
+      const recordWrite = async (write: () => Promise<unknown>): Promise<string | null> => {
+        try {
+          await write();
+          return null;
+        } catch {
+          try {
+            await write();
+            return null;
+          } catch (err) {
+            return errorOf(err);
+          }
+        }
+      };
       let outcome: SwitchOutcome;
       try {
-        outcome = delegation
-          ? await delegation.switch({ tenantId, scopeId, moduleId: input.moduleId, to })
-          : await this.scopeStub(scopeId).switchSystemSchedules(input.moduleId, scopeId, to, new Date().toISOString());
+        outcome = await move(input.moduleId, to, at);
       } catch (err) {
+        const recordError = prior ? await recordWrite(() => this.cp.restoreSystemSwitchRecord(record, prior)) : null;
         // Best effort: the original error is what the caller must see, and the intent row
         // already says an attempt was made.
         await this.recordAdmin(actor, action, target, null, {
           ...base,
           phase: 'failed',
-          error: err instanceof Error ? err.message : String(err),
+          error: errorOf(err),
+          ...(recordError ? { recordError } : {}),
         }).catch(() => undefined);
         throw err;
       }
+      // OFF is recorded once the scope held it. A refused ON moved nothing, so its record
+      // write is undone: left `on`, the next reconcile of a wiped scope would leave the
+      // module running.
+      const recordError =
+        to === 'off' && outcome.held
+          ? await recordWrite(() => this.cp.recordSystemSwitchedOff(record))
+          : to === 'on' && !outcome.held && prior
+            ? await recordWrite(() => this.cp.restoreSystemSwitchRecord(record, prior))
+            : null;
       await this.recordAdmin(actor, action, target, null, {
         ...base,
         phase: outcome.held ? 'applied' : 'refused',
         changed: outcome.changed,
         permissions: outcome.permissions,
+        ...(recordError ? { recordError } : {}),
       });
       if (!outcome.held) {
         throw substratError(
           'not_found',
           `scope ${scopeId} holds no system grant for module '${input.moduleId}' — nothing to switch ${to} ` +
-            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')`,
+            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')` +
+            (recordError ? `; and its directory record could not be put back (${recordError})` : ''),
+        );
+      }
+      if (recordError) {
+        throw substratError(
+          'unavailable',
+          `module '${input.moduleId}' is switched ${to} on scope ${scopeId}, but the directory's record of it ` +
+            `could not be written (${recordError}) — repeat the call to record it; a wipe of this scope would ` +
+            `otherwise lose the switch`,
         );
       }
       return {
@@ -4105,23 +4249,72 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       }
       const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
-      const states = delegation
-        ? await delegation.status({ tenantId, scopeId })
-        : systemScheduleEntry.array().parse(await this.scopeStub(scopeId).systemGrantsStatus());
+      // The scope's own position and the directory's record are independent reads.
+      const [states, recordedRows] = await Promise.all([
+        delegation
+          ? delegation.status({ tenantId, scopeId })
+          : this.scopeStub(scopeId).systemGrantsStatus().then((rows) => systemScheduleEntry.array().parse(rows)),
+        this.cp.systemSwitchRecordsOf(tenantId, scopeId),
+      ]);
       const offModules = new Set(states.filter((s) => s.schedules === 'off').map((s) => s.moduleId as string));
       const explanations =
         offModules.size > 0
           ? await lastSwitchedOff(tenantId, scopeId, offModules)
           : new Map<string, { actor: PlatformActorId; reason: string; at: Instant }>();
-      const result = states.map((s) => ({
-        moduleId: s.moduleId,
+      const result = withRecorded(states, new Map(recordedRows)).map((s) => ({
+        moduleId: s.moduleId as ModuleId,
         schedules: s.schedules,
         switchedOff: explanations.get(s.moduleId) ?? null,
+        recorded: s.recorded,
       }));
       // K-24: reading the switch's position and any live incident reason is itself
       // access-logged, the same as every other HostAdmin read.
       await this.recordAccess(actor, 'systemGrantsStatus', { tenantId, scopeId }, null, result.length);
       return result;
+    };
+
+    /**
+     * #1674: put the directory's OFF positions back into one scope — see
+     * `HostAdmin.reassertSystemSwitches`. It moves the switch through `systemSwitchTarget`,
+     * so it lands wherever an operator's OFF would have — for a hosted scope, over the
+     * `/internal/system-switch` route every deployment since #1666 answers.
+     */
+    const reassertSystemSwitchesOf = async (
+      actor: PlatformActorId,
+      node: { tenantId: TenantId; scopeId: ScopeId },
+    ): Promise<SystemSwitchReassert[]> => {
+      const { tenantId, scopeId } = node;
+      const { vertical, move } = await systemSwitchTarget(tenantId, scopeId);
+      const modules = await this.cp.switchedOffModulesOf(tenantId, scopeId);
+      // A hosted scope with no delegation configured (Copilot review): this host's own
+      // namespace is the module-less placeholder, where the switch would answer `held: false`
+      // quietly — a re-assert reported done, and a receipt written, while the deployment
+      // serving the scope keeps its schedules running. Refused loudly instead, as the status
+      // read is, and only when a re-assert is owed: nothing recorded, nothing to refuse.
+      if (modules.length > 0 && !this.cpLess && vertical !== null && !this.systemSwitchDelegation) {
+        throw substratError(
+          'unavailable',
+          `no delegation configured for hosted scope ${scopeId} (vertical '${vertical}') — cannot re-assert ` +
+            `its switched-off schedules in the deployment serving it`,
+        );
+      }
+      const at = new Date().toISOString();
+      const results: SystemSwitchReassert[] = [];
+      for (const moduleId of modules) {
+        const outcome = await move(moduleId as ModuleId, 'off', at);
+        if (outcome.changed) {
+          await this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId, vertical }, null, {
+            operationId: ulid(),
+            moduleId,
+            schedules: 'off',
+            phase: 'applied',
+            changed: true,
+            permissions: outcome.permissions,
+          });
+        }
+        results.push({ moduleId, held: outcome.held, changed: outcome.changed });
+      }
+      return results;
     };
 
     /**
@@ -4397,6 +4590,20 @@ export class CloudflareScopeHost implements ScopeHost {
       // #1674: the switch's status read — same gate, same delegation, and (unlike the
       // deployment it may delegate to) the admin log to explain an `off` entry.
       systemGrantsStatus: systemGrantsStatusOf,
+      // #1674: the directory's record of the switch — the fleet read, and the re-assert a
+      // scope that lost its marker gets after a wipe or a restore.
+      listSystemSwitches: async (actor: PlatformActorId, filter?: SystemSwitchRecordFilter) => {
+        const rows = await this.cp.listSystemSwitches(filter);
+        await this.recordAccess(
+          actor,
+          'listSystemSwitches',
+          { tenantId: (filter?.tenantId as TenantId | undefined) ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows.map((r) => systemSwitchRecord.parse(r));
+      },
+      reassertSystemSwitches: reassertSystemSwitchesOf,
       // #1672 — the platform's two capability verbs. Audited AFTER the write, on both, and
       // the failure each leaves is the safe one: a mint whose audit row did not land never
       // returned its secret, so nobody can ever exchange it; a revoke whose row did not land
@@ -4768,6 +4975,19 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.cp.setAdmission(versionId, 'admitted', null);
         await this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission }, { admission: 'admitted' });
       },
+      promotionImpact: async (actor, verticalSlug: string, channel, versionId: string): Promise<ExportBreak[]> => {
+        const incoming = await this.cp.readVersion(versionId);
+        if (!incoming || incoming.vertical_slug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        const current = await this.cp.readChannel(verticalSlug, channel);
+        const outgoing = current ? await this.cp.readVersion(current.version_id) : undefined;
+        const breaks = outgoing
+          ? await this.exportBreaksBetween(actor, verticalSlug, outgoing.manifest_json, incoming.manifest_json)
+          : [];
+        await this.recordAccess(actor, 'promotionImpact', { tenantId: null }, { verticalSlug, channel, versionId }, breaks.length);
+        return breaks;
+      },
       rejectVersion: async (actor, versionId: string, note: string) => {
         const v = await this.cp.readVersion(versionId);
         if (!v) throw substratError('not_found', `unknown version ${versionId}`);
@@ -4813,6 +5033,11 @@ export class CloudflareScopeHost implements ScopeHost {
               `promotion changes migrations (${outgoing.migration_digest} → ` +
                 `${incoming.migration_digest}) — acknowledge it explicitly to promote`,
             );
+          }
+          // #1705 PR 3: an export an installed consumer imports, dropped or re-versioned.
+          if (!ack.exportBreak) {
+            const breaks = await this.exportBreaksBetween(actor, verticalSlug, outgoing.manifest_json, incoming.manifest_json);
+            if (breaks.length > 0) throw substratError('precondition_failed', exportBreakRefusal(breaks));
           }
         }
 
@@ -4950,7 +5175,7 @@ export class CloudflareScopeHost implements ScopeHost {
        * reconciled against rather than whatever the scope happens to be bound to by the
        * time the write lands.
        */
-      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string) => {
+      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string | null) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         await this.cp.markScopeProvisioned(scopeId, versionId);
@@ -5277,6 +5502,8 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'importState', { tenantId, scopeId }, null, state.cursors.length);
         return state;
       },
+      moveImportCursor: async (actor, tenantId, scopeId, raw): Promise<ImportCursorMoved> =>
+        this.moveImportCursorAt(actor, tenantId, scopeId, raw),
       readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
         const record = await this.scopeRecordForRead(tenantId, scopeId);
         const bounded = Math.min(Math.max(limit ?? 200, 1), 1000);
@@ -7374,6 +7601,101 @@ export class CloudflareScopeHost implements ScopeHost {
   async importEventsLocal(tenantId: TenantId, scopeId: ScopeId, batch: ImportBatch): Promise<ImportResult> {
     await this.assertServesLocally(tenantId, scopeId, 'deliverToPeer');
     return this.deliverToPeer(tenantId, scopeId, batch);
+  }
+
+  /**
+   * The replay lever's far end (#1705 PR 3), for a consumer scope served HERE. The platform
+   * resolved the producer and wrote the intent row. What runs here is the move itself, in this
+   * deployment's own store, under the platform's `replayId`. Nothing is audited here, as for the
+   * switches: the admin rows are the platform's.
+   */
+  async importCursorLocal(tenantId: TenantId, scopeId: ScopeId, raw: ImportCursorMoveAt): Promise<ImportCursorMoved> {
+    const input = importCursorMoveAt.parse(raw);
+    await this.assertServesLocally(tenantId, scopeId, 'moveImportCursor');
+    return this.moveInScope(scopeId, input);
+  }
+
+  /** The move in this host's own scope DO, on the real clock (host code may read it). */
+  private async moveInScope(scopeId: ScopeId, at: ImportCursorMoveAt): Promise<ImportCursorMoved> {
+    return importCursorMoved.parse(await this.scopeStub(scopeId).importCursorMove({ ...at, now: Date.now() }));
+  }
+
+  /**
+   * `HostAdmin.moveImportCursor` (#1705 PR 3): the peer switch's shape. Resolve, audit the
+   * intent, move where the scope's storage is (the delegation for a hosted scope, this host's
+   * own DO otherwise), and audit the outcome. Every attempt leaves a row, and a failed one
+   * says why.
+   */
+  private async moveImportCursorAt(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    raw: ImportCursorMove,
+  ): Promise<ImportCursorMoved> {
+    const move = importCursorMove.parse(raw);
+    if (this.cpLess) {
+      throw substratError(
+        'unavailable',
+        'moveImportCursor needs the directory to resolve the producer — the platform moves a watermark, ' +
+          'and reaches this deployment through /internal/import-cursor',
+      );
+    }
+    const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+    if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    const source = await importCursorSourceOf(
+      (t, v) => this.admin.resolveVerticalInstance(t, v),
+      { tenantId, scopeId, vertical: rec.vertical },
+      move.from,
+    );
+    // Where the write lands is the peer switch's rule: a scope bound to a vertical is served by
+    // that vertical's deployment, and its watermark lives there. Without a delegation that
+    // refusal stands (`assertServedHere`) rather than a move in the placeholder namespace.
+    const delegation = rec.vertical !== null ? this.importCursorDelegation : undefined;
+    if (!delegation) this.assertServedHere(rec, scopeId, 'moveImportCursor');
+    await this.validateScopeAccess(tenantId, scopeId);
+    const replayId = ulid();
+    const target = { tenantId, scopeId, vertical: rec.vertical };
+    const base = { replayId, mode: move.mode, from: move.from, source: source.scopeId };
+    await this.recordAdmin(actor, 'moveImportCursor', target, null, { ...base, phase: 'intent', reason: move.reason });
+    const at: ImportCursorMoveAt = { move, source: source as ImportCursorMoveAt['source'], replayId };
+    let moved: ImportCursorMoved;
+    try {
+      moved = delegation
+        ? importCursorMoved.parse(await delegation.move({ tenantId, scopeId, at }))
+        : await this.moveInScope(scopeId, at);
+    } catch (err) {
+      await this.recordAdmin(actor, 'moveImportCursor', target, null, {
+        ...base,
+        phase: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      }).catch(() => undefined);
+      throw err;
+    }
+    await this.recordAdmin(actor, 'moveImportCursor', target, null, {
+      ...base,
+      phase: 'applied',
+      previous: moved.previous,
+      cursor: moved.cursor,
+      archived: moved.archived,
+    });
+    return moved;
+  }
+
+  /** #1705 PR 3: the promote gate's question, over two stored manifests (`exportBreaksOf`). */
+  private exportBreaksBetween(
+    actor: PlatformActorId,
+    producer: string,
+    outgoingManifest: string | null,
+    incomingManifest: string | null,
+  ): Promise<ExportBreak[]> {
+    return exportBreaksOf({
+      admin: this.admin,
+      actor,
+      producer,
+      outgoing: exportsOfManifestJson(outgoingManifest),
+      incoming: exportsOfManifestJson(incomingManifest),
+      readImports: (slug, versionId) => this.versionImports(slug, versionId),
+    });
   }
 
   /**

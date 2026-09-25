@@ -76,7 +76,10 @@ connection it holds no memberships; its authority is exactly the grants written 
 `system:<moduleId>`, projected at provisioning. The schedule switch
 (`revokeFromSystem` / `restoreToSystem`) turns one module's scheduled work off on one scope
 and back on. While it is off, the module's system grants there are revoked, so a job acting
-with that authority is denied too, and a new grant to the module there is refused.
+with that authority is denied too, and a new grant to the module there is refused. The
+platform also records the switch outside the scope, so a scope whose storage is wiped or
+restored from an older backup is switched off again after it is provisioned, and staff can
+list every scope with a module switched off (`GET /system-switches`).
 
 Organizations are a real directory record, not a string you make up at the call site:
 

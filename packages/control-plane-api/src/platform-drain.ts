@@ -31,6 +31,7 @@ import {
 import { ControlPlaneError } from './client.js';
 import { attributeFailure, terminalFailureNote } from './failure-attribution.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
+import { reconcileThenReassert } from './reconcile.js';
 import { collectBlobStoreHandles, collectTenantStoreHandles } from './tenant-stores.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
 
@@ -322,15 +323,18 @@ export async function provisionSiblingScope(
     tenantId: input.tenantId,
     patchBindings: deps.patchScriptBindings,
   });
-  await vertical.provisionInstance({
-    tenantId: input.tenantId,
-    scopeId: input.scopeId,
-    owner: principalIdSchema.parse(input.owner),
-    slug: input.slug,
-    name: input.name,
-    entitlements,
-    ...(tenantStores.length ? { tenantStores } : {}),
-  });
+  // #1674: a re-drain reuses the sibling's id, so this can re-seat a wiped, switched-off scope.
+  await reconcileThenReassert(admin, actor, { tenantId: input.tenantId, scopeId: input.scopeId }, () =>
+    vertical.provisionInstance({
+      tenantId: input.tenantId,
+      scopeId: input.scopeId,
+      owner: principalIdSchema.parse(input.owner),
+      slug: input.slug,
+      name: input.name,
+      entitlements,
+      ...(tenantStores.length ? { tenantStores } : {}),
+    }),
+  );
   await admin.activateScope(actor, input.tenantId, input.scopeId);
   return { ok: true, scopeId: input.scopeId };
 }
@@ -685,15 +689,18 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
       patchBindings: deps.patchScriptBindings,
     });
     try {
-      await vertical.provisionInstance({
-        tenantId,
-        scopeId,
-        owner: principalIdSchema.parse(payload.instance.owner),
-        slug: payload.instance.slug,
-        name: payload.instance.name,
-        entitlements,
-        ...(tenantStores.length ? { tenantStores } : {}),
-      });
+      // #1674: a re-drain reuses the proposed ids, so this can re-seat a wiped, switched-off scope.
+      await reconcileThenReassert(admin, actor, { tenantId, scopeId }, () =>
+        vertical.provisionInstance({
+          tenantId,
+          scopeId,
+          owner: principalIdSchema.parse(payload.instance.owner),
+          slug: payload.instance.slug,
+          name: payload.instance.name,
+          entitlements,
+          ...(tenantStores.length ? { tenantStores } : {}),
+        }),
+      );
       if (payload.config && Object.keys(payload.config).length) {
         try {
           await vertical.configureInstance({
@@ -848,14 +855,16 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
       ? await admin.connectionSealingKeys(tenantId, scope.vertical)
       : [];
     try {
-      await vertical.reconcileInstance({
-        tenantId,
-        scopeId,
-        entitlements,
-        identityLinks,
-        connectionGrants,
-        connectionKeys,
-      });
+      await reconcileThenReassert(admin, actor, { tenantId, scopeId }, () =>
+        vertical.reconcileInstance({
+          tenantId,
+          scopeId,
+          entitlements,
+          identityLinks,
+          connectionGrants,
+          connectionKeys,
+        }),
+      );
     } catch (e) {
       if (e instanceof ControlPlaneError) return { status: 'pending', error: e.message };
       throw e;

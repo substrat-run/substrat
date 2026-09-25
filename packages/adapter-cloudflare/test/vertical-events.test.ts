@@ -23,7 +23,7 @@ import {
   testMod,
   verticalEventsContractSuite,
 } from '@substrat-run/contract-tests';
-import { runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration, type SweepRunInput } from '@substrat-run/kernel';
+import { crossVerticalHealth, runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration, type SweepRunInput } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vertical-host';
 import { ControlPlaneError, VerticalClient, hostedCrossVerticalReach } from '@substrat-run/control-plane-api';
 import { CloudflareScopeHost, type EventDrainDelegation } from '../src/host.js';
@@ -40,7 +40,10 @@ verticalEventsContractSuite('adapter-cloudflare (workerd)', async () => {
   producer.registerModule(crmExportMod);
   const consumer = new CloudflareScopeHost({ scope: env.BOARD_SCOPE, controlPlane: env.VE_CONTROL_PLANE, secretBox });
   consumer.registerModule(boardImportMod);
-  return { producer, consumer, cleanup: async () => {} };
+  // Edge health's door read. This directory host serves the scopes itself and has no peer-switch
+  // delegation, so its `peerGrantsStatus` refuses a scope bound to a vertical. The far end is the
+  // same read the shared control plane's delegation makes.
+  return { producer, consumer, door: async (_t, s) => consumer.peerGrantsStatusLocal(s), cleanup: async () => {} };
 });
 
 /**
@@ -110,6 +113,30 @@ describe('cross-vertical verbs on the shared control plane (#1705)', () => {
     await expect(shared.deliverToPeer(t, hosted, batch(hosted))).rejects.toThrow(served);
   });
 
+  it('edge health with no reach says it cannot answer, rather than reporting no edges (#1705 PR 3)', async () => {
+    const view = await crossVerticalHealth(shared, { actor: staff, tenantId: t });
+    expect(view.unavailable).toMatch(/cannot reach the deployments/);
+    expect(view.edges).toEqual([]);
+    // The twin: the same host handed a reach answers (here: nothing imports into this tenant yet).
+    const reached = await crossVerticalHealth(shared, {
+      actor: staff,
+      tenantId: t,
+      crossVertical: {
+        reach: {
+          candidates: () => [],
+          importState: async () => ({ consumes: [], cursors: [] }),
+          readExports: async () => {
+            throw new Error('not reached');
+          },
+          deliver: async () => {
+            throw new Error('not reached');
+          },
+        },
+      },
+    });
+    expect(reached.unavailable).toBeNull();
+  });
+
   it('answers for a scope it does serve — the refusal is about WHERE the storage is, not the verb', async () => {
     const read = await shared.admin.readExportedEvents(staff, t, ownScope, {
       consumer: BOARD_VERTICAL,
@@ -140,6 +167,7 @@ const CROSS_VERTICAL_ROUTES = {
   '/internal/exported-events': 'exportedEventsLocal',
   '/internal/import-state': 'importStateLocal',
   '/internal/import-events': 'importEventsLocal',
+  '/internal/import-cursor': 'importCursorLocal',
 } as const;
 const CROSS_VERTICAL_VERBS = new Set<string>(Object.values(CROSS_VERTICAL_ROUTES));
 
@@ -222,10 +250,42 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
     clientForScope: routeTo(crm, board),
     readImports: (slug, versionId) => consumer.versionImports(slug, versionId),
   });
+  // #1705 PR 3: the replay lever as the shared control plane pulls it. The directory resolves the
+  // producer and writes the admin rows, and the delegation moves the watermark in the consumer's
+  // deployment, over its `/internal/import-cursor`, as `importCursorDelegationFor` does.
+  const leverActor = platformActorId.parse(ulid());
+  const leverHost = new CloudflareScopeHost({
+    scope: env.BOARD_SCOPE,
+    controlPlane: env.VE_CONTROL_PLANE,
+    secretBox,
+    // Edge health's door read, as the shared control plane makes it: over the consumer
+    // deployment's `/internal/peer-grants`, with the admin log's reason joined here.
+    peerSwitchDelegation: {
+      switch: async () => {
+        throw new Error('the suite switches peers on the deployments directly');
+      },
+      status: async (a) => {
+        const rec = await consumer.admin.getScopeRecord(leverActor, a.tenantId, a.scopeId);
+        const client = rec ? await routeTo(crm, board)(rec) : undefined;
+        if (!client) throw new Error(`no deployment serving scope ${a.scopeId}`);
+        return client.peerGrantsStatus({ scopeId: a.scopeId });
+      },
+    },
+    importCursorDelegation: {
+      move: async (a) => {
+        const rec = await consumer.admin.getScopeRecord(leverActor, a.tenantId, a.scopeId);
+        const client = rec ? await routeTo(crm, board)(rec) : undefined;
+        if (!client) throw new Error(`no deployment serving scope ${a.scopeId}`);
+        return client.importCursorMove(a);
+      },
+    },
+  });
   return {
     producer,
     consumer,
     transport,
+    lever: (t, s, move) => leverHost.admin.moveImportCursor(leverActor, t, s, move),
+    door: (t, s) => leverHost.admin.peerGrantsStatus(leverActor, { tenantId: t, scopeId: s }),
     afterInstall: async (t, s, vertical) => {
       await (vertical === CRM_VERTICAL ? crm : board).provision(t, s);
     },
@@ -234,7 +294,9 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
     // pass here and prove nothing about the transport.
     cleanup: async () => {
       expect(crm.paths).toContain('/internal/exported-events');
-      expect(board.paths).toEqual(expect.arrayContaining(['/internal/import-state', '/internal/import-events']));
+      expect(board.paths).toEqual(
+        expect.arrayContaining(['/internal/import-state', '/internal/import-events', '/internal/import-cursor']),
+      );
     },
   };
 });
@@ -285,6 +347,18 @@ describe('the cross-vertical far ends refuse a scope this deployment does not se
     expect(errorCodeOf(await refusal(crm.hostFor().exportedEventsLocal(u, p, read)))).toBe('conflict');
     expect(errorCodeOf(await refusal(board.hostFor().importStateLocal(u, c)))).toBe('conflict');
     expect(errorCodeOf(await refusal(board.hostFor().importEventsLocal(u, c, batch)))).toBe('conflict');
+  });
+
+  it('the replay lever\'s far end refuses a scope it never provisioned, or its own under another tenant (#1705 PR 3)', async () => {
+    const at = {
+      move: { mode: 'skip' as const, from: CRM_VERTICAL, through: 'now' as const, acknowledge: 'skip-events' as const, reason: 'r' },
+      source: { vertical: CRM_VERTICAL, scopeId: p },
+      replayId: ulid(),
+    };
+    expect(errorCodeOf(await refusal(board.hostFor().importCursorLocal(t, foreign, at)))).toBe('conflict');
+    expect(errorCodeOf(await refusal(board.hostFor().importCursorLocal(u, c, at)))).toBe('conflict');
+    // The twin: its own scope, for its own tenant, moves.
+    await expect(board.hostFor().importCursorLocal(t, c, at)).resolves.toMatchObject({ mode: 'skip', replayId: at.replayId });
   });
 
   it('a deployment that imports nothing still refuses a scope it does not serve, before saying so', async () => {
@@ -431,6 +505,29 @@ describe('a producer deployment that predates the cross-vertical routes (#1705 P
         expect(e.message).toMatch(said);
       }
       expect(old.paths).toEqual(['/internal/import-state', '/internal/import-events']);
+    });
+
+    // #1705 PR 3: the lever on an old consumer deployment. A 501 either way, and "nothing moved"
+    // is true, because the route never ran. Never a move reported as made.
+    it(`${era} consumer: import-cursor answers 501, and the watermark holds`, async () => {
+      const old = deployment(env.BOARD_SCOPE, boardImportMod, BOARD_OWNER, era);
+      const said = era === 'routes-predate' ? /predates cross-vertical events/ : /cannot move an import watermark.*redeploy it/;
+      const before = (await board.client.importState({ tenantId: t, scopeId: c })).cursors;
+      const e = (await old.client
+        .importCursorMove({
+          tenantId: t,
+          scopeId: c,
+          at: {
+            move: { mode: 'skip', from: CRM_VERTICAL, through: 'now', acknowledge: 'skip-events', reason: 'skew' },
+            source: { vertical: CRM_VERTICAL, scopeId: p },
+            replayId: ulid(),
+          },
+        })
+        .then(() => null, (err: unknown) => err)) as ControlPlaneError;
+      expect(e).toBeInstanceOf(ControlPlaneError);
+      expect(e.status).toBe(501);
+      expect(e.message).toMatch(said);
+      expect((await board.client.importState({ tenantId: t, scopeId: c })).cursors).toEqual(before);
     });
   }
 
@@ -682,5 +779,82 @@ describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 P
     // The twin: the real producer, under its own tenant, is resolved and its consumers asked for.
     await kick(coalescer(env.KICK_REAL, t, p), t, p);
     expect((await lines(p)).filter((l) => l.startsWith('candidates:'))).toEqual([`candidates:${p}:${CRM_VERTICAL}`]);
+  });
+});
+
+/**
+ * #1705 PR 3 on workerd: a replay's archive, clear and watermark are ONE `transactionSync` in the
+ * consumer's Durable Object. A failure injected at the last statement (a trigger refusing the
+ * watermark's delete) leaves the journal, the deliveries and the watermark as they were, and
+ * nothing in `_substrat_import_replays`. The twin: with the trigger gone, the replay moves.
+ */
+describe('adapter-cloudflare (workerd): the replay is atomic (#1705 PR 3)', () => {
+  it('a failure mid-move leaves nothing half-moved', async () => {
+    await warmControlPlane(env.VE_CONTROL_PLANE);
+    const secretBox = webCryptoSecretBox('test-key', new Uint8Array(32).fill(7));
+    const producer = new CloudflareScopeHost({ scope: env.CRM_SCOPE, controlPlane: env.VE_CONTROL_PLANE, secretBox });
+    producer.registerModule(crmExportMod);
+    const consumer = new CloudflareScopeHost({ scope: env.BOARD_SCOPE, controlPlane: env.VE_CONTROL_PLANE, secretBox });
+    consumer.registerModule(boardImportMod);
+    const staff = platformActorId.parse(ulid());
+    const writer = principalId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    await producer.admin.createTenant(staff, { id: t, slug: `ve-atomic-${t.toLowerCase()}`, name: 'Atomic' });
+    await producer.admin.grantEntitlement(staff, t, 'crm-export');
+    await producer.admin.grantEntitlement(staff, t, 'board-import');
+    const install = async (host: CloudflareScopeHost, vertical: string) => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical });
+      await host.admin.activateScope(staff, t, s);
+      return s;
+    };
+    const p = await install(producer, CRM_VERTICAL);
+    const c = await install(consumer, BOARD_VERTICAL);
+    await producer.admin.grant(staff, { principalId: writer, permission: key('customer:write'), node: { tenantId: t, scopeId: p }, grantedBy: writer });
+    await (await producer.getScope(writer, t, p)).invoke('crm/create', { name: 'Kept' });
+    const hostOf = (s: ScopeId) => (s === p ? producer : consumer);
+    await runPlatformSweep(consumer, {
+      actor: staff,
+      fetch: (async () => new Response('unused')) as FetchLike,
+      sweepers: {},
+      drainRetries: false,
+      gcSnapshots: false,
+      reconcileMigrations: false,
+      runSchedules: false,
+      crossVertical: {
+        reach: {
+          candidates: (scopes) => scopes.filter((s) => s.tenantId === t),
+          importState: (tt, s) => hostOf(s).admin.importState(staff, tt, s),
+          readExports: (tt, s, input) => hostOf(s).admin.readExportedEvents(staff, tt, s, input),
+          deliver: (tt, s, batch) => hostOf(s).deliverToPeer(tt, s, batch),
+        },
+      },
+    });
+    const stub = env.BOARD_SCOPE.get(env.BOARD_SCOPE.idFromName(c));
+    const snapshot = () =>
+      runInDurableObject(stub, async (_i, state) => {
+        const sql = state.storage.sql;
+        return {
+          imports: sql.exec('SELECT event_id FROM _substrat_imports ORDER BY event_id').toArray(),
+          deliveries: sql.exec('SELECT event_id, consumer_module FROM _substrat_deliveries ORDER BY event_id').toArray(),
+          cursors: sql.exec('SELECT source_scope_id, cursor FROM _substrat_import_cursors').toArray(),
+          replays: sql.exec('SELECT COUNT(*) AS n FROM _substrat_import_replays').toArray()[0],
+        };
+      });
+    const before = await snapshot();
+    expect(before.imports).toHaveLength(1);
+    await runInDurableObject(stub, async (_i, state) => {
+      state.storage.sql.exec(
+        `CREATE TRIGGER injected BEFORE DELETE ON _substrat_import_cursors BEGIN SELECT RAISE(ABORT, 'injected failure'); END;`,
+      );
+    });
+    const move = { mode: 'replay', from: CRM_VERTICAL, after: null, acknowledge: 'rerun-handlers', reason: 'atomicity' } as const;
+    await expect(consumer.admin.moveImportCursor(staff, t, c, move)).rejects.toThrow(/injected failure/);
+    expect(await snapshot()).toEqual(before);
+    await runInDurableObject(stub, async (_i, state) => {
+      state.storage.sql.exec('DROP TRIGGER injected');
+    });
+    await expect(consumer.admin.moveImportCursor(staff, t, c, move)).resolves.toMatchObject({ archived: { journal: 1, deliveries: 1 } });
+    expect(await snapshot()).toMatchObject({ imports: [], deliveries: [], cursors: [], replays: { n: 2 } });
   });
 });

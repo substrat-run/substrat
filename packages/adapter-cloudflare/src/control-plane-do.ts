@@ -10,12 +10,26 @@ import {
   SWEEP_RUN_RETENTION_DAYS,
   SWEEP_RUNS_INTENT_INDEX,
   sweepRunsIntentHasKind,
+  SYSTEM_SWITCHES_BACKFILL_SQL,
+  SYSTEM_SWITCHES_DDL,
+  forgetSystemSwitchesOf,
+  listSystemSwitchRecords,
+  recordSystemSwitchedOff,
+  recordSystemSwitchedOn,
+  restoreSystemSwitchRecord,
+  switchedOffModulesOf,
+  systemSwitchRecordsOf,
+  systemSwitchesTableExists,
+  type SystemSwitchRecordFilter,
+  type SystemSwitchRecordPrior,
+  type SystemSwitchRecordRow,
+  type SystemSwitchRecordWrite,
   MODEL_USAGE_RETENTION_DAYS,
   isPrimaryScope,
   resolveVerticalInstanceFrom,
   type ImpersonationRow,
 } from '@substrat-run/kernel';
-import { splitSqlStatements } from './scope-do.js';
+import { splitSqlStatements, switchSqlOver } from './scope-do.js';
 import type {
   AdminLogEntry,
   ListPage,
@@ -892,6 +906,7 @@ const DIRECTORY_DDL = `
     PRIMARY KEY (scope_id, subject_id)
   );
   ${IMPERSONATION_DDL}
+  ${SYSTEM_SWITCHES_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_admin_log (
     id TEXT PRIMARY KEY,
     actor TEXT NOT NULL,
@@ -1049,14 +1064,39 @@ const SCOPE_COLUMNS_ADDED = [
 
 export class ControlPlaneDO extends DurableObject {
   private readonly sql: SqlStorage;
+  /** The directory's store as the kernel's SQL handle — the switch record's helpers (#1674). */
+  private readonly kernelSql: ReturnType<typeof switchSqlOver>;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
     this.sql = ctx.storage.sql;
+    this.kernelSql = switchSqlOver(this.sql);
+    this.applyDirectorySchema();
+  }
+
+  /**
+   * The DDL, then the migrations for a directory that predates part of it. Run on every
+   * construction and after a directory restore, which may land a dump from before a table.
+   *
+   * The schedule switch's record (#1674) is backfilled from the admin log on a run that
+   * creates its table, and its table is created in the SAME transaction as the backfill
+   * (Copilot review): the gate is "the table does not exist yet", so a table committed ahead
+   * of a backfill that then failed would read as already migrated on every later run. On
+   * such a run its statements are held back from the loop below and run with the backfill.
+   */
+  private applyDirectorySchema(): void {
+    const switchRecordIsNew = !systemSwitchesTableExists(this.kernelSql);
     for (const stmt of splitSqlStatements(DIRECTORY_DDL)) {
+      if (switchRecordIsNew && stmt.includes('_substrat_system_switches')) continue;
       this.sql.exec(stmt);
     }
     this.ensureDirectoryColumns();
+    if (switchRecordIsNew) {
+      this.ctx.storage.transactionSync(() => {
+        for (const stmt of splitSqlStatements(SYSTEM_SWITCHES_DDL)) this.sql.exec(stmt);
+        this.sql.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      });
+    }
   }
 
   /**
@@ -1353,8 +1393,7 @@ export class ControlPlaneDO extends DurableObject {
     // Outside the transaction, like the constructor's own path: these are idempotent
     // schema assertions, and an ALTER that has to be tolerated (duplicate column) must
     // not take the restore's data down with it.
-    for (const stmt of splitSqlStatements(DIRECTORY_DDL)) this.sql.exec(stmt);
-    this.ensureDirectoryColumns();
+    this.applyDirectorySchema();
   }
 
   // -- tenant registry (control-plane.md §4.1) --------------------------------
@@ -1466,6 +1505,7 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_roles', // operator-defined roles
       '_substrat_entitlements', // per-tenant SKU flags
       'orgs', // K-22 org records
+      '_substrat_system_switches', // #1674: the schedule switch's record, per scope
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
@@ -1969,25 +2009,30 @@ export class ControlPlaneDO extends DurableObject {
           `(allowed from: ${from.join('|')})`,
       };
     }
-    // Stamp/clear archived_at so the reap sweep can age scopes. Entering `archived`
-    // records when; `unarchive` (→ active, a restore per §4.2) clears it so a later
-    // re-archive dates from the new event. `reaped` keeps it — it is terminal history.
-    if (to === 'archived') {
-      this.sql.exec(
-        'UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?',
-        to,
-        new Date().toISOString(),
-        scopeId,
-      );
-    } else if (to === 'active') {
-      this.sql.exec(
-        'UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?',
-        to,
-        scopeId,
-      );
-    } else {
-      this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
-    }
+    // One transaction: the status and — on a reap — the scope's switch records (#1674).
+    // Reaped is terminal, so a cleanup that failed after the flip could never be retried.
+    this.ctx.storage.transactionSync(() => {
+      // Stamp/clear archived_at so the reap sweep can age scopes. Entering `archived`
+      // records when; `unarchive` (→ active, a restore per §4.2) clears it so a later
+      // re-archive dates from the new event. `reaped` keeps it — it is terminal history.
+      if (to === 'archived') {
+        this.sql.exec(
+          'UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?',
+          to,
+          new Date().toISOString(),
+          scopeId,
+        );
+      } else if (to === 'active') {
+        this.sql.exec(
+          'UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?',
+          to,
+          scopeId,
+        );
+      } else {
+        this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
+      }
+      if (to === 'reaped') forgetSystemSwitchesOf(this.kernelSql, scopeId);
+    });
     return { ok: true, status: row.status, vertical: row.vertical };
   }
 
@@ -2510,7 +2555,7 @@ export class ControlPlaneDO extends DurableObject {
    * the field is that it is a receipt. Marked optimistically it would silence the sweep
    * for a repair that failed, which is the one outcome that must keep being retried.
    */
-  markScopeProvisioned(scopeId: string, versionId: string): void {
+  markScopeProvisioned(scopeId: string, versionId: string | null): void {
     this.sql.exec(
       'UPDATE scopes SET provisioned_version_id = ? WHERE scope_id = ?',
       versionId, scopeId,
@@ -2524,6 +2569,7 @@ export class ControlPlaneDO extends DurableObject {
    */
   deleteScopeDirectory(scopeId: string): void {
     this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
+    forgetSystemSwitchesOf(this.kernelSql, scopeId);
     this.sql.exec('DELETE FROM scopes WHERE scope_id = ?', scopeId);
   }
 
@@ -3253,6 +3299,41 @@ export class ControlPlaneDO extends DurableObject {
       row.grantedBy,
       row.grantedAt,
     );
+  }
+
+  // -- the schedule switch's record (#1674) — `system-switch-record.ts` is the whole rule ---
+
+  /** OFF's write, after the scope's switch held. */
+  recordSystemSwitchedOff(row: SystemSwitchRecordWrite): void {
+    recordSystemSwitchedOff(this.kernelSql, row);
+  }
+
+  /** ON's write, before the scope moves. Answers the row as it was, for a failed ON to restore. */
+  recordSystemSwitchedOn(row: SystemSwitchRecordWrite): SystemSwitchRecordPrior {
+    return recordSystemSwitchedOn(this.kernelSql, row);
+  }
+
+  /** Put a row back as `recordSystemSwitchedOn` found it — the ON that followed it failed. */
+  restoreSystemSwitchRecord(
+    key: { tenantId: string; scopeId: string; moduleId: string; operationId: string },
+    prior: SystemSwitchRecordPrior,
+  ): void {
+    restoreSystemSwitchRecord(this.kernelSql, key, prior);
+  }
+
+  /** The fleet read. */
+  listSystemSwitches(filter?: SystemSwitchRecordFilter): SystemSwitchRecordRow[] {
+    return listSystemSwitchRecords(this.kernelSql, filter);
+  }
+
+  /** One scope's recorded positions, by module — the status read's `recorded` join. */
+  systemSwitchRecordsOf(tenantId: string, scopeId: string): [string, 'on' | 'off'][] {
+    return [...systemSwitchRecordsOf(this.kernelSql, tenantId, scopeId)];
+  }
+
+  /** The modules a re-assert switches back off on one scope. */
+  switchedOffModulesOf(tenantId: string, scopeId: string): string[] {
+    return switchedOffModulesOf(this.kernelSql, tenantId, scopeId);
   }
 
   /** The tenant's LIVE connection grants (#592) — the provision/reconcile gather read. */

@@ -258,6 +258,26 @@ export interface EmittedModel {
    * where absence honestly says "it has not declared any."
    */
   readonly lifecycles?: Record<string, EmittedLifecycle>;
+  /**
+   * The events this module lets another vertical receive (#1705 PR 3, D-22), keyed by type,
+   * each with its payload as JSON Schema. Absent when the module exports nothing, so a model
+   * that exports nothing is unchanged by the field's existence.
+   *
+   * Here, in the checked-in artifact, because an exported payload is a contract with ANOTHER
+   * team's deployed code. `lint:model --check` holds the artifact to the declaration, and
+   * `lint:export-schemas` compares it with the base branch's: at an unchanged schemaVersion a
+   * field removed, retyped, newly required or no longer required is refused, because a consumer
+   * already parsing that version breaks on it (K-39).
+   */
+  readonly exports?: Record<string, EmittedExport>;
+}
+
+/** One exported event type in the model (#1705 PR 3). */
+export interface EmittedExport {
+  readonly schemaVersion: number;
+  readonly readPermission: string;
+  /** The payload as JSON Schema (`z.toJSONSchema` output, `$schema` dropped). Carried opaque. */
+  readonly payload: Record<string, unknown>;
 }
 
 /**
@@ -293,10 +313,17 @@ export const emittedEntity = z.object({
   erasable: z.array(z.string()).optional(),
 });
 
+export const emittedExport = z.object({
+  schemaVersion: z.number().int().positive(),
+  readPermission: z.string().min(1),
+  payload: z.record(z.string(), z.unknown()),
+});
+
 export const emittedModel = z.object({
   version: z.string().min(1).optional(),
   entities: z.record(z.string(), emittedEntity),
   lifecycles: z.record(z.string(), emittedLifecycle).optional(),
+  exports: z.record(z.string(), emittedExport).optional(),
 });
 
 /**
@@ -316,6 +343,12 @@ export function emitModel<T extends Record<string, EntityDef>>(
      * declares no version emits no claim about one.
      */
     readonly version?: string;
+    /**
+     * The module's exported events with their payload schemas (#1705 PR 3), as
+     * `exportedEventSchemasOf(operations, eventsExportedBy(...))` builds them. Rendered sorted,
+     * and omitted when empty.
+     */
+    readonly exports?: readonly ({ type: string } & EmittedExport)[];
   } = {},
 ): EmittedModel {
   if (options.version !== undefined && options.version.length === 0) {
@@ -352,11 +385,17 @@ export function emitModel<T extends Record<string, EntityDef>>(
       }
     }
   }
+  const exports: Record<string, EmittedExport> = {};
+  for (const e of [...(options.exports ?? [])].sort((a, b) => a.type.localeCompare(b.type))) {
+    if (e.type in exports) throw new Error(`model: '${e.type}' is exported twice`);
+    exports[e.type] = { schemaVersion: e.schemaVersion, readPermission: e.readPermission, payload: e.payload };
+  }
   return {
     // First, so a reader of the checked-in artifact meets it before the entities.
     ...(options.version !== undefined ? { version: options.version } : {}),
     entities: out,
     ...(lifecycles && Object.keys(lifecycles).length ? { lifecycles } : {}),
+    ...(Object.keys(exports).length ? { exports } : {}),
   };
 }
 

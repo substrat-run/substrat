@@ -8,8 +8,12 @@
  * (§5), so a builder never types their own prefix. Only admitted versions promote; a changed
  * digest is refused without acknowledgement (the two checkpoints), surfaced as a 4xx here —
  * re-run with `--ack-permissions` / `--ack-migrations` after reading the two diffs it prints.
+ *
+ * #1705 PR 3: a promote that drops or re-versions an exported event an installed app imports
+ * is refused too (409), and the refusal lists the apps it would break: the caller's own tenant's
+ * by name, any other tenant only as a count. `--ack-export-break` passes it once that is read.
  */
-import type { MigrationDiff, MigrationEntry, PermissionRegistry } from '@substrat-run/contracts';
+import type { ExportBreak, MigrationDiff, MigrationEntry, PermissionRegistry } from '@substrat-run/contracts';
 import { warnIfStale } from './version.js';
 import { parseJsonBody, readAllEntries } from './http.js';
 import { failureMessage, getJson } from './problem.js';
@@ -20,7 +24,24 @@ export interface PromoteOptions {
   slug: string;
   channel: string;
   versionId: string;
-  acknowledge?: { permissionChange?: boolean; migrationChange?: boolean };
+  acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean };
+}
+
+/** The installed apps a promote breaks (#1705 PR 3), as the control plane lists them to this caller. */
+export interface ExportBreaks {
+  affected: ExportBreak[];
+  otherTenants?: number;
+}
+
+/** The listing a refused (or acknowledged) export break carries, one line per affected app. */
+export function exportBreakLines(b: ExportBreaks): string[] {
+  const lines = b.affected.map(
+    (r) =>
+      `  ${r.vertical} (scope ${r.scopeId}) imports ${r.type} v${r.schemaVersion} — ` +
+      (r.incoming === null ? 'this version no longer exports it' : `this version exports v${r.incoming}`),
+  );
+  if (b.otherTenants) lines.push(`  …and apps in ${b.otherTenants} other tenant(s)`);
+  return lines;
 }
 
 /**
@@ -42,6 +63,8 @@ export interface PromoteResult {
    *  only tenants the caller may see (a builder reads its own tenant's directory rows and no
    *  one else's); `otherTenants` counts the rest of the fleet the sweep also covered. */
   storeBackfill?: { minted: MintedStore[]; otherTenants?: number; error?: string };
+  /** Present when an acknowledged export break reached installed apps (#1705 PR 3). */
+  exportBreaks?: ExportBreaks;
 }
 
 export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
@@ -60,16 +83,30 @@ export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
   // A refused promote is exactly where the problem document earns its keep: the two
   // checkpoints answer 4xx with the digests that need acknowledging (#971) — and, since
   // #1677, with the two diffs those digests stand for, so `--ack-*` is an informed answer.
+  // An export-break refusal (#1705 PR 3) carries its own listing of the apps it breaks.
   if (!res.ok) {
+    let parsed: { exportBreaks?: ExportBreaks | null; exportBreaksUnavailable?: string } = {};
+    try {
+      parsed = JSON.parse(body) as typeof parsed;
+    } catch {
+      // Not JSON: the failure message below carries the body as it is.
+    }
+    const listing = parsed.exportBreaks
+      ? `\n${exportBreakLines(parsed.exportBreaks).join('\n')}\n(re-run with --ack-export-break once read)`
+      : parsed.exportBreaksUnavailable
+        ? `\n  (${parsed.exportBreaksUnavailable}; re-run with --ack-export-break to promote anyway)`
+        : '';
     const message = failureMessage('promote failed', res.status, body);
-    if (!message.includes(NEEDS_ACK)) throw new Error(message);
+    if (!message.includes(NEEDS_ACK)) throw new Error(message + listing);
     const lines = await explainRefusal(opts, message.includes('changes migrations'));
-    throw new Error(`${message}\n\n${lines.join('\n')}`);
+    throw new Error(`${message}${listing}\n\n${lines.join('\n')}`);
   }
   return parseJsonBody<PromoteResult>(body, url);
 }
 
-/** What both digest refusals say (`… — acknowledge it explicitly to promote`). */
+/** What both digest refusals say (`… — acknowledge it explicitly to promote`). Case matters:
+ *  the export-break refusal says "Acknowledge it explicitly (exportBreak)", and it is answered
+ *  by its own listing, not by the digest diffs. */
 const NEEDS_ACK = 'acknowledge it explicitly';
 
 /**

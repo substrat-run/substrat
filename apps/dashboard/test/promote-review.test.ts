@@ -7,6 +7,7 @@ import {
   planMigration,
   planPermission,
   promoteWithCheckpoint,
+  readyToPromote,
   type Acks,
   type Checkpoint,
   type PromoteReviewWire,
@@ -496,5 +497,106 @@ describe('the migration section from the review (#1677)', () => {
     expect(d.shown).toHaveLength(1);
     expect(d.shown[0]!.migration).toEqual({ digests: null, sql: null, enforced: false });
     expect(g.sent).toEqual([{ migrationChange: true }]);
+  });
+});
+
+describe('the export-break acknowledgement (#1705 PR 3)', () => {
+  const listing = { affected: [{ scopeId: 's1', vertical: 'acme/board', type: 'crm.a', schemaVersion: 1, incoming: null }], otherTenants: 2 };
+  const BREAK_REFUSAL =
+    'promotion drops or re-versions 1 exported event type(s) that 3 installed app(s) in 3 tenant(s) import — their edges would stop delivering it. Acknowledge it explicitly (exportBreak) to promote';
+  /** The registry's gate with the export-break refusal, which fires after the digests do. */
+  const breakGate = (breaks: boolean) => {
+    const sent: Array<Acks | undefined> = [];
+    return {
+      sent,
+      promote: async (ack: Acks | undefined) => {
+        sent.push(ack);
+        if (breaks && !ack?.exportBreak) throw new Error(BREAK_REFUSAL);
+      },
+    };
+  };
+
+  it('a review that names broken apps asks up front, and sends exportBreak only once ticked', async () => {
+    const g = breakGate(true);
+    const d = dialog({ exportBreak: true });
+    const outcome = await promoteWithCheckpoint({ review: async () => review({ exportBreaks: listing }), promote: g.promote, ask: d.ask });
+    expect(outcome).toBe('promoted');
+    expect(d.shown[0]?.exportBreak).toEqual({ kind: 'listing', listing });
+    expect(g.sent).toEqual([{ exportBreak: true }]);
+  });
+
+  it('an unticked box is no acknowledgement: nothing is sent', async () => {
+    const g = breakGate(true);
+    const d = dialog({});
+    // The dialog answered, but without the box; the flow stops rather than promoting.
+    expect(await promoteWithCheckpoint({ review: async () => review({ exportBreaks: listing }), promote: g.promote, ask: d.ask })).toBe(
+      'cancelled',
+    );
+    expect(g.sent).toEqual([]);
+  });
+
+  it('a refusal the review did not foresee is shown in the gate\'s own counted words, then asked', async () => {
+    const g = breakGate(true);
+    const d = dialog({ exportBreak: true });
+    expect(await promoteWithCheckpoint({ review: async () => review(), promote: g.promote, ask: d.ask })).toBe('promoted');
+    expect(d.shown[0]?.exportBreak).toEqual({ kind: 'server-reported', summary: BREAK_REFUSAL });
+    expect(g.sent).toEqual([undefined, { exportBreak: true }]);
+  });
+
+  it('classifies the export-break refusal, and a flag for a section never shown counts for nothing', () => {
+    expect(classifyRefusal(`HTTP 409: ${BREAK_REFUSAL}`)).toEqual({ kind: 'export-break', summary: BREAK_REFUSAL });
+    const shownNothing: Checkpoint = { permission: null, migration: null, exportBreak: null, acknowledged: {} };
+    expect(honour(shownNothing, { exportBreak: true })).toEqual({});
+  });
+});
+
+/**
+ * All three kinds at once (#1677 × #1705 PR 3): a permission change, migrations the review
+ * shows, and an export break. The two features met in one merge, and the property is that
+ * none of their clauses was dropped there: nothing promotes until every kind is ticked.
+ */
+describe('a review that needs all three acknowledgements', () => {
+  const listing = { affected: [{ scopeId: 's1', vertical: 'acme/board', type: 'crm.a', schemaVersion: 1, incoming: null }] };
+  const allThree = review({
+    incomingRegistry: widened.incomingRegistry,
+    migrations: { baseline: 'version', added: [{ moduleId: 'desk', version: '0002', sql: 'ALTER TABLE t ADD c TEXT;' }], changed: [], total: 1, truncated: false },
+    exportBreaks: listing,
+  });
+  const EVERY = { permissionChange: true, migrationChange: true, exportBreak: true } as const;
+
+  it('readyToPromote: true only with every outstanding kind ticked — each of the seven partial ticks is not', () => {
+    const left = { permission: true, migration: true, exportBreak: true };
+    const kinds = ['permission', 'migration', 'exportBreak'] as const;
+    for (let mask = 0; mask < 8; mask++) {
+      const ticked = { permission: !!(mask & 1), migration: !!(mask & 2), exportBreak: !!(mask & 4) };
+      expect(readyToPromote(left, ticked), JSON.stringify(ticked)).toBe(mask === 7);
+    }
+    // And a kind that is not outstanding needs no tick.
+    for (const k of kinds) {
+      expect(readyToPromote({ ...left, [k]: false }, { permission: k !== 'permission', migration: k !== 'migration', exportBreak: k !== 'exportBreak' })).toBe(true);
+    }
+  });
+
+  it('the flow asks all three in one dialog, and any two of them promote nothing', async () => {
+    for (const missing of ['permissionChange', 'migrationChange', 'exportBreak'] as const) {
+      const g = gate({ permission: true });
+      const { [missing]: _left, ...two } = EVERY;
+      const d = dialog(two);
+      expect(await promoteWithCheckpoint({ review: async () => allThree, promote: g.promote, ask: d.ask }), missing).toBe('cancelled');
+      expect(d.shown[0]).toMatchObject({
+        permission: { kind: 'diff' },
+        migration: { enforced: false },
+        exportBreak: { kind: 'listing', listing },
+      });
+      expect(g.sent).toEqual([]);
+    }
+  });
+
+  it('and all three ticked promote once, carrying exactly the three flags', async () => {
+    const g = gate({ permission: true });
+    const d = dialog(EVERY);
+    expect(await promoteWithCheckpoint({ review: async () => allThree, promote: g.promote, ask: d.ask })).toBe('promoted');
+    expect(d.shown).toHaveLength(1);
+    expect(g.sent).toEqual([EVERY]);
   });
 });

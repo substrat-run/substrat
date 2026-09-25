@@ -247,7 +247,15 @@ describe('permission-diff --root — the standalone permission checkpoint', () =
  * #1705: both ends of a cross-vertical edge, as two modules of one project declare them.
  * `exports` is the flow out, `consumes` with `from` the flow in.
  */
-async function edgeProject(exportKey = 'acme:read'): Promise<string> {
+/** A model.json carrying the given exported types' payload schemas (#1705 PR 3, D-22). */
+function modelWithExports(types: { type: string; schemaVersion: number }[]): string {
+	const exports = Object.fromEntries(
+		types.map((t) => [t.type, { schemaVersion: t.schemaVersion, readPermission: 'acme:read', payload: { type: 'object', properties: {} } }]),
+	);
+	return JSON.stringify({ entities: {}, exports }, null, 2);
+}
+
+async function edgeProject(exportKey = 'acme:read', model: string | null = modelWithExports([{ type: 'acme.thing-made', schemaVersion: 2 }])): Promise<string> {
 	const dir = join(await mkdtemp(join(tmpdir(), 'permission-diff-edge-')), 'acme');
 	await mkdir(join(dir, 'src'), { recursive: true });
 	await writeFile(
@@ -265,6 +273,7 @@ async function edgeProject(exportKey = 'acme:read'): Promise<string> {
 			'  roles: [{ key: "staff", permissions: ["acme:read"], source: "acme" }],\n' +
 			'};\n',
 	);
+	if (model !== null) await writeFile(join(dir, 'model.json'), model);
 	return dir;
 }
 
@@ -286,8 +295,30 @@ describe('permission-diff — the cross-vertical edge (#1705)', () => {
 		const src = join(dir, 'src/provision.mjs');
 		const code = await readFile(src, 'utf8');
 		await writeFile(src, code.replace('exports: [', 'exports: [{ type: "acme.secret-kept", schemaVersion: 1, readPermission: "acme:read" }, '));
+		await writeFile(
+			join(dir, 'model.json'),
+			modelWithExports([
+				{ type: 'acme.thing-made', schemaVersion: 2 },
+				{ type: 'acme.secret-kept', schemaVersion: 1 },
+			]),
+		);
 		const drift = await tool(['tools/permission-diff.mts', '--root', dir, '--check']);
 		expect(drift.code).toBe(1);
+	}, 60_000);
+
+	it('an export whose payload schema the model does not carry is exit 2: D-22 would have nothing to judge (#1705 PR 3)', async () => {
+		// No model.json at all.
+		const bare = await edgeProject('acme:read', null);
+		const r = await tool(['tools/permission-diff.mts', '--root', bare]);
+		expect(r.code).toBe(2);
+		expect(r.out).toContain('whose payload schema its model.json does not carry');
+		expect(r.out).toContain('acme.thing-made v2');
+		// A model that carries the type at another version is no better.
+		const stale = await edgeProject('acme:read', modelWithExports([{ type: 'acme.thing-made', schemaVersion: 1 }]));
+		expect((await tool(['tools/permission-diff.mts', '--root', stale])).code).toBe(2);
+		// The twin: carried at the exported version, it renders.
+		const carried = await edgeProject();
+		expect((await tool(['tools/permission-diff.mts', '--root', carried])).code).toBe(0);
 	}, 60_000);
 
 	it('an export gated on a key nobody declares is exit 2: that edge could never be granted', async () => {

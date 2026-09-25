@@ -70,6 +70,9 @@ import {
   systemScheduleEntry,
   exportedBatch,
   importResult,
+  importCursorMoved,
+  type ImportCursorMoveAt,
+  type ImportCursorMoved,
   importState,
   type ExportReadInput,
   type ExportedBatch,
@@ -1242,6 +1245,18 @@ export class VerticalClient {
   }
 
   /**
+   * The replay lever's far end (#1705 PR 3): move the watermark of the consumer scope this
+   * deployment serves. The same skew rule, plus the write's one difference: a JSON 200 of the
+   * wrong shape may follow a move that happened, so the 502 says to read the edge before
+   * pulling the lever again. A 404 or an SPA shell proves the route is absent, so nothing moved.
+   */
+  async importCursorMove(input: { tenantId: TenantId; scopeId: ScopeId; at: ImportCursorMoveAt }): Promise<ImportCursorMoved> {
+    return this.crossVerticalCall('import-cursor', '/internal/import-cursor', input.scopeId, importCursorMoved, input, {
+      write: true,
+    });
+  }
+
+  /**
    * The three cross-vertical verbs' one transport and skew rule (see `exportedEvents`): a POST
    * of `body` when there is one, a GET otherwise.
    */
@@ -1251,6 +1266,7 @@ export class VerticalClient {
     scopeId: ScopeId,
     schema: { safeParse(v: unknown): { success: true; data: T } | { success: false } },
     body?: unknown,
+    opts: { write?: boolean } = {},
   ): Promise<T> {
     const predates = (): ControlPlaneError =>
       new ControlPlaneError(
@@ -1279,7 +1295,11 @@ export class VerticalClient {
     }
     const parsed = schema.safeParse(raw);
     if (!parsed.success) {
-      throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape for scope ${scopeId}.`);
+      throw new ControlPlaneError(
+        502,
+        `vertical answered ${verb} with an unexpected shape for scope ${scopeId}.` +
+          (opts.write ? ' The write may have taken effect: read the edge before retrying.' : ''),
+      );
     }
     return parsed.data;
   }

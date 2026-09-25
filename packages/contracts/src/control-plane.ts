@@ -145,11 +145,20 @@ export const adminAction = z.enum([
   // a required `reason`: the row answers who turned a tenant's schedules off, and why.
   'revokeFromSystem',
   'restoreToSystem',
+  // #1674 — the directory's record of a switched-off module put back into a scope that lost
+  // it (a wipe, a restore of an older dump). Its own action, not a `revokeFromSystem`, so the
+  // status read's who/why join still names the operator who pulled the switch.
+  'reassertSystemSwitch',
   // #1706 — the same switch for a PEER vertical on one scope: a tenant turning another
   // app's calls into this one off, and back on, without a push. Same reason-carrying
   // pair, same intent-then-outcome rows.
   'revokeFromPeer',
   'restoreToPeer',
+  // #1705 PR 3 — the replay lever: a consumer's watermark on one cross-vertical edge moved
+  // by hand (replay from a point, or skip to now). A replay runs handlers again, so the row
+  // answers who did that, when and why. It carries the `replayId` that names the journal
+  // rows the replay moved aside into `_substrat_import_replays`.
+  'moveImportCursor',
   // #40 — the directory's own disaster-recovery write: replace THE DIRECTORY (tenants,
   // scopes, hostnames, verticals, identities) with a stored dump. Carries no tenant,
   // because its blast radius is every tenant. The entry lands in the log it just
