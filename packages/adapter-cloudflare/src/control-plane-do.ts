@@ -1912,6 +1912,9 @@ export class ControlPlaneDO extends DurableObject {
    * illegal one), flip the status. Returns the previous status AND the scope's
    * vertical — both for the audit entry, sparing the coordinator a read
    * round-trip. `action` rides along only to name the illegal-transition message.
+   *
+   * Kept for a coordinator from before #1718, which still calls it. The current one
+   * calls `transitionScopeOrRefusal` instead, because a throw from here reaches it untyped.
    */
   transitionScope(
     tenantId: string,
@@ -1920,19 +1923,40 @@ export class ControlPlaneDO extends DurableObject {
     to: ScopeStatus,
     action: string,
   ): { status: string; vertical: string | null } {
+    const outcome = this.transitionScopeOrRefusal(tenantId, scopeId, from, to, action);
+    if (!outcome.ok) throw new Error(outcome.message);
+    return { status: outcome.status, vertical: outcome.vertical };
+  }
+
+  /**
+   * The same transition, answering its refusal as DATA (#1718) — for the reason
+   * `scopeAccessRefusal` does. The pair check has to be answered HERE, in the same
+   * synchronous read as the write it guards: a coordinator-side pre-read cannot stand in
+   * for it, since the row can be deleted (`deleteScopeDirectory`) between the two.
+   */
+  transitionScopeOrRefusal(
+    tenantId: string,
+    scopeId: string,
+    from: string[],
+    to: ScopeStatus,
+    action: string,
+  ):
+    | { ok: true; status: string; vertical: string | null }
+    | { ok: false; code: 'not_found' | null; message: string } {
     const row = this.sql
       .exec('SELECT tenant_id, status, vertical FROM scopes WHERE scope_id = ?', scopeId)
       .toArray()[0] as { tenant_id: string; status: string; vertical: string | null } | undefined;
-    // The coordinator makes this same pair check first and throws it typed (#1718); a
-    // throw from here crosses RPC untyped. This one stays as the check the write rests on.
     if (!row || row.tenant_id !== tenantId) {
-      throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      return { ok: false, code: 'not_found', message: `unknown scope for tenant: (${tenantId}, ${scopeId})` };
     }
     if (!from.includes(row.status)) {
-      throw new Error(
-        `illegal scope transition for ${action}: ${row.status} → ${to} ` +
+      return {
+        ok: false,
+        code: null,
+        message:
+          `illegal scope transition for ${action}: ${row.status} → ${to} ` +
           `(allowed from: ${from.join('|')})`,
-      );
+      };
     }
     // Stamp/clear archived_at so the reap sweep can age scopes. Entering `archived`
     // records when; `unarchive` (→ active, a restore per §4.2) clears it so a later
@@ -1953,7 +1977,7 @@ export class ControlPlaneDO extends DurableObject {
     } else {
       this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
     }
-    return { status: row.status, vertical: row.vertical };
+    return { ok: true, status: row.status, vertical: row.vertical };
   }
 
   // -- roles (checker rule 1) -------------------------------------------------

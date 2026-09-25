@@ -492,13 +492,17 @@ interface ControlPlaneStub {
     tenantId: string,
     scopeId: string,
   ): Promise<{ code: 'not_found' | null; message: string } | null | undefined>;
-  transitionScope(
+  /** A scope lifecycle transition, its refusal answered as data (#1718). */
+  transitionScopeOrRefusal(
     tenantId: string,
     scopeId: string,
     from: string[],
     to: ScopeStatus,
     action: string,
-  ): Promise<{ status: string; vertical: string | null }>;
+  ): Promise<
+    | { ok: true; status: string; vertical: string | null }
+    | { ok: false; code: 'not_found' | null; message: string }
+  >;
   defineRole(tenantId: string, role: RoleDefinition): Promise<RoleDefinition | null>;
   listRoles(filter: { tenantId?: string; source?: string } & ListPage): Promise<RoleRow[]>;
   writeTenantTuple(
@@ -3791,12 +3795,13 @@ export class CloudflareScopeHost implements ScopeHost {
       // describes what the transition DID, not the state it left.
       afterExtra?: Record<string, unknown>,
     ) => {
-      // K-3's pair check first, HERE (#1718): the DO makes it too, but its refusal crosses
-      // RPC untyped. A record crosses intact, so the refusal is typed on this side.
-      if (!(await this.cp.getScopeRecord(tenantId, scopeId))) {
-        throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      // The DO answers a refusal as data (#1718): a throw from there would arrive here
+      // flattened, its code gone. The pair check stays in the DO, in the same read as the
+      // write, so a row deleted concurrently is still refused `not_found`.
+      const before = await this.cp.transitionScopeOrRefusal(tenantId, scopeId, from, to, action);
+      if (!before.ok) {
+        throw before.code ? substratError(before.code, before.message) : new Error(before.message);
       }
-      const before = await this.cp.transitionScope(tenantId, scopeId, from, to, action);
       // The audit target carries the scope's vertical (control-plane.md §4.4:
       // "vertical stays null until §4.2 lifecycle actions that name one"). The DO
       // returns it with the previous status, so the trail cannot disagree with
@@ -6435,10 +6440,6 @@ export class CloudflareScopeHost implements ScopeHost {
   // -- helpers --------------------------------------------------------------
 
   /**
-   * Record a staff read (K-24). `params` is a bounded summary, capped so one query
-   * cannot write an unbounded row.
-   */
-  /**
    * The getScope gate (control-plane.md §4.1/§4.2) — the pair check, then the tenant's and
    * the scope's lifecycle — thrown on THIS side of the RPC (#1718). The ControlPlaneDO
    * answers its refusal as data, because an error thrown there arrives here flattened, with
@@ -6495,6 +6496,10 @@ export class CloudflareScopeHost implements ScopeHost {
     });
   }
 
+  /**
+   * Record a staff read (K-24). `params` is a bounded summary, capped so one query
+   * cannot write an unbounded row.
+   */
   private async recordAccess(
     actor: PlatformActorId,
     method: string,

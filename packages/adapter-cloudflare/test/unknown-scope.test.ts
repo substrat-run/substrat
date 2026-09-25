@@ -143,3 +143,81 @@ describe('unknown-scope refusals are typed not_found (#1718)', () => {
     await host.close();
   });
 });
+
+/**
+ * The transition's pair check, raced (#1718 review). A coordinator-side pre-read cannot type
+ * this refusal alone: `deleteSnapshot` can remove the directory row between that read and
+ * the DO's transition. Interleaved deterministically — the control-plane stub deletes the
+ * row after a pre-read has seen it and just before forwarding the transition — so the DO's
+ * own check is the one that refuses, and the refusal must still arrive `not_found`.
+ */
+describe('a transition raced by a concurrent delete is still not_found (#1718)', () => {
+  beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
+
+  const staff = platformActorId.parse(ulid());
+  const plainHost = () =>
+    new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+
+  const world = async () => {
+    const own = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const setup = plainHost();
+    await setup.admin.createTenant(staff, { id: own, slug: `t-${own.toLowerCase()}`, name: 'T' });
+    await setup.provisionScope(staff, { tenantId: own, scopeId: s, vertical: 'raced', kind: 'preview' });
+    await setup.admin.activateScope(staff, own, s);
+    return { own, s };
+  };
+
+  /** A host whose control plane runs `beforeTransition` just ahead of the transition RPC. */
+  const racedHost = (beforeTransition: () => Promise<void>) => {
+    const real = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane'));
+    const stub = new Proxy(real, {
+      get: (target, prop) => {
+        const call = (...a: unknown[]) =>
+          (target as unknown as Record<PropertyKey, (...x: unknown[]) => unknown>)[prop]!(...a);
+        if (prop === 'transitionScopeOrRefusal') {
+          return async (...a: unknown[]) => {
+            await beforeTransition();
+            return call(...a);
+          };
+        }
+        const value = Reflect.get(target, prop) as unknown;
+        // Called ON the real stub: see the workerd note in peer-local.test.ts.
+        return typeof value === 'function' ? call : value;
+      },
+    });
+    return new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: {
+        idFromName: (name: string) => env.CONTROL_PLANE.idFromName(name),
+        get: () => stub,
+      } as unknown as typeof env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+  };
+
+  it('the row deleted between a pre-read and the transition is refused not_found', async () => {
+    const { own, s } = await world();
+    const deleter = plainHost();
+    const host = racedHost(async () => {
+      // A pre-read at this point would still pass…
+      expect(await deleter.admin.getScopeRecord(staff, own, s)).toBeDefined();
+      // …and then the row goes, before the DO transitions.
+      await deleter.deleteSnapshot(staff, own, s);
+    });
+    const error = await refusal(host.admin.suspendScope(staff, own, s));
+    expect(errorCodeOf(error)).toBe('not_found');
+    expect(error).toHaveProperty('message', `unknown scope for tenant: (${own}, ${s})`);
+  });
+
+  it('twin: the same interleaving with nothing deleted suspends the scope', async () => {
+    const { own, s } = await world();
+    const host = racedHost(async () => {});
+    await expect(host.admin.suspendScope(staff, own, s)).resolves.not.toThrow();
+    expect((await plainHost().admin.getScopeRecord(staff, own, s))?.status).toBe('suspended');
+  });
+});
