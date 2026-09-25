@@ -234,8 +234,8 @@ PRIVATE vertical's push lands ADMITTED and prod (the one serving channel) is sel
 so '--promote prod' is a complete deploy. Once a vertical is LISTED on the marketplace its
 pushes land PENDING and prod promotion + admission are a staff decision again. A promotion
 that changes the permission or migration surface is refused until the change is
-acknowledged (--ack-permissions / --ack-migrations) — read the diff it names first. For a
-non-prod environment, run the version against a copy of the data with 'substrat preview
+acknowledged (--ack-permissions / --ack-migrations) — the refusal prints the permission
+diff and each new migration's SQL; read them first. For a non-prod environment, run the version against a copy of the data with 'substrat preview
 create' — dev/staging channels were retired (#509).
 
 Auth resolves: explicit --token/SUBSTRAT_SERVICE_TOKEN → stored browser session →
