@@ -102,7 +102,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { CrossVerticalOptions, OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
-import { crossVerticalHealth, exportBreakRefusal, migrationProgress, ulid } from '@substrat-run/kernel';
+import { crossVerticalHealth, isExportBreakRefusal, migrationProgress, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
@@ -494,6 +494,22 @@ type Vars = { actor: PlatformActorId; principal: Principal };
 function outsideTenant(p: Principal, tenantId: TenantId): boolean {
   const pin = confinedTenant(p);
   return pin !== null && pin !== tenantId;
+}
+
+/**
+ * A fleet-wide report, narrowed to what a caller may see: a confined caller gets its own
+ * tenant's rows and a COUNT of the other tenants, never their ids (K-3's forced filter, held on
+ * reports that have to be computed fleet-wide). Staff (`pin === null`) get every row.
+ */
+function narrowToCaller<T extends { tenantId: string }>(
+  rows: readonly T[],
+  pin: string | null,
+): { visible: T[]; otherTenants: number } {
+  if (pin === null) return { visible: [...rows], otherTenants: 0 };
+  return {
+    visible: rows.filter((r) => r.tenantId === pin),
+    otherTenants: new Set(rows.filter((r) => r.tenantId !== pin).map((r) => r.tenantId)).size,
+  };
 }
 
 // -- request schemas ---------------------------------------------------------
@@ -4897,29 +4913,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
     }
     const { versionId, acknowledge } = promoteVersionBody.parse(await c.req.json());
-    // #1705 PR 3: the installed consumers this promotion would break (an export they import,
-    // dropped or re-versioned). Read here, where the caller is known, so the listing can be
-    // narrowed the way the store backfill below is: a confined caller sees its own tenant's
-    // apps, and the rest as a count, never another tenant's id. The host refuses the same
-    // promotion without `exportBreak` whoever calls it, and this answer only adds the listing.
-    const breaks = await admin.promotionImpact(c.get('actor'), slug, channel, versionId);
-    const breakPin = confinedTenant(p);
-    const exportBreaks =
-      breaks.length === 0
-        ? null
-        : {
-            affected: breakPin ? breaks.filter((b) => b.tenantId === breakPin) : breaks,
-            ...(breakPin && breaks.some((b) => b.tenantId !== breakPin)
-              ? { otherTenants: new Set(breaks.filter((b) => b.tenantId !== breakPin).map((b) => b.tenantId)).size }
-              : {}),
-          };
-    if (exportBreaks && !acknowledge?.exportBreak) {
-      return c.json({ error: exportBreakRefusal(breaks), exportBreaks }, 409);
-    }
+    // #1705 PR 3: the installed consumers a promotion breaks (an export they import, dropped or
+    // re-versioned). The host refuses it without `exportBreak` whoever calls, in counts only,
+    // because it does not know who is asking. This door knows, so it adds the listing, narrowed
+    // the way the store backfill below is: a confined caller sees its own tenant's apps and the
+    // rest as a count, never another tenant's id. Read only when there is something to say: on
+    // the refusal, and before an acknowledged promotion moves the channel it is measured from.
+    const breaksOf = async () => {
+      const breaks = await admin.promotionImpact(c.get('actor'), slug, channel, versionId);
+      if (breaks.length === 0) return null;
+      const { visible, otherTenants } = narrowToCaller(breaks, confinedTenant(p));
+      return { affected: visible, ...(otherTenants ? { otherTenants } : {}) };
+    };
+    const exportBreaks = acknowledge?.exportBreak ? await breaksOf() : null;
     // The blast-radius moment: refuses a changed digest without the acknowledgement,
     // and refuses a non-admitted version. Both are enforced below the seam and
     // surface as a 4xx through mapError, not a 500.
-    await admin.promoteVersion(c.get('actor'), slug, channel, versionId, acknowledge);
+    try {
+      await admin.promoteVersion(c.get('actor'), slug, channel, versionId, acknowledge);
+    } catch (err) {
+      if (!isExportBreakRefusal(err)) throw err;
+      return c.json({ error: err.message, exportBreaks: await breaksOf() }, 409);
+    }
     // The in-place serve (#286), prod only, AFTER every promote gate has passed —
     // uploading first would deploy to live scopes before the acknowledgement check.
     // A failed serve is NOT a failed promote: the channel moved (audited), old code
@@ -4963,12 +4978,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // report must not be the one place that hands them the tenant ids of everyone who
     // installed their vertical. The rest is a count, which tells them the fleet was covered
     // without naming who is in it.
-    const p2 = c.get('principal');
-    const reportPin = confinedTenant(p2);
-    const visible = reportPin ? backfill.minted.filter((m) => m.tenantId === reportPin) : backfill.minted;
-    const otherTenants = new Set(
-      backfill.minted.filter((m) => !visible.includes(m)).map((m) => m.tenantId),
-    ).size;
+    const { visible, otherTenants } = narrowToCaller(backfill.minted, confinedTenant(c.get('principal')));
     return c.json({
       ...promoted,
       // What the acknowledged break reached, so a promoter who passed `exportBreak` reads it.
@@ -6738,15 +6748,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // -- edge health (#1705 PR 3): where each cross-vertical edge of one tenant stands -
   // Read live, through the phase's own reach, so it cannot disagree with the next pass about
   // which edges exist. Staff and the tenant's own credential, tenant-pinned (the dashboard shows
-  // a tenant its own apps' edges). Builders may not: absent from BUILDER_ROUTES.
+  // a tenant its own apps' edges). Builders may not: absent from BUILDER_ROUTES. `?scopeId=`
+  // narrows it to one scope's edges, so a per-app view asks nothing about the rest.
   app.get('/tenants/:tenantId/cross-vertical/edges', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const pin = confinedTenant(c.get('principal'));
     if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const focus = c.req.query('scopeId');
     return c.json(
       await crossVerticalHealth(host, {
         actor: c.get('actor'),
         tenantId,
+        ...(focus ? { focus: scopeIdSchema.parse(focus) } : {}),
         ...(options.crossVertical ? { crossVertical: options.crossVertical } : {}),
       }),
     );

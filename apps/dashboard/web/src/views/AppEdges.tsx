@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import type { EdgeHealth, EdgeHealthReport } from '@substrat-run/contracts';
+import {
+  EDGE_STATE,
+  LEVER_EFFECT,
+  lagText,
+  leverOffered,
+  leverRequest,
+  type EdgeHealth,
+  type EdgeHealthReport,
+  type LeverMode,
+} from '@substrat-run/contracts';
 import { Button, Dialog, Input } from '@substrat-run/ui';
 import { api } from '../lib/api';
-import { EDGE_STATE, LEVER_EFFECT, lagText, leverOffered, leverRequest, type LeverKind } from '../lib/edge-health';
 import { validPeerReason } from '../lib/peer-switch';
 import { Pill, card } from '../components/ui';
 import { relativeTime } from '../lib/format';
@@ -22,38 +30,44 @@ import { relativeTime } from '../lib/format';
 export function AppEdges({ scopeId }: { scopeId: string }) {
   const [view, setView] = useState<EdgeHealthReport | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<{ edge: EdgeHealth; kind: LeverKind } | null>(null);
+  const [dialog, setDialog] = useState<{ edge: EdgeHealth; kind: LeverMode } | null>(null);
   const [reason, setReason] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const moving = useRef(false);
 
-  const load = async (): Promise<void> => {
+  /** Read the edges. `live` says whether the answer is still wanted when it lands. */
+  const load = async (live: () => boolean = () => true): Promise<void> => {
     try {
-      setView(await api.appEdges(scopeId));
-      setFailed(null);
+      const v = await api.appEdges(scopeId);
+      if (live()) {
+        setView(v);
+        setFailed(null);
+      }
     } catch (e) {
-      setView(null);
-      setFailed(e instanceof Error ? e.message : String(e));
+      if (live()) {
+        setView(null);
+        setFailed(e instanceof Error ? e.message : String(e));
+      }
     }
+  };
+  const openLever = (edge: EdgeHealth, kind: LeverMode) => {
+    setDialog({ edge, kind });
+    setReason('');
+    setAgreed(false);
+    setNotice(null);
   };
 
   useEffect(() => {
     let cancelled = false;
     setView(null);
     setFailed(null);
-    api
-      .appEdges(scopeId)
-      .then((v) => {
-        if (!cancelled) setView(v);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setFailed(e instanceof Error ? e.message : String(e));
-      });
+    void load(() => !cancelled);
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeId]);
 
   async function confirmMove() {
@@ -119,7 +133,7 @@ export function AppEdges({ scopeId }: { scopeId: string }) {
           return (
             <li key={`${edge.consumer.scopeId}:${edge.producer.vertical}`} style={{ display: 'grid', gap: 4 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                <Pill kind={badge.kind}>{badge.label}</Pill>
+                <Pill kind={badge.tone}>{badge.label}</Pill>
                 <span style={{ fontSize: 12.5 }}>
                   {into ? (
                     <>
@@ -134,12 +148,10 @@ export function AppEdges({ scopeId }: { scopeId: string }) {
                 {lag && <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>oldest waiting {lag}</span>}
                 {leverOffered(edge, scopeId) && (
                   <>
-                    <Button size="sm" variant="secondary" disabled={busy}
-                      onClick={() => { setDialog({ edge, kind: 'replay' }); setReason(''); setAgreed(false); setNotice(null); }}>
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => openLever(edge, 'replay')}>
                       Replay from the start
                     </Button>
-                    <Button size="sm" variant="secondary" disabled={busy}
-                      onClick={() => { setDialog({ edge, kind: 'skip' }); setReason(''); setAgreed(false); setNotice(null); }}>
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => openLever(edge, 'skip')}>
                       Skip to now
                     </Button>
                   </>

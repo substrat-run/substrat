@@ -1104,6 +1104,30 @@ export function verticalEventsContractSuite(
       expect(await healthOf(u, cu)).toMatchObject({ state: 'behind' });
     });
 
+    it('edge health focused on one app shows its edges into it and out of it, and nothing else', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      const focused = (focus: ScopeId) =>
+        crossVerticalHealth(fx.consumer, {
+          actor: staff,
+          tenantId: t,
+          focus,
+          crossVertical: { reach },
+          ...(fx.door ? { door: fx.door } : {}),
+        });
+      const all = await health(t);
+      // crm imports from board and board from crm: two edges in the tenant.
+      expect(all.edges).toHaveLength(2);
+      // On the board app, both touch it: board ← crm (into), crm ← board (out of).
+      const onBoard = await focused(c);
+      expect(onBoard.edges.map((e) => `${e.consumer.scopeId}:${e.producer.vertical}`).sort()).toEqual(
+        [`${c}:${CRM_VERTICAL}`, `${p}:${BOARD_VERTICAL}`].sort(),
+      );
+      // A scope that is no install at all has no edges, and asks nothing.
+      expect((await focused(scopeId.parse(ulid()))).edges).toEqual([]);
+    });
+
     it('edge health never crosses a tenant: one tenant\'s view names only its own edges', async () => {
       const t = await newTenant();
       const u = await newTenant();

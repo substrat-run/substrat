@@ -4,6 +4,15 @@ import {
   buildPermissionRegistry,
   eventsExportedBy,
   exportedEventSchemasOf,
+  EDGE_STATE,
+  LEVER_EFFECT,
+  REPLAY_EFFECT,
+  SKIP_EFFECT,
+  importCursorMove,
+  lagText,
+  leverOffered,
+  leverRequest,
+  type EdgeHealth,
   emitModel,
   emittedModel,
   z,
@@ -238,5 +247,61 @@ describe('importsOfManifestJson (#1705 PR 2)', () => {
     const out = importsOfManifestJson(json);
     expect(out.kind).toBe('unreadable');
     expect(out.kind === 'unreadable' && out.reason).toMatch(reason);
+  });
+});
+
+describe('what the console and the dashboard say about an edge (#1705 PR 3)', () => {
+  const APP = '01J0000000000000000000APP0';
+  const edge = (over: Partial<EdgeHealth>): EdgeHealth =>
+    ({
+      tenantId: '01J0000000000000000000TNT0',
+      consumer: { scopeId: APP, vertical: 'acme/board' },
+      producer: { vertical: 'acme/crm', scopeId: '01J0000000000000000000PRD0' },
+      state: 'caught-up',
+      reason: null,
+      watermark: null,
+      oldestPending: null,
+      lagMs: null,
+      unexported: [],
+      lastDelivered: null,
+      lastProblem: null,
+      ...over,
+    }) as EdgeHealth;
+
+  it('never renders an edge nobody could ask as healthy: only caught-up is green', () => {
+    expect(EDGE_STATE.unavailable.tone).toBe('danger');
+    expect(Object.entries(EDGE_STATE).filter(([, v]) => v.tone === 'success').map(([k]) => k)).toEqual(['caught-up']);
+  });
+
+  it('offers the lever only on a resolved, reachable edge INTO the viewed scope', () => {
+    expect(leverOffered(edge({}), APP)).toBe(true);
+    expect(leverOffered(edge({ consumer: { scopeId: '01J0000000000000000000OTH0' as EdgeHealth['consumer']['scopeId'], vertical: 'acme/x' } }), APP)).toBe(false);
+    expect(leverOffered(edge({ state: 'unresolved', producer: { vertical: 'acme/crm', scopeId: null } }), APP)).toBe(false);
+    expect(leverOffered(edge({ state: 'unavailable' }), APP)).toBe(false);
+  });
+
+  it("says what a lever does in the platform's own words, and sends the matching acknowledgement", () => {
+    expect(LEVER_EFFECT.replay).toBe(REPLAY_EFFECT);
+    expect(LEVER_EFFECT.replay).toContain('anything they send or call outside this app happens again');
+    expect(LEVER_EFFECT.skip).toBe(SKIP_EFFECT);
+    expect(importCursorMove.parse(leverRequest('replay', 'acme/crm', ' lost a day '))).toMatchObject({
+      mode: 'replay',
+      after: null,
+      acknowledge: 'rerun-handlers',
+      reason: 'lost a day',
+    });
+    expect(importCursorMove.parse(leverRequest('skip', 'acme/crm', 'start today'))).toMatchObject({
+      mode: 'skip',
+      through: 'now',
+      acknowledge: 'skip-events',
+    });
+  });
+
+  it('writes a lag a person can read', () => {
+    expect(lagText(null)).toBeNull();
+    expect(lagText(12_000)).toBe('12s');
+    expect(lagText(5 * 60_000)).toBe('5 min');
+    expect(lagText(3 * 3_600_000)).toBe('3 h');
+    expect(lagText(3 * 86_400_000)).toBe('3 days');
   });
 });

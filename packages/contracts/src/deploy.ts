@@ -304,26 +304,42 @@ export type ManifestImports =
   | { kind: 'imports'; rows: { from: string; type: string; schemaVersion: number }[] }
   | { kind: 'unreadable'; reason: string };
 
-export function importsOfManifestJson(manifestJson: string | null | undefined): ManifestImports {
-  if (!manifestJson) return { kind: 'none' };
+/**
+ * One registry list of a STORED manifest, in the three answers both readers below give: absent
+ * (`null`), its rows, or why it cannot be read. Written once so the two cannot come to disagree
+ * about a null registry, a list that is not a list, or one bad row.
+ */
+function registryRowsOfManifestJson<T>(
+  manifestJson: string | null | undefined,
+  key: 'imports' | 'exports',
+  row: z.ZodType<T>,
+): { rows: T[] } | { unreadable: string } | null {
+  if (!manifestJson) return null;
   let m: unknown;
   try {
     m = JSON.parse(manifestJson);
   } catch {
-    return { kind: 'unreadable', reason: 'the stored manifest is not JSON' };
+    return { unreadable: 'the stored manifest is not JSON' };
   }
   const registry = (m as { registry?: unknown } | null)?.registry;
-  if (registry === undefined || registry === null) return { kind: 'none' };
-  if (typeof registry !== 'object' || !('imports' in registry)) return { kind: 'none' };
-  const rows = (registry as { imports: unknown }).imports;
-  if (!Array.isArray(rows)) return { kind: 'unreadable', reason: "the manifest's registry.imports is not a list" };
-  const out: { from: string; type: string; schemaVersion: number }[] = [];
+  if (registry === undefined || registry === null) return null;
+  if (typeof registry !== 'object' || !(key in registry)) return null;
+  const rows = (registry as Record<string, unknown>)[key];
+  if (!Array.isArray(rows)) return { unreadable: `the manifest's registry.${key} is not a list` };
+  const out: T[] = [];
   for (const r of rows) {
-    const p = permissionRegistryImport.safeParse(r);
-    if (!p.success) return { kind: 'unreadable', reason: "a row of the manifest's registry.imports is malformed" };
-    out.push({ from: p.data.from, type: p.data.type, schemaVersion: p.data.schemaVersion });
+    const p = row.safeParse(r);
+    if (!p.success) return { unreadable: `a row of the manifest's registry.${key} is malformed` };
+    out.push(p.data);
   }
-  return { kind: 'imports', rows: out };
+  return { rows: out };
+}
+
+export function importsOfManifestJson(manifestJson: string | null | undefined): ManifestImports {
+  const read = registryRowsOfManifestJson(manifestJson, 'imports', permissionRegistryImport);
+  if (read === null) return { kind: 'none' };
+  if ('unreadable' in read) return { kind: 'unreadable', reason: read.unreadable };
+  return { kind: 'imports', rows: read.rows.map((r) => ({ from: r.from, type: r.type, schemaVersion: r.schemaVersion })) };
 }
 
 /**
@@ -338,25 +354,10 @@ export type ManifestExports =
   | { kind: 'unreadable'; reason: string };
 
 export function exportsOfManifestJson(manifestJson: string | null | undefined): ManifestExports {
-  if (!manifestJson) return { kind: 'none' };
-  let m: unknown;
-  try {
-    m = JSON.parse(manifestJson);
-  } catch {
-    return { kind: 'unreadable', reason: 'the stored manifest is not JSON' };
-  }
-  const registry = (m as { registry?: unknown } | null)?.registry;
-  if (registry === undefined || registry === null) return { kind: 'none' };
-  if (typeof registry !== 'object' || !('exports' in registry)) return { kind: 'none' };
-  const rows = (registry as { exports: unknown }).exports;
-  if (!Array.isArray(rows)) return { kind: 'unreadable', reason: "the manifest's registry.exports is not a list" };
-  const out: { type: string; schemaVersion: number }[] = [];
-  for (const r of rows) {
-    const p = permissionRegistryExport.safeParse(r);
-    if (!p.success) return { kind: 'unreadable', reason: "a row of the manifest's registry.exports is malformed" };
-    out.push({ type: p.data.type, schemaVersion: p.data.schemaVersion });
-  }
-  return { kind: 'exports', rows: out };
+  const read = registryRowsOfManifestJson(manifestJson, 'exports', permissionRegistryExport);
+  if (read === null) return { kind: 'none' };
+  if ('unreadable' in read) return { kind: 'unreadable', reason: read.unreadable };
+  return { kind: 'exports', rows: read.rows.map((r) => ({ type: r.type, schemaVersion: r.schemaVersion })) };
 }
 
 /**

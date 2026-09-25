@@ -360,3 +360,56 @@ export const edgeHealthReport = z.object({
   history: z.object({ available: z.boolean(), reason: z.string().nullable() }),
 });
 export type EdgeHealthReport = z.infer<typeof edgeHealthReport>;
+
+// -- what the console and the dashboard say about an edge (#1705 PR 3) ------------------------
+// One copy, because a tenant and an operator looking at the same edge must be told the same
+// thing: the same label, the same tone, the same lag, and the same request behind the lever.
+
+/**
+ * How each state reads on a badge. `unavailable` is a side nobody could ask. It says nothing
+ * about whether events move, so it is never `success`, and only a caught-up edge is green.
+ */
+export const EDGE_STATE: Record<EdgeHealthState, { tone: 'success' | 'warning' | 'danger'; label: string }> = {
+  'caught-up': { tone: 'success', label: 'Caught up' },
+  behind: { tone: 'warning', label: 'Behind' },
+  paused: { tone: 'danger', label: 'Paused' },
+  unresolved: { tone: 'warning', label: 'Unresolved' },
+  unavailable: { tone: 'danger', label: 'Unavailable' },
+};
+
+/** How long the oldest waiting event has waited, in a person's words. */
+export function lagText(ms: number | null): string | null {
+  if (ms === null) return null;
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h} h`;
+  return `${Math.floor(h / 24)} days`;
+}
+
+/**
+ * Whether a view of `scopeId` offers the lever on an edge: only on an edge INTO it (the watermark
+ * is the consumer's), and only where both ends resolved and could be asked.
+ */
+export function leverOffered(edge: EdgeHealth, scopeId: string): boolean {
+  return (
+    edge.consumer.scopeId === scopeId &&
+    edge.producer.scopeId !== null &&
+    edge.state !== 'unresolved' &&
+    edge.state !== 'unavailable'
+  );
+}
+
+export type LeverMode = ImportCursorMove['mode'];
+
+/** What a lever does, in the words the platform refuses a missing acknowledgement in. */
+export const LEVER_EFFECT: Record<LeverMode, string> = { replay: REPLAY_EFFECT, skip: SKIP_EFFECT };
+
+/** The request a dialog sends once the person has agreed: the whole history, or up to now. */
+export function leverRequest(mode: LeverMode, from: string, reason: string): ImportCursorMove {
+  return mode === 'replay'
+    ? { mode: 'replay', from, after: null, acknowledge: 'rerun-handlers', reason: reason.trim() }
+    : { mode: 'skip', from, through: 'now', acknowledge: 'skip-events', reason: reason.trim() };
+}

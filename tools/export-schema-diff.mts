@@ -40,7 +40,6 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** One exported type as `model.json` carries it. */
 interface Exported {
   schemaVersion: number;
-  readPermission?: string;
   payload: Record<string, unknown>;
 }
 

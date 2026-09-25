@@ -43,6 +43,7 @@ import {
 import { domainEventOf, type OutboxEnvelopeRow } from './outbox-event.js';
 import type { ImportHandler } from './scope-host.js';
 import { ulidCeiling } from './ulid.js';
+import type { SwitchSql } from './system-switch.js';
 
 export const VERTICAL_EVENTS_DDL = `
   -- #1705: every event this scope has received from another vertical. The envelope only, and
@@ -360,7 +361,7 @@ export async function importCursorSourceOf(
   if (from === consumer.vertical) {
     throw substratError('precondition_failed', `'${from}' is this scope's own vertical — an edge names ANOTHER vertical`);
   }
-  const self = await resolve(consumer.tenantId, consumer.vertical);
+  const [self, producer] = await Promise.all([resolve(consumer.tenantId, consumer.vertical), resolve(consumer.tenantId, from)]);
   if (self.outcome !== 'resolved' || self.instance.scopeId !== consumer.scopeId) {
     throw substratError(
       'precondition_failed',
@@ -368,7 +369,6 @@ export async function importCursorSourceOf(
         `a fork, a preview or a second install is no end of an edge`,
     );
   }
-  const producer = await resolve(consumer.tenantId, from);
   if (producer.outcome !== 'resolved') {
     throw substratError(
       producer.outcome === 'not-installed' ? 'not_found' : 'precondition_failed',
@@ -378,21 +378,6 @@ export async function importCursorSourceOf(
     );
   }
   return { vertical: from, scopeId: producer.instance.scopeId };
-}
-
-/**
- * The SQL a lever needs, and nothing else. Both adapters hand `moveImportCursor` one of these
- * over their own store, inside their own transaction, on the scope's own queue, so a pass
- * delivering on the same edge can never interleave with the move.
- */
-export interface CursorMoveSql {
-  /**
-   * Run a write. Its change count is not used: a Durable Object's `rowsWritten` counts index
-   * writes too, so the two adapters would disagree about how many rows a replay moved.
-   */
-  run(sql: string, ...params: unknown[]): unknown;
-  /** Read at most one row. */
-  get<T>(sql: string, ...params: unknown[]): T | undefined;
 }
 
 /**
@@ -414,12 +399,12 @@ const ARCHIVE_DELIVERIES_SQL = `
    WHERE i.source_scope_id = ? AND i.event_id > ?
 `;
 
-/** How many rows the two archive statements are about to move. Params: (source scope, after) twice. */
-const REPLAY_RANGE_COUNT_SQL = `
-  SELECT (SELECT COUNT(*) FROM _substrat_imports WHERE source_scope_id = ? AND event_id > ?) AS journal,
-         (SELECT COUNT(*) FROM _substrat_deliveries d JOIN _substrat_imports i ON i.event_id = d.event_id
-           WHERE i.source_scope_id = ? AND i.event_id > ?) AS deliveries
-`;
+/**
+ * What one replay moved aside, by kind: a seek on the table's key prefix over the rows just
+ * written. Counted from the rows rather than from a write's change count, because a Durable
+ * Object's `rowsWritten` counts index writes too, and the two adapters would then disagree.
+ */
+const REPLAY_ARCHIVED_SQL = 'SELECT kind, COUNT(*) AS n FROM _substrat_import_replays WHERE replay_id = ? GROUP BY kind';
 
 /** Copy the replayed range's journal rows. Params as `ARCHIVE_DELIVERIES_SQL`. */
 const ARCHIVE_JOURNAL_SQL = `
@@ -456,8 +441,9 @@ const CURSOR_SET_SQL = `
 const CURSOR_CLEAR_SQL = 'DELETE FROM _substrat_import_cursors WHERE source_scope_id = ?';
 
 /**
- * Move one edge's watermark (#1705 PR 3). The adapter supplies the store, the transaction, the
- * queue, the clock and the act's id. Everything the move decides is decided here, once, for
+ * Move one edge's watermark (#1705 PR 3). The adapter supplies the store (as the switches'
+ * `SwitchSql`), the transaction, the queue, the clock and the act's id. Run on the scope's own
+ * queue, so a pass delivering on the same edge can never interleave with the move. Everything the move decides is decided here, once, for
  * both adapters.
  *
  * Why a bare rewind is not a replay. Three guards stand between an event and a second run of
@@ -484,19 +470,18 @@ const CURSOR_CLEAR_SQL = 'DELETE FROM _substrat_import_cursors WHERE source_scop
  * - a replay on an edge that has delivered nothing yet: there is nothing to run again.
  */
 export function moveImportCursor(
-  sql: CursorMoveSql,
+  sql: SwitchSql,
   input: {
     move: ImportCursorMove;
     source: { vertical: string; scopeId: string };
     replayId: string;
-    /** ISO 8601, for the rows. */
-    at: string;
-    /** "now" for a skip, as the watermark's ceiling. */
+    /** Epoch ms: the rows' time, and "now" for a skip, as the watermark's ceiling. */
     now: number;
   },
 ): ImportCursorMoved {
   const { move, source } = input;
-  const previous = sql.get<{ cursor: string }>(IMPORT_CURSOR_OF_SQL, source.scopeId)?.cursor ?? null;
+  const at = new Date(input.now).toISOString();
+  const previous = (sql.all(IMPORT_CURSOR_OF_SQL, source.scopeId)[0]?.cursor as string | undefined) ?? null;
   const moved = (cursor: string | null, archived: { journal: number; deliveries: number }): ImportCursorMoved => ({
     replayId: input.replayId,
     mode: move.mode,
@@ -514,7 +499,7 @@ export function moveImportCursor(
           `to deliver events again, replay (mode 'replay')`,
       );
     }
-    sql.run(CURSOR_SET_SQL, source.scopeId, source.vertical, through, input.at);
+    sql.run(CURSOR_SET_SQL, source.scopeId, source.vertical, through, at);
     return moved(through, { journal: 0, deliveries: 0 });
   }
   if (previous === null) {
@@ -532,21 +517,14 @@ export function moveImportCursor(
     );
   }
   const floor = move.after ?? '';
-  const counted = sql.get<{ journal: number; deliveries: number }>(
-    REPLAY_RANGE_COUNT_SQL,
-    source.scopeId,
-    floor,
-    source.scopeId,
-    floor,
-  );
-  const archived = { journal: Number(counted?.journal ?? 0), deliveries: Number(counted?.deliveries ?? 0) };
-  sql.run(ARCHIVE_DELIVERIES_SQL, input.replayId, input.at, source.scopeId, floor);
-  sql.run(ARCHIVE_JOURNAL_SQL, input.replayId, input.at, source.scopeId, floor);
+  sql.run(ARCHIVE_DELIVERIES_SQL, input.replayId, at, source.scopeId, floor);
+  sql.run(ARCHIVE_JOURNAL_SQL, input.replayId, at, source.scopeId, floor);
+  const counts = new Map(sql.all(REPLAY_ARCHIVED_SQL, input.replayId).map((r) => [r.kind as string, Number(r.n)]));
   sql.run(CLEAR_DELIVERIES_SQL, source.scopeId, floor);
   sql.run(CLEAR_JOURNAL_SQL, source.scopeId, floor);
   if (move.after === null) sql.run(CURSOR_CLEAR_SQL, source.scopeId);
-  else sql.run(CURSOR_SET_SQL, source.scopeId, source.vertical, move.after, input.at);
-  return moved(move.after, archived);
+  else sql.run(CURSOR_SET_SQL, source.scopeId, source.vertical, move.after, at);
+  return moved(move.after, { journal: counts.get('journal') ?? 0, deliveries: counts.get('delivery') ?? 0 });
 }
 
 /** The note a withheld event's dead letter carries at the consumer. Names the reason, never the content. */

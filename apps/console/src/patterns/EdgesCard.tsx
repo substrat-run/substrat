@@ -1,13 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
-import type { EdgeHealth, EdgeHealthReport, Scope } from '@substrat-run/contracts';
+import {
+  EDGE_STATE,
+  LEVER_EFFECT,
+  lagText,
+  leverOffered,
+  leverRequest,
+  type EdgeHealth,
+  type EdgeHealthReport,
+  type LeverMode,
+  type Scope,
+} from '@substrat-run/contracts';
 import { Badge, Button, Card, Dialog, Input, Table } from '../components';
 import type { Api } from '../lib/api';
-import { edgeBadgeStatus, edgeStateLabel, edgesCardState, leverOffered, leverRequest, LEVER_EFFECT, type LeverKind } from '../lib/edges';
+import { edgesCardState } from '../lib/edges';
 import { errorMessage, validReason } from '../lib/schedules';
 
 const stamp = (iso: string) => iso.replace('T', ' ').replace(/\.\d+Z$/, 'Z');
-const lag = (ms: number | null) =>
-  ms === null ? '—' : ms < 60_000 ? `${Math.floor(ms / 1000)}s` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min` : `${Math.floor(ms / 3_600_000)} h`;
 
 /**
  * Cross-vertical event edges into and out of this scope (#1705 PR 3), read live, with the replay
@@ -29,38 +37,43 @@ export function EdgesCard({
 }) {
   const [report, setReport] = useState<EdgeHealthReport | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const [dialog, setDialog] = useState<{ edge: EdgeHealth; kind: LeverKind } | null>(null);
+  const [dialog, setDialog] = useState<{ edge: EdgeHealth; kind: LeverMode } | null>(null);
   const [reason, setReason] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const moving = useRef(false);
 
-  async function reload() {
+  /** Read the edges. `live` says whether the answer is still wanted when it lands. */
+  async function reload(live: () => boolean = () => true) {
     try {
-      setReport(await api.crossVerticalEdges(scope.tenantId));
-      setError(null);
+      const r = await api.crossVerticalEdges(scope.tenantId, scope.id);
+      if (live()) {
+        setReport(r);
+        setError(null);
+      }
     } catch (e) {
-      setReport(null);
-      setError(e);
+      if (live()) {
+        setReport(null);
+        setError(e);
+      }
     }
   }
+  const openLever = (edge: EdgeHealth, kind: LeverMode) => {
+    setDialog({ edge, kind });
+    setReason('');
+    setAgreed(false);
+  };
 
   useEffect(() => {
     let cancelled = false;
     setReport(null);
     setError(null);
-    api
-      .crossVerticalEdges(scope.tenantId)
-      .then((r) => {
-        if (!cancelled) setReport(r);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e);
-      });
+    void reload(() => !cancelled);
     return () => {
       cancelled = true;
     };
-  }, [api, scope.tenantId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, scope.tenantId, scope.id]);
 
   const state = edgesCardState(report, error, scope.id);
   // Nothing to say on a scope with no edge, which is most of them.
@@ -131,8 +144,8 @@ export function EdgesCard({
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>to {e.consumer.vertical}</span>
                 ),
             },
-            { header: 'State', render: (e) => <Badge status={edgeBadgeStatus(e.state)}>{edgeStateLabel(e.state)}</Badge> },
-            { header: 'Oldest waiting', render: (e) => lag(e.lagMs) },
+            { header: 'State', render: (e) => <Badge status={EDGE_STATE[e.state].tone}>{EDGE_STATE[e.state].label}</Badge> },
+            { header: 'Oldest waiting', render: (e) => lagText(e.lagMs) ?? '—' },
             {
               header: 'Last delivered',
               render: (e) => (e.lastDelivered ? stamp(e.lastDelivered.at) : <span style={{ color: 'var(--text-tertiary)' }}>—</span>),
@@ -151,12 +164,10 @@ export function EdgesCard({
               render: (e) =>
                 leverOffered(e, scope.id) ? (
                   <span style={{ display: 'inline-flex', gap: 6 }}>
-                    <Button size="sm" variant="secondary"
-                      onClick={() => { setDialog({ edge: e, kind: 'replay' }); setReason(''); setAgreed(false); }}>
+                    <Button size="sm" variant="secondary" onClick={() => openLever(e, 'replay')}>
                       Replay
                     </Button>
-                    <Button size="sm" variant="secondary"
-                      onClick={() => { setDialog({ edge: e, kind: 'skip' }); setReason(''); setAgreed(false); }}>
+                    <Button size="sm" variant="secondary" onClick={() => openLever(e, 'skip')}>
                       Skip to now
                     </Button>
                   </span>

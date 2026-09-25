@@ -1859,8 +1859,9 @@ export class TenantNarrowedControlPlane {
    * plane through the sweep's own reach. A failure surfaces as the `ApiError` it is: "no edge"
    * and "could not be read" are different answers.
    */
-  crossVerticalEdges(): Promise<EdgeHealthReport> {
-    return this.call(`/tenants/${this.tenantId}/cross-vertical/edges`);
+  crossVerticalEdges(focus?: ScopeId): Promise<EdgeHealthReport> {
+    const q = focus ? `?scopeId=${focus}` : '';
+    return this.call(`/tenants/${this.tenantId}/cross-vertical/edges${q}`);
   }
 
   /**

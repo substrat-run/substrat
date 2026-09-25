@@ -378,7 +378,6 @@ import {
   importCursorSourceOf,
   exportBreaksOf,
   exportBreakRefusal,
-  type CursorMoveSql,
   CrossVerticalRegistry,
   exportReadPlan,
   exportReadQuery,
@@ -441,12 +440,6 @@ const switchSqlOf = (db: Database.Database): SwitchSql => ({
   run: (sql, ...params) => {
     db.prepare(sql).run(...params);
   },
-});
-
-/** The kernel's replay-lever SQL (#1705 PR 3), over one scope's database handle. */
-const cursorMoveSqlOf = (db: Database.Database): CursorMoveSql => ({
-  run: (sql, ...params) => db.prepare(sql).run(...params),
-  get: <T>(sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined,
 });
 
 /**
@@ -3571,13 +3564,19 @@ export class SqliteScopeHost implements ScopeHost {
     });
   }
 
-  /** A stored version's manifest, unaudited: the platform reading its own code metadata (#1705). */
-  private manifestJsonOf(versionId: string): string | null {
-    return (
-      (this.directory.prepare('SELECT manifest_json FROM vertical_versions WHERE id = ?').get(versionId) as
-        | { manifest_json: string | null }
-        | undefined)?.manifest_json ?? null
-    );
+  /**
+   * A stored version's manifest, unaudited: the platform reading its own code metadata (#1705).
+   * `undefined` when the registry has no such version (under `slug`, when one is named).
+   */
+  private manifestJsonOf(versionId: string, slug?: string): string | null | undefined {
+    const row = (
+      slug === undefined
+        ? this.directory.prepare('SELECT manifest_json FROM vertical_versions WHERE id = ?').get(versionId)
+        : this.directory
+            .prepare('SELECT manifest_json FROM vertical_versions WHERE id = ? AND vertical_slug = ?')
+            .get(versionId, slug)
+    ) as { manifest_json: string | null } | undefined;
+    return row ? row.manifest_json : undefined;
   }
 
   /** #1705 PR 3: the promote gate's question, over two stored versions (`exportBreaksOf`). */
@@ -3594,11 +3593,9 @@ export class SqliteScopeHost implements ScopeHost {
       outgoing: exportsOfManifestJson(this.manifestJsonOf(outgoingId)),
       incoming: exportsOfManifestJson(this.manifestJsonOf(incomingId)),
       readImports: async (slug, versionId) => {
-        const row = this.directory
-          .prepare('SELECT manifest_json FROM vertical_versions WHERE id = ? AND vertical_slug = ?')
-          .get(versionId, slug) as { manifest_json: string | null } | undefined;
-        if (!row) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
-        return importsOfManifestJson(row.manifest_json);
+        const manifest = this.manifestJsonOf(versionId, slug);
+        if (manifest === undefined) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
+        return importsOfManifestJson(manifest);
       },
     });
   }
@@ -7277,13 +7274,11 @@ export class SqliteScopeHost implements ScopeHost {
         let moved: ImportCursorMoved;
         try {
           const rt = this.runtime(tenantId, scopeId);
-          const at = this.clock();
+          const now = Date.parse(this.clock());
           // One turn on the scope actor, which is where `deliverToPeer` runs: a delivery on this
           // edge is either wholly before the move or refused by its compare-and-set after it.
           moved = await rt.actor.turn(() =>
-            rt.db.transaction(() =>
-              moveImportCursor(cursorMoveSqlOf(rt.db), { move, source, replayId, at, now: Date.parse(at) }),
-            )(),
+            rt.db.transaction(() => moveImportCursor(switchSqlOf(rt.db), { move, source, replayId, now }))(),
           );
         } catch (err) {
           try {

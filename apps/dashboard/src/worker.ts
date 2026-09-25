@@ -2080,7 +2080,9 @@ app.get('/api/apps/:scopeId/edges', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const report = await controlPlaneFor(c.env, node.tenantId).crossVerticalEdges();
+  // Focused on this app, so the plane asks nothing about the tenant's other edges. Filtered again
+  // here all the same: the panel must never show another app's edge as this one's.
+  const report = await controlPlaneFor(c.env, node.tenantId).crossVerticalEdges(scopeId.parse(appRow.app_scope_id));
   const mine = (e: EdgeHealth): boolean =>
     e.consumer.scopeId === appRow.app_scope_id || e.producer.scopeId === appRow.app_scope_id;
   return c.json({ ...report, edges: report.edges.filter(mine) });

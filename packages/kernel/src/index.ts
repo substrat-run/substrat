@@ -437,6 +437,8 @@ export {
   crossVerticalHealth,
   exportBreaksOf,
   exportBreakRefusal,
+  EXPORT_BREAK_REFUSAL,
+  isExportBreakRefusal,
 } from './platform-sweep.js';
 export type {
   CandidatesHint,
@@ -483,7 +485,6 @@ export {
   OUTBOX_MARK_SQL,
   moveImportCursor,
   importCursorSourceOf,
-  type CursorMoveSql,
   exportedSinceQuery,
   exportReadQuery,
   exportReadPlan,

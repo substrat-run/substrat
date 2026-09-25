@@ -1244,7 +1244,7 @@ interface ScopeStubRpc {
   /** #1705 PR 2: was this scope provisioned here for this tenant — read without migrating. */
   servesTenant(tenantId: TenantId): Promise<boolean>;
   /** #1705 PR 3: the replay lever, on the scope's queue, in one transaction. */
-  importCursorMove(input: ImportCursorMoveAt & { at: string; now: number }): Promise<ImportCursorMoved>;
+  importCursorMove(input: ImportCursorMoveAt & { now: number }): Promise<ImportCursorMoved>;
   redrainEvents(drainedBefore: string): Promise<number>;
   /** How many rows that reopen WOULD touch, touching none of them (#1545). */
   redrainCount(drainedBefore: string): Promise<number>;
@@ -7422,10 +7422,12 @@ export class CloudflareScopeHost implements ScopeHost {
   async importCursorLocal(tenantId: TenantId, scopeId: ScopeId, raw: ImportCursorMoveAt): Promise<ImportCursorMoved> {
     const input = importCursorMoveAt.parse(raw);
     await this.assertServesLocally(tenantId, scopeId, 'moveImportCursor');
-    const now = Date.now();
-    return importCursorMoved.parse(
-      await this.scopeStub(scopeId).importCursorMove({ ...input, at: new Date(now).toISOString(), now }),
-    );
+    return this.moveInScope(scopeId, input);
+  }
+
+  /** The move in this host's own scope DO, on the real clock (host code may read it). */
+  private async moveInScope(scopeId: ScopeId, at: ImportCursorMoveAt): Promise<ImportCursorMoved> {
+    return importCursorMoved.parse(await this.scopeStub(scopeId).importCursorMove({ ...at, now: Date.now() }));
   }
 
   /**
@@ -7459,11 +7461,8 @@ export class CloudflareScopeHost implements ScopeHost {
     // that vertical's deployment, and its watermark lives there. Without a delegation that
     // refusal stands (`assertServedHere`) rather than a move in the placeholder namespace.
     const delegation = rec.vertical !== null ? this.importCursorDelegation : undefined;
-    if (delegation) await this.validateScopeAccess(tenantId, scopeId);
-    else {
-      this.assertServedHere(rec, scopeId, 'moveImportCursor');
-      await this.validateScopeAccess(tenantId, scopeId);
-    }
+    if (!delegation) this.assertServedHere(rec, scopeId, 'moveImportCursor');
+    await this.validateScopeAccess(tenantId, scopeId);
     const replayId = ulid();
     const target = { tenantId, scopeId, vertical: rec.vertical };
     const base = { replayId, mode: move.mode, from: move.from, source: source.scopeId };
@@ -7471,14 +7470,9 @@ export class CloudflareScopeHost implements ScopeHost {
     const at: ImportCursorMoveAt = { move, source: source as ImportCursorMoveAt['source'], replayId };
     let moved: ImportCursorMoved;
     try {
-      if (delegation) {
-        moved = importCursorMoved.parse(await delegation.move({ tenantId, scopeId, at }));
-      } else {
-        const now = Date.now();
-        moved = importCursorMoved.parse(
-          await this.scopeStub(scopeId).importCursorMove({ ...at, at: new Date(now).toISOString(), now }),
-        );
-      }
+      moved = delegation
+        ? importCursorMoved.parse(await delegation.move({ tenantId, scopeId, at }))
+        : await this.moveInScope(scopeId, at);
     } catch (err) {
       await this.recordAdmin(actor, 'moveImportCursor', target, null, {
         ...base,

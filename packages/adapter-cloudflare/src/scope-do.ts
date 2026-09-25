@@ -3051,20 +3051,9 @@ export function defineScopeDO(
      * edge is therefore wholly before the move, or refused by its compare-and-set after it.
      * Migrated first: the rows a replay moves aside go to `_substrat_import_replays`.
      */
-    async importCursorMove(input: ImportCursorMoveAt & { at: string; now: number }): Promise<ImportCursorMoved> {
+    async importCursorMove(input: ImportCursorMoveAt & { now: number }): Promise<ImportCursorMoved> {
       await this.ensureMigrations();
-      return this.queue.enqueue(() =>
-        this.ctx.storage.transactionSync(() =>
-          moveImportCursor(
-            {
-              run: (q, ...params) => this.sql.exec(q, ...params),
-              get: <T>(q: string, ...params: unknown[]) =>
-                this.sql.exec(q, ...params).toArray()[0] as T | undefined,
-            },
-            input,
-          ),
-        ),
-      );
+      return this.queue.enqueue(() => this.ctx.storage.transactionSync(() => moveImportCursor(this.switchSql(), input)));
     }
 
     /**

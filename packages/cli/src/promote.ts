@@ -13,6 +13,7 @@
  * is refused too (409), and the refusal lists the apps it would break: the caller's own tenant's
  * by name, any other tenant only as a count. `--ack-export-break` passes it once that is read.
  */
+import type { ExportBreak } from '@substrat-run/contracts';
 import { warnIfStale } from './version.js';
 import { parseJsonBody } from './http.js';
 import { failureMessage } from './problem.js';
@@ -26,18 +27,9 @@ export interface PromoteOptions {
   acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean };
 }
 
-/** One installed app a promote breaks (#1705 PR 3), as the control plane lists it to this caller. */
-export interface ExportBreakRow {
-  tenantId: string;
-  scopeId: string;
-  vertical: string;
-  version: string | null;
-  type: string;
-  schemaVersion: number;
-  incoming: number | null;
-}
+/** The installed apps a promote breaks (#1705 PR 3), as the control plane lists them to this caller. */
 export interface ExportBreaks {
-  affected: ExportBreakRow[];
+  affected: ExportBreak[];
   otherTenants?: number;
 }
 

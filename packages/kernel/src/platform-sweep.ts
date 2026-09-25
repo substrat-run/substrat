@@ -1,4 +1,4 @@
-import { drainedEvent, instant } from '@substrat-run/contracts';
+import { drainedEvent, errorCodeOf, instant } from '@substrat-run/contracts';
 import type {
   AccessLogEntry,
   ConnectionId,
@@ -1590,13 +1590,7 @@ async function sweepCrossVertical(
       );
       return;
     }
-    const bySource = new Map<string, WantedEvent[]>();
-    for (const c of state.consumes) {
-      if (from !== null && c.from !== from) continue;
-      const list = bySource.get(c.from) ?? [];
-      list.push({ type: c.type, schemaVersion: c.schemaVersion });
-      bySource.set(c.from, list);
-    }
+    const bySource = wantsBySource(state.consumes, (f) => from === null || f === from);
     // Sequential per consumer: its edges share the consumer's serialization queue anyway,
     // and one consumer with many sources must not hold more than one slot of the pass.
     for (const [from, wants] of [...bySource.entries()].sort(([a], [b]) => a.localeCompare(b))) {
@@ -1647,6 +1641,41 @@ export async function runCrossVerticalFrom(
  * reported once per pass through `hint.doubt`, and a failure on one version never stops the
  * others.
  */
+/**
+ * What each scope's RUNNING version imports, from the registry (#1705): one `listVerticals` when
+ * a scope is on a serving script, then one `readImports` per distinct running version, at most
+ * `concurrency` in flight. A read that throws is `unreadable`, and a failure on one version never
+ * stops the others. A scope bound to no version gets no fact. The narrowing and the promote gate
+ * both ask it, so the two cannot come to disagree about which code a scope runs.
+ */
+async function runningImportsOf(
+  admin: Pick<HostAdmin, 'listVerticals'>,
+  actor: PlatformActorId,
+  scopes: readonly Scope[],
+  readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>,
+  concurrency: number,
+): Promise<{ scope: Scope; key: string; versionId: string | null; fact: ManifestImports | undefined }[]> {
+  const serving = await servingPointersFor(admin, actor, scopes);
+  const versions = new Map<string, { slug: string; versionId: string }>();
+  const keyed: { scope: Scope; key: string; versionId: string | null }[] = [];
+  for (const s of scopes) {
+    if (!s.vertical) continue;
+    const versionId = runningVersionOf(s, serving.get(s.vertical));
+    const key = `${s.vertical}@${versionId ?? '(no version)'}`;
+    if (versionId && !versions.has(key)) versions.set(key, { slug: s.vertical, versionId });
+    keyed.push({ scope: s, key, versionId });
+  }
+  const facts = new Map<string, ManifestImports>();
+  await mapBounded([...versions], concurrency, async ([key, v]) => {
+    try {
+      facts.set(key, await readImports(v.slug, v.versionId));
+    } catch (err) {
+      facts.set(key, { kind: 'unreadable', reason: message(err) });
+    }
+  });
+  return keyed.map((k) => ({ ...k, fact: facts.get(k.key) }));
+}
+
 export function registryImportCandidates(input: {
   admin: Pick<HostAdmin, 'listVerticals'>;
   actor: PlatformActorId;
@@ -1655,29 +1684,12 @@ export function registryImportCandidates(input: {
   concurrency?: number;
 }): NonNullable<CrossVerticalReach['candidates']> {
   return async (scopes, hint) => {
-    const serving = await servingPointersFor(input.admin, input.actor, scopes);
-    const keyed: { scope: Scope; key: string }[] = [];
-    const versions = new Map<string, { slug: string; versionId: string }>();
-    for (const s of scopes) {
-      if (!s.vertical) continue;
-      const running = runningVersionOf(s, serving.get(s.vertical));
-      const key = `${s.vertical}@${running ?? '(no version)'}`;
-      if (running && !versions.has(key)) versions.set(key, { slug: s.vertical, versionId: running });
-      keyed.push({ scope: s, key });
-    }
-    const facts = new Map<string, ManifestImports>();
-    await mapBounded([...versions], input.concurrency ?? 8, async ([key, v]) => {
-      try {
-        facts.set(key, await input.readImports(v.slug, v.versionId));
-      } catch (err) {
-        facts.set(key, { kind: 'unreadable', reason: message(err) });
-      }
-    });
+    const running = await runningImportsOf(input.admin, input.actor, scopes, input.readImports, input.concurrency ?? 8);
     const doubted = new Map<string, { reason: string; scopeIds: ScopeId[] }>();
     const known: ScopeId[] = [];
     const out: Scope[] = [];
-    for (const { scope, key } of keyed) {
-      const fact: ManifestImports = facts.get(key) ?? {
+    for (const { scope, key, fact: read } of running) {
+      const fact: ManifestImports = read ?? {
         kind: 'unreadable',
         reason: 'the scope names no version the registry could be asked about',
       };
@@ -1750,25 +1762,14 @@ export async function exportBreaksOf(input: {
   const installedIn = new Set(scopes.filter((s) => s.vertical === input.producer).map((s) => s.tenantId as string));
   const consumers = scopes.filter((s) => s.vertical !== input.producer && installedIn.has(s.tenantId));
   if (consumers.length === 0) return [];
-  const serving = await servingPointersFor(input.admin, input.actor, consumers);
-  const running = new Map<string, { slug: string; versionId: string }>();
-  const keyed = consumers.map((s) => {
-    const versionId = runningVersionOf(s, serving.get(s.vertical));
-    const key = `${s.vertical}@${versionId ?? ''}`;
-    if (versionId && !running.has(key)) running.set(key, { slug: s.vertical, versionId });
-    return { scope: s, key, versionId };
-  });
-  const facts = new Map<string, ManifestImports>();
-  await mapBounded([...running], input.concurrency ?? 8, async ([key, v]) => {
-    try {
-      facts.set(key, await input.readImports(v.slug, v.versionId));
-    } catch (err) {
-      facts.set(key, { kind: 'unreadable', reason: message(err) });
-    }
-  });
   const out: ExportBreak[] = [];
-  for (const { scope, key, versionId } of keyed) {
-    const fact = facts.get(key);
+  for (const { scope, versionId, fact } of await runningImportsOf(
+    input.admin,
+    input.actor,
+    consumers,
+    input.readImports,
+    input.concurrency ?? 8,
+  )) {
     if (fact?.kind !== 'imports') continue;
     for (const row of fact.rows) {
       const hit = row.from === input.producer ? changed.get(row.type) : undefined;
@@ -1789,6 +1790,14 @@ export async function exportBreaksOf(input: {
   );
 }
 
+/** How `exportBreakRefusal` begins: what lets the promote route recognise it and add the listing. */
+export const EXPORT_BREAK_REFUSAL = 'promotion drops or re-versions';
+
+/** Whether a throw is the promote gate's export-break refusal (`exportBreakRefusal`). */
+export function isExportBreakRefusal(err: unknown): err is Error {
+  return errorCodeOf(err) === 'precondition_failed' && err instanceof Error && err.message.startsWith(EXPORT_BREAK_REFUSAL);
+}
+
 /**
  * The refusal a promote gets for a non-empty `exportBreaksOf` (#1705 PR 3). Counts only: the
  * adapters do not know who is promoting, and a builder must not learn from an error which other
@@ -1799,10 +1808,55 @@ export function exportBreakRefusal(breaks: readonly ExportBreak[]): string {
   const apps = new Set(breaks.map((b) => b.scopeId)).size;
   const tenants = new Set(breaks.map((b) => b.tenantId)).size;
   return (
-    `promotion drops or re-versions ${types} exported event type(s) that ${apps} installed app(s) in ` +
+    `${EXPORT_BREAK_REFUSAL} ${types} exported event type(s) that ${apps} installed app(s) in ` +
     `${tenants} tenant(s) import — their edges would stop delivering it. Acknowledge it explicitly ` +
     `(exportBreak) to promote, or keep the export and bump its consumers first`
   );
+}
+
+/**
+ * The two ends of the edge from `from` into `consumer`, by #1706's one rule
+ * (`resolveVerticalInstanceFrom`: same tenant, active, primary; two are `ambiguous`, refused rather
+ * than guessed). The producer is who is read. The consumer is who the producer's grant names, and a
+ * grant naming a slug cannot tell two installs of it apart. Shared by the sweep and the health read,
+ * so the view cannot disagree with the next pass about where an edge points, or why it points
+ * nowhere.
+ */
+function edgeEnds(
+  scopes: readonly Scope[],
+  consumer: Scope,
+  from: string,
+): { source: { vertical: string; scopeId: ScopeId } } | { reason: string } {
+  const vertical = consumer.vertical!;
+  if (from === vertical) return { reason: `'${vertical}' imports from itself — an import names ANOTHER vertical` };
+  const self = resolveVerticalInstanceFrom(scopes, consumer.tenantId, vertical);
+  if (self.outcome !== 'resolved' || self.instance.scopeId !== consumer.id) {
+    return {
+      reason: `this tenant has more than one primary instance of '${vertical}', so the producer cannot tell which one its grant names`,
+    };
+  }
+  const producer = resolveVerticalInstanceFrom(scopes, consumer.tenantId, from);
+  if (producer.outcome !== 'resolved') {
+    return {
+      reason:
+        producer.outcome === 'not-installed'
+          ? `'${from}' is not installed in this tenant`
+          : `this tenant has more than one primary instance of '${from}' — delivery waits until one is chosen`,
+    };
+  }
+  return { source: { vertical: from, scopeId: producer.instance.scopeId } };
+}
+
+/** A consumer's declared imports, grouped by the vertical they come from. */
+function wantsBySource(consumes: ImportState['consumes'], only: (from: string) => boolean = () => true): Map<string, WantedEvent[]> {
+  const bySource = new Map<string, WantedEvent[]>();
+  for (const c of consumes) {
+    if (!only(c.from)) continue;
+    const list = bySource.get(c.from) ?? [];
+    list.push({ type: c.type, schemaVersion: c.schemaVersion });
+    bySource.set(c.from, list);
+  }
+  return bySource;
 }
 
 async function sweepEdge(
@@ -1827,35 +1881,13 @@ async function sweepEdge(
     duplicates: 0,
     ...rest,
   });
-  if (from === vertical) {
-    return edge({ state: 'unresolved', reason: `'${vertical}' imports from itself — an import names ANOTHER vertical` });
-  }
-  // Both ends must be the tenant's one primary instance of their vertical, by #1706's one rule
-  // (`resolveVerticalInstanceFrom`: same tenant, active, primary; two are `ambiguous`, refused
-  // rather than guessed). The producer is who is read. The consumer is who the producer's grant
-  // names, and a grant naming a slug cannot tell two installs of it apart.
-  const self = resolveVerticalInstanceFrom(scopes, consumer.tenantId, vertical);
-  if (self.outcome !== 'resolved' || self.instance.scopeId !== consumer.id) {
-    return edge({
-      state: 'unresolved',
-      reason: `this tenant has more than one primary instance of '${vertical}', so the producer cannot tell which one its grant names`,
-    });
-  }
-  const producer = resolveVerticalInstanceFrom(scopes, consumer.tenantId, from);
-  if (producer.outcome !== 'resolved') {
-    return edge({
-      state: 'unresolved',
-      reason:
-        producer.outcome === 'not-installed'
-          ? `'${from}' is not installed in this tenant`
-          : `this tenant has more than one primary instance of '${from}' — delivery waits until one is chosen`,
-    });
-  }
-  const source = { vertical: from, scopeId: producer.instance.scopeId };
+  const ends = edgeEnds(scopes, consumer, from);
+  if ('reason' in ends) return edge({ state: 'unresolved', reason: ends.reason });
+  const { source } = ends;
   const at = { producer: source };
   const after = state.cursors.find((c) => c.source === source.scopeId)?.cursor ?? null;
   try {
-    const batch = await reach.readExports(producer.instance.tenantId, source.scopeId, {
+    const batch = await reach.readExports(consumer.tenantId, source.scopeId, {
       consumer: vertical as ExportReadInput['consumer'],
       after,
       wants,
@@ -1913,23 +1945,33 @@ async function sweepEdge(
 /** Sweep-run rows read per health view: the tenant's recent `vertical-events` history. */
 const EDGE_HEALTH_HISTORY = 200;
 
+/** Where a consumer's door stands for each peer, as `admin.peerGrantsStatus` answers it. */
+type DoorRead = (
+  tenantId: TenantId,
+  scopeId: ScopeId,
+) => Promise<readonly { vertical: string; calls: string; switchedOff?: { reason: string } | null }[]>;
+
 /**
  * Where every cross-vertical edge of one tenant stands, read LIVE (#1705 PR 3): the view behind
  * the console's and the dashboard's edge health.
  *
  * It is the sweep's own walk with the delivery taken out. It uses the same reach, the same
  * narrowing (`candidates`, which keeps it off scopes that import nothing), and the same resolution
- * of both ends (`sweepEdge`'s rule). So it cannot disagree with the next pass about which edges
- * exist or where they point. Per edge it makes one probe read of the producer after the watermark,
+ * of both ends (`edgeEnds`). So it cannot disagree with the next pass about which edges exist or
+ * where they point. Per edge it makes one probe read of the producer after the watermark,
  * `limit: 1`, which tells behind from caught up and dates the oldest waiting event. That read is the
  * producer's own `readExportedEvents`, gated and audited as on a pass, and nothing it returns is
  * delivered or kept. The consumer's door is read from its peer switch (`peerGrantsStatus`), because
  * a consumer refusing the producer is visible only at delivery otherwise. The tenant's recent
  * `vertical-events` sweep-run rows add the last pass that delivered and the last that did not.
  *
+ * `focus` narrows it to one scope's edges, the ones into it and out of it: a per-app view asks
+ * nothing about the rest of the tenant. Out of it means consumers the narrowing names for the
+ * focus's vertical (`hint.from`), so the registry, not a scope, decides who is asked.
+ *
  * Cost per view: one directory read, the narrowing, then per importing scope one `importState`
- * and one `peerGrantsStatus`, per edge one probe read, and one sweep-run read. It is bounded by
- * the tenant, never the fleet.
+ * and one door read, per edge one probe read, and one sweep-run read. It is bounded by the
+ * tenant, never the fleet.
  *
  * `unavailable` is its own state: a side that could not be asked gets no health, and no
  * surface may show it as healthy.
@@ -1940,16 +1982,15 @@ export async function crossVerticalHealth(
     actor: PlatformActorId;
     tenantId: TenantId;
     crossVertical?: CrossVerticalOptions;
+    /** Only this scope's edges: into it, and out of it. */
+    focus?: ScopeId;
     /**
      * Where the consumer's door stands for each peer. Default: `admin.peerGrantsStatus`, which on
      * the shared control plane reaches the consumer's deployment through its peer-switch
      * delegation and adds who switched a peer off, and why. A host that serves the scope itself
      * without that delegation may pass its own far end (`peerGrantsStatusLocal`) instead.
      */
-    door?: (
-      tenantId: TenantId,
-      scopeId: ScopeId,
-    ) => Promise<readonly { vertical: string; calls: string; switchedOff?: { reason: string } | null }[]>;
+    door?: DoorRead;
     /** Epoch ms. Injectable so a test pins the lag. */
     now?: () => number;
     concurrency?: number;
@@ -1957,6 +1998,7 @@ export async function crossVerticalHealth(
 ): Promise<EdgeHealthReport> {
   const { actor, tenantId } = options;
   const now = options.now ?? Date.now;
+  const concurrency = options.concurrency ?? 8;
   const report: EdgeHealthReport = {
     tenantId,
     checkedAt: new Date(now()).toISOString() as EdgeHealthReport['checkedAt'],
@@ -1973,43 +2015,58 @@ export async function crossVerticalHealth(
   const candidatesOf: NonNullable<CrossVerticalReach['candidates']> =
     reach.candidates?.bind(reach) ??
     ((scopes) => ((host.registeredImports?.() ?? []).length > 0 ? scopes : []));
-
-  let scopes: (Scope & { vertical: string })[];
-  let candidates: readonly Scope[];
+  const doorOf: DoorRead =
+    options.door ?? ((t, s) => host.admin.peerGrantsStatus(actor, { tenantId: t, scopeId: s }));
   const knownImporters = new Set<string>();
-  try {
-    scopes = (await host.admin.listScopes(actor, { status: 'active', tenantId })).filter(
-      (s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null,
-    );
-    candidates = await candidatesOf(scopes, {
-      known: (ids) => {
-        for (const id of ids) knownImporters.add(id);
-      },
-    });
-  } catch (err) {
-    report.unavailable = `could not list this tenant's apps that import events: ${message(err)}`;
+  const known = (ids: readonly ScopeId[]) => {
+    for (const id of ids) knownImporters.add(id);
+  };
+
+  // The directory and the history do not depend on each other.
+  const [listed, history] = await Promise.all([
+    (async () => {
+      const scopes = (await host.admin.listScopes(actor, { status: 'active', tenantId })).filter(
+        (s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null,
+      );
+      if (options.focus === undefined) return { scopes, candidates: await candidatesOf(scopes, { known }) };
+      const focus = scopes.find((s) => s.id === options.focus);
+      if (!focus) return { scopes, candidates: [] as readonly Scope[] };
+      const [into, outOf] = await Promise.all([
+        candidatesOf([focus], { known }),
+        candidatesOf(scopes, { from: focus.vertical, known }),
+      ]);
+      return { scopes, focus, candidates: [...into, ...outOf.filter((c) => c.id !== focus.id)] };
+    })().then(
+      (v) => ({ ok: true as const, ...v }),
+      (err: unknown) => ({ ok: false as const, error: message(err) }),
+    ),
+    host.admin.listSweepRuns(actor, { kind: 'vertical-events', tenantId, limit: EDGE_HEALTH_HISTORY }).then(
+      (rows) => ({ ok: true as const, rows }),
+      (err: unknown) => ({ ok: false as const, error: message(err) }),
+    ),
+  ]);
+  if (!listed.ok) {
+    report.unavailable = `could not list this tenant's apps that import events: ${listed.error}`;
     return report;
   }
+  const { scopes, candidates } = listed;
+  const focusVertical = 'focus' in listed ? listed.focus?.vertical : undefined;
 
-  // The history: the tenant's recent passes, newest first, grouped by edge.
-  const runs = new Map<string, SweepRunEntry[]>();
-  try {
-    for (const r of await host.admin.listSweepRuns(actor, {
-      kind: 'vertical-events',
-      tenantId,
-      limit: EDGE_HEALTH_HISTORY,
-    })) {
-      const list = runs.get(r.unit) ?? [];
-      list.push(r);
-      runs.set(r.unit, list);
+  // The history, newest first per edge (the read is already newest first).
+  const lastOk = new Map<string, SweepRunEntry>();
+  const lastProblem = new Map<string, SweepRunEntry>();
+  if (history.ok) {
+    for (const r of history.rows) {
+      const into = r.outcome === 'ok' ? lastOk : lastProblem;
+      const seen = into.get(r.unit);
+      if (!seen || r.id > seen.id) into.set(r.unit, r);
     }
-  } catch (err) {
-    report.history = { available: false, reason: `the sweep history could not be read: ${message(err)}` };
+  } else {
+    report.history = { available: false, reason: `the sweep history could not be read: ${history.error}` };
   }
   const historyOf = (unit: string): Pick<EdgeHealth, 'lastDelivered' | 'lastProblem'> => {
-    const list = [...(runs.get(unit) ?? [])].sort((a, b) => (a.id < b.id ? 1 : -1));
-    const ok = list.find((r) => r.outcome === 'ok');
-    const problem = list.find((r) => r.outcome !== 'ok');
+    const ok = lastOk.get(unit);
+    const problem = lastProblem.get(unit);
     return {
       lastDelivered: ok ? { at: ok.at } : null,
       lastProblem:
@@ -2019,9 +2076,9 @@ export async function crossVerticalHealth(
     };
   };
 
-  await mapBounded(candidates, options.concurrency ?? 8, async (consumer) => {
+  await mapBounded(candidates, concurrency, async (consumer) => {
     const vertical = consumer.vertical ?? '';
-    const blank = (from: string, rest: Partial<EdgeHealth> & Pick<EdgeHealth, 'state'>): EdgeHealth => ({
+    const edge = (from: string, rest: Partial<EdgeHealth> & Pick<EdgeHealth, 'state'>): EdgeHealth => ({
       tenantId,
       consumer: { scopeId: consumer.id, vertical },
       producer: { vertical: from, scopeId: null },
@@ -2033,19 +2090,29 @@ export async function crossVerticalHealth(
       ...historyOf(`${consumer.id}:${from}`),
       ...rest,
     });
-    let state: ImportState;
-    try {
-      state = await reach.importState(tenantId, consumer.id);
-    } catch (err) {
-      report.edges.push(
-        blank('*', { state: 'unavailable', reason: `could not ask this app what it imports: ${message(err)}` }),
-      );
+    // Into the focus, every source. Into anyone else, only the focus's own vertical.
+    const wanted = (from: string) => focusVertical === undefined || consumer.id === options.focus || from === focusVertical;
+    // The consumer's imports and its door, together: the door read is wasted only on a consumer
+    // that turns out to import nothing, which the narrowing has already made rare.
+    const [stateRead, doorRead] = await Promise.all([
+      reach.importState(tenantId, consumer.id).then(
+        (state) => ({ ok: true as const, state }),
+        (err: unknown) => ({ ok: false as const, error: message(err) }),
+      ),
+      doorOf(tenantId, consumer.id).then(
+        (entries) => ({ ok: true as const, entries }),
+        (err: unknown) => ({ ok: false as const, error: message(err) }),
+      ),
+    ]);
+    if (!stateRead.ok) {
+      report.edges.push(edge('*', { state: 'unavailable', reason: `could not ask this app what it imports: ${stateRead.error}` }));
       return;
     }
+    const state = stateRead.state;
     if (state.consumes.length === 0) {
       if (knownImporters.has(consumer.id)) {
         report.edges.push(
-          blank('*', {
+          edge('*', {
             state: 'unavailable',
             reason:
               "the version registry says this app's code imports events, but its deployment answers that it " +
@@ -2055,61 +2122,24 @@ export async function crossVerticalHealth(
       }
       return;
     }
-    // The consumer's door, once per consumer. Unreadable is not "open": the edge keeps its
-    // probe's state, and the reason says the door could not be read.
-    let door: Map<string, { calls: string; reason: string | null }> | null = null;
-    let doorError: string | null = null;
-    try {
-      const read =
-        options.door ?? ((t: TenantId, s: ScopeId) => host.admin.peerGrantsStatus(actor, { tenantId: t, scopeId: s }));
-      door = new Map(
-        (await read(tenantId, consumer.id)).map((e) => [
-          e.vertical,
-          { calls: e.calls, reason: e.switchedOff?.reason ?? null },
-        ]),
-      );
-    } catch (err) {
-      doorError = message(err);
-    }
-    const bySource = new Map<string, WantedEvent[]>();
-    for (const c of state.consumes) {
-      const list = bySource.get(c.from) ?? [];
-      list.push({ type: c.type, schemaVersion: c.schemaVersion });
-      bySource.set(c.from, list);
-    }
-    for (const [from, wants] of [...bySource.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-      const edge = (rest: Partial<EdgeHealth> & Pick<EdgeHealth, 'state'>): EdgeHealth => blank(from, rest);
-      if (from === vertical) {
-        report.edges.push(edge({ state: 'unresolved', reason: `'${vertical}' imports from itself — an import names ANOTHER vertical` }));
-        continue;
-      }
-      const self = resolveVerticalInstanceFrom(scopes, tenantId, vertical);
-      if (self.outcome !== 'resolved' || self.instance.scopeId !== consumer.id) {
-        report.edges.push(
-          edge({
-            state: 'unresolved',
-            reason: `this tenant has more than one primary instance of '${vertical}', so the producer cannot tell which one its grant names`,
-          }),
-        );
-        continue;
-      }
-      const producer = resolveVerticalInstanceFrom(scopes, tenantId, from);
-      if (producer.outcome !== 'resolved') {
-        report.edges.push(
-          edge({
-            state: 'unresolved',
-            reason:
-              producer.outcome === 'not-installed'
-                ? `'${from}' is not installed in this tenant`
-                : `this tenant has more than one primary instance of '${from}' — delivery waits until one is chosen`,
-          }),
-        );
-        continue;
-      }
-      const source = { vertical: from, scopeId: producer.instance.scopeId };
+    // Unreadable is not "open": the edge keeps its probe's state, and the reason says so.
+    const door = doorRead.ok
+      ? new Map(doorRead.entries.map((e) => [e.vertical, { calls: e.calls, reason: e.switchedOff?.reason ?? null }]))
+      : null;
+    const sources = [...wantsBySource(state.consumes, wanted)];
+    await mapBounded(sources, concurrency, async ([from, wants]) => {
+      report.edges.push(await edgeHealthOf(from, wants));
+    });
+
+    async function edgeHealthOf(from: string, wants: WantedEvent[]): Promise<EdgeHealth> {
+      const ends = edgeEnds(scopes, consumer, from);
+      if ('reason' in ends) return edge(from, { state: 'unresolved', reason: ends.reason });
+      const { source } = ends;
       const cursor = state.cursors.find((c) => c.source === source.scopeId) ?? null;
-      const watermark = cursor?.cursor ? { cursor: cursor.cursor, updatedAt: cursor.updatedAt } : null;
-      const at = { producer: source, watermark };
+      const at = {
+        producer: source,
+        watermark: cursor?.cursor ? { cursor: cursor.cursor, updatedAt: cursor.updatedAt } : null,
+      };
       let probe: ExportedBatch;
       try {
         probe = await reach.readExports(tenantId, source.scopeId, {
@@ -2119,57 +2149,39 @@ export async function crossVerticalHealth(
           limit: 1,
         });
       } catch (err) {
-        report.edges.push(edge({ ...at, state: 'unavailable', reason: `could not ask '${from}' what is waiting: ${message(err)}` }));
-        continue;
+        return edge(from, { ...at, state: 'unavailable', reason: `could not ask '${from}' what is waiting: ${message(err)}` });
       }
       const unexported = probe.unexported;
       if (probe.paused) {
-        report.edges.push(
-          edge({
-            ...at,
-            unexported,
-            state: 'paused',
-            reason: `'${from}' does not grant vertical:${vertical} ${probe.paused.missing.join(', ')} — nothing moves; the backlog waits in its outbox`,
-          }),
-        );
-        continue;
+        return edge(from, {
+          ...at,
+          unexported,
+          state: 'paused',
+          reason: `'${from}' does not grant vertical:${vertical} ${probe.paused.missing.join(', ')} — nothing moves; the backlog waits in its outbox`,
+        });
       }
       const first = [...probe.events, ...probe.withheld].sort((a, b) => (a.id < b.id ? -1 : 1))[0];
       const oldestPending = first ? { id: first.id, occurredAt: first.occurredAt } : null;
       const occurred = first ? Date.parse(first.occurredAt) : NaN;
       const lagMs = first && Number.isFinite(occurred) ? Math.max(0, Math.floor(now() - occurred)) : null;
+      const pending = { ...at, unexported, oldestPending, lagMs };
       const gate = door?.get(from);
       if (gate && gate.calls !== 'on') {
-        report.edges.push(
-          edge({
-            ...at,
-            unexported,
-            oldestPending,
-            lagMs,
-            state: 'paused',
-            reason:
-              gate.calls === 'off'
-                ? `this app has '${from}' switched off${gate.reason ? ` (${gate.reason})` : ''} — nothing is delivered; the backlog waits in the producer's outbox`
-                : `this app holds no grant for '${from}' — its door refuses the delivery; the backlog waits in the producer's outbox`,
-          }),
-        );
-        continue;
+        return edge(from, {
+          ...pending,
+          state: 'paused',
+          reason:
+            gate.calls === 'off'
+              ? `this app has '${from}' switched off${gate.reason ? ` (${gate.reason})` : ''} — nothing is delivered; the backlog waits in the producer's outbox`
+              : `this app holds no grant for '${from}' — its door refuses the delivery; the backlog waits in the producer's outbox`,
+        });
       }
-      const doorNote = door === null ? ` (whether this app admits '${from}' could not be read: ${doorError})` : '';
-      report.edges.push(
-        edge({
-          ...at,
-          unexported,
-          oldestPending,
-          lagMs,
-          state: first ? 'behind' : 'caught-up',
-          reason: first
-            ? `events are waiting past the watermark; the next pass takes them${doorNote}`
-            : doorNote
-              ? doorNote.trim()
-              : null,
-        }),
-      );
+      const doorNote = doorRead.ok ? '' : ` (whether this app admits '${from}' could not be read: ${doorRead.error})`;
+      return edge(from, {
+        ...pending,
+        state: first ? 'behind' : 'caught-up',
+        reason: first ? `events are waiting past the watermark; the next pass takes them${doorNote}` : doorNote ? doorNote.trim() : null,
+      });
     }
   });
   report.edges.sort(
