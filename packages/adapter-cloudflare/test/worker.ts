@@ -189,6 +189,19 @@ export const KickTestDO = defineKickCoalescerDO<KickEnv>({
   run: async (env, producer) => kickLog(env).record(`pass:${producer.tenantId}:${producer.scopeId}`),
 });
 
+/**
+ * A coalescer whose pass outlasts its window. A kick arriving after the window but while the pass
+ * still runs must join it, not start a second pass beside it: the window alone would allow that.
+ */
+export const KickSlowDO = defineKickCoalescerDO<KickEnv>({
+  windowMs: 100,
+  run: async (env, producer) => {
+    await kickLog(env).record(`start:${producer.scopeId}`);
+    await new Promise((r) => setTimeout(r, 400));
+    await kickLog(env).record(`end:${producer.scopeId}`);
+  },
+});
+
 /** A coalescer whose every pass throws. The kick must still answer, never throw. */
 export const KickThrowDO = defineKickCoalescerDO<KickEnv>({
   windowMs: 60_000,

@@ -51,7 +51,8 @@
       { "name": "KICK_TEST", "class_name": "KickTestDO" },
       { "name": "KICK_THROW", "class_name": "KickThrowDO" },
       { "name": "KICK_REAL", "class_name": "KickRealDO" },
-      { "name": "KICK_LOG", "class_name": "KickLogDO" }
+      { "name": "KICK_LOG", "class_name": "KickLogDO" },
+      { "name": "KICK_SLOW", "class_name": "KickSlowDO" }
     ]
   },
   "migrations": [
@@ -85,7 +86,7 @@
     },
     {
       "tag": "v8",
-      "new_sqlite_classes": ["KickTestDO", "KickThrowDO", "KickRealDO", "KickLogDO"]
+      "new_sqlite_classes": ["KickTestDO", "KickThrowDO", "KickRealDO", "KickLogDO", "KickSlowDO"]
     }
   ]
 }

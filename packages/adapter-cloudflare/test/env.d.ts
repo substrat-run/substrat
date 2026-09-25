@@ -34,5 +34,6 @@ declare module 'cloudflare:test' {
     KICK_THROW: DurableObjectNamespace;
     KICK_REAL: DurableObjectNamespace;
     KICK_LOG: DurableObjectNamespace;
+    KICK_SLOW: DurableObjectNamespace;
   }
 }

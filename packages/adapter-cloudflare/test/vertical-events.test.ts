@@ -593,6 +593,19 @@ describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 P
     expect(await passesFor(s)).toHaveLength(2);
   });
 
+  it('a kick during a pass that has outlasted its window joins it, never a second pass beside it', async () => {
+    const t = ulid();
+    const s = ulid();
+    const stub = coalescer(env.KICK_SLOW, t, s);
+    const first = kick(stub, t, s);
+    await sleep(200); // past the 100 ms window, inside the 400 ms pass
+    expect(await kick(stub, t, s)).toBe('coalesced');
+    expect(await first).toBe('ran');
+    const lines = (await log().lines()).filter((l) => l.endsWith(`:${s}`));
+    // One pass, start to end, with nothing started inside it.
+    expect(lines).toEqual([`start:${s}`, `end:${s}`]);
+  });
+
   it('an alarm before the window has passed runs nothing and re-arms', async () => {
     const t = ulid();
     const s = ulid();
