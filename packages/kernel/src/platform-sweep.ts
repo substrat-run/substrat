@@ -1978,8 +1978,13 @@ type DoorRead = (
  * focus's vertical (`hint.from`), so the registry, not a scope, decides who is asked.
  *
  * Cost per view: one directory read, the narrowing, then per importing scope one `importState`
- * and one door read, per edge one probe read, and one sweep-run read. It is bounded by the
+ * and one door read, per edge one probe read and one or two sweep-run reads. It is bounded by the
  * tenant, never the fleet.
+ *
+ * Who the reads are audited as: the directory, door and history reads as `actor`, the viewer the
+ * caller names. The reach's reads (`importState`, the probe) are audited as whatever actor the
+ * reach was built with. On the control plane that is the sweep's own actor, since it is the
+ * sweep's reach, so those rows read as the platform's, not the viewer's.
  *
  * `unavailable` is its own state: a side that could not be asked gets no health, and no
  * surface may show it as healthy.
@@ -2181,11 +2186,15 @@ export async function crossVerticalHealth(
               : `this app holds no grant for '${from}' — its door refuses the delivery; the backlog waits in the producer's outbox`,
         });
       }
+      // Caught up means nothing is waiting, which an unread door cannot change, so its reason is
+      // null as the contract says. Behind with an unread door says so: whether the next pass
+      // delivers depends on it.
+      if (!first) return edge(from, { ...pending, state: 'caught-up', reason: null });
       const doorNote = doorRead.ok ? '' : ` (whether this app admits '${from}' could not be read: ${doorRead.error})`;
       return edge(from, {
         ...pending,
-        state: first ? 'behind' : 'caught-up',
-        reason: first ? `events are waiting past the watermark; the next pass takes them${doorNote}` : doorNote ? doorNote.trim() : null,
+        state: 'behind',
+        reason: `events are waiting past the watermark; the next pass takes them${doorNote}`,
       });
     }
   });

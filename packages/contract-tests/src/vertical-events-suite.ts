@@ -1101,6 +1101,16 @@ export function verticalEventsContractSuite(
       const after = await healthOf(t, c);
       expect(after).toMatchObject({ state: 'caught-up', oldestPending: null, lagMs: null, reason: null });
       expect(after?.watermark).not.toBeNull();
+      // A door that cannot be read changes nothing about a caught-up edge: its reason stays null.
+      const unreadDoor = await crossVerticalHealth(fx.consumer, {
+        actor: staff,
+        tenantId: t,
+        crossVertical: { reach },
+        door: async () => {
+          throw new Error('door unreadable');
+        },
+      });
+      expect(unreadDoor.edges.find((e) => e.consumer.scopeId === c)).toMatchObject({ state: 'caught-up', reason: null });
       // What the consumer asks for and the producer does not export, reported beside the state.
       // (The sweep-run history is covered where the rows are durable: the control plane's route.)
       expect(after?.unexported).toEqual([{ type: 'crm.customer-noted', schemaVersion: 1 }]);
