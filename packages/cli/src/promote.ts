@@ -83,13 +83,17 @@ export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
   // A refused promote is exactly where the problem document earns its keep: the two
   // checkpoints answer 4xx with the diff that needs acknowledging (#971).
   if (!res.ok) {
-    let breaks: ExportBreaks | undefined;
+    let parsed: { exportBreaks?: ExportBreaks | null; exportBreaksUnavailable?: string } = {};
     try {
-      breaks = (JSON.parse(body) as { exportBreaks?: ExportBreaks }).exportBreaks;
+      parsed = JSON.parse(body) as typeof parsed;
     } catch {
       // Not JSON: the failure message below carries the body as it is.
     }
-    const listing = breaks ? `\n${exportBreakLines(breaks).join('\n')}\n(re-run with --ack-export-break once read)` : '';
+    const listing = parsed.exportBreaks
+      ? `\n${exportBreakLines(parsed.exportBreaks).join('\n')}\n(re-run with --ack-export-break once read)`
+      : parsed.exportBreaksUnavailable
+        ? `\n  (${parsed.exportBreaksUnavailable}; re-run with --ack-export-break to promote anyway)`
+        : '';
     throw new Error(failureMessage('promote failed', res.status, body) + listing);
   }
   return parseJsonBody<PromoteResult>(body, url);
