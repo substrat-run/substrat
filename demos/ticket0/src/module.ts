@@ -847,8 +847,11 @@ function blockedBy(ctx: OperationContext, probe: BlockProbe): BlockRuleRow | und
     params.push(address);
     const domains = domainChainOf(address);
     if (domains.length > 0) {
-      clauses.push(`(kind = 'domain' AND value IN (${domains.map(() => '?').join(', ')}))`);
-      params.push(...domains);
+      // ONE bound JSON array, not a `?` per label: the chain comes from an inbound
+      // address, which the sender writes, and a domain has up to ~127 labels while a
+      // Durable Object binds 100 parameters in all (#1759).
+      clauses.push("(kind = 'domain' AND value IN (SELECT value FROM json_each(?)))");
+      params.push(JSON.stringify(domains));
     }
   }
   if (clauses.length === 0) return undefined;
@@ -2208,8 +2211,10 @@ function withCitations<T extends { cited_article_ids?: string | null }>(
   const byId = new Map(
     (ids.length
       ? ctx.sql.query<KbArticleRow>(
-          `SELECT * FROM ticket0_kb_articles WHERE id IN (${ids.map(() => '?').join(', ')})`,
-          ids,
+          // One bound JSON array, not a `?` per article: a page can cite past the 100
+          // parameters a Durable Object binds in all (#1759).
+          'SELECT * FROM ticket0_kb_articles WHERE id IN (SELECT value FROM json_each(?))',
+          [JSON.stringify(ids)],
         )
       : []
     ).map((a) => [a.id, a]),
@@ -2964,8 +2969,10 @@ const operations = {
     const hits = ctx.search('kbArticle', input.q, { limit: fetch });
     if (hits.length === 0) return { results: [], limit, capped: false };
 
-    const params: string[] = hits.map((h) => h.id);
-    let sql = `SELECT * FROM ticket0_kb_articles WHERE id IN (${hits.map(() => '?').join(', ')})`;
+    // The hits go in as ONE bound JSON array: up to MAX_SEARCH_LIMIT (100) of them plus
+    // `source_id` is 101 parameters, one past what a Durable Object binds (#1759).
+    const params: string[] = [JSON.stringify(hits.map((h) => h.id))];
+    let sql = 'SELECT * FROM ticket0_kb_articles WHERE id IN (SELECT value FROM json_each(?))';
     if (input.sourceId) {
       sql += ' AND source_id = ?';
       params.push(input.sourceId);
@@ -4437,8 +4444,10 @@ const operations = {
     const ids = [...new Set(rows.flatMap((r) => JSON.parse(r.cited_article_ids) as string[]))];
     const articles = ids.length
       ? ctx.sql.query<KbArticleRow>(
-          `SELECT * FROM ticket0_kb_articles WHERE id IN (${ids.map(() => '?').join(', ')})`,
-          ids,
+          // One bound JSON array, not a `?` per article: a page can cite past the 100
+          // parameters a Durable Object binds in all (#1759).
+          'SELECT * FROM ticket0_kb_articles WHERE id IN (SELECT value FROM json_each(?))',
+          [JSON.stringify(ids)],
         )
       : [];
     const byId = new Map(articles.map((a) => [a.id, a]));
