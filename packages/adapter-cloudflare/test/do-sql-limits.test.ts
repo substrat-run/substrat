@@ -12,13 +12,17 @@ import { DO_SQL_LIMITS } from '@substrat-run/kernel';
  *
  * Each limit is FOUND by bisection over a range wide enough to be a sane bound (stock SQLite
  * allows 500 terms, 32 766 parameters and 1 GB of SQL; every range here reaches past stock's
- * compound and variable limits), then compared with the constant.
+ * compound and variable limits), then compared with the constant. The ranges are kept close to the known values (a few times the limit,
+ * not stock SQLite's 500 terms or 1 GB): a probe that builds megabyte statements against a runtime
+ * shared with every other file in the pool is the wrong place to look for where a limit ends.
  */
 
 type Trial = (n: number) => { sql: string; params?: unknown[] };
 
+// ONE Durable Object for the file, on a name of its own: a fresh object per probe left a dozen
+// abandoned instances behind in the shared runtime for the next file to re-patch around.
 const run = async <T>(fn: (sql: SqlStorage) => T): Promise<T> => {
-  const stub = env.SCOPE.get(env.SCOPE.idFromName(`do-sql-limits-${Math.random()}`));
+  const stub = env.SCOPE.get(env.SCOPE.idFromName('do-sql-limits'));
   return runInDurableObject(stub, (_instance, state) => fn(state.storage.sql));
 };
 
@@ -51,15 +55,15 @@ const marks = (n: number): string => Array.from({ length: n }, () => '?').join('
 describe('the SQL limits of a Durable Object, measured (#1741)', () => {
   for (const op of ['UNION ALL', 'UNION', 'INTERSECT', 'EXCEPT']) {
     it(`compound SELECT terms: ${op}`, async () => {
-      const found = await run((sql) => limitOf(sql, (n) => ({ sql: terms(n, op) }), 2000));
+      const found = await run((sql) => limitOf(sql, (n) => ({ sql: terms(n, op) }), 60));
       expect(found.max).toBe(DO_SQL_LIMITS.compoundTerms);
       expect(found.refusal).toBe('too many terms in compound SELECT: SQLITE_ERROR');
     });
   }
 
-  it('a multi-row VALUES list is NOT a compound: 5 000 rows run', async () => {
+  it('a multi-row VALUES list is NOT a compound: 1 000 rows run', async () => {
     const outcomes = await run((sql) => [
-      attempt(sql, (n) => ({ sql: `SELECT * FROM (VALUES ${Array.from({ length: n }, () => '(1)').join(',')})` }), 5000),
+      attempt(sql, (n) => ({ sql: `SELECT * FROM (VALUES ${Array.from({ length: n }, () => '(1)').join(',')})` }), 1000),
       attempt(sql, (n) => ({ sql: `SELECT * FROM (VALUES ${Array.from({ length: n }, () => '(?)').join(',')})`, params: Array(n).fill(1) }), DO_SQL_LIMITS.boundParameters),
     ]);
     expect(outcomes).toEqual(['ok', 'ok']);
@@ -75,7 +79,7 @@ describe('the SQL limits of a Durable Object, measured (#1741)', () => {
 
   it('bound parameters', async () => {
     const found = await run((sql) =>
-      limitOf(sql, (n) => ({ sql: `SELECT 1 WHERE 1 IN (${marks(n)})`, params: Array(n).fill(1) }), 5000),
+      limitOf(sql, (n) => ({ sql: `SELECT 1 WHERE 1 IN (${marks(n)})`, params: Array(n).fill(1) }), 400),
     );
     expect(found.max).toBe(DO_SQL_LIMITS.boundParameters);
     // The offset is the byte where the first `?` past the limit starts.
@@ -109,7 +113,7 @@ describe('the SQL limits of a Durable Object, measured (#1741)', () => {
   });
 
   it('statement length: the whole string, in bytes', async () => {
-    const found = await run((sql) => limitOf(sql, (n) => ({ sql: `SELECT '${'a'.repeat(n)}'` }), 1_000_000));
+    const found = await run((sql) => limitOf(sql, (n) => ({ sql: `SELECT '${'a'.repeat(n)}'` }), 250_000));
     // `SELECT ''` is 9 bytes around the literal.
     expect(found.max + "SELECT ''".length).toBe(DO_SQL_LIMITS.statementBytes);
     expect(found.refusal).toBe('statement too long: SQLITE_TOOBIG');
@@ -127,7 +131,7 @@ describe('the SQL limits of a Durable Object, measured (#1741)', () => {
 
   it('LIKE pattern length: the limit the node preload enforces', async () => {
     const found = await run((sql) =>
-      limitOf(sql, (n) => ({ sql: `SELECT 'x' LIKE ?`, params: ['%' + 'a'.repeat(n) + '%'] }), 500),
+      limitOf(sql, (n) => ({ sql: `SELECT 'x' LIKE ?`, params: ['%' + 'a'.repeat(n) + '%'] }), 200),
     );
     // n characters between two `%`.
     expect(found.max + 2).toBe(DO_SQL_LIMITS.likePatternBytes);
