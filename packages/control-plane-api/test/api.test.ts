@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
-import { assetHash, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
+import { assetHash, deployManifest, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
 import { denialLogQuery } from '../src/api.js';
 import {
   createControlPlaneApi,
@@ -3820,6 +3820,55 @@ describe('control-plane API — vertical registry', () => {
     await json('/verticals/fsm/versions', 'POST', version(v3));
     expect((await json(`/verticals/fsm/versions/${v3}/reject`, 'POST', { note: 'no' })).status).toBe(200);
     expect((await json(`/verticals/fsm/versions/${v3}/admit`, 'POST')).status).toBe(409);
+  });
+
+  // #1765: the route holds manifestJson to the parser every reader uses.
+  describe('POST /verticals/:slug/versions — manifestJson at the boundary', () => {
+    const post = (id: string, manifestJson: string | null | undefined) =>
+      json('/verticals/fsm/versions', 'POST', version(id, manifestJson === undefined ? {} : { manifestJson }));
+
+    it('refuses a manifest that is not JSON, and stores nothing', async () => {
+      const id = ulid();
+      const res = await post(id, '{not json');
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toMatch(/not valid JSON/);
+      expect((await get(`/verticals/fsm/versions/${id}/registry`)).status).toBe(404);
+    });
+
+    it('refuses JSON no reader could open, naming the field', async () => {
+      const res = await post(ulid(), JSON.stringify({ version: 'x', compatibilityDate: '2026-07-01' }));
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toMatch(/entry/);
+      // The next case along: JSON that is not an object at all.
+      expect((await post(ulid(), '[]')).status).toBe(400);
+      expect((await post(ulid(), '"a string"')).status).toBe(400);
+    });
+
+    it('accepts what the push path stores — a parsed deployManifest, re-serialized — and serves it back', async () => {
+      const id = ulid();
+      const parsed = deployManifest.parse({
+        version: id.slice(-6),
+        entry: 'index.js',
+        compatibilityDate: '2026-07-01',
+        registry: { permissions: [], roles: [], entityGrants: [] },
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      });
+      const res = await post(id, JSON.stringify(parsed));
+      expect(res.status).toBe(201);
+      expect((await get(`/verticals/fsm/versions/${id}/registry`)).status).toBe(200);
+    });
+
+    it('still accepts a pre-#286 version with no manifest, and one with no registry', async () => {
+      expect((await post(ulid(), null)).status).toBe(201);
+      expect((await post(ulid(), undefined)).status).toBe(201);
+      const legacy = JSON.stringify({
+        version: 'old',
+        entry: 'index.js',
+        compatibilityDate: '2026-07-01',
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      });
+      expect((await post(ulid(), legacy)).status).toBe(201);
+    });
   });
 
   // The permission registry read (D-39, #336) — the dashboard's Permissions tab consumes it.
