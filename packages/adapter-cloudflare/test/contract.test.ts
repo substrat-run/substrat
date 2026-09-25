@@ -636,6 +636,70 @@ describe('#1674 — a hosted scope is re-asserted through the delegation, after 
 });
 
 /**
+ * #1674 — the switch record's one-time backfill, on DO SQLite. The kernel test proves the
+ * statement on node's SQLite; this proves it where it runs in production (`json_extract` and
+ * a window function, inside the directory DO), through the real path that reaches it: a
+ * directory restored from a dump taken before the table existed. A fresh DO name is a
+ * fresh, isolated directory.
+ */
+describe('#1674 — the switch record is backfilled from the admin log, once, on DO SQLite', () => {
+  type Directory = {
+    exportDump(): Promise<{ name: string; ddl: string; columns: string[]; rows: unknown[][] }[]>;
+    importDump(tables: unknown[]): Promise<void>;
+    listSystemSwitches(filter: object): Promise<{ scopeId: string; moduleId: string; position: string; reason: string }[]>;
+  };
+  const directory = () => env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`backfill-${ulid()}`)) as unknown as Directory;
+  let seq = 0;
+  const history = (columns: string[]) => {
+    const row = (action: string, scope: string, after: object) => {
+      const values: Record<string, unknown> = {
+        id: `01BACKFILL${String(++seq).padStart(16, '0')}`,
+        actor: 'staff',
+        action,
+        tenant_id: 'tenant-a',
+        scope_id: scope,
+        after: JSON.stringify(after),
+        at: '2026-09-01T00:00:00.000Z',
+      };
+      return columns.map((c) => values[c] ?? null);
+    };
+    const call = (to: 'on' | 'off', scope: string, outcome: string, reason: string) => {
+      const action = to === 'off' ? 'revokeFromSystem' : 'restoreToSystem';
+      const operationId = `op-${ulid()}`;
+      const common = { operationId, moduleId: '@test/sched', schedules: to };
+      return [row(action, scope, { ...common, phase: 'intent', reason }), row(action, scope, { ...common, phase: outcome })];
+    };
+    return [
+      ...call('off', 's-latest', 'applied', 'first'),
+      ...call('on', 's-latest', 'applied', 'fixed'),
+      ...call('off', 's-latest', 'applied', 'again'),
+      ...call('off', 's-refused', 'refused', 'typo'),
+    ];
+  };
+  const withHistory = async (keepRecordTable: boolean) => {
+    const dir = directory();
+    const tables = await dir.exportDump();
+    return tables
+      .filter((t) => keepRecordTable || t.name !== '_substrat_system_switches')
+      .map((t) => (t.name === '_substrat_admin_log' ? { ...t, rows: [...t.rows, ...history(t.columns)] } : t));
+  };
+
+  it('a restored directory from before the table gets it backfilled: the latest APPLIED call, never a refused one', async () => {
+    const dir = directory();
+    await dir.importDump(await withHistory(false));
+    expect((await dir.listSystemSwitches({})).map((r) => [r.scopeId, r.position, r.reason])).toEqual([
+      ['s-latest', 'off', 'again'],
+    ]);
+  });
+
+  it('twin: a dump that already carries the table is not backfilled — it runs once, when the table is created', async () => {
+    const dir = directory();
+    await dir.importDump(await withHistory(true));
+    expect(await dir.listSystemSwitches({})).toEqual([]);
+  });
+});
+
+/**
  * #1666's two write-side guarantees on DO SQLite, each with the one lever a contract suite
  * cannot hold: a newer VERSION of a module (a second facade registering a manifest that
  * declares one more schedule permission — the coordinator's `provisionScope` seats from
