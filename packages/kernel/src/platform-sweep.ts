@@ -1472,7 +1472,16 @@ async function sweepCrossVertical(
 
   // Narrowed BEFORE any scope is called, then capped. The resolution below still needs every
   // primary scope (a producer is any of them), and that is the one directory read above.
-  const candidates = await candidatesOf(scopes, ...(from !== null ? [{ from }] : []));
+  // Contained: the narrowing may read the version registry (the control plane's reach), and a
+  // failed read must cost this phase one pass, not sink the phases after it. No scope is called,
+  // every watermark holds, and the next pass asks again.
+  let candidates: readonly Scope[];
+  try {
+    candidates = await candidatesOf(scopes, ...(from !== null ? [{ from }] : []));
+  } catch (err) {
+    report.errors.push({ kind: 'vertical-events', id: 'candidates', error: message(err) });
+    return out;
+  }
   out.candidates = candidates.length;
   const configuredCap = cv.maxConsumers ?? CROSS_VERTICAL_CONSUMERS_PER_PASS;
   const cap = Number.isFinite(configuredCap) && configuredCap >= 0 ? Math.floor(configuredCap) : CROSS_VERTICAL_CONSUMERS_PER_PASS;

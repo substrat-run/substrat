@@ -1887,6 +1887,24 @@ describe('registryImportCandidates (#1705 PR 2)', () => {
     expect(reads).toEqual(['listVerticals', `versionManifest:${V1}`]);
   });
 
+  it('a registry read that fails costs this phase one pass, and never the phases after it', async () => {
+    const scopes = scopesOn(3, V1);
+    const admin = {
+      listVerticals: async () => [],
+      versionManifest: async () => {
+        throw new Error('directory unavailable');
+      },
+    };
+    const { host, called, reachOver } = hostWith(scopes);
+    const report = await runPlatformSweep(host, {
+      ...quiet,
+      crossVertical: { reach: reachOver(registryImportCandidates({ admin: admin as never, actor: ACTOR, importsOf })) },
+    });
+    expect(called).toEqual([]);
+    expect(report.errors).toEqual([{ kind: 'vertical-events', id: 'candidates', error: 'directory unavailable' }]);
+    expect(report.crossVertical).toMatchObject({ edges: [], candidates: 0 });
+  });
+
   it('with a `from` hint, a scope that imports only from someone else is dropped', async () => {
     const fromCrm = scopesOn(1, V1);
     const fromOther = scopesOn(1, V2);
