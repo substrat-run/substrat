@@ -1066,16 +1066,26 @@ export class ControlPlaneDO extends DurableObject {
   /**
    * The DDL, then the migrations for a directory that predates part of it. Run on every
    * construction and after a directory restore, which may land a dump from before a table.
-   * The schedule switch's record (#1674) is backfilled from the admin log on the one run
-   * that creates its table, and never again.
+   *
+   * The schedule switch's record (#1674) is backfilled from the admin log on a run that
+   * creates its table, and its table is created in the SAME transaction as the backfill
+   * (Copilot review): the gate is "the table does not exist yet", so a table committed ahead
+   * of a backfill that then failed would read as already migrated on every later run. On
+   * such a run its statements are held back from the loop below and run with the backfill.
    */
   private applyDirectorySchema(): void {
     const switchRecordIsNew = !systemSwitchesTableExists(this.kernelSql);
     for (const stmt of splitSqlStatements(DIRECTORY_DDL)) {
+      if (switchRecordIsNew && stmt.includes('_substrat_system_switches')) continue;
       this.sql.exec(stmt);
     }
     this.ensureDirectoryColumns();
-    if (switchRecordIsNew) this.sql.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+    if (switchRecordIsNew) {
+      this.ctx.storage.transactionSync(() => {
+        for (const stmt of splitSqlStatements(SYSTEM_SWITCHES_DDL)) this.sql.exec(stmt);
+        this.sql.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      });
+    }
   }
 
   /**

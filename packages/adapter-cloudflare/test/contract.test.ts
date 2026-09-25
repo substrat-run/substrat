@@ -800,6 +800,21 @@ describe('#1674 — the switch record is backfilled from the admin log, once, on
     ]);
   });
 
+  it('a backfill that fails leaves no table behind, so it is retried rather than read as done (Copilot review)', async () => {
+    const dir = directory();
+    // A pre-table dump whose admin log keeps its payload under an old column name: the
+    // backfill's read of \`after\` fails outright.
+    const tables = (await withHistory(false)).map((t) =>
+      t.name === '_substrat_admin_log'
+        ? { ...t, ddl: t.ddl.replace(/\bafter TEXT\b/, 'payload TEXT'), columns: t.columns.map((c) => (c === 'after' ? 'payload' : c)) }
+        : t,
+    );
+    await expect(dir.importDump(tables)).rejects.toThrow(/after/);
+    const names = (await dir.exportDump()).map((t) => t.name);
+    expect(names).toContain('_substrat_admin_log');
+    expect(names).not.toContain('_substrat_system_switches');
+  });
+
   it('twin: a dump that already carries the table is not backfilled — it runs once, when the table is created', async () => {
     const dir = directory();
     await dir.importDump(await withHistory(true));
