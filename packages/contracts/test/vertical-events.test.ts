@@ -3,6 +3,10 @@ import {
   importsOfManifestJson,
   buildPermissionRegistry,
   eventsExportedBy,
+  exportedEventSchemasOf,
+  emitModel,
+  emittedModel,
+  z,
   moduleManifest,
   sweepRunsPayload,
   type ModuleManifest,
@@ -116,6 +120,51 @@ describe('eventsExportedBy — the PII rule at declaration (#1705)', () => {
     expect(() => eventsExportedBy({}, { 'm.ghost': 'thing:read' })).toThrow(/no operation emits it/);
     const ops = { 'm/a': op('m.made', 'none', 1), 'm/b': op('m.made', 'none', 2) };
     expect(() => eventsExportedBy(ops, { 'm.made': 'thing:read' })).toThrow(/schemaVersions 1, 2/);
+  });
+});
+
+describe('exportedEventSchemasOf — the payload another vertical parses, into the model (#1705 PR 3, D-22)', () => {
+  const output = z.object({ id: z.string(), name: z.string(), note: z.string().optional(), secret: z.string() });
+  const op = (payload?: string[], out: z.ZodType = output) => ({
+    output: out,
+    emits: { entity: 'thing', entityIdFrom: 'id', type: 'm.made', schemaVersion: 1, piiClass: 'none', ...(payload ? { payload } : {}) },
+  });
+  const exported = [{ type: 'm.made', schemaVersion: 1, readPermission: 'thing:read' }];
+
+  it('is the output picked to the declared payload fields, and nothing else of it', () => {
+    const [e] = exportedEventSchemasOf({ 'm/make': op(['id', 'name', 'note']) }, exported);
+    expect(e).toMatchObject({ type: 'm.made', schemaVersion: 1, readPermission: 'thing:read' });
+    expect(Object.keys((e!.payload as { properties: object }).properties).sort()).toEqual(['id', 'name', 'note']);
+    expect((e!.payload as { required: string[] }).required.sort()).toEqual(['id', 'name']);
+    expect(JSON.stringify(e!.payload)).not.toContain('secret');
+    expect(e!.payload).not.toHaveProperty('$schema');
+  });
+
+  it('an operation that declares no payload promises an empty object', () => {
+    const [e] = exportedEventSchemasOf({ 'm/make': op() }, exported);
+    expect((e!.payload as { properties: object }).properties).toEqual({});
+  });
+
+  it('refuses two operations promising different shapes under one (type, version); the same shape twice is fine', () => {
+    expect(() => exportedEventSchemasOf({ 'm/a': op(['id']), 'm/b': op(['id', 'name']) }, exported)).toThrow(
+      /m\/a and m\/b with different payloads/,
+    );
+    expect(exportedEventSchemasOf({ 'm/a': op(['id']), 'm/b': op(['id']) }, exported)).toHaveLength(1);
+  });
+
+  it('refuses a payload drawn from a non-object output, and an export nobody emits', () => {
+    expect(() => exportedEventSchemasOf({ 'm/make': op(['id'], z.array(z.string())) }, exported)).toThrow(/not an object/);
+    expect(() => exportedEventSchemasOf({}, exported)).toThrow(/no operation emits it/);
+  });
+
+  it('lands in the emitted model, sorted, and a model that exports nothing is unchanged', () => {
+    const entities = { thing: { table: 'things', fields: z.object({ id: z.string() }) } };
+    const none = emitModel(entities);
+    expect(none).not.toHaveProperty('exports');
+    const withExports = emitModel(entities, { exports: exportedEventSchemasOf({ 'm/make': op(['id']) }, exported) });
+    expect(Object.keys(withExports.exports ?? {})).toEqual(['m.made']);
+    // What a control plane re-parses at a trust boundary still parses.
+    expect(emittedModel.parse(JSON.parse(JSON.stringify(withExports)))).toEqual(withExports);
   });
 });
 

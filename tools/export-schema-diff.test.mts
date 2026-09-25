@@ -1,0 +1,132 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { classifyExports, run } from './export-schema-diff.mts';
+
+const TOOL = resolve(dirname(fileURLToPath(import.meta.url)), 'export-schema-diff.mts');
+
+const obj = (properties: Record<string, unknown>, required: string[] = []) => ({
+  type: 'object',
+  properties,
+  required,
+  additionalProperties: false,
+});
+const exp = (schemaVersion: number, payload: Record<string, unknown>) => ({ schemaVersion, readPermission: 'r:read', payload });
+const base = { 'crm.customer-created': exp(1, obj({ id: { type: 'string' }, name: { type: 'string' } }, ['id', 'name'])) };
+const rules = (head: Record<string, ReturnType<typeof exp>>) =>
+  classifyExports('m.json', base, head).map((v) => `${v.rule}:${v.field ?? '-'}`);
+
+test('a removed field at the same version is refused; bumped, it passes', () => {
+  const head = { 'crm.customer-created': exp(1, obj({ id: { type: 'string' } }, ['id'])) };
+  assert.deepEqual(rules(head), ['removed:name']);
+  assert.deepEqual(rules({ 'crm.customer-created': exp(2, obj({ id: { type: 'string' } }, ['id'])) }), []);
+});
+
+test('a retyped field is refused; a changed description is not a retype', () => {
+  const retyped = { 'crm.customer-created': exp(1, obj({ id: { type: 'string' }, name: { type: 'number' } }, ['id', 'name'])) };
+  assert.deepEqual(rules(retyped), ['retyped:name']);
+  const described = {
+    'crm.customer-created': exp(1, obj({ id: { type: 'string' }, name: { type: 'string', description: 'the name' } }, ['id', 'name'])),
+  };
+  assert.deepEqual(rules(described), []);
+});
+
+test('a newly required field is refused — events already sent at this version lack it; a new optional one passes', () => {
+  const required = {
+    'crm.customer-created': exp(1, obj({ id: { type: 'string' }, name: { type: 'string' }, org: { type: 'string' } }, ['id', 'name', 'org'])),
+  };
+  assert.deepEqual(rules(required), ['newly-required:org']);
+  const optional = {
+    'crm.customer-created': exp(1, obj({ id: { type: 'string' }, name: { type: 'string' }, org: { type: 'string' } }, ['id', 'name'])),
+  };
+  assert.deepEqual(rules(optional), []);
+});
+
+test('a field no longer required is refused', () => {
+  const loosened = { 'crm.customer-created': exp(1, obj({ id: { type: 'string' }, name: { type: 'string' } }, ['id'])) };
+  assert.deepEqual(rules(loosened), ['no-longer-required:name']);
+});
+
+test('a schemaVersion that went down is refused; a dropped export is the promote gate\'s, not this one\'s', () => {
+  const b2 = { t: exp(2, obj({ id: { type: 'string' } }, ['id'])) };
+  assert.deepEqual(
+    classifyExports('m.json', b2, { t: exp(1, obj({ id: { type: 'string' } }, ['id'])) }).map((v) => v.rule),
+    ['version-down'],
+  );
+  assert.deepEqual(classifyExports('m.json', b2, {}), []);
+  // A new export is additive.
+  assert.deepEqual(classifyExports('m.json', {}, b2), []);
+});
+
+// -- against a real repository --------------------------------------------------------------
+
+function repo(t: { after(fn: () => void): void }) {
+  const dir = mkdtempSync(join(tmpdir(), 'export-schema-diff-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const g = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  g('init', '-q', '-b', 'main');
+  g('config', 'user.email', 't@example.invalid');
+  g('config', 'user.name', 't');
+  const write = (model: unknown) => {
+    mkdirSync(join(dir, 'demos/crm'), { recursive: true });
+    writeFileSync(join(dir, 'demos/crm/model.json'), JSON.stringify(model, null, 2));
+  };
+  return { dir, g, write };
+}
+
+test('against the base branch: a break is found, and the twin (the same change, bumped) passes', (t) => {
+  const { dir, g, write } = repo(t);
+  write({ entities: {}, exports: base });
+  g('add', '.');
+  g('commit', '-q', '-m', 'base');
+  g('checkout', '-q', '-b', 'change');
+  write({ entities: {}, exports: { 'crm.customer-created': exp(1, obj({ id: { type: 'string' } }, ['id'])) } });
+  g('commit', '-qam', 'drop name');
+  assert.deepEqual(run('main', dir).map((v) => v.rule), ['removed']);
+  write({ entities: {}, exports: { 'crm.customer-created': exp(2, obj({ id: { type: 'string' } }, ['id'])) } });
+  g('commit', '-qam', 'bump');
+  assert.deepEqual(run('main', dir), []);
+});
+
+test('a model.json the base genuinely lacks is new, and passes', (t) => {
+  const { dir, g, write } = repo(t);
+  writeFileSync(join(dir, 'README'), 'x');
+  g('add', '.');
+  g('commit', '-q', '-m', 'base');
+  g('checkout', '-q', '-b', 'change');
+  write({ entities: {}, exports: base });
+  g('add', '.');
+  g('commit', '-q', '-m', 'first export');
+  assert.deepEqual(run('main', dir), []);
+});
+
+test('a base that is not in the checkout is exit 2, never read as "new file" — on a shallow clone it says so', (t) => {
+  const { dir, g, write } = repo(t);
+  write({ entities: {}, exports: base });
+  g('add', '.');
+  g('commit', '-q', '-m', 'base');
+  const baseSha = g('rev-parse', 'HEAD').trim();
+  write({ entities: {}, exports: { 'crm.customer-created': exp(1, obj({ id: { type: 'string' } }, ['id'])) } });
+  g('commit', '-qam', 'break it');
+  // A depth-1 clone holds the breaking commit and not the base it would be compared with.
+  const shallow = mkdtempSync(join(tmpdir(), 'export-schema-diff-shallow-'));
+  t.after(() => rmSync(shallow, { recursive: true, force: true }));
+  execFileSync('git', ['clone', '-q', '--depth', '1', `file://${dir}`, shallow]);
+  const res = spawnSync('npx', ['tsx', TOOL, '--base', baseSha, '--root', shallow], { encoding: 'utf8' });
+  assert.equal(res.status, 2, res.stderr);
+  assert.match(res.stderr, /not in this checkout.*shallow clone/);
+  const missing = spawnSync('npx', ['tsx', TOOL, '--base', 'refs/heads/no-such-base'], { cwd: dir, encoding: 'utf8' });
+  assert.equal(missing.status, 2, missing.stderr);
+  assert.match(missing.stderr, /cannot run/);
+  // The twin: with the base present, the same break is found (exit 1), not skipped.
+  assert.deepEqual(run(baseSha, dir).map((v) => v.rule), ['removed']);
+});
+
+test('no --base is exit 2', () => {
+  const res = spawnSync('npx', ['tsx', TOOL], { encoding: 'utf8' });
+  assert.equal(res.status, 2);
+});
