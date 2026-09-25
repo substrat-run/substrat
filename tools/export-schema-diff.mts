@@ -139,6 +139,20 @@ function compareSchemas(
     push('retyped', path || null, path ? `'${path}' changed shape` : 'the payload schema changed');
     return;
   }
+  // A record (`z.record`) says its value type in `additionalProperties`. A boolean there only
+  // opens or closes the object, and is exempt. A schema there is the type of every value, and is
+  // compared as a field would be, under `<path>[*]`.
+  const ba = bs.additionalProperties;
+  const ha = hs.additionalProperties;
+  const schemaValued = (a: unknown) => a !== null && typeof a === 'object';
+  if (schemaValued(ba) || schemaValued(ha)) {
+    const at2 = path ? `${path}[*]` : '[*]';
+    if (schemaValued(ba) && schemaValued(ha)) {
+      compareSchemas(at, at2, ba as Record<string, unknown>, ha as Record<string, unknown>);
+    } else {
+      push('retyped', at2, `the values of '${path || 'the payload'}' changed from ${shape(ba)} to ${shape(ha)}`);
+    }
+  }
   const bp = propertiesOf(bs);
   const hp = propertiesOf(hs);
   for (const field of Object.keys(bp).sort()) {

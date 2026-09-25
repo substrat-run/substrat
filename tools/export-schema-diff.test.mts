@@ -114,6 +114,26 @@ test('inside a nested object, an optional field added is additive, and a removed
   assert.deepEqual(classifyExports('m.json', base, { t: exp(1, p({ type: 'string' })) }).map((v) => `${v.rule}:${v.field}`), ['retyped:org']);
 });
 
+test("a record's value type is compared (z.record), and a boolean additionalProperties stays exempt", () => {
+  const rec = (value: unknown) => obj({ tags: { type: 'object', propertyNames: { type: 'string' }, additionalProperties: value } }, ['tags']);
+  const base = { t: exp(1, rec({ type: 'string' })) };
+  // Record<string, string> -> Record<string, number>: every value is retyped.
+  assert.deepEqual(classifyExports('m.json', base, { t: exp(1, rec({ type: 'number' })) }).map((v) => `${v.rule}:${v.field}`), [
+    'retyped:tags[*]',
+  ]);
+  // The twin: the same value type passes.
+  assert.deepEqual(classifyExports('m.json', base, { t: exp(1, rec({ type: 'string' })) }), []);
+  // A record of objects is compared through, so an optional field added to the values is additive.
+  const objs = (props: Record<string, unknown>) => rec({ type: 'object', properties: props, required: ['id'] });
+  assert.deepEqual(
+    classifyExports('m.json', { t: exp(1, objs({ id: { type: 'string' } })) }, { t: exp(1, objs({ id: { type: 'string' }, note: { type: 'string' } })) }),
+    [],
+  );
+  // A boolean additionalProperties opening or closing an object is not judged.
+  const open = (a: boolean) => ({ type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: a });
+  assert.deepEqual(classifyExports('m.json', { t: exp(1, open(false)) }, { t: exp(1, open(true)) }), []);
+});
+
 test('a change inside anyOf/oneOf is a retype', () => {
   const p = (alts: unknown[]) => obj({ v: { anyOf: alts } }, ['v']);
   assert.deepEqual(
