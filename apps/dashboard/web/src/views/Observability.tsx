@@ -1,7 +1,7 @@
 import { readObsQuery, queryWindow, type ObsQuery } from '../lib/observability-query';
 import { ObservabilityTime } from '../components/ObservabilityTime';
 import { InspectableTraffic } from '../components/InspectableTraffic';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Button, Select } from '@substrat-run/ui';
 import {
   api,
@@ -20,6 +20,7 @@ import { AppSchedules } from './AppSchedules';
 import { FleetHealth } from './Apps';
 import { Flow } from './Flow';
 import { EventExplorer, TenantLogs, TenantTrafficTable } from './ObservabilityPanels';
+import { SECTION_VIEWS, defaultView, sectionLabel, sectionOf, type ObsSection } from '../lib/obs-sections';
 
 /** One shared, URL-owned query window for traffic, logs, event facets and changes.
  * Registry changes are contextual facts; snapshot panels explicitly state their coverage.
@@ -121,12 +122,19 @@ export function Observability({
 
   const app = scopeId ? apps.find((a) => a.app_scope_id === scopeId) : undefined;
   const oneApp = scopeId !== null;
-  // A sub-view the current mode cannot answer falls back to Traffic rather than rendering
-  // blank: `?view=logs` with the filter back on All apps is a stale link, not an error.
+  // Which menu child is open (#1767) — derived from the sub-view, never stored beside it.
+  const section: ObsSection = sectionOf(view);
+  // A Pulse sub-view the current mode cannot answer falls back to Traffic rather than
+  // rendering blank: `?view=schedules` with the filter back on All apps is a stale link,
+  // not an error. Logs and Processes do NOT fall back: every one of their sub-views is
+  // per app, so falling back would leave the reader on Pulse with the menu saying Logs.
+  // They ask for an app instead (`needsApp`).
   const active: ViewKey = useMemo(() => {
-    const wanted = VIEWS.find((v) => v.key === view);
-    return wanted && available(wanted, oneApp) ? wanted.key : 'traffic';
-  }, [view, oneApp]);
+    const wanted = VIEWS.find((v) => v.key === (view ?? defaultView(section)));
+    if (wanted && (available(wanted, oneApp) || section !== 'pulse')) return wanted.key;
+    return 'traffic';
+  }, [view, oneApp, section]);
+  const needsApp = !available(VIEWS.find((v) => v.key === active)!, oneApp);
 
   useEffect(() => {
     let live = true;
@@ -241,11 +249,9 @@ export function Observability({
     <Page>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <span style={{ fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>Observability</span>
+          <h1 style={{ margin: 0, fontSize: 22, lineHeight: '29px', fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>{sectionLabel(section)}</h1>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-            {app
-              ? <>Traffic, logs, events and schedules for <strong style={{ fontWeight: 550 }}>{app.name}</strong>.</>
-              : 'Every app on this team, on one time axis.'}
+            {SUBTITLE[section](app?.name)}
           </div>
         </div>
         <div style={{ flex: 1 }} />
@@ -261,7 +267,7 @@ export function Observability({
             onNav({
               ...(next ? { app: next } : {}),
               invocationId: undefined,
-              ...(wanted && available(wanted, next !== '') ? { view: active } : {}),
+              ...(wanted && (available(wanted, next !== '') || section !== 'pulse') ? { view: active } : {}),
             });
           }}
           style={{ width: 200 }}
@@ -336,9 +342,12 @@ export function Observability({
         </span>
       </div>
 
+      {/* Hidden while the page asks for an app: every entry would be disabled, and a row of
+          dead buttons above "Pick an app" says the same thing twice. */}
+      {SECTION_VIEWS[section].length > 1 && !needsApp && (
       <Segmented
         label="Sub-view"
-        options={VIEWS.map((v) => ({
+        options={VIEWS.filter((v) => SECTION_VIEWS[section].includes(v.key)).map((v) => ({
           key: v.key,
           label: v.label,
           ...(available(v, oneApp) ? {} : { disabled: true, title: 'Pick an app' }),
@@ -353,6 +362,9 @@ export function Observability({
         // would simply be larger.
         onPick={(k) => onNav({ ...(scopeId ? { app: scopeId } : {}), view: k, ...(cursor ?? {}) })}
       />
+      )}
+
+      {needsApp && <PickApp section={section} apps={apps} onPick={(s) => onNav({ app: s, view: active, ...(cursor ?? {}) })} />}
 
       {/* Not drawn under an unavailable chart: `deriveTeamSeries` zero-fills every line
           whether or not the plane answered, so these rows would put "0 requests" beside
@@ -393,7 +405,7 @@ export function Observability({
       {scopeId && active === 'schedules' && (
         <AppSchedules key={`${scopeId}:${nonce}`} scopeId={scopeId} window={panelWindow} />
       )}
-      {(active === 'flow' || active === 'schedules' || active === 'health') && <p style={{ fontSize: 12 }}>This view is a current snapshot. Schedule highlights cover only the returned recent runs; it is not a complete historical query.</p>}
+      {!needsApp && (active === 'flow' || active === 'schedules' || active === 'health') && <p style={{ fontSize: 12 }}>This view is a current snapshot. Schedule highlights cover only the returned recent runs; it is not a complete historical query.</p>}
       {app && active === 'flow' && <Flow key={`${app.app_scope_id}:${nonce}`} app={app} />}
     </Page>
   );
@@ -574,6 +586,43 @@ function Segmented({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/** The page subtitle per menu child: what it answers, for the app filter's current grain. */
+const SUBTITLE: Record<ObsSection, (app?: string) => ReactNode> = {
+  pulse: (app) =>
+    app ? <>Traffic, health and schedules for <strong style={{ fontWeight: 550 }}>{app}</strong>, on one time axis.</> : 'Every app on this team, on one time axis.',
+  processes: (app) =>
+    app ? <>How <strong style={{ fontWeight: 550 }}>{app}</strong> is wired: triggers, events, consumers and connections.</> : 'How each app is wired: triggers, events, consumers and connections.',
+  logs: (app) =>
+    app ? <>Log lines and emitted events for <strong style={{ fontWeight: 550 }}>{app}</strong>.</> : 'Log lines and emitted events, one app at a time.',
+};
+
+/**
+ * Logs and Processes answer per app. With the filter on All apps they say so and list
+ * the apps to pick, rather than falling back to Pulse — the menu would then name a page
+ * the reader is not on.
+ */
+function PickApp({ section, apps, onPick }: { section: ObsSection; apps: AppRow[]; onPick: (scopeId: string) => void }) {
+  return (
+    <div style={{ ...card, padding: 16, display: 'grid', gap: 10 }}>
+      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Pick an app</div>
+      <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+        {section === 'logs' ? 'Logs and events are read one app at a time.' : 'The flow map is drawn one app at a time.'}
+      </div>
+      {apps.length === 0 ? (
+        <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>This team has no apps yet.</div>
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {apps.map((a) => (
+            <Button key={a.app_scope_id} variant="secondary" size="sm" onClick={() => onPick(a.app_scope_id)}>
+              {a.name}
+            </Button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

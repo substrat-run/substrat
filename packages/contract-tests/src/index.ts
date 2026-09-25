@@ -29,6 +29,7 @@ export {
 export { peerContractSuite, verticalResolutionContractSuite } from './peer-suite.js';
 export { inputParseContractSuite } from './input-parse-suite.js';
 export { spineGuardContractSuite } from './spine-guard-suite.js';
+export { sqlLimitsContractSuite } from './sql-limits-suite.js';
 export { grantExpiryContractSuite } from './grant-expiry-suite.js';
 export { facetRecencyContractSuite, type FacetRecencyFixture } from './facet-recency-suite.js';
 export type { GrantExpiryFixture } from './grant-expiry-suite.js';

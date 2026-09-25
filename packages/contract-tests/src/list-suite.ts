@@ -184,6 +184,20 @@ export function listContractSuite(
     });
 
     /**
+     * #1741. A set filter bound one `?` per member, and the walk adds the cursor and the page
+     * size to the same statement — so a caller-supplied set of 100 members was a statement
+     * with 104 parameters, over the 100 a Durable Object allows, on a page that node ran
+     * happily. Members that match nothing are the point: the set is wide, the answer is not.
+     */
+    it('filters on a set far wider than a statement may bind, through the whole walk', async () => {
+      const wide = [...Array.from({ length: 300 }, (_, i) => `none-${i}`), 'closed'];
+      const seen = await walkAll({ filters: { status: wide } }, 1);
+      expect(seen).toEqual(['01D', '01F']);
+      const counted = (await page({ limit: 1, filters: { status: wide }, total: true })) as CountedPage<Row>;
+      expect(counted.total).toBe(2);
+    });
+
+    /**
      * A caller that narrowed to nothing asked for nothing. Dropping an empty clause
      * would hand back the WHOLE table instead — the widest possible answer to the
      * narrowest possible question, and a permission-shaped bug wherever the set is

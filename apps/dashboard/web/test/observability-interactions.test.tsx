@@ -324,3 +324,51 @@ it('partial-window marker stacks keep separate buckets independently visible', a
   expect(overlay.querySelectorAll('[role="button"]')).toHaveLength(4);
   expect(overlay.textContent).not.toContain('+1');
 });
+
+describe('menu children (#1767)', () => {
+  const render = async (view: string, scopeId: string | null, onNav = vi.fn()) => {
+    vi.spyOn(api, 'teamTraffic').mockResolvedValue({ series: [{ scopeId: 'app-a', buckets }], available: true, bucketMinutes: 15 });
+    vi.spyOn(api, 'appTraffic').mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15 } as Awaited<ReturnType<typeof api.appTraffic>>);
+    await act(async () =>
+      root.render(
+        <Observability
+          apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
+          query={new URLSearchParams({ view, ...(scopeId ? { app: scopeId } : {}) }).toString()}
+          scopeId={scopeId}
+          view={view}
+          focusEventType={null}
+          cursor={null}
+          onNav={onNav}
+        />,
+      ),
+    );
+    return onNav;
+  };
+  const heading = () => container.querySelector('h1')!.textContent;
+  const subViews = () => [...container.querySelectorAll('[aria-label="Sub-view"] button')].map((b) => b.textContent);
+
+  it('titles the page by the child and offers only that child’s sub-views', async () => {
+    await render('events', 'app-a');
+    expect(heading()).toBe('Logs');
+    expect(subViews()).toEqual(['Logs', 'Events']);
+  });
+
+  it('asks for an app on Logs with All apps, instead of falling back to Pulse', async () => {
+    const onNav = await render('logs', null);
+    expect(heading()).toBe('Logs');
+    click(button('App A'));
+    expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-a', view: 'logs' }));
+  });
+
+  it('draws no sub-view switch on a child with one view', async () => {
+    await render('flow', null);
+    expect(heading()).toBe('Processes');
+    expect(container.querySelector('[aria-label="Sub-view"]')).toBeNull();
+  });
+
+  it('still falls back to Traffic for a per-app Pulse view on All apps', async () => {
+    await render('schedules', null);
+    expect(heading()).toBe('Pulse');
+    expect(container.textContent).not.toContain('Pick an app');
+  });
+});
