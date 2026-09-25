@@ -494,7 +494,10 @@ export function moveImportCursor(
   });
   if (move.mode === 'skip') {
     const ceiling = ulidCeiling(input.now);
-    const through = move.through === 'now' ? ceiling : move.through;
+    // "Now" is every millisecond BEFORE this one. An event minted in the skip's own millisecond may
+    // commit just after it, and a watermark at this millisecond's ceiling would pass over it
+    // silently. On the boundary the edge delivers rather than drops: at least once, never lost.
+    const through = move.through === 'now' ? ulidCeiling(input.now - 1) : move.through;
     // Not into the future: a watermark past now would pass over every event yet to be written,
     // silently, and the edge would then read as caught up. "Now" is as far as a skip reaches.
     if (through > ceiling) {

@@ -223,7 +223,8 @@ export const SKIP_EFFECT =
  *   importing module's handler runs AGAIN for every replayed event, and what it emits is a new
  *   event that fans out again. "Once per (event, module)" becomes "once per (event, module) per
  *   replay". Hence the acknowledgement, whose literal stands for `REPLAY_EFFECT`.
- * - `skip`: move the watermark forward to `through` (`'now'`: every event that exists yet), so
+ * - `skip`: move the watermark forward to `through` (`'now'`: every event of an earlier millisecond
+ *   than the skip's; one in the skip's own millisecond is delivered, never dropped), so
  *   what lies between is never delivered. Recoverable, since the producer's outbox keeps the
  *   events and a later replay reaches back to them. Still acknowledged, because nothing else
  *   tells the person that the app will simply not see those events.

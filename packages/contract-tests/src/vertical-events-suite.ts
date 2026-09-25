@@ -488,6 +488,12 @@ export function verticalEventsContractSuite(
       reason: 'the board app starts from today',
     });
     const refusal = (x: Promise<unknown>): Promise<unknown> => x.then(() => undefined, (e: unknown) => e);
+    /**
+     * Let the clock pass the millisecond an event was minted in. "Skip to now" passes over earlier
+     * milliseconds only, so a test that needs an event skipped must not share the skip's. A timer,
+     * not a spin: on workerd the clock does not move without I/O.
+     */
+    const nextMillisecond = () => new Promise<void>((r) => setTimeout(r, 2));
     const edgesOf = (report: PlatformSweepReport, t: TenantId) =>
       (report.crossVertical?.edges ?? []).filter((e) => e.tenantId === t);
     /** The edge INTO one consumer scope. crm imports from board too, so a tenant has two. */
@@ -907,6 +913,7 @@ export function verticalEventsContractSuite(
       const p = await install(t, CRM_VERTICAL);
       const c = await install(t, BOARD_VERTICAL);
       await create(t, p, 'Before the skip');
+      await nextMillisecond();
       const moved = await lever(t, c, skip('now'));
       expect(moved).toMatchObject({ mode: 'skip', previous: null, archived: { journal: 0, deliveries: 0 } });
       expect(moved.cursor).not.toBeNull();
@@ -928,6 +935,7 @@ export function verticalEventsContractSuite(
       const p = await install(t, CRM_VERTICAL);
       const c = await install(t, BOARD_VERTICAL);
       await create(t, p, 'Read before the skip');
+      await nextMillisecond();
       const read = await fx.producer.admin.readExportedEvents(staff, t, p, {
         consumer: BOARD_VERTICAL,
         after: null,
@@ -976,10 +984,24 @@ export function verticalEventsContractSuite(
       expect((await fx.consumer.admin.importState(staff, t, c)).cursors).toEqual([]);
       expect(await healthOf(t, c)).toMatchObject({ state: 'behind' });
       // The twin: to now, it moves, and an event written after it still arrives.
+      await nextMillisecond();
       await lever(t, c, skip('now'));
       await create(t, p, 'After');
       await sweep();
       expect((await board(t, c)).associations.map((r) => r.name)).toEqual(['After']);
+    });
+
+    it('skip to now never drops an event of its own millisecond: on the boundary it delivers', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      const moved = await lever(t, c, skip('now'));
+      // Whatever is written next, however soon, sorts after the watermark: it cannot have been
+      // minted in a millisecond earlier than the skip's.
+      await create(t, p, 'Right after');
+      await sweep();
+      expect((await board(t, c)).associations.map((r) => r.name)).toEqual(['Right after']);
+      expect(moved.cursor! < ulid()).toBe(true);
     });
 
     it('a replay without its acknowledgement never reaches the store', async () => {
