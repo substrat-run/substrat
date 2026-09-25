@@ -12,9 +12,11 @@ import {
   buildPermissionRegistry,
   DECLARED_MIGRATIONS_MAX,
   DECLARED_MIGRATIONS_SQL_BYTES_MAX,
+  DEPLOY_MANIFEST_BYTES_SAFE,
   deployManifest,
   emittedModel,
   sqlBytes,
+  utf8Length,
   type DeclaredMigration,
   envVarSpec,
   runtimeNeeds,
@@ -184,6 +186,26 @@ export function flattenDeclaredMigrations(permissions: PermissionsInput): { migr
     return { omitted: `${bytes} bytes of SQL, over the ${DECLARED_MIGRATIONS_SQL_BYTES_MAX} a manifest carries` };
   }
   return { migrations };
+}
+
+/**
+ * The manifest as it is sent: without `migrations` when carrying them would take the whole
+ * serialized manifest past {@link DEPLOY_MANIFEST_BYTES_SAFE} (#1677). The control plane keeps
+ * the manifest in one Durable-Object row, which refuses anything over 2 MB, and JSON-escaping
+ * can make the SQL several times its own size — so the SQL cap alone does not keep the row
+ * storable. Left off, the promote dialog says "SQL not available" and still asks. A manifest
+ * over the bound WITHOUT migrations is sent as it is: that is not this field's to decide.
+ */
+export function boundManifest(manifest: DeployManifest, warn: (message: string) => void = console.warn): DeployManifest {
+  if (!manifest.migrations) return manifest;
+  const bytes = utf8Length(JSON.stringify(manifest));
+  if (bytes <= DEPLOY_MANIFEST_BYTES_SAFE) return manifest;
+  warn(
+    `⚠ the SQL migrations are not carried in this version's manifest (the manifest would be ${bytes} bytes, over the ` +
+      `${DEPLOY_MANIFEST_BYTES_SAFE} the platform stores) — a promote of it will say the SQL is not available.`,
+  );
+  const { migrations: _omitted, ...rest } = manifest;
+  return rest;
 }
 
 export interface DeclaredSurface {
@@ -1249,7 +1271,7 @@ export async function push(
       );
     }
   };
-  const manifest = parseManifest({
+  const manifest = boundManifest(parseManifest({
     version: opts.version,
     name: opts.name ?? opts.slug,
     entry,
@@ -1332,7 +1354,7 @@ export async function push(
       permission: await permissionDigest(registry),
       migration: await sha256(Buffer.from(JSON.stringify(doClasses))),
     },
-  });
+  }));
 
   const form = new FormData();
   form.set('manifest', JSON.stringify(manifest));

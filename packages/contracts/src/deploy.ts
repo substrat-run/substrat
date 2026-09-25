@@ -788,7 +788,17 @@ export type DeclaredEventSurface = z.infer<typeof declaredEventSurface>;
 /** How many SQL migrations a manifest carries at most (#1677). */
 export const DECLARED_MIGRATIONS_MAX = 2000;
 /** How many bytes of SQL (UTF-8, summed over every migration) a manifest carries at most. */
-export const DECLARED_MIGRATIONS_SQL_BYTES_MAX = 2 * 1024 * 1024;
+export const DECLARED_MIGRATIONS_SQL_BYTES_MAX = 512 * 1024;
+/**
+ * How large a serialized deploy manifest may be for `substrat push` to send its migrations.
+ *
+ * The control plane stores the whole manifest as one row in a Durable Object, and a DO's
+ * SQLite refuses a string or row over 2 MB. Node's SQLite allows about a gigabyte, so no
+ * node suite sees the limit (the #1655 class). The SQL grows when JSON-escaped, so the SQL
+ * cap alone does not bound the row: the push measures the manifest it is about to send and
+ * leaves `migrations` off when the whole would pass this, well under the DO's limit.
+ */
+export const DEPLOY_MANIFEST_BYTES_SAFE = 1.5 * 1024 * 1024;
 
 /**
  * One SQL migration a module ships (#1677): the `(module, version)` pair the kernel journals
@@ -1005,5 +1015,8 @@ export type DeployManifest = z.infer<typeof deployManifest>;
  */
 export const storedDeployManifest = deployManifest.extend({
   registry: permissionRegistry.optional(),
+  // The caps are the push boundary's, not history's: lowering one must never make a
+  // stored version unreadable.
+  migrations: z.array(declaredMigration).optional(),
 });
 export type StoredDeployManifest = z.infer<typeof storedDeployManifest>;

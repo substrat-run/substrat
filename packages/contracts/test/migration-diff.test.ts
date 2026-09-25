@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   deployManifest,
+  storedDeployManifest,
   migrationsOnTop,
   DECLARED_MIGRATIONS_SQL_BYTES_MAX,
   MIGRATION_READ_MAX,
@@ -65,5 +66,12 @@ describe('deployManifest.migrations', () => {
     const sql = 'x'.repeat(DECLARED_MIGRATIONS_SQL_BYTES_MAX);
     expect(deployManifest.safeParse({ ...base, migrations: [m('1', sql)] }).success).toBe(true);
     expect(deployManifest.safeParse({ ...base, migrations: [m('1', sql), m('2', 'y')] }).success).toBe(false);
+  });
+
+  it('reads a STORED manifest over the push cap — the cap may move, history stays readable', () => {
+    const sql = 'x'.repeat(DECLARED_MIGRATIONS_SQL_BYTES_MAX);
+    const over = { ...base, migrations: [m('1', sql), m('2', 'y')] };
+    expect(deployManifest.safeParse(over).success).toBe(false);
+    expect(storedDeployManifest.parse(over).migrations).toHaveLength(2);
   });
 });

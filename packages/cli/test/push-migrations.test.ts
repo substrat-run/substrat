@@ -4,8 +4,8 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DECLARED_MIGRATIONS_MAX, type DeployManifest } from '@substrat-run/contracts';
-import { flattenDeclaredMigrations } from '../src/push.js';
+import { DECLARED_MIGRATIONS_MAX, DECLARED_MIGRATIONS_SQL_BYTES_MAX, DEPLOY_MANIFEST_BYTES_SAFE, type DeployManifest } from '@substrat-run/contracts';
+import { boundManifest, flattenDeclaredMigrations } from '../src/push.js';
 
 /**
  * The SQL migrations a push carries (#1677), driven through the real `push()` — the only
@@ -56,6 +56,10 @@ await push({ dir, slug: 'helpdesk', version: '1.0.0', controlPlaneUrl: 'http://c
 `;
 
 function pushed(dir: string): DeployManifest {
+  return pushedWith(dir).manifest;
+}
+
+function pushedWith(dir: string): { manifest: DeployManifest; stderr: string } {
   const scratch = mkdtempSync(join(tmpdir(), 'substrat-cli-push-'));
   // An `npx` that "builds" by writing the entry module into wrangler's --outdir.
   writeFileSync(
@@ -71,7 +75,7 @@ function pushed(dir: string): DeployManifest {
   });
   const line = (r.stdout ?? '').split('\n').find((l) => l.startsWith('MANIFEST '));
   if (r.status !== 0 || !line) throw new Error(`push did not upload (${r.status}):\n${r.stdout}\n${r.stderr}`);
-  return JSON.parse(line.slice('MANIFEST '.length)) as DeployManifest;
+  return { manifest: JSON.parse(line.slice('MANIFEST '.length)) as DeployManifest, stderr: r.stderr ?? '' };
 }
 
 const INIT = { version: '0001-init', sql: 'CREATE TABLE ticket (id TEXT PRIMARY KEY);' };
@@ -100,6 +104,15 @@ describe.runIf(built)('push carries each module’s SQL migrations (#1677)', () 
     const many = Array.from({ length: DECLARED_MIGRATIONS_MAX + 1 }, (_, i) => ({ version: String(i), sql: 'SELECT 1;' }));
     // `pushed` throws unless the upload happened, so reaching the assertion is the push succeeding.
     expect(pushed(vertical([{ id: 'helpdesk', migrations: many }])).migrations).toBeUndefined();
+  });
+
+  it('leaves the field OFF when escaping takes the MANIFEST past what the platform stores, though the SQL is under its cap', () => {
+    // Control characters escape to six bytes each in JSON: under the SQL cap, over the row.
+    const sql = '\u0001'.repeat(300 * 1024);
+    expect(sql.length).toBeLessThan(DECLARED_MIGRATIONS_SQL_BYTES_MAX);
+    const { manifest, stderr } = pushedWith(vertical([{ id: 'helpdesk', migrations: [{ version: '0001', sql }] }]));
+    expect(manifest.migrations).toBeUndefined();
+    expect(stderr).toMatch(/not carried in this version's manifest \(the manifest would be \d+ bytes/);
   });
 
   /**
@@ -142,5 +155,39 @@ describe('flattenDeclaredMigrations', () => {
       surface(Array.from({ length: DECLARED_MIGRATIONS_MAX }, (_, i) => ({ version: String(i), sql: '' }))) as never,
     );
     expect(r.migrations).toHaveLength(DECLARED_MIGRATIONS_MAX);
+  });
+});
+
+describe('boundManifest (#1677)', () => {
+  const manifestOf = (sqlLength: number) =>
+    ({
+      version: '1.0.0',
+      entry: 'index.js',
+      compatibilityDate: '2026-07-01',
+      compatibilityFlags: [],
+      doClasses: [],
+      bindings: [],
+      tenantStores: [],
+      blobStores: [],
+      registry: { permissions: [], roles: [], entityGrants: [] },
+      digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      migrations: [{ moduleId: 'helpdesk', version: '0001', sql: 'x'.repeat(sqlLength) }],
+    }) as unknown as DeployManifest;
+  const sizeOf = (m: DeployManifest) => Buffer.byteLength(JSON.stringify(m));
+  const warnings: string[] = [];
+  const warn = (w: string) => warnings.push(w);
+
+  it('keeps a manifest at the bound, and drops only `migrations` from one a byte over', () => {
+    const base = sizeOf(manifestOf(0));
+    const at = manifestOf(DEPLOY_MANIFEST_BYTES_SAFE - base);
+    expect(sizeOf(at)).toBe(DEPLOY_MANIFEST_BYTES_SAFE);
+    expect(boundManifest(at, warn)).toBe(at);
+    expect(warnings).toEqual([]);
+
+    const over = manifestOf(DEPLOY_MANIFEST_BYTES_SAFE - base + 1);
+    const sent = boundManifest(over, warn);
+    expect(sent.migrations).toBeUndefined();
+    expect({ ...sent, migrations: over.migrations }).toEqual(over);
+    expect(warnings).toHaveLength(1);
   });
 });
