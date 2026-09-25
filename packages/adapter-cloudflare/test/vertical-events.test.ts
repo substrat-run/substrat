@@ -22,7 +22,7 @@ import {
   crmExportMod,
   verticalEventsContractSuite,
 } from '@substrat-run/contract-tests';
-import { runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration } from '@substrat-run/kernel';
+import { runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration, type SweepRunInput } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vertical-host';
 import { ControlPlaneError, VerticalClient, hostedCrossVerticalReach } from '@substrat-run/control-plane-api';
 import { CloudflareScopeHost, type EventDrainDelegation } from '../src/host.js';
@@ -317,14 +317,15 @@ describe('a producer deployment that predates the cross-vertical routes (#1705 P
   const current = deployment(env.CRM_SCOPE, crmExportMod, CRM_OWNER);
   const board = deployment(env.BOARD_SCOPE, boardImportMod, BOARD_OWNER);
 
-  const sweepWith = async (crm: ReturnType<typeof deployment>) => {
+  const sweepWith = async (crm: ReturnType<typeof deployment>, consumer = board, runs: SweepRunInput[] = []) => {
     const reach = hostedCrossVerticalReach({
       admin: dir.admin,
       actor: staff,
-      clientForScope: routeTo(crm, board),
+      clientForScope: routeTo(crm, consumer),
       readImports: (slug, versionId) => dir.versionImports(slug, versionId),
     });
     const report = await runPlatformSweep(dir, {
+      recordSweepRun: (e) => runs.push(e),
       actor: staff,
       fetch: noFetch,
       sweepers: {},
@@ -391,6 +392,17 @@ describe('a producer deployment that predates the cross-vertical routes (#1705 P
       expect(old.paths).toEqual(['/internal/import-state', '/internal/import-events']);
     });
   }
+
+  it('an old consumer deployment is a failed edge to "*" in the sweep-run rows, never a silent skip', async () => {
+    const runs: SweepRunInput[] = [];
+    const edge = await sweepWith(current, deployment(env.BOARD_SCOPE, boardImportMod, BOARD_OWNER, 'routes-predate'), runs);
+    expect(edge).toMatchObject({ state: 'failed', producer: { vertical: '*' } });
+    // The board consumer's rows. (crm imports from board too, and reads through the same old
+    // deployment, so its own producer-side edge fails beside this one, as it should.)
+    expect(runs.filter((r) => r.unit.startsWith(`${c}:`))).toEqual([
+      expect.objectContaining({ kind: 'vertical-events', unit: `${c}:*`, outcome: 'failed', error: expect.stringMatching(/redeploy/) }),
+    ]);
+  });
 
   it('the same edge, once the producer is redeployed, delivers the backlog', async () => {
     const edge = await sweepWith(current);

@@ -213,7 +213,11 @@ deployment that cannot give one must not produce it. A script that predates the 
 404 or its SPA shell, and `VerticalClient` turns either into a 501 that says to redeploy. A
 current script over a host without the far ends answers the route's own 501. Either way the
 edge reports `failed` with that reason, and its watermark holds. It never reports `idle` over a
-backlog.
+backlog. On the consumer's side, where no producer has been named yet, the failure is an edge
+to `*`: a failed `<scope>:*` sweep-run row. The same row appears when the registry says a
+scope's code imports but its deployment answers that it imports nothing. That scope is not
+running the version the registry names, and saying so beats every edge into it quietly
+disappearing.
 
 **Every far end proves the scope is one it serves.** A vertical's deployment is CP-less and has no
 directory. An unprovisioned Durable Object answers every read with something plausible, such as a

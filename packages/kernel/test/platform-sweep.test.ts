@@ -1934,6 +1934,32 @@ describe('registryImportCandidates (#1705 PR 2)', () => {
     expect(peak()).toBe(3);
   });
 
+  it("a consumer whose imports cannot be read is a failed edge to '*', recorded", async () => {
+    const [only] = scopesOn(1, V1);
+    const { admin, readImports } = registry({ [V1]: manifestImporting(['acme/crm']) });
+    const { host, reachOver } = hostWith([only!]);
+    const reach = reachOver(registryImportCandidates({ admin, actor: ACTOR, readImports }));
+    reach.importState = async () => {
+      throw new Error('the deployment serving scope predates cross-vertical events (#1705) — redeploy the vertical');
+    };
+    const { report, runs } = await sweep(host, reach);
+    expect(runs).toEqual([
+      expect.objectContaining({ kind: 'vertical-events', unit: `${only!.id}:*`, outcome: 'failed', error: expect.stringMatching(/redeploy/) }),
+    ]);
+    expect(report.errors).toEqual([expect.objectContaining({ kind: 'vertical-events', id: `${only!.id}:*` })]);
+  });
+
+  it('a registry that says "imports" against a deployment that says "nothing" is a failed edge; a doubted scope is not', async () => {
+    const definite = scopesOn(1, V1);
+    const doubted = scopesOn(1, V2);
+    const { admin, readImports } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: '{not json' });
+    const { host, reachOver } = hostWith([...definite, ...doubted]);
+    const { runs } = await sweep(host, reachOver(registryImportCandidates({ admin, actor: ACTOR, readImports })));
+    const edgeRows = runs.filter((r) => !r.unit.startsWith('version:'));
+    expect(edgeRows).toEqual([
+      expect.objectContaining({ unit: `${definite[0]!.id}:*`, outcome: 'failed', error: expect.stringMatching(/not running the version the registry names/) }),
+    ]);
+  });
 });
 
 /**

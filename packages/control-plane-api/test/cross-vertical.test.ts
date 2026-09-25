@@ -246,7 +246,7 @@ describe('hostedCrossVerticalReach — the hosted cost bound (#1705 PR 2)', () =
     const [only] = scopesOn(1, IMPORTS);
     const { report } = await run([only!], async () => undefined);
     expect(report.errors).toEqual([
-      expect.objectContaining({ kind: 'vertical-events', id: only!.id, error: expect.stringMatching(/no deployment serving scope/) }),
+      expect.objectContaining({ kind: 'vertical-events', id: `${only!.id}:*`, error: expect.stringMatching(/no deployment serving scope/) }),
     ]);
   });
 });

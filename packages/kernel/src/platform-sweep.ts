@@ -1529,11 +1529,36 @@ async function sweepCrossVertical(
 
   await mapBounded(visiting, options.concurrency ?? 8, async (consumer) => {
     if (failedThisPass.has(consumer.id)) return;
+    // The consumer side, failing before any producer is named: an edge to `*`, so it lands in
+    // the sweep-run rows under `<scope>:*` beside the per-producer edges, not only in `errors`.
+    const consumerFailed = (reason: string): void =>
+      record({
+        tenantId: consumer.tenantId,
+        consumer: { scopeId: consumer.id, vertical: consumer.vertical ?? '' },
+        producer: { vertical: '*', scopeId: null },
+        state: 'failed',
+        delivered: 0,
+        deadLettered: 0,
+        withheld: 0,
+        duplicates: 0,
+        reason,
+      });
     let state: ImportState;
     try {
       state = await reach.importState(consumer.tenantId, consumer.id);
     } catch (err) {
-      report.errors.push({ kind: 'vertical-events', id: consumer.id, error: message(err) });
+      consumerFailed(`could not read the consumer's imports: ${message(err)}`);
+      return;
+    }
+    // A candidate is one whose code is known to import (or could not be judged). Its deployment
+    // answering that it imports NOTHING means the two disagree: the scope is not running the code
+    // the registry describes (a push that did not reach it, or a reconcile still owed). Said, not
+    // skipped: skipping would make every edge into this scope disappear without a trace.
+    if (state.consumes.length === 0 && reach.candidates && !doubtful.has(consumer.id)) {
+      consumerFailed(
+        "the version registry says this scope's code imports events, but its deployment answers that it " +
+          'imports nothing — it is not running the version the registry names; redeploy or reconcile it',
+      );
       return;
     }
     const bySource = new Map<string, WantedEvent[]>();
