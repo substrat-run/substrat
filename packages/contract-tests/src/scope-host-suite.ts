@@ -6961,6 +6961,14 @@ export function scopeHostContractSuite(
       // nothing, never degenerate into an unfiltered read of the whole fleet.
       expect(await host.admin.listScopes(staff, { tenantId: t5, status: [] })).toEqual([]);
 
+      // A list longer than a Durable Object binds parameters (#1776). Nothing bounds its
+      // length, since a status may repeat, and a `?` per entry was refused past 100.
+      const repeated = await host.admin.listScopes(staff, {
+        tenantId: t5,
+        status: [...Array<'active'>(150).fill('active'), 'suspended'],
+      });
+      expect(repeated.map((s) => s.id)).toEqual(both.map((s) => s.id));
+
       await host.admin.unsuspendScope(staff, t5, target.id);
     });
 
@@ -7041,6 +7049,14 @@ export function scopeHostContractSuite(
 
       // Empty action list matches nothing rather than everything.
       expect(await host.admin.auditLog(staff, { tenantId: t5, action: [] })).toEqual([]);
+
+      // A list longer than a Durable Object binds parameters (#1776): an action may repeat,
+      // so nothing bounds its length, and a `?` per entry was refused past 100.
+      const repeated = await host.admin.auditLog(staff, {
+        tenantId: t5,
+        action: [...Array<'suspendScope'>(150).fill('suspendScope'), 'unsuspendScope'],
+      });
+      expect(repeated.map((r) => r.id)).toEqual(lifecycle.map((r) => r.id));
     });
 
     it('orders oldest-first by default and newest-first on request (§4.5)', async () => {

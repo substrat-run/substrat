@@ -7816,8 +7816,9 @@ export class SqliteScopeHost implements ScopeHost {
           // An empty array means "no status is acceptable" — match nothing, rather
           // than degenerating into an unfiltered read of the whole fleet.
           if (statuses.length === 0) return [];
-          where.push(`status IN (${statuses.map(() => '?').join(', ')})`);
-          params.push(...statuses);
+          // One JSON array, the shape the DO twin needs for its 100-parameter limit (#1776).
+          where.push('status IN (SELECT value FROM json_each(?))');
+          params.push(JSON.stringify(statuses));
         }
         if (filter?.vertical) {
           where.push('vertical = ?');
@@ -9241,8 +9242,9 @@ export class SqliteScopeHost implements ScopeHost {
         if (filter?.action) {
           const actions = Array.isArray(filter.action) ? filter.action : [filter.action];
           if (actions.length === 0) return []; // no action is acceptable — match nothing
-          where.push(`action IN (${actions.map(() => '?').join(', ')})`);
-          params.push(...actions);
+          // One JSON array, the shape the DO twin needs for its 100-parameter limit (#1776).
+          where.push('action IN (SELECT value FROM json_each(?))');
+          params.push(JSON.stringify(actions));
         }
         if (filter?.since) {
           where.push('at >= ?');
