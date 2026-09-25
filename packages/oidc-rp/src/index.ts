@@ -25,7 +25,7 @@
 import { SignJWT, jwtVerify, createRemoteJWKSet } from 'jose';
 import type { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { discoverIssuer as discover, isHttpsOrLoopback, isHttpsOrLoopbackUrl, type Discovery } from './discovery.js';
+import { discoverIssuer as discover, isAllowedEndpoint, type Discovery } from './discovery.js';
 
 export { discoverIssuer, type Discovery as OidcDiscovery } from './discovery.js';
 
@@ -181,10 +181,10 @@ export async function completeLogin(
   if (flow.s !== state) throw new Error('state mismatch');
 
   const d = await discover(env.OIDC_ISSUER);
-  // The code, the PKCE verifier and the client secret go to this URL: https (or loopback for a
-  // dev issuer), and never through a redirect. It is NOT required to share the issuer's
+  // The code, the PKCE verifier and the client secret go to this URL: https (or plaintext
+  // loopback, only for a loopback dev issuer), and never through a redirect. It is NOT required to share the issuer's
   // origin: real providers serve the token endpoint from another host than their issuer.
-  if (!isHttpsOrLoopback(new URL(d.token_endpoint))) throw new Error('token endpoint is not https');
+  if (!isAllowedEndpoint(env.OIDC_ISSUER, d.token_endpoint)) throw new Error('token endpoint is not https');
   const res = await fetch(d.token_endpoint, {
     redirect: 'manual',
     method: 'POST',
@@ -280,7 +280,8 @@ async function withUserInfo(
   if (user.email !== undefined && user.name !== undefined) return user;
   if (!d.userinfo_endpoint || !accessToken) return user;
   // Best effort, and never over plaintext: the bearer would cross the wire in the clear.
-  if (!isHttpsOrLoopbackUrl(d.userinfo_endpoint)) return user;
+  // `d.issuer` is the configured issuer: discovery refuses a document that states another.
+  if (!isAllowedEndpoint(d.issuer, d.userinfo_endpoint)) return user;
 
   let claims: { sub?: unknown; email?: unknown; name?: unknown; email_verified?: unknown };
   try {
@@ -626,7 +627,7 @@ export async function federatedLogoutUrl(
     u.searchParams.set('client_id', env.OIDC_CLIENT_ID);
     u.searchParams.set('post_logout_redirect_uri', `${origin}${postLogoutPath}`);
     if (idTokenHint) {
-      if (isHttpsOrLoopback(u)) u.searchParams.set('id_token_hint', idTokenHint);
+      if (isAllowedEndpoint(env.OIDC_ISSUER, d.end_session_endpoint)) u.searchParams.set('id_token_hint', idTokenHint);
       else console.warn('oidc.logout.hint_withheld', { reason: 'end_session_endpoint is not https' });
     }
     return u.toString();

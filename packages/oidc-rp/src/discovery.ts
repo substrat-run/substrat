@@ -58,6 +58,25 @@ async function fetchDiscovery(url: string): Promise<Response> {
 }
 
 /**
+ * May `endpoint` — a token, JWKS, UserInfo or end-session URL a discovery document named for
+ * `issuer` — be sent a credential or trusted for keys? `https` always; plaintext only on a
+ * loopback host AND only when the configured issuer is itself a loopback `http` issuer (the dev
+ * one). Decided against the issuer, never per endpoint: an https issuer's document must not be
+ * able to name a plaintext loopback endpoint and have the client secret or bearer sent there.
+ */
+export function isAllowedEndpoint(issuer: string, endpoint: string): boolean {
+  try {
+    const e = new URL(endpoint);
+    if (e.protocol === 'https:') return true;
+    if (e.protocol !== 'http:' || !LOOPBACK_HOSTS.has(e.hostname)) return false;
+    const i = new URL(issuer);
+    return i.protocol === 'http:' && LOOPBACK_HOSTS.has(i.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * An issuer identifier as a comparison key: parsed, so the host's case and a default port do
  * not matter, with one trailing slash dropped. The path stays case-sensitive. Null when it is
  * not a URL, or carries a query, a fragment or userinfo: an issuer identifier has none, and
@@ -129,7 +148,7 @@ export function discoverIssuer(issuer: string): Promise<Discovery> {
         throw new Error(`OIDC discovery at ${url} names a different issuer`);
       }
       // The keys an ID token is verified against are fetched from here, so not in plaintext.
-      if (typeof d.jwks_uri !== 'string' || !isHttpsOrLoopbackUrl(d.jwks_uri)) {
+      if (typeof d.jwks_uri !== 'string' || !isAllowedEndpoint(issuer, d.jwks_uri)) {
         throw new Error(`OIDC discovery at ${url} names a jwks_uri that is not https`);
       }
       return d;

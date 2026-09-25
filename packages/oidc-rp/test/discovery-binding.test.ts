@@ -254,6 +254,46 @@ describe('userinfo', () => {
   });
 });
 
+describe('a plaintext loopback endpoint needs a loopback issuer', () => {
+  /** A fresh https issuer per case: a discovery that succeeded is cached for the isolate. */
+  const fresh = () => {
+    issuer = `https://issuer-lb-${++n}.test`;
+    env = { ...env, OIDC_ISSUER: issuer };
+    signAs = { key: 'good', iss: issuer };
+  };
+
+  it('an https issuer cannot name a plaintext loopback jwks_uri', async () => {
+    fresh();
+    doc = { jwks_uri: 'http://localhost:9/jwks' };
+    await expect(login()).rejects.toThrow(/jwks_uri that is not https/);
+    expect(requests.some((r) => r.url.startsWith('http://localhost:9'))).toBe(false);
+  });
+
+  it('nor a plaintext loopback token endpoint, which then receives nothing', async () => {
+    fresh();
+    doc = { token_endpoint: 'http://127.0.0.1:9/token' };
+    await expect(login()).rejects.toThrow(/not https/);
+    expect(requests.some((r) => r.url.startsWith('http://127.0.0.1'))).toBe(false);
+  });
+
+  it('nor a plaintext loopback userinfo endpoint: the login stands without it', async () => {
+    fresh();
+    sparse = true;
+    doc = { userinfo_endpoint: 'http://localhost:9/me' };
+    expect((await login()).user.email).toBeUndefined();
+    expect(requests.some((r) => r.url.startsWith('http://localhost:9'))).toBe(false);
+  });
+
+  it('a loopback http issuer may name plaintext loopback endpoints (positive twin)', async () => {
+    issuer = `http://localhost:${9000 + ++n}`;
+    env = { ...env, OIDC_ISSUER: issuer };
+    signAs = { key: 'good', iss: issuer };
+    sparse = true;
+    doc = { userinfo_endpoint: `${issuer}/userinfo`, jwks_uri: `${issuer}/jwks` };
+    expect((await login()).user.email).toBe('a@example.test');
+  });
+});
+
 describe('what else the document names', () => {
   it('refuses a plaintext jwks_uri, and does not cache the refusal', async () => {
     doc = { jwks_uri: 'http://keys.example.test/jwks' };
