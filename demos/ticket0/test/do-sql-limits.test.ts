@@ -75,13 +75,13 @@ async function conversation(email: string): Promise<string> {
 }
 
 describe('cited articles, past a hundred distinct ones', () => {
-  it('list-turns and list-messages read every citation of a page', async () => {
+  async function citedPage(email: string) {
     const { ids } = await fill(120);
     expect(ids).toHaveLength(120);
     // 150 distinct ids on one turn, 120 of them real: the page cites past the
     // hundred parameters a DO binds. Unknown ids are dropped, as they always were.
     const cited = [...ids, ...Array.from({ length: 30 }, (_, i) => `gone-${i}`)];
-    const conversationId = await conversation('cites@customer.example');
+    const conversationId = await conversation(email);
 
     const assistant = await at('assistant');
     await assistant.invoke('ticket0/record-answer', {
@@ -101,11 +101,19 @@ describe('cited articles, past a hundred distinct ones', () => {
       citedArticleIds: cited,
     });
 
+    return { conversationId, ids, agent };
+  }
+
+  it('list-turns reads every citation of a page', async () => {
+    const { conversationId, ids, agent } = await citedPage('turns@customer.example');
     const turns = (await agent.invoke('ticket0/list-turns', { conversationId })) as Page<{
       citations: { id: string }[];
     }>;
     expect(turns.entries[0]!.citations.map((c) => c.id).sort()).toEqual([...ids].sort());
+  });
 
+  it('list-messages reads every citation of a page', async () => {
+    const { conversationId, ids, agent } = await citedPage('messages@customer.example');
     const messages = (await agent.invoke('ticket0/list-messages', { conversationId })) as Page<{
       citations: { id: string }[];
     }>;
