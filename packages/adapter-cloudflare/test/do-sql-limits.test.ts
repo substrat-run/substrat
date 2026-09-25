@@ -224,6 +224,7 @@ describe('platform list statements past the parameter limit (#1776)', () => {
     });
     expect(count).toBe(n);
     expect(access(now)).toBe(access(before));
+    expect(access(now)).toContain('INDEX _substrat_outbox_type_id');
   });
 
   it('the drain stamp counts by the (drained_at, id) index, as the old form did', async () => {

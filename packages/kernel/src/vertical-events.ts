@@ -131,8 +131,8 @@ export function exportReadQuery(
   // parameters, and nothing caps how many event types a manifest exports. The plan depends on
   // there being no table statistics: with none, this seeks `_substrat_outbox_type_id` as the
   // old `IN (?, …)` did. After an ANALYZE, SQLite walks the primary key with a bloom filter
-  // instead. Nothing runs ANALYZE or `PRAGMA optimize` on a scope today; whoever adds one should
-  // recheck this plan (`adapter-cloudflare/test/do-sql-limits.test.ts` pins it).
+  // instead. The platform runs neither ANALYZE nor `PRAGMA optimize`, but a module's `ctx.sql` can
+  // (#1787). Whoever adds one should recheck this plan (`adapter-cloudflare/test/do-sql-limits.test.ts` pins it).
   return {
     sql:
       'SELECT * FROM _substrat_outbox WHERE type IN (SELECT value FROM json_each(?))' +
