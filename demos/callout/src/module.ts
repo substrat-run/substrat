@@ -141,6 +141,9 @@ const searchCustomersOp: OperationHandler<
   const limit = input.limit ?? 20;
   const hits = ctx.search('customer', input.q, { limit });
   if (hits.length === 0) return { results: [], limit, capped: false };
+  // Exactly at the limit: hits are capped at 100 and a Durable Object binds 100 parameters
+  // in all, so ONE more bound value here (a filter) is refused. Bind the hits as a single
+  // JSON array (`id IN (SELECT value FROM json_each(?))`) before adding one (#1759).
   const rows = ctx.sql.query<CustomerRow>(
     `SELECT * FROM callout_customers WHERE id IN (${hits.map(() => '?').join(', ')})`,
     hits.map((h) => h.id),
