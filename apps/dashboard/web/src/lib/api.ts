@@ -1,6 +1,7 @@
 import { problemDetail } from '@substrat-run/contracts';
 import { tenantLogsQuery } from './logs-query';
 import type { PromoteReviewWire } from './promote-review';
+import { exportBreaksIn } from './bind-ack';
 import type { EdgeHealthReport, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PreviewAuth, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
@@ -1314,10 +1315,22 @@ export class ApiError extends Error {
      * including WHICH provider environment answered — rather than "couldn't save".
      */
     readonly probe?: ConnectionProbeView,
+    /** #1756: the apps an Update or a Bind would break, when that is why it was refused. */
+    readonly exportBreaks?: ExportBreakRow[],
   ) {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+/** One app a move would break (#1756): it imports `type` at `schemaVersion`, and the version stops exporting it. */
+export interface ExportBreakRow {
+  scopeId: string;
+  vertical: string;
+  type: string;
+  schemaVersion: number;
+  /** What the version exports it as instead, or null when it no longer does. */
+  incoming: number | null;
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1331,7 +1344,12 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     // sentence, then the deprecated duplicate every SPA read before it. The `probe`
     // beside it is the dashboard's own extension (#605) and stays read here.
     const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView } | null;
-    throw new ApiError(res.status, problemDetail(body) ?? `${res.status} ${res.statusText}`, body?.probe);
+    throw new ApiError(
+      res.status,
+      problemDetail(body) ?? `${res.status} ${res.statusText}`,
+      body?.probe,
+      exportBreaksIn<ExportBreakRow>(body),
+    );
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }

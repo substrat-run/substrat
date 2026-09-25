@@ -2531,8 +2531,13 @@ app.post('/api/apps/:scopeId/bind', async (c) => {
     .object({ versionId: z.string().min(1), snapshot: z.boolean().optional(), acknowledge: bindAckBody })
     .parse(await c.req.json());
   const target = scopeId.parse(appRow.app_scope_id);
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  // #1756: the apps this bind would break, asked first so the refusal names them.
+  if (!body.acknowledge?.exportBreak) {
+    const breaks = await cp.bindingImpact(target, body.versionId);
+    if (breaks.length > 0) throw new ExportBreakRefused(breaks);
+  }
   try {
-    const cp = controlPlaneFor(c.env, node.tenantId);
     await cp.bindScopeVersion(target, body.versionId, { snapshot: body.snapshot, acknowledge: body.acknowledge });
     return c.body(null, 204);
   } catch (e) {
@@ -5353,8 +5358,11 @@ app.onError((err, c) => {
   // is a deployment fact, not the caller's mistake, so it must not land in the `: 400`
   // default: 400 would tell the operator to look at what they typed.
   if (err instanceof SecretBoxUnconfiguredError) return problem(c, 503, m);
-  // #1756: an Update refused for the apps it would break.
-  if (err instanceof ExportBreakRefused) return problem(c, 409, m);
+  // #1756: an Update or a Bind refused for the apps it would break — which are the team's own,
+  // so the refusal carries them for the confirm to name.
+  if (err instanceof ExportBreakRefused) {
+    return c.json({ error: m, detail: m, exportBreaks: { affected: err.breaks } }, 409);
+  }
   // A ControlPlaneError carries the plane's OWN status. Honor it rather than letting the
   // `: 400` default below flatten an upstream 5xx to a 400 — that mislabels a server/upstream
   // fault (e.g. the CF observability token 403 that the plane surfaces as a 500 `internal error`)

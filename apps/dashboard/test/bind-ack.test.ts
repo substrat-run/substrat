@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { scopeId, tenantId } from '@substrat-run/contracts';
 import { BIND_EXPORT_BREAK_REFUSAL, bindExportBreakRefusal, ulid } from '@substrat-run/kernel';
-import { BIND_EXPORT_BREAK, bindExportBreakOf, sendWithExportBreakAck } from '../web/src/lib/bind-ack.js';
+import { BIND_EXPORT_BREAK, bindExportBreakOf, brokenAppLines, sendWithExportBreakAck } from '../web/src/lib/bind-ack.js';
 
 /**
  * The export-break acknowledgement on Update and Bind (#1756). The flag is the answer to a
@@ -89,5 +89,17 @@ describe('sendWithExportBreakAck', () => {
       ),
     ).rejects.toThrow(BIND_EXPORT_BREAK_REFUSAL);
     expect(asked).toBe(1);
+  });
+
+  it('names each app the way the CLI does: dropped, or exported at another version', () => {
+    expect(
+      brokenAppLines([
+        { vertical: 'acme/desk', type: 'ledger.entry-made', schemaVersion: 1, incoming: null },
+        { vertical: 'acme/board', type: 'ledger.entry-made', schemaVersion: 1, incoming: 2 },
+      ]),
+    ).toEqual([
+      '• acme/desk imports ledger.entry-made v1 — this version no longer exports it',
+      '• acme/board imports ledger.entry-made v1 — this version exports v2',
+    ]);
   });
 });

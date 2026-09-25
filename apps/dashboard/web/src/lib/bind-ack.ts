@@ -17,20 +17,44 @@ export function bindExportBreakOf(message: string): string | null {
   return at >= 0 ? message.slice(at) : null;
 }
 
+/** One app the refusal names (`ApiError.exportBreaks`), as much as the confirm shows of it. */
+export interface BrokenApp {
+  vertical: string;
+  type: string;
+  schemaVersion: number;
+  incoming: number | null;
+}
+
+/** The apps a refusal's body names (`{ exportBreaks: { affected } }`), when it names any. */
+export function exportBreaksIn<T extends BrokenApp = BrokenApp>(body: unknown): T[] | undefined {
+  return (body as { exportBreaks?: { affected?: T[] } } | null)?.exportBreaks?.affected;
+}
+
+/** The confirm's lines: one per app the move would break, said as the CLI says them. */
+export function brokenAppLines(apps: readonly BrokenApp[]): string[] {
+  return apps.map(
+    (a) =>
+      `• ${a.vertical} imports ${a.type} v${a.schemaVersion} — ` +
+      (a.incoming === null ? 'this version no longer exports it' : `this version exports v${a.incoming}`),
+  );
+}
+
 /**
- * Send, and on the export-break refusal ask `confirm` with its sentence, then send once more
- * acknowledged. Any other failure, and a refusal of the acknowledged send, is thrown as it is.
+ * Send, and on the export-break refusal ask `confirm` with its sentence and the apps it names,
+ * then send once more acknowledged. Any other failure, and a refusal of the acknowledged send,
+ * is thrown as it is.
  */
 export async function sendWithExportBreakAck<T>(
   send: (ackExportBreak: boolean) => Promise<T>,
-  confirm: (refusal: string) => boolean | Promise<boolean>,
+  confirm: (refusal: string, apps: readonly BrokenApp[]) => boolean | Promise<boolean>,
 ): Promise<T | 'cancelled'> {
   try {
     return await send(false);
   } catch (e) {
     const refusal = bindExportBreakOf(e instanceof Error ? e.message : String(e));
     if (refusal === null) throw e;
-    if (!(await confirm(refusal))) return 'cancelled';
+    const apps = (e as { exportBreaks?: readonly BrokenApp[] }).exportBreaks ?? [];
+    if (!(await confirm(refusal, apps))) return 'cancelled';
     return await send(true);
   }
 }

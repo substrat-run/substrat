@@ -26,7 +26,7 @@ import { StatusBand } from './StatusBand';
 import { EntityTimeline } from './EventHistory';
 import { useTenantMetrics } from '../lib/use-tenant-metrics';
 import { useAppSchedules } from '../lib/use-app-schedules';
-import { sendWithExportBreakAck } from '../lib/bind-ack';
+import { brokenAppLines, sendWithExportBreakAck, type BrokenApp } from '../lib/bind-ack';
 import { AppTraffic } from './AppTraffic';
 
 /**
@@ -804,9 +804,11 @@ export function Deployments({ app }: { app: AppRow }) {
 
   // #1756: the plane refused because the version drops an event another app here imports.
   // Its own sentence, and one explicit yes, before the same request goes again acknowledged.
-  const confirmExportBreak = (refusal: string) =>
+  const confirmExportBreak = (refusal: string, apps: readonly BrokenApp[]) =>
     window.confirm(
-      `${refusal}.\n\nThose apps stop receiving the event until they move to a version that no longer imports it. Continue anyway?`,
+      `${refusal}.\n\n` +
+        (apps.length > 0 ? `${brokenAppLines(apps).join('\n')}\n\n` : '') +
+        'Those apps stop receiving the event until they move to a version that no longer imports it. Continue anyway?',
     );
 
   const doUpdate = async () => {
