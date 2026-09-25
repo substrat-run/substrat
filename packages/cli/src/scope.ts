@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { fetchWhoami } from './whoami.js';
 import { readJson } from './http.js';
 import { orderTablesByForeignKeys } from './dump-order.js';
-import { exportBreakLines, type ExportBreaks } from './promote.js';
+import { exportBreakListing, type ExportBreaks } from './promote.js';
 
 interface DumpTable {
   name: string;
@@ -408,7 +408,7 @@ export async function bindScopeVersion(opts: {
       body: JSON.stringify({
         versionId: opts.versionId,
         snapshot: opts.snapshot || undefined,
-        ...(opts.ackExportBreak ? { acknowledge: { exportBreak: true } } : {}),
+        acknowledge: opts.ackExportBreak ? { exportBreak: true } : undefined,
       }),
     },
   );
@@ -416,9 +416,7 @@ export async function bindScopeVersion(opts: {
     const body = (await res.json().catch(() => null)) as { exportBreaks?: ExportBreaks } | null;
     // An export-break refusal (#1756) carries the apps it would break: named here, so the
     // acknowledgement is an informed answer rather than a flag tried to see what happens.
-    const listing = body?.exportBreaks
-      ? `\n${exportBreakLines(body.exportBreaks).join('\n')}\n(re-run with --ack-export-break once read)`
-      : '';
+    const listing = body?.exportBreaks ? exportBreakListing(body.exportBreaks) : '';
     throw new Error((problemDetail(body) ?? `bind refused: ${res.status} ${res.statusText}`) + listing);
   }
   const record = await readJson<{ verticalVersionId: string | null; vertical: string | null; servingRef?: string | null }>(

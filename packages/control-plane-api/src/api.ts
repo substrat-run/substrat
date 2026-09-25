@@ -4120,8 +4120,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         return c.json({ error: bindExportBreakRefusal(breaks), exportBreaks: { affected: breaks } }, 409);
       }
     }
-    // What the three binds below pass on: the acknowledgement, when there is one.
-    const bindOpts = acknowledge?.exportBreak ? { acknowledge } : {};
     // A refusal throws a ControlPlaneError, which the app's error boundary relays with its
     // status and records as an ops failure. An unknown scope carries nothing, and the bind
     // below refuses it as it always has.
@@ -4163,16 +4161,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }
         await carry();
         if (migrationCrossing) await orchestratedSnapshot(c, tenantId, scope, {});
-        await bind(bindOpts);
+        await bind({ acknowledge });
       } else {
         await carry();
-        await bind({ ...bindOpts, snapshot: true });
+        await bind({ acknowledge, snapshot: true });
       }
       await reassert();
       return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
     }
     await carry();
-    await bind(bindOpts);
+    await bind({ acknowledge });
     await reassert();
     return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
   });

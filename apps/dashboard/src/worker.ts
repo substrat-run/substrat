@@ -22,7 +22,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, importCursorMove, parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, importCursorMove, promotionAcknowledgement, parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
@@ -758,6 +758,10 @@ const promoteBody = z.object({
     .object({ permissionChange: z.boolean().optional(), migrationChange: z.boolean().optional(), exportBreak: z.boolean().optional() })
     .optional(),
 });
+
+// #1756: what an Update or a Bind may acknowledge — the plane refuses a version that drops an
+// export another app in this tenant imports, unless this says it was read.
+const bindAckBody = promotionAcknowledgement.pick({ exportBreak: true }).optional();
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -2493,14 +2497,14 @@ app.post('/api/apps/:scopeId/update', async (c) => {
   // `acknowledge.exportBreak` (#1756): update even though prod drops an export another app in
   // this tenant imports — the plane refuses it otherwise, and the refusal says so.
   const body = z
-    .object({ snapshot: z.boolean().optional(), acknowledge: z.object({ exportBreak: z.boolean().optional() }).optional() })
+    .object({ snapshot: z.boolean().optional(), acknowledge: bindAckBody })
     .parse(await c.req.json().catch(() => ({})));
   const result = await updateApp(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
     verticalSlug: appRow.vertical_slug,
     snapshot: body.snapshot,
-    ackExportBreak: body.acknowledge?.exportBreak,
+    acknowledge: body.acknowledge,
     controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   return c.json(result);
@@ -2524,19 +2528,12 @@ app.post('/api/apps/:scopeId/bind', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const body = z
-    .object({
-      versionId: z.string().min(1),
-      snapshot: z.boolean().optional(),
-      acknowledge: z.object({ exportBreak: z.boolean().optional() }).optional(),
-    })
+    .object({ versionId: z.string().min(1), snapshot: z.boolean().optional(), acknowledge: bindAckBody })
     .parse(await c.req.json());
   const target = scopeId.parse(appRow.app_scope_id);
   try {
     const cp = controlPlaneFor(c.env, node.tenantId);
-    await cp.bindScopeVersion(target, body.versionId, {
-      ...(body.snapshot ? { snapshot: true } : {}),
-      ...(body.acknowledge?.exportBreak ? { acknowledge: { exportBreak: true } } : {}),
-    });
+    await cp.bindScopeVersion(target, body.versionId, { snapshot: body.snapshot, acknowledge: body.acknowledge });
     return c.body(null, 204);
   } catch (e) {
     if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });

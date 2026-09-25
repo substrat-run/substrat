@@ -49,7 +49,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
-import { LIST_PAGE_MAX, denialQuery, problemDetail } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX, denialQuery, problemDetail, type BindAcknowledgement } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-api';
 
 // One class, owned by the package that throws it from its own client (#971).
@@ -1536,7 +1536,7 @@ export class TenantNarrowedControlPlane {
   bindScopeVersion(
     scopeId: ScopeId,
     versionId: string,
-    opts?: { snapshot?: boolean; acknowledge?: { exportBreak?: boolean } },
+    opts?: { snapshot?: boolean; acknowledge?: BindAcknowledgement },
   ): Promise<void> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/version`, {
       versionId,

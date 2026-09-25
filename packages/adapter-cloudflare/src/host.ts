@@ -3893,6 +3893,14 @@ export class CloudflareScopeHost implements ScopeHost {
         archivedAt: r.archived_at ?? null,
         createdAt: r.created_at,
       });
+    // The (version, scope) pair a bind and its impact read both start from (#1756).
+    const bindTarget = async (tenantId: string, scopeId: string, versionId: string) => {
+      const v = await this.cp.readVersion(versionId);
+      if (!v) throw substratError('not_found', `unknown version ${versionId}`);
+      const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+      if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+      return { v, scope };
+    };
 
     const transitionScope = async (
       actor: PlatformActorId,
@@ -5152,19 +5160,13 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       },
       bindingImpact: async (actor, tenantId, scopeId, versionId: string): Promise<ExportBreak[]> => {
-        const v = await this.cp.readVersion(versionId);
-        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
-        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-        const breaks = await this.bindBreaks(actor, scope, v);
+        const { v, scope } = await bindTarget(tenantId, scopeId, versionId);
+        const breaks = await this.bindBreaks(actor, mapScope(scope), v);
         await this.recordAccess(actor, 'bindingImpact', { tenantId, scopeId }, { versionId }, breaks.length);
         return breaks;
       },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
-        const v = await this.cp.readVersion(versionId);
-        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
-        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        const { v, scope } = await bindTarget(tenantId, scopeId, versionId);
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
         // The refusal the registry exists for — but scoped to a SERVING bind. Admission
         // gates code reaching an install; a PREVIEW fork is the builder's own tenant's data
@@ -5180,7 +5182,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
         // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
         if (!ack.exportBreak) {
-          const breaks = await this.bindBreaks(actor, scope, v);
+          const breaks = await this.bindBreaks(actor, mapScope(scope), v);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
         // Fork-before-promote (§4): snapshot the pre-migration data if this rebind
@@ -7736,30 +7738,26 @@ export class CloudflareScopeHost implements ScopeHost {
     });
   }
 
-  /** #1756: the bind gate's question for one install (`bindExportBreaksOf`), from the directory. */
-  private async bindBreaks(
-    actor: PlatformActorId,
-    scope: ScopeRow,
-    incoming: { id: string; vertical_slug: string },
-  ): Promise<ExportBreak[]> {
-    const vertical = scope.vertical ? await this.cp.readVertical(scope.vertical) : undefined;
+  /**
+   * #1756: the bind gate's question for one install (`bindExportBreaksOf`), from the directory.
+   * The serving pointer is read only for a scope on a serving script, the one case it decides
+   * anything, and the incoming version's manifest comes from the row the caller already holds.
+   */
+  private async bindBreaks(actor: PlatformActorId, scope: Scope, incoming: VersionRow): Promise<ExportBreak[]> {
+    const vertical = scope.vertical && scope.servingRef ? await this.cp.readVertical(scope.vertical) : undefined;
     return bindExportBreaksOf({
       admin: this.admin,
       actor,
-      scope: {
-        tenantId: scope.tenant_id as TenantId,
-        forkedFrom: scope.forked_from as ScopeId | null,
-        kind: scope.kind as Scope['kind'],
-        vertical: scope.vertical as Scope['vertical'],
-        verticalVersionId: scope.vertical_version_id,
-        servingRef: scope.serving_ref,
-      },
+      scope,
       incoming: { id: incoming.id, verticalSlug: incoming.vertical_slug },
       serving:
         vertical?.serving_ref && vertical.serving_version_id
           ? { ref: vertical.serving_ref, versionId: vertical.serving_version_id }
           : null,
-      readExports: async (versionId) => exportsOfManifestJson((await this.cp.readVersion(versionId))?.manifest_json ?? null),
+      readExports: async (versionId) =>
+        exportsOfManifestJson(
+          versionId === incoming.id ? incoming.manifest_json : ((await this.cp.readVersion(versionId))?.manifest_json ?? null),
+        ),
       readImports: (slug, versionId) => this.versionImports(slug, versionId),
     });
   }

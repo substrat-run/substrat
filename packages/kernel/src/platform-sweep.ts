@@ -1756,8 +1756,10 @@ export async function exportBreaksOf(input: {
    * the producer (the scope being bound is that install), whatever its status.
    */
   tenantId?: TenantId;
+  /** What is being judged, for the wording of a refusal to judge it. Default `'promotion'`. */
+  act?: 'promotion' | 'bind';
 }): Promise<ExportBreak[]> {
-  const act = input.tenantId === undefined ? 'promotion' : 'bind';
+  const act = input.act ?? 'promotion';
   // An outgoing manifest that does not parse promised SOMETHING nobody can read. Judging it as
   // "promised nothing" would pass every break unacknowledged, so it refuses, as a thrown read does.
   if (input.outgoing.kind === 'unreadable') {
@@ -1775,17 +1777,15 @@ export async function exportBreaksOf(input: {
   }
   if (changed.size === 0) return [];
 
-  const scopes = (
-    await input.admin.listScopes(input.actor, {
-      status: 'active',
-      ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
-    })
-  ).filter((s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null);
+  const scopes = (await input.admin.listScopes(input.actor, { status: 'active', tenantId: input.tenantId })).filter(
+    (s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null,
+  );
+  // Narrowed to one tenant, every scope read is already in a tenant that runs the producer.
   const installedIn =
-    input.tenantId !== undefined
-      ? new Set<string>([input.tenantId])
-      : new Set(scopes.filter((s) => s.vertical === input.producer).map((s) => s.tenantId as string));
-  const consumers = scopes.filter((s) => s.vertical !== input.producer && installedIn.has(s.tenantId));
+    input.tenantId === undefined
+      ? new Set(scopes.filter((s) => s.vertical === input.producer).map((s) => s.tenantId as string))
+      : null;
+  const consumers = scopes.filter((s) => s.vertical !== input.producer && (installedIn?.has(s.tenantId) ?? true));
   if (consumers.length === 0) return [];
   const out: ExportBreak[] = [];
   for (const { scope, key, versionId, fact, threw } of await runningImportsOf(
@@ -1902,14 +1902,16 @@ export async function bindExportBreaksOf(input: {
   const before = runningVersionOf(scope, input.serving);
   const after = runningVersionOf({ verticalVersionId: input.incoming.id, servingRef: scope.servingRef }, input.serving);
   if (before === null || after === null || before === after) return [];
+  const [outgoing, incoming] = await Promise.all([input.readExports(before), input.readExports(after)]);
   return exportBreaksOf({
     admin: input.admin,
     actor: input.actor,
     producer: scope.vertical,
-    outgoing: await input.readExports(before),
-    incoming: await input.readExports(after),
+    outgoing,
+    incoming,
     readImports: input.readImports,
     tenantId: scope.tenantId,
+    act: 'bind',
   });
 }
 

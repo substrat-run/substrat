@@ -1352,53 +1352,49 @@ export function verticalEventsContractSuite(
       expect(log.some((e) => JSON.stringify(e.after).includes('"exportBreak":true'))).toBe(true);
     });
 
+    // #1756's fixtures. The registry decides what a version exports and imports, so each version
+    // is a manifest published and admitted, and each app a scope provisioned, activated and bound.
+    const BIND_TYPE = 'crm.customer-created';
+    const registryJson = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
+    const exportingJson = (v: number | null) =>
+      registryJson(v === null ? {} : { exports: [{ type: BIND_TYPE, schemaVersion: v, readPermission: 'customer:read', declaredBy: ['@test/x'] }] });
+    const importingJson = (from: string) =>
+      registryJson({ imports: [{ from, type: BIND_TYPE, schemaVersion: 1, declaredBy: ['@test/y'] }] });
+    const publishManifest = async (slug: string, manifestJson: string, migrationDigest = 'g') => {
+      const id = ulid();
+      await fx.consumer.admin.publishVersion(staff, {
+        id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
+        permissionDigest: 'p', migrationDigest, deploymentRef: null, manifestJson,
+      });
+      await fx.consumer.admin.admitVersion(staff, id);
+      return id;
+    };
+    const bindAt = async (tenant: TenantId, slug: string, version?: string, extra: object = {}) => {
+      const sc = scopeId.parse(ulid());
+      await fx.consumer.provisionScope(staff, { tenantId: tenant, scopeId: sc, vertical: slug, ...extra });
+      await fx.consumer.admin.activateScope(staff, tenant, sc);
+      if (version) await fx.consumer.admin.bindScopeVersion(staff, tenant, sc, version);
+      return sc;
+    };
+    const boundTo = async (tenant: TenantId, sc: ScopeId) =>
+      (await fx.consumer.admin.getScopeRecord(staff, tenant, sc))?.verticalVersionId;
+
     it('a bind that drops or re-versions an export an app in its tenant imports is refused, and acknowledged it binds (#1756)', async () => {
       const tag = ulid().slice(-8).toLowerCase();
       const producer = `acme/bx-${tag}`;
       const consumer = `acme/bi-${tag}`;
-      const TYPE = 'crm.customer-created';
       for (const slug of [producer, consumer]) {
         await fx.consumer.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
       }
-      const registry = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
-      const exporting = (v: number | null) =>
-        registry(v === null ? {} : { exports: [{ type: TYPE, schemaVersion: v, readPermission: 'customer:read', declaredBy: ['@test/x'] }] });
-      const publish = async (slug: string, manifestJson: string, migrationDigest = 'g') => {
-        const id = ulid();
-        await fx.consumer.admin.publishVersion(staff, {
-          id,
-          verticalSlug: slug,
-          version: `1.0.${id.slice(-4).toLowerCase()}`,
-          manifestDigest: `m-${id}`,
-          permissionDigest: 'p',
-          migrationDigest,
-          deploymentRef: null,
-          manifestJson,
-        });
-        await fx.consumer.admin.admitVersion(staff, id);
-        return id;
-      };
-      const v1 = await publish(producer, exporting(1));
-      const kept = await publish(producer, exporting(1));
+      const v1 = await publishManifest(producer, exportingJson(1));
+      const kept = await publishManifest(producer, exportingJson(1));
       // Crosses a migration too, so a bind asking for a snapshot would take one.
-      const dropped = await publish(producer, exporting(null), 'g2');
-      const bumped = await publish(producer, exporting(2));
-      const consumerVersion = await publish(
-        consumer,
-        registry({ imports: [{ from: producer, type: TYPE, schemaVersion: 1, declaredBy: ['@test/y'] }] }),
-      );
-      const bindAt = async (tenant: TenantId, slug: string, version?: string, extra: object = {}) => {
-        const sc = scopeId.parse(ulid());
-        await fx.consumer.provisionScope(staff, { tenantId: tenant, scopeId: sc, vertical: slug, ...extra });
-        await fx.consumer.admin.activateScope(staff, tenant, sc);
-        if (version) await fx.consumer.admin.bindScopeVersion(staff, tenant, sc, version);
-        return sc;
-      };
-      const boundTo = async (tenant: TenantId, sc: ScopeId) =>
-        (await fx.consumer.admin.getScopeRecord(staff, tenant, sc))?.verticalVersionId;
+      const dropped = await publishManifest(producer, exportingJson(null), 'g2');
+      const bumped = await publishManifest(producer, exportingJson(2));
+      const consumerVersion = await publishManifest(consumer, importingJson(producer));
 
-      // Tenant t runs the producer at v1 beside an app that imports TYPE v1 from it. Tenant u runs
-      // the same pair, so a break in t that named u's app would show here.
+      // Tenant t runs the producer at v1 beside an app that imports BIND_TYPE v1 from it. Tenant u
+      // runs the same pair, so a break in t that named u's app would show here.
       const t = await newTenant();
       const u = await newTenant();
       const pt = await bindAt(t, producer, v1);
@@ -1416,7 +1412,7 @@ export function verticalEventsContractSuite(
       expect(String(refused)).toMatch(/this bind drops or re-versions 1 exported event type\(s\) that 1 installed app\(s\) in this tenant/);
       expect(await boundTo(t, pt)).toBe(kept);
       expect(await fx.consumer.admin.bindingImpact(staff, t, pt, dropped)).toEqual([
-        { tenantId: t, scopeId: ct, vertical: consumer, version: consumerVersion, type: TYPE, schemaVersion: 1, incoming: null },
+        { tenantId: t, scopeId: ct, vertical: consumer, version: consumerVersion, type: BIND_TYPE, schemaVersion: 1, incoming: null },
       ]);
       // Refused with a snapshot asked for too, on a bind that crosses a migration: the refusal
       // comes first, so no archive is taken.
@@ -1462,35 +1458,15 @@ export function verticalEventsContractSuite(
       const tag = ulid().slice(-8).toLowerCase();
       const producer = `acme/sx-${tag}`;
       const consumer = `acme/si-${tag}`;
-      const TYPE = 'crm.customer-created';
       for (const slug of [producer, consumer]) {
         await fx.consumer.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
       }
-      const registry = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
-      const publish = async (slug: string, manifestJson: string) => {
-        const id = ulid();
-        await fx.consumer.admin.publishVersion(staff, {
-          id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
-          permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null, manifestJson,
-        });
-        await fx.consumer.admin.admitVersion(staff, id);
-        return id;
-      };
-      const v1 = await publish(producer, registry({ exports: [{ type: TYPE, schemaVersion: 1, readPermission: 'customer:read', declaredBy: ['@test/x'] }] }));
-      const dropped = await publish(producer, registry({}));
-      const consumerVersion = await publish(
-        consumer,
-        registry({ imports: [{ from: producer, type: TYPE, schemaVersion: 1, declaredBy: ['@test/y'] }] }),
-      );
+      const v1 = await publishManifest(producer, exportingJson(1));
+      const dropped = await publishManifest(producer, exportingJson(null));
+      const consumerVersion = await publishManifest(consumer, importingJson(producer));
       const t = await newTenant();
-      const pt = scopeId.parse(ulid());
-      await fx.consumer.provisionScope(staff, { tenantId: t, scopeId: pt, vertical: producer });
-      await fx.consumer.admin.activateScope(staff, t, pt);
-      await fx.consumer.admin.bindScopeVersion(staff, t, pt, v1);
-      const ct = scopeId.parse(ulid());
-      await fx.consumer.provisionScope(staff, { tenantId: t, scopeId: ct, vertical: consumer });
-      await fx.consumer.admin.activateScope(staff, t, ct);
-      await fx.consumer.admin.bindScopeVersion(staff, t, ct, consumerVersion);
+      const pt = await bindAt(t, producer, v1);
+      const ct = await bindAt(t, consumer, consumerVersion);
 
       // The vertical serves v1 in place, and the producer's scope runs that script. What it runs
       // is the serving version whatever its pointer says, so moving the pointer breaks nothing.
@@ -1508,7 +1484,7 @@ export function verticalEventsContractSuite(
       await fx.consumer.admin.setScopeServingRef(staff, t, pt, null);
       const refused = await refusal(fx.consumer.admin.bindScopeVersion(staff, t, pt, dropped));
       expect(String(refused)).toMatch(/this bind drops or re-versions/);
-      expect((await fx.consumer.admin.getScopeRecord(staff, t, pt))?.verticalVersionId).toBe(v1);
+      expect(await boundTo(t, pt)).toBe(v1);
       expect((await fx.consumer.admin.bindingImpact(staff, t, pt, dropped)).map((b) => b.scopeId)).toEqual([ct]);
     });
 
@@ -1516,43 +1492,23 @@ export function verticalEventsContractSuite(
       const tag = ulid().slice(-8).toLowerCase();
       const producer = `acme/px-${tag}`;
       const consumer = `acme/pi-${tag}`;
-      const TYPE = 'crm.customer-created';
       const t = await newTenant();
       // PRIVATE: owned by t and unlisted, so a prod promote re-points t's scopes in the same act.
       await fx.consumer.admin.registerVertical(staff, { slug: producer, name: producer, source: 'cli', ownerTenant: t });
       await fx.consumer.admin.registerVertical(staff, { slug: consumer, name: consumer, source: 'cli' });
-      const registry = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
-      const publish = async (slug: string, manifestJson: string) => {
-        const id = ulid();
-        await fx.consumer.admin.publishVersion(staff, {
-          id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
-          permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null, manifestJson,
-        });
-        await fx.consumer.admin.admitVersion(staff, id);
-        return id;
-      };
-      const v1 = await publish(producer, registry({ exports: [{ type: TYPE, schemaVersion: 1, readPermission: 'customer:read', declaredBy: ['@test/x'] }] }));
-      const dropped = await publish(producer, registry({}));
-      const consumerVersion = await publish(
-        consumer,
-        registry({ imports: [{ from: producer, type: TYPE, schemaVersion: 1, declaredBy: ['@test/y'] }] }),
-      );
+      const v1 = await publishManifest(producer, exportingJson(1));
+      const dropped = await publishManifest(producer, exportingJson(null));
+      const consumerVersion = await publishManifest(consumer, importingJson(producer));
       await fx.consumer.admin.promoteVersion(staff, producer, 'prod', v1);
-      const pt = scopeId.parse(ulid());
-      await fx.consumer.provisionScope(staff, { tenantId: t, scopeId: pt, vertical: producer });
-      await fx.consumer.admin.activateScope(staff, t, pt);
-      await fx.consumer.admin.bindScopeVersion(staff, t, pt, v1);
-      const ct = scopeId.parse(ulid());
-      await fx.consumer.provisionScope(staff, { tenantId: t, scopeId: ct, vertical: consumer });
-      await fx.consumer.admin.activateScope(staff, t, ct);
-      await fx.consumer.admin.bindScopeVersion(staff, t, ct, consumerVersion);
+      const pt = await bindAt(t, producer, v1);
+      await bindAt(t, consumer, consumerVersion);
 
       // The same move by bind alone is refused, which is what makes the next line mean something.
       expect(String(await refusal(fx.consumer.admin.bindScopeVersion(staff, t, pt, dropped)))).toMatch(/this bind drops/);
       // The promote is refused on the same break, and acknowledged it moves the owned scope too.
       expect(String(await refusal(fx.consumer.admin.promoteVersion(staff, producer, 'prod', dropped)))).toMatch(/promotion drops/);
       await fx.consumer.admin.promoteVersion(staff, producer, 'prod', dropped, { exportBreak: true });
-      expect((await fx.consumer.admin.getScopeRecord(staff, t, pt))?.verticalVersionId).toBe(dropped);
+      expect(await boundTo(t, pt)).toBe(dropped);
     });
 
     it('a fork is neither read nor fed, and two primary installs are refused rather than guessed between', async () => {

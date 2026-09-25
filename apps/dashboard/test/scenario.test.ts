@@ -1333,7 +1333,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     );
     expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))?.verticalVersionId).toBe(exporting);
 
-    const r = await updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian', ackExportBreak: true });
+    const r = await updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian', acknowledge: { exportBreak: true } });
     expect(r.updated).toBe(true);
     expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))?.verticalVersionId).toBe(dropping);
   });
