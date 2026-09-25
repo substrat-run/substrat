@@ -393,8 +393,14 @@ at the same code. A promote to any channel but `prod` is refused, naming the pre
 
 The one thing a promote will stop for is a **changed surface**: a promotion whose permission or
 migration digest differs from what is live is refused until you acknowledge the diff
-(`--ack-permissions` / `--ack-migrations`) — read the diff it names first. That is the migration
-/ permission checkpoint, applied at the deploy boundary.
+(`--ack-permissions` / `--ack-migrations`). The refusal prints both diffs: the permission keys,
+roles and grant shapes that changed, and each migration the promote adds, with its SQL. Read them
+first. That is the migration / permission checkpoint, applied at the deploy boundary. The
+dashboard's promote dialog shows the same two diffs before it promotes.
+
+The migration digest covers the app's Durable-Object classes, not its SQL, so a change to SQL
+migrations alone is not refused yet ([#1754](https://github.com/substrat-run/substrat/issues/1754)).
+The dashboard asks you to acknowledge one anyway.
 
 The staff gate returns only when you **widen the audience**: `substrat publish <slug>` lists the
 vertical on the marketplace, and from then on its pushes land pending and its prod promotion is a
