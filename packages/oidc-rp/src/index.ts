@@ -182,8 +182,9 @@ export async function completeLogin(
 
   const d = await discover(env.OIDC_ISSUER);
   // The code, the PKCE verifier and the client secret go to this URL: https (or plaintext
-  // loopback, only for a loopback dev issuer), and never through a redirect. It is NOT required to share the issuer's
-  // origin: real providers serve the token endpoint from another host than their issuer.
+  // loopback, only for a loopback dev issuer), and never through a redirect. It is NOT
+  // required to share the issuer's origin: real providers serve the token endpoint from
+  // another host than their issuer.
   if (!isAllowedEndpoint(env.OIDC_ISSUER, d.token_endpoint)) throw new Error('token endpoint is not https');
   const res = await fetch(d.token_endpoint, {
     redirect: 'manual',
