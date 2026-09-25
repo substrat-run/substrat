@@ -58,8 +58,14 @@ export const crmExportModManifest = moduleManifest.parse({
       { type: 'crm.customer-created', schemaVersion: 1 },
       { type: 'crm.customer-noted', schemaVersion: 1 },
       { type: 'crm.customer-touched', schemaVersion: 1 },
+      // #1705 PR 2: not exported. Its local consumer answers with an exported type, which is
+      // how the kick's signal is shown to count a consumer's emit in the invoke's tail.
+      { type: 'crm.customer-flagged', schemaVersion: 1 },
     ],
-    consumes: [{ from: BOARD_VERTICAL, type: 'board.association-linked', schemaVersion: 1 }],
+    consumes: [
+      { from: BOARD_VERTICAL, type: 'board.association-linked', schemaVersion: 1 },
+      { type: 'crm.customer-flagged', schemaVersion: 1 },
+    ],
     exports: [
       { type: 'crm.customer-created', schemaVersion: 1, readPermission: 'customer:read' },
       { type: 'crm.customer-touched', schemaVersion: 1, readPermission: 'customer:read' },
@@ -127,6 +133,32 @@ const crmTouch: OperationHandler<{ id: string }, void> = async (ctx, input) => {
   });
 };
 
+/** Emits an exported type, then throws: the kick's signal must not survive the rollback. */
+const crmCreateThenFail: OperationHandler<{ name: string }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(key('customer:write')));
+  const id = ulid();
+  ctx.emit({
+    type: 'crm.customer-created',
+    schemaVersion: 1,
+    entity: { entityType: 'customer', entityId: id },
+    piiClass: 'none',
+    payload: { id, name: input.name },
+  });
+  throw new Error('crm/create-then-fail fails after emitting, by design');
+};
+
+/** Emits a type crm does NOT export; its local consumer answers with one it does. */
+const crmFlag: OperationHandler<{ id: string }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(key('customer:write')));
+  ctx.emit({
+    type: 'crm.customer-flagged',
+    schemaVersion: 1,
+    entity: { entityType: 'customer', entityId: input.id },
+    piiClass: 'none',
+    payload: { id: input.id },
+  });
+};
+
 export const crmExportMod: ModuleRegistration = {
   manifest: crmExportModManifest,
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE crm_customers (id TEXT PRIMARY KEY, name TEXT NOT NULL)' }],
@@ -134,6 +166,21 @@ export const crmExportMod: ModuleRegistration = {
     'crm/create': crmCreate as OperationHandler<never, unknown>,
     'crm/note': crmNote as OperationHandler<never, unknown>,
     'crm/touch': crmTouch as OperationHandler<never, unknown>,
+    'crm/create-then-fail': crmCreateThenFail as OperationHandler<never, unknown>,
+    'crm/flag': crmFlag as OperationHandler<never, unknown>,
+  },
+  consumers: {
+    // In the invoke's post-commit tail: an exported type committed by a consumer, not the operation.
+    'crm.customer-flagged': async (ctx, event) => {
+      const { id } = z.object({ id: z.string() }).parse(event.payload);
+      ctx.emit({
+        type: 'crm.customer-created',
+        schemaVersion: 1,
+        entity: { entityType: 'customer', entityId: id },
+        piiClass: 'none',
+        payload: { id, name: 'Flagged' },
+      });
+    },
   },
   imports: {
     [BOARD_VERTICAL]: {
@@ -452,6 +499,42 @@ export function verticalEventsContractSuite(
       expect(seen).toEqual([1]);
       // Each exported type counts, whichever operation committed it.
       await stub.invoke('crm/touch', { id });
+      expect(seen).toEqual([1, 1]);
+    });
+
+    it('the kick\'s signal: never for a rolled-back invoke or a read-only session, and a consumer\'s tail counts (#1705 PR 2)', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const seen: number[] = [];
+      const stub = await fx.producer.getScope(writer, t, p, { onExportedEvents: (n) => seen.push(n) });
+      // Emitted an exported type, then threw: the event rolled back, so there is nothing to kick.
+      await expect(stub.invoke('crm/create-then-fail', { name: 'Gone' })).rejects.toThrow(/by design/);
+      expect(seen).toEqual([]);
+      // The operation emits an unexported type; its local consumer, in the tail, an exported one.
+      await stub.invoke('crm/flag', { id: ulid() });
+      expect(seen).toEqual([1]);
+      // A read-only support session commits nothing, whatever the operation emits.
+      const readOnly = await fx.producer.admin.beginImpersonation(staff, {
+        tenantId: t,
+        scopeId: p,
+        principal: writer,
+        reason: 'ticket #1705 — checking the kick signal',
+        mode: 'read-only',
+      });
+      // The kernel refuses its emit outright (K-42), so the invoke fails and nothing is raised.
+      const ro = await fx.producer.getImpersonatedScope(readOnly.id, t, p, { onExportedEvents: (n) => seen.push(n) });
+      await expect(ro.invoke('crm/create', { name: 'Looked at' })).rejects.toThrow(/read-only/);
+      expect(seen).toEqual([1]);
+      // The twin: a WRITE session that commits the same operation does raise it.
+      const write = await fx.producer.admin.beginImpersonation(staff, {
+        tenantId: t,
+        scopeId: p,
+        principal: writer,
+        reason: 'ticket #1705 — the write twin',
+        mode: 'write',
+      });
+      const rw = await fx.producer.getImpersonatedScope(write.id, t, p, { onExportedEvents: (n) => seen.push(n) });
+      await rw.invoke('crm/create', { name: 'Written' });
       expect(seen).toEqual([1, 1]);
     });
 
