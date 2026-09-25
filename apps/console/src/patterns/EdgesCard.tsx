@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  EDGE_STATE,
   LEVER_EFFECT,
+  edgeBadge,
+  unexportedNote,
   lagText,
   leverOffered,
   leverRequest,
@@ -144,7 +145,7 @@ export function EdgesCard({
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>to {e.consumer.vertical}</span>
                 ),
             },
-            { header: 'State', render: (e) => <Badge status={EDGE_STATE[e.state].tone}>{EDGE_STATE[e.state].label}</Badge> },
+            { header: 'State', render: (e) => <Badge status={edgeBadge(e).tone}>{edgeBadge(e).label}</Badge> },
             { header: 'Oldest waiting', render: (e) => lagText(e.lagMs) ?? '—' },
             {
               header: 'Last delivered',
@@ -154,7 +155,8 @@ export function EdgesCard({
               header: 'Why',
               render: (e) => (
                 <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-                  {e.reason ?? (e.lastProblem ? `last pass: ${e.lastProblem.error ?? e.lastProblem.outcome}` : '—')}
+                  {e.reason ?? (e.lastProblem ? `last pass: ${e.lastProblem.error ?? e.lastProblem.outcome}` : unexportedNote(e) ? '' : '—')}
+                  {unexportedNote(e) && <span style={{ display: 'block', color: 'var(--status-warning-fg)' }}>{unexportedNote(e)}</span>}
                 </span>
               ),
             },

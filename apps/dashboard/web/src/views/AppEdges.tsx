@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  EDGE_STATE,
   LEVER_EFFECT,
+  edgeBadge,
+  unexportedNote,
   lagText,
   leverOffered,
   leverRequest,
@@ -128,7 +129,8 @@ export function AppEdges({ scopeId }: { scopeId: string }) {
       <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 10 }}>
         {view.edges.map((edge) => {
           const into = edge.consumer.scopeId === scopeId;
-          const badge = EDGE_STATE[edge.state];
+          const badge = edgeBadge(edge);
+          const missing = unexportedNote(edge);
           const lag = lagText(edge.lagMs);
           return (
             <li key={`${edge.consumer.scopeId}:${edge.producer.vertical}`} style={{ display: 'grid', gap: 4 }}>
@@ -159,6 +161,9 @@ export function AppEdges({ scopeId }: { scopeId: string }) {
               </div>
               {edge.reason && (
                 <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: '18px' }}>{edge.reason}</span>
+              )}
+              {missing && (
+                <span style={{ fontSize: 12.5, color: 'var(--status-warning-fg)', lineHeight: '18px' }}>{missing}</span>
               )}
               <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                 {edge.lastDelivered ? `Last delivered ${relativeTime(edge.lastDelivered.at)}.` : 'No delivery recorded.'}

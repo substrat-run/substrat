@@ -5,6 +5,8 @@ import {
   eventsExportedBy,
   exportedEventSchemasOf,
   EDGE_STATE,
+  edgeBadge,
+  unexportedNote,
   LEVER_EFFECT,
   REPLAY_EFFECT,
   SKIP_EFFECT,
@@ -271,6 +273,18 @@ describe('what the console and the dashboard say about an edge (#1705 PR 3)', ()
   it('never renders an edge nobody could ask as healthy: only caught-up is green', () => {
     expect(EDGE_STATE.unavailable.tone).toBe('danger');
     expect(Object.entries(EDGE_STATE).filter(([, v]) => v.tone === 'success').map(([k]) => k)).toEqual(['caught-up']);
+  });
+
+  it('a caught-up edge whose producer does not export some imported type is not green, and says which', () => {
+    const missing = edge({ unexported: [{ type: 'crm.customer-noted', schemaVersion: 1 }] as EdgeHealth['unexported'] });
+    expect(edgeBadge(missing).tone).toBe('warning');
+    expect(edgeBadge(missing).label).toMatch(/never arrive/);
+    expect(unexportedNote(missing)).toMatch(/'acme\/crm' does not export crm\.customer-noted v1/);
+    // The twin: nothing missing, the state's own badge and no note.
+    expect(edgeBadge(edge({}))).toEqual(EDGE_STATE['caught-up']);
+    expect(unexportedNote(edge({}))).toBeNull();
+    // A state that is already not green keeps its own tone.
+    expect(edgeBadge(edge({ state: 'paused', unexported: missing.unexported })).tone).toBe('danger');
   });
 
   it('offers the lever only on a resolved, reachable edge INTO the viewed scope', () => {

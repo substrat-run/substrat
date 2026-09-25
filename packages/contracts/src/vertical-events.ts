@@ -378,6 +378,24 @@ export const EDGE_STATE: Record<EdgeHealthState, { tone: 'success' | 'warning' |
   unavailable: { tone: 'danger', label: 'Unavailable' },
 };
 
+/**
+ * The badge one edge wears, which is its state's unless the consumer imports types its producer
+ * does not export (`edge.unexported`). Those never arrive, so a caught-up edge carrying them is
+ * not green: it is caught up on what is exported, and waiting forever on the rest.
+ */
+export function edgeBadge(edge: Pick<EdgeHealth, 'state' | 'unexported'>): { tone: 'success' | 'warning' | 'danger'; label: string } {
+  const base = EDGE_STATE[edge.state];
+  if (edge.unexported.length === 0 || base.tone !== 'success') return base;
+  return { tone: 'warning', label: `${base.label} · ${edge.unexported.length} type(s) never arrive` };
+}
+
+/** The sentence naming what an edge's producer does not export, or null when it exports all of it. */
+export function unexportedNote(edge: Pick<EdgeHealth, 'unexported' | 'producer'>): string | null {
+  if (edge.unexported.length === 0) return null;
+  const types = edge.unexported.map((w) => `${w.type} v${w.schemaVersion}`).join(', ');
+  return `'${edge.producer.vertical}' does not export ${types} — this app imports it, and it never arrives until the producer exports it`;
+}
+
 /** How long the oldest waiting event has waited, in a person's words. */
 export function lagText(ms: number | null): string | null {
   if (ms === null) return null;
