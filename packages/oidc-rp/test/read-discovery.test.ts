@@ -40,7 +40,7 @@ describe('readDiscovery', () => {
     expect(d.token_endpoint).toBe(`${ISSUER}/token`);
     // The whole document comes back, so a caller can read a field `Discovery` does not name.
     expect(d.registration_endpoint).toBe(`${ISSUER}/register`);
-    expect(calls).toEqual([{ url: WELL_KNOWN, init: { redirect: 'manual' } }]);
+    expect(calls).toEqual([{ url: WELL_KNOWN, init: { redirect: 'manual', headers: { accept: 'application/json' } } }]);
   });
 
   it('defaults to the runtime fetch, looked up at call time', async () => {

@@ -59,7 +59,11 @@ async function fetchDiscovery(url: string, opts: ReadDiscoveryOptions): Promise<
   const origin = new URL(url).origin;
   let target = url;
   for (let hop = 0; ; hop++) {
-    const res = await get(target, { redirect: 'manual', ...(opts.signal ? { signal: opts.signal } : {}) });
+    const res = await get(target, {
+      redirect: 'manual',
+      headers: { accept: 'application/json' },
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
     if (res.status < 300 || res.status >= 400) return res;
     const location = res.headers.get('location');
     if (!location) throw new Error(`OIDC discovery at ${url} answered ${res.status} with no Location`);
