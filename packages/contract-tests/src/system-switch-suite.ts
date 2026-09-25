@@ -451,6 +451,19 @@ export function systemSwitchContractSuite(
       expect(rows).toHaveLength(1);
     });
 
+    it('a REFUSED restore leaves the record off, so the next reconcile still switches the module off (#1674 review)', async () => {
+      const s = await newScope();
+      await off(s);
+      await wipe(s);
+      // The wiped scope holds nothing for the module, so the restore is refused…
+      const refused = await on(s).then(() => null, (e: unknown) => e);
+      expect(errorCodeOf(refused)).toBe('not_found');
+      // …and the record it wrote ahead of the move is put back: still off, still the incident.
+      expect(await records(s)).toEqual([expect.objectContaining({ position: 'off', reason })]);
+      await provision(s);
+      expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
+    });
+
     it('a record never turns a module ON: a live marker beside a record of `on` stays off', async () => {
       const s = await newScope();
       await off(s);

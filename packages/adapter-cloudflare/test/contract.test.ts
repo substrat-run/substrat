@@ -604,6 +604,21 @@ describe('#1674 — a hosted scope is re-asserted through the delegation, after 
     });
   });
 
+  it('a restore the wiped deployment refuses leaves the record off, and the reconcile after the seat switches it off (#1674 review)', async () => {
+    const { host, node, deployment } = await setup();
+    deployment.position = 'wiped';
+    const refused = await host.admin
+      .restoreToSystem(staff, { moduleId: SCHED, node, reason: 'fixed' })
+      .then(() => null, (e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('not_found');
+    expect(await host.admin.listSystemSwitches(staff, { scopeId: node.scopeId })).toEqual([
+      expect.objectContaining({ position: 'off', reason: 'incident 7' }),
+    ]);
+    deployment.position = 'on'; // the deployment's reconcile seats the grants
+    await host.admin.reassertSystemSwitches(staff, node);
+    expect(deployment.position).toBe('off');
+  });
+
   it('a far end that cannot be reached fails the re-assert, so no caller records a receipt for a scope left on', async () => {
     const { host, node, deployment } = await setup();
     deployment.fail = true;

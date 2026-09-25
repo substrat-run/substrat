@@ -4034,6 +4034,9 @@ export class CloudflareScopeHost implements ScopeHost {
         throw err;
       }
       if (to === 'off' && outcome.held) await this.cp.recordSystemSwitchedOff(record);
+      // A refused ON moved nothing, so its record write is undone too: left `on`, the next
+      // reconcile of a wiped scope would leave the module running.
+      if (to === 'on' && !outcome.held && prior) await this.cp.restoreSystemSwitchRecord(record, prior);
       await this.recordAdmin(actor, action, target, null, {
         ...base,
         phase: outcome.held ? 'applied' : 'refused',

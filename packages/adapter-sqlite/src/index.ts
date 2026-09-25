@@ -5761,6 +5761,9 @@ export class SqliteScopeHost implements ScopeHost {
         throw err;
       }
       if (to === 'off' && outcome.held) recordSystemSwitchedOff(directorySql, record);
+      // A refused ON moved nothing, so its record write is undone too: left `on`, the next
+      // reconcile of a wiped scope would leave the module running.
+      if (to === 'on' && !outcome.held) restoreSystemSwitchRecord(directorySql, record, prior);
       this.recordAdmin(actor, action, target, null, {
         ...base,
         phase: outcome.held ? 'applied' : 'refused',
