@@ -213,9 +213,13 @@ describe('moveImportCursor: where "skip to now" lands (#1705 PR 3)', () => {
     expect(moved.cursor! >= earlier).toBe(true);
   });
 
-  it('refuses a watermark past now, and takes one at now', () => {
+  it("refuses a watermark past now, or into the skip's own millisecond, as 'now' itself is bounded", () => {
     const { sql } = store();
     expect(() => moveImportCursor(sql, { move: skip(ulidCeiling(T + 1)), source, replayId: ulid(), now: T, imports })).toThrow(/at most now/);
-    expect(moveImportCursor(sql, { move: skip(ulidCeiling(T)), source, replayId: ulid(), now: T, imports }).cursor).toBe(ulidCeiling(T));
+    // Typing this millisecond's ceiling in is no way around the boundary 'now' keeps.
+    expect(() => moveImportCursor(sql, { move: skip(ulidCeiling(T)), source, replayId: ulid(), now: T, imports })).toThrow(/at most now/);
+    // The twin: the previous millisecond's ceiling, which is exactly where 'now' lands.
+    expect(moveImportCursor(sql, { move: skip(ulidCeiling(T - 1)), source, replayId: ulid(), now: T, imports }).cursor).toBe(ulidCeiling(T - 1));
+    expect(moveImportCursor(sql, { move: skip('now'), source, replayId: ulid(), now: T, imports }).cursor).toBe(ulidCeiling(T - 1));
   });
 });
