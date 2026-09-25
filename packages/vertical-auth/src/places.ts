@@ -37,7 +37,8 @@ import type { IdentityStub } from './identity-do.js';
  * exactly), to `https:` (`http:` only on a loopback issuer, which is what the dev issuer is), and
  * to no embedded credentials; and the POST is made with `redirect: 'manual'`, so a 30x is a
  * failure and never a second hop for the secret. A refused endpoint sends nothing, is reported as
- * `failed` like an unreachable issuer, and is logged once with its origin only (#1771).
+ * `failed` like an unreachable issuer, and is logged once with its origin only (#1771): the
+ * origin is what is bound and shown, since a path and query are the issuer's own and may carry a token.
  *
  * Every report is best-effort and **never throws**: a login must never fail because the index
  * could not be told. A lost report is what the repair exists for.
@@ -95,6 +96,7 @@ function endpointRefusal(issuer: string, endpoint: string): string | null {
 
 /** Per isolate: the refusals already logged, so a request path that repeats does not flood. */
 const refusalLogged = new Set<string>();
+const REFUSAL_LOG_LIMIT = 100;
 
 const reasonOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -146,6 +148,7 @@ export function placesReporter(opts: {
         // Logged with the endpoint's origin only: its path and query are the issuer's to keep.
         const shown = new URL(endpoint).origin;
         if (!refusalLogged.has(`${issuer}|${shown}`)) {
+          if (refusalLogged.size >= REFUSAL_LOG_LIMIT) refusalLogged.delete(refusalLogged.values().next().value as string);
           refusalLogged.add(`${issuer}|${shown}`);
           log(`vertical-auth: places report to ${shown} refused — ${refusal}; the client secret was not sent`);
         }

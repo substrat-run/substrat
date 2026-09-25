@@ -165,7 +165,7 @@ describe('where the client secret may go (#1771)', () => {
     }
   });
 
-  it('refuses a downgrade to http on the issuer\'s own host', async () => {
+  it('refuses a downgrade to http on the issuer\'s own host (caught by the origin check: scheme is part of it)', async () => {
     const { fake, reporter } = via('http://auth.acme.test/api/places/report');
     expect(await reporter.present(SCOPE, 's')).toMatchObject({ outcome: 'failed' });
     expect(fake.reports()).toEqual([]);
@@ -186,7 +186,7 @@ describe('where the client secret may go (#1771)', () => {
   });
 
   it('allows http on a loopback issuer, the dev case', async () => {
-    for (const host of ['http://localhost:8879', 'http://127.0.0.1:8879']) {
+    for (const host of ['http://localhost:8879', 'http://127.0.0.1:8879', 'http://127.1:8879', 'http://[::1]:8879']) {
       resetPlacesMemo();
       const { fake, reporter } = via(`${host}/api/places/report`, host);
       expect(await reporter.present(SCOPE, 's')).toEqual({ outcome: 'sent' });
