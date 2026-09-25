@@ -1130,6 +1130,13 @@ export const DIRECTORY_ACTOR = '01JZ00000000000000000000DR';
 /** The operation a failing #1764 backfill is recorded under in `_substrat_ops_failures`. */
 export const BACKFILL_OPERATION = 'directory.version-migrations-backfill';
 
+/**
+ * Where the #1764 backfill keeps how many batches have failed in a row: in the DO's storage,
+ * not in the instance, so an eviction between failures does not reset the backoff (or keep
+ * `backoff-capped` from ever being reached). Cleared only after a batch succeeds.
+ */
+export const BACKFILL_FAILURES_KEY = 'versionMigrationsBackfillFailures';
+
 /** How long the backfill waits after its `failures`-th failure in a row: doubling, capped. */
 export function backfillBackoffMs(failures: number): number {
   return Math.min(BACKFILL_PAUSE_MS * 2 ** failures, BACKFILL_BACKOFF_MAX_MS);
@@ -1139,8 +1146,6 @@ export class ControlPlaneDO extends DurableObject {
   private readonly sql: SqlStorage;
   /** The directory's store as the kernel's SQL handle — the switch record's helpers (#1674). */
   private readonly kernelSql: ReturnType<typeof switchSqlOver>;
-  /** #1764 backfill batches that have failed in a row, since this instance was constructed. */
-  private backfillFailures = 0;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
@@ -1176,7 +1181,8 @@ export class ControlPlaneDO extends DurableObject {
     try {
       more = this.ctx.storage.transactionSync(() => splitVersionMigrationsBatch(this.kernelSql)).more;
     } catch (err) {
-      const failures = ++this.backfillFailures;
+      const failures = ((await this.ctx.storage.get<number>(BACKFILL_FAILURES_KEY)) ?? 0) + 1;
+      await this.ctx.storage.put(BACKFILL_FAILURES_KEY, failures);
       const delay = backfillBackoffMs(failures);
       console.error(`substrat: version-migrations backfill failed, retrying in ${delay} ms`, err);
       // Visible where staff look, not only in logs: once when it starts failing, and once
@@ -1201,7 +1207,9 @@ export class ControlPlaneDO extends DurableObject {
       await this.ctx.storage.setAlarm(Date.now() + delay);
       return;
     }
-    this.backfillFailures = 0;
+    if ((await this.ctx.storage.get<number>(BACKFILL_FAILURES_KEY)) !== undefined) {
+      await this.ctx.storage.delete(BACKFILL_FAILURES_KEY);
+    }
     if (more) await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
   }
 

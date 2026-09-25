@@ -391,11 +391,14 @@ describe('the #1764 backfill survives a failing batch', () => {
     });
   });
 
-  it('a failing batch is caught, re-armed with a growing backoff, and reads stay right', async () => {
+  it('a failing batch is caught, re-armed with a backoff that grows across an eviction, and reads stay right', async () => {
     await inDirectory(async (d, state) => {
-      for (const want of [2000, 4000]) {
+      for (const want of [2000, 4000, 8000]) {
+        // Each failure on a NEW instance over the same storage, which is what an eviction is:
+        // the count lives in storage, so the backoff keeps growing rather than restarting at 2 s.
+        const evicted = new ControlPlaneDO(state, env) as Directory;
         const before = Date.now();
-        await expect(d.alarm()).resolves.toBeUndefined();
+        await expect(evicted.alarm()).resolves.toBeUndefined();
         expect(unsplit(state)).toBe(ids.length); // the batch rolled back whole
         expect((await state.storage.getAlarm())! - before).toBeGreaterThanOrEqual(want);
       }
@@ -446,11 +449,13 @@ describe('the #1764 backfill survives a failing batch', () => {
       // Two episodes so far, each recorded once at its first failure, and no row per retry.
       expect(rows(state).map((r) => r.stage)).toEqual(['first-failure', 'first-failure']);
       // The second episode is at 1 failure; the backoff caps at the 12th (1 s × 2^12 > 1 h).
-      for (let n = 2; n <= 11; n++) await d.alarm();
+      // Every one of them on a new instance: the cap is reached across evictions too.
+      const evicted = () => new ControlPlaneDO(state, env) as Directory;
+      for (let n = 2; n <= 11; n++) await evicted().alarm();
       expect(rows(state)).toHaveLength(2);
-      await d.alarm(); // the 12th
+      await evicted().alarm(); // the 12th
       expect(rows(state).map((r) => r.stage)).toEqual(['first-failure', 'first-failure', 'backoff-capped']);
-      await d.alarm(); // the 13th: still capped, nothing new
+      await evicted().alarm(); // the 13th: still capped, nothing new
       expect(rows(state)).toHaveLength(3);
       const [capped] = rows(state).slice(-1);
       expect(platformActorId.safeParse(capped!.actor).success).toBe(true); // the console's read parses it
