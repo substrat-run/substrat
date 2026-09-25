@@ -148,6 +148,35 @@ describe('prepareProject', () => {
 		expect(await ws.exists(`${dir}/.git`)).toBe(true);
 	});
 
+	it('wipes a dir whose name holds shell metacharacters', async () => {
+		const ws = await scratchRoot();
+		const dir = `${EVAL_PROJECT_PREFIX}a$HOME\`echo x\`'q`;
+		await ws.mkdir(dir, { recursive: true });
+		await ws.writeFile(`${dir}/stale.txt`, 'old');
+		await prepareProject(ws, dir, FIXTURE);
+		expect(await ws.exists(`${dir}/stale.txt`)).toBe(false);
+		expect(await ws.exists(`${dir}/.git`)).toBe(true);
+	});
+
+	it('throws when git config fails, with its stderr', async () => {
+		const ws = await scratchRoot();
+		const failing = new Proxy(ws, {
+			get(t, k, r) {
+				if (k !== 'exec') {
+					const v = Reflect.get(t, k, t);
+					return typeof v === 'function' ? v.bind(t) : v;
+				}
+				return async (cmd: string, o?: never) =>
+					cmd.startsWith('git config gc.auto')
+						? { exitCode: 1, stdout: '', stderr: 'config is locked' }
+						: t.exec(cmd, o);
+			},
+		});
+		await expect(prepareProject(failing, `${EVAL_PROJECT_PREFIX}cfg`, FIXTURE)).rejects.toThrow(
+			/git config failed.*config is locked/,
+		);
+	});
+
 	it('refuses to wipe outside the eval namespace', async () => {
 		const ws = await scratchRoot();
 		await expect(prepareProject(ws, '.builder/projects/real-app', FIXTURE)).rejects.toThrow(
