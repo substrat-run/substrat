@@ -105,6 +105,62 @@ const propertiesOf = (s: Record<string, unknown>): Record<string, unknown> =>
 const requiredOf = (s: Record<string, unknown>): Set<string> =>
   new Set(Array.isArray(s.required) ? (s.required as unknown[]).filter((x): x is string => typeof x === 'string') : []);
 
+const isObject = (s: unknown): s is Record<string, unknown> =>
+  s !== null && typeof s === 'object' && ((s as Record<string, unknown>).type === 'object' || 'properties' in (s as object));
+
+/** What an object schema says besides its fields: compared whole, as a retype when it changes. */
+const objectRest = (s: Record<string, unknown>) => {
+  const { properties: _p, required: _r, additionalProperties: _a, ...rest } = s;
+  return shape(rest);
+};
+
+/**
+ * One schema against its base, recursively through object properties, so a field added to a
+ * nested object is judged as a field (additive when optional) rather than as a retype of the whole
+ * object. `path` is the dotted field path (`''` at the payload itself). Anything that is not an
+ * object on both sides (a scalar, an array, an `anyOf`) is compared whole.
+ */
+function compareSchemas(
+  at: { file: string; type: string; version: number; out: Violation[] },
+  path: string,
+  bs: Record<string, unknown>,
+  hs: Record<string, unknown>,
+): void {
+  const name = (field: string) => (path ? `${path}.${field}` : field);
+  const push = (rule: Violation['rule'], field: string | null, detail: string) =>
+    at.out.push({ file: at.file, type: at.type, rule, field, detail });
+  if (!isObject(bs) || !isObject(hs)) {
+    if (shape(bs) !== shape(hs)) {
+      push('retyped', path || null, path ? `'${path}' changed from ${shape(bs)} to ${shape(hs)}` : 'the payload schema changed');
+    }
+    return;
+  }
+  if (objectRest(bs) !== objectRest(hs)) {
+    push('retyped', path || null, path ? `'${path}' changed shape` : 'the payload schema changed');
+    return;
+  }
+  const bp = propertiesOf(bs);
+  const hp = propertiesOf(hs);
+  for (const field of Object.keys(bp).sort()) {
+    if (!(field in hp)) push('removed', name(field), `'${name(field)}' is no longer in the payload`);
+    else compareSchemas(at, name(field), bp[field] as Record<string, unknown>, hp[field] as Record<string, unknown>);
+  }
+  const br = requiredOf(bs);
+  const hr = requiredOf(hs);
+  for (const field of [...hr].sort()) {
+    if (!br.has(field)) {
+      push(
+        'newly-required',
+        name(field),
+        `'${name(field)}' is required now, and events already sent at v${at.version} do not carry it`,
+      );
+    }
+  }
+  for (const field of [...br].sort()) {
+    if (!hr.has(field) && field in hp) push('no-longer-required', name(field), `'${name(field)}' may now be omitted`);
+  }
+}
+
 /**
  * The rule itself, over two parsed `exports` maps (a missing side is `{}`). Pure, so the test
  * holds each clause without a repository.
@@ -130,42 +186,12 @@ export function classifyExports(
       continue;
     }
     if (h.schemaVersion !== b.schemaVersion) continue; // the explicit break (K-39)
-    const bs = resolveRefs(b.payload) as Record<string, unknown>;
-    const hs = resolveRefs(h.payload) as Record<string, unknown>;
-    const bp = propertiesOf(bs);
-    const hp = propertiesOf(hs);
-    const isObject = (s: Record<string, unknown>) => s.type === 'object' || 'properties' in s;
-    if (!isObject(bs) || !isObject(hs)) {
-      if (shape(bs) !== shape(hs)) {
-        out.push({ file, type, rule: 'retyped', field: null, detail: 'the payload schema changed' });
-      }
-      continue;
-    }
-    for (const field of Object.keys(bp).sort()) {
-      if (!(field in hp)) {
-        out.push({ file, type, rule: 'removed', field, detail: `'${field}' is no longer in the payload` });
-      } else if (shape(bp[field]) !== shape(hp[field])) {
-        out.push({ file, type, rule: 'retyped', field, detail: `'${field}' changed from ${shape(bp[field])} to ${shape(hp[field])}` });
-      }
-    }
-    const br = requiredOf(bs);
-    const hr = requiredOf(hs);
-    for (const field of [...hr].sort()) {
-      if (!br.has(field)) {
-        out.push({
-          file,
-          type,
-          rule: 'newly-required',
-          field,
-          detail: `'${field}' is required now, and events already sent at v${b.schemaVersion} do not carry it`,
-        });
-      }
-    }
-    for (const field of [...br].sort()) {
-      if (!hr.has(field) && field in hp) {
-        out.push({ file, type, rule: 'no-longer-required', field, detail: `'${field}' may now be omitted` });
-      }
-    }
+    compareSchemas(
+      { file, type, version: b.schemaVersion, out },
+      '',
+      resolveRefs(b.payload) as Record<string, unknown>,
+      resolveRefs(h.payload) as Record<string, unknown>,
+    );
   }
   return out;
 }

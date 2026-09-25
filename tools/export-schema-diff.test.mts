@@ -74,7 +74,7 @@ test('a break inside $defs is found: references are resolved before anything is 
   // Loosened INSIDE the definition: both references still read {"$ref": "#/$defs/Org"}.
   assert.deepEqual(
     classifyExports('m.json', b, { t: exp(1, payload(['id'])) }).map((v) => `${v.rule}:${v.field}`),
-    ['retyped:org', 'retyped:parent'],
+    ['no-longer-required:org.name', 'no-longer-required:parent.name'],
   );
   // The twin: the same definition, and nothing is found.
   assert.deepEqual(classifyExports('m.json', b, { t: exp(1, payload(['id', 'name'])) }), []);
@@ -86,6 +86,32 @@ test('a break inside $defs is found: references are resolved before anything is 
     ),
     ['removed:gone'],
   );
+});
+
+test('inside a nested object, an optional field added is additive, and a removed or newly required one is a break', () => {
+  const org = (props: Record<string, unknown>, required: string[]) => ({ type: 'object', properties: props, required, additionalProperties: false });
+  const p = (o: unknown) => obj({ org: o }, ['org']);
+  const base = { t: exp(1, p(org({ id: { type: 'string' } }, ['id']))) };
+  // org: { id } -> org: { id, note? } is additive.
+  assert.deepEqual(classifyExports('m.json', base, { t: exp(1, p(org({ id: { type: 'string' }, note: { type: 'string' } }, ['id']))) }), []);
+  // ...required, it is a break at its own path.
+  assert.deepEqual(
+    classifyExports('m.json', base, { t: exp(1, p(org({ id: { type: 'string' }, note: { type: 'string' } }, ['id', 'note']))) }).map(
+      (v) => `${v.rule}:${v.field}`,
+    ),
+    ['newly-required:org.note'],
+  );
+  // A nested field removed or retyped is named at its path.
+  assert.deepEqual(
+    classifyExports('m.json', base, { t: exp(1, p(org({}, []))) }).map((v) => `${v.rule}:${v.field}`),
+    ['removed:org.id'],
+  );
+  assert.deepEqual(
+    classifyExports('m.json', base, { t: exp(1, p(org({ id: { type: 'number' } }, ['id']))) }).map((v) => `${v.rule}:${v.field}`),
+    ['retyped:org.id'],
+  );
+  // An object that stops being one is a retype of the field.
+  assert.deepEqual(classifyExports('m.json', base, { t: exp(1, p({ type: 'string' })) }).map((v) => `${v.rule}:${v.field}`), ['retyped:org']);
 });
 
 test('a change inside anyOf/oneOf is a retype', () => {
