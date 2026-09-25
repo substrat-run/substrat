@@ -3,6 +3,8 @@ import { api, ApiError, type ObservabilityLogEvent } from '../lib/api';
 import { callLogsWindow, CALL_LOGS_MARGIN_MINUTES } from '../lib/history';
 import { shortId } from '../lib/format';
 import { LogList } from '../components/LogList';
+import { DEV_MOCK } from '../lib/mock';
+import { mockCallLogs } from '../lib/mock-timeline';
 
 /**
  * The log lines of the call behind one event (#1525) — the other half of `InvocationStrip`.
@@ -41,6 +43,10 @@ export function InvocationLogsStrip({
     const window = callLogsWindow(occurredAt);
     if (window === null) {
       setErr(`This ${anchorNoun} carries no usable time, so its log lines cannot be looked up.`);
+      return;
+    }
+    if (DEV_MOCK) {
+      setLogs(mockCallLogs(invocationId));
       return;
     }
     api

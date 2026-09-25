@@ -1,4 +1,4 @@
-import type { Actor, EmittedEntity, HistoryEntry } from '@substrat-run/contracts';
+import type { Actor, EmittedEntity, EmittedLifecycle, HistoryEntry } from '@substrat-run/contracts';
 
 /**
  * How a record's history reads on screen (#1235) — the presentation decisions of
@@ -210,6 +210,11 @@ export interface TimelineTarget {
   readonly entityType: string;
   /** The column holding the id to read it with. */
   readonly idColumn: string;
+  /**
+   * The payload key the entity's declared lifecycle moves (#1767), when it declares one —
+   * what lets the Event history tell a transition from any other change without guessing.
+   */
+  readonly stateField?: string;
 }
 
 /**
@@ -231,14 +236,18 @@ export interface TimelineTarget {
  * happened" about a record that has a history, and a missing link is the better
  * failure of the two.
  */
-export function timelineTargets(entities: Record<string, EmittedEntity>): Record<string, TimelineTarget> {
+export function timelineTargets(
+  entities: Record<string, EmittedEntity>,
+  lifecycles?: Record<string, EmittedLifecycle>,
+): Record<string, TimelineTarget> {
   const byTable: Record<string, TimelineTarget> = {};
   for (const [entityType, def] of Object.entries(entities)) {
     const table = (def as { table?: string }).table;
     if (!table) continue;
     const key = def.primaryKey?.length ? def.primaryKey : ['id'];
     if (key.length !== 1) continue;
-    byTable[table] = { entityType, idColumn: key[0]! };
+    const stateField = lifecycles?.[entityType]?.field;
+    byTable[table] = stateField ? { entityType, idColumn: key[0]!, stateField } : { entityType, idColumn: key[0]! };
   }
   return byTable;
 }
