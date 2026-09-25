@@ -115,7 +115,7 @@ describe('discovery is bound to the configured issuer', () => {
   it('does not accept an ID token minted against keys a foreign document names', async () => {
     doc = { issuer: 'https://evil.test', jwks_uri: 'https://evil.test/jwks' };
     signAs = { key: 'evil', iss: 'https://evil.test' };
-    await expect(login()).rejects.toThrow();
+    await expect(login()).rejects.toThrow(/different issuer/);
   });
 
   it('accepts the document when only a trailing slash differs, either way round', async () => {
@@ -130,10 +130,44 @@ describe('discovery is bound to the configured issuer', () => {
     expect((await login()).user.id).toBe('u-1');
   });
 
+  it('takes the issuer as a URL: host case and a default port do not make it a different one', async () => {
+    const host = new URL(issuer).host;
+    env = { ...env, OIDC_ISSUER: `https://${host.toUpperCase()}:443` };
+    expect((await login()).user.id).toBe('u-1');
+  });
+
+  it('keeps the path case-sensitive', async () => {
+    issuer = `https://issuer-path-${n}.test/Tenant`;
+    env = { ...env, OIDC_ISSUER: issuer };
+    // The stub answers the discovery URL under /Tenant; the document names /tenant.
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push({ url });
+      if (url.endsWith('/openid-configuration')) return Response.json({ issuer: issuer.replace('Tenant', 'tenant'), authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`, jwks_uri: `${issuer}/jwks` });
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch);
+    await expect(beginLogin(env, APP)).rejects.toThrow(/different issuer/);
+  });
+
   it('does not cache the refusal: an issuer that is corrected is usable', async () => {
     doc = { issuer: 'https://other.test' };
     await expect(login()).rejects.toThrow(/different issuer/);
     doc = {};
+    expect((await login()).user.id).toBe('u-1');
+  });
+});
+
+describe('the configured issuer', () => {
+  it('must be https: a plaintext issuer is refused before any request is made', async () => {
+    env = { ...env, OIDC_ISSUER: 'http://issuer.example.test' };
+    await expect(beginLogin(env, APP)).rejects.toThrow(/not https/);
+    expect(requests).toEqual([]);
+  });
+
+  it('is not written off by the refusal: the same isolate serves an https one (positive twin)', async () => {
+    env = { ...env, OIDC_ISSUER: 'http://issuer.example.test' };
+    await expect(beginLogin(env, APP)).rejects.toThrow(/not https/);
+    env = { ...env, OIDC_ISSUER: issuer };
     expect((await login()).user.id).toBe('u-1');
   });
 });

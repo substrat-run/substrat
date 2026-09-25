@@ -57,6 +57,7 @@ export interface SessionUser {
   emailVerified?: boolean;
 }
 
+export type OidcDiscovery = Discovery;
 interface Discovery {
   issuer: string;
   authorization_endpoint: string;
@@ -124,10 +125,38 @@ async function fetchDiscovery(url: string): Promise<Response> {
   }
 }
 
+/**
+ * An issuer identifier as a comparison key: parsed, so the host's case and a default port do
+ * not matter, with one trailing slash dropped. The path stays case-sensitive. Null when it is
+ * not a URL at all.
+ */
+function issuerKey(issuer: string): string | null {
+  try {
+    const u = new URL(issuer);
+    return `${u.origin}${u.pathname}`.replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
 // Discovery + JWKS, cached per issuer for the life of the isolate.
 const discoveryCache = new Map<string, Promise<Discovery>>();
+/**
+ * The issuer's discovery document, held to what it is trusted with: it must come from an
+ * https issuer (or a loopback one, for a dev issuer), because a plaintext discovery fetch can
+ * be rewritten in flight with the `issuer` intact; it must state the issuer it was fetched
+ * for; and it names no plaintext `jwks_uri`. Exported so every path that trusts a discovery
+ * document for the same issuer (a bearer verifier's key lookup) shares this one.
+ */
+export function discoverIssuer(issuer: string): Promise<OidcDiscovery> {
+  return discover(issuer);
+}
 function discover(issuer: string): Promise<Discovery> {
-  const key = issuer.replace(/\/$/, '');
+  const key = issuerKey(issuer);
+  if (!key || !isHttpsOrLoopback(new URL(issuer))) {
+    // Not cached: nothing was asked of anyone.
+    return Promise.reject(new Error('OIDC issuer is not https'));
+  }
   const cached = discoveryCache.get(key);
   if (cached) return cached;
   const url = `${key}/.well-known/openid-configuration`;
@@ -144,7 +173,7 @@ function discover(issuer: string): Promise<Discovery> {
       // OIDC Discovery §4.3: the `issuer` the document states MUST be the one it was fetched
       // for. The ID token is checked against `d.issuer` and its keys come from `d.jwks_uri`, so
       // without this the document vouches for itself. Fail closed, and (below) do not cache it.
-      if (typeof d.issuer !== 'string' || d.issuer.replace(/\/$/, '') !== key) {
+      if (typeof d.issuer !== 'string' || issuerKey(d.issuer) !== key) {
         throw new Error(`OIDC discovery at ${url} names a different issuer`);
       }
       return d;
