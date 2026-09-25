@@ -4929,6 +4929,7 @@ export function scopeHostContractSuite(
       await expectRefusal(host.admin.promoteVersion(staff, 'callout', 'prod', ghost), 'not_found');
       await expectRefusal(host.admin.bindScopeVersion(staff, t1, s1, ghost), 'not_found');
       await expectRefusal(host.admin.versionManifest(staff, 'callout', ghost), 'not_found');
+      await expectRefusal(host.admin.versionMigrations(staff, 'callout', ghost), 'not_found');
 
       // versionManifest refuses on the PAIR — `!v || v.vertical_slug !== verticalSlug` —
       // so the absent id above only exercises HALF its guard. A version that really
@@ -4956,6 +4957,60 @@ export function scopeHostContractSuite(
       // firing, not the version failing to exist.
       await host.admin.versionManifest(staff, 'otherowner', elsewhere);
       await expectRefusal(host.admin.versionManifest(staff, 'callout', elsewhere), 'not_found');
+      // The migrations read refuses on the same pair: a version's SQL describes its schema.
+      await host.admin.versionMigrations(staff, 'otherowner', elsewhere);
+      await expectRefusal(host.admin.versionMigrations(staff, 'callout', elsewhere), 'not_found');
+    });
+
+    it('stores a version\'s SQL migrations apart from its manifest, and never reads absent as none (#1764)', async () => {
+      await host.admin.registerVertical(staff, { slug: 'migrationsapart', name: 'Apart', source: 'builtin' });
+      const base = {
+        version: '1.0.0',
+        entry: 'index.js',
+        registry: { permissions: [], roles: [], entityGrants: [] },
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      };
+      const publish = async (manifest: Record<string, unknown> | string) => {
+        const id = ulid();
+        await host.admin.publishVersion(staff, {
+          id, verticalSlug: 'migrationsapart', version: `1.0.${id.toLowerCase()}`, manifestDigest: 'm',
+          permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+          manifestJson: typeof manifest === 'string' ? manifest : JSON.stringify(manifest),
+        });
+        return id;
+      };
+      const migrations = [
+        { moduleId: 'engine-workorder', version: '0001-init', sql: 'CREATE TABLE a (id TEXT);' },
+        { moduleId: 'helpdesk', version: '0001-init', sql: 'CREATE TABLE b (id TEXT);' },
+        { moduleId: 'helpdesk', version: '0002-more', sql: 'ALTER TABLE b ADD COLUMN c TEXT;' },
+      ];
+
+      // Carried: every migration, in the order the host runs them, and a manifest without them.
+      const carried = await publish({ ...base, migrations });
+      expect(await host.admin.versionMigrations(staff, 'migrationsapart', carried)).toEqual(migrations);
+      const manifest = JSON.parse((await host.admin.versionManifest(staff, 'migrationsapart', carried))!);
+      expect(manifest).not.toHaveProperty('migrations');
+      expect(manifest).toEqual(base);
+
+      // `[]` is a version whose modules ship none; an absent field is one that cannot say.
+      expect(await host.admin.versionMigrations(staff, 'migrationsapart', await publish({ ...base, migrations: [] }))).toEqual([]);
+      expect(await host.admin.versionMigrations(staff, 'migrationsapart', await publish(base))).toBeNull();
+
+      // Over the push's caps, or not shaped like migrations: dropped, and read as not available.
+      // The publish itself still succeeds, since refusing would come after the script upload.
+      const overCap = await publish({
+        ...base,
+        migrations: [{ moduleId: 'helpdesk', version: '0001', sql: 'x'.repeat(512 * 1024 + 1) }],
+      });
+      expect(await host.admin.versionMigrations(staff, 'migrationsapart', overCap)).toBeNull();
+      expect(JSON.parse((await host.admin.versionManifest(staff, 'migrationsapart', overCap))!)).not.toHaveProperty('migrations');
+      const malformed = await publish({ ...base, migrations: 'nope' });
+      expect(await host.admin.versionMigrations(staff, 'migrationsapart', malformed)).toBeNull();
+
+      // A manifest that is not JSON, or none at all: stored as it came, with no SQL to show.
+      const junk = await publish('not json');
+      expect(await host.admin.versionManifest(staff, 'migrationsapart', junk)).toBe('not json');
+      expect(await host.admin.versionMigrations(staff, 'migrationsapart', junk)).toBeNull();
     });
 
     it('an archived scope blocks the delete naming the reap step; a reaped tombstone never blocks', async () => {

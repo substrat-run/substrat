@@ -1080,6 +1080,12 @@ const SCOPE_COLUMNS_ADDED = [
   'archived_at TEXT',
 ] as const;
 
+/**
+ * The pause before each #1764 backfill batch. A batch holds the directory DO, which every
+ * control-plane request goes through, so batches are spaced rather than run back to back.
+ */
+const BACKFILL_PAUSE_MS = 1000;
+
 export class ControlPlaneDO extends DurableObject {
   private readonly sql: SqlStorage;
   /** The directory's store as the kernel's SQL handle — the switch record's helpers (#1674). */
@@ -1110,7 +1116,7 @@ export class ControlPlaneDO extends DurableObject {
    * restore, so a dump taken before the backfill is moved again.
    */
   private armVersionMigrationsBackfill(): void {
-    if (versionsAwaitSplit(this.versionSql)) void this.ctx.storage.setAlarm(Date.now());
+    if (versionsAwaitSplit(this.versionSql)) void this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
   }
 
   /**
@@ -1120,7 +1126,7 @@ export class ControlPlaneDO extends DurableObject {
    */
   override async alarm(): Promise<void> {
     const { more } = this.ctx.storage.transactionSync(() => splitVersionMigrationsBatch(this.versionSql));
-    if (more) await this.ctx.storage.setAlarm(Date.now());
+    if (more) await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
   }
 
   /**
@@ -1393,10 +1399,13 @@ export class ControlPlaneDO extends DurableObject {
    * did before the restore, which is the opposite of what a recovery is for.
    */
   exportDump(): ScopeDumpTable[] {
+    // Not `_cf_*` either: workerd's own tables (the #1764 backfill's alarm creates
+    // `_cf_METADATA`), which are not the directory's and which it refuses to drop on restore.
     const defs = this.sql
       .exec(
         `SELECT name, sql FROM sqlite_master
-          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*'
+            AND sql IS NOT NULL
           ORDER BY name`,
       )
       .toArray() as unknown as { name: string; sql: string }[];
@@ -1429,8 +1438,12 @@ export class ControlPlaneDO extends DurableObject {
   async importDump(tables: ScopeDumpTable[]): Promise<void> {
     await this.ctx.storage.transaction(async () => {
       this.sql.exec('PRAGMA defer_foreign_keys = ON');
+      // `_cf_*` is workerd's, and dropping it is refused (SQLITE_AUTH), as `exportDump` says.
       const existing = this.sql
-        .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+        .exec(
+          `SELECT name FROM sqlite_master
+            WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*'`,
+        )
         .toArray() as unknown as { name: string }[];
       for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
       // Same untrusted dump, same two holes as the scope path (#1143): names reaching
