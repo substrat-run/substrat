@@ -3246,11 +3246,13 @@ export function defineScopeDO(
         {};
       for (const t of types) out[t] = { observedAt: null, stateAt: null, stateOutcome: null };
       if (types.length === 0) return out;
-      const marks = types.map(() => '?').join(', ');
+      // Each list travels as ONE bound JSON array (#1776): a DO binds at most 100 parameters,
+      // and nothing caps how many event types the registered modules declare a window for.
       for (const row of this.sql
         .exec(
-          `SELECT type, MAX(occurred_at) AS at FROM _substrat_outbox WHERE type IN (${marks}) GROUP BY type`,
-          ...types,
+          `SELECT type, MAX(occurred_at) AS at FROM _substrat_outbox
+            WHERE type IN (SELECT value FROM json_each(?)) GROUP BY type`,
+          JSON.stringify(types),
         )
         .toArray() as unknown as { type: string; at: string | null }[]) {
         if (row.at !== null) out[row.type]!.observedAt = row.at;
@@ -3259,8 +3261,8 @@ export function defineScopeDO(
       for (const row of this.sql
         .exec(
           `SELECT schedule_op, last_run_at, last_status FROM _substrat_schedule_state
-            WHERE kind = 'freshness' AND schedule_op IN (${marks})`,
-          ...keys,
+            WHERE kind = 'freshness' AND schedule_op IN (SELECT value FROM json_each(?))`,
+          JSON.stringify(keys),
         )
         .toArray() as unknown as { schedule_op: string; last_run_at: string | null; last_status: string | null }[]) {
         const t = row.schedule_op.slice('freshness:'.length);

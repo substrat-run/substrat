@@ -3925,9 +3925,10 @@ export class SqliteScopeHost implements ScopeHost {
       for (const row of rt.db
         .prepare(
           `SELECT type, MAX(occurred_at) AS at FROM _substrat_outbox
-            WHERE type IN (${types.map(() => '?').join(', ')}) GROUP BY type`,
+            WHERE type IN (SELECT value FROM json_each(?)) GROUP BY type`,
         )
-        .all(...types) as { type: string; at: string | null }[]) {
+        // One JSON array, the shape the DO twin needs for its 100-parameter limit (#1776).
+        .all(JSON.stringify(types)) as { type: string; at: string | null }[]) {
         if (row.at !== null) observed.set(row.type, row.at);
       }
 
