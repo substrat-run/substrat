@@ -4997,7 +4997,8 @@ export function scopeHostContractSuite(
       expect(await host.admin.versionMigrations(staff, 'migrationsapart', await publish(base))).toBeNull();
 
       // Over the push's caps, or not shaped like migrations: dropped, and read as not available.
-      // The publish itself still succeeds, since refusing would come after the script upload.
+      // `/deploy` refuses such a set before the upload; this is the cap on whatever else reaches
+      // `publishVersion` (the raw `POST …/versions`, #1765), and the publish still succeeds.
       const overCap = await publish({
         ...base,
         migrations: [{ moduleId: 'helpdesk', version: '0001', sql: 'x'.repeat(512 * 1024 + 1) }],

@@ -87,13 +87,14 @@ describe('the stored manifest size bound (#1677)', () => {
     expect(bytes(stored)).toBeLessThan(1024);
   });
 
-  it('what the first caps admitted, and the DO refused as one row, now publishes as SQL not available', async () => {
+  it('publishVersion caps what reaches it by any route: SQL the DO refused as one row now stores as not available', async () => {
     const statement = 'CREATE TABLE "t" ("id" TEXT);\n';
     const sql = statement.repeat(Math.floor((2 * 1024 * 1024) / statement.length));
     const json = manifestWithSql(sql);
     expect(bytes(json)).toBeGreaterThan(2 * 1024 * 1024);
-    // Before #1764 this whole manifest was one row, and `publishVersion` failed on SQLITE_TOOBIG
-    // after the script had been uploaded. The SQL is over the push's cap, so it is dropped.
+    // Before #1764 this whole manifest was one row, and `publishVersion` failed on SQLITE_TOOBIG.
+    // `/deploy` refuses this set before the upload (its `deployManifest` parse); the raw
+    // `POST …/versions` route (#1765) does not, so the host's split caps it: it is dropped.
     const id = await publish(json);
     expect(await host.admin.versionMigrations(staff, vertical, id)).toBeNull();
     expect(JSON.parse((await host.admin.versionManifest(staff, vertical, id))!)).not.toHaveProperty('migrations');

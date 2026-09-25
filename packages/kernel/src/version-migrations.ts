@@ -71,11 +71,14 @@ export interface SplitManifest {
  * Take `migrations` out of a manifest.
  *
  * `push` holds the field to the push boundary's caps (`deployManifest`): at most 2000 entries
- * and 512 KiB of SQL, which also bounds every row under a Durable Object's 2 MB row limit. A
- * field over the caps, or not shaped like migrations, is dropped and the version reads as
- * "SQL not available", so the promote dialog still asks. Refusing instead would fail the
- * push after its script was uploaded. `stored` is for a manifest already in the directory,
- * whose history the caps must never make unreadable (`storedDeployManifest`).
+ * and 512 KiB of SQL, which also bounds every row under a Durable Object's 2 MB row limit.
+ * `/deploy` already refuses an over-cap set, before the upload, because it parses the whole
+ * manifest with `deployManifest`. This split caps whatever reaches `publishVersion` by any
+ * route, including `POST /verticals/:slug/versions`, which stores `manifestJson` unparsed
+ * (#1765). There, a field over the caps or not shaped like migrations is dropped and the
+ * version reads as "SQL not available", so the promote dialog still asks. `stored` is for a
+ * manifest already in the directory, whose history the caps must never make unreadable
+ * (`storedDeployManifest`).
  *
  * A manifest that is not a JSON object is returned as it came, with no migrations. The
  * manifest is only rewritten when it has a `migrations` key to remove.
