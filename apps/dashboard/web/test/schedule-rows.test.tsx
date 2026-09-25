@@ -14,6 +14,9 @@ import {
 } from '../src/lib/schedule-rows';
 import { AppSchedules } from '../src/views/AppSchedules';
 import { AppSchedulesCard } from '../src/views/AppSchedulesCard';
+import { StatusBand } from '../src/views/StatusBand';
+import { useAppSchedules } from '../src/lib/use-app-schedules';
+import type { AppRow } from '../src/lib/api';
 
 const NOW = Date.parse('2026-09-01T12:00:00.000Z');
 const ago = (min: number) => new Date(NOW - min * 60_000).toISOString();
@@ -101,6 +104,24 @@ describe('schedule rows (#1767)', () => {
   });
 });
 
+function CardHarness({ v }: { v: AppSchedulesView }) {
+  return <AppSchedulesCard scopeId="s" schedules={{ state: 'ok', view: v }} />;
+}
+
+describe('window edges', () => {
+  it('a run exactly at the left edge still marks the window as truncated (20+)', () => {
+    const w = { from: ago(600), to: ago(0) };
+    const runs = Array.from({ length: RUN_CAP }, (_, i) => run(`r${i}`, (i * 600) / (RUN_CAP - 1)));
+    const p = pulseScheduleRow(schedule('a', runs), w, ago(1));
+    expect(p.runs).toBe(RUN_CAP);
+    expect(p.truncated).toBe(true);
+    expect(p.coveredFrom).toBe(0);
+    const f = pulseFreshnessRow({ ...fresh('e', 'fresh', 1), runs }, w, ago(1), NOW);
+    expect(f.runs).toBe(RUN_CAP);
+    expect(f.truncated).toBe(true);
+  });
+});
+
 describe('schedule surfaces', () => {
   let container: HTMLDivElement, root: Root;
   beforeEach(() => {
@@ -162,8 +183,7 @@ describe('schedule surfaces', () => {
   });
 
   it('the Overview card draws a fixed strip per schedule and links to Schedules', async () => {
-    vi.spyOn(api, 'appSchedules').mockResolvedValue(view());
-    await act(async () => root.render(<AppSchedulesCard scopeId="s" />));
+    await act(async () => root.render(<CardHarness v={view()} />));
     const strips = [...container.querySelectorAll('[aria-label^="Last "]')];
     expect(strips).toHaveLength(3);
     expect(strips.every((s) => s.children.length === RUN_CAP)).toBe(true);
@@ -173,8 +193,52 @@ describe('schedule surfaces', () => {
   });
 
   it('the Overview card stays away when nothing is declared', async () => {
-    vi.spyOn(api, 'appSchedules').mockResolvedValue({ running: { versionId: null, version: null }, schedules: null, freshness: null, lastSweepAt: null });
-    await act(async () => root.render(<AppSchedulesCard scopeId="s" />));
+    await act(async () => root.render(<CardHarness v={{ running: { versionId: null, version: null }, schedules: null, freshness: null, lastSweepAt: null }} />));
     expect(container.innerHTML).toBe('');
+  });
+
+  it('the Overview asks for schedules once, for the Health tile and the card together', async () => {
+    const spy = vi.spyOn(api, 'appSchedules').mockResolvedValue(view());
+    vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
+    window.matchMedia = ((q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    const Both = () => {
+      const schedules = useAppSchedules('s');
+      return (
+        <>
+          <StatusBand app={{ app_scope_id: 's' } as AppRow} versionLabel="1.0.0" updateAvailable={false} seat={null} schedules={schedules} />
+          <AppSchedulesCard scopeId="s" schedules={schedules} />
+        </>
+      );
+    };
+    await act(async () => root.render(<Both />));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('Schedules and freshness');
+  });
+
+  it('a failed last run is danger-red on both surfaces, like its tick', async () => {
+    const v = view();
+    vi.spyOn(api, 'appSchedules').mockResolvedValue(v);
+    const failing = { ...v, schedules: [{ ...schedule('app/broke', [liveRun('b1', 30, 'failed', 'nope')]), lastRun: liveRun('b1', 30, 'failed', 'nope') }], freshness: [] };
+    await act(async () => root.render(<CardHarness v={failing} />));
+    const lastRun = [...container.querySelectorAll<HTMLElement>('span')].find((e) => e.textContent?.startsWith('failed ·'))!;
+    expect(lastRun.style.color).toBe('var(--status-danger-fg)');
+    await act(async () => root.render(<div />));
+    vi.mocked(api.appSchedules).mockResolvedValue(failing);
+    await act(async () => root.render(<AppSchedules scopeId="s" window={{ from: at(24 * 60), to: at(0) }} onOpen={() => {}} />));
+    const pulse = [...container.querySelectorAll<HTMLElement>('span')].find((e) => /^failed \d/.test(e.textContent ?? ''))!;
+    expect(pulse.style.color).toBe('var(--status-danger-fg)');
+  });
+
+  it('Pulse shows a freshness rule\'s runs, failures and ticks', async () => {
+    const v = view();
+    const f = { ...fresh('sla.checked', 'fresh', 30), runs: [run('r2', 30), run('r1', 90, 'failed', 'probe down')] };
+    vi.spyOn(api, 'appSchedules').mockResolvedValue({ ...v, schedules: [], freshness: [{ ...f, runs: [liveRun('r2', 30), liveRun('r1', 90, 'failed', 'probe down')] }] });
+    await act(async () => root.render(<AppSchedules scopeId="s" window={{ from: at(24 * 60), to: at(0) }} onOpen={() => {}} />));
+    const row = [...container.querySelectorAll('a')].find((a) => a.textContent?.includes('sla.checked'))!;
+    const nums = [...row.querySelectorAll('span')].map((e) => e.textContent);
+    expect(nums).toEqual(expect.arrayContaining(['2', '1']));
+    const ticks = [...row.querySelectorAll<HTMLElement>('[role="img"]')];
+    expect(ticks).toHaveLength(2);
+    expect(ticks.filter((t) => t.style.background === 'var(--status-danger-fg)')).toHaveLength(1);
   });
 });

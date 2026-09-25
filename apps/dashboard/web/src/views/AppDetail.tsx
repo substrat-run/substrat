@@ -20,6 +20,7 @@ import { AppPeers } from './AppPeers';
 import { AppEdges } from './AppEdges';
 import { AppSchedulesCard } from './AppSchedulesCard';
 import { StatusBand } from './StatusBand';
+import { useAppSchedules } from '../lib/use-app-schedules';
 import { InvocationStrip } from './InvocationStrip';
 import { InvocationLogsStrip } from './InvocationLogsStrip';
 import { Sparkline } from '../components/Sparkline';
@@ -362,6 +363,7 @@ function ScopeOwnerSeat({ scopeId, versionId, active }: { scopeId: string; versi
 
 function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[] }) {
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
+  const schedules = useAppSchedules(app.app_scope_id);
   // The app's REAL audit trail (created / active / failed+reason / deleted), one page
   // newest-first; `eventsCursor` walks older activity. Dev-preview shows a sample.
   const [events, setEvents] = useState<AppEvent[] | null>(null);
@@ -516,7 +518,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Full width, above everything: the four stats that answer "is this app OK?".
           They are why Observability and Audit could move to the left menu (#1447). */}
-      <StatusBand app={app} versionLabel={versionLabel} updateAvailable={updateAvailable} seat={seat} />
+      <StatusBand app={app} versionLabel={versionLabel} updateAvailable={updateAvailable} seat={seat} schedules={schedules} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ ...card, padding: 20 }}>
@@ -597,7 +599,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
             </a>
           </div>
         </div>
-        <AppSchedulesCard key={`schedules:${app.app_scope_id}`} scopeId={app.app_scope_id} />
+        <AppSchedulesCard key={`schedules:${app.app_scope_id}`} scopeId={app.app_scope_id} schedules={schedules} />
         <OwnerSeatCard key={app.app_scope_id} scopeId={app.app_scope_id} seat={seat} onClaimed={readSeat} />
         <AppPeers key={`peers:${app.app_scope_id}`} scopeId={app.app_scope_id} />
         <AppEdges key={`edges:${app.app_scope_id}`} scopeId={app.app_scope_id} />

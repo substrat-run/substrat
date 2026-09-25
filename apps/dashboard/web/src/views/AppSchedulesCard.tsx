@@ -1,8 +1,6 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import { Badge } from '@substrat-run/ui';
-import { api, type AppSchedulesView } from '../lib/api';
-import { DEV_MOCK } from '../lib/mock';
-import { MOCK_SCHEDULES_VIEW } from '../lib/mock-schedules';
+import type { SchedulesState } from '../lib/use-app-schedules';
 import { card } from '../components/ui';
 import { navigate, obsPath, teamPath } from '../lib/router';
 import type { ObsQuery } from '../lib/observability-query';
@@ -22,27 +20,10 @@ import {
  * recent runs as a fixed strip, and each freshness rule as the sentence it produces. The
  * glance; Pulse's Schedules view draws the same runs at their real times, one click away.
  * Absent when the running version declares neither — most verticals — and while the read is
- * in flight or has failed, so the Overview never grows a card that says nothing.
+ * in flight or has failed (the read is the Overview's, shared with the Health tile), so the Overview never grows a card that says nothing.
  */
-export function AppSchedulesCard({ scopeId }: { scopeId: string }) {
-  const [view, setView] = useState<AppSchedulesView | null>(null);
-
-  useEffect(() => {
-    setView(null);
-    if (DEV_MOCK) {
-      setView(MOCK_SCHEDULES_VIEW);
-      return;
-    }
-    let live = true;
-    api
-      .appSchedules(scopeId)
-      .then((v) => live && setView(v))
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [scopeId]);
-
+export function AppSchedulesCard({ scopeId, schedules: read }: { scopeId: string; schedules: SchedulesState }) {
+  const view = read.state === 'ok' ? read.view : null;
   const schedules = view?.schedules ?? [];
   const freshness = view?.freshness ?? [];
   if (!view || (schedules.length === 0 && freshness.length === 0)) return null;
@@ -75,7 +56,7 @@ export function AppSchedulesCard({ scopeId }: { scopeId: string }) {
               {row.operation}
             </span>
             <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{cadenceLabel(row.everyMinutes)}</span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: last.failed ? 'var(--status-warning-fg)' : 'var(--text-secondary)' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: last.failed ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}>
               {last.text}
             </span>
             <span style={{ display: 'flex', gap: 2, alignItems: 'center' }} aria-label={`Last ${RUN_CAP} runs, oldest first`}>

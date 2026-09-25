@@ -144,7 +144,7 @@ export interface PulseScheduleRow {
    */
   truncated: boolean;
   coveredFrom: number | null;
-  ticks: Array<{ id: string; x: number; failed: boolean; title: string }>;
+  ticks: Tick[];
   hatch: Hatch | null;
 }
 
@@ -154,16 +154,32 @@ const hatchFrom = (iso: string | null, w: AxisWindow): number | null => {
   return place(iso, w);
 };
 
-export function pulseScheduleRow(row: AppScheduleRow, w: AxisWindow, lastSweepAt: string | null): PulseScheduleRow {
-  const inside = row.runs.filter((r) => place(r.at, w) !== null);
-  const oldest = row.runs.at(-1);
-  const truncated = row.runs.length >= RUN_CAP && !!oldest && place(oldest.at, w) !== null && place(oldest.at, w)! > 0;
-  const ticks = inside.map((r) => ({
+type Tick = { id: string; x: number; failed: boolean; title: string };
+
+/** What a run history draws over the window: the counts, the ticks, and how far the read reaches. */
+function runMarks(runs: SweepRunView[], w: AxisWindow) {
+  const inside = runs.filter((r) => place(r.at, w) !== null);
+  const oldest = runs.at(-1);
+  // A run exactly on the left edge places at 0 and is inside: any placement counts.
+  const oldestX = oldest ? place(oldest.at, w) : null;
+  const truncated = runs.length >= RUN_CAP && oldestX !== null;
+  const ticks: Tick[] = inside.map((r) => ({
     id: r.id,
     x: place(r.at, w)!,
     failed: r.outcome === 'failed',
     title: `${r.outcome === 'failed' ? `failed${r.error ? `: ${r.error}` : ''}` : r.outcome} · ${clock(r.at)}`,
   }));
+  return {
+    runs: inside.length,
+    failed: inside.filter((r) => r.outcome === 'failed').length,
+    truncated,
+    coveredFrom: truncated ? oldestX : null,
+    ticks,
+  };
+}
+
+export function pulseScheduleRow(row: AppScheduleRow, w: AxisWindow, lastSweepAt: string | null): PulseScheduleRow {
+  const marks = runMarks(row.runs, w);
   let hatch: Hatch | null = null;
   if (row.health === 'overdue' && row.nextDueAt) {
     const x = hatchFrom(row.nextDueAt, w);
@@ -172,15 +188,7 @@ export function pulseScheduleRow(row: AppScheduleRow, w: AxisWindow, lastSweepAt
     const x = hatchFrom(lastSweepAt, w);
     if (x !== null) hatch = { from: x, title: lastSweepAt ? `No sweep since ${clock(lastSweepAt)}` : 'No sweep has reached this app' };
   }
-  return {
-    row,
-    runs: inside.length,
-    failed: inside.filter((r) => r.outcome === 'failed').length,
-    truncated,
-    coveredFrom: truncated ? place(oldest!.at, w) : null,
-    ticks,
-    hatch,
-  };
+  return { row, ...marks, hatch };
 }
 
 /** Pulse's freshness row: the age of the newest evidence, and the span it has been stale. */
@@ -189,7 +197,7 @@ export function pulseFreshnessRow(
   w: AxisWindow,
   lastSweepAt: string | null,
   now = Date.now(),
-): { age: string; verdict: string; hatch: Hatch | null } {
+): { age: string; verdict: string; hatch: Hatch | null } & Omit<PulseScheduleRow, 'row' | 'hatch'> {
   const age = row.observedAt ? relativeTime(row.observedAt, now) : row.health === 'never-seen' ? 'never' : '—';
   let hatch: Hatch | null = null;
   let verdict = FRESHNESS_VERDICT[row.health].label;
@@ -203,7 +211,7 @@ export function pulseFreshnessRow(
     const x = hatchFrom(lastSweepAt, w);
     if (x !== null) hatch = { from: x, title: lastSweepAt ? `No sweep since ${clock(lastSweepAt)}` : 'No sweep has reached this app' };
   }
-  return { age, verdict, hatch };
+  return { age, verdict, hatch, ...runMarks(row.runs, w) };
 }
 
 /** One freshness rule, as a sentence: the line this feature exists to produce. */

@@ -143,7 +143,7 @@ export function AppSchedules({
               }
               subColor={hit?.outcome === 'failed' ? 'var(--status-danger-fg)' : undefined}
             />
-            <span style={{ ...num, ...mono, color: last.failed ? 'var(--status-warning-fg)' : undefined }}>{last.text}</span>
+            <span style={{ ...num, ...mono, color: last.failed ? 'var(--status-danger-fg)' : undefined }}>{last.text}</span>
             <span style={{ ...num, ...mono }} title={s.truncated ? `At least — only the last ${RUN_CAP} runs are read` : undefined}>
               {row.health === 'never-run' ? '0' : `${s.runs}${lowerBound}`}
             </span>
@@ -155,21 +155,7 @@ export function AppSchedules({
             </span>
             <Axis hatch={s.hatch} coveredFrom={s.coveredFrom}>
               {s.ticks.map((t) => (
-                <span
-                  key={t.id}
-                  role="img"
-                  aria-label={t.title}
-                  title={t.title}
-                  style={{
-                    position: 'absolute',
-                    left: `${(t.x * 100).toFixed(3)}%`,
-                    top: t.failed ? 4 : 9,
-                    height: t.failed ? 22 : 14,
-                    width: 2,
-                    marginLeft: -1,
-                    background: t.failed ? 'var(--status-danger-fg)' : 'var(--text-tertiary)',
-                  }}
-                />
+                <RunTick key={t.id} t={t} />
               ))}
             </Axis>
             <span style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -186,9 +172,22 @@ export function AppSchedules({
           <RowLink key={`fresh:${row.eventType}`} link={link} title={`${row.eventType} in the event explorer`}>
             <Name name={row.eventType} sub={sub(`freshness · ≤ ${row.withinHours}h`)} />
             <span style={{ ...num, ...mono, color: row.health === 'stale' ? 'var(--status-warning-fg)' : undefined }}>{f.age}</span>
-            <span />
-            <span />
-            <Axis hatch={f.hatch} coveredFrom={null} />
+            <span style={{ ...num, ...mono }} title={f.truncated ? `At least — only the last ${RUN_CAP} runs are read` : undefined}>
+              {f.runs}
+              {f.truncated ? '+' : ''}
+            </span>
+            <span
+              style={{ ...num, ...mono, color: f.failed > 0 ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}
+              title={f.truncated ? `At least — only the last ${RUN_CAP} runs are read` : undefined}
+            >
+              {f.failed}
+              {f.truncated ? '+' : ''}
+            </span>
+            <Axis hatch={f.hatch} coveredFrom={f.coveredFrom}>
+              {f.ticks.map((t) => (
+                <RunTick key={t.id} t={t} />
+              ))}
+            </Axis>
             <span style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <Badge status={v.status}>{f.verdict}</Badge>
             </span>
@@ -331,5 +330,24 @@ function Note({ children, tone }: { children: ReactNode; tone?: 'warning' }) {
     >
       {children}
     </div>
+  );
+}
+
+function RunTick({ t }: { t: { x: number; failed: boolean; title: string } }) {
+  return (
+    <span
+      role="img"
+      aria-label={t.title}
+      title={t.title}
+      style={{
+        position: 'absolute',
+        left: `${(t.x * 100).toFixed(3)}%`,
+        top: t.failed ? 4 : 9,
+        height: t.failed ? 22 : 14,
+        width: 2,
+        marginLeft: -1,
+        background: t.failed ? 'var(--status-danger-fg)' : 'var(--text-tertiary)',
+      }}
+    />
   );
 }
