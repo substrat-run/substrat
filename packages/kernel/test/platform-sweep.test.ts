@@ -1949,6 +1949,15 @@ describe('registryImportCandidates (#1705 PR 2)', () => {
     expect(report.errors).toEqual([expect.objectContaining({ kind: 'vertical-events', id: `${only!.id}:*` })]);
   });
 
+  it('a superset narrowing (a plain filter, which the contract allows) never turns "imports nothing" into a failure', async () => {
+    const scopes = scopesOn(3, V1);
+    const { host, called, reachOver } = hostWith(scopes);
+    const { report, runs } = await sweep(host, reachOver((all) => all.filter((s) => s.tenantId === T)));
+    expect(called).toHaveLength(3);
+    expect(runs).toEqual([]);
+    expect(report.errors).toEqual([]);
+  });
+
   it('a registry that says "imports" against a deployment that says "nothing" is a failed edge; a doubted scope is not', async () => {
     const definite = scopesOn(1, V1);
     const doubted = scopesOn(1, V2);

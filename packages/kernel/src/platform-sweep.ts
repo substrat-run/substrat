@@ -678,6 +678,13 @@ export interface CandidatesHint {
    * Such a scope answering that it imports nothing is an answer, not a disagreement.
    */
   doubt?(unit: string, reason: string, scopeIds: readonly ScopeId[]): void;
+  /**
+   * Report scopes the narrowing KNOWS import (their running code declares it). A candidate
+   * reported here that answers "imports nothing" disagrees with the registry, and is a failed
+   * edge. A candidate not reported (a superset `candidates`, which the contract allows, or a
+   * doubtful one) answering "nothing" has simply answered.
+   */
+  known?(scopeIds: readonly ScopeId[]): void;
 }
 
 /** How the cross-vertical phase reaches the two scopes of an edge (#1705). */
@@ -1505,10 +1512,15 @@ async function sweepCrossVertical(
   // every watermark holds, and the next pass asks again.
   // Scopes kept only because the narrowing could not judge them: their "imports nothing" is an answer.
   const doubtful = new Set<string>();
+  // Scopes the narrowing KNOWS import: their "imports nothing" contradicts the registry.
+  const knownImporters = new Set<string>();
   let candidates: readonly Scope[];
   try {
     candidates = await candidatesOf(scopes, {
       ...(from !== null ? { from } : {}),
+      known: (scopeIds) => {
+        for (const id of scopeIds) knownImporters.add(id);
+      },
       doubt: (unit, reason, scopeIds) => {
         for (const id of scopeIds) doubtful.add(id);
         // A kick pass leaves doubt to the sweep: see the filter below and `record`.
@@ -1561,11 +1573,12 @@ async function sweepCrossVertical(
       consumerFailed(`could not read the consumer's imports: ${message(err)}`);
       return;
     }
-    // A candidate is one whose code is known to import (or could not be judged). Its deployment
-    // answering that it imports NOTHING means the two disagree: the scope is not running the code
-    // the registry describes (a push that did not reach it, or a reconcile still owed). Said, not
-    // skipped: skipping would make every edge into this scope disappear without a trace.
-    if (state.consumes.length === 0 && reach.candidates && !doubtful.has(consumer.id)) {
+    // A scope the narrowing KNOWS imports (`hint.known`) whose deployment answers that it imports
+    // NOTHING: the two disagree, and the scope is not running the code the registry describes (a
+    // push that did not reach it, or a reconcile still owed). Said, not skipped: skipping would
+    // make every edge into this scope disappear without a trace. Any other candidate (a superset
+    // narrowing, which the contract allows, or a doubtful scope) answering "nothing" has answered.
+    if (state.consumes.length === 0 && knownImporters.has(consumer.id)) {
       consumerFailed(
         "the version registry says this scope's code imports events, but its deployment answers that it " +
           'imports nothing — it is not running the version the registry names; redeploy or reconcile it',
@@ -1656,6 +1669,7 @@ export function registryImportCandidates(input: {
       }
     });
     const doubted = new Map<string, { reason: string; scopeIds: ScopeId[] }>();
+    const known: ScopeId[] = [];
     const out: Scope[] = [];
     for (const { scope, key } of keyed) {
       const fact: ManifestImports = facts.get(key) ?? {
@@ -1665,7 +1679,10 @@ export function registryImportCandidates(input: {
       if (fact.kind === 'none') continue;
       if (fact.kind === 'imports') {
         const from = hint?.from;
-        if (from !== undefined ? fact.rows.some((r) => r.from === from) : fact.rows.length > 0) out.push(scope);
+        if (from !== undefined ? fact.rows.some((r) => r.from === from) : fact.rows.length > 0) {
+          out.push(scope);
+          known.push(scope.id);
+        }
         continue;
       }
       out.push(scope);
@@ -1674,6 +1691,7 @@ export function registryImportCandidates(input: {
       doubted.set(key, d);
     }
     for (const [key, d] of doubted) hint?.doubt?.(key, d.reason, d.scopeIds);
+    if (known.length > 0) hint?.known?.(known);
     return out;
   };
 }
