@@ -14,19 +14,19 @@ import {
 } from './console-client.js';
 import {
   GENERIC_ID_PATTERN,
-  LOOPBACK_HOSTS,
   PROVIDER_CATALOGUE,
   deleteProvider,
   descriptorOf,
+  genericEndpointsRefusal,
   isReservedProviderId,
   readProvider,
-  isHttpsOrLoopback,
   readProviders,
   toWireProvider,
   upsertProvider,
   type ProviderEndpoints,
 } from './providers.js';
 import { resolveIssuerEndpoints } from './provider-discovery.js';
+import { isHttpsOrLoopback, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import { deleteBankIdConfig, putBankIdConfig, readBankIdConfig, toWireBankId } from './bankid.js';
 import { SIGN_IN_LOG_LIMIT, readSignInLog, signInLogQuery } from './sign-in-log.js';
 
@@ -340,7 +340,7 @@ function assertRedirectUri(value: string, applicationType: string): void {
     throw new HTTPException(400, { message: `'${value}' is not an absolute URI` });
   }
   if (url.hash) throw new HTTPException(400, { message: `'${value}' must not carry a fragment` });
-  if (applicationType === 'web' && url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) {
+  if (applicationType === 'web' && url.protocol === 'http:' && !isHttpsOrLoopback(url)) {
     throw new HTTPException(400, {
       message: `web clients require https redirect URIs on non-loopback hosts: ${value}`,
     });
@@ -351,21 +351,18 @@ function assertRedirectUri(value: string, applicationType: string): void {
  * The rule for a GENERIC provider's issuer URL. HTTPS, because the discovery document fetched
  * from it decides where this issuer sends people and their authorization codes — with the
  * loopback exception every other rule here grants, so a local Keycloak works in dev. No
- * query or fragment: an issuer is an origin plus an optional path (RFC 8414), and anything
- * after that is a pasted authorize URL, not an issuer.
+ * query, fragment or credentials: an issuer is an origin plus an optional path (RFC 8414),
+ * and anything after that is a pasted authorize URL, not an issuer. The predicate is
+ * `@substrat-run/oidc-rp`'s own `issuerRefusal`, which discovery applies again, so the save can
+ * never admit an issuer the discovery read then refuses. The value is not echoed back: it may
+ * carry a password.
  */
 function assertIssuerUrl(value: string): void {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new HTTPException(400, { message: `'${value}' is not an absolute URL` });
-  }
-  if (url.hash || url.search) {
-    throw new HTTPException(400, { message: 'an issuer URL carries no query or fragment' });
-  }
-  if (!isHttpsOrLoopback(url)) {
-    throw new HTTPException(400, { message: `an issuer URL must be https (or http on loopback): ${value}` });
+  const refusal = issuerRefusal(value);
+  if (refusal) {
+    throw new HTTPException(400, {
+      message: `${refusal} — an issuer URL is https (or http on loopback), with no query, fragment or credentials`,
+    });
   }
 }
 
@@ -524,8 +521,10 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
       // `resolveIssuerEndpoints` for why that is load-bearing). Re-resolved when the issuer
       // changes and kept otherwise, so flipping a toggle does not depend on the upstream
       // being reachable at that moment.
+      // A stored document that no longer passes the rule is re-discovered too, so saving the
+      // row is what brings a provider back once its upstream serves a usable document.
       const issuerChanged = input.issuer.trim() !== existing?.issuer;
-      if (issuerChanged || !existing?.endpoints) {
+      if (issuerChanged || !existing?.endpoints || genericEndpointsRefusal(existing) !== null) {
         try {
           endpoints = await resolveIssuerEndpoints(input.issuer.trim());
         } catch (e) {

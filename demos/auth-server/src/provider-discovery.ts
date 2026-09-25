@@ -1,4 +1,5 @@
-import { discoveryUrlOf, isHttpsOrLoopback, type ProviderEndpoints } from './providers.js';
+import { isAllowedEndpoint, readDiscovery } from '@substrat-run/oidc-rp/discovery';
+import { CREDENTIALED_ENDPOINTS, issuerOf, type ProviderEndpoints } from './providers.js';
 
 /**
  * The auth adapter's discovery boundary — the ONE place this issuer fetches another issuer's
@@ -12,6 +13,12 @@ import { discoveryUrlOf, isHttpsOrLoopback, type ProviderEndpoints } from './pro
  * the reasoning (`resolveIssuerEndpoints` there in spirit): the per-request Better Auth
  * rebuild both runtimes rely on turns any runtime discovery fetch into a fetch per request,
  * and into unbounded recursion when the upstream's discovery routes back to this issuer.
+ *
+ * The read itself is `@substrat-run/oidc-rp`'s, uncached — the same rules every platform
+ * relying party holds a discovery document to, so this issuer acting as a relying party is
+ * held to them too: an https issuer (loopback http in dev), same-origin redirects only, the
+ * `issuer` the document states is the one asked for, and a required `jwks_uri` held to the
+ * same endpoint rule the loop below applies to the credentialed endpoints.
  */
 
 /**
@@ -19,32 +26,29 @@ import { discoveryUrlOf, isHttpsOrLoopback, type ProviderEndpoints } from './pro
  * the admin route turns that into the 400 the form shows. The timeout is what stands between
  * "the upstream is down" and an admin request that hangs a Durable Object.
  */
-export async function resolveIssuerEndpoints(issuer: string): Promise<ProviderEndpoints> {
-  const url = discoveryUrlOf(issuer);
-  let res: Response;
-  try {
-    res = await fetch(url, { signal: AbortSignal.timeout(10_000), headers: { accept: 'application/json' } });
-  } catch (e) {
-    throw new Error(`could not reach ${url}: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (!res.ok) throw new Error(`${url} answered ${res.status} — is the issuer URL right?`);
-  const doc = (await res.json().catch(() => null)) as Partial<ProviderEndpoints> | null;
-  if (!doc?.issuer || !doc.authorization_endpoint || !doc.token_endpoint) {
+export async function resolveIssuerEndpoints(input: string): Promise<ProviderEndpoints> {
+  const issuer = issuerOf(input);
+  // The document's self-declared issuer becomes the account namespace, so a document free to
+  // declare any issuer could collide with another configured provider's accounts — which is
+  // why `readDiscovery` refuses one that is not the issuer asked for.
+  const doc = await readDiscovery(issuer, { signal: AbortSignal.timeout(10_000) });
+  if (typeof doc.authorization_endpoint !== 'string' || typeof doc.token_endpoint !== 'string') {
     throw new Error(
-      `${url} is not an OIDC discovery document (issuer, authorization_endpoint and token_endpoint are required)`,
+      `${issuer} serves no usable OIDC discovery document (authorization_endpoint and token_endpoint are required)`,
     );
   }
-  // The document must be talking about the issuer that was asked for. Its self-declared
-  // issuer becomes the account namespace (`accountIssuer`, keyed with the upstream's `sub`),
-  // so a document free to declare any issuer could collide with another configured provider's
-  // accounts — OIDC discovery requires the match for exactly this reason.
-  if (doc.issuer.replace(/\/+$/, '') !== expectedIssuerOf(issuer)) {
-    throw new Error(
-      `${url} declares issuer '${doc.issuer}', which is not the issuer that was asked for — the two must match`,
-    );
-  }
-  for (const key of ['authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'end_session_endpoint'] as const) {
-    assertUsableEndpoint(key, doc[key]);
+  // Decided against the ISSUER, not per endpoint (`isAllowedEndpoint`): plaintext only on
+  // loopback, and only when the issuer is itself a loopback dev issuer. An https upstream's
+  // document must not be able to name a plaintext endpoint and have the client secret, a
+  // code or a token sent there.
+  for (const key of CREDENTIALED_ENDPOINTS) {
+    const value = doc[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || !isAllowedEndpoint(issuer, value)) {
+      // The value is the upstream document's, not the operator's, and this message reaches the
+      // admin form — so it names the field and never repeats what the document put in it.
+      throw new Error(`the discovery document's ${key} must be https (or http on loopback, for a loopback issuer)`);
+    }
   }
   return {
     issuer: doc.issuer,
@@ -53,33 +57,4 @@ export async function resolveIssuerEndpoints(issuer: string): Promise<ProviderEn
     ...(doc.userinfo_endpoint ? { userinfo_endpoint: doc.userinfo_endpoint } : {}),
     ...(doc.end_session_endpoint ? { end_session_endpoint: doc.end_session_endpoint } : {}),
   };
-}
-
-/**
- * What the document's `issuer` has to equal: the operator's input, minus the well-known
- * suffix `discoveryUrlOf` tolerates and any trailing slashes — the same normalisation the
- * fetch itself applied, so a pasted discovery URL still matches its own document.
- */
-function expectedIssuerOf(issuer: string): string {
-  const trimmed = issuer.replace(/\/+$/, '');
-  const wellKnown = trimmed.indexOf('/.well-known/');
-  return wellKnown === -1 ? trimmed : trimmed.slice(0, wellKnown);
-}
-
-/**
- * The issuer URL already passed the HTTPS-or-loopback rule at the admin route; the endpoints
- * the document hands back are what people, authorization codes and the client secret are
- * actually sent to, so each one has to pass the same rule before it is stored.
- */
-function assertUsableEndpoint(name: string, value: string | undefined): void {
-  if (!value) return;
-  let endpoint: URL;
-  try {
-    endpoint = new URL(value);
-  } catch {
-    throw new Error(`the discovery document's ${name} ('${value}') is not an absolute URL`);
-  }
-  if (!isHttpsOrLoopback(endpoint)) {
-    throw new Error(`the discovery document's ${name} must be https (or http on loopback): ${value}`);
-  }
 }

@@ -11,6 +11,7 @@
  */
 
 import { SHARED_ISSUER_CONFIG_KEY, type ScopeId } from '@substrat-run/contracts';
+import { isAllowedEndpoint, readDiscovery } from '@substrat-run/oidc-rp/discovery';
 
 export type AppAuthChoice =
   /** An issuer the user configured by hand — Supabase, Auth0, Keycloak, …; the client
@@ -33,26 +34,46 @@ export type RegisterOidcClientFn = (
   input: { appName: string; redirectUri: string },
 ) => Promise<RegisteredClient>;
 
+/** How long a whole client registration may take — the auth-server's own discovery bound. */
+export const REGISTRATION_TIMEOUT_MS = 10_000;
+
 /**
  * Register a relying party at `issuer` via dynamic client registration. The endpoint
  * comes from the issuer's own discovery document (`registration_endpoint`), with the
- * Better-Auth default path as the fallback for an issuer whose discovery omits it.
- * `token_endpoint_auth_method: client_secret_post` matches how the RP flow presents the
- * secret (oidc-rp sends it in the token-request body).
+ * Better-Auth default path on the issuer's own origin as the fallback for an issuer whose
+ * discovery omits it. `token_endpoint_auth_method: client_secret_post` matches how the RP
+ * flow presents the secret (oidc-rp sends it in the token-request body).
+ *
+ * The response carries the new client's secret, so the document is read under oidc-rp's
+ * rules (`readDiscovery`: an https issuer, same-origin redirects, the issuer it states is the
+ * one asked for), the endpoint it names passes `isAllowedEndpoint`, and the POST follows no
+ * redirect. A document that cannot be read, or is refused, fails the registration rather than
+ * falling back: the installed app's login reads the same document and would refuse it too.
  */
 export async function registerOidcClient(
   issuer: string,
   input: { appName: string; redirectUri: string },
   fetchImpl: typeof globalThis.fetch = globalThis.fetch.bind(globalThis),
+  timeoutMs = REGISTRATION_TIMEOUT_MS,
 ): Promise<RegisteredClient> {
-  const base = issuer.replace(/\/$/, '');
-  const discovery = (await fetchImpl(`${base}/.well-known/openid-configuration`)
-    .then((r) => (r.ok ? r.json() : null))
-    .catch(() => null)) as { registration_endpoint?: string } | null;
-  const endpoint = discovery?.registration_endpoint ?? `${base}/api/auth/oauth2/register`;
+  // One bound for the whole registration — every discovery hop and the POST — so an issuer
+  // that accepts the connection and never answers fails the install instead of holding it.
+  const signal = AbortSignal.timeout(timeoutMs);
+  const discovery = await readDiscovery(issuer, { fetch: fetchImpl, signal });
+  const named = discovery.registration_endpoint;
+  if (named !== undefined && typeof named !== 'string') {
+    throw new Error(`client registration at ${issuer}: the discovery document's registration_endpoint is not a URL`);
+  }
+  const endpoint = named ?? `${issuer.replace(/\/$/, '')}/api/auth/oauth2/register`;
+  if (!isAllowedEndpoint(issuer, endpoint)) {
+    throw new Error(`client registration at ${issuer}: the registration_endpoint is not https`);
+  }
 
   const res = await fetchImpl(endpoint, {
     method: 'POST',
+    // A 30x is a failure, not a place to send the request (and take the secret from) instead.
+    redirect: 'manual',
+    signal,
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       client_name: input.appName,

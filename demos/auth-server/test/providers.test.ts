@@ -9,13 +9,15 @@ import { buildAuth, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
 import {
   PROVIDER_CATALOGUE,
-  discoveryUrlOf,
+  genericEndpointsRefusal,
   genericProvidersFrom,
   isReservedProviderId,
+  issuerOf,
   publicProvidersFrom,
   readProviders,
   socialProvidersFrom,
   trustedProvidersFrom,
+  wireIssuer,
   type ProviderRow,
 } from '../src/providers.js';
 import type { SqlExec } from '../src/introspect.js';
@@ -96,6 +98,7 @@ interface WireProvider {
   trustEmail: boolean;
   disabled: boolean;
   callbackPath: string;
+  attention: string | null;
 }
 
 const listProviders = async (cookie: string): Promise<WireProvider[]> =>
@@ -242,13 +245,18 @@ const supabaseRow = (over: Partial<ProviderRow> = {}): ProviderRow =>
  * discovery fetch at all.
  */
 const discoveryHits: string[] = [];
+/** Per-test discovery answers, by URL — checked before the fixed ones below. */
+const served = new Map<string, () => unknown>();
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   discoveryHits.length = 0;
+  served.clear();
   globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const target = String(input instanceof Request ? input.url : input);
     if (target.includes('/.well-known/openid-configuration')) {
       discoveryHits.push(target);
+      const answer = served.get(target);
+      if (answer) return answer() as Response;
       if (target === 'https://id.acme.test/.well-known/openid-configuration') {
         return Response.json(ACME_DISCOVERY);
       }
@@ -277,6 +285,8 @@ beforeEach(() => {
           issuer: 'http://localhost:8080/realms/dev',
           authorization_endpoint: 'http://localhost:8080/realms/dev/protocol/openid-connect/auth',
           token_endpoint: 'http://localhost:8080/realms/dev/protocol/openid-connect/token',
+          jwks_uri: 'http://localhost:8080/realms/dev/protocol/openid-connect/certs',
+          userinfo_endpoint: 'http://localhost:8080/realms/dev/protocol/openid-connect/userinfo',
         });
       }
       return new Response('not found', { status: 404 });
@@ -447,6 +457,75 @@ describe('the providers admin surface', () => {
     expect(sneaky.status).toBe(400);
     expect(((await sneaky.json()) as { error: string }).error).toContain('https');
     expect(readProviders(sql)).toEqual([]);
+  });
+
+  it('holds each endpoint to the ISSUER: an https upstream cannot name a plaintext loopback one', async () => {
+    const cookie = await signInAs(ADMIN);
+    // Plaintext loopback is the dev exception for a loopback ISSUER. Judged per endpoint, an
+    // https upstream could name one, and the client secret, a code or a token would go there.
+    for (const key of ['authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'end_session_endpoint', 'jwks_uri']) {
+      served.set('https://id.acme.test/.well-known/openid-configuration', () =>
+        Response.json({ ...ACME_DISCOVERY, [key]: 'http://localhost:9999/x' }),
+      );
+      const res = await addAcme(cookie);
+      expect(res.status, key).toBe(400);
+      const error = ((await res.json()) as { error: string }).error;
+      expect(error, key).toContain(key);
+      // The upstream document's value never reaches the admin form.
+      expect(error, key).not.toContain('localhost:9999');
+      // The two refused here (the others by `readDiscovery`, whose message names only the
+      // issuer's own discovery URL) carry no URL at all.
+      if (key === 'userinfo_endpoint' || key === 'end_session_endpoint') expect(error, key).not.toMatch(/https?:\/\//);
+    }
+    // `jwks_uri` is required, as every platform relying party requires it.
+    const { jwks_uri: _omit, ...noJwks } = ACME_DISCOVERY;
+    served.set('https://id.acme.test/.well-known/openid-configuration', () => Response.json(noJwks));
+    const missing = await addAcme(cookie);
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { error: string }).error).toContain('jwks_uri');
+    expect(readProviders(sql)).toEqual([]);
+    // The positive twin is the loopback Keycloak below: a loopback issuer's own plaintext
+    // loopback endpoints are admitted.
+  });
+
+  it('follows a redirect only while it stays on the issuer origin', async () => {
+    const cookie = await signInAs(ADMIN);
+    served.set('https://id.acme.test/.well-known/openid-configuration', () =>
+      new Response(null, { status: 302, headers: { location: 'https://elsewhere.test/.well-known/openid-configuration' } }),
+    );
+    const away = await addAcme(cookie);
+    expect(away.status).toBe(400);
+    expect(((await away.json()) as { error: string }).error).toContain('away from its origin');
+    // The off-origin document was never asked for.
+    expect(discoveryHits).toEqual(['https://id.acme.test/.well-known/openid-configuration']);
+    expect(readProviders(sql)).toEqual([]);
+
+    // Positive twin: a same-origin bounce is followed, and the document it lands on is used.
+    discoveryHits.length = 0;
+    served.set('https://id.acme.test/.well-known/openid-configuration', () =>
+      new Response(null, { status: 301, headers: { location: '/.well-known/openid-configuration/' } }),
+    );
+    served.set('https://id.acme.test/.well-known/openid-configuration/', () => Response.json(ACME_DISCOVERY));
+    expect((await addAcme(cookie)).status).toBe(201);
+    expect(discoveryHits).toEqual([
+      'https://id.acme.test/.well-known/openid-configuration',
+      'https://id.acme.test/.well-known/openid-configuration/',
+    ]);
+  });
+
+  it('refuses an issuer URL carrying credentials before anything is fetched, and does not echo it', async () => {
+    const cookie = await signInAs(ADMIN);
+    const res = await addAcme(cookie, { issuer: 'https://user:hunter2@id.acme.test' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).not.toContain('hunter2');
+    expect(discoveryHits).toEqual([]);
+    expect(readProviders(sql)).toEqual([]);
+  });
+
+  it('takes a pasted discovery URL as its issuer, and reads the document that issuer serves', async () => {
+    const cookie = await signInAs(ADMIN);
+    expect((await addAcme(cookie, { issuer: 'https://id.acme.test/.well-known/openid-configuration' })).status).toBe(201);
+    expect(discoveryHits).toEqual(['https://id.acme.test/.well-known/openid-configuration']);
   });
 
   it('refuses the ids and issuers that would go wrong later, at save time', async () => {
@@ -643,15 +722,73 @@ describe('rows becoming Better Auth config', () => {
     }
   });
 
-  it('derives the discovery URL from an issuer without doubling a pasted one', () => {
-    expect(discoveryUrlOf('https://id.acme.test')).toBe('https://id.acme.test/.well-known/openid-configuration');
-    expect(discoveryUrlOf('https://id.acme.test/')).toBe('https://id.acme.test/.well-known/openid-configuration');
-    expect(discoveryUrlOf('https://kc.acme.test/realms/main')).toBe(
-      'https://kc.acme.test/realms/main/.well-known/openid-configuration',
+  it('derives the issuer from a pasted discovery URL without doubling the well-known suffix', () => {
+    expect(issuerOf('https://id.acme.test')).toBe('https://id.acme.test');
+    expect(issuerOf('https://id.acme.test/')).toBe('https://id.acme.test');
+    expect(issuerOf('https://kc.acme.test/realms/main')).toBe('https://kc.acme.test/realms/main');
+    expect(issuerOf('https://id.acme.test/.well-known/openid-configuration')).toBe('https://id.acme.test');
+    expect(issuerOf('https://kc.acme.test/realms/main/.well-known/openid-configuration')).toBe(
+      'https://kc.acme.test/realms/main',
     );
-    expect(discoveryUrlOf('https://id.acme.test/.well-known/openid-configuration')).toBe(
-      'https://id.acme.test/.well-known/openid-configuration',
-    );
+  });
+
+  it('offers no STORED row whose discovery no longer passes the rule: no config, no button, no trust', () => {
+    // Rows saved before the rule was decided against the issuer, or otherwise unusable now.
+    const stale: [string, Partial<ProviderRow>][] = [
+      ['plaintext loopback token endpoint', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, token_endpoint: 'http://localhost:9999/token' }) }],
+      ['plaintext loopback userinfo', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, userinfo_endpoint: 'http://127.0.0.1/userinfo' }) }],
+      ['plaintext end-session', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, end_session_endpoint: 'http://id.acme.test/logout' }) }],
+      ['issuer carrying credentials', { issuer: 'https://user:hunter2@id.acme.test' }],
+      ['stored issuer not usable', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, issuer: 'http://id.acme.test' }) }],
+      ['stored issuer is another one', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, issuer: 'https://other.acme.test' }) }],
+      ['configured issuer is another one', { issuer: 'https://id.acme.test/tenant' }],
+      ['nothing stored', { endpoints: null }],
+      ['unreadable', { endpoints: '{not json' }],
+    ];
+    for (const [name, over] of stale) {
+      const row = genericRow({ trust_email: 1, ...over });
+      expect(genericEndpointsRefusal(row), name).not.toBeNull();
+      expect(genericProvidersFrom([row]), name).toBeUndefined();
+      expect(publicProvidersFrom([row]), name).toEqual([]);
+      expect(trustedProvidersFrom([row]), name).toEqual([]);
+      // The reason names no URL: the admin panel shows it, and an issuer may carry a password.
+      expect(genericEndpointsRefusal(row), name).not.toMatch(/https?:|hunter2/);
+    }
+    // The positive twins: a valid stored row is offered everywhere, and a loopback dev issuer's
+    // own plaintext loopback endpoints are still valid.
+    const valid = genericRow({ trust_email: 1 });
+    expect(genericEndpointsRefusal(valid)).toBeNull();
+    expect(genericProvidersFrom([valid])?.map((c) => c.providerId)).toEqual(['acme']);
+    expect(publicProvidersFrom([valid])).toEqual([{ id: 'acme', label: 'Acme SSO' }]);
+    expect(trustedProvidersFrom([valid])).toEqual(['acme']);
+    const dev = 'http://localhost:8080/realms/dev';
+    const loopback = genericRow({
+      issuer: dev,
+      endpoints: JSON.stringify({ issuer: dev, authorization_endpoint: `${dev}/auth`, token_endpoint: `${dev}/token` }),
+    });
+    expect(genericEndpointsRefusal(loopback)).toBeNull();
+    // The issuers compare the way discovery compares them: host case, a default port, one
+    // trailing slash and a pasted well-known suffix do not make them different.
+    for (const configured of ['https://ID.acme.test:443/', 'https://id.acme.test/.well-known/openid-configuration']) {
+      expect(genericEndpointsRefusal(genericRow({ issuer: configured })), configured).toBeNull();
+    }
+    // A catalogue row is never judged by this.
+    expect(genericEndpointsRefusal(row())).toBeNull();
+  });
+
+  it('never shows an issuer\'s userinfo on the wire, and shows an unparseable one not at all', async () => {
+    // A row saved before credentials in an issuer URL were refused.
+    const cookie = await signInAs(ADMIN);
+    expect((await addAcme(cookie)).status).toBe(201);
+    db.prepare('UPDATE identity_provider SET issuer = ? WHERE provider_id = ?').run('https://user:hunter2@id.acme.test/realm', 'acme');
+    const [provider] = await listProviders(cookie);
+    expect(provider!.issuer).toBe('https://id.acme.test/realm');
+    expect(JSON.stringify(provider)).not.toContain('hunter2');
+    expect(JSON.stringify(provider)).not.toContain('user@');
+    expect(wireIssuer('not a url with a secret')).toBe('(not a valid URL)');
+    // The positive twins: an ordinary issuer, and a catalogue row's null, pass through verbatim.
+    expect(wireIssuer('https://kc.acme.test/realms/main/')).toBe('https://kc.acme.test/realms/main/');
+    expect(wireIssuer(null)).toBeNull();
   });
 
   it('treats a generic provider like any other for trust and the login screen', () => {
@@ -719,6 +856,45 @@ describe('the login screen', () => {
     expect(authorize.searchParams.get('scope')).toContain('openid');
     // OAuth 2.1's PKCE, pinned in `genericProvidersFrom` rather than left to a default.
     expect(authorize.searchParams.get('code_challenge')).toBeTruthy();
+  });
+
+  it('does not start a sign-in at a stored row that no longer passes the rule, and a re-save brings it back', async () => {
+    const cookie = await signInAs(ADMIN);
+    expect((await addAcme(cookie)).status).toBe(201);
+    // A row as an older save stored it: an https upstream whose document named a plaintext
+    // loopback token endpoint, which the rule then admitted endpoint by endpoint.
+    db.prepare('UPDATE identity_provider SET endpoints = ? WHERE provider_id = ?').run(
+      JSON.stringify({ ...ACME_DISCOVERY, token_endpoint: 'http://localhost:9999/token' }),
+      'acme',
+    );
+    auth = rebuild();
+    const refused = await call('/api/auth/sign-in/social', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'acme', callbackURL: '/' }),
+    });
+    expect(refused.status).not.toBe(200);
+
+    // The admin panel says so, names the provider, says what fixes it, and repeats no URL.
+    const [stale] = await listProviders(cookie);
+    expect(stale).toMatchObject({ id: 'acme' });
+    expect(stale!.attention).toContain('Save the provider again');
+    expect(stale!.attention).not.toMatch(/https?:/);
+
+    // Saving it again, issuer unchanged, re-discovers — and the upstream now serves a valid
+    // document, so the provider is offered again.
+    discoveryHits.length = 0;
+    expect((await addAcme(cookie)).status).toBe(200);
+    expect(discoveryHits).toEqual(['https://id.acme.test/.well-known/openid-configuration']);
+    const [fixed] = await listProviders(cookie);
+    expect(fixed!.attention).toBeNull();
+    auth = rebuild();
+    const ok = await call('/api/auth/sign-in/social', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'acme', callbackURL: '/' }),
+    });
+    expect(ok.status).toBe(200);
   });
 
   it('sends the browser to the Supabase project a named catalogue row configured', async () => {

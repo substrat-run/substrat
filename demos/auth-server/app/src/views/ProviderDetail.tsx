@@ -139,7 +139,14 @@ function ProviderHeader({
           {provider.disabled ? <span className="tag warn">disabled</span> : 'enabled'}
           {provider.allowSignup && <span className="tag">creates accounts</span>}
           {provider.trustEmail && <span className="tag">trusted email</span>}
+          {provider.attention && <span className="tag warn">not offered</span>}
         </dd>
+        {provider.attention && (
+          <>
+            <dt>Needs attention</dt>
+            <dd>{provider.attention}</dd>
+          </>
+        )}
         <dt>Client ID</dt>
         <dd><code>{provider.clientId}</code></dd>
         {provider.issuer && (
