@@ -248,16 +248,21 @@ export interface SystemSwitchReassert {
   changed: boolean;
 }
 
-/** Overwrite one existing row's position and provenance — ON's write, and its undo. */
+/**
+ * Overwrite one existing row's position and provenance — ON's write, and its undo. With
+ * `ifOperationId`, only while the row is still the one that operation wrote (a CAS).
+ */
 function setRecordRow(
   db: SwitchSql,
   key: { tenantId: string; scopeId: string; moduleId: string },
   row: NonNullable<SystemSwitchRecordPrior>,
+  ifOperationId?: string,
 ): void {
   db.run(
     `UPDATE _substrat_system_switches
         SET position = ?, actor = ?, reason = ?, operation_id = ?, switched_at = ?
-      WHERE tenant_id = ? AND scope_id = ? AND module_id = ?`,
+      WHERE tenant_id = ? AND scope_id = ? AND module_id = ?` +
+      (ifOperationId === undefined ? '' : ' AND operation_id = ?'),
     row.position,
     row.actor,
     row.reason,
@@ -266,6 +271,7 @@ function setRecordRow(
     key.tenantId,
     key.scopeId,
     key.moduleId,
+    ...(ifOperationId === undefined ? [] : [ifOperationId]),
   );
 }
 
@@ -320,11 +326,16 @@ export function recordSystemSwitchedOn(db: SwitchSql, row: SystemSwitchRecordWri
   };
 }
 
-/** Put a row back as `recordSystemSwitchedOn` found it — the ON that followed it failed. */
+/**
+ * Put a row back as `recordSystemSwitchedOn` found it — the ON that wrote it threw, or held
+ * nothing. A compare-and-set on the ON's own `operationId`: if another switch call has
+ * written the row since (a concurrent OFF), the row is left as that call wrote it, so an
+ * ON's undo can never clobber a newer position.
+ */
 export function restoreSystemSwitchRecord(
   db: SwitchSql,
-  key: { tenantId: string; scopeId: string; moduleId: string },
+  on: { tenantId: string; scopeId: string; moduleId: string; operationId: string },
   prior: SystemSwitchRecordPrior,
 ): void {
-  if (prior) setRecordRow(db, key, prior);
+  if (prior) setRecordRow(db, on, prior, on.operationId);
 }

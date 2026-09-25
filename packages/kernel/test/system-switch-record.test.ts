@@ -165,9 +165,41 @@ describe('the schedule switch record (#1674)', () => {
       expect(prior).toMatchObject({ position: 'off', reason: 'incident', operationId: '01A' });
       expect(switchedOffModulesOf(sql, T, S)).toEqual([]);
 
-      restoreSystemSwitchRecord(sql, { tenantId: T, scopeId: S, moduleId: M }, prior);
+      restoreSystemSwitchRecord(sql, { tenantId: T, scopeId: S, moduleId: M, operationId: '01B' }, prior);
       expect(switchedOffModulesOf(sql, T, S)).toEqual([M]);
       expect(listSystemSwitchRecords(sql)[0]).toMatchObject({ reason: 'incident', operationId: '01A' });
+    });
+  });
+
+  describe('the undo of a failed ON is a compare-and-set (#1674 review)', () => {
+    const write = (over: Partial<{ reason: string; operationId: string }> = {}) => ({
+      tenantId: T, scopeId: S, moduleId: M, actor: 'staff', reason: 'incident', operationId: '01A', at: '2026-09-01T00:00:00.000Z',
+      ...over,
+    });
+
+    it('an OFF that lands between an ON and its undo is kept, not clobbered by the undo', () => {
+      const { db, sql } = fresh();
+      create(db);
+      recordSystemSwitchedOff(sql, write());
+      const prior = recordSystemSwitchedOn(sql, write({ reason: 'fixed', operationId: '01B' }));
+      // Meanwhile, a second operator pulls the switch again.
+      recordSystemSwitchedOff(sql, write({ reason: 'second incident', operationId: '01C' }));
+      // The ON (01B) now fails, and undoes ITS write — which is no longer there.
+      restoreSystemSwitchRecord(sql, { tenantId: T, scopeId: S, moduleId: M, operationId: '01B' }, prior);
+      expect(listSystemSwitchRecords(sql)).toEqual([
+        expect.objectContaining({ position: 'off', reason: 'second incident', operationId: '01C' }),
+      ]);
+    });
+
+    it('twin: with nothing in between, the undo restores the prior row', () => {
+      const { db, sql } = fresh();
+      create(db);
+      recordSystemSwitchedOff(sql, write());
+      const prior = recordSystemSwitchedOn(sql, write({ reason: 'fixed', operationId: '01B' }));
+      restoreSystemSwitchRecord(sql, { tenantId: T, scopeId: S, moduleId: M, operationId: '01B' }, prior);
+      expect(listSystemSwitchRecords(sql)).toEqual([
+        expect.objectContaining({ position: 'off', reason: 'incident', operationId: '01A' }),
+      ]);
     });
   });
 

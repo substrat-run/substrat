@@ -3276,7 +3276,7 @@ export class ControlPlaneDO extends DurableObject {
 
   /** Put a row back as `recordSystemSwitchedOn` found it — the ON that followed it failed. */
   restoreSystemSwitchRecord(
-    key: { tenantId: string; scopeId: string; moduleId: string },
+    key: { tenantId: string; scopeId: string; moduleId: string; operationId: string },
     prior: SystemSwitchRecordPrior,
   ): void {
     restoreSystemSwitchRecord(this.kernelSql, key, prior);

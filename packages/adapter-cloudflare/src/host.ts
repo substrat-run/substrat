@@ -694,7 +694,7 @@ interface ControlPlaneStub {
   recordSystemSwitchedOff(row: SystemSwitchRecordWrite): Promise<void>;
   recordSystemSwitchedOn(row: SystemSwitchRecordWrite): Promise<SystemSwitchRecordPrior>;
   restoreSystemSwitchRecord(
-    key: { tenantId: string; scopeId: string; moduleId: string },
+    key: { tenantId: string; scopeId: string; moduleId: string; operationId: string },
     prior: SystemSwitchRecordPrior,
   ): Promise<void>;
   listSystemSwitches(filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecordRow[]>;
