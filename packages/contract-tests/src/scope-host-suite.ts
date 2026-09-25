@@ -1449,21 +1449,29 @@ export function scopeHostContractSuite(
       // 150: past the limit. Then 200, the default batch, overlapping the first so the
       // count has to tell a stamped row from an unstamped one inside one oversized list.
       await expect(host.admin.markEventsDrained(staff, t1, sBig, ids.slice(0, 150))).resolves.toBe(150);
+      // The two batches must carry different instants for the reopen below to tell them apart.
+      const firstMarked = Date.now();
+      while (Date.now() <= firstMarked + 1) await new Promise((r) => setTimeout(r, 1));
       await expect(host.admin.markEventsDrained(staff, t1, sBig, ids.slice(100, 350))).resolves.toBe(200);
       await expect(host.admin.readUndrainedEvents(staff, t1, sBig, 1000)).resolves.toHaveLength(0);
-
-      // …and the stamp is per row and undrained-only: the overlap kept its FIRST instant.
       const stamps = (await host.admin.auditLog(staff, { tenantId: t1 }))
         .filter((r) => r.action === 'drainEvents' && r.scopeId === sBig)
-        .map((r) => r.after as { drained: number; requested: number; drainedAt: string });
-      expect(stamps.map((s) => [s.drained, s.requested]).sort()).toEqual([[150, 150], [200, 250]]);
+        .map((r) => r.after as { drained: number; requested: number; drainedAt: string })
+        .sort((a, b) => (a.drainedAt < b.drainedAt ? -1 : 1));
+      expect(stamps.map((s) => [s.drained, s.requested])).toEqual([[150, 150], [200, 250]]);
 
-      // The reopen: every one of the 350 in one call, past the limit the same way.
-      const latest = stamps.map((s) => s.drainedAt).sort().at(-1)!;
-      const justAfter = new Date(Date.parse(latest) + 1).toISOString();
-      await expect(host.admin.redrainEvents(staff, t1, sBig, { drainedBefore: justAfter })).resolves.toBe(350);
-      const reopened = await host.admin.readUndrainedEvents(staff, t1, sBig, 1000);
-      expect(reopened.map((e) => e.id)).toEqual(ids);
+      // The reopen, past the limit the same way. Just after the FIRST instant it reopens exactly
+      // the first 150, which is what shows the overlap kept its first stamp: a stamp that
+      // re-marked rows 100–149 would have moved them out of this window.
+      const justAfter = (at: string) => new Date(Date.parse(at) + 1).toISOString();
+      await expect(
+        host.admin.redrainEvents(staff, t1, sBig, { drainedBefore: justAfter(stamps[0]!.drainedAt) }),
+      ).resolves.toBe(150);
+      expect((await host.admin.readUndrainedEvents(staff, t1, sBig, 1000)).map((e) => e.id)).toEqual(ids.slice(0, 150));
+      await expect(
+        host.admin.redrainEvents(staff, t1, sBig, { drainedBefore: justAfter(stamps[1]!.drainedAt) }),
+      ).resolves.toBe(200);
+      expect((await host.admin.readUndrainedEvents(staff, t1, sBig, 1000)).map((e) => e.id)).toEqual(ids);
     });
 
     it('facets the outbox, and keeps an ERASED payload out of the null bucket (#1239)', async () => {
