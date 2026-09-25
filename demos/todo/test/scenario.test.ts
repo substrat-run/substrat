@@ -11,8 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CountedPage, Page } from '@substrat-run/contracts';
-import { MAX_SEARCH_LIMIT, type ScopeHost } from '@substrat-run/kernel';
-import { TODO_SEARCH_MAX } from '../spec/model.js';
+import type { ScopeHost } from '@substrat-run/kernel';
 import { buildHost, seed, type World } from '../src/seed.js';
 
 let dir: string;
@@ -284,7 +283,7 @@ describe('finding an item by what someone typed', () => {
   });
 
   /**
-   * #1741. The widened ask is `TODO_SEARCH_MAX × SEARCH_OVERFETCH` = 100 hits, and the row
+   * #1741. The widened ask is `TODO_SEARCH_MAX × SEARCH_OVERFETCH` = 25 × 4 = 100 hits, and the row
    * read bound one parameter per hit PLUS the list id: 101, one over what a Durable Object
    * allows. It passed here for as long as node allowed any number, and would have failed on
    * a deployed list the first time a term matched a hundred items. The twin: a term matching
@@ -293,18 +292,19 @@ describe('finding an item by what someone typed', () => {
   it('answers when the widened ask hits the kernel ceiling — a hundred matches', async () => {
     const ada = await as('ada');
     const bulk = (await ada.invoke<{ id: string }>('todo/create-list', { name: 'Bulk' })).id;
-    for (let i = 0; i < MAX_SEARCH_LIMIT; i += 1) {
+    // 25 is the largest `limit` the operation accepts, and the widened ask is 4 × that.
+    for (let i = 0; i < 100; i += 1) {
       await ada.invoke('todo/add-item', { listId: bulk, text: `zucchini ${i}` });
     }
     const found = await ada.invoke<{ results: unknown[]; capped: boolean }>('todo/search-list-items', {
       listId: bulk,
       q: 'zucchini',
-      limit: TODO_SEARCH_MAX,
+      limit: 25,
     });
-    expect(found.results).toHaveLength(TODO_SEARCH_MAX);
+    expect(found.results).toHaveLength(25);
     expect(found.capped).toBe(true);
-    const across = await ada.invoke<{ results: unknown[] }>('todo/search-items', { q: 'zucchini', limit: TODO_SEARCH_MAX });
-    expect(across.results).toHaveLength(TODO_SEARCH_MAX);
+    const across = await ada.invoke<{ results: unknown[] }>('todo/search-items', { q: 'zucchini', limit: 25 });
+    expect(across.results).toHaveLength(25);
   });
 
   it('refuses a term too short to index, at the operation boundary', async () => {
