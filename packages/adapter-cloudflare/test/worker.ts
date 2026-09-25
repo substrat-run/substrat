@@ -181,24 +181,30 @@ const kickLog = (env: KickEnv) =>
   env.KICK_LOG.get(env.KICK_LOG.idFromName('log')) as unknown as { record(line: string): Promise<void> };
 
 /**
- * A coalescer whose pass only records that it ran, and for whom. A short window, so a test can
- * outlast it and see the trailing pass run.
+ * A coalescer whose pass only records that it ran, and for whom. A long window, so nothing in a
+ * test depends on how fast the machine is: a test that wants the window over moves the recorded
+ * start back instead of waiting.
  */
 export const KickTestDO = defineKickCoalescerDO<KickEnv>({
-  windowMs: 500,
+  windowMs: 60_000,
   run: async (env, producer) => kickLog(env).record(`pass:${producer.tenantId}:${producer.scopeId}`),
 });
 
 /**
- * A coalescer whose pass outlasts its window. A kick arriving after the window but while the pass
- * still runs must join it, not start a second pass beside it: the window alone would allow that.
+ * A coalescer whose pass outlasts its window. A zero window, so ANY kick while the pass runs is
+ * past it, and only the single-flight can join it to the pass. The pass holds until the test
+ * releases it (a `release:<scope>` line in the log), so nothing depends on timing.
  */
 export const KickSlowDO = defineKickCoalescerDO<KickEnv>({
-  windowMs: 100,
+  windowMs: 0,
   run: async (env, producer) => {
-    await kickLog(env).record(`start:${producer.scopeId}`);
-    await new Promise((r) => setTimeout(r, 400));
-    await kickLog(env).record(`end:${producer.scopeId}`);
+    const log = kickLog(env) as unknown as { record(l: string): Promise<void>; lines(): Promise<string[]> };
+    await log.record(`start:${producer.scopeId}`);
+    for (let i = 0; i < 3000; i += 1) {
+      if ((await log.lines()).includes(`release:${producer.scopeId}`)) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await log.record(`end:${producer.scopeId}`);
   },
 });
 

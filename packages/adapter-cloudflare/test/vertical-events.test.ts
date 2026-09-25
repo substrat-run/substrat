@@ -572,9 +572,20 @@ describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 P
     ns.get(ns.idFromName(kickCoalescerName(tenantId.parse(t), scopeId.parse(s))));
   const kick = (stub: DurableObjectStub, t: string, s: string): Promise<KickOutcome> =>
     (stub as unknown as KickCoalescerDo).kick(tenantId.parse(t), scopeId.parse(s));
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  it('a burst of kicks inside the window is one pass, then one trailing pass by alarm, and no more', async () => {
+  /** Move the recorded start of the last pass back past the window, instead of waiting it out. */
+  const windowOver = (stub: DurableObjectStub) =>
+    runInDurableObject(stub, async (_i, state) => {
+      const st = await state.storage.get<{ lastStartedAt: number }>('state');
+      if (st) await state.storage.put('state', { ...st, lastStartedAt: st.lastStartedAt - 61_000 });
+    });
+  const storageOf = (stub: DurableObjectStub) =>
+    runInDurableObject(stub, async (_i, state) => ({
+      keys: [...(await state.storage.list()).keys()],
+      alarm: await state.storage.getAlarm(),
+    }));
+
+  it('a burst of kicks inside the window is one pass, then one trailing pass by alarm, then the object clears', async () => {
     const t = ulid();
     const s = ulid();
     const stub = coalescer(env.KICK_TEST, t, s);
@@ -583,27 +594,31 @@ describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 P
     expect(outcomes.filter((o) => o !== 'ran')).toHaveLength(7);
     expect(await passesFor(s)).toHaveLength(1);
     // The trailing pass is armed for the window's end, not run now.
-    expect(await runInDurableObject(stub, (_i, state) => state.storage.getAlarm())).not.toBeNull();
-    await sleep(600);
-    await runDurableObjectAlarm(stub);
+    expect((await storageOf(stub)).alarm).not.toBeNull();
+    await windowOver(stub);
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(await passesFor(s)).toHaveLength(2);
-    // Nothing was kicked since the trailing pass started: no third pass.
-    await sleep(600);
-    await runDurableObjectAlarm(stub);
+    // Nothing was kicked since the trailing pass started: its window's end runs no third pass,
+    // and clears the object, so a producer that kicked once leaves no storage behind.
+    await windowOver(stub);
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(await passesFor(s)).toHaveLength(2);
+    expect(await storageOf(stub)).toEqual({ keys: [], alarm: null });
   });
 
   it('a kick during a pass that has outlasted its window joins it, never a second pass beside it', async () => {
     const t = ulid();
     const s = ulid();
     const stub = coalescer(env.KICK_SLOW, t, s);
+    const lines = async () => (await log().lines()).filter((l) => l.endsWith(`:${s}`));
     const first = kick(stub, t, s);
-    await sleep(200); // past the 100 ms window, inside the 400 ms pass
+    // Wait on the pass's own signal, not the clock.
+    for (let i = 0; i < 3000 && !(await lines()).includes(`start:${s}`); i += 1) await new Promise((r) => setTimeout(r, 5));
     expect(await kick(stub, t, s)).toBe('coalesced');
+    await (env.KICK_LOG.get(env.KICK_LOG.idFromName('log')) as unknown as { record(l: string): Promise<void> }).record(`release:${s}`);
     expect(await first).toBe('ran');
-    const lines = (await log().lines()).filter((l) => l.endsWith(`:${s}`));
     // One pass, start to end, with nothing started inside it.
-    expect(lines).toEqual([`start:${s}`, `end:${s}`]);
+    expect(await lines()).toEqual([`start:${s}`, `release:${s}`, `end:${s}`]);
   });
 
   it('an alarm before the window has passed runs nothing and re-arms', async () => {
@@ -614,7 +629,7 @@ describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 P
     expect(await kick(stub, t, s)).toBe('deferred');
     await runDurableObjectAlarm(stub);
     expect(await passesFor(s)).toHaveLength(1);
-    expect(await runInDurableObject(stub, (_i, state) => state.storage.getAlarm())).not.toBeNull();
+    expect((await storageOf(stub)).alarm).not.toBeNull();
   });
 
   it('two producers do not coalesce with each other', async () => {

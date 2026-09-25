@@ -95,16 +95,26 @@ export function defineKickCoalescerDO<Env>(
       return 'ran';
     }
 
-    /** The trailing pass. Nothing to do unless a kick arrived that no pass has covered. */
+    /**
+     * The window's end: the trailing pass if a kick arrived that no pass has covered, and
+     * otherwise the end of this object. Its storage is deleted, so a producer that kicked once
+     * leaves nothing behind. That waits for the window's end, so a kick after the delete may run
+     * at once without breaking the bound.
+     */
     async alarm(): Promise<void> {
       const state = await this.ctx.storage.get<KickState>('state');
-      if (!state?.dirty || this.#running) return;
-      // The window holds even against an early alarm: re-arm for its end rather than run.
+      if (!state || this.#running) return;
+      // The window holds even against an early alarm: re-arm for its end rather than act.
       if (Date.now() - state.lastStartedAt < windowMs) {
         await this.#armFor(state.lastStartedAt);
         return;
       }
-      await this.#pass(state);
+      if (state.dirty) {
+        await this.#pass(state);
+        return;
+      }
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
     }
 
     async #pass(state: KickState): Promise<void> {
@@ -121,8 +131,9 @@ export function defineKickCoalescerDO<Env>(
         await this.#running;
       } finally {
         this.#running = null;
-        const after = await this.ctx.storage.get<KickState>('state');
-        if (after?.dirty) await this.#armFor(startedAt);
+        // Always, at this window's end: the alarm runs the trailing pass if a kick arrived since
+        // this one started, and clears this object's storage if none did.
+        await this.#armFor(startedAt);
       }
     }
 
