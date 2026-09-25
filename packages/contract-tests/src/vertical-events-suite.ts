@@ -1519,6 +1519,10 @@ export function verticalEventsContractSuite(
       const provisioning = scopeId.parse(ulid());
       await fx.consumer.provisionScope(staff, { tenantId: t, scopeId: provisioning, vertical: producer });
       await fx.consumer.admin.bindScopeVersion(staff, t, provisioning, v1);
+      // Born on the serving script (a scope provisioned while its vertical serves in place
+      // inherits the ref), so the route is cleared first: the move below is a real one.
+      await fx.consumer.admin.setScopeServingRef(staff, t, provisioning, null);
+      expect((await fx.consumer.admin.getScopeRecord(staff, t, provisioning))?.status).toBe('provisioning');
       await fx.consumer.admin.setScopeServingRef(staff, t, provisioning, ref);
       expect(await routeOf(provisioning)).toBe(ref);
       // Acknowledged, it moves, and the admin log says so. Binding it to the served version
