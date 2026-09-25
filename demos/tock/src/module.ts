@@ -933,11 +933,13 @@ const mapRunOp: OperationHandler<
    */
   const declared = Object.keys(JSON.parse(schema.fields_json) as FieldDefs);
   ctx.sql.exec('UPDATE tock_observations SET declared = 0 WHERE run_id = ?', [run.id]);
+  // The declared names are ONE bound JSON array: they grow with the schema, and a Durable
+  // Object binds 100 parameters in all, so a schema of 100 fields would refuse (#1759).
   if (declared.length > 0)
     ctx.sql.exec(
       `UPDATE tock_observations SET declared = 1
-        WHERE run_id = ? AND field IN (${declared.map(() => '?').join(', ')})`,
-      [run.id, ...declared],
+        WHERE run_id = ? AND field IN (SELECT value FROM json_each(?))`,
+      [run.id, JSON.stringify(declared)],
     );
 
   ctx.sql.exec('UPDATE tock_runs SET schema_version = ?, status = ? WHERE id = ?', [

@@ -6,6 +6,8 @@ import { actorLabel, authorizationLabel, callButtonTitle, callLogsButtonTitle, i
 import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
+import { MOCK_APP_DEPLOYMENTS } from '../lib/mock-deployments';
+import { updatePlacement } from '../lib/release-ledger';
 import { renderModelHtml } from '@substrat-run/model-view';
 import { oidcCallbackUrl } from '@substrat-run/contracts';
 import { relativeTime, shortDate, shortId, untilTime } from '../lib/format';
@@ -15,11 +17,13 @@ import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, OriginTag, Pill, Row
 import { AppIntegrations } from './Integrations';
 import { teamPath, navigate, obsPath } from '../lib/router';
 import { DnsRecords } from './Domains';
-import { ReleaseComparisonCard, SchemaHistoryCard } from './ReleaseCards';
+import { ReleaseComparisonCard, ReleasesCard, SchemaHistoryCard, useLedger, type ComparisonTarget } from './ReleaseCards';
 import { AppPeers } from './AppPeers';
 import { AppEdges } from './AppEdges';
+import { AppSchedulesCard } from './AppSchedulesCard';
 import { StatusBand } from './StatusBand';
 import { useTenantMetrics } from '../lib/use-tenant-metrics';
+import { useAppSchedules } from '../lib/use-app-schedules';
 import { InvocationStrip } from './InvocationStrip';
 import { InvocationLogsStrip } from './InvocationLogsStrip';
 import { AppTraffic } from './AppTraffic';
@@ -363,6 +367,7 @@ function ScopeOwnerSeat({ scopeId, versionId, active }: { scopeId: string; versi
 function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[] }) {
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
   const metrics24 = useTenantMetrics(app.app_scope_id);
+  const schedules = useAppSchedules(app.app_scope_id);
   // The app's REAL audit trail (created / active / failed+reason / deleted), one page
   // newest-first; `eventsCursor` walks older activity. Dev-preview shows a sample.
   const [events, setEvents] = useState<AppEvent[] | null>(null);
@@ -490,7 +495,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Full width, above everything: the four stats that answer "is this app OK?".
           They are why Observability and Audit could move to the left menu (#1447). */}
-      <StatusBand app={app} versionLabel={versionLabel} updateAvailable={updateAvailable} seat={seat} metrics={metrics24} />
+      <StatusBand app={app} versionLabel={versionLabel} updateAvailable={updateAvailable} seat={seat} metrics={metrics24} schedules={schedules} />
       {/* What arrived at the app, by status class, with the shared overlays (#1767) —
           full width because it is a time axis, and the Overview's sparkline it replaced
           answered the same question in less space and with no way in. */}
@@ -543,6 +548,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>A hostname is assigned once provisioning completes.</div>
           )}
         </div>
+        <AppSchedulesCard key={`schedules:${app.app_scope_id}`} scopeId={app.app_scope_id} schedules={schedules} />
         <OwnerSeatCard key={app.app_scope_id} scopeId={app.app_scope_id} seat={seat} onClaimed={readSeat} />
         <AppPeers key={`peers:${app.app_scope_id}`} scopeId={app.app_scope_id} />
         <AppEdges key={`edges:${app.app_scope_id}`} scopeId={app.app_scope_id} />
@@ -661,17 +667,24 @@ function Timeline({ items }: { items: Array<{ dot: TimelineDot; body: React.Reac
   );
 }
 
-function Deployments({ app }: { app: AppRow }) {
+/** Versions read while looking for the newest admitted push, before the look is given up. */
+const ADMITTED_SEARCH_CAP = 200;
+
+export function Deployments({ app }: { app: AppRow }) {
   const [dep, setDep] = useState<AppDeployments | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const [updating, setUpdating] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // The look for the newest admitted push (below) ran out — a failed read or the page cap.
+  const [searchGaveUp, setSearchGaveUp] = useState(false);
   // Which version's static-asset panel is open (#340) — one at a time, fetched on open
   // rather than with the versions list: an asset manifest is per version and most rows
   // are never expanded.
   const [openAssets, setOpenAssets] = useState<string | null>(null);
+  // The version a Releases row pointed at, outlined in the table below it.
+  const [picked, setPicked] = useState<string | null>(null);
   // Fork-before-promote (default ON): snapshot the app's data before a migration-
   // crossing update, so a bad upgrade has a rollback point. A code-only update
   // snapshots nothing — the platform compares migration digests, not the checkbox.
@@ -681,10 +694,11 @@ function Deployments({ app }: { app: AppRow }) {
   const [bookmarks, setBookmarks] = useState<MigrationBookmark[]>([]);
   useEffect(() => {
     if (DEV_MOCK) {
-      setDep(MOCK_DEPLOYMENTS[0] ? { ...MOCK_DEPLOYMENTS[0], nextCursor: null } : null);
+      setDep(MOCK_APP_DEPLOYMENTS);
       return;
     }
     let live = true;
+    setSearchGaveUp(false);
     api
       .appDeployments(app.app_scope_id)
       .then((d) => live && setDep(d))
@@ -697,6 +711,8 @@ function Deployments({ app }: { app: AppRow }) {
       live = false;
     };
   }, [app.app_scope_id, nonce]);
+
+  const ledger = useLedger(dep);
 
   // Append the next (older) page of versions below the loaded ones.
   const loadOlderVersions = async () => {
@@ -717,6 +733,21 @@ function Deployments({ app }: { app: AppRow }) {
       setLoadingOlder(false);
     }
   };
+
+  // "Is an admitted push waiting for prod?" is a question about the NEWEST admitted version,
+  // and the first page can hold only pending or rejected pushes. Keep walking older pages
+  // until one is found, the history ends, or the cap is hit — the answer must come from
+  // complete data, or the card must say it does not have it (#1782 review).
+  const lookingForAdmitted = !DEV_MOCK && !!dep && !!dep.nextCursor && !dep.versions.some((v) => v.admission === 'admitted') && !searchGaveUp;
+  useEffect(() => {
+    if (!lookingForAdmitted || loadingOlder || !dep) return;
+    if (dep.versions.length >= ADMITTED_SEARCH_CAP) {
+      setSearchGaveUp(true);
+      return;
+    }
+    loadOlderVersions().catch(() => setSearchGaveUp(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lookingForAdmitted, loadingOlder, dep]);
 
   if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load deployments — {err}</div>;
   if (!dep) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading deployments…</div>;
@@ -739,6 +770,9 @@ function Deployments({ app }: { app: AppRow }) {
   // The stuck state this tab must not leave unexplained: the newest admitted version
   // isn't what prod points at, so no update can be offered until someone promotes it.
   const newestAdmitted = dep.versions.find((v) => v.admission === 'admitted');
+  // Newest-first pages: the first admitted one found IS the newest. Not found and more
+  // history unread is "not known", never "there is none".
+  const admittedKnown = !!newestAdmitted || !dep.nextCursor;
   const awaitingPromotion = !updateAvailable && !!newestAdmitted && newestAdmitted.id !== prod?.versionId;
   // Prod was promoted but its in-place serve failed (#321): the channel points at a version
   // the scopes are NOT running. Surface it — this is exactly the silent state the field
@@ -747,6 +781,25 @@ function Deployments({ app }: { app: AppRow }) {
   const promotedVersion = serveStalled ? dep.versions.find((v) => v.id === prod!.versionId) : undefined;
   const servingVersion = serveStalled ? dep.versions.find((v) => v.id === prod!.servingVersionId) : undefined;
   const COLS = '1fr 1fr 1.3fr 1.1fr 0.8fr';
+  // What the comparison holds the running version against: the prod head an Update moves
+  // to, else a newer admitted push still waiting for prod. Neither ⇒ the app is current.
+  const updateIn = updatePlacement(updateAvailable, !!prodVersion);
+  const target: ComparisonTarget | null =
+    updateIn === 'card' && prodVersion ? { version: prodVersion, state: 'update' } : awaitingPromotion && newestAdmitted ? { version: newestAdmitted, state: 'unpromoted' } : null;
+  // Why the card has no target to name, when the reason is that the tab does not KNOW —
+  // and must not fall back to "latest" for it.
+  const unknown: string | null =
+    updateIn === 'bar'
+      ? 'An update is available, but prod’s version is older than the releases loaded here, so it cannot be compared. Use “Update to latest” above.'
+      : target === null && !updateAvailable && !admittedKnown
+        ? searchGaveUp
+          ? 'Could not check whether a newer version is waiting for prod.'
+          : 'Checking for a newer version…'
+        : null;
+  const pickVersion = (versionId: string) => {
+    setPicked(versionId);
+    document.getElementById(`version-${versionId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
 
   const doUpdate = async () => {
     setUpdating(true);
@@ -828,19 +881,10 @@ function Deployments({ app }: { app: AppRow }) {
           <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Not serving a registry version yet — a pushed version must be admitted and promoted.</span>
         )}
         <div style={{ flex: 1 }} />
-        {awaitingPromotion && (
-          <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>
-            <MonoTag>{newestAdmitted.version}</MonoTag> is admitted but not in <b>prod</b>
-            {selfServe ? (
-              <> — <a href="/verticals" onClick={(e) => { e.preventDefault(); navigate('/verticals'); }} style={{ color: 'var(--text-brand)' }}>promote it on Verticals →</a></>
-            ) : (
-              <> — the Substrat team promotes it</>
-            )}
-          </span>
-        )}
-        {updateAvailable && (
+        {/* The Update action lives in the comparison's header. Only when prod's version is
+            beyond the loaded page — so the comparison has nothing to name — does it stay here. */}
+        {updateIn === 'bar' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {prodVersion && <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>Update available → <MonoTag>{prodVersion.version}</MonoTag></span>}
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
               <input type="checkbox" checked={snapFirst} onChange={(e) => setSnapFirst(e.target.checked)} />
               Snapshot data first
@@ -849,9 +893,35 @@ function Deployments({ app }: { app: AppRow }) {
           </div>
         )}
       </div>
-      {/* Directly under "Running": the card's own header calls itself the last question
-          before pressing Update, and the Update button is the line above it. */}
-      <ReleaseComparisonCard app={app} />
+      {/* Directly under "Running": the last question before pressing Update, with the
+          button that answers it in its own header. */}
+      <ReleaseComparisonCard
+        app={app}
+        dep={dep}
+        running={running}
+        target={target}
+        unknown={unknown}
+        ledger={ledger}
+        actions={
+          target?.state === 'update' ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={snapFirst} onChange={(e) => setSnapFirst(e.target.checked)} />
+                Snapshot data first
+              </label>
+              <Button size="sm" onClick={doUpdate} disabled={updating}>{updating ? 'Updating…' : 'Update this app'}</Button>
+            </div>
+          ) : target?.state === 'unpromoted' ? (
+            // Promoting is a fleet move with its own permission and migration review, which
+            // lives on Verticals; this tab links there rather than growing a second one.
+            selfServe ? (
+              <Button size="sm" variant="secondary" onClick={() => navigate('/verticals')}>Promote on Verticals</Button>
+            ) : (
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>the Substrat team promotes it to prod</span>
+            )
+          ) : null
+        }
+      />
       {serveStalled && (
         <div style={{ ...card, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderColor: 'var(--status-danger-fg)' }}>
           <Pill kind="warning">serve failed</Pill>
@@ -891,6 +961,10 @@ function Deployments({ app }: { app: AppRow }) {
           <>Read live from the registry. “Running” is the version the router serves for this app. The Substrat team promotes versions to prod; updating here moves this app to the current prod version.</>
         )}
       </HonestyBanner>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
+        <ReleasesCard ledger={ledger} onPick={pickVersion} />
+        <SchemaHistoryCard app={app} />
+      </div>
       {dep.versions.length === 0 ? (
         <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No versions pushed to the registry yet.</div>
       ) : (
@@ -901,7 +975,7 @@ function Deployments({ app }: { app: AppRow }) {
           {dep.versions.map((v, i) => {
             const chans = channelsOf(v.id);
             return (
-              <div key={v.id} style={{ borderBottom: i === dep.versions.length - 1 ? 'none' : '1px solid var(--border-subtle)', background: v.id === dep.boundVersionId ? 'var(--surface-brand-subtle)' : 'transparent' }}>
+              <div key={v.id} id={`version-${v.id}`} style={{ borderBottom: i === dep.versions.length - 1 ? 'none' : '1px solid var(--border-subtle)', background: v.id === dep.boundVersionId ? 'var(--surface-brand-subtle)' : 'transparent', boxShadow: v.id === picked ? 'inset 3px 0 0 var(--border-brand)' : undefined }}>
               <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 40, padding: '8px 16px', fontSize: 13 }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{v.version}</span>
@@ -939,9 +1013,6 @@ function Deployments({ app }: { app: AppRow }) {
           )}
         </div>
       )}
-      {/* Last, under the version table: when each migration actually ran is the other
-          thing a release changes, and it reads as a tail of that same list. */}
-      <SchemaHistoryCard app={app} />
     </div>
   );
 }

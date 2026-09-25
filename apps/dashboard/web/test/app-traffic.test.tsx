@@ -6,6 +6,7 @@ import { InspectableTraffic } from '../src/components/InspectableTraffic';
 import { api, type TrafficSeries } from '../src/lib/api';
 import { StatusBand } from '../src/views/StatusBand';
 import { useTenantMetrics } from '../src/lib/use-tenant-metrics';
+import { useAppSchedules } from '../src/lib/use-app-schedules';
 import type { AppRow } from '../src/lib/api';
 import { classTotals, rangeLabel, resolveClockRange, seriesWindow, surfaceRows } from '../src/lib/app-traffic';
 import { applyOverlayPrefs, OVERLAY_PREFS_KEY, parseOverlayPrefs, resetOverlayPrefs } from '../src/lib/overlay-prefs';
@@ -171,9 +172,10 @@ describe('App › Overview traffic card (#1767)', () => {
     window.matchMedia = ((q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
     const Both = () => {
       const m = useTenantMetrics('app-a');
+      const s = useAppSchedules('app-a');
       return (
         <>
-          <StatusBand app={{ app_scope_id: 'app-a' } as AppRow} versionLabel="1.0.0" updateAvailable={false} seat={null} metrics={m} />
+          <StatusBand app={{ app_scope_id: 'app-a' } as AppRow} versionLabel="1.0.0" updateAvailable={false} seat={null} metrics={m} schedules={s} />
           <AppTraffic scopeId="app-a" surfaces={[]} metrics24={m} />
         </>
       );
