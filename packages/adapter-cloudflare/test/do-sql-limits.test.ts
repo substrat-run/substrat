@@ -193,7 +193,7 @@ describe('platform list statements past the parameter limit (#1776)', () => {
   const access = (detail: string): string => detail.split(' | ').filter((l) => l.includes('_substrat_outbox'))[0]!;
   const oldForm = (q: { sql: string; params: unknown[] }, few: readonly string[]) => ({
     sql: q.sql.replace('(SELECT value FROM json_each(?))', `(${few.map(() => '?').join(', ')})`),
-    params: q.params.flatMap((p) => (p === JSON.stringify(few) ? few : [p])),
+    params: q.params.flatMap((p): unknown[] => (p === JSON.stringify(few) ? [...few] : [p])),
   });
 
   for (const after of [null, `01J${'0'.repeat(22)}9`]) {
