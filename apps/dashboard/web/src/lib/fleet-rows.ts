@@ -41,14 +41,7 @@ export function fleetRows(input: { apps: AppRow[]; health: AppHealthRow[] | null
   const rows = input.apps.map((a): FleetRow => {
     const h = health.get(a.app_scope_id);
     const t = traffic?.get(a.app_scope_id);
-    const [verdict, why]: [FleetVerdict, string] =
-      a.status === 'failed'
-        ? ['install-failed', 'Provisioning failed before the app could run.']
-        : a.status === 'provisioning'
-          ? ['installing', 'Installing — assigning a hostname.']
-          : h
-            ? [h.state, h.reason]
-            : ['unknown', 'Health could not be read for this app.'];
+    const { verdict, why } = appVerdict(a, h);
     return {
       scopeId: a.app_scope_id,
       name: a.name,
@@ -64,6 +57,16 @@ export function fleetRows(input: { apps: AppRow[]; health: AppHealthRow[] | null
   });
   // Worst first; within a verdict, the busier app first — it is the one more people feel.
   return rows.sort((x, y) => VERDICTS[x.verdict].rank - VERDICTS[y.verdict].rank || (y.requests ?? 0) - (x.requests ?? 0));
+}
+
+/**
+ * One app's verdict and the sentence behind it — the Apps table's rule, also the app
+ * page header's (#1767), so the two can never disagree about the same app.
+ */
+export function appVerdict(app: Pick<AppRow, 'status'>, health: AppHealthRow | undefined): { verdict: FleetVerdict; why: string } {
+  if (app.status === 'failed') return { verdict: 'install-failed', why: 'Provisioning failed before the app could run.' };
+  if (app.status === 'provisioning') return { verdict: 'installing', why: 'Installing — assigning a hostname.' };
+  return health ? { verdict: health.state, why: health.reason } : { verdict: 'unknown', why: 'Health could not be read for this app.' };
 }
 
 export function unreadWhy(cap: number | null): string {
