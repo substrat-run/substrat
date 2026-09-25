@@ -14,7 +14,8 @@ import { mcpResourceOf } from '@substrat-run/contracts';
 import { decodeJwt } from 'jose';
 import type { DevPersona } from '../src/personas.js';
 
-const ISSUER = 'http://issuer.test';
+// Loopback, as the real dev issuer is: the RP sends the client secret over plain http only there.
+const ISSUER = 'http://localhost:8879';
 const APP = 'http://app.test';
 
 const PERSONAS: DevPersona[] = [
