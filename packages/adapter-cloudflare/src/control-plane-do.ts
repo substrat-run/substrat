@@ -1556,8 +1556,14 @@ export class ControlPlaneDO extends DurableObject {
     // backoff were about, so neither may delay or silence it: the count is cleared and the next
     // batch armed outright, a pause away. (An ordinary construction keeps a pending alarm; this
     // does not.) A dump taken before the backfill lands unsplit versions, so it runs again.
-    await this.ctx.storage.delete(BACKFILL_FAILURES_KEY);
-    if (versionsAwaitSplit(this.kernelSql)) await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
+    // The restore has committed by now, so failing to arm must not report it as failed: the
+    // next construction arms the backfill, since it finds none set.
+    try {
+      await this.ctx.storage.delete(BACKFILL_FAILURES_KEY);
+      if (versionsAwaitSplit(this.kernelSql)) await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
+    } catch (err) {
+      console.error('substrat: the restore committed, but its version-migrations backfill was not armed', err);
+    }
   }
 
   // -- tenant registry (control-plane.md §4.1) --------------------------------

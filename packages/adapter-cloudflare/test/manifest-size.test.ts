@@ -586,3 +586,41 @@ describe('the backfill batch bound is bytes, on workerd', () => {
     });
   });
 });
+
+/**
+ * #1764 review: once the restore has committed, failing to arm the backfill must not report
+ * the restore as failed. The next construction arms it, since it finds none set.
+ */
+describe('a restore whose backfill cannot be armed still succeeds', () => {
+  const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`version-backfill-restore-${ulid()}`));
+
+  it('resolves, the data is restored, and the next construction arms the backfill', async () => {
+    await runInDurableObject(stub, async (instance, state) => {
+      const d = instance as unknown as ControlPlaneDO & {
+        exportDump(): ScopeDumpTable[];
+        importDump(tables: ScopeDumpTable[]): Promise<void>;
+        backfillArmed: Promise<void>;
+      };
+      const id = ulid();
+      state.storage.sql.exec(
+        `INSERT INTO vertical_versions (id, vertical_slug, version, manifest_digest, permission_digest,
+           migration_digest, admission, manifest_json, created_at)
+         VALUES (?, 'acme', '1.0.0', 'm', 'p', 'g', 'admitted', ?, '2026-09-01T00:00:00.000Z')`,
+        id, JSON.stringify({ version: '1.0.0', migrations: [] }),
+      );
+      const dump = d.exportDump();
+      await state.storage.deleteAlarm();
+      const setAlarm = state.storage.setAlarm;
+      state.storage.setAlarm = () => Promise.reject(new Error('injected: setAlarm'));
+      try {
+        await expect(d.importDump(dump)).resolves.toBeUndefined();
+      } finally {
+        state.storage.setAlarm = setAlarm;
+      }
+      expect(state.storage.sql.exec('SELECT COUNT(*) AS n FROM vertical_versions WHERE id = ?', id).one().n).toBe(1);
+      expect(await state.storage.getAlarm()).toBeNull(); // the arm really did fail
+      await (new ControlPlaneDO(state, env) as typeof d).backfillArmed;
+      expect(await state.storage.getAlarm()).not.toBeNull();
+    });
+  });
+});
