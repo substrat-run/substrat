@@ -1,7 +1,7 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { useMediaQuery } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type AppSchedulesView, type OwnerSeatView, type TenantMetricsRow } from '../lib/api';
-import { DEV_MOCK, MOCK_TENANT_METRICS } from '../lib/mock';
+import type { AppRow, AppSchedulesView, OwnerSeatView, TenantMetricsRow } from '../lib/api';
+import type { MetricsState } from '../lib/use-tenant-metrics';
 import type { SchedulesState } from '../lib/use-app-schedules';
 import { MonoTag, Pill, type PillKind } from '../components/ui';
 import { navigate, obsPath, teamPath } from '../lib/router';
@@ -25,6 +25,7 @@ export function StatusBand({
   versionLabel,
   updateAvailable,
   seat,
+  metrics,
   schedules,
 }: {
   app: AppRow;
@@ -33,6 +34,8 @@ export function StatusBand({
   updateAvailable: boolean;
   /** `undefined` = still asking, `null` = the platform cannot answer for this instance. */
   seat: OwnerSeatView | null | undefined;
+  /** The Overview's one 24h metrics read, shared with the traffic card. */
+  metrics: MetricsState;
   /** The Overview's one schedules read, shared with the Schedules card. */
   schedules: SchedulesState;
 }) {
@@ -40,27 +43,6 @@ export function StatusBand({
   // Two columns below 720px: four tiles side by side stop being a glance long before
   // they stop fitting. An inline-styled app has no `@media` block to say it in.
   const narrow = useMediaQuery('(max-width: 720px)');
-
-  const [metrics, setMetrics] = useState<MetricsState>({ state: 'loading' });
-  useEffect(() => {
-    if (DEV_MOCK) {
-      setMetrics({ state: 'ok', rows: MOCK_TENANT_METRICS });
-      return;
-    }
-    let live = true;
-    // Cleared on a scope change, not left standing: a stat captioned with the wrong
-    // app's name is worse than a blank moment.
-    setMetrics({ state: 'loading' });
-    api
-      .appTenantMetrics(scopeId, 24)
-      .then((rows) => live && setMetrics({ state: 'ok', rows }))
-      // 501 = this plane counts no traffic, which is a different fact from "no traffic".
-      .catch((e) => live && setMetrics({ state: e instanceof ApiError && e.status === 501 ? 'absent' : 'error' }))
-    ;
-    return () => {
-      live = false;
-    };
-  }, [scopeId]);
 
   const health = schedules.state === 'ok' ? healthOf(schedules.view) : null;
   const errors = metrics.state === 'ok' ? errorsOf(metrics.rows) : null;
@@ -121,8 +103,6 @@ export function StatusBand({
     </div>
   );
 }
-
-type MetricsState = { state: 'loading' } | { state: 'error' } | { state: 'absent' } | { state: 'ok'; rows: TenantMetricsRow[] };
 
 /** The app declares neither a schedule nor a freshness expectation — nothing to walk into. */
 const NO_SCHEDULES = 'No schedules';

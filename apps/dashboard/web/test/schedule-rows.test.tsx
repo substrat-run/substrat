@@ -16,6 +16,7 @@ import { AppSchedules } from '../src/views/AppSchedules';
 import { AppSchedulesCard } from '../src/views/AppSchedulesCard';
 import { StatusBand } from '../src/views/StatusBand';
 import { useAppSchedules } from '../src/lib/use-app-schedules';
+import { useTenantMetrics } from '../src/lib/use-tenant-metrics';
 import type { AppRow } from '../src/lib/api';
 
 const NOW = Date.parse('2026-09-01T12:00:00.000Z');
@@ -199,19 +200,21 @@ describe('schedule surfaces', () => {
 
   it('the Overview asks for schedules once, for the Health tile and the card together', async () => {
     const spy = vi.spyOn(api, 'appSchedules').mockResolvedValue(view());
-    vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
+    const metricsSpy = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
     window.matchMedia = ((q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
     const Both = () => {
       const schedules = useAppSchedules('s');
+      const metrics = useTenantMetrics('s');
       return (
         <>
-          <StatusBand app={{ app_scope_id: 's' } as AppRow} versionLabel="1.0.0" updateAvailable={false} seat={null} schedules={schedules} />
+          <StatusBand app={{ app_scope_id: 's' } as AppRow} versionLabel="1.0.0" updateAvailable={false} seat={null} metrics={metrics} schedules={schedules} />
           <AppSchedulesCard scopeId="s" schedules={schedules} />
         </>
       );
     };
     await act(async () => root.render(<Both />));
     expect(spy).toHaveBeenCalledTimes(1);
+    expect(metricsSpy).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain('Schedules and freshness');
   });
 

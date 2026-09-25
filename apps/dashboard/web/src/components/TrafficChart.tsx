@@ -1,5 +1,6 @@
-import type { KeyboardEvent } from 'react';
+import type { CSSProperties, KeyboardEvent, ReactNode } from 'react';
 import type { AppOverlays, OverlayMarker, ReleaseMarker, TrafficBucket } from '../lib/api';
+import { markerKey, releaseKey, type OverlayKey } from '../lib/overlay-prefs';
 
 /**
  * The palette a multi-line chart cycles (#1447) — the three layer accents the dashboard
@@ -19,16 +20,27 @@ const LINE_COLORS = [
 const LEGEND_CAP = 8;
 
 /**
- * How each overlay kind draws and reads (#1447 step 3b). One table, so the glyph, the
- * legend swatch and the text alternative cannot drift apart — and so shape carries the
- * meaning as well as colour, which is what keeps the three distinguishable for a reader
- * who cannot separate them by hue.
+ * How each overlay kind draws and reads — the one vocabulary every time chart shares
+ * (#1767, extending #1447 step 3b). One table, so the rail glyph, the line through the
+ * plot and the text alternative cannot drift apart. Shape carries the meaning as well as
+ * colour (○ ● ■ × !, dashed / solid / dotted / tick), which is what keeps the kinds apart
+ * for a reader who cannot separate them by hue. Red is spent only on the two kinds that
+ * are failures.
  */
-const OVERLAY_KINDS = {
-  migration: { color: 'var(--text-tertiary)', filled: false, round: true, noun: 'migration' },
-  'run-failed': { color: 'var(--status-warning-fg)', filled: true, round: false, noun: 'failed schedule run' },
-  failure: { color: 'var(--status-danger-fg)', filled: true, round: true, noun: 'recorded failure' },
-} as const;
+const VOCAB: Record<Exclude<OverlayKey, 'stale'>, { glyph: string; color: string; line: CSSProperties }> = {
+  pushed: { glyph: '○', color: 'var(--text-secondary)', line: { top: 0, bottom: 0, borderLeft: '1px dashed var(--border-strong)' } },
+  live: { glyph: '●', color: 'var(--text-primary)', line: { top: 0, bottom: 0, borderLeft: '1px solid var(--text-secondary)' } },
+  mig: { glyph: '■', color: 'var(--text-secondary)', line: { top: 0, bottom: 0, borderLeft: '1px dotted var(--text-tertiary)' } },
+  fail: { glyph: '×', color: 'var(--status-danger-fg)', line: { top: 0, height: 14, borderLeft: '2px solid var(--status-danger-fg)' } },
+  rec: { glyph: '!', color: 'var(--status-danger-fg)', line: { top: 0, height: 14, borderLeft: '2px solid var(--status-danger-fg)' } },
+};
+
+/** The noun each overlay-marker kind is counted in, for the legend and the text alternative. */
+const OVERLAY_NOUNS = { migration: 'migration', 'run-failed': 'failed schedule run', failure: 'recorded failure' } as const;
+
+/** The stale span's fill — a hatch rather than a tint, so it reads as "context", never as data. */
+const STALE_HATCH =
+  'repeating-linear-gradient(135deg, color-mix(in srgb, var(--status-warning-fg) 22%, transparent) 0 4px, transparent 4px 8px)';
 
 /** How many glyphs one bucket stacks before the row counts the rest. */
 const STACK_CAP = 3;
@@ -54,8 +66,10 @@ const HIT = 24;
  * most easily becomes a dishonest picture:
  *
  * - **Each bar stacks by HTTP status class** (#1693) when the bucket carries the
- *   split: green (2xx + 3xx) at the base, yellow (4xx — a client got a no, not
- *   necessarily an alarm) above it, red (5xx) on top. A bucket missing the split
+ *   split: neutral (2xx + 3xx) at the base, amber (4xx — a client got a no, not
+ *   necessarily an alarm) above it, red (5xx) on top. Success is deliberately NOT
+ *   green (#1767): green on 97 % of every bar stops meaning anything, and the two
+ *   colours that do mean something then stand out. A bucket missing the split
  *   (an older plane, or the script-grain source that cannot carry it) falls back
  *   to a single bar with the red 5xx count drawn inside it, as before.
  * - **A zero bucket is a visible baseline tick**, never a gap — the series is
@@ -71,12 +85,13 @@ const HIT = 24;
  * the comparison legitimate, so `buckets` still supplies the grid.
  *
  * With `overlays` it also draws the declared facts that explain the shape (#1447 step
- * 3b): a shaded span for a stale freshness window, a glyph per migration, failed
- * schedule run and recorded failure. Two rules keep them apart from the release
- * markers: the glyphs sit in a row at the BASELINE rather than crossing the plot — a
- * full-height rule means "the code changed here", and nothing else may borrow it — and
- * a glyph is clickable where a release marker is not, because each one has a sub-view
- * that explains it.
+ * 3b), in the vocabulary every time chart shares (#1767, `VOCAB`): a glyph per instant
+ * in a rail above the plot, a line or tick through it, and a hatch for a stale span.
+ * Full-height lines are the code and the schema changing (pushed, went live,
+ * migration); a failure is a short red tick, so it cannot be mistaken for one. An
+ * overlay glyph is clickable where a release glyph is not, because each overlay has a
+ * sub-view that explains it. Which kinds are drawn is the caller's choice
+ * (`overlay-prefs`), so a chart with no chips above it never hides one.
  *
  * With `onBucket` the time axis becomes a cursor (#1447 step 3c): a bar already IS a span
  * of time, so clicking one asks "what was happening then". Bars only — a line chart has
@@ -95,6 +110,8 @@ export function TrafficChart({
   onMarker,
   onBucket,
   cursor,
+  variant = 'default',
+  plotOverlay,
 }: {
   buckets: TrafficBucket[];
   plotWindow?: { since: string; until: string };
@@ -116,6 +133,12 @@ export function TrafficChart({
   onBucket?: (start: string, bucketMinutes: number) => void;
   /** The window the page is currently narrowed to, drawn over the plot. */
   cursor?: { from: string; to: string };
+  /** `card` (#1767): a y axis and clock ticks around the plot, and no legend rows under
+   *  it — the card that hosts it draws its own legend and overlay chips. */
+  variant?: 'default' | 'card';
+  /** Drawn inside the plot's own box (selection, hover, pin), so a host never has to
+   *  measure where the plot sits below the glyph rail. */
+  plotOverlay?: ReactNode;
 }) {
   if (buckets.length === 0) return null;
 
@@ -158,10 +181,27 @@ export function TrafficChart({
 
   const overlayMarkers = overlays?.markers ?? [];
   const overlaySpans = overlays?.spans ?? [];
+  // The glyph rail carries both kinds of instant: the release markers (○ pushed, ● went
+  // live) and the declared overlays. Only the overlays are controls — a release marker
+  // has no sub-view to open.
+  const railItems = [
+    ...markers.map((m) => ({
+      key: releaseKey(m),
+      at: m.at,
+      title: `${m.version} ${m.kind === 'went-live' ? 'promoted to prod' : 'version registered'} — ${fmt(m.at)}`,
+      marker: null as OverlayMarker | null,
+    })),
+    ...overlayMarkers.map((m) => ({
+      key: markerKey(m),
+      at: m.at,
+      title: [m.label, m.detail, fmt(m.at)].filter(Boolean).join(' — '),
+      marker: m as OverlayMarker | null,
+    })),
+  ].sort((a, b) => a.at.localeCompare(b.at));
   // Stacked per bucket so a burst reads as a burst: a dozen failures inside one hour
   // land on the same x, and drawn flat they would be one dot claiming one failure.
-  const stacks = new Map<number, OverlayMarker[]>();
-  for (const m of overlayMarkers) {
+  const stacks = new Map<number, typeof railItems>();
+  for (const m of railItems) {
     const slot = Math.min(buckets.length - 1, Math.floor(xOf(m.at)));
     stacks.set(slot, [...(stacks.get(slot) ?? []), m]);
   }
@@ -169,21 +209,106 @@ export function TrafficChart({
   const anyCounted = [...stacks.values()].some((s) => s.length > STACK_CAP);
   const counts = { migration: 0, 'run-failed': 0, failure: 0 };
   for (const m of overlayMarkers) counts[m.kind] += 1;
-  const present = (Object.keys(OVERLAY_KINDS) as Array<keyof typeof OVERLAY_KINDS>).filter((k) => counts[k] > 0);
+  const present = (Object.keys(OVERLAY_NOUNS) as Array<keyof typeof OVERLAY_NOUNS>).filter((k) => counts[k] > 0);
   const overlayWords = [
-    ...present.map((k) => `${counts[k]} ${OVERLAY_KINDS[k].noun}${counts[k] === 1 ? '' : 's'}`),
+    ...present.map((k) => `${counts[k]} ${OVERLAY_NOUNS[k]}${counts[k] === 1 ? '' : 's'}`),
     ...(overlaySpans.length > 0 ? [`${overlaySpans.length} stale window${overlaySpans.length === 1 ? '' : 's'}`] : []),
   ];
   // The text alternative carries the overlays too — a reader who cannot see the glyphs
   // must still learn that something happened in this window, not just how busy it was.
   const overlayAria = overlayWords.length > 0 ? `. Overlays: ${overlayWords.join(', ')}` : '';
 
-  /** A marker's x as a percentage of the plot's width — the release markers' own mapping,
-   *  rescaled because the glyph layer is drawn in px rather than bucket units. */
-  const pctOf = (iso: string): string => `${((xOf(iso) - offset) / W) * 100}%`;
+  /** A marker's x as a fraction of the plot's width — the bars' own mapping, rescaled
+   *  because the glyphs and lines are drawn in px rather than bucket units. */
+  const fracOf = (iso: string): number => (xOf(iso) - offset) / W;
+  const pctOf = (iso: string): string => `${fracOf(iso) * 100}%`;
+  const card = variant === 'card';
+  const clock = (ms: number) => new Date(ms).toISOString().slice(11, 16);
+  const axisSince = Date.parse(plotWindow?.since ?? buckets[0]!.start);
+  const axisUntil = plotWindow ? Date.parse(plotWindow.until) : Date.parse(buckets[buckets.length - 1]!.start) + widthMs;
+
+  // The glyph rail is its OWN svg, in px and with no viewBox, because the plot below it
+  // is scaled non-uniformly (`preserveAspectRatio="none"`): a glyph drawn in bucket units
+  // would arrive squashed by however wide the container is. The x mapping is the same one
+  // — as a percentage of the plot — so a glyph sits over the instant it names, and the
+  // line it draws through the plot (the layer below) lands under it.
+  const railRows = Math.max(card ? 1 : 0, stackRows);
+  const rail = (railItems.length > 0 || card) && (
+    <svg
+      width="100%"
+      height={railRows * HIT + (anyCounted ? 12 : 0)}
+      role="group"
+      aria-label={`Overlay markers: ${[`${markers.length} release marker${markers.length === 1 ? '' : 's'}`, ...overlayWords].join(', ')}`}
+      style={{ display: 'block', overflow: 'visible', ...(card ? { borderBottom: '1px solid var(--border-subtle)' } : {}) }}
+    >
+      {[...stacks.entries()].map(([slot, group]) => (
+        <g key={slot}>
+          {group.slice(0, STACK_CAP).map((m, row) => {
+            const kind = VOCAB[m.key];
+            // Stacked UP from the plot, so the first glyph of every bucket sits right
+            // over the line it names; the count of any overflow tops the stack.
+            const y = (anyCounted ? 12 : 0) + (railRows - 1 - row) * HIT + HIT / 2;
+            const marker = m.marker;
+            return (
+              <g
+                key={`${m.key}:${m.at}:${m.title}`}
+                {...(onMarker && marker
+                  ? {
+                      role: 'button',
+                      'aria-label': m.title,
+                      tabIndex: 0,
+                      style: { cursor: 'pointer' },
+                      onClick: () => onMarker(marker),
+                      onKeyDown: (e: KeyboardEvent<SVGGElement>) => {
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        e.preventDefault();
+                        onMarker(marker);
+                      },
+                    }
+                  : {})}
+              >
+                {/* The pad: painted nothing, but it is what the pointer hits. First
+                    in the group so the mark draws over it; `fill="transparent"`
+                    rather than `none`, because `none` is not hit-tested. */}
+                <rect x={pctOf(m.at)} y={y - HIT / 2} width={HIT} height={HIT} fill="transparent" transform={`translate(${-HIT / 2},0)`} />
+                <text
+                  x={pctOf(m.at)}
+                  y={y + 4}
+                  textAnchor="middle"
+                  fontSize={11}
+                  fontFamily="var(--font-mono)"
+                  fontWeight={m.key === 'fail' || m.key === 'rec' ? 700 : 400}
+                  fill={kind.color}
+                >
+                  {kind.glyph}
+                </text>
+                <title>{m.title}</title>
+              </g>
+            );
+          })}
+          {/* Counted, never dropped silently — the same rule the line legend follows. */}
+          {group.length > STACK_CAP && (
+            <text x={pctOf(group[0]!.at)} y={9} fontSize={9} fill="var(--text-tertiary)" textAnchor="middle">
+              {`+${group.length - STACK_CAP}`}
+            </text>
+          )}
+        </g>
+      ))}
+    </svg>
+  );
 
   return (
-    <div style={{ display: 'grid', gap: 6 }}>
+    <div style={card ? { display: 'grid', gridTemplateColumns: '40px minmax(0,1fr)', gap: '0 6px' } : { display: 'grid', gap: 6 }}>
+      {card && <span />}
+      {rail}
+      {card && (
+        <div style={{ position: 'relative', height, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)', textAlign: 'right' }}>
+          <span style={{ position: 'absolute', right: 0, top: -2 }}>{peak.toLocaleString('en-US')}</span>
+          <span style={{ position: 'absolute', right: 0, top: height / 2 - 7 }}>{Math.round(peak / 2).toLocaleString('en-US')}</span>
+          <span style={{ position: 'absolute', right: 0, bottom: -5 }}>0</span>
+        </div>
+      )}
+      <div style={{ position: 'relative' }}>
       <svg
         data-traffic-plot
         viewBox={`${offset} 0 ${W} ${H}`}
@@ -196,24 +321,8 @@ export function TrafficChart({
             : `Traffic over ${buckets.length} buckets with ${markers.length} deploy markers`) + overlayAria
         }
       >
-        {/* Spans first, so the shading sits BEHIND the traffic: a stale freshness window
-            is context for the bars, and drawn over them it would tint the data itself. */}
-        {overlaySpans.map((s) => (
-          <rect
-            key={`${s.kind}:${s.from}:${s.label}`}
-            x={xOf(s.from)}
-            width={Math.max(xOf(s.to) - xOf(s.from), 0.05)}
-            y={0}
-            height={H}
-            fill="var(--status-warning-fg, #b45309)"
-            opacity={0.12}
-          >
-            <title>{`${s.label} stale ${fmt(s.from)}–${fmt(s.to)}`}</title>
-          </rect>
-        ))}
-        {/* The cursor sits ABOVE the stale shading and BELOW the traffic: it is the
-            reader's own selection, so it must win over the other context drawn behind the
-            bars, and it must still not tint the data it is selecting. Same x mapping as
+        {/* The cursor sits BELOW the traffic: it is the reader's own selection, and it
+            must not tint the data it is selecting. Same x mapping as
             the markers, so the highlight lands under the instant it names. A window
             narrower than a hair still gets a visible sliver — a five-minute cursor on a
             three-day axis is otherwise nothing at all. */}
@@ -253,15 +362,15 @@ export function TrafficChart({
               const label = classes
                 ? `${fmt(b.start)} — ${b.requests.toLocaleString()} req, ${classes.green.toLocaleString()} 2xx/3xx, ${classes.yellow.toLocaleString()} 4xx, ${b.errors.toLocaleString()} 5xx`
                 : `${fmt(b.start)} — ${b.requests.toLocaleString()} req, ${b.errors.toLocaleString()} err`;
-              // Stacked bottom-up: green (no complaint), yellow (a no), red (5xx) on top —
+              // Stacked bottom-up: neutral (no complaint), amber (a no), red (5xx) on top —
               // so the eye reads severity climbing toward the top of the bar. A class with
               // nothing in it draws no segment at all (#1693 acceptance).
               const segments =
                 classes && b.requests > 0
                   ? [
-                      { count: classes.green, color: 'var(--status-success-fg, #16a34a)' },
-                      { count: classes.yellow, color: 'var(--status-warning-fg, #b45309)' },
-                      { count: b.errors, color: 'var(--status-danger-fg, #dc2626)' },
+                      { count: classes.green, color: 'var(--text-tertiary, #6b7280)', opacity: 0.75 },
+                      { count: classes.yellow, color: 'var(--status-warning-fg, #b45309)', opacity: 1 },
+                      { count: b.errors, color: 'var(--status-danger-fg, #dc2626)', opacity: 1 },
                     ]
                   : null;
               const errs = b.requests === 0 ? 0 : (b.errors / peak) * (H - 2);
@@ -296,7 +405,7 @@ export function TrafficChart({
                         const h = (s.count / peak) * (H - 2);
                         if (h <= 0) return null;
                         const rect = (
-                          <rect key={s.color} x={i + 0.1} y={yCursor - h} width={0.8} height={h} fill={s.color} opacity={0.85} />
+                          <rect key={s.color} x={i + 0.1} y={yCursor - h} width={0.8} height={h} fill={s.color} opacity={s.opacity} />
                         );
                         yCursor -= h;
                         return rect;
@@ -310,8 +419,8 @@ export function TrafficChart({
                         y={H - Math.max(total, 0.6)}
                         width={0.8}
                         height={Math.max(total, 0.6)}
-                        fill="var(--brand-500, #6366f1)"
-                        opacity={0.55}
+                        fill="var(--text-tertiary, #6b7280)"
+                        opacity={0.75}
                       />
                       {errs > 0 && (
                         <rect x={i + 0.1} y={H - errs} width={0.8} height={errs} fill="var(--status-danger-fg, #dc2626)" opacity={0.9} />
@@ -323,105 +432,39 @@ export function TrafficChart({
               );
             })}
         {lines && onBucket && buckets.map((b, i) => <rect key={b.start} x={i} y={0} width={1} height={H} fill="transparent" role="button" tabIndex={0} aria-label={`Inspect ${fmt(b.start)}`} onFocus={() => onInspect?.(i)} onBlur={() => onInspect?.(null)} onClick={() => onBucket(b.start, bucketMinutes)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onBucket(b.start, bucketMinutes); } }} />)}
-        {markers.map((m) => (
-          <line
-            key={`${m.kind}:${m.versionId}:${m.at}`}
-            x1={xOf(m.at)}
-            x2={xOf(m.at)}
-            y1={0}
-            y2={H}
-            stroke={m.kind === 'went-live' ? 'var(--status-success-fg, #16a34a)' : 'var(--text-tertiary, #6b7280)'}
-            strokeWidth={0.12}
-            strokeDasharray={m.kind === 'pushed' ? '1 1' : undefined}
-            vectorEffect="non-scaling-stroke"
-          >
-            <title>{`${m.version} ${m.kind === 'went-live' ? 'promoted to prod' : 'version registered'} — ${fmt(m.at)}`}</title>
-          </line>
-        ))}
       </svg>
-      {/* The glyph row is its OWN svg, in px and with no viewBox, because the chart above
-          is scaled non-uniformly (`preserveAspectRatio="none"`): a circle drawn in bucket
-          units would arrive as a flat ellipse whose width depends on the container. The
-          x mapping is the same one — as a percentage of the plot — so a glyph sits under
-          the instant it names. */}
-      {overlayMarkers.length > 0 && (
-        <svg
-          width="100%"
-          height={stackRows * HIT + (anyCounted ? 12 : 0)}
-          role="group"
-          aria-label={`Overlay markers: ${overlayWords.join(', ')}`}
-          style={{ display: 'block', overflow: 'visible', marginTop: -2 }}
-        >
-          {[...stacks.entries()].map(([slot, group]) => (
-            <g key={slot}>
-              {group.slice(0, STACK_CAP).map((m, row) => {
-                const kind = OVERLAY_KINDS[m.kind];
-                const y = row * HIT + HIT / 2;
-                const title = [m.label, m.detail, fmt(m.at)].filter(Boolean).join(' — ');
-                const glyph = kind.round ? (
-                  <circle
-                    cx={pctOf(m.at)}
-                    cy={y}
-                    r={3.2}
-                    fill={kind.filled ? kind.color : 'none'}
-                    stroke={kind.color}
-                    strokeWidth={1.2}
-                  />
-                ) : (
-                  // The percentage resolves against the viewport first; the translate then
-                  // centres the square on it, which no single attribute can express.
-                  <rect x={pctOf(m.at)} y={y - 3} width={6} height={6} fill={kind.color} transform="translate(-3,0)" />
-                );
-                return (
-                  <g
-                    key={`${m.kind}:${m.at}:${m.label}`}
-                    {...(onMarker
-                      ? {
-                          role: 'button',
-                          'aria-label': title,
-                          tabIndex: 0,
-                          style: { cursor: 'pointer' },
-                          onClick: () => onMarker(m),
-                          onKeyDown: (e: KeyboardEvent<SVGGElement>) => {
-                            if (e.key !== 'Enter' && e.key !== ' ') return;
-                            e.preventDefault();
-                            onMarker(m);
-                          },
-                        }
-                      : {})}
-                  >
-                    {/* The pad: painted nothing, but it is what the pointer hits. First
-                        in the group so the mark draws over it; `fill="transparent"`
-                        rather than `none`, because `none` is not hit-tested. */}
-                    <rect
-                      x={pctOf(m.at)}
-                      y={y - HIT / 2}
-                      width={HIT}
-                      height={HIT}
-                      fill="transparent"
-                      transform={`translate(${-HIT / 2},0)`}
-                    />
-                    {glyph}
-                    <title>{title}</title>
-                  </g>
-                );
-              })}
-              {/* Counted, never dropped silently — the same rule the line legend follows. */}
-              {group.length > STACK_CAP && (
-                <text
-                  x={pctOf(group[0]!.at)}
-                  y={STACK_CAP * HIT + 9}
-                  fontSize={9}
-                  fill="var(--text-tertiary)"
-                  textAnchor="middle"
-                >
-                  {`+${group.length - STACK_CAP}`}
-                </text>
-              )}
-            </g>
+        {/* The overlay layer: stale spans as a hatch, and each marker's line through the
+            plot. HTML rather than SVG for the same reason the rail is its own svg — a
+            dash, a dot or a hatch drawn inside the stretched viewBox would be stretched
+            with it. It never takes the pointer, so every gesture still reaches the bars. */}
+        <div aria-hidden style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
+          {overlaySpans.map((s) => (
+            <span
+              key={`${s.kind}:${s.from}:${s.label}`}
+              title={`${s.label} stale ${fmt(s.from)}–${fmt(s.to)}`}
+              style={{ position: 'absolute', top: 0, bottom: 0, left: pctOf(s.from), width: `${Math.max(0.3, (fracOf(s.to) - fracOf(s.from)) * 100)}%`, background: STALE_HATCH }}
+            />
           ))}
-        </svg>
+          {railItems.map((m) => (
+            <span key={`${m.key}:${m.at}:${m.title}`} style={{ position: 'absolute', left: pctOf(m.at), ...VOCAB[m.key].line }} />
+          ))}
+        </div>
+        {plotOverlay}
+      </div>
+      {card && (
+        <>
+          <span />
+          {/* Six clock ticks, UTC like every other time on the page. */}
+          <div style={{ position: 'relative', height: 16, marginTop: 4 }}>
+            {[0, 1, 2, 3, 4, 5].map((t) => (
+              <span key={t} style={{ position: 'absolute', left: `${t * 20}%`, transform: t === 0 ? 'none' : t === 5 ? 'translateX(-100%)' : 'translateX(-50%)', fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                {clock(axisSince + (t / 5) * (axisUntil - axisSince))}
+              </span>
+            ))}
+          </div>
+        </>
       )}
+      {!card && (<>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
         <span>{fmt(plotWindow?.since ?? buckets[0]!.start)}</span>
         <span>{fmt(plotWindow?.until ?? buckets[buckets.length - 1]!.start)}</span>
@@ -429,7 +472,7 @@ export function TrafficChart({
       {classTotals && (
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--text-tertiary)' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <span aria-hidden style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--status-success-fg)', display: 'inline-block' }} />
+            <span aria-hidden style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--text-tertiary)', display: 'inline-block' }} />
             <span>{classTotals.green.toLocaleString()} 2xx/3xx</span>
           </span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -459,15 +502,9 @@ export function TrafficChart({
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--text-tertiary)' }}>
           {markers.slice(-6).map((m) => (
             <span key={`${m.kind}:${m.versionId}:${m.at}`} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <span
-                aria-hidden
-                style={{
-                  width: 8,
-                  height: 2,
-                  background: m.kind === 'went-live' ? 'var(--status-success-fg)' : 'var(--text-tertiary)',
-                  display: 'inline-block',
-                }}
-              />
+              <span aria-hidden style={{ fontFamily: 'var(--font-mono)', color: VOCAB[releaseKey(m)].color }}>
+                {VOCAB[releaseKey(m)].glyph}
+              </span>
               <span style={{ fontFamily: 'var(--font-mono)' }}>{m.version}</span>
               <span>{m.kind === 'went-live' ? 'promoted to prod' : 'registered'}</span>
             </span>
@@ -481,19 +518,11 @@ export function TrafficChart({
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--text-tertiary)' }}>
           {present.map((k) => (
             <span key={k} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <span
-                aria-hidden
-                style={{
-                  width: OVERLAY_KINDS[k].round ? 8 : 7,
-                  height: OVERLAY_KINDS[k].round ? 8 : 7,
-                  borderRadius: OVERLAY_KINDS[k].round ? '50%' : 0,
-                  background: OVERLAY_KINDS[k].filled ? OVERLAY_KINDS[k].color : 'transparent',
-                  border: OVERLAY_KINDS[k].filled ? 0 : `1.5px solid ${OVERLAY_KINDS[k].color}`,
-                  display: 'inline-block',
-                }}
-              />
+              <span aria-hidden style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: VOCAB[markerKey({ kind: k })].color }}>
+                {VOCAB[markerKey({ kind: k })].glyph}
+              </span>
               <span>
-                {counts[k]} {OVERLAY_KINDS[k].noun}
+                {counts[k]} {OVERLAY_NOUNS[k]}
                 {counts[k] === 1 ? '' : 's'}
               </span>
             </span>
@@ -502,7 +531,7 @@ export function TrafficChart({
             <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
               <span
                 aria-hidden
-                style={{ width: 14, height: 8, background: 'var(--status-warning-fg)', opacity: 0.25, display: 'inline-block' }}
+                style={{ width: 14, height: 8, background: STALE_HATCH, display: 'inline-block' }}
               />
               <span>
                 {overlaySpans.length} stale window{overlaySpans.length === 1 ? '' : 's'}
@@ -514,6 +543,7 @@ export function TrafficChart({
           {overlays?.truncated && <span>+ more markers not drawn</span>}
         </div>
       )}
+      </>)}
     </div>
   );
 }
