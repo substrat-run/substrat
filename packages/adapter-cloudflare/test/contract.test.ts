@@ -1,3 +1,4 @@
+declare const __BISECT_SKIP_1758__: boolean;
 import { env } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { warmControlPlane } from './do-warmup.js';
@@ -2286,7 +2287,7 @@ spineGuardContractSuite('adapter-cloudflare', async () => {
 // which is where the limits come from. The node twin is in adapter-sqlite's contract.test.ts.
 // TODO(#1758): skipped in CI while bisecting a workerd `HashIndex` SIGSEGV that hits this package's
 // Linux CI on this branch only. Restore the unconditional call once the cause is known.
-if (!process.env.CI) sqlLimitsContractSuite('adapter-cloudflare', async () => {
+if (!__BISECT_SKIP_1758__) sqlLimitsContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

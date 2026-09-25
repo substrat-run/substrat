@@ -1,6 +1,8 @@
 import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
 
 export default defineWorkersConfig({
+  // #1758 bisect: `process.env` inside workerd is not the runner's, so a CI-only skip is decided here.
+  define: { __BISECT_SKIP_1758__: JSON.stringify(Boolean(process.env.CI)) },
   test: {
     include: ['test/**/*.test.ts'],
     passWithNoTests: true,
