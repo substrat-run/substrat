@@ -18,7 +18,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import type { ScopeDumpTable } from '@substrat-run/contracts';
-import { ControlPlaneDO } from '../src/control-plane-do.js';
+import { ControlPlaneDO, backfillBackoffMs } from '../src/control-plane-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -313,5 +313,71 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
       expect(await state.storage.getAlarm()).toBeNull();
       expect(reads(instance)).toEqual(want);
     });
+  });
+});
+
+/**
+ * #1764 review: one unexpected throw must not stop the backfill until the DO is next
+ * constructed. The alarm catches it and re-arms with a doubling backoff, and every version
+ * keeps reading right from its manifest meanwhile. The throw is a real SQL failure inside
+ * the batch: a trigger that refuses the update of one version.
+ */
+describe('the #1764 backfill survives a failing batch', () => {
+  type Directory = ControlPlaneDO & {
+    readVersionMigrations(id: string): { verticalSlug: string; migrations: unknown[] | null } | undefined;
+  };
+  const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`version-backfill-fails-${ulid()}`));
+  const inDirectory = <R>(fn: (d: Directory, state: DurableObjectState) => R | Promise<R>) =>
+    runInDurableObject(stub, (instance, state) => fn(instance as unknown as Directory, state));
+  const ids = [ulid(), ulid(), ulid()].sort();
+  const migrations = [{ moduleId: 'helpdesk', version: '0001', sql: 'CREATE TABLE a (id TEXT);' }];
+  const unsplit = (state: DurableObjectState) =>
+    (state.storage.sql.exec('SELECT COUNT(*) AS n FROM vertical_versions WHERE migrations_split IS NULL').one() as { n: number }).n;
+
+  beforeAll(async () => {
+    await inDirectory(async (_d, state) => {
+      for (const [i, id] of ids.entries()) {
+        state.storage.sql.exec(
+          `INSERT INTO vertical_versions (id, vertical_slug, version, manifest_digest, permission_digest,
+             migration_digest, admission, manifest_json, created_at)
+           VALUES (?, 'acme', ?, 'm', 'p', 'g', 'admitted', ?, '2026-09-01T00:00:00.000Z')`,
+          id, `1.0.${i}`, JSON.stringify({ version: `1.0.${i}`, migrations }),
+        );
+      }
+      state.storage.sql.exec(
+        `CREATE TRIGGER poison BEFORE UPDATE ON vertical_versions WHEN OLD.id = '${ids[1]}'
+         BEGIN SELECT RAISE(ABORT, 'injected'); END`,
+      );
+      await state.storage.deleteAlarm();
+    });
+  });
+
+  it('a failing batch is caught, re-armed with a growing backoff, and reads stay right', async () => {
+    await inDirectory(async (d, state) => {
+      for (const want of [2000, 4000]) {
+        const before = Date.now();
+        await expect(d.alarm()).resolves.toBeUndefined();
+        expect(unsplit(state)).toBe(ids.length); // the batch rolled back whole
+        expect((await state.storage.getAlarm())! - before).toBeGreaterThanOrEqual(want);
+      }
+      for (const id of ids) expect(d.readVersionMigrations(id)?.migrations).toEqual(migrations);
+    });
+  });
+
+  it('and once the cause is gone, the next alarm finishes it and stops arming', async () => {
+    await inDirectory(async (d, state) => {
+      state.storage.sql.exec('DROP TRIGGER poison');
+      // The runtime consumes the alarm it fires; a direct call does not, so take it first.
+      await state.storage.deleteAlarm();
+      await d.alarm();
+      expect(unsplit(state)).toBe(0);
+      expect(await state.storage.getAlarm()).toBeNull();
+      for (const id of ids) expect(d.readVersionMigrations(id)?.migrations).toEqual(migrations);
+    });
+  });
+
+  it('the backoff doubles from the pause and is capped at an hour', () => {
+    expect([0, 1, 2, 3].map(backfillBackoffMs)).toEqual([1000, 2000, 4000, 8000]);
+    expect(backfillBackoffMs(40)).toBe(60 * 60 * 1000);
   });
 });

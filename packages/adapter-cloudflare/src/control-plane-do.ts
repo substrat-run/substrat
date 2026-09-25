@@ -1080,11 +1080,20 @@ const SCOPE_COLUMNS_ADDED = [
  * control-plane request goes through, so batches are spaced rather than run back to back.
  */
 const BACKFILL_PAUSE_MS = 1000;
+/** The longest a failing #1764 backfill waits before it tries again. */
+const BACKFILL_BACKOFF_MAX_MS = 60 * 60 * 1000;
+
+/** How long the backfill waits after its `failures`-th failure in a row: doubling, capped. */
+export function backfillBackoffMs(failures: number): number {
+  return Math.min(BACKFILL_PAUSE_MS * 2 ** failures, BACKFILL_BACKOFF_MAX_MS);
+}
 
 export class ControlPlaneDO extends DurableObject {
   private readonly sql: SqlStorage;
   /** The directory's store as the kernel's SQL handle — the switch record's helpers (#1674). */
   private readonly kernelSql: ReturnType<typeof switchSqlOver>;
+  /** #1764 backfill batches that have failed in a row, since this instance was constructed. */
+  private backfillFailures = 0;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
@@ -1108,11 +1117,24 @@ export class ControlPlaneDO extends DurableObject {
 
   /**
    * One bounded batch of the #1764 backfill, then re-arm while versions are left. A batch
-   * and its progress marks commit together, so a run that fails moved nothing and the
-   * alarm's retry starts over from the same versions.
+   * and its progress marks commit together, so a run that fails moved nothing.
+   *
+   * A failure is caught and the alarm re-armed with a doubling backoff (capped at an hour),
+   * rather than thrown: workerd's own alarm retries give up after a few attempts, and the
+   * backfill would then stay stopped until the DO was next constructed. Nothing is lost
+   * meanwhile, because a version the backfill has not reached reads from its manifest.
    */
   override async alarm(): Promise<void> {
-    const { more } = this.ctx.storage.transactionSync(() => splitVersionMigrationsBatch(this.kernelSql));
+    let more: boolean;
+    try {
+      more = this.ctx.storage.transactionSync(() => splitVersionMigrationsBatch(this.kernelSql)).more;
+    } catch (err) {
+      const delay = backfillBackoffMs(++this.backfillFailures);
+      console.error(`substrat: version-migrations backfill failed, retrying in ${delay} ms`, err);
+      await this.ctx.storage.setAlarm(Date.now() + delay);
+      return;
+    }
+    this.backfillFailures = 0;
     if (more) await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
   }
 

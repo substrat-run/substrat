@@ -2050,9 +2050,15 @@ export class SqliteScopeHost implements ScopeHost {
     })();
     // #1764: move the SQL out of every version stored before the split. A batch per
     // transaction, the same resumable step the Durable-Object adapter runs per alarm. This
-    // adapter has no constructor budget to protect, so it runs them all on open.
+    // adapter has no constructor budget to protect, so it runs them all on open. A batch that
+    // fails is logged and the rest left for the next open: the host must still open, and a
+    // version the backfill has not reached reads from its manifest.
     const sql = switchSqlOf(this.directory);
-    while (this.directory.transaction(() => splitVersionMigrationsBatch(sql))().more);
+    try {
+      while (this.directory.transaction(() => splitVersionMigrationsBatch(sql))().more);
+    } catch (err) {
+      console.error('substrat: version-migrations backfill failed; unsplit versions read from their manifests', err);
+    }
   }
 
   registerExecutor(

@@ -93,3 +93,59 @@ describe('a directory from before #1764, opened by this code', () => {
     await host.close();
   });
 });
+
+/**
+ * #1764 review: a backfill that throws must not stop the host opening. The throw is logged,
+ * the versions it did not reach stay unsplit and read from their manifests, and the next
+ * open moves them. Injected as a real SQL failure: a trigger refusing one version's update.
+ */
+describe('a failing backfill does not stop the host opening', () => {
+  let dir: string | undefined;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  const staff = platformActorId.parse('01JZ00000000000000000000ST');
+  const migrations = [{ moduleId: 'helpdesk', version: '0001-init', sql: 'CREATE TABLE a (id TEXT);' }];
+  const ids = [ulid(), ulid(), ulid()].sort();
+  const unsplit = () => {
+    const db = new Database(join(dir!, '_directory.sqlite'), { readonly: true });
+    const r = db.prepare('SELECT COUNT(*) AS n FROM vertical_versions WHERE migrations_split IS NULL').get();
+    db.close();
+    return (r as { n: number }).n;
+  };
+
+  it('opens, reads every version from its manifest, and the next open finishes the move', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'version-migrations-fail-'));
+    const seed = new SqliteScopeHost({ dir });
+    await seed.admin.registerVertical(staff, { slug: 'acme', name: 'Acme', source: 'builtin' });
+    for (const [i, id] of ids.entries()) {
+      await seed.admin.publishVersion(staff, {
+        id, verticalSlug: 'acme', version: `1.0.${i}`, manifestDigest: 'm', permissionDigest: 'p',
+        migrationDigest: 'g', deploymentRef: null,
+      });
+    }
+    await seed.close();
+    const db = new Database(join(dir, '_directory.sqlite'));
+    // Put the versions back as stored before #1764, and poison the update of the middle one.
+    db.prepare('UPDATE vertical_versions SET manifest_json = ?, migration_count = NULL, migrations_split = NULL')
+      .run(JSON.stringify({ version: '1.0.0', migrations }));
+    db.exec(`CREATE TRIGGER poison BEFORE UPDATE ON vertical_versions WHEN OLD.id = '${ids[1]}'
+             BEGIN SELECT RAISE(ABORT, 'injected'); END`);
+    db.close();
+
+    const host = new SqliteScopeHost({ dir });
+    expect(unsplit()).toBe(ids.length); // the batch rolled back whole
+    for (const id of ids) expect(await host.admin.versionMigrations(staff, 'acme', id)).toEqual(migrations);
+    await host.close();
+
+    const repair = new Database(join(dir, '_directory.sqlite'));
+    repair.exec('DROP TRIGGER poison');
+    repair.close();
+    const reopened = new SqliteScopeHost({ dir });
+    expect(unsplit()).toBe(0);
+    for (const id of ids) expect(await reopened.admin.versionMigrations(staff, 'acme', id)).toEqual(migrations);
+    await reopened.close();
+  });
+});
