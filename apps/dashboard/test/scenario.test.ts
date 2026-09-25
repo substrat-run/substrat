@@ -49,6 +49,7 @@ import {
   retryApp,
   resumeApp,
   updateApp,
+  ExportBreakRefused,
   CATALOG,
   ensureCatalog,
   availableCatalog,
@@ -1328,14 +1329,30 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     // acknowledged here; it does not move this app, which a listed vertical's Update does.
     await host.admin.promoteVersion(staff, 'meridian', 'prod', dropping, { exportBreak: true });
 
-    await expect(updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian' })).rejects.toThrow(
-      /this bind drops or re-versions 1 exported event type\(s\) that 1 installed app\(s\) in this tenant/,
-    );
-    expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))?.verticalVersionId).toBe(exporting);
+    type Ev = { kind: string; detail: string | null };
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    const updatedLines = async () =>
+      (await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated');
 
+    // Refused, and answered No: nothing moved, and nothing on the Activity trail says it did.
+    const refused = await updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian' }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(refused).toBeInstanceOf(ExportBreakRefused);
+    expect(String(refused)).toMatch(/this bind drops or re-versions 1 exported event type\(s\) that 1 installed app\(s\) in this tenant/);
+    expect((refused as ExportBreakRefused).breaks.map((b) => b.scopeId)).toEqual([deskScope]);
+    expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))?.verticalVersionId).toBe(exporting);
+    expect(await updatedLines()).toEqual([]);
+
+    // Answered yes, sent again acknowledged: it moves, and the trail has exactly one line, which
+    // says the break was acknowledged.
     const r = await updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian', acknowledge: { exportBreak: true } });
     expect(r.updated).toBe(true);
     expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))?.verticalVersionId).toBe(dropping);
+    const lines = await updatedLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.detail).toMatch(/ \(export break acknowledged\)$/);
   });
 
   it('heals the row’s lineage after a staff rebind-vertical (#389): the directory’s slug wins', async () => {

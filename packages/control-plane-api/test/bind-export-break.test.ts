@@ -363,6 +363,22 @@ describe('the bind gate route (#1756)', () => {
     expect(await boundTo()).toBe(v1);
   });
 
+  it('the impact read is the same answer as a read: staff and the tenant may ask, another tenant and a builder may not', async () => {
+    await host.admin.bindScopeVersion(staff, t, producerScope, v1, { acknowledge: { exportBreak: true } });
+    const ask = (headers: Record<string, string>, versionId: string, tenant: string = t) =>
+      app.request(`/tenants/${tenant}/scopes/${producerScope}/binding-impact?versionId=${versionId}`, { headers });
+    for (const who of [asStaff, asTenant]) {
+      const res = await ask(who, dropped);
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { affected: { scopeId: string }[] }).affected.map((b) => b.scopeId)).toEqual([consumerScope]);
+    }
+    // The twin: a version that keeps the export breaks nothing.
+    expect(await (await ask(asTenant, kept)).json()).toEqual({ affected: [] });
+    expect((await ask(asOtherTenant, dropped)).status).toBe(403);
+    expect((await ask(asBuilder, dropped)).status).toBe(403);
+    expect(await boundTo()).toBe(v1);
+  });
+
   it('an acknowledgement of something a bind has no gate for is refused as a malformed body', async () => {
     const before = await boundTo();
     const res = await bind(asStaff, { versionId: kept, acknowledge: { permissionChange: true } });

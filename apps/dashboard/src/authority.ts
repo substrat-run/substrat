@@ -49,7 +49,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
-import { LIST_PAGE_MAX, denialQuery, problemDetail, type BindAcknowledgement } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX, denialQuery, problemDetail, type BindAcknowledgement, type ExportBreak } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-api';
 
 // One class, owned by the package that throws it from its own client (#971).
@@ -1533,6 +1533,24 @@ export class TenantNarrowedControlPlane {
    * calling this only when a `prod` version exists keeps the dashboard identical
    * for both. Not tenant-narrowed in the wire shape beyond the pinned tenant path.
    */
+  /**
+   * #1756: which apps in this tenant binding `versionId` onto the scope would break — asked
+   * before anything of the dashboard's own is recorded, so a refused Update leaves no trace.
+   * Empty on a plane predating the route (deploy skew): the bind itself still refuses there.
+   */
+  async bindingImpact(scopeId: ScopeId, versionId: string): Promise<ExportBreak[]> {
+    try {
+      const r = await this.call<{ affected: ExportBreak[] }>(
+        `/tenants/${this.tenantId}/scopes/${scopeId}/binding-impact?versionId=${encodeURIComponent(versionId)}`,
+      );
+      return r.affected;
+    } catch (e) {
+      // A route the plane does not have is a bare 404; an unknown scope or version names itself.
+      if (e instanceof ControlPlaneError && e.status === 404 && !/unknown/i.test(e.message)) return [];
+      throw e;
+    }
+  }
+
   bindScopeVersion(
     scopeId: ScopeId,
     versionId: string,

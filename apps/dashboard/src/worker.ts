@@ -28,7 +28,7 @@ import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
-import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
+import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { McpReconcileGate, clearAppMcpResources, isSharedIssuer, issuerFor, logUnsettled, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
@@ -5353,6 +5353,8 @@ app.onError((err, c) => {
   // is a deployment fact, not the caller's mistake, so it must not land in the `: 400`
   // default: 400 would tell the operator to look at what they typed.
   if (err instanceof SecretBoxUnconfiguredError) return problem(c, 503, m);
+  // #1756: an Update refused for the apps it would break.
+  if (err instanceof ExportBreakRefused) return problem(c, 409, m);
   // A ControlPlaneError carries the plane's OWN status. Honor it rather than letting the
   // `: 400` default below flatten an upstream 5xx to a 400 — that mislabels a server/upstream
   // fault (e.g. the CF observability token 403 that the plane surfaces as a 500 `internal error`)

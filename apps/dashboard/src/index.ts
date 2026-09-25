@@ -11,6 +11,7 @@ export {
   retryApp,
   resumeApp,
   updateApp,
+  ExportBreakRefused,
   type UpdateAppResult,
   listAppHostnames,
   addAppHostname,

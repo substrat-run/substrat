@@ -4167,6 +4167,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   });
 
+  // #1756: which apps in this tenant binding `versionId` onto the scope would break — the
+  // question the bind below refuses on, as a read, so a client can ask it before it records
+  // anything of its own (the dashboard's Activity line) and show what an acknowledgement would
+  // break. Refuses what the bind would refuse first (unknown scope or version, not admitted).
+  // Callers: staff, and a tenant's own credential pinned to the tenant in the path; a builder's
+  // push token is not in BUILDER_ROUTES. Every row is in that tenant.
+  app.get('/tenants/:tenantId/scopes/:scopeId/binding-impact', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const versionId = z.string().min(1).parse(c.req.query('versionId'));
+    return c.json({ affected: await admin.bindingImpact(c.get('actor'), tenantId, scopeId, versionId) });
+  });
+
   // Pin a scope to a vertical version (#31; orchestration.md §4). Refuses a
   // non-admitted version below the seam — that refusal is the registry's reason to
   // exist. A scope operation, so it keeps the scope route shape. `snapshot: true`
