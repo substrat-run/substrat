@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import { Badge, Button } from '@substrat-run/ui';
 import { api, type AppHealthRow, type AppRow } from '../lib/api';
 import { DEV_MOCK, MOCK_FLEET_HEALTH } from '../lib/mock';
@@ -29,25 +29,34 @@ export function AppHeader({
   actions?: ReactNode;
 }) {
   // `undefined` while asking, `null` when the read failed — which the verdict rule reads
-  // as "unknown", the same word the Apps table prints for it.
-  const [health, setHealth] = useState<AppHealthRow[] | null | undefined>(undefined);
+  // as "unknown", the same word the Apps table prints for it. The answer is kept with the
+  // scope it was read for: this header stays mounted across app navigation, and the last
+  // app's rows would otherwise be judged against the next app for one render ("Unknown").
+  const [read, setRead] = useState<{ scopeId: string; rows: AppHealthRow[] | null } | undefined>(undefined);
   useEffect(() => {
+    // An app that is not running is judged by its install state alone, so no fleet read.
+    if (app.status !== 'active') {
+      setRead(undefined);
+      return;
+    }
+    const scopeId = app.app_scope_id;
     if (DEV_MOCK) {
-      setHealth(MOCK_FLEET_HEALTH);
+      setRead({ scopeId, rows: MOCK_FLEET_HEALTH });
       return;
     }
     let live = true;
-    setHealth(undefined);
+    setRead(undefined);
     // There is no one-app health read; the fleet read is one row per app and the
     // same one the Apps table makes.
     api
       .fleetHealth()
-      .then((r) => live && setHealth(r.rows))
-      .catch(() => live && setHealth(null));
+      .then((r) => live && setRead({ scopeId, rows: r.rows }))
+      .catch(() => live && setRead({ scopeId, rows: null }));
     return () => {
       live = false;
     };
   }, [app.app_scope_id, app.status]);
+  const health = read?.scopeId === app.app_scope_id ? read.rows : undefined;
 
   // An app that is not running is judged by its install state, which needs no read.
   const installing = app.status !== 'active';
@@ -63,9 +72,9 @@ export function AppHeader({
             <Ic name="pencil" size={14} />
           </button>
           {judged ? (
-            <span data-verdict={judged.verdict} title={judged.why} style={{ display: 'inline-flex' }}>
+            <VerdictReason verdict={judged.verdict} why={judged.why}>
               <Badge status={VERDICTS[judged.verdict].status}>{VERDICTS[judged.verdict].label}</Badge>
-            </span>
+            </VerdictReason>
           ) : (
             <Pill kind={statusKind}>{statusLabel}</Pill>
           )}
@@ -88,5 +97,53 @@ export function AppHeader({
         {actions}
       </div>
     </div>
+  );
+}
+
+/**
+ * The verdict with its reason on hover and on keyboard focus, tied to it by
+ * `aria-describedby` so a screen reader reads the reason too. `Tooltip` from the ui
+ * package opens on the pointer only, and a `title` is out of reach of keyboard and touch.
+ */
+function VerdictReason({ verdict, why, children }: { verdict: string; why: string; children: ReactNode }) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  return (
+    <span
+      data-verdict={verdict}
+      tabIndex={0}
+      aria-describedby={id}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      onKeyDown={(e) => e.key === 'Escape' && setOpen(false)}
+      style={{ position: 'relative', display: 'inline-flex', borderRadius: 'var(--radius-sm)', cursor: 'default' }}
+    >
+      {children}
+      <span
+        id={id}
+        role="tooltip"
+        hidden={!open}
+        style={{
+          position: 'absolute',
+          top: '100%',
+          left: '50%',
+          transform: 'translate(-50%,6px)',
+          zIndex: 50,
+          whiteSpace: 'nowrap',
+          pointerEvents: 'none',
+          background: 'var(--surface-inverse)',
+          color: 'var(--text-inverse)',
+          fontSize: 'var(--text-xs)',
+          lineHeight: '16px',
+          padding: '5px 8px',
+          borderRadius: 'var(--radius-sm)',
+          boxShadow: 'var(--shadow-md)',
+        }}
+      >
+        {why}
+      </span>
+    </span>
   );
 }

@@ -624,12 +624,18 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
 export function SchedulesAbsent({ scopeId, schedules }: { scopeId: string; schedules: SchedulesState }) {
   const none = schedules.state === 'ok' && !(schedules.view.schedules?.length || schedules.view.freshness?.length);
   if (!none && schedules.state !== 'error') return null;
+  // With no version running there is nothing that could have declared a schedule yet.
+  const noVersion = none && schedules.state === 'ok' && schedules.view.running.versionId === null;
   const to = obsPath({ app: scopeId, view: 'schedules' });
   return (
     <div style={{ ...card, display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px' }}>
       <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Schedules and freshness</span>
       <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-        {none ? 'none declared by the running version — health cannot be judged from schedules' : 'could not be read — not measured, not zero'}
+        {noVersion
+          ? 'no version is running yet — nothing has declared any'
+          : none
+            ? 'none declared by the running version — health cannot be judged from schedules'
+            : 'could not be read — not measured, not zero'}
       </span>
       <span style={{ flex: 1 }} />
       {!none && (
