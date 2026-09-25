@@ -3965,9 +3965,10 @@ export class SqliteScopeHost implements ScopeHost {
       for (const row of rt.db
         .prepare(
           `SELECT type, MAX(occurred_at) AS at FROM _substrat_outbox
-            WHERE type IN (${types.map(() => '?').join(', ')}) GROUP BY type`,
+            WHERE type IN (SELECT value FROM json_each(?)) GROUP BY type`,
         )
-        .all(...types) as { type: string; at: string | null }[]) {
+        // One JSON array, the shape the DO twin needs for its 100-parameter limit (#1776).
+        .all(JSON.stringify(types)) as { type: string; at: string | null }[]) {
         if (row.at !== null) observed.set(row.type, row.at);
       }
 
@@ -7877,8 +7878,9 @@ export class SqliteScopeHost implements ScopeHost {
           // An empty array means "no status is acceptable" — match nothing, rather
           // than degenerating into an unfiltered read of the whole fleet.
           if (statuses.length === 0) return [];
-          where.push(`status IN (${statuses.map(() => '?').join(', ')})`);
-          params.push(...statuses);
+          // One JSON array, the shape the DO twin needs for its 100-parameter limit (#1776).
+          where.push('status IN (SELECT value FROM json_each(?))');
+          params.push(JSON.stringify(statuses));
         }
         if (filter?.vertical) {
           where.push('vertical = ?');
@@ -9302,8 +9304,9 @@ export class SqliteScopeHost implements ScopeHost {
         if (filter?.action) {
           const actions = Array.isArray(filter.action) ? filter.action : [filter.action];
           if (actions.length === 0) return []; // no action is acceptable — match nothing
-          where.push(`action IN (${actions.map(() => '?').join(', ')})`);
-          params.push(...actions);
+          // One JSON array, the shape the DO twin needs for its 100-parameter limit (#1776).
+          where.push('action IN (SELECT value FROM json_each(?))');
+          params.push(JSON.stringify(actions));
         }
         if (filter?.since) {
           where.push('at >= ?');

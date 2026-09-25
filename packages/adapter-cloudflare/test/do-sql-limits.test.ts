@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { DO_SQL_LIMITS } from '@substrat-run/kernel';
+import { DO_SQL_LIMITS, exportedSinceQuery, exportReadQuery } from '@substrat-run/kernel';
 
 declare const __PROBE_DO_LIMITS__: boolean;
 
@@ -137,6 +137,107 @@ describe('the SQL limits of a Durable Object: the boundary (#1741)', () => {
     const [at, past] = await run((sql) => [attempt(sql, likeTrial, likePatternBytes), attempt(sql, likeTrial, likePatternBytes + 1)]);
     expect(at).toBe('ok');
     expect(past).toBe('LIKE or GLOB pattern too complex: SQLITE_ERROR');
+  });
+});
+
+/** The slice of the ScopeDO's RPC surface the #1776 block below calls directly. */
+interface ScopeInstance {
+  freshnessProbe(types: string[]): Promise<Record<string, { observedAt: string | null; stateOutcome: string | null }>>;
+}
+
+/**
+ * #1776: the platform's own statements that take a list bind it as ONE JSON array, so a list
+ * longer than `boundParameters` runs. These lists are bounded by what a manifest declares, not
+ * by a constant, so each is run here at 1.5 × the limit against a real ScopeDO's spine. The
+ * plan is pinned too, because the conversion must not cost the index the old `IN (?, …)` used.
+ * No stats exist in a scope (nothing runs ANALYZE), which is the state these plans are read in.
+ */
+describe('platform list statements past the parameter limit (#1776)', () => {
+  const n = Math.floor(boundParameters * 1.5);
+  const types = Array.from({ length: n }, (_, i) => `probe.t${i}`);
+  const inScope = async <T>(fn: (instance: ScopeInstance, sql: SqlStorage) => T | Promise<T>): Promise<T> => {
+    const stub = env.SCOPE.get(env.SCOPE.idFromName('do-sql-lists-1776'));
+    return runInDurableObject(stub, (instance, state) => fn(instance as unknown as ScopeInstance, state.storage.sql));
+  };
+  const plan = (sql: SqlStorage, q: { sql: string; params: unknown[] }): string =>
+    (sql.exec(`EXPLAIN QUERY PLAN ${q.sql}`, ...(q.params as never[])).toArray() as { detail: string }[])
+      .map((r) => r.detail)
+      .join(' | ');
+
+  // One event of every type, and a freshness verdict for every type: the lists below then
+  // have a row to find for each entry, so a count that stopped at 100 would be visible.
+  it('seeds one event and one freshness verdict per type', async () => {
+    await inScope((_i, sql) => {
+      sql.exec('DELETE FROM _substrat_outbox');
+      types.forEach((type, i) => {
+        sql.exec(
+          `INSERT INTO _substrat_outbox (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
+             entity_type, entity_id, pii_class) VALUES (?, ?, 1, ?, 't', 's', 'a', 'e', ?, 'none')`,
+          `01J${String(i).padStart(23, '0')}`,
+          type,
+          `2026-09-25T00:00:${String(i % 60).padStart(2, '0')}.000Z`,
+          String(i),
+        );
+        sql.exec(
+          `INSERT OR REPLACE INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
+             VALUES ('freshness', ?, '2026-09-25T00:00:00.000Z', 'ok')`,
+          `freshness:${type}`,
+        );
+      });
+    });
+  });
+
+  it('freshnessProbe answers every declared type, observed and recorded', async () => {
+    const probe = await inScope((instance) => instance.freshnessProbe(types));
+    expect(Object.keys(probe)).toHaveLength(n);
+    expect(Object.values(probe).every((p) => p.observedAt !== null && p.stateOutcome === 'ok')).toBe(true);
+  });
+
+  // The access path the table is read by: the plan minus json_each's own lines. The old form,
+  // one `?` per type, is planned for a list short enough to run, and must read the same way.
+  const access = (detail: string): string => detail.split(' | ').find((l) => l.includes('_substrat_outbox'))!;
+  const oldForm = (q: { sql: string; params: unknown[] }, few: readonly string[]) => ({
+    sql: q.sql.replace('(SELECT value FROM json_each(?))', `(${few.map(() => '?').join(', ')})`),
+    params: q.params.flatMap((p): unknown[] => (p === JSON.stringify(few) ? [...few] : [p])),
+  });
+
+  for (const after of [null, `01J${'0'.repeat(22)}9`]) {
+    it(`exportReadQuery reads every exported type, by the index the old form used (after: ${after})`, async () => {
+      const few = types.slice(0, 3);
+      const [rows, now, before] = await inScope((_i, sql) => {
+        const q = exportReadQuery(types, after, 1000);
+        const small = exportReadQuery(few, after, 1000);
+        return [sql.exec(q.sql, ...(q.params as never[])).toArray().length, plan(sql, small), plan(sql, oldForm(small, few))] as const;
+      });
+      expect(rows).toBe(after === null ? n : n - 10);
+      expect(access(now)).toBe(access(before));
+      expect(access(now)).toMatch(/USING (COVERING )?INDEX _substrat_outbox_type_/);
+    });
+  }
+
+  it('exportedSinceQuery counts every exported type past the mark, by the index the old form used', async () => {
+    const few = types.slice(0, 3);
+    const [count, now, before] = await inScope((_i, sql) => {
+      const q = exportedSinceQuery(types, 0);
+      const small = exportedSinceQuery(few, 0);
+      return [(sql.exec(q.sql, ...(q.params as never[])).one() as { n: number }).n, plan(sql, small), plan(sql, oldForm(small, few))] as const;
+    });
+    expect(count).toBe(n);
+    expect(access(now)).toBe(access(before));
+    expect(access(now)).toContain('INDEX _substrat_outbox_type_id');
+  });
+
+  it('the drain stamp counts by the (drained_at, id) index, as the old form did', async () => {
+    const few = ['a', 'b', 'c'];
+    const [now, before] = await inScope((_i, sql) => {
+      const small = {
+        sql: 'SELECT COUNT(*) AS c FROM _substrat_outbox WHERE drained_at IS NULL AND id IN (SELECT value FROM json_each(?))',
+        params: [JSON.stringify(few)],
+      };
+      return [plan(sql, small), plan(sql, oldForm(small, few))] as const;
+    });
+    expect(access(now)).toBe(access(before));
+    expect(access(now)).toContain('_substrat_outbox_drained');
   });
 });
 

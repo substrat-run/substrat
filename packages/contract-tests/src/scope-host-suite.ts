@@ -1432,6 +1432,48 @@ export function scopeHostContractSuite(
       ).rejects.toThrow(/unknown scope/);
     });
 
+    it('stamps and reopens more events than a Durable Object binds parameters (#1776)', async () => {
+      // A DO's SQLite refuses the 101st bound parameter (#1741), and the drain batch is 200
+      // by default. A statement binding one `?` per event id therefore failed every default
+      // drain of a busy scope on the hosted host, while node, which allows far more, stayed
+      // green. Its own scope, so the counts below are this test's events and nothing else.
+      const sBig = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sBig, vertical: 'connector-vertical' });
+      await host.admin.activateScope(staff, t1, sBig);
+      const stub = await host.getScope(alice, t1, sBig);
+      await stub.invoke('test/emit-burst', { entityId: ulid(), count: 350 });
+
+      const pending = await host.admin.readUndrainedEvents(staff, t1, sBig, 1000);
+      expect(pending).toHaveLength(350);
+      const ids = pending.map((e) => e.id);
+      // 150: past the limit. Then 200, the default batch, overlapping the first so the
+      // count has to tell a stamped row from an unstamped one inside one oversized list.
+      await expect(host.admin.markEventsDrained(staff, t1, sBig, ids.slice(0, 150))).resolves.toBe(150);
+      // The two batches must carry different instants for the reopen below to tell them apart.
+      const firstMarked = Date.now();
+      while (Date.now() <= firstMarked + 1) await new Promise((r) => setTimeout(r, 1));
+      await expect(host.admin.markEventsDrained(staff, t1, sBig, ids.slice(100, 350))).resolves.toBe(200);
+      await expect(host.admin.readUndrainedEvents(staff, t1, sBig, 1000)).resolves.toHaveLength(0);
+      const stamps = (await host.admin.auditLog(staff, { tenantId: t1 }))
+        .filter((r) => r.action === 'drainEvents' && r.scopeId === sBig)
+        .map((r) => r.after as { drained: number; requested: number; drainedAt: string })
+        .sort((a, b) => (a.drainedAt < b.drainedAt ? -1 : 1));
+      expect(stamps.map((s) => [s.drained, s.requested])).toEqual([[150, 150], [200, 250]]);
+
+      // The reopen, past the limit the same way. Just after the FIRST instant it reopens exactly
+      // the first 150, which is what shows the overlap kept its first stamp: a stamp that
+      // re-marked rows 100–149 would have moved them out of this window.
+      const justAfter = (at: string) => new Date(Date.parse(at) + 1).toISOString();
+      await expect(
+        host.admin.redrainEvents(staff, t1, sBig, { drainedBefore: justAfter(stamps[0]!.drainedAt) }),
+      ).resolves.toBe(150);
+      expect((await host.admin.readUndrainedEvents(staff, t1, sBig, 1000)).map((e) => e.id)).toEqual(ids.slice(0, 150));
+      await expect(
+        host.admin.redrainEvents(staff, t1, sBig, { drainedBefore: justAfter(stamps[1]!.drainedAt) }),
+      ).resolves.toBe(200);
+      expect((await host.admin.readUndrainedEvents(staff, t1, sBig, 1000)).map((e) => e.id)).toEqual(ids);
+    });
+
     it('facets the outbox, and keeps an ERASED payload out of the null bucket (#1239)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       const subject = ulid();
@@ -6983,6 +7025,14 @@ export function scopeHostContractSuite(
       // nothing, never degenerate into an unfiltered read of the whole fleet.
       expect(await host.admin.listScopes(staff, { tenantId: t5, status: [] })).toEqual([]);
 
+      // A list longer than a Durable Object binds parameters (#1776). Nothing bounds its
+      // length, since a status may repeat, and a `?` per entry was refused past 100.
+      const repeated = await host.admin.listScopes(staff, {
+        tenantId: t5,
+        status: [...Array<'active'>(150).fill('active'), 'suspended'],
+      });
+      expect(repeated.map((s) => s.id)).toEqual(both.map((s) => s.id));
+
       await host.admin.unsuspendScope(staff, t5, target.id);
     });
 
@@ -7063,6 +7113,14 @@ export function scopeHostContractSuite(
 
       // Empty action list matches nothing rather than everything.
       expect(await host.admin.auditLog(staff, { tenantId: t5, action: [] })).toEqual([]);
+
+      // A list longer than a Durable Object binds parameters (#1776): an action may repeat,
+      // so nothing bounds its length, and a `?` per entry was refused past 100.
+      const repeated = await host.admin.auditLog(staff, {
+        tenantId: t5,
+        action: [...Array<'suspendScope'>(150).fill('suspendScope'), 'unsuspendScope'],
+      });
+      expect(repeated.map((r) => r.id)).toEqual(lifecycle.map((r) => r.id));
     });
 
     it('orders oldest-first by default and newest-first on request (§4.5)', async () => {

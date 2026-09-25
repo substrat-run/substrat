@@ -354,10 +354,14 @@ export interface OperationContext {
    * ```ts
    * const hits = ctx.search('customer', term, { limit: 10 });
    * const rows = ctx.sql.query(
-   *   `SELECT * FROM callout_customers WHERE id IN (${hits.map(() => '?').join(',')})`,
-   *   hits.map((h) => h.id),
+   *   'SELECT * FROM callout_customers WHERE id IN (SELECT value FROM json_each(?))',
+   *   [JSON.stringify(hits.map((h) => h.id))],
    * );
    * ```
+   *
+   * The ids go in as ONE JSON array, never a `?` per hit: a Durable Object refuses the 101st
+   * bound parameter (#1776), so a list of hits sized by a caller's `limit` must not become the
+   * statement's parameter count.
    *
    * **This does not check permission** — nothing on `ctx` does. The operation's
    * own `assertAllowed` still comes first, and an entity-narrowed vertical has to

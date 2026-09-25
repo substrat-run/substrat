@@ -127,13 +127,18 @@ export function exportReadQuery(
   limit: number,
 ): { sql: string; params: unknown[] } {
   if (types.length === 0) throw new Error('exportReadQuery: no types to read');
-  const placeholders = types.map(() => '?').join(', ');
+  // The types travel as ONE bound JSON array (#1776): a Durable Object binds at most 100
+  // parameters, and nothing caps how many event types a manifest exports. The plan depends on
+  // there being no table statistics: with none, this seeks `_substrat_outbox_type_id` as the
+  // old `IN (?, …)` did. After an ANALYZE, SQLite walks the primary key with a bloom filter
+  // instead. The platform runs neither ANALYZE nor `PRAGMA optimize`, but a module's `ctx.sql` can
+  // (#1787). Whoever adds one should recheck this plan (`adapter-cloudflare/test/do-sql-limits.test.ts` pins it).
   return {
     sql:
-      `SELECT * FROM _substrat_outbox WHERE type IN (${placeholders})` +
+      'SELECT * FROM _substrat_outbox WHERE type IN (SELECT value FROM json_each(?))' +
       (after === null ? '' : ' AND id > ?') +
       ' ORDER BY id LIMIT ?',
-    params: [...types, ...(after === null ? [] : [after]), limit],
+    params: [JSON.stringify(types), ...(after === null ? [] : [after]), limit],
   };
 }
 
@@ -303,8 +308,9 @@ export const OUTBOX_MARK_SQL = 'SELECT COALESCE(MAX(rowid), 0) AS mark FROM _sub
 export function exportedSinceQuery(types: readonly string[], mark: number): { sql: string; params: unknown[] } {
   if (types.length === 0) throw new Error('exportedSinceQuery: no types to count');
   return {
-    sql: `SELECT COUNT(*) AS n FROM _substrat_outbox WHERE rowid > ? AND type IN (${types.map(() => '?').join(', ')})`,
-    params: [mark, ...types],
+    // One bound JSON array, on `exportReadQuery`'s reasoning (#1776).
+    sql: 'SELECT COUNT(*) AS n FROM _substrat_outbox WHERE rowid > ? AND type IN (SELECT value FROM json_each(?))',
+    params: [mark, JSON.stringify(types)],
   };
 }
 

@@ -2043,8 +2043,10 @@ export class ControlPlaneDO extends DurableObject {
       // An empty array means "no status is acceptable" — match nothing, rather
       // than degenerating into an unfiltered read of the whole fleet.
       if (filter.status.length === 0) return [];
-      where.push(`status IN (${filter.status.map(() => '?').join(', ')})`);
-      params.push(...filter.status);
+      // ONE bound JSON array, not a `?` per entry (#1776): a DO binds at most 100
+      // parameters, and nothing bounds this list's length (a status may repeat).
+      where.push('status IN (SELECT value FROM json_each(?))');
+      params.push(JSON.stringify(filter.status));
     }
     if (filter.vertical) {
       where.push('vertical = ?');
@@ -3955,8 +3957,10 @@ export class ControlPlaneDO extends DurableObject {
     }
     if (query.action) {
       if (query.action.length === 0) return []; // no action is acceptable — match nothing
-      where.push(`action IN (${query.action.map(() => '?').join(', ')})`);
-      params.push(...query.action);
+      // ONE bound JSON array, not a `?` per entry (#1776): a DO binds at most 100
+      // parameters, and nothing bounds this list's length (an action may repeat).
+      where.push('action IN (SELECT value FROM json_each(?))');
+      params.push(JSON.stringify(query.action));
     }
     if (query.since) {
       where.push('at >= ?');
