@@ -3858,6 +3858,19 @@ describe('control-plane API — vertical registry', () => {
       expect((await get(`/verticals/fsm/versions/${id}/registry`)).status).toBe(200);
     });
 
+    it('stores the manifest as sent — a key the schema does not know survives', async () => {
+      const id = ulid();
+      const sent = JSON.stringify({
+        version: id.slice(-6),
+        entry: 'index.js',
+        compatibilityDate: '2026-07-01',
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+        fromANewerPublisher: { kept: true },
+      });
+      expect((await post(id, sent)).status).toBe(201);
+      expect(await host.admin.versionManifest(staff, 'fsm', id)).toBe(sent);
+    });
+
     it('still accepts a pre-#286 version with no manifest, and one with no registry', async () => {
       expect((await post(ulid(), null)).status).toBe(201);
       expect((await post(ulid(), undefined)).status).toBe(201);
