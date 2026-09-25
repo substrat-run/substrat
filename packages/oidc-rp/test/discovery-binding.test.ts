@@ -60,8 +60,12 @@ beforeEach(() => {
   vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     requests.push({ url, redirect: init?.redirect, method: init?.method });
+    // A runaway guard: a loop that lost its cap must FAIL here, not spin the event loop.
+    if (requests.length > 50) throw new Error('runaway: more than 50 requests');
     if (url === `${issuer}/.well-known/openid-configuration`) {
       if (discoveryRedirect !== null) {
+        // A timer tick per hop: a microtask-only loop starves the runner's own timeout.
+        await new Promise((resolve) => setTimeout(resolve, 0));
         return new Response(null, { status: 302, headers: discoveryRedirect ? { location: discoveryRedirect } : {} });
       }
       return Response.json({
@@ -271,7 +275,7 @@ describe('the discovery fetch', () => {
     discoveryRedirect = `${issuer}/.well-known/openid-configuration`;
     await expect(beginLogin(env, APP)).rejects.toThrow(/redirected more than 3 times/);
     expect(requests.filter((r) => r.url.includes('openid-configuration'))).toHaveLength(4);
-  });
+  }, 2_000);
 
   it('follows one that stays on the issuer origin (positive twin)', async () => {
     discoveryRedirect = `${issuer}/moved/.well-known/openid-configuration`;
