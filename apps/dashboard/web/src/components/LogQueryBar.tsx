@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import type { ObsQuery } from '../lib/observability-query';
 import type { LogMode } from '../lib/log-stream';
-import { logChips, parseBarText, without, type LogChip } from '../lib/logs-chips';
+import { logChips, parseBarText, windowLabel, without, type LogChip } from '../lib/logs-chips';
 
 /**
  * The Logs query bar (#1767): one 36px field holding the filters as removable chips, then
@@ -29,7 +29,7 @@ export function LogQueryBar({
   const [error, setError] = useState('');
   const chips: LogChip[] = [
     ...logChips(query, mode),
-    ...(cursor ? [{ key: 'time', value: `${cursor.from.slice(11, 16)}–${cursor.to.slice(11, 16)} UTC`, clears: ['from', 'to'] as (keyof ObsQuery)[] }] : []),
+    ...(cursor ? [{ key: 'time', value: windowLabel(cursor.from, cursor.to), clears: ['from', 'to'] as (keyof ObsQuery)[] }] : []),
   ];
   const submit = () => {
     const parsed = parseBarText(text, mode);

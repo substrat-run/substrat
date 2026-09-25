@@ -15,13 +15,19 @@ import { ULID, shortId } from '../lib/logs-chips';
  */
 export type LogFilter = { level?: string; search?: string; invocationId?: string };
 
-const GRID = '3px 100px 34px 196px 76px minmax(0,1fr) 100px';
+/**
+ * The level bar is drawn inside the time cell, pinned to the row's left edge, rather than
+ * as a column of its own: a column holding only colour would be a cell with nothing to read
+ * in every row of the table. The time column is the bar, the gap and the old time column.
+ */
+const GRID = '111px 34px 196px 76px minmax(0,1fr) 100px';
 /**
  * Inside another panel (an event's "Logs for this call"): every line is the same call, so
  * the invocation column says nothing and outcome is the call's, not the line's. Both go,
  * and the message wraps rather than truncating in what is left of a narrow column.
  */
-const COMPACT_GRID = '3px 100px 34px 160px minmax(0,1fr)';
+const COMPACT_GRID = '111px 34px 160px minmax(0,1fr)';
+const TIME_INSET = 19;
 
 const LEVEL: Record<string, { tag: string; color: string; msg: string }> = {
   error: { tag: 'ERR', color: 'var(--status-danger-fg)', msg: 'var(--text-primary)' },
@@ -91,8 +97,7 @@ export function LogList({
         role="row"
         style={{ display: 'grid', gridTemplateColumns: grid, gap: '0 8px', alignItems: 'center', height: 28, paddingRight: 12, fontSize: 10.5, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)', ...(maxHeight ? { position: 'sticky' as const, top: 0, background: 'var(--surface-card)', zIndex: 1 } : {}) }}
       >
-        <span />
-        <span role="columnheader" style={{ paddingLeft: 8 }}>Time</span>
+        <span role="columnheader" style={{ paddingLeft: TIME_INSET }}>Time</span>
         <span role="columnheader">Lvl</span>
         <span role="columnheader">Operation</span>
         {!compact && <span role="columnheader">Outcome</span>}
@@ -122,34 +127,38 @@ export function LogList({
                 } else if (k.key === 'Escape' && on) close(i);
               }}
               className="log-row"
-              style={{ display: 'grid', gridTemplateColumns: grid, gap: '0 8px', alignItems: 'center', ...(compact ? { minHeight: 28, padding: '5px 12px 5px 0' } : { height: 28, paddingRight: 12 }), fontFamily: 'var(--font-mono)', fontSize: 12, cursor: 'pointer', color: 'var(--text-primary)', ...(on ? { background: 'var(--surface-active)' } : {}) }}
+              style={{ display: 'grid', gridTemplateColumns: grid, gap: '0 8px', alignItems: 'center', ...(compact ? { minHeight: 28, padding: '5px 12px 5px 0' } : { height: 28, paddingRight: 12 }), fontFamily: 'var(--font-mono)', fontSize: 12, cursor: 'pointer', color: 'var(--text-primary)', position: 'relative', ...(on ? { background: 'var(--surface-active)' } : {}) }}
             >
-              <span aria-hidden style={{ alignSelf: 'stretch', background: lv.color, ...(compact ? { margin: '-5px 0' } : {}) }} />
-              <span style={{ paddingLeft: 8, color: 'var(--text-tertiary)' }}>{lineTime(e.timestamp)}</span>
-              <span style={{ color: lv.color, fontWeight: 500 }}>{lv.tag}</span>
-              <span style={ellipsis} title={e.trigger ?? undefined}>{e.trigger ?? e.entrypoint ?? e.invocation ?? '—'}</span>
-              {!compact && <span style={{ ...ellipsis, color: e.outcome && e.outcome !== 'ok' ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}>{e.outcome ?? '—'}</span>}
-              <span style={compact ? { color: lv.msg, overflowWrap: 'anywhere', minWidth: 0 } : { ...ellipsis, color: lv.msg }} title={compact ? undefined : (e.message ?? undefined)}>{e.message ?? '—'}</span>
+              <span role="cell" style={{ paddingLeft: TIME_INSET, color: 'var(--text-tertiary)' }}>
+                <span aria-hidden style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: lv.color }} />
+                {lineTime(e.timestamp)}
+              </span>
+              <span role="cell" style={{ color: lv.color, fontWeight: 500 }}>{lv.tag}</span>
+              <span role="cell" style={ellipsis} title={e.trigger ?? undefined}>{e.trigger ?? e.entrypoint ?? e.invocation ?? '—'}</span>
+              {!compact && <span role="cell" style={{ ...ellipsis, color: e.outcome && e.outcome !== 'ok' ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}>{e.outcome ?? '—'}</span>}
+              <span role="cell" style={compact ? { color: lv.msg, overflowWrap: 'anywhere', minWidth: 0 } : { ...ellipsis, color: lv.msg }} title={compact ? undefined : (e.message ?? undefined)}>{e.message ?? '—'}</span>
               {compact ? null : invocation && onFilter ? (
-                <button
-                  type="button"
-                  title={`Only invocation ${invocation}`}
-                  aria-label={`Only invocation ${invocation}`}
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    onFilter({ invocationId: invocation });
-                  }}
-                  style={{ appearance: 'none', border: 0, background: 'none', padding: 0, font: 'inherit', textAlign: 'right', color: 'var(--text-link)', cursor: 'pointer' }}
-                >
-                  {shortId(invocation)}
-                </button>
+                <span role="cell" style={{ textAlign: 'right' }}>
+                  <button
+                    type="button"
+                    title={`Only invocation ${invocation}`}
+                    aria-label={`Only invocation ${invocation}`}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      onFilter({ invocationId: invocation });
+                    }}
+                    style={{ appearance: 'none', border: 0, background: 'none', padding: 0, font: 'inherit', textAlign: 'right', color: 'var(--text-link)', cursor: 'pointer' }}
+                  >
+                    {shortId(invocation)}
+                  </button>
+                </span>
               ) : (
-                <span style={{ textAlign: 'right', color: 'var(--text-tertiary)' }} title={invocation ?? undefined}>
+                <span role="cell" style={{ textAlign: 'right', color: 'var(--text-tertiary)' }} title={invocation ?? undefined}>
                   {invocation ? shortId(invocation) : '—'}
                 </span>
               )}
             </div>
-            {on && <LineFields event={e} onFilter={onFilter} onClose={() => close(i)} />}
+            {on && <LineFields event={e} columns={compact ? 4 : 6} onFilter={onFilter} onClose={() => close(i)} />}
           </div>
         );
       })}
@@ -162,62 +171,69 @@ export function LogList({
  * returned are listed — a key with a null value is a key this line did not carry, and
  * `"cpuTimeMs": null` would read as a measurement.
  */
-function LineFields({ event, onFilter, onClose }: { event: ObservabilityLogEvent; onFilter: ((f: LogFilter) => void) | undefined; onClose: () => void }) {
+function LineFields({ event, columns, onFilter, onClose }: { event: ObservabilityLogEvent; columns: number; onFilter: ((f: LogFilter) => void) | undefined; onClose: () => void }) {
   const [raw, setRaw] = useState(false);
   const fields = FIELDS.filter((k) => event[k] !== null && event[k] !== undefined);
   return (
-    <section
+    // A row of its own with one cell across every column, so the table stays rows of cells.
+    <div
+      role="row"
       aria-label="Log details"
       onKeyDown={(k) => {
         if (k.key === 'Escape') onClose();
       }}
-      style={{ padding: '10px 16px 12px 150px', background: 'var(--surface-inset)', borderTop: '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: '20px' }}
     >
-      <div style={{ color: 'var(--text-tertiary)' }}>{'{'}</div>
-      {fields.map((k) => {
-        const v = event[k];
-        const shown = k === 'timestamp' ? JSON.stringify(new Date(v as number).toISOString()) : typeof v === 'number' ? String(v) : JSON.stringify(v);
-        const filter = onFilter ? filterFor(k, event) : null;
-        return (
-          <div key={k} style={{ display: 'flex', gap: 6, paddingLeft: 16, minWidth: 0 }}>
-            <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>"{k}":</span>
-            {filter ? (
-              <button
-                type="button"
-                title={`Filter by ${k}`}
-                onClick={() => onFilter!(filter)}
-                style={{ appearance: 'none', border: 0, background: 'none', padding: 0, font: 'inherit', textAlign: 'left', overflowWrap: 'anywhere', color: 'var(--text-link)', cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'var(--border-strong)', textUnderlineOffset: 3 }}
-              >
-                {shown}
-              </button>
-            ) : (
-              <span style={{ overflowWrap: 'anywhere', color: typeof v === 'number' && k !== 'timestamp' ? 'var(--status-info-fg)' : 'var(--text-primary)' }}>{shown}</span>
-            )}
-          </div>
-        );
-      })}
-      <div style={{ color: 'var(--text-tertiary)' }}>{'}'}</div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 10, fontFamily: 'var(--font-sans)' }}>
-        {onFilter && event.invocationId && ULID.test(event.invocationId) && (
-          <Button variant="secondary" size="sm" onClick={() => onFilter({ invocationId: event.invocationId! })}>
-            Only this invocation’s lines
+      <div role="cell" aria-colspan={columns} style={{ padding: '10px 16px 12px 150px', background: 'var(--surface-inset)', borderTop: '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: '20px' }}>
+        <div data-log-json>
+          <div style={{ color: 'var(--text-tertiary)' }}>{'{'}</div>
+          {fields.map((k, n) => {
+            const v = event[k];
+            const shown = k === 'timestamp' ? JSON.stringify(new Date(v as number).toISOString()) : typeof v === 'number' ? String(v) : JSON.stringify(v);
+            const filter = onFilter ? filterFor(k, event) : null;
+            return (
+              <div key={k} style={{ display: 'flex', gap: 6, paddingLeft: 16, minWidth: 0 }}>
+                <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>"{k}":</span>
+                {filter ? (
+                  <button
+                    type="button"
+                    title={`Filter by ${k}`}
+                    onClick={() => onFilter!(filter)}
+                    style={{ appearance: 'none', border: 0, background: 'none', padding: 0, font: 'inherit', textAlign: 'left', overflowWrap: 'anywhere', color: 'var(--text-link)', cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'var(--border-strong)', textUnderlineOffset: 3 }}
+                  >
+                    {shown}
+                  </button>
+                ) : (
+                  <span style={{ overflowWrap: 'anywhere', color: typeof v === 'number' && k !== 'timestamp' ? 'var(--status-info-fg)' : 'var(--text-primary)' }}>{shown}</span>
+                )}
+                {/* Outside the link, so the underline stays on the value it filters by. */}
+                {n < fields.length - 1 && <span style={{ color: 'var(--text-tertiary)', marginLeft: -6 }}>,</span>}
+              </div>
+            );
+          })}
+          <div style={{ color: 'var(--text-tertiary)' }}>{'}'}</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, fontFamily: 'var(--font-sans)' }}>
+          {onFilter && event.invocationId && ULID.test(event.invocationId) && (
+            <Button variant="secondary" size="sm" onClick={() => onFilter({ invocationId: event.invocationId! })}>
+              Only this invocation’s lines
+            </Button>
+          )}
+          {event.raw !== undefined && (
+            <Button variant="ghost" size="sm" onClick={() => setRaw((r) => !r)}>
+              {raw ? 'Hide raw event' : 'Raw event'}
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Close
           </Button>
+        </div>
+        {raw && (
+          <pre style={{ margin: '10px 0 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--text-secondary)' }}>
+            {JSON.stringify(event.raw, null, 2)}
+          </pre>
         )}
-        {event.raw !== undefined && (
-          <Button variant="ghost" size="sm" onClick={() => setRaw((r) => !r)}>
-            {raw ? 'Hide raw event' : 'Raw event'}
-          </Button>
-        )}
-        <Button variant="ghost" size="sm" onClick={onClose}>
-          Close
-        </Button>
       </div>
-      {raw && (
-        <pre style={{ margin: '10px 0 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--text-secondary)' }}>
-          {JSON.stringify(event.raw, null, 2)}
-        </pre>
-      )}
-    </section>
+    </div>
   );
 }
 

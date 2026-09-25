@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TrafficChart } from '../src/components/TrafficChart';
 import { LogList } from '../src/components/LogList';
+import { LogQueryBar } from '../src/components/LogQueryBar';
 import { Observability } from '../src/views/Observability';
 import { api, type ObservabilityLogEvent, type AppRow, type AppHealthRow } from '../src/lib/api';
 import { obsPath } from '../src/lib/router';
@@ -104,6 +105,63 @@ it('a Lines row opens its fields as JSON, and an underlined value adds that filt
   expect(row.getAttribute('aria-expanded')).toBe('true');
   key(details, 'Escape');
   expect(container.querySelector('[aria-label="Log details"]')).toBeNull();
+});
+
+it('Lines is a table of rows of cells, and an open line is a row of its own whose block parses as JSON', async () => {
+  const event: ObservabilityLogEvent = {
+    timestamp: Date.parse(windowRange.since),
+    level: 'warn',
+    message: 'said "slow"',
+    service: 'service',
+    outcome: 'ok',
+    trigger: 'GET /api/orders',
+    invocation: 'fetch',
+    entrypoint: null,
+    requestId: 'provider-request-2',
+    invocationId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    cpuTimeMs: 3,
+    wallTimeMs: 40,
+  };
+  for (const compact of [false, true]) {
+    await act(async () => root.render(<LogList events={[event, { ...event, level: 'info' }]} onFilter={vi.fn()} compact={compact} />));
+    const table = container.querySelector('[role="table"]')!;
+    click(table.querySelector('[role="row"][aria-expanded]')!);
+    const rows = [...table.querySelectorAll('[role="row"]')];
+    // Header, the open line, its details, the closed line.
+    expect(rows).toHaveLength(4);
+    const [header, ...body] = rows;
+    const width = compact ? 4 : 6;
+    expect([...header!.children].map((c) => c.getAttribute('role'))).toEqual(Array(width).fill('columnheader'));
+    for (const row of body) expect([...row.children].every((c) => c.getAttribute('role') === 'cell')).toBe(true);
+    expect(body[0]!.children).toHaveLength(width);
+    const details = body[1]!;
+    expect(details.getAttribute('aria-label')).toBe('Log details');
+    expect(details.children).toHaveLength(1);
+    expect(details.children[0]!.getAttribute('aria-colspan')).toBe(String(width));
+    // The block reads as JSON, and is JSON: commas between fields, none after the last.
+    const parsed = JSON.parse(details.querySelector('[data-log-json]')!.textContent!);
+    expect(parsed).toEqual({
+      timestamp: windowRange.since,
+      level: 'warn',
+      message: 'said "slow"',
+      service: 'service',
+      outcome: 'ok',
+      trigger: 'GET /api/orders',
+      invocation: 'fetch',
+      requestId: 'provider-request-2',
+      invocationId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      cpuTimeMs: 3,
+      wallTimeMs: 40,
+    });
+    // The underlined values survive the commas, and no comma is inside a link.
+    expect([...details.querySelectorAll('button[title^="Filter by"]')].map((b) => b.textContent)).toEqual(['"warn"', '"said \\"slow\\""', '"01ARZ3NDEKTSV4RRFFQ69G5FAV"']);
+  }
+});
+
+it('the custom-window chip dates a window that crosses a UTC day', async () => {
+  const cursor = { from: '2026-09-01T10:00:00.000Z', to: '2026-09-02T10:00:00.000Z' };
+  await act(async () => root.render(<LogQueryBar query={{ view: 'logs', ...cursor }} mode="logs" cursor={cursor} onQuery={vi.fn()} />));
+  expect(container.querySelector('[data-chip="time"]')!.textContent).toContain('2026-09-01 10:00 – 2026-09-02 10:00 UTC');
 });
 
 /** The page as the app mounts it: URL in, navigation out, re-rendered on popstate. */

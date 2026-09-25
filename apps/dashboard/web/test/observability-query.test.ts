@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { queryWindow, readObsQuery, dragWindow } from '../src/lib/observability-query';
 import { obsPath } from '../src/lib/router';
 import { sectionQuery } from '../src/lib/obs-sections';
-import { logChips, parseBarText, shortId, without } from '../src/lib/logs-chips';
+import { logChips, parseBarText, shortId, windowLabel, without } from '../src/lib/logs-chips';
 const window = { since: '2026-09-01T10:00:00.000Z', until: '2026-09-01T11:00:00.000Z' };
 describe('shared observability query', () => {
   it('round trips applied filters including punctuation and the historical interval', () => {
@@ -70,6 +70,21 @@ describe('Logs query bar chips (#1767)', () => {
     expect(parseBarText('receipt.sent', 'events')).toEqual({ add: { type: 'receipt.sent' } });
     expect(parseBarText('', 'logs')).toBeNull();
     expect(parseBarText('x'.repeat(201), 'logs')).toEqual({ error: expect.any(String) });
+  });
+  it('refuses a key the other mode owns, rather than writing a filter that shows no chip', () => {
+    expect(parseBarText('type:receipt.sent', 'logs')).toEqual({ error: 'type: filters apply in Events.' });
+    expect(parseBarText('level:error', 'events')).toEqual({ error: 'level: filters apply in Lines.' });
+    expect(parseBarText(`invocation:${inv}`, 'events')).toEqual({ error: 'invocation: filters apply in Lines.' });
+    expect(parseBarText('type:receipt.sent', 'events')).toEqual({ add: { type: 'receipt.sent' } });
+  });
+  it('refuses an empty filter key, rather than searching for "level:" as a message', () => {
+    expect(parseBarText('level:', 'logs')).toEqual({ error: 'level: needs a value after the colon.' });
+    expect(parseBarText('invocation:   ', 'logs')).toEqual({ error: 'invocation: needs a value after the colon.' });
+    expect(parseBarText('type:', 'events')).toEqual({ error: 'type: needs a value after the colon.' });
+  });
+  it('dates a custom window, so a cross-day one cannot read as 10:00–10:00', () => {
+    expect(windowLabel('2026-09-01T10:00:00.000Z', '2026-09-02T10:00:00.000Z')).toBe('2026-09-01 10:00 – 2026-09-02 10:00 UTC');
+    expect(windowLabel('2026-09-01T10:00:00.000Z', '2026-09-01T11:30:00.000Z')).toBe('2026-09-01 10:00–11:30 UTC');
   });
 });
 
