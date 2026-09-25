@@ -128,8 +128,11 @@ directory: the staff roster (its own D1 database), worker secrets, or the key th
 credential was sealed with.
 
 The directory's record of each schedule kill switch (`GET /system-switches`) rolls back to the
-copy too, while each scope's own switch stays where it was. After a restore, repeat any switch
-pulled since the copy was taken, so the record holds it again.
+copy too, while each scope's own switch stays where it was, and the restored admin log cannot say
+what moved since. Recover from the scopes: read each scope's `system-grants`, and where it
+reports `schedules: off` but `recorded` is not `off`, repeat the OFF so the record holds it again.
+Where it reports `schedules: on` but `recorded: off`, the next reconcile will switch the module
+off; if it was switched back on after the copy on purpose, repeat that restore instead.
 
 **Self-hosting note.** On the SQLite adapter there is no DO point-in-time recovery to fall back
 on, so `exportDirectory`/`restoreDirectory` are not a second line of defence there — they are
