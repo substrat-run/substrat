@@ -289,6 +289,12 @@ import {
   systemSwitchRecordsOf,
   systemSwitchesTableExists,
   withRecorded,
+  VERSION_MIGRATIONS_DDL,
+  splitManifestMigrations,
+  splitVersionMigrationsBatch,
+  versionMigrationsOf,
+  writeVersionMigrations,
+  type VersionMigrationsSql,
   type SystemSwitchReassert,
   type SystemSwitchRecordFilter,
   type SystemSwitchRecordPrior,
@@ -452,6 +458,14 @@ import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
 /** The kernel's schedule-switch SQL (#1666), over one scope's database handle. */
+/** The directory as the kernel's version-migrations helpers read it (#1764). */
+const versionSqlOf = (db: Database.Database): VersionMigrationsSql => ({
+  all: (sql, ...params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
+  run: (sql, ...params) => {
+    db.prepare(sql).run(...params);
+  },
+});
+
 const switchSqlOf = (db: Database.Database): SwitchSql => ({
   all: (sql, ...params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
   run: (sql, ...params) => {
@@ -1044,6 +1058,10 @@ interface VersionRow {
   manifest_json: string | null;
   /** Push provenance (`versionOrigin` JSON) — null for a pre-tracking push. */
   origin_json: string | null;
+  /** How many SQL migrations the version stored apart (#1764). NULL = it carries none to show. */
+  migration_count: number | null;
+  /** 1 once the version's SQL is out of `manifest_json` (#1764). NULL = the backfill has not reached it. */
+  migrations_split: number | null;
   created_at: string;
 }
 
@@ -1634,10 +1652,16 @@ export class SqliteScopeHost implements ScopeHost {
         admission_note    TEXT,
         -- The pushed DeployManifest (JSON) — what a serve rebuilds upload metadata
         -- from (#286). NULL = pre-#286 push, archivable but never served in place.
+        -- Stored WITHOUT its SQL migrations, which live in vertical_version_migrations (#1764).
         manifest_json     TEXT,
+        -- How many migration rows the version stored. NULL = it carries no SQL to show.
+        migration_count   INTEGER,
+        -- 1 once the SQL is out of manifest_json. NULL = stored before #1764, not yet backfilled.
+        migrations_split  INTEGER,
         created_at        TEXT NOT NULL,
         UNIQUE (vertical_slug, version)
       );
+      ${VERSION_MIGRATIONS_DDL}
       -- Channels (#31 step 2): a named pointer per vertical. Promotion moves it,
       -- and promotion is where the migration and permission diffs fire — the
       -- moment a change reaches anyone, rather than the moment it was typed.
@@ -2028,9 +2052,20 @@ export class SqliteScopeHost implements ScopeHost {
   private ensureDirectorySchema(): void {
     this.directory.transaction(() => {
       const switchRecordIsNew = !systemSwitchesTableExists(switchSqlOf(this.directory));
+      // #1764: `VERSION_MIGRATIONS_DDL` indexes these two columns, so a directory created
+      // before them needs them before `applyDirectorySchema` reaches that statement.
+      if (this.directory.prepare('PRAGMA table_info(vertical_versions)').all().length > 0) {
+        this.ensureColumn(this.directory, 'vertical_versions', 'migration_count', 'migration_count INTEGER');
+        this.ensureColumn(this.directory, 'vertical_versions', 'migrations_split', 'migrations_split INTEGER');
+      }
       this.applyDirectorySchema();
       if (switchRecordIsNew) this.directory.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
     })();
+    // #1764: move the SQL out of every version stored before the split. A batch per
+    // transaction, the same resumable step the Durable-Object adapter runs per alarm. This
+    // adapter has no constructor budget to protect, so it runs them all on open.
+    const sql = versionSqlOf(this.directory);
+    while (this.directory.transaction(() => splitVersionMigrationsBatch(sql))().more);
   }
 
   registerExecutor(
@@ -6805,28 +6840,35 @@ export class SqliteScopeHost implements ScopeHost {
         // The manifest is retained for the serving upload (#286), not audited — a whole
         // manifest per publish would drown the admin log in bundle metadata.
         const { manifestJson, origin, ...audited } = parsed;
-        this.directory
-          .prepare(
-            `INSERT INTO vertical_versions
-               (id, vertical_slug, version, manifest_digest, permission_digest,
-                migration_digest, deployment_ref, admission, admission_note, manifest_json,
-                origin_json, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            audited.id,
-            audited.verticalSlug,
-            audited.version,
-            audited.manifestDigest,
-            audited.permissionDigest,
-            audited.migrationDigest,
-            audited.deploymentRef,
-            selfAdmits ? 'admitted' : 'pending',
-            selfAdmits ? AUTO_ADMISSION_NOTE : null,
-            manifestJson ?? null,
-            origin ? JSON.stringify(origin) : null,
-            new Date().toISOString(),
-          );
+        // The SQL migrations are stored apart from the manifest (#1764), so no read of the
+        // version but the promote review's carries them.
+        const split = splitManifestMigrations(manifestJson ?? null, 'push');
+        this.directory.transaction(() => {
+          this.directory
+            .prepare(
+              `INSERT INTO vertical_versions
+                 (id, vertical_slug, version, manifest_digest, permission_digest,
+                  migration_digest, deployment_ref, admission, admission_note, manifest_json,
+                  origin_json, migration_count, migrations_split, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+            )
+            .run(
+              audited.id,
+              audited.verticalSlug,
+              audited.version,
+              audited.manifestDigest,
+              audited.permissionDigest,
+              audited.migrationDigest,
+              audited.deploymentRef,
+              selfAdmits ? 'admitted' : 'pending',
+              selfAdmits ? AUTO_ADMISSION_NOTE : null,
+              split.manifestJson,
+              origin ? JSON.stringify(origin) : null,
+              split.migrations === null ? null : split.migrations.length,
+              new Date().toISOString(),
+            );
+          writeVersionMigrations(versionSqlOf(this.directory), audited.id, split.migrations);
+        })();
         this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
           ...(origin ? { origin } : {}),
@@ -6936,6 +6978,12 @@ export class SqliteScopeHost implements ScopeHost {
         // cleanup script (#248), never destroyed alongside a registry row.
         this.directory.prepare('DELETE FROM vertical_channels WHERE vertical_slug = ?').run(slug);
         this.directory.prepare('DELETE FROM vertical_channel_history WHERE vertical_slug = ?').run(slug);
+        this.directory
+          .prepare(
+            `DELETE FROM vertical_version_migrations
+              WHERE version_id IN (SELECT id FROM vertical_versions WHERE vertical_slug = ?)`,
+          )
+          .run(slug);
         this.directory.prepare('DELETE FROM vertical_versions WHERE vertical_slug = ?').run(slug);
         this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug);
         this.recordAdmin(
@@ -7275,6 +7323,14 @@ export class SqliteScopeHost implements ScopeHost {
         }
         this.recordAccess(actor, 'versionManifest', {}, { verticalSlug, versionId }, v.manifest_json ? 1 : 0);
         return v.manifest_json;
+      },
+      versionMigrations: async (actor, verticalSlug: string, versionId: string) => {
+        const v = versionMigrationsOf(versionSqlOf(this.directory), versionId);
+        if (!v || v.verticalSlug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        this.recordAccess(actor, 'versionMigrations', {}, { verticalSlug, versionId }, v.migrations?.length ?? 0);
+        return v.migrations;
       },
       setScopeServingRef: async (actor, tenantId, scopeId, servingRef) => {
         const scope = this.directory
@@ -9855,6 +9911,9 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, 'vertical_versions', 'manifest_json', 'manifest_json TEXT');
     // Push provenance (git CI vs a terminal) — null for a pre-tracking push.
     this.ensureColumn(this.directory, 'vertical_versions', 'origin_json', 'origin_json TEXT');
+    // #1764: the SQL migrations moved out of the manifest, and the backfill's progress.
+    this.ensureColumn(this.directory, 'vertical_versions', 'migration_count', 'migration_count INTEGER');
+    this.ensureColumn(this.directory, 'vertical_versions', 'migrations_split', 'migrations_split INTEGER');
     // #33: the SKU flag learns to express a plan. All nullable — a legacy row
     // reads as a perpetual boolean flag, exactly its pre-widening semantics.
     for (const [col, ddl] of [

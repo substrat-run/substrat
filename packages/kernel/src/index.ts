@@ -304,6 +304,17 @@ export type {
   SystemSwitchRecordWrite,
 } from './system-switch-record.js';
 export {
+  VERSION_MIGRATIONS_BATCH,
+  VERSION_MIGRATIONS_DDL,
+  isVersionMigrationsDdl,
+  splitManifestMigrations,
+  splitVersionMigrationsBatch,
+  versionMigrationsOf,
+  versionsAwaitSplit,
+  writeVersionMigrations,
+} from './version-migrations.js';
+export type { SplitManifest, VersionMigrationsSql } from './version-migrations.js';
+export {
   PEER_SUBJECT_PREFIX,
   admitPeer,
   collectPeers,
