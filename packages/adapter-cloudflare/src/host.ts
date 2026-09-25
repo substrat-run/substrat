@@ -4018,36 +4018,84 @@ export class CloudflareScopeHost implements ScopeHost {
       // `recordSystemSwitchedOn` for why that order is the safe one.
       const at = new Date().toISOString();
       const record = { tenantId, scopeId, moduleId: input.moduleId, actor, reason: input.reason, operationId, at };
-      const prior = to === 'on' ? await this.cp.recordSystemSwitchedOn(record) : null;
+      const errorOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
+      let prior: SystemSwitchRecordPrior = null;
+      if (to === 'on') {
+        try {
+          prior = await this.cp.recordSystemSwitchedOn(record);
+        } catch (err) {
+          // Nothing has moved: fail the call here, audited, rather than switch a scope on
+          // whose record still says off (the next reconcile would switch it back off).
+          await this.recordAdmin(actor, action, target, null, { ...base, phase: 'failed', error: errorOf(err) }).catch(
+            () => undefined,
+          );
+          throw err;
+        }
+      }
+      /**
+       * A record write AFTER the scope moved (review #5): retried once, and a failure of both
+       * is answered rather than swallowed — it lands on the outcome row as `recordError`, and
+       * the call does not report plain success. A lost OFF record is exactly what a wipe then
+       * turns into a module running again.
+       */
+      const recordWrite = async (write: () => Promise<unknown>): Promise<string | null> => {
+        try {
+          await write();
+          return null;
+        } catch {
+          try {
+            await write();
+            return null;
+          } catch (err) {
+            return errorOf(err);
+          }
+        }
+      };
       let outcome: SwitchOutcome;
       try {
         outcome = await move(input.moduleId, to, at);
       } catch (err) {
-        if (prior) await this.cp.restoreSystemSwitchRecord(record, prior).catch(() => undefined);
+        const recordError = prior ? await recordWrite(() => this.cp.restoreSystemSwitchRecord(record, prior)) : null;
         // Best effort: the original error is what the caller must see, and the intent row
         // already says an attempt was made.
         await this.recordAdmin(actor, action, target, null, {
           ...base,
           phase: 'failed',
-          error: err instanceof Error ? err.message : String(err),
+          error: errorOf(err),
+          ...(recordError ? { recordError } : {}),
         }).catch(() => undefined);
         throw err;
       }
-      if (to === 'off' && outcome.held) await this.cp.recordSystemSwitchedOff(record);
-      // A refused ON moved nothing, so its record write is undone too: left `on`, the next
-      // reconcile of a wiped scope would leave the module running.
-      if (to === 'on' && !outcome.held && prior) await this.cp.restoreSystemSwitchRecord(record, prior);
+      // OFF is recorded once the scope held it. A refused ON moved nothing, so its record
+      // write is undone: left `on`, the next reconcile of a wiped scope would leave the
+      // module running.
+      const recordError =
+        to === 'off' && outcome.held
+          ? await recordWrite(() => this.cp.recordSystemSwitchedOff(record))
+          : to === 'on' && !outcome.held && prior
+            ? await recordWrite(() => this.cp.restoreSystemSwitchRecord(record, prior))
+            : null;
       await this.recordAdmin(actor, action, target, null, {
         ...base,
         phase: outcome.held ? 'applied' : 'refused',
         changed: outcome.changed,
         permissions: outcome.permissions,
+        ...(recordError ? { recordError } : {}),
       });
       if (!outcome.held) {
         throw substratError(
           'not_found',
           `scope ${scopeId} holds no system grant for module '${input.moduleId}' — nothing to switch ${to} ` +
-            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')`,
+            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')` +
+            (recordError ? `; and its directory record could not be put back (${recordError})` : ''),
+        );
+      }
+      if (recordError) {
+        throw substratError(
+          'unavailable',
+          `module '${input.moduleId}' is switched ${to} on scope ${scopeId}, but the directory's record of it ` +
+            `could not be written (${recordError}) — repeat the call to record it; a wipe of this scope would ` +
+            `otherwise lose the switch`,
         );
       }
       return {

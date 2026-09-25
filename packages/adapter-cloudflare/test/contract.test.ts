@@ -651,6 +651,99 @@ describe('#1674 — a hosted scope is re-asserted through the delegation, after 
 });
 
 /**
+ * #1674 review #5 — a directory record write that fails AFTER the scope moved is retried
+ * once, and a failure of both is never swallowed: it lands on the outcome row as
+ * `recordError`, and the call does not answer plain success. The control plane's stub is
+ * wrapped so one named method fails a set number of times; every other call goes to the
+ * real directory DO (through an arrow on the real stub — never `.bind` on a stub proxy).
+ */
+describe('#1674 — a failed switch-record write is retried once, then answered, never swallowed', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+
+  const setup = async (method: string, failures: number) => {
+    let remaining = failures;
+    const flaky = {
+      idFromName: (name: string) => env.CONTROL_PLANE.idFromName(name),
+      get: (id: DurableObjectId) => {
+        const real = env.CONTROL_PLANE.get(id) as unknown as Record<string, (...a: unknown[]) => unknown>;
+        return new Proxy(real, {
+          get: (target, prop) => {
+            if (prop === method && remaining > 0) {
+              return async () => {
+                remaining--;
+                throw new Error('control plane unreachable');
+              };
+            }
+            const value = target[prop as string];
+            return typeof value === 'function' ? (...a: unknown[]) => target[prop as string]!(...a) : value;
+          },
+        });
+      },
+    } as unknown as DurableObjectNamespace;
+    const deployment = { position: 'on' as 'on' | 'off', fail: false };
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: flaky,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      systemSwitchDelegation: {
+        switch: async (a) => {
+          if (deployment.fail) throw new Error('vertical unreachable during system-switch');
+          const changed = deployment.position !== a.to;
+          deployment.position = a.to;
+          return { held: true, changed, permissions: [] };
+        },
+        status: async () => [{ moduleId: SCHED, schedules: deployment.position }],
+      },
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `flaky-${t.slice(-10).toLowerCase()}`, name: 'Flaky' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    const node = { tenantId: t, scopeId: s };
+    const outcomes = async () =>
+      (await host.admin.auditLog(staff, { scopeId: s, action: ['revokeFromSystem', 'restoreToSystem'] }))
+        .map((e) => e.after as { phase: string; recordError?: string })
+        .filter((a) => a.phase !== 'intent');
+    const records = () => host.admin.listSystemSwitches(staff, { scopeId: s });
+    return { host, node, deployment, outcomes, records };
+  };
+
+  it('an OFF whose record write fails once is retried, recorded, and answered as success', async () => {
+    const { host, node, outcomes, records } = await setup('recordSystemSwitchedOff', 1);
+    expect(await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' })).toMatchObject({ schedules: 'off' });
+    expect(await records()).toEqual([expect.objectContaining({ position: 'off' })]);
+    expect((await outcomes()).map((o) => [o.phase, o.recordError])).toEqual([['applied', undefined]]);
+  });
+
+  it('an OFF whose record write fails twice: the switch moved, the outcome row says so AND names the record failure, and the call throws', async () => {
+    const { host, node, deployment, outcomes, records } = await setup('recordSystemSwitchedOff', 2);
+    const e = await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' }).then(() => null, (x: unknown) => x);
+    expect(errorCodeOf(e)).toBe('unavailable');
+    expect(String(e)).toMatch(/switched off .* could not be written .* repeat the call/);
+    expect(deployment.position).toBe('off');
+    expect(await records()).toEqual([]);
+    expect((await outcomes()).map((o) => [o.phase, o.recordError])).toEqual([['applied', 'control plane unreachable']]);
+    // Repeating the call — the remedy the error names — records it.
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+    expect(await records()).toEqual([expect.objectContaining({ position: 'off' })]);
+  });
+
+  it("a failed ON whose record undo fails twice names it on the failed row, rather than dropping it", async () => {
+    const { host, node, deployment, outcomes } = await setup('restoreSystemSwitchRecord', 2);
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+    deployment.fail = true;
+    await expect(host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'fixed' })).rejects.toThrow(/unreachable/);
+    expect((await outcomes()).map((o) => [o.phase, o.recordError])).toEqual([
+      ['applied', undefined],
+      ['failed', 'control plane unreachable'],
+    ]);
+  });
+});
+
+/**
  * #1674 — the switch record's one-time backfill, on DO SQLite. The kernel test proves the
  * statement on node's SQLite; this proves it where it runs in production (`json_extract` and
  * a window function, inside the directory DO), through the real path that reaches it: a

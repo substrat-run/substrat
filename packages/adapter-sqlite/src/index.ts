@@ -284,6 +284,7 @@ import {
   withRecorded,
   type SystemSwitchReassert,
   type SystemSwitchRecordFilter,
+  type SystemSwitchRecordPrior,
   type SwitchOutcome,
   type SwitchSql,
   type PeerGrantsRow,
@@ -5733,7 +5734,35 @@ export class SqliteScopeHost implements ScopeHost {
       const at = new Date().toISOString();
       const directorySql = switchSqlOf(this.directory);
       const record = { tenantId, scopeId, moduleId: input.moduleId, actor, reason: input.reason, operationId, at };
-      const prior = to === 'on' ? recordSystemSwitchedOn(directorySql, record) : null;
+      const errorOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
+      let prior: SystemSwitchRecordPrior = null;
+      if (to === 'on') {
+        try {
+          prior = recordSystemSwitchedOn(directorySql, record);
+        } catch (err) {
+          // Nothing has moved: fail the call here, audited — the Cloudflare adapter's posture.
+          try {
+            this.recordAdmin(actor, action, target, null, { ...base, phase: 'failed', error: errorOf(err) });
+          } catch {
+            // Best effort: the original error is what the caller must see.
+          }
+          throw err;
+        }
+      }
+      /** A record write after the scope moved (review #5): retried once, never swallowed. */
+      const recordWrite = (write: () => void): string | null => {
+        try {
+          write();
+          return null;
+        } catch {
+          try {
+            write();
+            return null;
+          } catch (err) {
+            return errorOf(err);
+          }
+        }
+      };
       let outcome: SwitchOutcome;
       try {
         // A turn on the scope actor (#1666 review), exactly as the job store (#1577): `invoke`
@@ -5748,33 +5777,49 @@ export class SqliteScopeHost implements ScopeHost {
           )(),
         );
       } catch (err) {
-        restoreSystemSwitchRecord(directorySql, record, prior);
+        const recordError = recordWrite(() => restoreSystemSwitchRecord(directorySql, record, prior));
         try {
           this.recordAdmin(actor, action, target, null, {
             ...base,
             phase: 'failed',
-            error: err instanceof Error ? err.message : String(err),
+            error: errorOf(err),
+            ...(recordError ? { recordError } : {}),
           });
         } catch {
           // Best effort: the original error is what the caller must see.
         }
         throw err;
       }
-      if (to === 'off' && outcome.held) recordSystemSwitchedOff(directorySql, record);
-      // A refused ON moved nothing, so its record write is undone too: left `on`, the next
-      // reconcile of a wiped scope would leave the module running.
-      if (to === 'on' && !outcome.held) restoreSystemSwitchRecord(directorySql, record, prior);
+      // OFF is recorded once the scope held it. A refused ON moved nothing, so its record
+      // write is undone: left `on`, the next reconcile of a wiped scope would leave the
+      // module running.
+      const recordError =
+        to === 'off' && outcome.held
+          ? recordWrite(() => recordSystemSwitchedOff(directorySql, record))
+          : to === 'on' && !outcome.held
+            ? recordWrite(() => restoreSystemSwitchRecord(directorySql, record, prior))
+            : null;
       this.recordAdmin(actor, action, target, null, {
         ...base,
         phase: outcome.held ? 'applied' : 'refused',
         changed: outcome.changed,
         permissions: outcome.permissions,
+        ...(recordError ? { recordError } : {}),
       });
       if (!outcome.held) {
         throw substratError(
           'not_found',
           `scope ${scopeId} holds no system grant for module '${input.moduleId}' — nothing to switch ${to} ` +
-            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')`,
+            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')` +
+            (recordError ? `; and its directory record could not be put back (${recordError})` : ''),
+        );
+      }
+      if (recordError) {
+        throw substratError(
+          'unavailable',
+          `module '${input.moduleId}' is switched ${to} on scope ${scopeId}, but the directory's record of it ` +
+            `could not be written (${recordError}) — repeat the call to record it; a wipe of this scope would ` +
+            `otherwise lose the switch`,
         );
       }
       return {
