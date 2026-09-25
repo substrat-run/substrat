@@ -268,7 +268,10 @@ data. `prod` is the *only* channel, so `--channel` defaults to it; a promote to 
 refused with a pointer at [`preview`](#preview). For a vertical you own privately this is
 self-serve, prod included; a **listed** vertical's prod promotion is a staff decision (the
 marketplace gate). A promote whose permission or migration digest differs from what is live is
-refused until you acknowledge the diff (`--ack-permissions` / `--ack-migrations`).
+refused until you acknowledge the diff (`--ack-permissions` / `--ack-migrations`). The refusal
+prints the permission diff and each migration the version adds on top of the live one, with its
+SQL, so the flag answers something you have read. A version pushed before migrations were carried
+in the manifest says its SQL is not available.
 
 For a non-production environment — test, canary, a PR preview — you do **not** promote a second
 channel; you run the version against a scope with data. See [`preview`](#preview),

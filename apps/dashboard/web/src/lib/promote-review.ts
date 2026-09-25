@@ -1,3 +1,4 @@
+import type { MigrationDiff } from '@substrat-run/contracts';
 import { diffRegistries, hasRegistryChange, type RegistryDiff, type RegistryLike } from './registry-diff.js';
 
 /**
@@ -18,6 +19,9 @@ export interface PromoteReviewWire {
   incoming: { versionId: string };
   servingRegistry: RegistryLike | null;
   incomingRegistry: RegistryLike | null;
+  /** What the incoming version's migrations add on top of the serving one's. Null = no SQL to
+   *  show, which `planMigration` asks about whenever there is something to compare. */
+  migrations: MigrationDiff | null;
   /** #1705 PR 3: whom the promotion breaks (this tenant's apps by name, others as a count). */
   exportBreaks?: ExportBreakListing | null;
 }
@@ -56,12 +60,38 @@ export type PermissionSection =
   | { kind: 'server-reported'; digests: string | null };
 
 /**
- * The migration half. The SQL is not carried in the manifest yet (#1677 part b), so there
- * is nothing to show but that the set differs — and that is only learned from the registry's
- * own refusal, which names the digest pair.
+ * The migration half (#1677). It reaches the dialog two ways, and the difference is who is
+ * asking:
+ *
+ * - From the review, when the incoming version's migrations add to or edit the serving
+ *   version's, or when its manifest carries no SQL at all (pushed by an older CLI, or over
+ *   the size a manifest carries), so nothing can say whether they changed. `enforced: false`:
+ *   the registry's gate does not see SQL-only changes (its migration digest covers the
+ *   Durable-Object classes, #1754), so this acknowledgement is the dialog's own. It is still
+ *   required: showing SQL a person may skip — or not showing it — is how a schema change
+ *   slips through.
+ * - From the gate's own refusal on the migration digest. `enforced: true`, with the digest
+ *   pair. `sql` is the review's diff when it has one, and null when the incoming version's
+ *   manifest carries no SQL — "not available", and the acknowledgement is still required.
  */
 export interface MigrationSection {
   digests: string | null;
+  sql: MigrationDiff | null;
+  enforced: boolean;
+}
+
+/**
+ * The migration section a review yields before anything is sent. Null only when the review
+ * SHOWS no change — a diff with nothing in it — or has nothing to compare (a first promotion,
+ * or promoting what already serves). A version whose manifest carries no SQL is not "no
+ * change": it is "SQL not available", and it is asked about, because the gate will not ask
+ * for a SQL-only change (#1754) and this would otherwise promote one with no prompt at all.
+ */
+export function planMigration(review: PromoteReviewWire): MigrationSection | null {
+  if (review.serving === null || review.serving.versionId === review.incoming.versionId) return null;
+  const sql = review.migrations;
+  if (sql === null) return { digests: null, sql: null, enforced: false };
+  return sql.total > 0 ? { digests: null, sql, enforced: false } : null;
 }
 
 /** What the dialog is asked to put in front of a person. */
@@ -129,13 +159,31 @@ export function classifyRefusal(message: string): Refusal | 'unrecognised' | nul
   return 'unrecognised';
 }
 
+/** The kinds of change a checkpoint can ask about, each true or false. */
+export interface PerKind {
+  permission: boolean;
+  migration: boolean;
+  exportBreak: boolean;
+}
+
 /** Whether a checkpoint asks for something no one has acknowledged yet. */
-export function outstanding(c: Checkpoint): { permission: boolean; migration: boolean; exportBreak: boolean } {
+export function outstanding(c: Checkpoint): PerKind {
   return {
     permission: c.permission !== null && c.acknowledged.permissionChange !== true,
     migration: c.migration !== null && c.acknowledged.migrationChange !== true,
     exportBreak: (c.exportBreak ?? null) !== null && c.acknowledged.exportBreak !== true,
   };
+}
+
+const NONE_TICKED: PerKind = { permission: false, migration: false, exportBreak: false };
+
+/**
+ * Whether a promote may go ahead: every kind still outstanding has its box ticked. The ONE
+ * place the kinds are joined, read by the dialog's Promote button and by the flow's own
+ * check after an answer, so a kind added later cannot be required by one and not the other.
+ */
+export function readyToPromote(left: PerKind, ticked: PerKind = NONE_TICKED): boolean {
+  return (!left.permission || ticked.permission) && (!left.migration || ticked.migration) && (!left.exportBreak || ticked.exportBreak);
 }
 
 /**
@@ -169,11 +217,12 @@ const messageOf = (e: unknown): string => (e instanceof Error ? e.message : Stri
  *
  * 1. Read the review. If that fails the promote does not happen: the review is the only
  *    thing that can say "no permission change", and a read that did not answer says nothing.
- * 2. A permission section to show → ask, and stop unless it was acknowledged.
+ * 2. A permission section, migrations the review shows, or apps it breaks → ask, and stop unless each
+ *    was acknowledged.
  * 3. Promote with exactly the acknowledgements that were given (none, when none — the
  *    promote of an unchanged surface is the request it always was).
- * 4. If the gate refuses for a kind that was not shown (the migrations are only ever learned
- *    this way; the permission digest can differ where no diff could be drawn), show that
+ * 4. If the gate refuses for a kind that was not shown (a migration digest that moved with no
+ *    SQL to show; the permission digest can differ where no diff could be drawn), show that
  *    kind in the same dialog and ask again. A refusal for a kind already acknowledged is not
  *    retried — the state moved under the person, and they are told.
  */
@@ -182,7 +231,7 @@ export async function promoteWithCheckpoint(deps: PromoteDeps): Promise<PromoteO
 
   let checkpoint: Checkpoint = {
     permission: planPermission(review),
-    migration: null,
+    migration: planMigration(review),
     exportBreak: planExportBreak(review),
     acknowledged: {},
   };
@@ -193,11 +242,15 @@ export async function promoteWithCheckpoint(deps: PromoteDeps): Promise<PromoteO
     const answer = await deps.ask(checkpoint);
     if (answer === null) return false;
     checkpoint = { ...checkpoint, acknowledged: honour(checkpoint, answer) };
-    const left = outstanding(checkpoint);
-    return !left.permission && !left.migration && !left.exportBreak;
+    return readyToPromote(outstanding(checkpoint));
   };
 
-  if ((checkpoint.permission !== null || checkpoint.exportBreak !== null) && !(await confirm())) return 'cancelled';
+  if (
+    (checkpoint.permission !== null || checkpoint.migration !== null || checkpoint.exportBreak !== null) &&
+    !(await confirm())
+  ) {
+    return 'cancelled';
+  }
 
   // Three kinds exist, so a fourth refusal is not a next step but a loop.
   for (let round = 0; round < 4; round++) {
@@ -217,7 +270,7 @@ export async function promoteWithCheckpoint(deps: PromoteDeps): Promise<PromoteO
         checkpoint =
           refusal.kind === 'permission'
             ? { ...checkpoint, permission: { kind: 'server-reported', digests: refusal.digests } }
-            : { ...checkpoint, migration: { digests: refusal.digests } };
+            : { ...checkpoint, migration: { digests: refusal.digests, sql: review.migrations, enforced: true } };
       }
       if (!(await confirm())) return 'cancelled';
     }

@@ -2,8 +2,9 @@ import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Checkbox, Dialog } from '@substrat-run/ui';
 import { registryDirection, type RegistryDirection, type RegistryLike } from '../lib/registry-diff';
-import { outstanding, type Acks, type Checkpoint, type MigrationSection, type PermissionSection, type Unverifiable } from '../lib/promote-review';
+import { outstanding, readyToPromote, type Acks, type Checkpoint, type PermissionSection, type Unverifiable } from '../lib/promote-review';
 import { ExportBreakAck } from './ExportBreakAck';
+import { PromoteMigrations } from './PromoteMigrations';
 import { MonoTag, Pill } from './ui';
 
 /**
@@ -39,8 +40,7 @@ export function PromoteDialog({
   const [migrationTicked, setMigrationTicked] = useState(false);
   const [exportBreakTicked, setExportBreakTicked] = useState(false);
   const left = outstanding(checkpoint);
-  const ready =
-    (!left.permission || permissionTicked) && (!left.migration || migrationTicked) && (!left.exportBreak || exportBreakTicked);
+  const ready = readyToPromote(left, { permission: permissionTicked, migration: migrationTicked, exportBreak: exportBreakTicked });
 
   const answer = (): Acks => ({
     ...(left.permission && permissionTicked ? { permissionChange: true as const } : {}),
@@ -76,7 +76,7 @@ export function PromoteDialog({
         )}
         {checkpoint.migration && (
           <Section title="Migration changes">
-            <MigrationBody section={checkpoint.migration} />
+            <PromoteMigrations section={checkpoint.migration} />
             {left.migration ? (
               <Checkbox
                 label="I acknowledge the migration change"
@@ -244,15 +244,6 @@ function ShapeLine({ name, added, removed, status, kind }: { name: string; added
           −{p}
         </span>
       ))}
-    </div>
-  );
-}
-
-function MigrationBody({ section }: { section: MigrationSection }) {
-  return (
-    <div style={muted}>
-      The migration set changed{section.digests ? <> (<span style={mono}>{section.digests}</span>)</> : null}. The SQL isn’t available
-      yet (#1677 part b), so what the migrations do can’t be shown here — read them in the repository before you acknowledge.
     </div>
   );
 }

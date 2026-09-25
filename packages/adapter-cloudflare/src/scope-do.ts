@@ -109,11 +109,10 @@ import {
   NotSearchable,
   isSearchIndexTable,
   searchIndexDdl,
-  searchIndexMigrations,
   searchIndexPlans,
   NotListable,
-  listIndexMigrations,
   listIndexPlans,
+  moduleMigrations,
   listQuery,
   cursorOf,
   type ListIndexPlan,
@@ -964,11 +963,8 @@ export function defineScopeDO(
       this.crossVertical.register(manifest, registration.imports);
       this.modules.set(manifest.id, {
         id: manifest.id,
-        migrations: [
-          ...(registration.migrations ?? []),
-          ...searchIndexMigrations(manifest.id, manifest.searchables),
-          ...listIndexMigrations(manifest.id, manifest.lists),
-        ],
+        // The order the kernel writes once (#1677): authored, then search, then list indexes.
+        migrations: moduleMigrations(registration),
         consumers: Object.entries(registration.consumers ?? {}).map(([eventType, handler]) => ({
           eventType,
           handler,

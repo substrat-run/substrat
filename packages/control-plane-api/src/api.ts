@@ -81,6 +81,7 @@ import {
   importCursorMove,
   importCursorAcknowledgementMissing,
   REDRAIN_BATCH,
+  migrationsOnTop,
 } from '@substrat-run/contracts';
 import type {
   Connection,
@@ -1001,6 +1002,7 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'DELETE', re: /\/verticals\/[^/]+$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/versions$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/registry$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/migrations$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/model$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/flow$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/assets$/, pin: 'owner' },
@@ -1165,6 +1167,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // The declared permission registry of one version (D-39, #336) — owner-narrowed in the
     // handler like the versions list; the builder-facing Permissions tab reads it.
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/registry$/ },
+    // The SQL migrations one version adds on top of another (#1677), owner-narrowed the same
+    // way; the promote dialog and `substrat promote` read it.
+    { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/migrations$/ },
     // The emitted entity model of one version (#1214) — owner-narrowed the same way;
     // the dashboard's Model tab reads it.
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/model$/ },
@@ -4555,6 +4560,32 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
     const registry = json ? (storedDeployManifest.parse(JSON.parse(json)).registry ?? null) : null;
     return c.json({ registry });
+  });
+
+  // The SQL migrations one version adds on top of another (#1677): what the promote dialog
+  // and `substrat promote` show before a migration change is acknowledged. `?base=` names the
+  // version to compare against (the one `prod` serves); without it every migration is listed.
+  // Owner-narrowed like `/registry`, and never widened: migration SQL describes a schema.
+  // `migrations` is null for a version whose manifest carries none (pushed before the field,
+  // or over the push's cap), which a reader must show as "SQL not available", never as
+  // "no migrations". Bounded in count and bytes (`migrationsOnTop`).
+  app.get('/verticals/:slug/versions/:id/migrations', async (c) => {
+    const p = c.get('principal');
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
+    if (await notOwned(p, slug)) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    // `versionManifest` refuses a version of another vertical, so `base` cannot reach one.
+    const migrationsOf = async (id: string) => {
+      const json = await admin.versionManifest(c.get('actor'), slug, id);
+      return json ? (storedDeployManifest.parse(JSON.parse(json)).migrations ?? null) : null;
+    };
+    const base = c.req.query('base');
+    const [incoming, baseline] = await Promise.all([
+      migrationsOf(c.req.param('id')),
+      base === undefined ? undefined : migrationsOf(base),
+    ]);
+    return c.json({ migrations: incoming === null ? null : migrationsOnTop(incoming, baseline) });
   });
 
   // The emitted entity model (#1214) one version ships: entities, field schemas, parent

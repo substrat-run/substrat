@@ -25,6 +25,7 @@ import type {
   InvocationEvents,
   DeadLetter,
   PermissionDenial,
+  MigrationDiff,
   PermissionRegistry,
   PlatformRequest,
   PreviewAuth,
@@ -815,6 +816,10 @@ export class TenantNarrowedControlPlane {
           const channels = await this.listAll<{ channel: string; versionId: string }>(
             `/verticals/${encodeURIComponent(verticalSlug)}/channels`,
           );
+          // The channel's `versionId`, not its `servingVersionId`: the gate compares against
+          // the version the pointer names (`promoteVersion` reads the channel), so the review
+          // must too. The two differ only after an in-place serve failed; #1661 is where
+          // reconcile follows the running one instead, and that is not the checkpoint.
           return channels.find((c) => c.channel === 'prod')?.versionId ?? null;
         },
         registry: async (id) => {
@@ -826,6 +831,16 @@ export class TenantNarrowedControlPlane {
             throw new ControlPlaneError(502, `the registry of version ${id} could not be read`);
           }
           return res.registry ?? null;
+        },
+        migrations: async (id, baseId) => {
+          const res = await this.call<{ migrations?: MigrationDiff | null } | undefined>(
+            `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(id)}/migrations?base=${encodeURIComponent(baseId)}`,
+          );
+          // The same rule as the registry: an OK answer with no readable body is no answer.
+          if (!res || typeof res !== 'object' || !('migrations' in res)) {
+            throw new ControlPlaneError(502, `the migrations of version ${id} could not be read`);
+          }
+          return res.migrations ?? null;
         },
         exportBreaks: async (id) => {
           const res = await this.call<ExportBreaks | undefined>(

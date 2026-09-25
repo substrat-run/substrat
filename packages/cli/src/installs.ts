@@ -7,8 +7,8 @@
  * Forks (snapshots/previews) are not installs and are excluded.
  */
 import { listVerticalHostnames } from './hostnames.js';
-import { readAllEntries, readJson } from './http.js';
-import { failureMessage } from './problem.js';
+import { readAllEntries } from './http.js';
+import { getJson } from './problem.js';
 
 interface ScopeRow {
   id: string;
@@ -20,17 +20,6 @@ interface ScopeRow {
   forkedFrom: string | null;
   servingRef?: string | null;
   createdAt: string;
-}
-
-/** GET one control-plane page, reading a refusal as the problem document it is. */
-async function getJson<T>(url: string, header: Record<string, string>): Promise<T> {
-  const res = await fetch(url, { headers: header });
-  if (!res.ok) {
-    // The control plane answers a refused read with a problem document; print what it
-    // says — the code and the detail — instead of a slice of the raw body (#971).
-    throw new Error(failureMessage('control-plane read failed', res.status, await res.text().catch(() => res.statusText)));
-  }
-  return readJson<T>(res, url);
 }
 
 /**

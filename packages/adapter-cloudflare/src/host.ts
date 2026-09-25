@@ -358,6 +358,7 @@ import type {
   ScopeRow,
   VerticalRow,
   VersionRow,
+  VersionListRow,
 } from './control-plane-do.js';
 
 /**
@@ -582,7 +583,7 @@ interface ControlPlaneStub {
     originJson: string | null;
     createdAt: string;
   }): Promise<void>;
-  listVersions(verticalSlug: string, page?: ListPage): Promise<VersionRow[]>;
+  listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string): Promise<void>;
   markScopeProvisioned(scopeId: string, versionId: string | null): Promise<void>;
@@ -3794,7 +3795,26 @@ export class CloudflareScopeHost implements ScopeHost {
         ...(r.serving_version_id ? { servingVersionId: r.serving_version_id } : {}),
         createdAt: r.created_at,
       });
+    // A listed version carries its surfaces as lifted JSON text, not its manifest (#1677):
+    // read on exactly `outboundOfManifestJson`'s terms, so the two reads agree.
+    const stringListOfJson = (json: string | null): string[] | null => {
+      if (!json) return null;
+      try {
+        const v = JSON.parse(json) as unknown;
+        return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : null;
+      } catch {
+        return null;
+      }
+    };
     const mapVersion = (r: VersionRow): VerticalVersion =>
+      versionRecord(r, outboundOfManifestJson(r.manifest_json), callsOfManifestJson(r.manifest_json));
+    const mapListedVersion = (r: VersionListRow): VerticalVersion =>
+      versionRecord(r, stringListOfJson(r.outbound_json), stringListOfJson(r.calls_json));
+    const versionRecord = (
+      r: Omit<VersionRow, 'manifest_json'>,
+      outbound: string[] | null,
+      calls: string[] | null,
+    ): VerticalVersion =>
       verticalVersion.parse({
         id: r.id,
         verticalSlug: r.vertical_slug,
@@ -3806,8 +3826,8 @@ export class CloudflareScopeHost implements ScopeHost {
         admission: r.admission,
         admissionNote: r.admission_note,
         origin: r.origin_json ? JSON.parse(r.origin_json) : null,
-        outbound: outboundOfManifestJson(r.manifest_json),
-        calls: callsOfManifestJson(r.manifest_json),
+        outbound,
+        calls,
         createdAt: r.created_at,
       });
 
@@ -4855,7 +4875,7 @@ export class CloudflareScopeHost implements ScopeHost {
       listVersions: async (actor, verticalSlug: string, page) => {
         const rows = await this.cp.listVersions(verticalSlug, page);
         await this.recordAccess(actor, 'listVersions', {}, { verticalSlug }, rows.length);
-        return rows.map(mapVersion);
+        return rows.map(mapListedVersion);
       },
       getVersion: async (actor, versionId: string, verticalSlug?: string) => {
         const row = await this.cp.readVersion(versionId);

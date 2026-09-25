@@ -1,4 +1,4 @@
-import type { ExportBreak, PermissionRegistry } from '@substrat-run/contracts';
+import type { ExportBreak, MigrationDiff, PermissionRegistry } from '@substrat-run/contracts';
 
 /**
  * The installed apps a promotion would break (#1705 PR 3), as the plane lists them to this
@@ -25,6 +25,14 @@ export interface PromotionReview {
   servingRegistry: PermissionRegistry | null;
   incomingRegistry: PermissionRegistry | null;
   /**
+   * The SQL migrations the incoming version adds on top of the serving one (#1677). `null`
+   * when there is nothing to compare (a first promotion, or promoting what already serves)
+   * or when the incoming version's manifest carries no SQL. Null is never "no migrations":
+   * with something serving and a different version incoming, the dialog says the SQL is not
+   * available and asks, whether or not the registry's gate refuses (#1754).
+   */
+  migrations: MigrationDiff | null;
+  /**
    * #1705 PR 3: whom this promotion breaks, or null when nothing would (a first promotion, or no
    * installed app imports what it drops). Read BEFORE the promote so the dialog asks up front.
    */
@@ -32,7 +40,7 @@ export interface PromotionReview {
 }
 
 /**
- * The two reads a review is built from. BOTH must throw when the read did not happen:
+ * The reads a review is built from. EACH must throw when the read did not happen:
  * a reader that folds a failure into `null` turns "the plane never answered" into
  * "this version declares no registry", and the caller cannot tell the two apart. The
  * lenient reads elsewhere in the authority seam do exactly that, on purpose, for a tab
@@ -42,6 +50,8 @@ export interface PromotionReviewReader {
   /** The version the `prod` channel points at, or null when no version has been promoted. */
   prodVersionId(): Promise<string | null>;
   registry(versionId: string): Promise<PermissionRegistry | null>;
+  /** What `versionId` adds on top of `baseId`, or null when its manifest carries no SQL. */
+  migrations(versionId: string, baseId: string): Promise<MigrationDiff | null>;
   /** #1705 PR 3: the plane's impact read for promoting `versionId`. Throws when it did not answer. */
   exportBreaks(versionId: string): Promise<ExportBreaks>;
 }
@@ -60,13 +70,16 @@ export async function readPromotionReview(
       incoming: { versionId: incomingVersionId },
       servingRegistry: null,
       incomingRegistry: null,
+      migrations: null,
       exportBreaks: null,
     };
   }
-  const [servingRegistry, incomingRegistry, breaks] = await Promise.all([
+  const same = servingId === incomingVersionId;
+  const [servingRegistry, incomingRegistry, migrations, breaks] = await Promise.all([
     reader.registry(servingId),
-    servingId === incomingVersionId ? undefined : reader.registry(incomingVersionId),
-    servingId === incomingVersionId ? undefined : reader.exportBreaks(incomingVersionId),
+    same ? undefined : reader.registry(incomingVersionId),
+    same ? null : reader.migrations(incomingVersionId, servingId),
+    same ? undefined : reader.exportBreaks(incomingVersionId),
   ]);
   return {
     serving: { versionId: servingId },
@@ -74,6 +87,7 @@ export async function readPromotionReview(
     servingRegistry,
     // Promoting the version prod already serves changes nothing; one read answers both.
     incomingRegistry: incomingRegistry === undefined ? servingRegistry : incomingRegistry,
+    migrations,
     exportBreaks: breaks && (breaks.affected.length > 0 || (breaks.otherTenants ?? 0) > 0) ? breaks : null,
   };
 }

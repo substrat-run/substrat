@@ -271,6 +271,17 @@ export interface VersionRow {
   created_at: string;
 }
 
+/**
+ * A version as the LIST reads it (#1677): every column but `manifest_json`, with only the two
+ * manifest fields the record carries lifted out as JSON text. A manifest carries the version's
+ * whole SQL migration set, so listing whole manifests moves every version's SQL across the DO
+ * RPC for a page that shows none of it.
+ */
+export type VersionListRow = Omit<VersionRow, 'manifest_json'> & {
+  outbound_json: string | null;
+  calls_json: string | null;
+};
+
 export interface ChannelRow {
   vertical_slug: string;
   channel: string;
@@ -2504,13 +2515,23 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('UPDATE scopes SET expires_at = ? WHERE scope_id = ?', expiresAt, scopeId);
   }
 
-  listVersions(verticalSlug: string, page?: ListPage): VersionRow[] {
+  listVersions(verticalSlug: string, page?: ListPage): VersionListRow[] {
     const where: string[] = ['vertical_slug = ?'];
     const params: (string | number)[] = [verticalSlug];
     const tail = keysetTail(where, params, 'id', page);
+    // Named columns, never `manifest_json` itself. `json_valid` first: a manifest that is not
+    // JSON lists with null surfaces, as `outboundOfManifestJson` reads it, rather than
+    // failing the whole page on `->`.
     return this.sql
-      .exec(`SELECT * FROM vertical_versions WHERE ${where.join(' AND ')}${tail}`, ...params)
-      .toArray() as unknown as VersionRow[];
+      .exec(
+        `SELECT id, vertical_slug, version, manifest_digest, permission_digest, migration_digest,
+                deployment_ref, admission, admission_note, origin_json, created_at,
+                CASE WHEN json_valid(manifest_json) THEN manifest_json -> '$.outbound' END AS outbound_json,
+                CASE WHEN json_valid(manifest_json) THEN manifest_json -> '$.calls' END AS calls_json
+           FROM vertical_versions WHERE ${where.join(' AND ')}${tail}`,
+        ...params,
+      )
+      .toArray() as unknown as VersionListRow[];
   }
 
   setAdmission(id: string, admission: string, note: string | null): void {

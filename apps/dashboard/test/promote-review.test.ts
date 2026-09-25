@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import type { MigrationDiff } from '@substrat-run/contracts';
 import { diffRegistries, hasRegistryChange, registryDirection, type RegistryLike } from '../web/src/lib/registry-diff.js';
 import {
   classifyRefusal,
   honour,
+  planMigration,
   planPermission,
   promoteWithCheckpoint,
+  readyToPromote,
   type Acks,
   type Checkpoint,
   type PromoteReviewWire,
@@ -41,6 +44,8 @@ const review = (over: Partial<PromoteReviewWire> = {}): PromoteReviewWire => ({
   incoming: { versionId: 'v2' },
   servingRegistry: reg(),
   incomingRegistry: reg(),
+  // A new-CLI version whose SQL adds nothing: the "no change" baseline. `null` is not that.
+  migrations: { baseline: 'version', added: [], changed: [], total: 0, truncated: false },
   ...over,
 });
 
@@ -180,7 +185,7 @@ describe('honour', () => {
     expect(honour(shown({}), { permissionChange: true, migrationChange: true })).toEqual({});
   });
   it('keeps what an earlier round acknowledged', () => {
-    expect(honour(shown({ migration: { digests: null }, acknowledged: { permissionChange: true } }), { migrationChange: true })).toEqual({
+    expect(honour(shown({ migration: { digests: null, sql: null, enforced: false }, acknowledged: { permissionChange: true } }), { migrationChange: true })).toEqual({
       permissionChange: true,
       migrationChange: true,
     });
@@ -303,7 +308,8 @@ describe('promoteWithCheckpoint', () => {
       expect(await promoteWithCheckpoint({ review: async () => review(), promote: g.promote, ask: d.ask })).toBe('promoted');
       expect(d.shown).toHaveLength(1);
       expect(d.shown[0]!.permission).toBeNull();
-      expect(d.shown[0]!.migration).toEqual({ digests: 'ccc333 → ddd444' });
+      // The SQL diff is empty (the digest moved on a Durable-Object class), and is shown as such.
+      expect(d.shown[0]!.migration).toEqual({ digests: 'ccc333 → ddd444', sql: review().migrations, enforced: true });
       expect(g.sent).toEqual([undefined, { migrationChange: true }]);
       expect(g.sent[1]).not.toHaveProperty('permissionChange');
     });
@@ -420,6 +426,80 @@ describe('promoteWithCheckpoint', () => {
   });
 });
 
+/**
+ * The migrations a promote would run (#1677 part b). The gate's migration digest does not
+ * cover SQL (#1754), so the review is what raises a SQL-only change, and the dialog asks for
+ * it on its own. That acknowledgement is client-side, and these hold it to the same rules as
+ * the rest: shown before it can be given, ticked on its own, and never skipped.
+ */
+describe('the migration section from the review (#1677)', () => {
+  const ADD = { moduleId: 'desk', version: '0002-priority', sql: 'ALTER TABLE ticket ADD COLUMN priority TEXT;' };
+  const withSql = (over: Partial<MigrationDiff> = {}): PromoteReviewWire =>
+    review({ migrations: { baseline: 'version', added: [ADD], changed: [], total: 1, truncated: false, ...over } });
+
+  it('planMigration: shown when the review adds or edits one; null only for an empty diff or nothing to compare', () => {
+    expect(planMigration(withSql())).toEqual({ digests: null, sql: withSql().migrations, enforced: false });
+    expect(planMigration(withSql({ added: [], total: 0 }))).toBeNull();
+    expect(planMigration(review({ serving: null, migrations: null }))).toBeNull();
+    expect(planMigration(review({ serving: { versionId: 'v2' }, migrations: null }))).toBeNull();
+  });
+
+  it('planMigration: NO SQL carried is "not available" and asked about — never read as no change', () => {
+    expect(planMigration(review({ migrations: null }))).toEqual({ digests: null, sql: null, enforced: false });
+  });
+
+  it('a version with no SQL, which the gate lets through, still waits for the migration tick', async () => {
+    const g = gate({});
+    const declined = dialog({});
+    expect(await promoteWithCheckpoint({ review: async () => review({ migrations: null }), promote: g.promote, ask: declined.ask })).toBe('cancelled');
+    expect(declined.shown[0]!.migration).toEqual({ digests: null, sql: null, enforced: false });
+    expect(g.sent).toEqual([]);
+    const ticked = dialog({ migrationChange: true });
+    expect(await promoteWithCheckpoint({ review: async () => review({ migrations: null }), promote: g.promote, ask: ticked.ask })).toBe('promoted');
+    expect(g.sent).toEqual([{ migrationChange: true }]);
+  });
+
+  it('a SQL-only change the gate does not see is asked for BEFORE the promote, and sent only if ticked', async () => {
+    const g = gate({});
+    const d = dialog({ migrationChange: true });
+    expect(await promoteWithCheckpoint({ review: async () => withSql(), promote: g.promote, ask: d.ask })).toBe('promoted');
+    expect(d.shown).toHaveLength(1);
+    expect(d.shown[0]!.migration).toMatchObject({ enforced: false, sql: { added: [ADD] } });
+    expect(g.sent).toEqual([{ migrationChange: true }]);
+  });
+
+  it('not ticked → nothing is promoted, though the gate would have let it through', async () => {
+    const g = gate({});
+    expect(await promoteWithCheckpoint({ review: async () => withSql(), promote: g.promote, ask: dialog({}).ask })).toBe('cancelled');
+    expect(await promoteWithCheckpoint({ review: async () => withSql(), promote: g.promote, ask: dialog(null).ask })).toBe('cancelled');
+    expect(g.sent).toEqual([]);
+  });
+
+  it('the permission tick does not cover it', async () => {
+    const g = gate({ permission: true });
+    const both = { ...withSql(), incomingRegistry: widened.incomingRegistry };
+    expect(await promoteWithCheckpoint({ review: async () => both, promote: g.promote, ask: dialog({ permissionChange: true }).ask })).toBe('cancelled');
+    expect(g.sent).toEqual([]);
+  });
+
+  it('a gate refusal with SQL in the review shows the SQL, now enforced', async () => {
+    const g = gate({ migration: true });
+    const noSqlChange = withSql({ added: [], total: 0 });
+    const d = dialog({ migrationChange: true });
+    expect(await promoteWithCheckpoint({ review: async () => noSqlChange, promote: g.promote, ask: d.ask })).toBe('promoted');
+    expect(d.shown[0]!.migration).toEqual({ digests: 'ccc333 → ddd444', sql: noSqlChange.migrations, enforced: true });
+  });
+
+  it('a gate refusal with NO SQL carried was already asked about, and the tick carries through', async () => {
+    const g = gate({ migration: true });
+    const d = dialog({ migrationChange: true });
+    expect(await promoteWithCheckpoint({ review: async () => review({ migrations: null }), promote: g.promote, ask: d.ask })).toBe('promoted');
+    expect(d.shown).toHaveLength(1);
+    expect(d.shown[0]!.migration).toEqual({ digests: null, sql: null, enforced: false });
+    expect(g.sent).toEqual([{ migrationChange: true }]);
+  });
+});
+
 describe('the export-break acknowledgement (#1705 PR 3)', () => {
   const listing = { affected: [{ scopeId: 's1', vertical: 'acme/board', type: 'crm.a', schemaVersion: 1, incoming: null }], otherTenants: 2 };
   const BREAK_REFUSAL =
@@ -467,5 +547,56 @@ describe('the export-break acknowledgement (#1705 PR 3)', () => {
     expect(classifyRefusal(`HTTP 409: ${BREAK_REFUSAL}`)).toEqual({ kind: 'export-break', summary: BREAK_REFUSAL });
     const shownNothing: Checkpoint = { permission: null, migration: null, exportBreak: null, acknowledged: {} };
     expect(honour(shownNothing, { exportBreak: true })).toEqual({});
+  });
+});
+
+/**
+ * All three kinds at once (#1677 × #1705 PR 3): a permission change, migrations the review
+ * shows, and an export break. The two features met in one merge, and the property is that
+ * none of their clauses was dropped there: nothing promotes until every kind is ticked.
+ */
+describe('a review that needs all three acknowledgements', () => {
+  const listing = { affected: [{ scopeId: 's1', vertical: 'acme/board', type: 'crm.a', schemaVersion: 1, incoming: null }] };
+  const allThree = review({
+    incomingRegistry: widened.incomingRegistry,
+    migrations: { baseline: 'version', added: [{ moduleId: 'desk', version: '0002', sql: 'ALTER TABLE t ADD c TEXT;' }], changed: [], total: 1, truncated: false },
+    exportBreaks: listing,
+  });
+  const EVERY = { permissionChange: true, migrationChange: true, exportBreak: true } as const;
+
+  it('readyToPromote: true only with every outstanding kind ticked — each of the seven partial ticks is not', () => {
+    const left = { permission: true, migration: true, exportBreak: true };
+    const kinds = ['permission', 'migration', 'exportBreak'] as const;
+    for (let mask = 0; mask < 8; mask++) {
+      const ticked = { permission: !!(mask & 1), migration: !!(mask & 2), exportBreak: !!(mask & 4) };
+      expect(readyToPromote(left, ticked), JSON.stringify(ticked)).toBe(mask === 7);
+    }
+    // And a kind that is not outstanding needs no tick.
+    for (const k of kinds) {
+      expect(readyToPromote({ ...left, [k]: false }, { permission: k !== 'permission', migration: k !== 'migration', exportBreak: k !== 'exportBreak' })).toBe(true);
+    }
+  });
+
+  it('the flow asks all three in one dialog, and any two of them promote nothing', async () => {
+    for (const missing of ['permissionChange', 'migrationChange', 'exportBreak'] as const) {
+      const g = gate({ permission: true });
+      const { [missing]: _left, ...two } = EVERY;
+      const d = dialog(two);
+      expect(await promoteWithCheckpoint({ review: async () => allThree, promote: g.promote, ask: d.ask }), missing).toBe('cancelled');
+      expect(d.shown[0]).toMatchObject({
+        permission: { kind: 'diff' },
+        migration: { enforced: false },
+        exportBreak: { kind: 'listing', listing },
+      });
+      expect(g.sent).toEqual([]);
+    }
+  });
+
+  it('and all three ticked promote once, carrying exactly the three flags', async () => {
+    const g = gate({ permission: true });
+    const d = dialog(EVERY);
+    expect(await promoteWithCheckpoint({ review: async () => allThree, promote: g.promote, ask: d.ask })).toBe('promoted');
+    expect(d.shown).toHaveLength(1);
+    expect(g.sent).toEqual([EVERY]);
   });
 });

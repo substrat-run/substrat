@@ -10,8 +10,14 @@ import {
   assetHash,
   assetsNeed,
   buildPermissionRegistry,
+  DECLARED_MIGRATIONS_MAX,
+  DECLARED_MIGRATIONS_SQL_BYTES_MAX,
+  DEPLOY_MANIFEST_BYTES_SAFE,
   deployManifest,
   emittedModel,
+  sqlBytes,
+  utf8Length,
+  type DeclaredMigration,
   envVarSpec,
   runtimeNeeds,
   RUNTIME_BASELINE,
@@ -158,6 +164,79 @@ export function flattenDeclaredFreshness(
   return freshness.length > 0 ? freshness : undefined;
 }
 
+/**
+ * The kernel function that lists a module's migrations in the order the hosts apply them —
+ * authored, then the derived search and list indexes. It is read from the VERTICAL's own
+ * kernel, the code its deployed worker runs, so the push never keeps a second copy.
+ */
+export type ModuleMigrationsFn = (registration: PermissionsInput['modules'][number]) => readonly { version: string; sql: string }[];
+
+/**
+ * Every module's SQL migrations, flattened with the owning module (#1677) — what the
+ * manifest carries so a promote can show the migrations it would run. Read off the same
+ * `modules` the permission entry exports, which are `ModuleRegistration`s carrying their
+ * `migrations` beside the manifest.
+ *
+ * Through `moduleMigrations`, the kernel's own list, because a host also applies migrations
+ * nobody authored: the indexes a module's `searchables` and `lists` declare. Changing those
+ * runs real schema SQL. Without the function (a vertical on a kernel older than it, or none
+ * resolvable) a module declaring either cannot be carried completely, so the field is left
+ * off rather than carried short; one declaring neither has only its authored set.
+ *
+ * `migrations` is undefined (and `omitted` says why) when the set is over the manifest's caps,
+ * or incomplete as above. The field is then left off, which the promote dialog reads as "SQL
+ * not available" and still asks for the acknowledgement: metadata must never fail a push.
+ */
+export function flattenDeclaredMigrations(
+  permissions: PermissionsInput,
+  moduleMigrations?: ModuleMigrationsFn,
+): { migrations?: DeclaredMigration[]; omitted?: string } {
+  const derives = (m: PermissionsInput['modules'][number]) =>
+    (m.manifest.searchables?.length ?? 0) > 0 || (m.manifest.lists?.length ?? 0) > 0;
+  if (!moduleMigrations && permissions.modules.some(derives)) {
+    return {
+      omitted:
+        "a module declares searchables or lists, and the vertical's @substrat-run/kernel has no moduleMigrations " +
+        'to derive their index migrations with (upgrade the kernel)',
+    };
+  }
+  const migrations = permissions.modules.flatMap((m) =>
+    (moduleMigrations ? moduleMigrations(m) : (m.migrations ?? [])).map((s) => ({
+      moduleId: m.manifest.id,
+      version: s.version,
+      sql: s.sql,
+    })),
+  );
+  if (migrations.length > DECLARED_MIGRATIONS_MAX) {
+    return { omitted: `${migrations.length} migrations, over the ${DECLARED_MIGRATIONS_MAX} a manifest carries` };
+  }
+  const bytes = sqlBytes(migrations);
+  if (bytes > DECLARED_MIGRATIONS_SQL_BYTES_MAX) {
+    return { omitted: `${bytes} bytes of SQL, over the ${DECLARED_MIGRATIONS_SQL_BYTES_MAX} a manifest carries` };
+  }
+  return { migrations };
+}
+
+/**
+ * The manifest as it is sent: without `migrations` when carrying them would take the whole
+ * serialized manifest past {@link DEPLOY_MANIFEST_BYTES_SAFE} (#1677). The control plane keeps
+ * the manifest in one Durable-Object row, which refuses anything over 2 MB, and JSON-escaping
+ * can make the SQL several times its own size — so the SQL cap alone does not keep the row
+ * storable. Left off, the promote dialog says "SQL not available" and still asks. A manifest
+ * over the bound WITHOUT migrations is sent as it is: that is not this field's to decide.
+ */
+export function boundManifest(manifest: DeployManifest, warn: (message: string) => void = console.warn): DeployManifest {
+  if (!manifest.migrations) return manifest;
+  const bytes = utf8Length(JSON.stringify(manifest));
+  if (bytes <= DEPLOY_MANIFEST_BYTES_SAFE) return manifest;
+  warn(
+    `⚠ the SQL migrations are not carried in this version's manifest (the manifest would be ${bytes} bytes, over the ` +
+      `${DEPLOY_MANIFEST_BYTES_SAFE} the platform stores) — a promote of it will say the SQL is not available.`,
+  );
+  const { migrations: _omitted, ...rest } = manifest;
+  return rest;
+}
+
 export interface DeclaredSurface {
   readonly registry: PermissionRegistry;
   /** The entry's `envSpec` export, validated — undefined when the entry exports none. */
@@ -180,6 +259,8 @@ export interface DeclaredSurface {
   readonly declaredEvents: NonNullable<DeployManifest['declaredEvents']>;
   /** True when the surface above hit its cap and is a sample — see the manifest field. */
   readonly declaredEventsTruncated: boolean;
+  /** Every module's SQL migrations (#1677) — see {@link flattenDeclaredMigrations}. */
+  readonly migrations: ReturnType<typeof flattenDeclaredMigrations>;
 }
 
 export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurface> {
@@ -211,10 +292,20 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
   // immediately after import. The unique name avoids the ESM import cache across pushes.
   const out = join(dir, `.substrat.permissions.${Date.now()}.mjs`);
   try {
-    let mod: { permissions?: PermissionsInput; envSpec?: unknown };
+    let mod: { permissions?: PermissionsInput; envSpec?: unknown; __substratKernel?: { moduleMigrations?: unknown } | null };
     try {
       await build({
-        entryPoints: [entryPath],
+        // The entry, plus the vertical's OWN kernel (#1677), imported where the vertical
+        // resolves it: `packages: 'external'` keeps the specifier, so it loads from the
+        // vertical's node_modules. Optional — a vertical with none still reads as data.
+        stdin: {
+          contents:
+            `export * from ${JSON.stringify(entryPath)};\n` +
+            `export const __substratKernel = await import('@substrat-run/kernel').catch(() => null);\n`,
+          resolveDir: dir,
+          sourcefile: 'substrat-surface.mjs',
+          loader: 'js',
+        },
         bundle: true,
         platform: 'node',
         format: 'esm',
@@ -225,6 +316,7 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       // @vite-ignore: this is a real filesystem path imported at runtime, never a bundler input —
       // the comment keeps vitest/vite from trying to resolve it through their transform pipeline.
       mod = (await import(/* @vite-ignore */ pathToFileURL(out).href)) as {
+        __substratKernel?: { moduleMigrations?: unknown } | null;
         permissions?: PermissionsInput;
         envSpec?: unknown;
       };
@@ -273,6 +365,12 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       freshness: flattenDeclaredFreshness(mod.permissions),
       declaredEvents: declaredEvents.events,
       declaredEventsTruncated: declaredEvents.truncated,
+      migrations: flattenDeclaredMigrations(
+        mod.permissions,
+        typeof mod.__substratKernel?.moduleMigrations === 'function'
+          ? (mod.__substratKernel.moduleMigrations as ModuleMigrationsFn)
+          : undefined,
+      ),
     };
   } finally {
     rmSync(out, { force: true });
@@ -1179,8 +1277,14 @@ export async function push(
   // below. Throws if the vertical declares no surface: absence is never a silent empty registry.
   // The same import reads the entry's `envSpec` export (#1206); when it exists it is the copy
   // that ships, and a drifted package.json duplicate refuses the push.
-  const { registry, envSpec: derivedEnvSpec, schedules, freshness, declaredEvents, declaredEventsTruncated } =
+  const { registry, envSpec: derivedEnvSpec, schedules, freshness, declaredEvents, declaredEventsTruncated, migrations } =
     await deriveDeclaredSurface(opts.dir);
+  if (migrations.omitted) {
+    console.warn(
+      `⚠ the SQL migrations are not carried in this version's manifest (${migrations.omitted}) — ` +
+        'a promote of it will say the SQL is not available.',
+    );
+  }
   const envSpec = resolveDeclaredEnvSpec(derivedEnvSpec, opts.envSpec);
 
   // The emitted entity model (#1214), read from the checked-in `model.json` beside
@@ -1212,7 +1316,7 @@ export async function push(
       );
     }
   };
-  const manifest = parseManifest({
+  const manifest = boundManifest(parseManifest({
     version: opts.version,
     name: opts.name ?? opts.slug,
     entry,
@@ -1274,6 +1378,10 @@ export async function push(
     // as that, or an app that declares none loses its provider findings too.
     declaredEvents,
     ...(declaredEventsTruncated ? { declaredEventsTruncated: true } : {}),
+    // The SQL migrations (#1677), sent as `[]` when there are none for the same reason:
+    // absence is what a pre-#1677 push looks like, and the promote dialog reads it as
+    // "SQL not available".
+    migrations: migrations.migrations,
     // The declared outbound surface (#303, D-46) — ALWAYS sent, `[]` when undeclared,
     // because absence means "pre-#303 push" to the egress worker (unenforced, metered
     // only) and a new-CLI push must not read as that. Unlike the metadata above it is
@@ -1291,7 +1399,7 @@ export async function push(
       permission: await permissionDigest(registry),
       migration: await sha256(Buffer.from(JSON.stringify(doClasses))),
     },
-  });
+  }));
 
   const form = new FormData();
   form.set('manifest', JSON.stringify(manifest));
