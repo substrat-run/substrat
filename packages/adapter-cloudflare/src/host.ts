@@ -700,7 +700,6 @@ interface ControlPlaneStub {
   listSystemSwitches(filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecordRow[]>;
   systemSwitchRecordsOf(tenantId: string, scopeId: string): Promise<[string, 'on' | 'off'][]>;
   switchedOffModulesOf(tenantId: string, scopeId: string): Promise<string[]>;
-  forgetSystemSwitches(scopeId: string): Promise<void>;
   recordConnectionUse(
     id: string,
     error: string | null,
@@ -1612,7 +1611,6 @@ function nullControlPlane(): ControlPlaneStub {
     listSystemSwitches: async () => [],
     systemSwitchRecordsOf: async () => [],
     switchedOffModulesOf: async () => [],
-    forgetSystemSwitches: noop,
   };
   return new Proxy({} as ControlPlaneStub, {
     get: (_t, prop) =>
@@ -5779,7 +5777,6 @@ export class CloudflareScopeHost implements ScopeHost {
         await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped', {
           backupRef: opts?.backupRef ?? null,
         });
-        await this.cp.forgetSystemSwitches(scopeId);
       },
       // -- subject erasure (#37) ----------------------------------------------
       sealSubjectPayloads: async (actor, tenantId, scopeId, items) => {

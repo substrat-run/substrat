@@ -1998,25 +1998,30 @@ export class ControlPlaneDO extends DurableObject {
           `(allowed from: ${from.join('|')})`,
       };
     }
-    // Stamp/clear archived_at so the reap sweep can age scopes. Entering `archived`
-    // records when; `unarchive` (→ active, a restore per §4.2) clears it so a later
-    // re-archive dates from the new event. `reaped` keeps it — it is terminal history.
-    if (to === 'archived') {
-      this.sql.exec(
-        'UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?',
-        to,
-        new Date().toISOString(),
-        scopeId,
-      );
-    } else if (to === 'active') {
-      this.sql.exec(
-        'UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?',
-        to,
-        scopeId,
-      );
-    } else {
-      this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
-    }
+    // One transaction: the status and — on a reap — the scope's switch records (#1674).
+    // Reaped is terminal, so a cleanup that failed after the flip could never be retried.
+    this.ctx.storage.transactionSync(() => {
+      // Stamp/clear archived_at so the reap sweep can age scopes. Entering `archived`
+      // records when; `unarchive` (→ active, a restore per §4.2) clears it so a later
+      // re-archive dates from the new event. `reaped` keeps it — it is terminal history.
+      if (to === 'archived') {
+        this.sql.exec(
+          'UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?',
+          to,
+          new Date().toISOString(),
+          scopeId,
+        );
+      } else if (to === 'active') {
+        this.sql.exec(
+          'UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?',
+          to,
+          scopeId,
+        );
+      } else {
+        this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
+      }
+      if (to === 'reaped') forgetSystemSwitchesOf(this.kernelSql, scopeId);
+    });
     return { ok: true, status: row.status, vertical: row.vertical };
   }
 
@@ -3303,11 +3308,6 @@ export class ControlPlaneDO extends DurableObject {
   /** One scope's recorded positions, by module — the status read's `recorded` join. */
   systemSwitchRecordsOf(tenantId: string, scopeId: string): [string, 'on' | 'off'][] {
     return [...systemSwitchRecordsOf(this.kernelSql, tenantId, scopeId)];
-  }
-
-  /** A reaped scope's switch records go with it (#1674) — see `forgetSystemSwitchesOf`. */
-  forgetSystemSwitches(scopeId: string): void {
-    forgetSystemSwitchesOf(this.kernelSql, scopeId);
   }
 
   /** The modules a re-assert switches back off on one scope. */

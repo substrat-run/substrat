@@ -73,3 +73,41 @@ describe('the switch record backfill is atomic with its table (#1674)', () => {
     expect(tableExists(d)).toBe(true);
   });
 });
+
+/**
+ * #1674 (Copilot review r4104327560): reaping a scope and forgetting its switch records are
+ * one directory transaction. Reaped is terminal, so a reap whose cleanup failed AFTER the
+ * status flip could never be retried, and the fleet read would list the dead scope's
+ * switch for good. The fault: the record table is dropped behind the host's back, so the
+ * cleanup throws.
+ */
+describe('reaping a scope and forgetting its switch records commit together (#1674)', () => {
+  it('a reap whose cleanup fails leaves the scope archived, so the reap can be retried', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'switch-reap-'));
+    try {
+      const staff = platformActorId.parse('01JZ00000000000000000000ST');
+      const t = '01JZ0000000000000000000TNT' as never;
+      const s = '01JZ0000000000000000000SCP' as never;
+      let host = new SqliteScopeHost({ dir: d });
+      await host.admin.createTenant(staff, { id: t, slug: 'reap', name: 'Reap' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s });
+      await host.admin.activateScope(staff, t, s);
+      await host.admin.archiveScope(staff, t, s);
+
+      const raw = new Database(join(d, '_directory.sqlite'));
+      raw.exec('DROP TABLE _substrat_system_switches');
+      raw.close();
+      await expect(host.admin.reapScope(staff, t, s, { force: true })).rejects.toThrow(/_substrat_system_switches/);
+      expect((await host.admin.getScopeRecord(staff, t, s))?.status).toBe('archived');
+
+      // Restarted, the directory has its table again, and the retried reap completes.
+      await host.close();
+      host = new SqliteScopeHost({ dir: d });
+      await host.admin.reapScope(staff, t, s, { force: true });
+      expect((await host.admin.getScopeRecord(staff, t, s))?.status).toBe('reaped');
+      await host.close();
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});

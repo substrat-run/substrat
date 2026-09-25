@@ -5612,31 +5612,37 @@ export class SqliteScopeHost implements ScopeHost {
             `(allowed from: ${from.join('|')})`,
         );
       }
-      // Stamp/clear archived_at so the reap sweep can age scopes (§4.4). Entering
-      // `archived` records when; `unarchive` (→ active, a restore) clears it so a later
-      // re-archive dates from the new event; `reaped` keeps it as terminal history.
-      if (to === 'archived') {
-        this.directory
-          .prepare('UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?')
-          .run(to, new Date().toISOString(), scopeId);
-      } else if (to === 'active') {
-        this.directory
-          .prepare('UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?')
-          .run(to, scopeId);
-      } else {
-        this.directory.prepare('UPDATE scopes SET status = ? WHERE scope_id = ?').run(to, scopeId);
-      }
-      // The audit target carries the scope's vertical (control-plane.md §4.4:
-      // "vertical stays null until §4.2 lifecycle actions that name one"). It is
-      // read from the scope rather than passed in, so the trail cannot disagree
-      // with the directory about which deployment the action touched.
-      this.recordAdmin(
-        actor,
-        action,
-        { tenantId, scopeId, vertical: row.vertical },
-        { status: row.status },
-        { status: to, ...afterExtra },
-      );
+      // One directory transaction: the status, the audit row and — on a reap — the scope's
+      // switch records (#1674). Reaped is terminal, so a cleanup that failed after the flip
+      // could never be retried; together, a failure leaves the scope where it was.
+      this.directory.transaction(() => {
+        // Stamp/clear archived_at so the reap sweep can age scopes (§4.4). Entering
+        // `archived` records when; `unarchive` (→ active, a restore) clears it so a later
+        // re-archive dates from the new event; `reaped` keeps it as terminal history.
+        if (to === 'archived') {
+          this.directory
+            .prepare('UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?')
+            .run(to, new Date().toISOString(), scopeId);
+        } else if (to === 'active') {
+          this.directory
+            .prepare('UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?')
+            .run(to, scopeId);
+        } else {
+          this.directory.prepare('UPDATE scopes SET status = ? WHERE scope_id = ?').run(to, scopeId);
+        }
+        if (to === 'reaped') forgetSystemSwitchesOf(switchSqlOf(this.directory), scopeId);
+        // The audit target carries the scope's vertical (control-plane.md §4.4:
+        // "vertical stays null until §4.2 lifecycle actions that name one"). It is
+        // read from the scope rather than passed in, so the trail cannot disagree
+        // with the directory about which deployment the action touched.
+        this.recordAdmin(
+          actor,
+          action,
+          { tenantId, scopeId, vertical: row.vertical },
+          { status: row.status },
+          { status: to, ...afterExtra },
+        );
+      })();
     };
 
     const writeTenantTuple = (
@@ -8111,7 +8117,6 @@ export class SqliteScopeHost implements ScopeHost {
         await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped', {
           backupRef: opts?.backupRef ?? null,
         });
-        forgetSystemSwitchesOf(switchSqlOf(this.directory), scopeId);
       },
       // -- subject erasure (#37) ----------------------------------------------
       sealSubjectPayloads: async (actor, tenantId, scopeId, items) => {
