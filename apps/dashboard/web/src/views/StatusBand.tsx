@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMediaQuery } from '@substrat-run/ui';
 import { api, ApiError, type AppRow, type AppSchedulesView, type OwnerSeatView, type TenantMetricsRow } from '../lib/api';
-import { DEV_MOCK, MOCK_APP_SCHEDULES, MOCK_TENANT_METRICS } from '../lib/mock';
+import { DEV_MOCK, MOCK_TENANT_METRICS } from '../lib/mock';
+import type { SchedulesState } from '../lib/use-app-schedules';
 import { MonoTag, Pill, type PillKind } from '../components/ui';
 import { navigate, obsPath, teamPath } from '../lib/router';
 
@@ -24,6 +25,7 @@ export function StatusBand({
   versionLabel,
   updateAvailable,
   seat,
+  schedules,
 }: {
   app: AppRow;
   /** The running version as Overview already resolved it ('…' loading, '—' nothing bound). */
@@ -31,29 +33,24 @@ export function StatusBand({
   updateAvailable: boolean;
   /** `undefined` = still asking, `null` = the platform cannot answer for this instance. */
   seat: OwnerSeatView | null | undefined;
+  /** The Overview's one schedules read, shared with the Schedules card. */
+  schedules: SchedulesState;
 }) {
   const scopeId = app.app_scope_id;
   // Two columns below 720px: four tiles side by side stop being a glance long before
   // they stop fitting. An inline-styled app has no `@media` block to say it in.
   const narrow = useMediaQuery('(max-width: 720px)');
 
-  const [schedules, setSchedules] = useState<SchedulesState>({ state: 'loading' });
   const [metrics, setMetrics] = useState<MetricsState>({ state: 'loading' });
   useEffect(() => {
     if (DEV_MOCK) {
-      setSchedules({ state: 'ok', view: MOCK_APP_SCHEDULES });
       setMetrics({ state: 'ok', rows: MOCK_TENANT_METRICS });
       return;
     }
     let live = true;
     // Cleared on a scope change, not left standing: a stat captioned with the wrong
     // app's name is worse than a blank moment.
-    setSchedules({ state: 'loading' });
     setMetrics({ state: 'loading' });
-    api
-      .appSchedules(scopeId)
-      .then((v) => live && setSchedules({ state: 'ok', view: v }))
-      .catch(() => live && setSchedules({ state: 'error' }));
     api
       .appTenantMetrics(scopeId, 24)
       .then((rows) => live && setMetrics({ state: 'ok', rows }))
@@ -125,7 +122,6 @@ export function StatusBand({
   );
 }
 
-type SchedulesState = { state: 'loading' } | { state: 'error' } | { state: 'ok'; view: AppSchedulesView };
 type MetricsState = { state: 'loading' } | { state: 'error' } | { state: 'absent' } | { state: 'ok'; rows: TenantMetricsRow[] };
 
 /** The app declares neither a schedule nor a freshness expectation — nothing to walk into. */
