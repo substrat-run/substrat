@@ -13,7 +13,14 @@
  * is refused too (409), and the refusal lists the apps it would break: the caller's own tenant's
  * by name, any other tenant only as a count. `--ack-export-break` passes it once that is read.
  */
-import type { ExportBreak, MigrationDiff, MigrationEntry, PermissionRegistry } from '@substrat-run/contracts';
+import {
+  diffRegistries,
+  unitemisedRegistryChanges,
+  type ExportBreak,
+  type MigrationDiff,
+  type MigrationEntry,
+  type PermissionRegistry,
+} from '@substrat-run/contracts';
 import { warnIfStale } from './version.js';
 import { parseJsonBody, readAllEntries } from './http.js';
 import { failureMessage, getJson } from './problem.js';
@@ -98,7 +105,10 @@ export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
         : '';
     const message = failureMessage('promote failed', res.status, body);
     if (!message.includes(NEEDS_ACK)) throw new Error(message + listing);
-    const lines = await explainRefusal(opts, message.includes('changes migrations'));
+    const lines = await explainRefusal(opts, {
+      permission: message.includes('changes the permission surface'),
+      migration: message.includes('changes migrations'),
+    });
     throw new Error(`${message}${listing}\n\n${lines.join('\n')}`);
   }
   return parseJsonBody<PromoteResult>(body, url);
@@ -115,7 +125,10 @@ const NEEDS_ACK = 'acknowledge it explicitly';
  * routes the dashboard's dialog reads. Never throws — the refusal is the answer, and a diff
  * that could not be read is said so in a line rather than put in its place.
  */
-export async function explainRefusal(opts: PromoteOptions, migrationRefused: boolean): Promise<string[]> {
+export async function explainRefusal(
+  opts: PromoteOptions,
+  refused: { permission: boolean; migration: boolean },
+): Promise<string[]> {
   const base = `${opts.controlPlaneUrl.replace(/\/$/, '')}/verticals/${encodeURIComponent(opts.slug)}`;
   const get = <T>(url: string): Promise<T> => getJson<T>(url, opts.header);
   try {
@@ -139,10 +152,10 @@ export async function explainRefusal(opts: PromoteOptions, migrationRefused: boo
       `${opts.channel} serves ${serving}; promoting ${opts.versionId}.`,
       '',
       'permission changes:',
-      ...formatRegistryDiff(from, to).map((l) => `  ${l}`),
+      ...formatRegistryDiff(from, to, refused.permission).map((l) => `  ${l}`),
       '',
       'migration changes:',
-      ...formatMigrationDiff(migrations, migrationRefused).map((l) => `  ${l}`),
+      ...formatMigrationDiff(migrations, refused.migration).map((l) => `  ${l}`),
       '',
       'note: the registry does not yet require --ack-migrations for a change to SQL migrations alone (#1754).',
     ];
@@ -151,38 +164,38 @@ export async function explainRefusal(opts: PromoteOptions, migrationRefused: boo
   }
 }
 
-/** A permission-registry diff, one line per change. `null` on a side is a version that kept none. */
-export function formatRegistryDiff(from: PermissionRegistry | null, to: PermissionRegistry | null): string[] {
+/**
+ * A permission-registry diff, one line per change — the dashboard's own `diffRegistries`
+ * (contracts), rendered for a terminal. `null` on a side is a version that kept none.
+ *
+ * The digest hashes the whole registry and the diff itemises keys, roles and grant shapes, so
+ * a field it does not itemise (exports, imports, which module declares a key) is NAMED rather
+ * than dropped. `digestMoved` is whether the gate refused on the permission digest: then
+ * "none" is never the answer, because the gate has just said there is a change.
+ */
+export function formatRegistryDiff(from: PermissionRegistry | null, to: PermissionRegistry | null, digestMoved: boolean): string[] {
   if (!from || !to) {
     return [`cannot compare: ${!from ? 'the serving' : 'the incoming'} version carries no permission registry`];
   }
-  const lines: string[] = [];
-  const before = new Map(from.permissions.map((p) => [p.key, p.description]));
-  const after = new Map(to.permissions.map((p) => [p.key, p.description]));
-  for (const [key, description] of after) {
-    const old = before.get(key);
-    if (old === undefined) lines.push(`+ ${key}  ${description}`);
-    else if (old !== description) lines.push(`~ ${key}  “${old}” → “${description}”`);
+  const diff = diffRegistries(from, to);
+  const describe = (reg: PermissionRegistry, key: string) => reg.permissions.find((p) => p.key === key)?.description ?? '';
+  const shape = (label: string, c: { added: string[]; removed: string[]; isNew: boolean; isGone: boolean }, name: string) =>
+    `${label} ${name}${c.isNew ? ' (new)' : c.isGone ? ' (removed)' : ''}: ${[...c.added.map((k) => `+${k}`), ...c.removed.map((k) => `-${k}`)].join(' ')}`.trimEnd();
+  const lines = [
+    ...diff.addedKeys.map((k) => `+ ${k}  ${describe(to, k)}`),
+    ...diff.changedKeys.map((k) => `~ ${k}  “${describe(from, k)}” → “${describe(to, k)}”`),
+    ...diff.removedKeys.map((k) => `- ${k}  ${describe(from, k)}`),
+    ...diff.roleChanges.map((r) => shape('role', r, r.key)),
+    ...diff.grantChanges.map((g) => shape('grant shape', g, g.entityType)),
+  ];
+  const unitemised = unitemisedRegistryChanges(from, to, diff);
+  if (unitemised.length > 0) {
+    lines.push(`changed, not itemised here: ${unitemised.join(', ')} — compare the two versions' registries`);
   }
-  for (const [key, description] of before) if (!after.has(key)) lines.push(`- ${key}  ${description}`);
-  const shapes = (label: string, a: Map<string, string[]>, b: Map<string, string[]>) => {
-    for (const name of [...new Set([...a.keys(), ...b.keys()])].sort()) {
-      const was = new Set(a.get(name) ?? []);
-      const now = new Set(b.get(name) ?? []);
-      const added = [...now].filter((k) => !was.has(k));
-      const removed = [...was].filter((k) => !now.has(k));
-      if (added.length === 0 && removed.length === 0 && a.has(name) === b.has(name)) continue;
-      const state = !a.has(name) ? ' (new)' : !b.has(name) ? ' (removed)' : '';
-      lines.push(`${label} ${name}${state}: ${[...added.map((k) => `+${k}`), ...removed.map((k) => `-${k}`)].join(' ')}`.trimEnd());
-    }
-  };
-  shapes('role', new Map(from.roles.map((r) => [r.key, r.permissions])), new Map(to.roles.map((r) => [r.key, r.permissions])));
-  shapes(
-    'grant shape',
-    new Map((from.entityGrants ?? []).map((g) => [g.entityType, g.permissions])),
-    new Map((to.entityGrants ?? []).map((g) => [g.entityType, g.permissions])),
-  );
-  return lines.length > 0 ? lines : ['none'];
+  if (lines.length > 0) return lines;
+  return digestMoved
+    ? ["the permission digest changed, but the two stored registries read the same here — compare them in the repository"]
+    : ['none'];
 }
 
 /**

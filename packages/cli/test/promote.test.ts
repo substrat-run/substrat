@@ -37,6 +37,8 @@ function plane(o: {
   migrations: MigrationDiff | null;
   serving?: string | null;
   failRegistry?: boolean;
+  /** The two registries the plane serves (serving v1, incoming v2), when not the default pair. */
+  registries?: { v1: PermissionRegistry; v2: PermissionRegistry };
   /** #1705 PR 3: the listing an export-break refusal carries in its body. */
   exportBreaks?: { affected: { scopeId: string; vertical: string; type: string; schemaVersion: number; incoming: number | null }[] };
 }) {
@@ -54,6 +56,7 @@ function plane(o: {
     }
     if (url.pathname.endsWith('/registry')) {
       if (o.failRegistry) return Response.json({ error: 'boom' }, { status: 500 });
+      if (o.registries) return Response.json({ registry: url.pathname.includes('/v1/') ? o.registries.v1 : o.registries.v2 });
       return Response.json({ registry: url.pathname.includes('/v1/') ? reg() : reg([{ key: 'desk:admin', description: 'Administer' }], ['desk:admin']) });
     }
     if (url.pathname.endsWith('/migrations')) return Response.json({ migrations: o.migrations });
@@ -61,6 +64,9 @@ function plane(o: {
   }) as typeof fetch;
   return seen;
 }
+
+const withExportsRow = (type: string) =>
+  ({ ...reg(), exports: [{ type, schemaVersion: 1, readPermission: 'desk:read', declaredBy: ['desk'] }] }) as unknown as PermissionRegistry;
 
 const run = () => promote({ controlPlaneUrl: 'http://cp/api', header: {}, slug: 'desk', channel: 'prod', versionId: 'v2' });
 const refusalOf = async () => (await run().then(() => null, (e: Error) => e))!.message;
@@ -76,6 +82,13 @@ describe('substrat promote — a refusal prints both diffs (#1677)', () => {
     expect(text).toContain('#1754');
     // The diff was taken against what prod SERVES, over the owner routes.
     expect(seen).toContain('GET /api/verticals/desk/versions/v2/migrations?base=v1');
+  });
+
+  it('a permission refusal for an EXPORTS-only change prints what moved, and never "none"', async () => {
+    plane({ refusal: PERM_REFUSAL, migrations: diff(), registries: { v1: withExportsRow('desk.a'), v2: withExportsRow('desk.b') } });
+    const text = await refusalOf();
+    expect(text).toMatch(/permission changes:\n {2}changed, not itemised here: exports/);
+    expect(text).not.toMatch(/permission changes:\n {2}none/);
   });
 
   it('a migration refusal with no SQL carried says so, naming the digest', async () => {
@@ -140,14 +153,41 @@ describe('the diff formatters', () => {
       ],
       entityGrants: [],
     } as unknown as PermissionRegistry;
-    expect(formatRegistryDiff(from, to)).toEqual([
-      '~ desk:read  “Read tickets” → “Read every ticket”',
+    expect(formatRegistryDiff(from, to, true)).toEqual([
       '+ desk:new  New',
+      '~ desk:read  “Read tickets” → “Read every ticket”',
       '- desk:old  Old',
       'grant shape ticket (removed): -desk:read',
     ]);
-    expect(formatRegistryDiff(reg(), reg())).toEqual(['none']);
-    expect(formatRegistryDiff(null, reg())[0]).toMatch(/serving version carries no permission registry/);
+    expect(formatRegistryDiff(reg(), reg(), false)).toEqual(['none']);
+    expect(formatRegistryDiff(null, reg(), true)[0]).toMatch(/serving version carries no permission registry/);
+  });
+
+  // Copilot on #1766: the digest hashes the whole registry, the diff itemises keys, roles and
+  // grant shapes. A change in anything else must never print as "none".
+  const withExports = (type: string) =>
+    ({ ...reg(), exports: [{ type, schemaVersion: 1, readPermission: 'desk:read', declaredBy: ['desk'] }] }) as unknown as PermissionRegistry;
+
+  it('an exports-only change is named, never "none"', () => {
+    expect(formatRegistryDiff(withExports('desk.a'), withExports('desk.b'), true)).toEqual([
+      "changed, not itemised here: exports — compare the two versions' registries",
+    ]);
+    // Named even when the permission digest is not what refused (it may have been acknowledged).
+    expect(formatRegistryDiff(reg(), withExports('desk.a'), false)).toEqual([
+      "changed, not itemised here: exports — compare the two versions' registries",
+    ]);
+  });
+
+  it('which module declares a key, and a role\'s source, are named too', () => {
+    const moved = { ...reg(), permissions: [{ key: 'desk:read', description: 'Read tickets', declaredBy: ['other'] }] } as unknown as PermissionRegistry;
+    expect(formatRegistryDiff(reg(), moved, true)).toEqual(["changed, not itemised here: permissions — compare the two versions' registries"]);
+    const sourced = { ...reg(), roles: [{ key: 'agent', permissions: ['desk:read'], source: 'engine' }] } as unknown as PermissionRegistry;
+    expect(formatRegistryDiff(reg(), sourced, true)).toEqual(["changed, not itemised here: roles — compare the two versions' registries"]);
+  });
+
+  it('a permission-digest refusal with nothing to tell apart still says the digest changed', () => {
+    expect(formatRegistryDiff(reg(), reg(), true)[0]).toMatch(/the permission digest changed/);
+    expect(formatRegistryDiff(reg(), reg(), true)).not.toContain('none');
   });
 
   it('formatMigrationDiff: edited ones first and marked, the unavailable baseline and a cut list said plainly', () => {
