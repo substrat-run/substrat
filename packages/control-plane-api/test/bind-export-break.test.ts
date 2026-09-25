@@ -297,6 +297,27 @@ describe('the bind gate route (#1756)', () => {
       expect(await recordOf(s)).toMatchObject({ servingRef: SERVING, verticalVersionId: dropped });
     });
 
+    it('rebind-vertical ACROSS lineages is not judged, even from a scope on its serving script', async () => {
+      // The known gap, held as a gap rather than turned into a phantom: the scope runs `kept` from
+      // PRODUCER's serving script while its pointer says `dropped`. Routing it onto ANOTHER
+      // vertical's script is not a move of PRODUCER's code, so it is not measured as one — which
+      // would read "kept → dropped" and refuse, after the data had already been copied across.
+      const OTHER = 'acme/ledger2';
+      const OTHER_SERVING = 'acme-ledger2-serving';
+      await host.admin.registerVertical(staff, { slug: OTHER, name: OTHER, source: 'cli' });
+      const l1 = await publish(OTHER, registry({}));
+      await host.admin.setVerticalServing(staff, OTHER, { ref: OTHER_SERVING, versionId: l1, doClasses: [], migrationTag: 'g' });
+      await serve(kept);
+      const s = await install(t, PRODUCER, v1); // born on PRODUCER's serving script
+      await host.admin.bindScopeVersion(staff, t, s, dropped); // runs `kept` all the same
+      expect(await recordOf(s)).toMatchObject({ servingRef: SERVING, verticalVersionId: dropped });
+      storeOf(SERVING).set(s, table('crossing-row'));
+      const res = await post(`/tenants/${t}/scopes/${s}/rebind-vertical`, asStaff, { vertical: OTHER });
+      expect(res.status).toBe(200);
+      expect(await recordOf(s)).toMatchObject({ servingRef: OTHER_SERVING, verticalVersionId: l1 });
+      expect(storeOf(OTHER_SERVING).get(s)?.[0]?.rows).toEqual([['crossing-row']]);
+    });
+
     it('the twin: a vertical serving a version that keeps the export adopts unasked', async () => {
       await serve(kept);
       const s = await legacy();

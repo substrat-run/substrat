@@ -1887,8 +1887,9 @@ export function bindExportBreakRefusal(breaks: readonly ExportBreak[]): string {
  *   primary install only), so nothing it runs can break an edge.
  * - **A scope still provisioning** has never been active, so no edge has ever delivered from it.
  * - **A first bind** runs nothing before it, so it promised nothing.
- * - **A lineage crossing** (the version belongs to another vertical than the scope's) is not
- *   judged here, and nothing else judges it either: every consumer importing `from` the old slug
+ * - **A lineage crossing** (the version belongs to another vertical than the scope's, or the route
+ *   goes onto a script that is not this vertical's serving script) is not judged here, and nothing
+ *   else judges it either: every consumer importing `from` the old slug
  *   loses its producer, and `rebind-vertical`'s acknowledgements are about migrations, not about
  *   that. A known gap, older than this gate.
  */
@@ -1908,6 +1909,10 @@ export async function bindExportBreaksOf(input: {
   const { scope } = input;
   if (!isPrimaryScope(scope) || scope.status === 'provisioning') return [];
   if (scope.vertical === null || scope.vertical !== input.incoming.verticalSlug) return [];
+  // A route onto a script that is not this vertical's serving script is a lineage crossing (or a
+  // ref this host cannot name), and what the scope runs there is not this vertical's code at all:
+  // the same known gap as above, never a phantom move judged against the wrong vertical.
+  if (typeof input.servingRef === 'string' && input.servingRef !== input.serving?.ref) return [];
   const before = runningVersionOf(scope, input.serving);
   const after = runningVersionOf(
     { verticalVersionId: input.incoming.id, servingRef: input.servingRef === undefined ? scope.servingRef : input.servingRef },

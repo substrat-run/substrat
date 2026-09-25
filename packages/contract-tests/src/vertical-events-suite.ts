@@ -1541,6 +1541,14 @@ export function verticalEventsContractSuite(
       await expect(fx.consumer.admin.bindingImpact(staff, other, po, v1, { servingRef: ref })).resolves.toEqual([]);
       await fx.consumer.admin.setScopeServingRef(staff, other, po, ref);
       expect((await fx.consumer.admin.getScopeRecord(staff, other, po))?.servingRef).toBe(ref);
+
+      // A route onto a script that is NOT this vertical's serving script is a crossing: another
+      // vertical's code, which this gate does not judge (a known gap). It is never measured as a
+      // move of this vertical's — which, for a scope on its serving script whose pointer says
+      // something else, would read a phantom break between the served version and the pointer.
+      await fx.consumer.admin.bindScopeVersion(staff, other, po, dropped); // on the script: runs `kept` still
+      await fx.consumer.admin.setScopeServingRef(staff, other, po, `elsewhere-${tag}`);
+      expect((await fx.consumer.admin.getScopeRecord(staff, other, po))?.servingRef).toBe(`elsewhere-${tag}`);
     });
 
     it("a private vertical's promote rebinds its owned scopes past the bind gate: the promote already judged the break (#1756)", async () => {
