@@ -319,11 +319,11 @@ host.defineOperation('acme/create-priced-workorder', async (ctx, input) => {
 ## SQL limits on `ctx.sql`
 
 A scope's database is a Durable Object's SQLite when deployed and `better-sqlite3` locally,
-and the Durable Object's build sets four limits far below stock SQLite's. A statement over one
-runs in every local test and fails on the first deployed call, so **the node adapter enforces
-the first three of these on `ctx.sql`** and refuses with the Durable Object's own message. Your
-suite sees what production sees for them. The `LIKE`/`GLOB` pattern limit is **not** enforced by
-the adapter: node's SQLite allows 50 000 bytes, and this repository's own suites emulate the limit
+and the Durable Object's build sets four limits far below stock SQLite's. Left alone, a statement
+over one would run in every local test and fail on the first deployed call, so **the node adapter
+enforces the first three of these on `ctx.sql`** and refuses with the Durable Object's own
+message. Your suite sees what production sees for them, and only the fourth can still pass locally
+and fail once deployed. The `LIKE`/`GLOB` pattern limit is **not** enforced by the adapter: node's SQLite allows 50 000 bytes, and this repository's own suites emulate the limit
 with a test preload (`tools/vitest/like-pattern-limit.cjs`) that a vertical's suite does not get.
 Enforcing it in the adapter would replace SQLite's `like()` on every connection, a JavaScript call
 per row and no `LIKE` prefix index for self-hosters. Bound the pattern yourself (below).
