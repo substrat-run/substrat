@@ -1264,7 +1264,7 @@ export class TenantNarrowedControlPlane {
    * session. A caller here cannot widen it — there is no parameter for that — which is
    * the same posture as the rest of this class, one layer further down.
    */
-  async tenantMetrics(input: { scopeId?: string; vertical?: string; hours: number; since?: string; until?: string }): Promise<
+  async tenantMetrics(input: { scopeId?: string; vertical?: string; grain?: 'surface' | 'scope'; hours: number; since?: string; until?: string }): Promise<
     Array<{
       scopeId: string;
       vertical: string | null;
@@ -1283,6 +1283,7 @@ export class TenantNarrowedControlPlane {
     if (input.until !== undefined) q.set('until', input.until);
     if (input.scopeId) q.set('scopeId', input.scopeId);
     if (input.vertical) q.set('vertical', input.vertical);
+    if (input.grain) q.set('grain', input.grain);
     const num = (v: unknown) => (typeof v === 'number' ? v : 0);
     const optNum = (v: unknown) => (typeof v === 'number' ? v : undefined);
     const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);

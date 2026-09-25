@@ -138,7 +138,7 @@ export type {
   TenantMetricsBucket,
   ConnectorCallsBucket,
 } from './observability.js';
-export { TENANT_SERIES_SCOPE_CAP } from './observability.js';
+export { TENANT_SERIES_SCOPE_CAP, TENANT_METRICS_LIMIT } from './observability.js';
 export {
   STORAGE_PAGE_DEFAULT,
   STORAGE_PAGE_MAX,

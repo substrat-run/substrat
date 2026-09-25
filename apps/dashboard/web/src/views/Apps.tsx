@@ -1,123 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
-import { api, type AppHealthRow, type AppRow, type InstallStep } from '../lib/api';
+import type { AppRow, InstallStep } from '../lib/api';
 import { verticalMeta } from '../lib/demo';
 import { relativeTime } from '../lib/format';
 import { Ic } from '../lib/icons';
 import { AppCard, type AppCardData } from '../components/AppCard';
+import { FleetHealth } from './FleetHealth';
 import { Page } from '../components/layout';
-import { Pill, PageTitle, RowActions, card } from '../components/ui';
-
-/**
- * The fleet rollup (#1238): what needs attention, before any drill-down.
- *
- * Shows only apps that are NOT ok, worst first — which is the right density for
- * the motivating user, a firm running one vertical for thirty clients. A clean
- * fleet gets one green line rather than thirty green cards to scan past.
- *
- * `silent` is listed as loudly as `failing`, because an app nothing has checked
- * is not an app that is fine — rendering silence as success is the failure this
- * whole view set exists to prevent.
- *
- * Exported because the team Observability page shows the same rollup as its all-apps
- * Health sub-view (#1447) — one derivation, two entrances, rather than the fleet answer
- * living in one place and the cross-app page carrying a copy of it.
- */
-export function FleetHealth({ onOpen }: { onOpen: (scopeId: string) => void }) {
-  const [rows, setRows] = useState<AppHealthRow[] | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    api
-      .fleetHealth()
-      .then((r) => live && setRows(r.rows))
-      // A worker predating the route costs the panel, not the page.
-      .catch(() => live && setRows(null));
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  if (!rows || rows.length === 0) return null;
-  // A row here is a to-do. `unknown` is not one: it is a fact about a read that
-  // did not reach the end of its record, not about the app — so it is counted in
-  // a footnote about the panel's own coverage rather than listed as a verdict the
-  // reader is expected to act on and cannot.
-  const attention = rows.filter((r) => r.state !== 'ok' && r.state !== 'unknown');
-  const unread = rows.filter((r) => r.state === 'unknown');
-  const read = rows.length - unread.length;
-  const tone: Record<string, 'danger' | 'warning' | 'neutral'> = {
-    failing: 'danger',
-    stale: 'warning',
-    silent: 'warning',
-  };
-  const footnote =
-    unread.length > 0 ? (
-      <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-        Health for {unread.length} {unread.length === 1 ? 'app' : 'apps'} could not be read
-        {unread.length <= 3 ? ` (${unread.map((r) => r.name).join(', ')})` : ''} — {unread[0]!.reason}
-      </span>
-    ) : null;
-
-  if (attention.length === 0) {
-    if (read === 0) {
-      // Nothing was readable: no verdict at all, and no "All clear" for it.
-      return <div style={{ ...card, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>{footnote}</div>;
-    }
-    return (
-      <div style={{ ...card, padding: '10px 14px', display: 'grid', gap: 4, fontSize: 12.5 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Pill kind="success">All clear</Pill>
-          <span style={{ color: 'var(--text-tertiary)' }}>
-            {read} {read === 1 ? 'app' : 'apps'} swept or with nothing to sweep, and nothing failing or overdue.
-          </span>
-        </div>
-        {footnote}
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ ...card, padding: 14, display: 'grid', gap: 8 }}>
-      <div>
-        <h3 style={{ margin: 0, fontSize: 15 }}>Needs attention</h3>
-        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-          {attention.length} of {read} {read === 1 ? 'app' : 'apps'}, worst first. Apps that are swept and
-          clean, or declare nothing to sweep, are not listed. Open a row for its sweep record.
-        </p>
-      </div>
-      {attention.map((r) => (
-        <button
-          key={r.scopeId}
-          type="button"
-          onClick={() => onOpen(r.scopeId)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', width: '100%',
-            background: 'none', border: 0, borderTop: '1px solid var(--border-subtle)',
-            padding: '8px 0 0', font: 'inherit', cursor: 'pointer',
-          }}
-        >
-          <Pill kind={tone[r.state] ?? 'neutral'}>{r.state}</Pill>
-          {/*
-            Whose app, then what is wrong. The scope suffix stays as the last column
-            because two clients may share a name, but it is no longer the only
-            identity on the row: an operator running one vertical for thirty clients
-            reads this line to know who to call.
-          */}
-          <span style={{ fontSize: 12.5, fontWeight: 550, whiteSpace: 'nowrap' }}>{r.name}</span>
-          <span style={{ fontSize: 12, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-            {verticalMeta(r.vertical).label}
-          </span>
-          <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{r.reason}</span>
-          <div style={{ flex: 1 }} />
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-            {r.scopeId.slice(-8)}
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
+import { PageTitle, card } from '../components/ui';
 
 /** A normal install completes in seconds; past this, a `provisioning` row is STUCK (#424). */
 const STALL_AFTER_MS = 2 * 60 * 1000;
@@ -138,7 +28,8 @@ export function toCard(a: AppRow): AppCardData & { scopeId: string } {
   };
 }
 
-type Mode = 'grid' | 'list';
+/** `health` is the redesign's fleet table (#1767) and the default; `grid` keeps the cards. */
+type Mode = 'health' | 'grid';
 
 /**
  * Overview / My Apps (screens 1d, 1e, 1f). Real data from the worker. Loading →
@@ -151,7 +42,6 @@ export function Apps({
   loading,
   onCreate,
   onOpen,
-  onOpenHealth,
   onRetry,
   onResume,
   loadSteps,
@@ -163,12 +53,6 @@ export function Apps({
   loading?: boolean;
   onCreate: () => void;
   onOpen: (scopeId: string) => void;
-  /**
-   * Where a "needs attention" row lands — the app's Observability tab, which holds
-   * the sweep record the verdict was read from. Landing on the overview instead
-   * showed a page with no trace of why the row existed.
-   */
-  onOpenHealth?: (scopeId: string) => void;
   onRetry: (scopeId: string) => void;
   onResume?: (scopeId: string) => void;
   /** Loader for one app's install step record (#424) — threaded to the cards. */
@@ -178,7 +62,7 @@ export function Apps({
   loadingMore?: boolean;
   onLoadMore?: () => void;
 }) {
-  const [mode, setMode] = useState<Mode>('grid');
+  const [mode, setMode] = useState<Mode>('health');
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('All statuses');
 
@@ -193,26 +77,36 @@ export function Apps({
     [cards, q, status],
   );
 
+  // The table claims one row per app, worst first — true only of the WHOLE fleet, and the
+  // list arrives a page (20) at a time, newest first. So while it is shown the pages are
+  // walked to exhaustion, the way App.tsx walks them for the team views; the grid keeps
+  // its "Load more". Keyed on the row count, not on `loadingMore`: a page that lands
+  // re-runs this, and a page that fails changes no count, so it stops rather than retries
+  // in a loop — leaving the button below as the way to try again.
+  const walking = mode === 'health' && !!hasMore && !!onLoadMore;
+  useEffect(() => {
+    if (walking && !loadingMore) onLoadMore!();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
+  }, [walking, apps.length]);
+
   if (loading) return <AppsSkeleton />;
   if (apps.length === 0) return <Onboarding onCreate={onCreate} />;
 
   return (
     <Page>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
-        <PageTitle title="Apps" subtitle="The tools your team runs — each app is its own isolated scope." />
+        <PageTitle title="Apps" subtitle={mode === 'health' ? 'Fleet health · one row per app, worst first. Open a row for its traffic, schedules and releases.' : 'The tools your team runs — each app is its own isolated scope.'} />
         <div style={{ flex: 1 }} />
         <Button icon={<Ic name="plus" />} onClick={onCreate}>Create App</Button>
       </div>
-
-      <FleetHealth onOpen={onOpenHealth ?? onOpen} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <Input placeholder="Search apps…" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 260 }} />
         <Select options={['All statuses', 'Active', 'Provisioning', 'Failed']} value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: 150 }} />
         <div style={{ flex: 1 }} />
         <div style={{ display: 'inline-flex', border: '1px solid var(--border-default)', borderRadius: 6, overflow: 'hidden' }}>
-          <SegBtn on={mode === 'grid'} onClick={() => setMode('grid')} label="Grid view"><Ic name="grid" size={14} /></SegBtn>
-          <SegBtn on={mode === 'list'} onClick={() => setMode('list')} label="List view" divider><Ic name="list" size={14} /></SegBtn>
+          <SegBtn on={mode === 'health'} onClick={() => setMode('health')} label="Health table"><Ic name="list" size={14} /></SegBtn>
+          <SegBtn on={mode === 'grid'} onClick={() => setMode('grid')} label="Grid view" divider><Ic name="grid" size={14} /></SegBtn>
         </div>
       </div>
 
@@ -230,7 +124,15 @@ export function Apps({
           ))}
         </div>
       ) : (
-        <ListMode cards={filtered} onOpen={onOpen} onRetry={onRetry} />
+        // The search box and status filter narrow the table as they narrow the cards.
+        <>
+          <FleetHealth apps={apps.filter((a) => filtered.some((c) => c.scopeId === a.app_scope_id))} onOpen={onOpen} onRetry={onRetry} />
+          {walking && (
+            <span role="status" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Loading the rest of the fleet — {apps.length} apps so far, ordered among themselves.
+            </span>
+          )}
+        </>
       )}
 
       {hasMore && onLoadMore && (
@@ -241,47 +143,6 @@ export function Apps({
         </div>
       )}
     </Page>
-  );
-}
-
-const COLS = '2fr 1.4fr 1fr 2fr 1fr 40px';
-function ListMode({ cards, onOpen, onRetry }: { cards: Array<AppCardData & { scopeId: string }>; onOpen: (s: string) => void; onRetry: (s: string) => void }) {
-  return (
-    <div style={{ ...card, overflow: 'hidden' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
-        <span>App</span><span>Vertical</span><span>Status</span><span>Hostname</span><span>Updated</span><span />
-      </div>
-      {cards.map((c, i) => (
-        <div
-          key={c.scopeId}
-          onClick={() => onOpen(c.scopeId)}
-          style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 40, padding: '0 16px', fontSize: 13, borderBottom: i === cards.length - 1 ? 'none' : '1px solid var(--border-subtle)', cursor: 'pointer' }}
-        >
-          <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 500, color: 'var(--text-primary)' }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: c.accent }} />{c.name}
-          </span>
-          <span style={{ color: 'var(--text-secondary)' }}>{c.verticalLabel}{c.version ? ` · ${c.version}` : ''}</span>
-          <span>
-            <Pill kind={c.status === 'provisioning' ? 'info' : c.status === 'failed' ? 'danger' : 'success'} pulse={c.status === 'provisioning'}>
-              {c.status === 'provisioning' ? 'Provisioning' : c.status === 'failed' ? 'Failed' : 'Active'}
-            </Pill>
-          </span>
-          {c.status === 'provisioning' ? (
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-placeholder)' }}>assigning hostname…</span>
-          ) : c.status === 'failed' ? (
-            <span style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
-              Provisioning failed — <span onClick={(e) => { e.stopPropagation(); onRetry(c.scopeId); }} style={{ textDecoration: 'underline', cursor: 'pointer' }}>Retry</span>
-            </span>
-          ) : c.host ? (
-            <a href={`https://${c.host}`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{c.host}</a>
-          ) : (
-            <span />
-          )}
-          <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{c.updated}</span>
-          <RowActions />
-        </div>
-      ))}
-    </div>
   );
 }
 

@@ -5516,6 +5516,15 @@ describe('control-plane API — observability proxy', () => {
      * installer could read every other installer by editing a URL, which is the exact
      * leak the grain decision exists to prevent.
      */
+    // #1767: a per-app p95 has to be grouped at the source, so the route hands the grain
+    // through — and refuses one it does not know rather than quietly answering by surface.
+    it('passes a scope grain through, and refuses an unknown one', async () => {
+      const app = appWith(tenantReader);
+      expect((await app.request('/observability/tenant-metrics?grain=scope', { headers: asBuilder })).status).toBe(200);
+      expect(tenantSeen.metrics.at(-1)).toMatchObject({ tenantId: builderTenant, grain: 'scope' });
+      expect((await app.request('/observability/tenant-metrics?grain=tenant', { headers: asBuilder })).status).toBe(400);
+    });
+
     it('ignores a tenantId a builder puts in the query — the principal decides', async () => {
       const app = appWith(tenantReader);
       const someoneElse = tenantId.parse(ulid());
