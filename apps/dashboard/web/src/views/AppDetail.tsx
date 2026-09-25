@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type EffectsTree, type EffectsTerminal, type EventEffects, type EventDelivery, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type TrafficSeries } from '../lib/api';
+import { api, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
 import { diffRegistries, hasRegistryChange } from '../lib/registry-diff';
-import { actorLabel, authorizationLabel, callButtonTitle, callLogsButtonTitle, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
+import { timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
-import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_APP_TRAFFIC, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
+import { MOCK_TIMELINE_TARGETS } from '../lib/mock-timeline';
+import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
+import { MOCK_APP_DEPLOYMENTS } from '../lib/mock-deployments';
+import { updatePlacement } from '../lib/release-ledger';
 import { renderModelHtml } from '@substrat-run/model-view';
 import { oidcCallbackUrl } from '@substrat-run/contracts';
 import { relativeTime, shortDate, shortId, untilTime } from '../lib/format';
@@ -15,13 +18,15 @@ import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, OriginTag, Pill, Row
 import { AppIntegrations } from './Integrations';
 import { teamPath, navigate, obsPath } from '../lib/router';
 import { DnsRecords } from './Domains';
-import { ReleaseComparisonCard, SchemaHistoryCard } from './ReleaseCards';
+import { ReleaseComparisonCard, ReleasesCard, SchemaHistoryCard, useLedger, type ComparisonTarget } from './ReleaseCards';
 import { AppPeers } from './AppPeers';
 import { AppEdges } from './AppEdges';
+import { AppSchedulesCard } from './AppSchedulesCard';
 import { StatusBand } from './StatusBand';
-import { InvocationStrip } from './InvocationStrip';
-import { InvocationLogsStrip } from './InvocationLogsStrip';
-import { Sparkline } from '../components/Sparkline';
+import { EntityTimeline } from './EventHistory';
+import { useTenantMetrics } from '../lib/use-tenant-metrics';
+import { useAppSchedules } from '../lib/use-app-schedules';
+import { AppTraffic } from './AppTraffic';
 
 /**
  * App detail (screens 1i, 1j, 1k, 1l). The header and the Overview tab render REAL
@@ -361,6 +366,8 @@ function ScopeOwnerSeat({ scopeId, versionId, active }: { scopeId: string; versi
 
 function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[] }) {
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
+  const metrics24 = useTenantMetrics(app.app_scope_id);
+  const schedules = useAppSchedules(app.app_scope_id);
   // The app's REAL audit trail (created / active / failed+reason / deleted), one page
   // newest-first; `eventsCursor` walks older activity. Dev-preview shows a sample.
   const [events, setEvents] = useState<AppEvent[] | null>(null);
@@ -373,12 +380,6 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   // would caption the previous app's version until the new read lands, and for ever if
   // it does not.
   const [dep, setDep] = useState<Deployment | null | undefined>(undefined);
-  // The app's own last 24 hours (#1447), for the sparkline card below the Production card.
-  // `undefined` while asking; `'error'` when the read failed — a transient 500 or a lost
-  // connection, which is not the same fact as a plane that cannot bucket; a series with
-  // `available: false` for that (and for a worker predating the route, which answers the
-  // same way a 501 does). The card draws a flat line for none of them.
-  const [traffic, setTraffic] = useState<TrafficSeries | 'error' | undefined>(undefined);
   // The owner seat, read ONCE here for both the status band's tile and the card below —
   // see OwnerSeatCard. `undefined` = still asking, `null` = the platform cannot answer.
   const [seat, setSeat] = useState<OwnerSeatView | null | undefined>(undefined);
@@ -391,25 +392,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   // version, #1345), and in the render right after navigating `dep` still holds the
   // previous app's deployments — which must not become this app's version key.
   const depScope = useRef<string | null>(null);
-  /** The traffic read, on its own so the card's retry can ask again without a remount. */
-  const readTraffic = (forScope: string, still: () => boolean) => {
-    setTraffic(undefined);
-    api
-      .appTraffic(forScope, 24)
-      .then((t) => still() && setTraffic(t))
-      // A 501 (or a worker predating the route) says the plane cannot bucket, which is
-      // what `available: false` means; anything else is a read that failed, and the
-      // card must not present that as a capability the plane lacks.
-      .catch((e) =>
-        still() &&
-        setTraffic(
-          e instanceof ApiError && (e.status === 501 || e.status === 404)
-            ? { buckets: [], markers: [], bucketMinutes: 60, available: false }
-            : 'error',
-        ),
-      );
-  };
-  // Its own generation, beside `seatScope` (which the traffic read also uses): the seat
+  // Its own generation, beside `seatScope`: the seat
   // effect re-runs on the running VERSION as well as the scope, so a scope guard alone
   // lets a slow answer for the version this app just moved off overwrite the new one's.
   const readSeat = (forScope: string) => {
@@ -423,18 +406,15 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
     if (DEV_MOCK) {
       setEvents(mockEventsFor(app));
       setDep(MOCK_DEPLOYMENTS[0] ?? null);
-      setTraffic(MOCK_APP_TRAFFIC);
       setSeat({ state: 'claimed', owner: app.created_by, firstSignIn: null, claimLink: null });
       return;
     }
     let live = true;
     seatScope.current = app.app_scope_id;
     setDep(undefined);
-    setTraffic(undefined);
     setSeat(undefined);
     // An active app's seat is read by the effect below, once its running version is known.
     if (app.status !== 'active') setSeat(null);
-    readTraffic(app.app_scope_id, () => live);
     api
       .appEvents(app.app_scope_id)
       .then((p) => {
@@ -515,7 +495,11 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Full width, above everything: the four stats that answer "is this app OK?".
           They are why Observability and Audit could move to the left menu (#1447). */}
-      <StatusBand app={app} versionLabel={versionLabel} updateAvailable={updateAvailable} seat={seat} />
+      <StatusBand app={app} versionLabel={versionLabel} updateAvailable={updateAvailable} seat={seat} metrics={metrics24} schedules={schedules} />
+      {/* What arrived at the app, by status class, with the shared overlays (#1767) —
+          full width because it is a time axis, and the Overview's sparkline it replaced
+          answered the same question in less space and with no way in. */}
+      <AppTraffic scopeId={app.app_scope_id} surfaces={surfaceUrls} metrics24={metrics24} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ ...card, padding: 20 }}>
@@ -564,38 +548,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>A hostname is assigned once provisioning completes.</div>
           )}
         </div>
-        {/* Under the address it serves: what actually arrived there today. The full
-            chart, its overlays and every other window live one click away in
-            Observability (#1447) — this is the glance that decides whether to go. */}
-        <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <Eyebrow>Last 24 hours</Eyebrow>
-          {traffic === undefined ? (
-            <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading traffic…</div>
-          ) : traffic === 'error' ? (
-            <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
-              Traffic could not be read just now.{' '}
-              <a
-                href="#"
-                onClick={(e) => { e.preventDefault(); readTraffic(app.app_scope_id, () => seatScope.current === app.app_scope_id); }}
-                style={{ color: 'var(--text-brand)' }}
-              >
-                Try again
-              </a>
-            </div>
-          ) : (
-            <Sparkline series={traffic} />
-          )}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-            <span style={{ ...mono, fontSize: 12, color: 'var(--text-tertiary)' }}>{trafficTotals(traffic)}</span>
-            <a
-              href={teamPath(obsPath({ app: app.app_scope_id }))}
-              onClick={(e) => { e.preventDefault(); navigate(obsPath({ app: app.app_scope_id })); }}
-              style={{ color: 'var(--text-brand)', fontSize: 12.5 }}
-            >
-              Open in Observability →
-            </a>
-          </div>
-        </div>
+        <AppSchedulesCard key={`schedules:${app.app_scope_id}`} scopeId={app.app_scope_id} schedules={schedules} />
         <OwnerSeatCard key={app.app_scope_id} scopeId={app.app_scope_id} seat={seat} onClaimed={readSeat} />
         <AppPeers key={`peers:${app.app_scope_id}`} scopeId={app.app_scope_id} />
         <AppEdges key={`edges:${app.app_scope_id}`} scopeId={app.app_scope_id} />
@@ -623,9 +576,9 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 12 }}>
           <Eyebrow>Activity</Eyebrow>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            {/* Observability's entrance used to sit here too. It now rides the sparkline
-                card in the left column, beside the traffic that prompts the question —
-                one entrance per thing, where the reader already is. */}
+            {/* Observability's entrance used to sit here too. It now rides the traffic
+                card above, beside the traffic that prompts the question — one entrance
+                per thing, where the reader already is. */}
             <a
               href={teamPath(`/audit?app=${app.app_scope_id}`)}
               onClick={(e) => { e.preventDefault(); navigate(`/audit?app=${app.app_scope_id}`); }}
@@ -655,16 +608,6 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
       </div>
     </div>
   );
-}
-
-/** The sparkline's caption — totals in mono, or the honest absence of them. */
-function trafficTotals(series: TrafficSeries | 'error' | undefined): string {
-  if (series === undefined) return '…';
-  if (series === 'error' || !series.available || series.buckets.length === 0) return '—';
-  const requests = series.buckets.reduce((n, b) => n + b.requests, 0);
-  const errors = series.buckets.reduce((n, b) => n + b.errors, 0);
-  const rate = requests === 0 ? '—' : `${((errors / requests) * 100).toFixed(2)}%`;
-  return `${requests.toLocaleString()} req · ${errors.toLocaleString()} err · ${rate}`;
 }
 
 type TimelineDot = 'success' | 'info' | 'neutral' | 'danger';
@@ -724,17 +667,24 @@ function Timeline({ items }: { items: Array<{ dot: TimelineDot; body: React.Reac
   );
 }
 
-function Deployments({ app }: { app: AppRow }) {
+/** Versions read while looking for the newest admitted push, before the look is given up. */
+const ADMITTED_SEARCH_CAP = 200;
+
+export function Deployments({ app }: { app: AppRow }) {
   const [dep, setDep] = useState<AppDeployments | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const [updating, setUpdating] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // The look for the newest admitted push (below) ran out — a failed read or the page cap.
+  const [searchGaveUp, setSearchGaveUp] = useState(false);
   // Which version's static-asset panel is open (#340) — one at a time, fetched on open
   // rather than with the versions list: an asset manifest is per version and most rows
   // are never expanded.
   const [openAssets, setOpenAssets] = useState<string | null>(null);
+  // The version a Releases row pointed at, outlined in the table below it.
+  const [picked, setPicked] = useState<string | null>(null);
   // Fork-before-promote (default ON): snapshot the app's data before a migration-
   // crossing update, so a bad upgrade has a rollback point. A code-only update
   // snapshots nothing — the platform compares migration digests, not the checkbox.
@@ -744,10 +694,11 @@ function Deployments({ app }: { app: AppRow }) {
   const [bookmarks, setBookmarks] = useState<MigrationBookmark[]>([]);
   useEffect(() => {
     if (DEV_MOCK) {
-      setDep(MOCK_DEPLOYMENTS[0] ? { ...MOCK_DEPLOYMENTS[0], nextCursor: null } : null);
+      setDep(MOCK_APP_DEPLOYMENTS);
       return;
     }
     let live = true;
+    setSearchGaveUp(false);
     api
       .appDeployments(app.app_scope_id)
       .then((d) => live && setDep(d))
@@ -760,6 +711,8 @@ function Deployments({ app }: { app: AppRow }) {
       live = false;
     };
   }, [app.app_scope_id, nonce]);
+
+  const ledger = useLedger(dep);
 
   // Append the next (older) page of versions below the loaded ones.
   const loadOlderVersions = async () => {
@@ -780,6 +733,21 @@ function Deployments({ app }: { app: AppRow }) {
       setLoadingOlder(false);
     }
   };
+
+  // "Is an admitted push waiting for prod?" is a question about the NEWEST admitted version,
+  // and the first page can hold only pending or rejected pushes. Keep walking older pages
+  // until one is found, the history ends, or the cap is hit — the answer must come from
+  // complete data, or the card must say it does not have it (#1782 review).
+  const lookingForAdmitted = !DEV_MOCK && !!dep && !!dep.nextCursor && !dep.versions.some((v) => v.admission === 'admitted') && !searchGaveUp;
+  useEffect(() => {
+    if (!lookingForAdmitted || loadingOlder || !dep) return;
+    if (dep.versions.length >= ADMITTED_SEARCH_CAP) {
+      setSearchGaveUp(true);
+      return;
+    }
+    loadOlderVersions().catch(() => setSearchGaveUp(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lookingForAdmitted, loadingOlder, dep]);
 
   if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load deployments — {err}</div>;
   if (!dep) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading deployments…</div>;
@@ -802,6 +770,9 @@ function Deployments({ app }: { app: AppRow }) {
   // The stuck state this tab must not leave unexplained: the newest admitted version
   // isn't what prod points at, so no update can be offered until someone promotes it.
   const newestAdmitted = dep.versions.find((v) => v.admission === 'admitted');
+  // Newest-first pages: the first admitted one found IS the newest. Not found and more
+  // history unread is "not known", never "there is none".
+  const admittedKnown = !!newestAdmitted || !dep.nextCursor;
   const awaitingPromotion = !updateAvailable && !!newestAdmitted && newestAdmitted.id !== prod?.versionId;
   // Prod was promoted but its in-place serve failed (#321): the channel points at a version
   // the scopes are NOT running. Surface it — this is exactly the silent state the field
@@ -810,6 +781,25 @@ function Deployments({ app }: { app: AppRow }) {
   const promotedVersion = serveStalled ? dep.versions.find((v) => v.id === prod!.versionId) : undefined;
   const servingVersion = serveStalled ? dep.versions.find((v) => v.id === prod!.servingVersionId) : undefined;
   const COLS = '1fr 1fr 1.3fr 1.1fr 0.8fr';
+  // What the comparison holds the running version against: the prod head an Update moves
+  // to, else a newer admitted push still waiting for prod. Neither ⇒ the app is current.
+  const updateIn = updatePlacement(updateAvailable, !!prodVersion);
+  const target: ComparisonTarget | null =
+    updateIn === 'card' && prodVersion ? { version: prodVersion, state: 'update' } : awaitingPromotion && newestAdmitted ? { version: newestAdmitted, state: 'unpromoted' } : null;
+  // Why the card has no target to name, when the reason is that the tab does not KNOW —
+  // and must not fall back to "latest" for it.
+  const unknown: string | null =
+    updateIn === 'bar'
+      ? 'An update is available, but prod’s version is older than the releases loaded here, so it cannot be compared. Use “Update to latest” above.'
+      : target === null && !updateAvailable && !admittedKnown
+        ? searchGaveUp
+          ? 'Could not check whether a newer version is waiting for prod.'
+          : 'Checking for a newer version…'
+        : null;
+  const pickVersion = (versionId: string) => {
+    setPicked(versionId);
+    document.getElementById(`version-${versionId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
 
   const doUpdate = async () => {
     setUpdating(true);
@@ -891,19 +881,10 @@ function Deployments({ app }: { app: AppRow }) {
           <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Not serving a registry version yet — a pushed version must be admitted and promoted.</span>
         )}
         <div style={{ flex: 1 }} />
-        {awaitingPromotion && (
-          <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>
-            <MonoTag>{newestAdmitted.version}</MonoTag> is admitted but not in <b>prod</b>
-            {selfServe ? (
-              <> — <a href="/verticals" onClick={(e) => { e.preventDefault(); navigate('/verticals'); }} style={{ color: 'var(--text-brand)' }}>promote it on Verticals →</a></>
-            ) : (
-              <> — the Substrat team promotes it</>
-            )}
-          </span>
-        )}
-        {updateAvailable && (
+        {/* The Update action lives in the comparison's header. Only when prod's version is
+            beyond the loaded page — so the comparison has nothing to name — does it stay here. */}
+        {updateIn === 'bar' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {prodVersion && <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>Update available → <MonoTag>{prodVersion.version}</MonoTag></span>}
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
               <input type="checkbox" checked={snapFirst} onChange={(e) => setSnapFirst(e.target.checked)} />
               Snapshot data first
@@ -912,9 +893,35 @@ function Deployments({ app }: { app: AppRow }) {
           </div>
         )}
       </div>
-      {/* Directly under "Running": the card's own header calls itself the last question
-          before pressing Update, and the Update button is the line above it. */}
-      <ReleaseComparisonCard app={app} />
+      {/* Directly under "Running": the last question before pressing Update, with the
+          button that answers it in its own header. */}
+      <ReleaseComparisonCard
+        app={app}
+        dep={dep}
+        running={running}
+        target={target}
+        unknown={unknown}
+        ledger={ledger}
+        actions={
+          target?.state === 'update' ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={snapFirst} onChange={(e) => setSnapFirst(e.target.checked)} />
+                Snapshot data first
+              </label>
+              <Button size="sm" onClick={doUpdate} disabled={updating}>{updating ? 'Updating…' : 'Update this app'}</Button>
+            </div>
+          ) : target?.state === 'unpromoted' ? (
+            // Promoting is a fleet move with its own permission and migration review, which
+            // lives on Verticals; this tab links there rather than growing a second one.
+            selfServe ? (
+              <Button size="sm" variant="secondary" onClick={() => navigate('/verticals')}>Promote on Verticals</Button>
+            ) : (
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>the Substrat team promotes it to prod</span>
+            )
+          ) : null
+        }
+      />
       {serveStalled && (
         <div style={{ ...card, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderColor: 'var(--status-danger-fg)' }}>
           <Pill kind="warning">serve failed</Pill>
@@ -954,6 +961,10 @@ function Deployments({ app }: { app: AppRow }) {
           <>Read live from the registry. “Running” is the version the router serves for this app. The Substrat team promotes versions to prod; updating here moves this app to the current prod version.</>
         )}
       </HonestyBanner>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
+        <ReleasesCard ledger={ledger} onPick={pickVersion} />
+        <SchemaHistoryCard app={app} />
+      </div>
       {dep.versions.length === 0 ? (
         <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No versions pushed to the registry yet.</div>
       ) : (
@@ -964,7 +975,7 @@ function Deployments({ app }: { app: AppRow }) {
           {dep.versions.map((v, i) => {
             const chans = channelsOf(v.id);
             return (
-              <div key={v.id} style={{ borderBottom: i === dep.versions.length - 1 ? 'none' : '1px solid var(--border-subtle)', background: v.id === dep.boundVersionId ? 'var(--surface-brand-subtle)' : 'transparent' }}>
+              <div key={v.id} id={`version-${v.id}`} style={{ borderBottom: i === dep.versions.length - 1 ? 'none' : '1px solid var(--border-subtle)', background: v.id === dep.boundVersionId ? 'var(--surface-brand-subtle)' : 'transparent', boxShadow: v.id === picked ? 'inset 3px 0 0 var(--border-brand)' : undefined }}>
               <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 40, padding: '8px 16px', fontSize: 13 }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{v.version}</span>
@@ -1002,9 +1013,6 @@ function Deployments({ app }: { app: AppRow }) {
           )}
         </div>
       )}
-      {/* Last, under the version table: when each migration actually ran is the other
-          thing a release changes, and it reads as a tail of that same list. */}
-      <SchemaHistoryCard app={app} />
     </div>
   );
 }
@@ -2117,9 +2125,13 @@ function DataBrowser({ app }: { app: AppRow }) {
   // switcher underneath an open timeline would otherwise re-ask the new scope for
   // an id it has never held — answering "no events recorded", confidently and
   // wrongly, about a record that has a history one scope over.
-  const [history, setHistory] = useState<{ scopeId: string; entityType: string; entityId: string } | null>(null);
+  const [history, setHistory] = useState<{ scopeId: string; entityType: string; entityId: string; stateField?: string } | null>(null);
 
   useEffect(() => {
+    if (DEV_MOCK) {
+      setTableEntity(MOCK_TIMELINE_TARGETS);
+      return;
+    }
     let live = true;
     setTableEntity({});
     api
@@ -2127,7 +2139,7 @@ function DataBrowser({ app }: { app: AppRow }) {
       .then((v) => {
         const entities = v.running?.model?.entities;
         if (!live || !entities) return;
-        setTableEntity(timelineTargets(entities));
+        setTableEntity(timelineTargets(entities, v.running?.model?.lifecycles));
       })
       // No model is a fine state — the key column simply stays plain text.
       .catch(() => undefined);
@@ -2283,7 +2295,9 @@ function DataBrowser({ app }: { app: AppRow }) {
                 onPrev={() => setOffset((o) => Math.max(0, o - DATA_PAGE))}
                 onNext={() => setOffset((o) => o + DATA_PAGE)}
                 target={tableEntity[page.table]}
-                onOpenHistory={(entityType, entityId) => setHistory({ scopeId: activeScope, entityType, entityId })}
+                onOpenHistory={(entityType, entityId) =>
+                  setHistory({ scopeId: activeScope, entityType, entityId, stateField: tableEntity[page.table]?.stateField })
+                }
               />
             )}
           </div>
@@ -2294,6 +2308,7 @@ function DataBrowser({ app }: { app: AppRow }) {
           scopeId={history.scopeId}
           entityType={history.entityType}
           entityId={history.entityId}
+          stateField={history.stateField}
           onClose={() => setHistory(null)}
         />
       )}
@@ -2432,422 +2447,6 @@ function TableGroup({ label, tables, selected, onPick }: { label: string; tables
           <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{t.rowCount}</span>
         </button>
       ))}
-    </div>
-  );
-}
-
-/**
- * What one event set off (#1237) — the forward twin of `CauseChainStrip`.
- *
- * This is the honest form of "expand this invocation". It is NOT a timing waterfall:
- * nothing in the platform emits a span for an operation, a permission check or an
- * engine call, so those steps have no duration to draw. What the spine did record is
- * which steps happened and when — which consumers an event reached, whether they threw,
- * and what they emitted in turn — and that is what this shows.
- *
- * The delivery states are kept apart deliberately. A consumer still retrying and one
- * that has given up both carry an error, and merging them would promise a retry that
- * is not coming.
- */
-function EffectsTreeStrip({ scopeId, eventId }: { scopeId: string; eventId: string }) {
-  const [tree, setTree] = useState<EffectsTree | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    setTree(null);
-    setErr(null);
-    api
-      .appEventEffects(scopeId, eventId)
-      .then((t) => live && setTree(t))
-      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
-    return () => {
-      live = false;
-    };
-  }, [scopeId, eventId]);
-
-  if (err) return <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>;
-  if (!tree) return <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Following what it set off…</div>;
-  if (!tree.root) return <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>This event is not in the app&rsquo;s records.</div>;
-
-  const TONE: Record<EventDelivery['state'], { label: string; fg: string; bg: string }> = {
-    delivered: { label: 'handled', fg: 'var(--text-secondary)', bg: 'var(--surface-inset)' },
-    retrying: { label: 'retrying', fg: 'var(--status-warning-fg)', bg: 'var(--status-warning-bg)' },
-    dead: { label: 'gave up', fg: 'var(--status-danger-fg)', bg: 'var(--status-danger-bg)' },
-  };
-
-  const ENDING: Record<EffectsTerminal, string | null> = {
-    complete: null,
-    depth: 'More happened below this than one read follows.',
-    missing: 'Part of this trail names an event the app no longer holds.',
-    cycle:
-      'An event appears twice in this trail. That should not be possible — a cause is always older than what it caused — so this is worth reporting rather than reading as a long chain.',
-  };
-  const ending = ENDING[tree.terminal];
-
-  const node = (n: EventEffects, depth: number): React.ReactNode => (
-    <div key={n.event.id} style={{ display: 'grid', gap: 4, paddingLeft: depth * 14 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12 }}>
-        <MonoTag>{n.event.type}</MonoTag>
-        <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>
-          {new Date(n.event.occurredAt).toLocaleString()}
-        </span>
-        <span style={{ color: 'var(--text-secondary)', fontSize: 11.5, fontFamily: 'var(--font-mono)' }}>
-          {operationLabel(n.event.operation)}
-        </span>
-      </div>
-      {n.deliveries.length === 0 ? (
-        <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-          {/* Ambiguous, and said so: the table records arrivals, never their absence. */}
-          No delivery recorded &mdash; either nothing handles this type, or dispatch has not run yet.
-        </div>
-      ) : (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {n.deliveries.map((d) => (
-            <span
-              key={d.consumer}
-              title={
-                d.error
-                  ? `${d.error} — ${d.attempts} attempt${d.attempts === 1 ? '' : 's'}, last ${new Date(d.at).toLocaleString()}`
-                  : `handled ${new Date(d.at).toLocaleString()}`
-              }
-              style={{
-                fontSize: 11,
-                padding: '2px 6px',
-                borderRadius: 4,
-                fontFamily: 'var(--font-mono)',
-                background: TONE[d.state].bg,
-                color: TONE[d.state].fg,
-              }}
-            >
-              {d.consumer} · {TONE[d.state].label}
-            </span>
-          ))}
-        </div>
-      )}
-      {n.effects.map((child) => node(child, depth + 1))}
-    </div>
-  );
-
-  return (
-    <div style={{ display: 'grid', gap: 6, paddingLeft: 10, borderLeft: '2px solid var(--border-default)' }}>
-      {node(tree.root, 0)}
-      {ending && <div style={{ fontSize: 12, color: 'var(--status-warning-fg)' }}>{ending}</div>}
-      <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-        Steps and when they happened. The platform records no duration for an operation, so there are
-        no timings here.
-      </div>
-    </div>
-  );
-}
-
-/**
- * Why one event exists (#1237) — its chain walked backwards, newest first.
- *
- * The value is entirely in the last line. A chain that reached the operation which
- * started it and a chain that ran out of recorded trail are the SAME SHAPE, and a
- * screen that rendered both as "here is the story" would let a reader conclude a
- * consumer began something it merely continued. So the terminal is stated in words,
- * every time, including when the answer is that the platform cannot say.
- */
-function CauseChainStrip({ scopeId, eventId }: { scopeId: string; eventId: string }) {
-  const [chain, setChain] = useState<CauseChain | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    setChain(null);
-    setErr(null);
-    api
-      .appEventCause(scopeId, eventId)
-      .then((c) => live && setChain(c))
-      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
-    return () => {
-      live = false;
-    };
-  }, [scopeId, eventId]);
-
-  if (err) return <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>;
-  if (!chain) return <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Following the trail…</div>;
-
-  // One sentence per ending, and none of them is "here is the story".
-  const root = chain.chain.at(-1);
-  const TERMINAL: Record<CauseTerminal, { text: string; tone: string }> = {
-    operation: {
-      text: root?.operation
-        ? `Started by ${root.operation}${root.version ? ` (version ${root.version})` : ''}.`
-        : 'Started by an operation.',
-      tone: 'var(--text-secondary)',
-    },
-    unrecorded: {
-      text:
-        'The trail stops here. Something produced this event, and it happened before the platform recorded what caused it — so this is where the chain was cut, not where it began.',
-      tone: 'var(--status-warning-fg)',
-    },
-    depth: {
-      text: 'More of the chain exists above this — it was longer than one read follows.',
-      tone: 'var(--status-warning-fg)',
-    },
-    missing: {
-      text:
-        'This event names a cause that is not in this app’s records. The trail cannot be followed further, and this is not the beginning.',
-      tone: 'var(--status-danger-fg)',
-    },
-    // Not "more above this": there is nothing above a loop. The one ending that says
-    // the record itself is wrong, and it must not read like a long chain.
-    cycle: {
-      text:
-        'The trail loops back on itself — an event names a cause that it also caused. That cannot happen in a sound record, so this app’s history needs looking at rather than reading further.',
-      tone: 'var(--status-danger-fg)',
-    },
-    // #1705: nothing is wrong. The cause is an event another app of this team exported,
-    // and the rest of the chain is in that app's records.
-    imported: {
-      text: chain.imported
-        ? `Caused by an event the ${chain.imported.vertical} app sent. The rest of the chain is in that app’s records.`
-        : 'Caused by an event another app sent. The rest of the chain is in that app’s records.',
-      tone: 'var(--text-secondary)',
-    },
-  };
-  const ending = TERMINAL[chain.terminal];
-
-  return (
-    <div style={{ display: 'grid', gap: 6, paddingLeft: 10, borderLeft: '2px solid var(--border-default)' }}>
-      {chain.chain.length === 0 ? (
-        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>No chain to show.</div>
-      ) : (
-        chain.chain.map((e, i) => (
-          <div key={e.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12 }}>
-            <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-              {i === 0 ? 'this' : `${i} back`}
-            </span>
-            <MonoTag>{e.type}</MonoTag>
-            <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>
-              {new Date(e.occurredAt).toLocaleString()}
-            </span>
-            {/* A consumer records no operation — that absence is the fact, and the
-                label says so rather than leaving a gap. */}
-            <span style={{ color: 'var(--text-secondary)', fontSize: 11.5, fontFamily: 'var(--font-mono)' }}>
-              {operationLabel(e.operation)}
-            </span>
-          </div>
-        ))
-      )}
-      <div style={{ fontSize: 12, color: ending.tone }}>{ending.text}</div>
-    </div>
-  );
-}
-
-/**
- * One record's story (#1235) — `readHistory`'s answer rendered: what happened to
- * this entity, who did it, under what permission, as whom, and under which push.
- *
- * The wording of every value here lives in `lib/history.ts`, where it is unit
- * tested: an actor is a UNION whose `{ system }` and `{ connection }` members are
- * objects — React throws on one, and this app has no error boundary to catch it —
- * and the nullables below each need a sentence rather than a blank.
- *
- * The three nullable fields are FACTS and the renderer says so rather than
- * showing a blank: a null payload means ERASED (a shred keeps the row and drops
- * the content), a null authorization means the row predates K-34 recording it —
- * which is different from "checked nothing" — and a null impersonation means
- * nobody was impersonating, the ordinary case. Flattening any of them to "—"
- * would throw away the reason `readHistory` exists.
- *
- * The entity type is DERIVED from the model's table mapping, so an empty result
- * is shown against the key it looked under. A vertical that emits a different
- * `entityType` than its model's entity name would otherwise render as "nothing
- * ever happened to this record", which is the confident-and-wrong answer.
- */
-function EntityTimeline({
-  scopeId,
-  entityType,
-  entityId,
-  onClose,
-}: {
-  scopeId: string;
-  entityType: string;
-  entityId: string;
-  onClose: () => void;
-}) {
-  const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [reading, setReading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  // Which walk the state below belongs to, so a page that arrives after the record
-  // changed is discarded rather than appended to another record's story.
-  const walk = useRef('');
-
-  useEffect(() => {
-    let live = true;
-    walk.current = `${scopeId}|${entityType}|${entityId}`;
-    setEntries(null);
-    setCursor(null);
-    setErr(null);
-    api
-      .appEntityHistory(scopeId, entityType, entityId)
-      .then((p) => {
-        if (!live) return;
-        setEntries(p.entries);
-        setCursor(p.nextCursor);
-      })
-      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
-    return () => {
-      live = false;
-    };
-  }, [scopeId, entityType, entityId]);
-
-  /**
-   * The rest of the story. The walk is `ORDER BY id ASC` and a page defaults to
-   * `LIST_PAGE_DEFAULT`, so a record touched more times than that has its RECENT
-   * events past the cursor — dropping it would end the story mid-sentence and say
-   * nothing about having done so.
-   */
-  const readMore = () => {
-    if (cursor === null || reading) return;
-    const at = walk.current;
-    setReading(true);
-    api
-      .appEntityHistory(scopeId, entityType, entityId, cursor)
-      .then((p) => {
-        if (walk.current !== at) return;
-        setEntries((prev) => [...(prev ?? []), ...p.entries]);
-        setCursor(p.nextCursor);
-      })
-      .catch((e) => walk.current === at && setErr(e instanceof Error ? e.message : String(e)))
-      .finally(() => walk.current === at && setReading(false));
-  };
-
-  /** Which row's chain is open. One at a time: each is a scope read. */
-  const [why, setWhy] = useState<string | null>(null);
-  /** …and which row's forward tree is open. Independent: the two answer opposite questions. */
-  const [effects, setEffects] = useState<string | null>(null);
-  /** …and which row's call is open. A third question: not cause at all, but "what else happened in that request". */
-  const [call, setCall] = useState<string | null>(null);
-  /** …and which row's log lines are open (#1525): what the same call WROTE, beside what it recorded. */
-  const [callLogs, setCallLogs] = useState<string | null>(null);
-
-  const when = (iso: string) => new Date(iso).toLocaleString();
-
-  return (
-    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <h3 style={{ margin: 0, fontSize: 15 }}>History</h3>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-tertiary)' }}>
-          {entityType} · {entityId}
-        </span>
-        <div style={{ flex: 1 }} />
-        <button type="button" onClick={onClose} style={pagerBtn(true)}>Close</button>
-      </div>
-
-      {err && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{err}</div>}
-      {!err && entries === null && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Reading…</div>
-      )}
-      {entries !== null && entries.length === 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-          No events recorded for <code>{entityType}</code> · <code>{entityId}</code>. If this record
-          has a history, its events name a different entity type than the model&rsquo;s.
-        </div>
-      )}
-
-      {entries?.map((e) => (
-        <div key={e.id} style={{ display: 'grid', gap: 4, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
-            <MonoTag>{e.type}</MonoTag>
-            <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>{when(e.occurredAt)}</span>
-            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{actorLabel(e.actor)}</span>
-            {e.impersonation && <Pill kind="warning">{impersonationLabel(e)}</Pill>}
-            {e.piiClass !== 'none' && <Pill kind="info">{e.piiClass}</Pill>}
-          </div>
-          <div style={{ display: 'flex', gap: 12, fontSize: 11.5, color: 'var(--text-tertiary)', flexWrap: 'wrap', fontFamily: 'var(--font-mono)' }}>
-            <span>{operationLabel(e.operation)}</span>
-            {e.version && <span>version {e.version}</span>}
-            {/* Null and empty are different answers: unrecorded vs checked nothing. */}
-            <span>{authorizationLabel(e.authorization)}</span>
-          </div>
-          <pre
-            style={{
-              margin: 0, fontSize: 11.5, fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word', color: e.payload == null ? 'var(--text-tertiary)' : 'var(--text-secondary)',
-            }}
-          >
-            {payloadText(e.payload)}
-          </pre>
-          <button
-            type="button"
-            onClick={() => setWhy((w) => (w === e.id ? null : e.id))}
-            title="follow this event back to whatever set it off"
-            style={{ ...pagerBtn(true), justifySelf: 'start', fontSize: 11.5, padding: '2px 8px' }}
-          >
-            {why === e.id ? 'Hide why' : 'Why?'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setEffects((w) => (w === e.id ? null : e.id))}
-            title="follow this event forward to what it set off"
-            style={{ ...pagerBtn(true), justifySelf: 'start', fontSize: 11.5, padding: '2px 8px' }}
-          >
-            {effects === e.id ? 'Hide effects' : 'What did it do?'}
-          </button>
-          {/* No id is a fact, not a gap: a seed or internal call carries none, and an event
-              from before calls were recorded never had one. The button says so and stays shut. */}
-          <button
-            type="button"
-            onClick={() => {
-              if (e.invocationId === null) return;
-              setCall((w) => (w === e.id ? null : e.id));
-            }}
-            // `aria-disabled`, not `disabled`, on Observability.tsx's precedent: a natively
-            // disabled button leaves the tab order, taking the `title` with it — so the one
-            // place the "why" is written would be unreachable by exactly the people who
-            // cannot see the greyed styling. It stays focusable, announces itself as
-            // unavailable, and the click is guarded above instead.
-            aria-disabled={e.invocationId === null}
-            title={callButtonTitle(e.invocationId)}
-            aria-description={callButtonTitle(e.invocationId)}
-            style={{ ...pagerBtn(e.invocationId !== null), justifySelf: 'start', fontSize: 11.5, padding: '2px 8px' }}
-          >
-            {call === e.id ? 'Hide call' : 'Same call'}
-          </button>
-          {/* The same null-id rule as the button above, and the same reason for
-              `aria-disabled` over `disabled`. */}
-          <button
-            type="button"
-            onClick={() => {
-              if (e.invocationId === null) return;
-              setCallLogs((w) => (w === e.id ? null : e.id));
-            }}
-            aria-disabled={e.invocationId === null}
-            aria-expanded={callLogs === e.id}
-            title={callLogsButtonTitle(e.invocationId)}
-            aria-description={callLogsButtonTitle(e.invocationId)}
-            style={{ ...pagerBtn(e.invocationId !== null), justifySelf: 'start', fontSize: 11.5, padding: '2px 8px' }}
-          >
-            {callLogs === e.id ? 'Hide logs' : 'Logs for this call'}
-          </button>
-          {why === e.id && <CauseChainStrip scopeId={scopeId} eventId={e.id} />}
-          {effects === e.id && <EffectsTreeStrip scopeId={scopeId} eventId={e.id} />}
-          {call === e.id && e.invocationId !== null && (
-            <InvocationStrip scopeId={scopeId} eventId={e.id} invocationId={e.invocationId} />
-          )}
-          {callLogs === e.id && e.invocationId !== null && (
-            <InvocationLogsStrip scopeId={scopeId} invocationId={e.invocationId} occurredAt={e.occurredAt} />
-          )}
-        </div>
-      ))}
-
-      {cursor !== null && (
-        <button
-          type="button"
-          onClick={readMore}
-          disabled={reading}
-          title="the walk runs oldest-first — this reads on towards the present"
-          style={{ ...pagerBtn(!reading), justifySelf: 'start' }}
-        >
-          {reading ? 'Reading…' : 'Later events →'}
-        </button>
-      )}
     </div>
   );
 }
