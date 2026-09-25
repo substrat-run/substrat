@@ -148,6 +148,11 @@ export function discoverIssuer(issuer: string): Promise<Discovery> {
       if (typeof d.issuer !== 'string' || issuerKey(d.issuer) !== key) {
         throw new Error(`OIDC discovery at ${url} names a different issuer`);
       }
+      // The browser is sent here with the authorization request, so a document that names one
+      // must name an allowed one. Absent is fine: a bearer-only issuer has no login to start.
+      if (d.authorization_endpoint !== undefined && (typeof d.authorization_endpoint !== 'string' || !isAllowedEndpoint(issuer, d.authorization_endpoint))) {
+        throw new Error(`OIDC discovery at ${url} names an authorization_endpoint that is not https`);
+      }
       // The keys an ID token is verified against are fetched from here, so not in plaintext.
       if (typeof d.jwks_uri !== 'string' || !isAllowedEndpoint(issuer, d.jwks_uri)) {
         throw new Error(`OIDC discovery at ${url} names a jwks_uri that is not https`);

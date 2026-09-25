@@ -294,6 +294,22 @@ describe('a plaintext loopback endpoint needs a loopback issuer', () => {
   });
 });
 
+describe('the authorization endpoint', () => {
+  it('must be https: a plaintext one, loopback included, is refused before any login starts', async () => {
+    for (const bad of ['http://auth.example.test/authorize', 'http://localhost:9/authorize']) {
+      issuer = `https://issuer-authz-${++n}.test`;
+      env = { ...env, OIDC_ISSUER: issuer };
+      doc = { authorization_endpoint: bad };
+      await expect(beginLogin(env, APP), bad).rejects.toThrow(/authorization_endpoint that is not https/);
+    }
+  });
+
+  it('may live on another https origin (positive twin)', async () => {
+    doc = { authorization_endpoint: 'https://login.example.test/authorize' };
+    expect((await beginLogin(env, APP)).location).toContain('https://login.example.test/authorize');
+  });
+});
+
 describe('what else the document names', () => {
   it('refuses a plaintext jwks_uri, and does not cache the refusal', async () => {
     doc = { jwks_uri: 'http://keys.example.test/jwks' };
