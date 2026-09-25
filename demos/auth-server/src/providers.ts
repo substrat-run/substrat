@@ -463,6 +463,26 @@ export function trustedProvidersFrom(rows: ProviderRow[]): string[] {
     .map((row) => row.provider_id);
 }
 
+/**
+ * The issuer as the panel may show it. An issuer URL carrying credentials is refused at save
+ * time now, but a row saved before that could hold one, and the panel is not where a password
+ * should reappear — so userinfo is blanked, and a value that does not parse is not shown at
+ * all. The stored column is untouched: this is display, and such a row is not offered anyway.
+ */
+export function wireIssuer(issuer: string | null): string | null {
+  if (issuer === null) return null;
+  let url: URL;
+  try {
+    url = new URL(issuer);
+  } catch {
+    return '(not a valid URL)';
+  }
+  if (!url.username && !url.password) return issuer;
+  url.username = '';
+  url.password = '';
+  return url.toString();
+}
+
 /** One row for the dashboard. The secret is never here — only whether there is one. */
 export function toWireProvider(row: ProviderRow) {
   return {
@@ -470,7 +490,7 @@ export function toWireProvider(row: ProviderRow) {
     clientId: row.client_id,
     clientSecretSet: true,
     tenantId: row.tenant_id,
-    issuer: row.issuer,
+    issuer: wireIssuer(row.issuer),
     label: row.label,
     allowSignup: Boolean(row.allow_signup),
     trustEmail: Boolean(row.trust_email),

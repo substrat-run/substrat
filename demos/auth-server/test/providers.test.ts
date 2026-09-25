@@ -17,6 +17,7 @@ import {
   readProviders,
   socialProvidersFrom,
   trustedProvidersFrom,
+  wireIssuer,
   type ProviderRow,
 } from '../src/providers.js';
 import type { SqlExec } from '../src/introspect.js';
@@ -760,6 +761,21 @@ describe('rows becoming Better Auth config', () => {
     expect(genericEndpointsRefusal(loopback)).toBeNull();
     // A catalogue row is never judged by this.
     expect(genericEndpointsRefusal(row())).toBeNull();
+  });
+
+  it('never shows an issuer\'s userinfo on the wire, and shows an unparseable one not at all', async () => {
+    // A row saved before credentials in an issuer URL were refused.
+    const cookie = await signInAs(ADMIN);
+    expect((await addAcme(cookie)).status).toBe(201);
+    db.prepare('UPDATE identity_provider SET issuer = ? WHERE provider_id = ?').run('https://user:hunter2@id.acme.test/realm', 'acme');
+    const [provider] = await listProviders(cookie);
+    expect(provider!.issuer).toBe('https://id.acme.test/realm');
+    expect(JSON.stringify(provider)).not.toContain('hunter2');
+    expect(JSON.stringify(provider)).not.toContain('user@');
+    expect(wireIssuer('not a url with a secret')).toBe('(not a valid URL)');
+    // The positive twins: an ordinary issuer, and a catalogue row's null, pass through verbatim.
+    expect(wireIssuer('https://kc.acme.test/realms/main/')).toBe('https://kc.acme.test/realms/main/');
+    expect(wireIssuer(null)).toBeNull();
   });
 
   it('treats a generic provider like any other for trust and the login screen', () => {
