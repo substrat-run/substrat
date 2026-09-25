@@ -781,3 +781,80 @@ describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 P
     expect((await lines(p)).filter((l) => l.startsWith('candidates:'))).toEqual([`candidates:${p}:${CRM_VERTICAL}`]);
   });
 });
+
+/**
+ * #1705 PR 3 on workerd: a replay's archive, clear and watermark are ONE `transactionSync` in the
+ * consumer's Durable Object. A failure injected at the last statement (a trigger refusing the
+ * watermark's delete) leaves the journal, the deliveries and the watermark as they were, and
+ * nothing in `_substrat_import_replays`. The twin: with the trigger gone, the replay moves.
+ */
+describe('adapter-cloudflare (workerd): the replay is atomic (#1705 PR 3)', () => {
+  it('a failure mid-move leaves nothing half-moved', async () => {
+    await warmControlPlane(env.VE_CONTROL_PLANE);
+    const secretBox = webCryptoSecretBox('test-key', new Uint8Array(32).fill(7));
+    const producer = new CloudflareScopeHost({ scope: env.CRM_SCOPE, controlPlane: env.VE_CONTROL_PLANE, secretBox });
+    producer.registerModule(crmExportMod);
+    const consumer = new CloudflareScopeHost({ scope: env.BOARD_SCOPE, controlPlane: env.VE_CONTROL_PLANE, secretBox });
+    consumer.registerModule(boardImportMod);
+    const staff = platformActorId.parse(ulid());
+    const writer = principalId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    await producer.admin.createTenant(staff, { id: t, slug: `ve-atomic-${t.toLowerCase()}`, name: 'Atomic' });
+    await producer.admin.grantEntitlement(staff, t, 'crm-export');
+    await producer.admin.grantEntitlement(staff, t, 'board-import');
+    const install = async (host: CloudflareScopeHost, vertical: string) => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical });
+      await host.admin.activateScope(staff, t, s);
+      return s;
+    };
+    const p = await install(producer, CRM_VERTICAL);
+    const c = await install(consumer, BOARD_VERTICAL);
+    await producer.admin.grant(staff, { principalId: writer, permission: key('customer:write'), node: { tenantId: t, scopeId: p }, grantedBy: writer });
+    await (await producer.getScope(writer, t, p)).invoke('crm/create', { name: 'Kept' });
+    const hostOf = (s: ScopeId) => (s === p ? producer : consumer);
+    await runPlatformSweep(consumer, {
+      actor: staff,
+      fetch: (async () => new Response('unused')) as FetchLike,
+      sweepers: {},
+      drainRetries: false,
+      gcSnapshots: false,
+      reconcileMigrations: false,
+      runSchedules: false,
+      crossVertical: {
+        reach: {
+          candidates: (scopes) => scopes.filter((s) => s.tenantId === t),
+          importState: (tt, s) => hostOf(s).admin.importState(staff, tt, s),
+          readExports: (tt, s, input) => hostOf(s).admin.readExportedEvents(staff, tt, s, input),
+          deliver: (tt, s, batch) => hostOf(s).deliverToPeer(tt, s, batch),
+        },
+      },
+    });
+    const stub = env.BOARD_SCOPE.get(env.BOARD_SCOPE.idFromName(c));
+    const snapshot = () =>
+      runInDurableObject(stub, async (_i, state) => {
+        const sql = state.storage.sql;
+        return {
+          imports: sql.exec('SELECT event_id FROM _substrat_imports ORDER BY event_id').toArray(),
+          deliveries: sql.exec('SELECT event_id, consumer_module FROM _substrat_deliveries ORDER BY event_id').toArray(),
+          cursors: sql.exec('SELECT source_scope_id, cursor FROM _substrat_import_cursors').toArray(),
+          replays: sql.exec('SELECT COUNT(*) AS n FROM _substrat_import_replays').toArray()[0],
+        };
+      });
+    const before = await snapshot();
+    expect(before.imports).toHaveLength(1);
+    await runInDurableObject(stub, async (_i, state) => {
+      state.storage.sql.exec(
+        `CREATE TRIGGER injected BEFORE DELETE ON _substrat_import_cursors BEGIN SELECT RAISE(ABORT, 'injected failure'); END;`,
+      );
+    });
+    const move = { mode: 'replay', from: CRM_VERTICAL, after: null, acknowledge: 'rerun-handlers', reason: 'atomicity' } as const;
+    await expect(consumer.admin.moveImportCursor(staff, t, c, move)).rejects.toThrow(/injected failure/);
+    expect(await snapshot()).toEqual(before);
+    await runInDurableObject(stub, async (_i, state) => {
+      state.storage.sql.exec('DROP TRIGGER injected');
+    });
+    await expect(consumer.admin.moveImportCursor(staff, t, c, move)).resolves.toMatchObject({ archived: { journal: 1, deliveries: 1 } });
+    expect(await snapshot()).toMatchObject({ imports: [], deliveries: [], cursors: [], replays: { n: 2 } });
+  });
+});
