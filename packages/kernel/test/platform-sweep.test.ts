@@ -2189,6 +2189,16 @@ describe('exportBreaksOf: the promote gate fails closed (#1705 PR 3)', () => {
     ).resolves.toEqual([]);
   });
 
+  it('an outgoing manifest that does not parse refuses; one with no exports promised nothing', async () => {
+    const ask = (out: Parameters<typeof exportBreaksOf>[0]['outgoing']) =>
+      exportBreaksOf({ admin: admin(fleet()), actor: ACTOR, producer: PRODUCER, outgoing: out, incoming, readImports: async () => imports });
+    await expect(ask({ kind: 'unreadable', reason: 'the stored manifest is not JSON' })).rejects.toThrow(
+      /outgoing version's exports could not be read/,
+    );
+    // The twin: a version that states no exports promised nothing, so nothing breaks.
+    await expect(ask({ kind: 'none' })).resolves.toEqual([]);
+  });
+
   it('a directory read that throws refuses too', async () => {
     await expect(
       exportBreaksOf({

@@ -1751,6 +1751,14 @@ export async function exportBreaksOf(input: {
   readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>;
   concurrency?: number;
 }): Promise<ExportBreak[]> {
+  // An outgoing manifest that does not parse promised SOMETHING nobody can read. Judging it as
+  // "promised nothing" would pass every break unacknowledged, so it refuses, as a thrown read does.
+  if (input.outgoing.kind === 'unreadable') {
+    throw substratError(
+      'unavailable',
+      `cannot say whom this promotion breaks: the outgoing version's exports could not be read (${input.outgoing.reason})`,
+    );
+  }
   if (input.outgoing.kind !== 'exports') return [];
   const incoming = new Map(input.incoming.kind === 'exports' ? input.incoming.rows.map((r) => [r.type, r.schemaVersion]) : []);
   const changed = new Map<string, { schemaVersion: number; incoming: number | null }>();
