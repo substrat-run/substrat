@@ -10,7 +10,7 @@ import {
   writeVersionMigrations,
   type SwitchSql,
 } from '../src/index.js';
-import { BATCH_MANIFEST_CHARS, UNSPLIT_IDS_SQL, UNSPLIT_PROBE_SQL } from '../src/version-migrations.js';
+import { BATCH_MANIFEST_BYTES, UNSPLIT_IDS_SQL, UNSPLIT_PROBE_SQL } from '../src/version-migrations.js';
 
 /**
  * #1764: a version's SQL migrations, stored apart from its manifest, executed against a real
@@ -170,7 +170,7 @@ describe('version migrations stored apart (#1764)', () => {
       const { sql } = fresh();
       // Near-limit manifests: two fit (2 × 0.45 of the bound), the third would pass it.
       const padded = (i: number, share: number) =>
-        manifest({ migrations: [{ ...migrations[0]!, version: `000${i}` }], pad: 'x'.repeat(Math.floor(BATCH_MANIFEST_CHARS * share)) });
+        manifest({ migrations: [{ ...migrations[0]!, version: `000${i}` }], pad: 'x'.repeat(Math.floor(BATCH_MANIFEST_BYTES * share)) });
       for (let i = 0; i < 5; i++) legacy(sql, `v${i}`, padded(i, 0.45));
       const split = () => sql.all('SELECT id FROM vertical_versions WHERE migrations_split = 1 ORDER BY id').map((r) => r.id as string);
 
@@ -180,13 +180,25 @@ describe('version migrations stored apart (#1764)', () => {
       expect(splitVersionMigrationsBatch(sql)).toEqual({ moved: 1, more: false });
       // Exactly at the bound is still taken: two manifests summing to it move together.
       const { sql: at } = fresh();
-      legacy(at, 'a', 'x'.repeat(BATCH_MANIFEST_CHARS / 2));
-      legacy(at, 'b', 'x'.repeat(BATCH_MANIFEST_CHARS / 2));
+      legacy(at, 'a', 'x'.repeat(BATCH_MANIFEST_BYTES / 2));
+      legacy(at, 'b', 'x'.repeat(BATCH_MANIFEST_BYTES / 2));
       legacy(at, 'c', 'x');
       expect(splitVersionMigrationsBatch(at)).toEqual({ moved: 2, more: true });
+      // Bytes, not code points: two manifests of four-byte characters, each well under the
+      // bound in code points (a quarter of it) but at 0.6 of it in bytes, never share a batch.
+      const { sql: wide } = fresh();
+      const emoji = '\u{1F600}'.repeat(Math.floor((BATCH_MANIFEST_BYTES * 0.6) / 4));
+      legacy(wide, 'w1', emoji);
+      legacy(wide, 'w2', emoji);
+      const [{ points, octets }] = wide.all(
+        "SELECT length(manifest_json) AS points, octet_length(manifest_json) AS octets FROM vertical_versions WHERE id = 'w1'",
+      ) as { points: number; octets: number }[];
+      expect(2 * points).toBeLessThan(BATCH_MANIFEST_BYTES); // a code-point bound would take both
+      expect(2 * octets).toBeGreaterThan(BATCH_MANIFEST_BYTES);
+      expect(splitVersionMigrationsBatch(wide)).toEqual({ moved: 1, more: true });
       // A manifest over the bound on its own still moves, alone: the first is always taken.
       const { sql: over } = fresh();
-      legacy(over, 'big', 'x'.repeat(BATCH_MANIFEST_CHARS + 1));
+      legacy(over, 'big', 'x'.repeat(BATCH_MANIFEST_BYTES + 1));
       legacy(over, 'next', 'x');
       expect(splitVersionMigrationsBatch(over)).toEqual({ moved: 1, more: true });
     });

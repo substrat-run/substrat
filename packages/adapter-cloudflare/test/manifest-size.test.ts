@@ -16,7 +16,13 @@ import {
   platformActorId,
   sqlBytes,
 } from '@substrat-run/contracts';
-import { ulid, UNSAFE_allowAllChecker, VERSION_MIGRATIONS_DDL, webCryptoSecretBox } from '@substrat-run/kernel';
+import {
+  splitVersionMigrationsBatch,
+  ulid,
+  UNSAFE_allowAllChecker,
+  VERSION_MIGRATIONS_DDL,
+  webCryptoSecretBox,
+} from '@substrat-run/kernel';
 import type { ScopeDumpTable } from '@substrat-run/contracts';
 import {
   BACKFILL_OPERATION,
@@ -26,7 +32,7 @@ import {
   backfillBackoffMs,
   planDirectoryDdl,
 } from '../src/control-plane-do.js';
-import { splitSqlStatements } from '../src/scope-do.js';
+import { splitSqlStatements, switchSqlOver } from '../src/scope-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -526,5 +532,44 @@ describe('the directory DDL plan holds back exactly #1764\'s statements', () => 
     expect(drifted.missing).toEqual(splitSqlStatements(VERSION_MIGRATIONS_DDL));
     expect(() => assertDirectoryDdlPlan(drifted)).toThrow(/does not carry 2 statement/);
     expect(assertDirectoryDdlPlan(plan)).toBe(plan);
+  });
+});
+
+/**
+ * #1764 review: the batch bound is measured in bytes with `octet_length`, which needs SQLite
+ * 3.43. Node's SQLite has it; this holds the Durable Object's to it too, and runs a real
+ * batch over DO rows whose code-point count is under the bound and whose byte count is over.
+ */
+describe('the backfill batch bound is bytes, on workerd', () => {
+  const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`version-backfill-bytes-${ulid()}`));
+
+  it('octet_length exists on DO SQLite and counts UTF-8 bytes', async () => {
+    await runInDurableObject(stub, (_instance, state) => {
+      const r = state.storage.sql
+        .exec('SELECT octet_length(char(128512)) AS octets, length(char(128512)) AS points')
+        .one() as { octets: number; points: number };
+      expect(r).toMatchObject({ octets: 4, points: 1 });
+    });
+  });
+
+  it('three manifests under the bound in code points but over it in bytes: one batch takes two', async () => {
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.deleteAlarm();
+      // ~1.5 MiB each in bytes (under the DO's row limit), a quarter of that in code points.
+      const wide = '\u{1F600}'.repeat(Math.floor((1.5 * 1024 * 1024) / 4));
+      const ids = [ulid(), ulid(), ulid()].sort();
+      for (const [i, id] of ids.entries()) {
+        state.storage.sql.exec(
+          `INSERT INTO vertical_versions (id, vertical_slug, version, manifest_digest, permission_digest,
+             migration_digest, admission, manifest_json, created_at)
+           VALUES (?, 'acme', ?, 'm', 'p', 'g', 'admitted', ?, '2026-09-01T00:00:00.000Z')`,
+          id, `1.0.${i}`, wide,
+        );
+      }
+      const sql = switchSqlOver(state.storage.sql);
+      expect(state.storage.sql.exec('SELECT SUM(length(manifest_json)) AS n FROM vertical_versions').one().n)
+        .toBeLessThan(4 * 1024 * 1024); // a code-point bound would take all three
+      expect(state.storage.transactionSync(() => splitVersionMigrationsBatch(sql))).toEqual({ moved: 2, more: true });
+    });
   });
 });

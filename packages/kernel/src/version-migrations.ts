@@ -126,14 +126,16 @@ export const UNSPLIT_PROBE_SQL = 'SELECT 1 AS present FROM vertical_versions WHE
 /** How many versions one backfill batch moves at most. */
 const BATCH_VERSIONS = 25;
 /**
- * How much manifest one batch reads at most, in characters (the first version is always
+ * How much manifest one batch reads at most, in UTF-8 bytes (the first version is always
  * moved). A stored manifest can be up to about 1.5 MiB, and a batch holds the directory DO.
+ * Bytes, because what a batch costs is the bytes it reads: a manifest of four-byte characters
+ * is four times its character count.
  */
-export const BATCH_MANIFEST_CHARS = 4 * 1024 * 1024;
+export const BATCH_MANIFEST_BYTES = 4 * 1024 * 1024;
 
 /**
  * Move the SQL out of the next versions stored before #1764: at most `limit` of them, and
- * at most `BATCH_MANIFEST_CHARS` of manifest. Returns how many it moved, and whether any are
+ * at most `BATCH_MANIFEST_BYTES` of manifest. Returns how many it moved, and whether any are
  * left.
  *
  * Bounded so that no one run has to read the whole version history: the Durable-Object
@@ -153,15 +155,17 @@ export function splitVersionMigrationsBatch(
   // The ids come off the partial index alone; each manifest is read only when it is moved.
   const ids = db.all(UNSPLIT_IDS_SQL, limit) as { id: string }[];
   let moved = 0;
-  let chars = 0;
+  let bytes = 0;
   for (const { id } of ids) {
     // The candidate is measured before it is taken, so a batch never passes the bound by one
     // more manifest. The first is always taken, or a manifest over the bound would never move.
-    const { size } = db.all('SELECT COALESCE(length(manifest_json), 0) AS size FROM vertical_versions WHERE id = ?', id)[0] as {
-      size: number;
-    };
-    if (moved > 0 && chars + size > BATCH_MANIFEST_CHARS) break;
-    chars += size;
+    // `octet_length` (SQLite 3.43+) counts bytes; `length` would count code points.
+    const { size } = db.all(
+      'SELECT COALESCE(octet_length(manifest_json), 0) AS size FROM vertical_versions WHERE id = ?',
+      id,
+    )[0] as { size: number };
+    if (moved > 0 && bytes + size > BATCH_MANIFEST_BYTES) break;
+    bytes += size;
     const { manifest_json: stored } = db.all('SELECT manifest_json FROM vertical_versions WHERE id = ?', id)[0] as {
       manifest_json: string | null;
     };
