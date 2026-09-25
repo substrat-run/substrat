@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { moduleManifest } from '@substrat-run/contracts';
 import { listIndexMigrations, moduleMigrations, searchIndexMigrations } from '../src/index.js';
 
 /**
@@ -7,11 +8,20 @@ import { listIndexMigrations, moduleMigrations, searchIndexMigrations } from '..
  * it, so a module changing only its `searchables` or `lists` shows as a migration change.
  */
 describe('moduleMigrations', () => {
-  const manifest = {
-    id: 'helpdesk',
-    searchables: [{ entityType: 'ticket', fields: ['title'], table: 'ticket', idColumn: 'id', tokenizer: 'unicode61' as const }],
-    lists: [{ entityType: 'ticket', sortable: ['created_at', 'id'], filterable: ['status'], table: 'ticket', idColumn: 'id' }],
-  };
+  const manifestOf = (lists: { sortable: string[]; filterable: string[] }) =>
+    moduleManifest.parse({
+      id: 'helpdesk',
+      version: '1.0.0',
+      kernelContract: '^0.0.1',
+      permissions: [{ key: 'helpdesk:use', description: 'use it' }],
+      events: { emits: [], consumes: [] },
+      migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+      attachmentTargets: [],
+      entitlementKey: 'helpdesk',
+      searchables: [{ entityType: 'ticket', fields: ['title'], table: 'ticket', idColumn: 'id' }],
+      lists: [{ entityType: 'ticket', table: 'ticket', idColumn: 'id', ...lists }],
+    });
+  const manifest = manifestOf({ sortable: ['created_at', 'id'], filterable: ['status'] });
   const authored = [{ version: '0001-init', sql: 'CREATE TABLE ticket (id TEXT PRIMARY KEY, title TEXT, status TEXT, created_at TEXT);' }];
 
   it('is the authored migrations, then the search indexes, then the list indexes', () => {
@@ -32,7 +42,7 @@ describe('moduleMigrations', () => {
   it('changing only `lists` changes the set', () => {
     const before = moduleMigrations({ manifest, migrations: authored });
     const after = moduleMigrations({
-      manifest: { ...manifest, lists: [{ ...manifest.lists[0]!, filterable: ['status', 'title'] }] },
+      manifest: manifestOf({ sortable: ['created_at', 'id'], filterable: ['status', 'title'] }),
       migrations: authored,
     });
     expect(after.map((m) => m.version)).not.toEqual(before.map((m) => m.version));
