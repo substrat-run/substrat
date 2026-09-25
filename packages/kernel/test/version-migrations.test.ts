@@ -190,9 +190,9 @@ describe('version migrations stored apart (#1764)', () => {
       const emoji = '\u{1F600}'.repeat(Math.floor((BATCH_MANIFEST_BYTES * 0.6) / 4));
       legacy(wide, 'w1', emoji);
       legacy(wide, 'w2', emoji);
-      const [{ points, octets }] = wide.all(
+      const { points, octets } = wide.all(
         "SELECT length(manifest_json) AS points, octet_length(manifest_json) AS octets FROM vertical_versions WHERE id = 'w1'",
-      ) as { points: number; octets: number }[];
+      )[0] as { points: number; octets: number };
       expect(2 * points).toBeLessThan(BATCH_MANIFEST_BYTES); // a code-point bound would take both
       expect(2 * octets).toBeGreaterThan(BATCH_MANIFEST_BYTES);
       expect(splitVersionMigrationsBatch(wide)).toEqual({ moved: 1, more: true });
