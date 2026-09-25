@@ -310,6 +310,26 @@ describe('the authorization endpoint', () => {
   });
 });
 
+describe('a document with a refusable token endpoint', () => {
+  it('is refused at discovery, and is not cached as a success', async () => {
+    doc = { token_endpoint: 'http://token.example.test/token' };
+    for (let i = 0; i < 3; i++) await expect(beginLogin(env, APP)).rejects.toThrow(/token_endpoint that is not https/);
+    // Answered from the failure window: one discovery, and nothing sent to the endpoint.
+    expect(requests.filter((r) => r.url.includes('openid-configuration'))).toHaveLength(1);
+    expect(requests.some((r) => r.url.startsWith('http://token.example.test'))).toBe(false);
+    // A success would be served from the success cache with no new fetch; instead, once the
+    // window passes and the document is corrected, the next login sees the corrected one.
+    doc = {};
+    pastTheFailureWindow();
+    expect((await login()).user.id).toBe('u-1');
+  });
+
+  it('is accepted when the token endpoint is https on another origin (positive twin)', async () => {
+    doc = { token_endpoint: 'https://token.example.test/token' };
+    expect((await beginLogin(env, APP)).location).toContain('/authorize');
+  });
+});
+
 describe('what else the document names', () => {
   it('refuses a plaintext jwks_uri, and does not cache the refusal', async () => {
     doc = { jwks_uri: 'http://keys.example.test/jwks' };

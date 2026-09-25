@@ -153,6 +153,12 @@ export function discoverIssuer(issuer: string): Promise<Discovery> {
       if (d.authorization_endpoint !== undefined && (typeof d.authorization_endpoint !== 'string' || !isAllowedEndpoint(issuer, d.authorization_endpoint))) {
         throw new Error(`OIDC discovery at ${url} names an authorization_endpoint that is not https`);
       }
+      // The client secret is sent here at the end of every login, so a document whose token
+      // endpoint would be refused then is refused now, and goes through the failure window
+      // instead of being cached as a success that fails every login. Absent is left to the login.
+      if (d.token_endpoint !== undefined && (typeof d.token_endpoint !== 'string' || !isAllowedEndpoint(issuer, d.token_endpoint))) {
+        throw new Error(`OIDC discovery at ${url} names a token_endpoint that is not https`);
+      }
       // The keys an ID token is verified against are fetched from here, so not in plaintext.
       if (typeof d.jwks_uri !== 'string' || !isAllowedEndpoint(issuer, d.jwks_uri)) {
         throw new Error(`OIDC discovery at ${url} names a jwks_uri that is not https`);
