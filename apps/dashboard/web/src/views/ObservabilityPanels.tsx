@@ -695,7 +695,13 @@ export function EventExplorer({
                 columns={columns}
                 onNarrow={
                   b.narrow
-                    ? () => apply({ groupBy: b.narrow!.groupBy!, field: '', type: b.narrow!.type! })
+                    ? () => {
+                        // Narrowing regroups by a dimension, so a half-chosen "Payload
+                        // field" is abandoned with it — left set, the control would show
+                        // the field input over rows grouped by operation.
+                        setFieldMode(false);
+                        apply({ groupBy: b.narrow!.groupBy!, field: '', type: b.narrow!.type! });
+                      }
                     : undefined
                 }
               />

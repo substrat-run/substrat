@@ -78,6 +78,17 @@ describe('Events mode', () => {
     expect(byText('acme/assign')).toBeUndefined();
   });
 
+  it('narrowing from a half-chosen Payload field leaves field mode, so the control matches the rows', async () => {
+    const facets = vi.spyOn(api, 'appFacets').mockResolvedValue(result());
+    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} />));
+    await click(byText('Payload field'));
+    expect(container.querySelector('[aria-label="Group by payload field"]')).not.toBeNull();
+    await click(byText('invoice.sent'));
+    expect(facets).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ groupBy: 'operation', type: 'invoice.sent' }));
+    expect(container.querySelector('[aria-label="Group by"] [aria-pressed="true"]')!.textContent).toBe('Operation');
+    expect(container.querySelector('[aria-label="Group by payload field"]')).toBeNull();
+  });
+
   it('picking Payload field asks nothing until a field is named', async () => {
     const facets = vi.spyOn(api, 'appFacets').mockResolvedValue(result());
     await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} />));
