@@ -486,9 +486,23 @@ export function moveImportCursor(
     replayId: string;
     /** Epoch ms: the rows' time, and "now" for a skip, as the watermark's ceiling. */
     now: number;
+    /**
+     * What the code running this scope imports (`CrossVerticalRegistry.consumes()`). A move names
+     * an edge only if the consumer declares it. Otherwise a skip would plant a watermark for an
+     * edge that does not exist yet, and the backfill of a later version that adds the import would
+     * silently start from it.
+     */
+    imports: readonly { from: string }[];
   },
 ): ImportCursorMoved {
   const { move, source } = input;
+  if (!input.imports.some((i) => i.from === source.vertical)) {
+    throw substratError(
+      'precondition_failed',
+      `this scope's code imports nothing from '${source.vertical}' — there is no edge to move; ` +
+        `a watermark set now would decide where a later import's backfill starts`,
+    );
+  }
   const at = new Date(input.now).toISOString();
   const previous = (sql.all(IMPORT_CURSOR_OF_SQL, source.scopeId)[0]?.cursor as string | undefined) ?? null;
   const moved = (cursor: string | null, archived: { journal: number; deliveries: number }): ImportCursorMoved => ({

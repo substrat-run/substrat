@@ -7278,7 +7278,9 @@ export class SqliteScopeHost implements ScopeHost {
           // One turn on the scope actor, which is where `deliverToPeer` runs: a delivery on this
           // edge is either wholly before the move or refused by its compare-and-set after it.
           moved = await rt.actor.turn(() =>
-            rt.db.transaction(() => moveImportCursor(switchSqlOf(rt.db), { move, source, replayId, now }))(),
+            rt.db.transaction(() =>
+              moveImportCursor(switchSqlOf(rt.db), { move, source, replayId, now, imports: this.crossVertical.consumes() }),
+            )(),
           );
         } catch (err) {
           try {

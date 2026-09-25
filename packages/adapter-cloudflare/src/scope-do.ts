@@ -3053,7 +3053,12 @@ export function defineScopeDO(
      */
     async importCursorMove(input: ImportCursorMoveAt & { now: number }): Promise<ImportCursorMoved> {
       await this.ensureMigrations();
-      return this.queue.enqueue(() => this.ctx.storage.transactionSync(() => moveImportCursor(this.switchSql(), input)));
+      // The consumer's own running imports decide whether the edge exists: read here, in the
+      // deployment whose handlers would run, never from the platform's request.
+      const imports = this.crossVertical.consumes();
+      return this.queue.enqueue(() =>
+        this.ctx.storage.transactionSync(() => moveImportCursor(this.switchSql(), { ...input, imports })),
+      );
     }
 
     /**

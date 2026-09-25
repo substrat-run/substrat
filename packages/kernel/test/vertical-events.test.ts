@@ -202,10 +202,11 @@ describe('moveImportCursor: where "skip to now" lands (#1705 PR 3)', () => {
   const skip = (through: string) =>
     ({ mode: 'skip', from: 'acme/crm', through, acknowledge: 'skip-events', reason: 'r' }) as ImportCursorMove;
   const source = { vertical: 'acme/crm', scopeId: '01J0000000000000000000PRD0' };
+  const imports = [{ from: 'acme/crm' }];
 
   it("passes over every earlier millisecond, and never an event minted in the skip's own", () => {
     const { sql } = store();
-    const moved = moveImportCursor(sql, { move: skip('now'), source, replayId: ulid(), now: T });
+    const moved = moveImportCursor(sql, { move: skip('now'), source, replayId: ulid(), now: T, imports });
     const sameMillisecond = createUlid()(T);
     const earlier = createUlid()(T - 1);
     expect(moved.cursor! < sameMillisecond).toBe(true);
@@ -214,7 +215,7 @@ describe('moveImportCursor: where "skip to now" lands (#1705 PR 3)', () => {
 
   it('refuses a watermark past now, and takes one at now', () => {
     const { sql } = store();
-    expect(() => moveImportCursor(sql, { move: skip(ulidCeiling(T + 1)), source, replayId: ulid(), now: T })).toThrow(/at most now/);
-    expect(moveImportCursor(sql, { move: skip(ulidCeiling(T)), source, replayId: ulid(), now: T }).cursor).toBe(ulidCeiling(T));
+    expect(() => moveImportCursor(sql, { move: skip(ulidCeiling(T + 1)), source, replayId: ulid(), now: T, imports })).toThrow(/at most now/);
+    expect(moveImportCursor(sql, { move: skip(ulidCeiling(T)), source, replayId: ulid(), now: T, imports }).cursor).toBe(ulidCeiling(T));
   });
 });

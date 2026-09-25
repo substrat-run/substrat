@@ -1025,6 +1025,19 @@ export function verticalEventsContractSuite(
       expect(new Set(back.map((r) => r.replay_id))).toEqual(new Set([moved.replayId]));
     });
 
+    it('the lever moves only an edge the consumer imports: a skip cannot plant a watermark for one that does not exist', async () => {
+      const t = await newTenant();
+      await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      // Installed in the tenant, and imported by nobody.
+      await install(t, 'acme/ledger');
+      const plant = { ...skip('now'), from: 'acme/ledger' } as ImportCursorMove;
+      expect(String(await refusal(lever(t, c, plant)))).toMatch(/imports nothing from 'acme\/ledger'/);
+      expect((await fx.consumer.admin.importState(staff, t, c)).cursors).toEqual([]);
+      // The twin: the edge it does import moves.
+      await expect(lever(t, c, skip('now'))).resolves.toMatchObject({ source: { vertical: CRM_VERTICAL } });
+    });
+
     it('a replay without its acknowledgement never reaches the store', async () => {
       const t = await newTenant();
       const p = await install(t, CRM_VERTICAL);
