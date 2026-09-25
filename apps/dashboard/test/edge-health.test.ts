@@ -29,7 +29,7 @@ describe('cross-app event health on the dashboard (#1705 PR 3)', () => {
 
   it('offers the lever only on a resolved edge INTO this app', () => {
     expect(leverOffered(edge({}), APP)).toBe(true);
-    expect(leverOffered(edge({ consumer: { scopeId: '01J0000000000000000000OTH0', vertical: 'acme/x' } }), APP)).toBe(false);
+    expect(leverOffered(edge({ consumer: { scopeId: '01J0000000000000000000OTH0' as EdgeHealth['consumer']['scopeId'], vertical: 'acme/x' } }), APP)).toBe(false);
     expect(leverOffered(edge({ state: 'unresolved', producer: { vertical: 'acme/crm', scopeId: null } }), APP)).toBe(false);
     expect(leverOffered(edge({ state: 'unavailable' }), APP)).toBe(false);
   });
