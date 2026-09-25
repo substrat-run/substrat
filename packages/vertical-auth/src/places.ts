@@ -159,11 +159,8 @@ export function placesReporter(opts: {
         redirect: 'manual',
       };
       const res = await fetchImpl(endpoint, init);
-      // Manual: a 30x (or the opaque redirect a browser-like runtime hands back, status 0) is a
-      // failure, never followed — following is how the secret would reach a host nobody checked.
-      if (res.status === 0 || (res.status >= 300 && res.status < 400)) {
-        return { outcome: 'failed', reason: `places report endpoint redirected (${res.status}); not followed` };
-      }
+      // With `redirect: 'manual'` a 30x (or the opaque redirect some runtimes hand back, status
+      // 0) is not `ok`, not a 4xx, and so lands in `failed` below: never followed.
       if (res.status === 204 || res.ok) return { outcome: 'sent' };
       if (res.status >= 400 && res.status < 500) return { outcome: 'refused', status: res.status };
       return { outcome: 'failed', reason: `places report answered ${res.status}` };
