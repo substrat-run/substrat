@@ -7310,13 +7310,16 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * The consumer's imports and watermarks (#1705), for a scope served HERE. A deployment that
-   * imports nothing answers so without a call, as `admin.importState` does: that is a fact
-   * about this code, and it names no scope.
+   * The consumer's imports and watermarks (#1705), for a scope served HERE. The served-here
+   * check comes FIRST, before the "this deployment imports nothing" answer. That answer is a
+   * fact about this code, but given for a scope this deployment does not serve, it would tell the
+   * platform the scope imports nothing, when the truth is that the platform asked the wrong
+   * deployment. The platform reads the former as a disagreement with its registry, and must
+   * hear the latter as a refusal.
    */
   async importStateLocal(tenantId: TenantId, scopeId: ScopeId): Promise<ImportState> {
-    if (this.crossVertical.consumes().length === 0) return { consumes: [], cursors: [] };
     await this.assertServesLocally(tenantId, scopeId, 'importState');
+    if (this.crossVertical.consumes().length === 0) return { consumes: [], cursors: [] };
     return importState.parse(await this.scopeStub(scopeId).importStateRead());
   }
 
@@ -7327,15 +7330,26 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * The served-here gate for a CP-less host (#1705 PR 2): the scope must have been provisioned
-   * in THIS deployment's namespace, for THIS tenant (`ScopeDO.servesTenant`). On a host with a
-   * directory the directory's own gate runs as well, so the shared control plane still refuses
-   * a scope bound to a vertical. Refused `conflict`, not `not_found`: over `/internal` a 404
-   * means "this deployment predates the route", and the platform reads it as exactly that.
+   * The served-here gate (#1705 PR 2), from whichever source of truth this host has.
+   *
+   * With a directory, the directory decides: the record must exist for this (tenant, scope), and
+   * the shared control plane refuses a scope bound to a vertical (`assertServedHere`). Role rows
+   * are not consulted, because a directory-backed host provisions without projecting them.
+   *
+   * CP-less, which is every pushed vertical, there is no directory. The scope must have been
+   * provisioned in THIS deployment's namespace, for THIS tenant (`ScopeDO.servesTenant`).
+   *
+   * Refused `conflict`, not `not_found`, in both cases. Over `/internal` a 404 means "this
+   * deployment predates the route", and the platform reads it as exactly that.
    */
   private async assertServesLocally(tenantId: TenantId, scopeId: ScopeId, verb: string): Promise<void> {
     if (!this.cpLess) {
-      this.assertServedHere(await this.scopeRecordForRead(tenantId, scopeId), scopeId, verb);
+      const record = await this.cp.getScopeRecord(tenantId, scopeId);
+      if (!record) {
+        throw substratError('conflict', `${verb} cannot answer for scope ${scopeId}: the directory has no such scope for tenant ${tenantId}`);
+      }
+      this.assertServedHere(record, scopeId, verb);
+      return;
     }
     if (!(await this.scopeStub(scopeId).servesTenant(tenantId))) {
       throw substratError(

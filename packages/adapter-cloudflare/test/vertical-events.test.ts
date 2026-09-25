@@ -20,6 +20,7 @@ import {
   CRM_VERTICAL,
   boardImportMod,
   crmExportMod,
+  testMod,
   verticalEventsContractSuite,
 } from '@substrat-run/contract-tests';
 import { runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration, type SweepRunInput } from '@substrat-run/kernel';
@@ -283,6 +284,37 @@ describe('the cross-vertical far ends refuse a scope this deployment does not se
     expect(errorCodeOf(await refusal(crm.hostFor().exportedEventsLocal(u, p, read)))).toBe('conflict');
     expect(errorCodeOf(await refusal(board.hostFor().importStateLocal(u, c)))).toBe('conflict');
     expect(errorCodeOf(await refusal(board.hostFor().importEventsLocal(u, c, batch)))).toBe('conflict');
+  });
+
+  it('a deployment that imports nothing still refuses a scope it does not serve, before saying so', async () => {
+    // Its "imports nothing" is a fact about its code. Given for a foreign scope it would read, to
+    // the platform, as a scope that imports nothing, when the truth is that it asked the wrong
+    // deployment.
+    const importsNothing = new CloudflareScopeHost({ scope: env.CRM_SCOPE });
+    importsNothing.registerModule(testMod);
+    expect(errorCodeOf(await refusal(importsNothing.importStateLocal(t, foreign)))).toBe('conflict');
+    await expect(importsNothing.importStateLocal(t, p)).resolves.toEqual({ consumes: [], cursors: [] });
+  });
+
+  it('a host WITH a directory decides from the directory, not from projected roles', async () => {
+    const staff = platformActorId.parse(ulid());
+    const d = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await warmControlPlane(env.VE_CONTROL_PLANE);
+    const full = new CloudflareScopeHost({
+      scope: env.CRM_SCOPE,
+      controlPlane: env.VE_CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    full.registerModule(crmExportMod);
+    await full.admin.createTenant(staff, { id: d, slug: `ve-full-${d.toLowerCase()}`, name: 'Full' });
+    // Provisioned through the directory only: no local provision, so no projected role rows.
+    await full.provisionScope(staff, { tenantId: d, scopeId: s, vertical: CRM_VERTICAL });
+    await full.admin.activateScope(staff, d, s);
+    await expect(full.exportedEventsLocal(d, s, read)).resolves.toMatchObject({ events: [] });
+    // The twin: a pair the directory does not know is refused, as on a CP-less host.
+    expect(errorCodeOf(await refusal(full.exportedEventsLocal(d, foreign, read)))).toBe('conflict');
+    expect(errorCodeOf(await refusal(full.exportedEventsLocal(u, s, read)))).toBe('conflict');
   });
 
   it('over the wire the refusal is a 409, never an empty answer and never a "redeploy"', async () => {
