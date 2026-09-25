@@ -49,6 +49,8 @@ export const SYSTEM_SWITCHES_DDL = `
   );
   CREATE INDEX IF NOT EXISTS _substrat_system_switches_position
     ON _substrat_system_switches (position, operation_id);
+  CREATE INDEX IF NOT EXISTS _substrat_system_switches_operation
+    ON _substrat_system_switches (operation_id);
 `;
 
 /**
@@ -148,7 +150,14 @@ const rowOf = (r: Record<string, unknown>): SystemSwitchRecordRow => ({
   at: String(r.switched_at),
 });
 
-/** The fleet read (`GET /system-switches`): records, keyset-paged by `operation_id`. */
+/**
+ * The fleet read (`GET /system-switches`): records, keyset-paged by `operation_id`.
+ *
+ * The key is the call that last moved the switch, so a row whose switch moves during a walk
+ * is re-keyed to a newer id and jumps to the end of the order. Ascending (the default) never
+ * skips a row for it; at worst it is seen twice, once per position. A DESCENDING walk can
+ * miss a row that moved after the walk started, so use ascending for "every switch".
+ */
 export function listSystemSwitchRecords(db: SwitchSql, filter: SystemSwitchRecordFilter = {}): SystemSwitchRecordRow[] {
   const where: string[] = [];
   const params: string[] = [];

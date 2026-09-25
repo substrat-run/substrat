@@ -240,6 +240,32 @@ describe('the schedule switch record (#1674)', () => {
       expect(ids(listSystemSwitchRecords(sql, { order: 'desc', cursor: '01B' }))).toEqual(['01A']);
     });
 
+    it('a walk over every position is served by the operation index, not a sort', () => {
+      const { db } = fresh();
+      create(db);
+      const plan = db
+        .prepare(
+          `EXPLAIN QUERY PLAN SELECT r.operation_id FROM _substrat_system_switches r
+             LEFT JOIN scopes s ON s.scope_id = r.scope_id
+            WHERE r.operation_id > ? ORDER BY r.operation_id ASC LIMIT 20`,
+        )
+        .all('0') as { detail: string }[];
+      const detail = plan.map((p) => p.detail).join(' | ');
+      expect(detail).toMatch(/_substrat_system_switches_operation/);
+      expect(detail).not.toMatch(/TEMP B-TREE/);
+    });
+
+    it('an ascending walk never skips a row whose switch moves mid-walk — at worst it is seen twice', () => {
+      const sql = seed();
+      const first = listSystemSwitchRecords(sql, { limit: 2 });
+      expect(ids(first)).toEqual(['01A', '01B']);
+      // Between pages, the not-yet-seen 01C's switch moves again: re-keyed to a newer id.
+      recordSystemSwitchedOff(sql, { tenantId: 't2', scopeId: 's3', moduleId: '@m/b', actor: 'staff', reason: 'again', operationId: '01Z', at: 'x' });
+      const rest = listSystemSwitchRecords(sql, { cursor: '01B' });
+      const scopesSeen = [...first, ...rest].map((r) => `${r.scopeId}/${r.moduleId}`);
+      expect(new Set(scopesSeen)).toEqual(new Set(['s1/@m/a', 's2/@m/a', 's3/@m/b', 's1/@m/b']));
+    });
+
     it('`systemSwitchRecordsOf` and `switchedOffModulesOf` read one scope', () => {
       const sql = seed();
       expect([...systemSwitchRecordsOf(sql, 't1', 's1')].sort()).toEqual([['@m/a', 'off'], ['@m/b', 'on']]);
