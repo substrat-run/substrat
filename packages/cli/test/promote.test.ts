@@ -127,6 +127,6 @@ describe('the diff formatters', () => {
     expect(out[1]).toMatch(/^~ \(edited after shipping.*\) desk 0001$/);
     expect(out[2]).toMatch(/SQL left out/);
     expect(out.at(-1)).toBe('(2 of 9 shown; read the rest in the repository)');
-    expect(formatMigrationDiff(diff({ added: [], total: 0 }), false)).toEqual(['none']);
+    expect(formatMigrationDiff(diff({ added: [], total: 0 }), false)).toEqual(['no SQL migration added or edited']);
   });
 });

@@ -173,7 +173,9 @@ export function formatMigrationDiff(diff: MigrationDiff | null, digestMoved: boo
     ...diff.added.flatMap((m) => entry('+', m)),
   ];
   if (diff.total === 0) {
-    lines.push(digestMoved ? 'no SQL migration added or edited — the Durable-Object classes moved the digest' : 'none');
+    // Not "none": the gate checks permissions first, so a permission refusal says nothing
+    // about whether the migration digest moved too.
+    lines.push(`no SQL migration added or edited${digestMoved ? ' — the Durable-Object classes moved the digest' : ''}`);
   }
   if (diff.truncated) lines.push(`(${diff.added.length + diff.changed.length} of ${diff.total} shown; read the rest in the repository)`);
   return lines;
