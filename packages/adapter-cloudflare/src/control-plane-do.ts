@@ -30,6 +30,7 @@ import {
   type SystemSwitchRecordRow,
   type SystemSwitchRecordWrite,
   MODEL_USAGE_RETENTION_DAYS,
+  ulid,
   isPrimaryScope,
   resolveVerticalInstanceFrom,
   type ImpersonationRow,
@@ -50,7 +51,7 @@ import type {
   TenantStatus,
   VerticalResolution,
 } from '@substrat-run/contracts';
-import { assertReplayableDump } from '@substrat-run/contracts';
+import { assertReplayableDump, opsFailureFingerprint } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -1054,8 +1055,12 @@ const DIRECTORY_DDL = `
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
 `;
 
-/** `DIRECTORY_DDL`, split once into what runs before the column additions and after (#1764). */
-export const DIRECTORY_DDL_PLAN = planDirectoryDdl(DIRECTORY_DDL);
+/**
+ * `DIRECTORY_DDL`, split once into what runs before the column additions and after (#1764).
+ * Checked at module load: it is a constant, so a drift is a build that never works rather
+ * than a directory that quietly skips or double-runs a statement.
+ */
+export const DIRECTORY_DDL_PLAN = assertDirectoryDdlPlan(planDirectoryDdl(DIRECTORY_DDL));
 
 /** The scope columns added after the directory's first shape shipped. */
 const SCOPE_COLUMNS_ADDED = [
@@ -1098,6 +1103,17 @@ export function planDirectoryDdl(ddl: string): { loop: string[]; afterColumns: s
   };
 }
 
+/** Refuses a plan whose held-back statements the DDL does not carry; returns it otherwise. */
+export function assertDirectoryDdlPlan<P extends { missing: string[] }>(plan: P): P {
+  if (plan.missing.length > 0) {
+    throw new Error(
+      `the directory DDL does not carry ${plan.missing.length} statement(s) of VERSION_MIGRATIONS_DDL — ` +
+        `interpolate the fragment whole: ${plan.missing[0]}`,
+    );
+  }
+  return plan;
+}
+
 /**
  * The pause before each #1764 backfill batch. A batch holds the directory DO, which every
  * control-plane request goes through, so batches are spaced rather than run back to back.
@@ -1105,6 +1121,14 @@ export function planDirectoryDdl(ddl: string): { loop: string[]; afterColumns: s
 const BACKFILL_PAUSE_MS = 1000;
 /** The longest a failing #1764 backfill waits before it tries again. */
 const BACKFILL_BACKOFF_MAX_MS = 60 * 60 * 1000;
+
+/**
+ * The actor a directory's own ops-failure rows carry: the directory DO acting for itself, with
+ * no request behind it. A fixed ULID, as the sweeper's is.
+ */
+export const DIRECTORY_ACTOR = '01JZ00000000000000000000DR';
+/** The operation a failing #1764 backfill is recorded under in `_substrat_ops_failures`. */
+export const BACKFILL_OPERATION = 'directory.version-migrations-backfill';
 
 /** How long the backfill waits after its `failures`-th failure in a row: doubling, capped. */
 export function backfillBackoffMs(failures: number): number {
@@ -1152,8 +1176,28 @@ export class ControlPlaneDO extends DurableObject {
     try {
       more = this.ctx.storage.transactionSync(() => splitVersionMigrationsBatch(this.kernelSql)).more;
     } catch (err) {
-      const delay = backfillBackoffMs(++this.backfillFailures);
+      const failures = ++this.backfillFailures;
+      const delay = backfillBackoffMs(failures);
       console.error(`substrat: version-migrations backfill failed, retrying in ${delay} ms`, err);
+      // Visible where staff look, not only in logs: once when it starts failing, and once
+      // more when the backoff reaches its cap (a backfill that is stuck, not unlucky).
+      const stage =
+        failures === 1 ? 'first-failure'
+        : delay === BACKFILL_BACKOFF_MAX_MS && backfillBackoffMs(failures - 1) < delay ? 'backoff-capped'
+        : null;
+      if (stage) {
+        try {
+          this.recordOpsFailure({
+            id: ulid(), actor: DIRECTORY_ACTOR, operation: BACKFILL_OPERATION, stage,
+            tenant_id: null, scope_id: null, vertical: null, version: null, status: null,
+            message: `failed ${failures} time(s) in a row, retrying in ${delay} ms: ${String(err)}`.slice(0, 2000),
+            reference: null, origin: null, code: null,
+            fingerprint: opsFailureFingerprint({ operation: BACKFILL_OPERATION, stage }), at: new Date().toISOString(),
+          });
+        } catch (recordErr) {
+          console.error('substrat: could not record the version-migrations backfill failure', recordErr);
+        }
+      }
       await this.ctx.storage.setAlarm(Date.now() + delay);
       return;
     }

@@ -19,8 +19,10 @@ import {
 import { ulid, UNSAFE_allowAllChecker, VERSION_MIGRATIONS_DDL, webCryptoSecretBox } from '@substrat-run/kernel';
 import type { ScopeDumpTable } from '@substrat-run/contracts';
 import {
+  BACKFILL_OPERATION,
   ControlPlaneDO,
   DIRECTORY_DDL_PLAN,
+  assertDirectoryDdlPlan,
   backfillBackoffMs,
   planDirectoryDdl,
 } from '../src/control-plane-do.js';
@@ -413,6 +415,50 @@ describe('the #1764 backfill survives a failing batch', () => {
     });
   });
 
+  it('a success resets the backoff: the next failure waits 2 s again, not 8 s', async () => {
+    await inDirectory(async (d, state) => {
+      const late = ulid();
+      state.storage.sql.exec(
+        `INSERT INTO vertical_versions (id, vertical_slug, version, manifest_digest, permission_digest,
+           migration_digest, admission, manifest_json, created_at)
+         VALUES (?, 'acme', '2.0.0', 'm', 'p', 'g', 'admitted', ?, '2026-09-01T00:00:00.000Z')`,
+        late, JSON.stringify({ version: '2.0.0', migrations }),
+      );
+      state.storage.sql.exec(
+        `CREATE TRIGGER poison BEFORE UPDATE ON vertical_versions WHEN OLD.id = '${late}'
+         BEGIN SELECT RAISE(ABORT, 'injected'); END`,
+      );
+      await state.storage.deleteAlarm();
+      const before = Date.now();
+      await d.alarm();
+      const wait = (await state.storage.getAlarm())! - before;
+      expect(wait).toBeGreaterThanOrEqual(2000);
+      expect(wait).toBeLessThan(4000);
+    });
+  });
+
+  it('a stuck backfill is visible in the ops failures: once when it starts failing, once when the backoff caps', async () => {
+    const rows = (state: DurableObjectState) =>
+      state.storage.sql
+        .exec('SELECT actor, stage, fingerprint, message FROM _substrat_ops_failures WHERE operation = ? ORDER BY id', BACKFILL_OPERATION)
+        .toArray() as { actor: string; stage: string; fingerprint: string; message: string }[];
+    await inDirectory(async (d, state) => {
+      // Two episodes so far, each recorded once at its first failure, and no row per retry.
+      expect(rows(state).map((r) => r.stage)).toEqual(['first-failure', 'first-failure']);
+      // The second episode is at 1 failure; the backoff caps at the 12th (1 s × 2^12 > 1 h).
+      for (let n = 2; n <= 11; n++) await d.alarm();
+      expect(rows(state)).toHaveLength(2);
+      await d.alarm(); // the 12th
+      expect(rows(state).map((r) => r.stage)).toEqual(['first-failure', 'first-failure', 'backoff-capped']);
+      await d.alarm(); // the 13th: still capped, nothing new
+      expect(rows(state)).toHaveLength(3);
+      const [capped] = rows(state).slice(-1);
+      expect(platformActorId.safeParse(capped!.actor).success).toBe(true); // the console's read parses it
+      expect(capped!.fingerprint).toBe(`${BACKFILL_OPERATION}\u001fbackoff-capped\u001f`);
+      expect(capped!.message).toMatch(/12 time\(s\) in a row.*injected/);
+    });
+  });
+
   it('the backoff doubles from the pause and is capped at an hour', () => {
     expect([0, 1, 2, 3].map(backfillBackoffMs)).toEqual([1000, 2000, 4000, 8000]);
     expect(backfillBackoffMs(40)).toBe(60 * 60 * 1000);
@@ -442,7 +488,11 @@ describe('the directory DDL plan holds back exactly #1764\'s statements', () => 
     const plan = planDirectoryDdl(`${VERSION_MIGRATIONS_DDL};\n${extra.join(';\n')};`);
     expect(plan.loop).toEqual(extra);
     expect(plan.missing).toEqual([]);
-    // A DDL that no longer carries the fragment says so, rather than quietly running it twice.
-    expect(planDirectoryDdl(extra.join(';\n')).missing).toEqual(splitSqlStatements(VERSION_MIGRATIONS_DDL));
+    // A DDL that no longer carries the fragment says so, rather than quietly running it twice,
+    // and the module-load check refuses it outright.
+    const drifted = planDirectoryDdl(extra.join(';\n'));
+    expect(drifted.missing).toEqual(splitSqlStatements(VERSION_MIGRATIONS_DDL));
+    expect(() => assertDirectoryDdlPlan(drifted)).toThrow(/does not carry 2 statement/);
+    expect(assertDirectoryDdlPlan(plan)).toBe(plan);
   });
 });

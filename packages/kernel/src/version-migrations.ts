@@ -32,7 +32,8 @@ import type { SwitchSql } from './system-switch.js';
 
 /**
  * The table, and the index the backfill walks. Interpolated into both adapters' directory DDL,
- * so `lint:spine-ddl` sees one spelling on each side.
+ * so `lint:spine-ddl` sees one spelling on each side. Anything that references this table or
+ * this index goes in this fragment, which is what the adapters run after their column additions.
  *
  * The index is partial: it holds only versions still waiting for the backfill, so "is there
  * anything left" is one probe that costs nothing once the backfill is done. It names a column

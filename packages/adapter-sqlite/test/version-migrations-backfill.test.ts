@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { platformActorId, type DirectoryDump } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { SqliteScopeHost } from '../src/index.js';
+import { SqliteScopeHost, isStorageFault } from '../src/index.js';
 
 /**
  * #1764 on the pure adapter: a directory from before the split, opened by this code.
@@ -147,5 +147,17 @@ describe('a failing backfill does not stop the host opening', () => {
     expect(unsplit()).toBe(0);
     for (const id of ids) expect(await reopened.admin.versionMigrations(staff, 'acme', id)).toEqual(migrations);
     await reopened.close();
+  });
+});
+
+describe('the backfill opens past a failed batch, never past the database itself failing', () => {
+  it('names full, corrupt, I/O and not-a-database faults, and nothing a statement raises', () => {
+    for (const code of ['SQLITE_FULL', 'SQLITE_CORRUPT', 'SQLITE_IOERR', 'SQLITE_IOERR_WRITE', 'SQLITE_NOTADB']) {
+      expect(isStorageFault(Object.assign(new Error(code), { code }))).toBe(true);
+    }
+    for (const code of ['SQLITE_CONSTRAINT_TRIGGER', 'SQLITE_ERROR', 'SQLITE_TOOBIG', undefined]) {
+      expect(isStorageFault(Object.assign(new Error('x'), { code }))).toBe(false);
+    }
+    expect(isStorageFault(null)).toBe(false);
   });
 });

@@ -456,6 +456,15 @@ import {
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
+/**
+ * A fault in the database itself (full, corrupt, I/O), as opposed to one statement failing.
+ * The #1764 backfill logs and opens past a failed batch, but never past one of these.
+ */
+export function isStorageFault(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^SQLITE_(FULL|CORRUPT|IOERR|NOTADB)/.test(code);
+}
+
 /** The kernel's schedule-switch SQL (#1666), over one scope's database handle. */
 const switchSqlOf = (db: Database.Database): SwitchSql => ({
   all: (sql, ...params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
@@ -2057,6 +2066,9 @@ export class SqliteScopeHost implements ScopeHost {
     try {
       while (this.directory.transaction(() => splitVersionMigrationsBatch(sql))().more);
     } catch (err) {
+      // The directory's own storage failing is not a backfill problem, and must not be
+      // opened past as one.
+      if (isStorageFault(err)) throw err;
       console.error('substrat: version-migrations backfill failed; unsplit versions read from their manifests', err);
     }
   }
