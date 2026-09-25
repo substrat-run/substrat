@@ -1,4 +1,5 @@
 import { jwtVerify, createRemoteJWKSet, type JWTPayload, type JWTVerifyGetKey } from 'jose';
+import { discoverIssuer } from '@substrat-run/oidc-rp/discovery';
 import type { AuthProvider, AuthSubject } from './provider.js';
 
 /**
@@ -33,24 +34,6 @@ export interface OidcConfig {
   jwksUri?: string;
   /** Inject the key resolver directly — tests / a static JWKS. Defaults to the issuer's remote JWKS. */
   keys?: JWTVerifyGetKey;
-}
-
-/** Discover the JWKS URI from the issuer's OIDC metadata, cached per issuer for the isolate. */
-const discoveryCache = new Map<string, Promise<string>>();
-function discoverJwksUri(issuer: string): Promise<string> {
-  let p = discoveryCache.get(issuer);
-  if (!p) {
-    p = (async () => {
-      const url = `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`OIDC discovery failed for ${issuer}: ${res.status}`);
-      const meta = (await res.json()) as { jwks_uri?: string };
-      if (!meta.jwks_uri) throw new Error(`OIDC discovery for ${issuer} has no jwks_uri`);
-      return meta.jwks_uri;
-    })();
-    discoveryCache.set(issuer, p);
-  }
-  return p;
 }
 
 function bearerFrom(headers: Headers): string | null {
@@ -122,10 +105,17 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
   const getKeys = async (): Promise<JWTVerifyGetKey> => {
     if (cfg.keys) return cfg.keys;
     if (!keysPromise) {
-      keysPromise = (async () => {
-        const jwksUri = cfg.jwksUri ?? (await discoverJwksUri(cfg.issuer));
+      // The login path's discovery, not a second one: bound to this issuer, https, no redirect
+      // off its origin (`discoverIssuer`). A failure is evicted here too, so an issuer that was
+      // down or answered wrongly once is asked again rather than refused for the isolate's life.
+      const pending: Promise<JWTVerifyGetKey> = (async () => {
+        const jwksUri = cfg.jwksUri ?? (await discoverIssuer(cfg.issuer)).jwks_uri;
         return createRemoteJWKSet(new URL(jwksUri));
       })();
+      pending.catch(() => {
+        if (keysPromise === pending) keysPromise = undefined;
+      });
+      keysPromise = pending;
     }
     return keysPromise;
   };
