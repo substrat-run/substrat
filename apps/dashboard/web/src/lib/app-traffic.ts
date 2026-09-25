@@ -56,9 +56,14 @@ const dayClock = (iso: string) => `${DAY[new Date(iso).getUTCDay()]} ${clockOf(i
 
 export const bucketLabel = (minutes: number): string => (minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60} h bars` : `${minutes} min bars`);
 
-/** "Mon 16:00 → Tue 16:00 UTC · 1 h bars". The day is named only when the window crosses midnight. */
+/**
+ * "Mon 16:00 → Tue 16:00 UTC · 1 h bars". The day is named when the two ends fall on
+ * different UTC dates — so `23:00 → 00:00` is dated too: an end at midnight is the next
+ * day's 00:00, and a bare "00:00" would leave the boundary ambiguous.
+ */
 export function rangeLabel(window: TimeWindow, bucketMinutes: number): string {
-  const crosses = window.since.slice(0, 10) !== new Date(Date.parse(window.until) - 1).toISOString().slice(0, 10);
+  const day = (iso: string) => new Date(iso).toISOString().slice(0, 10);
+  const crosses = day(window.since) !== day(window.until);
   const ends = crosses ? `${dayClock(window.since)} → ${dayClock(window.until)}` : `${clockOf(window.since)} → ${clockOf(window.until)}`;
   return `${ends} UTC · ${bucketLabel(bucketMinutes)}`;
 }
@@ -89,6 +94,8 @@ export function bucketBox(bucket: TrafficBucket, bucketMinutes: number, window: 
 }
 
 const CLOCK = /^(\d{1,2}):(\d{2})$/;
+/** Matches `queryWindow`'s contract (observability-query.ts): seconds and an explicit `Z` or offset. */
+const ISO_INSTANT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/;
 
 /**
  * The window two clock inputs describe. Each side is a UTC `HH:MM` or a full ISO instant.
@@ -106,21 +113,23 @@ export function resolveClockRange(fromText: string, toText: string, now = Date.n
     return (h * 60 + min) * MINUTE;
   };
   const DAY_MS = 24 * 60 * MINUTE;
+  // Timezone-qualified only, the form `queryWindow` requires: `Date.parse` reads a bare
+  // `2026-09-25T10:00:00` in the BROWSER's zone, which would shift a window labelled UTC.
   const iso = (text: string): number | null => {
     const t = Date.parse(text.trim());
-    return /^\d{4}-\d\d-\d\dT/.test(text.trim()) && Number.isFinite(t) ? t : null;
+    return ISO_INSTANT.test(text.trim()) && Number.isFinite(t) ? t : null;
   };
   let to = iso(toText);
   if (to === null) {
     const c = clockMs(toText);
-    if (c === null) return { error: 'Write the end as HH:MM (UTC) or a full timestamp.' };
+    if (c === null) return { error: 'Write the end as HH:MM (UTC) or a full timestamp with its timezone, like 2026-09-25T10:00:00Z.' };
     const midnight = Math.floor(nowMs / DAY_MS) * DAY_MS;
     to = midnight + c <= nowMs ? midnight + c : midnight + c - DAY_MS;
   }
   let from = iso(fromText);
   if (from === null) {
     const c = clockMs(fromText);
-    if (c === null) return { error: 'Write the start as HH:MM (UTC) or a full timestamp.' };
+    if (c === null) return { error: 'Write the start as HH:MM (UTC) or a full timestamp with its timezone, like 2026-09-25T10:00:00Z.' };
     const midnight = Math.floor(to / DAY_MS) * DAY_MS;
     from = midnight + c < to ? midnight + c : midnight + c - DAY_MS;
   }

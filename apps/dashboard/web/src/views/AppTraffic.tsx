@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from '
 import { Button } from '@substrat-run/ui';
 import { api, ApiError, type AppOverlays, type TenantMetricsRow, type TrafficSeries } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
+import type { MetricsState } from '../lib/use-tenant-metrics';
 import { mockAppOverlays, mockAppTraffic, mockSurfaceMetrics } from '../lib/mock-app-traffic';
 import { navigate, obsPath, teamPath } from '../lib/router';
 import { dragWindow } from '../lib/observability-query';
@@ -41,12 +42,20 @@ const PLOT_HEIGHT = 130;
 export function AppTraffic({
   scopeId,
   surfaces,
+  metrics24,
 }: {
   scopeId: string;
   surfaces: Array<{ surface: string | null; label: string | null; hostname: string }>;
+  /**
+   * The page's own last-24-hours read, when its parent already has it (the Errors tile
+   * reads the same route). Used while the card shows its default day; a zoomed window is
+   * a different question and is asked here. Absent: the card asks for itself.
+   */
+  metrics24?: MetricsState;
 }) {
   const [stack, setStack] = useState<TimeWindow[]>([]);
   const asked = stack[stack.length - 1];
+  const shareDay = metrics24 !== undefined && !DEV_MOCK;
   const [series, setSeries] = useState<TrafficSeries | 'error' | undefined>(undefined);
   const [overlays, setOverlays] = useState<AppOverlays | undefined>(undefined);
   const [overlayError, setOverlayError] = useState(false);
@@ -104,14 +113,17 @@ export function AppTraffic({
       .then((o) => live && setOverlays(o))
       // Said, not swallowed: a chart with no deploy line reads as "nothing shipped".
       .catch(() => live && setOverlayError(true));
-    api
-      .appTenantMetrics(scopeId, 24, asked)
-      .then((r) => live && setMetrics(r))
-      .catch((e) => live && setMetrics(e instanceof ApiError && e.status === 501 ? 'absent' : 'error'));
+    // The default day is the read the parent already made; only a zoom asks anew.
+    if (!(shareDay && !asked)) {
+      api
+        .appTenantMetrics(scopeId, 24, asked)
+        .then((r) => live && setMetrics(r))
+        .catch((e) => live && setMetrics(e instanceof ApiError && e.status === 501 ? 'absent' : 'error'));
+    }
     return () => {
       live = false;
     };
-  }, [scopeId, asked?.since, asked?.until, nonce]);
+  }, [scopeId, asked?.since, asked?.until, nonce, shareDay]);
 
   const prefs = useOverlayPrefs();
   const ready = series !== undefined && series !== 'error' && series.available && series.buckets.length > 0 ? series : null;
@@ -440,7 +452,7 @@ export function AppTraffic({
           )}
         </div>
       </div>
-      <SurfaceTable metrics={metrics} surfaces={surfaces} {...(whole ? { onOpen: () => openLogs(whole), href: teamPath(logsFor(whole)) } : {})} />
+      <SurfaceTable metrics={shareDay && !asked ? sharedRows(metrics24) : metrics} surfaces={surfaces} {...(whole ? { onOpen: () => openLogs(whole), href: teamPath(logsFor(whole)) } : {})} />
     </>
   );
 }
@@ -517,4 +529,9 @@ function SurfaceTable({
       )}
     </div>
   );
+}
+
+function sharedRows(m: MetricsState | undefined): TenantMetricsRow[] | 'absent' | 'error' | undefined {
+  if (!m || m.state === 'loading') return undefined;
+  return m.state === 'ok' ? m.rows : m.state;
 }

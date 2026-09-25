@@ -4,6 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppTraffic } from '../src/views/AppTraffic';
 import { InspectableTraffic } from '../src/components/InspectableTraffic';
 import { api, type TrafficSeries } from '../src/lib/api';
+import { StatusBand } from '../src/views/StatusBand';
+import { useTenantMetrics } from '../src/lib/use-tenant-metrics';
+import type { AppRow } from '../src/lib/api';
 import { classTotals, rangeLabel, resolveClockRange, seriesWindow, surfaceRows } from '../src/lib/app-traffic';
 import { applyOverlayPrefs, OVERLAY_PREFS_KEY, parseOverlayPrefs, resetOverlayPrefs } from '../src/lib/overlay-prefs';
 
@@ -63,6 +66,19 @@ describe('app traffic derivations (#1767)', () => {
     // An end later than now today is yesterday's.
     expect(resolveClockRange('09:00', '11:00', now)).toEqual({ from: '2026-09-01T09:00:00.000Z', to: '2026-09-01T11:00:00.000Z' });
     expect(resolveClockRange('nine', '11:00', now)).toHaveProperty('error');
+  });
+
+  it('names the days when a range ends exactly at midnight', () => {
+    expect(rangeLabel({ since: '2026-09-01T23:00:00.000Z', until: '2026-09-02T00:00:00.000Z' }, 15)).toBe('Tue 23:00 → Wed 00:00 UTC · 15 min bars');
+    // Same UTC date at both ends: no day names.
+    expect(rangeLabel({ since: '2026-09-01T22:00:00.000Z', until: '2026-09-01T23:59:00.000Z' }, 15)).toBe('22:00 → 23:59 UTC · 15 min bars');
+  });
+
+  it('accepts only timezone-qualified instants, never one read in the browser zone', () => {
+    const now = Date.parse('2026-09-02T10:00:00.000Z');
+    expect(resolveClockRange('2026-09-02T08:00:00Z', '2026-09-02T09:00:00+00:00', now)).toEqual({ from: '2026-09-02T08:00:00.000Z', to: '2026-09-02T09:00:00.000Z' });
+    expect(resolveClockRange('2026-09-02T08:00:00', '2026-09-02T09:00:00Z', now)).toHaveProperty('error');
+    expect(resolveClockRange('2026-09-02T08:00:00Z', '2026-09-02T09:00:00', now)).toHaveProperty('error');
   });
 
   it('never counts a 4xx as ok when the split is missing', () => {
@@ -125,6 +141,46 @@ describe('App › Overview traffic card (#1767)', () => {
     expect(container.textContent).toContain('12:00 → 14:00 UTC · 15 min bars');
     await act(async () => [...container.querySelectorAll('a')].find((a) => a.textContent === 'Undo zoom')!.click());
     expect(traffic).toHaveBeenLastCalledWith('app-a', 24, undefined);
+  });
+
+  it('with the parent\'s 24h read it asks for no metrics of its own, until a zoom needs a window', async () => {
+    vi.spyOn(api, 'appTraffic').mockImplementation(async (_s, _h, w) =>
+      w ? { ...series, window: w, bucketMinutes: 15, buckets: hourly.slice(0, 4).map((b, i) => ({ ...b, start: new Date(Date.parse(w.since) + i * 900_000).toISOString() })) } : series,
+    );
+    vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
+    const metrics = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
+    const rows = [{ scopeId: 'app-a', vertical: null, surface: 'api', requests: 1234, errors: 5, durationP50: 10, durationP95: 20 }];
+    await act(async () => root.render(<AppTraffic scopeId="app-a" surfaces={[]} metrics24={{ state: 'ok', rows }} />));
+    expect(metrics).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('1,234');
+    const plot = container.querySelector('[data-traffic-plot] rect')!;
+    await act(async () => {
+      pointer(plot, 'pointerdown', 240);
+      pointer(plot, 'pointermove', 280);
+      pointer(plot, 'pointerup', 280);
+    });
+    expect(metrics).toHaveBeenCalledTimes(1);
+    expect(metrics).toHaveBeenLastCalledWith('app-a', 24, { since: '2026-09-01T12:00:00.000Z', until: '2026-09-01T14:00:00.000Z' });
+  });
+
+  it('the Errors tile and the traffic card share one 24h metrics read', async () => {
+    vi.spyOn(api, 'appTraffic').mockResolvedValue(series);
+    vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
+    vi.spyOn(api, 'appSchedules').mockResolvedValue({ running: { versionId: null, version: null }, schedules: null, freshness: null, lastSweepAt: null });
+    const metrics = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
+    window.matchMedia = ((q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    const Both = () => {
+      const m = useTenantMetrics('app-a');
+      return (
+        <>
+          <StatusBand app={{ app_scope_id: 'app-a' } as AppRow} versionLabel="1.0.0" updateAvailable={false} seat={null} metrics={m} />
+          <AppTraffic scopeId="app-a" surfaces={[]} metrics24={m} />
+        </>
+      );
+    };
+    await act(async () => root.render(<Both />));
+    expect(metrics).toHaveBeenCalledTimes(1);
+    expect(metrics).toHaveBeenCalledWith('app-a', 24);
   });
 
   it('a click pins its bar, and the pin opens the logs for exactly that window', async () => {

@@ -19,6 +19,7 @@ import { ReleaseComparisonCard, SchemaHistoryCard } from './ReleaseCards';
 import { AppPeers } from './AppPeers';
 import { AppEdges } from './AppEdges';
 import { StatusBand } from './StatusBand';
+import { useTenantMetrics } from '../lib/use-tenant-metrics';
 import { InvocationStrip } from './InvocationStrip';
 import { InvocationLogsStrip } from './InvocationLogsStrip';
 import { AppTraffic } from './AppTraffic';
@@ -361,6 +362,7 @@ function ScopeOwnerSeat({ scopeId, versionId, active }: { scopeId: string; versi
 
 function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[] }) {
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
+  const metrics24 = useTenantMetrics(app.app_scope_id);
   // The app's REAL audit trail (created / active / failed+reason / deleted), one page
   // newest-first; `eventsCursor` walks older activity. Dev-preview shows a sample.
   const [events, setEvents] = useState<AppEvent[] | null>(null);
@@ -488,11 +490,11 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Full width, above everything: the four stats that answer "is this app OK?".
           They are why Observability and Audit could move to the left menu (#1447). */}
-      <StatusBand app={app} versionLabel={versionLabel} updateAvailable={updateAvailable} seat={seat} />
+      <StatusBand app={app} versionLabel={versionLabel} updateAvailable={updateAvailable} seat={seat} metrics={metrics24} />
       {/* What arrived at the app, by status class, with the shared overlays (#1767) —
           full width because it is a time axis, and the Overview's sparkline it replaced
           answered the same question in less space and with no way in. */}
-      <AppTraffic scopeId={app.app_scope_id} surfaces={surfaceUrls} />
+      <AppTraffic scopeId={app.app_scope_id} surfaces={surfaceUrls} metrics24={metrics24} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ ...card, padding: 20 }}>
