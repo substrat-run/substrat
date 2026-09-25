@@ -849,6 +849,10 @@ export const DECLARED_MIGRATIONS_SQL_BYTES_MAX = 512 * 1024;
  * node suite sees the limit (the #1655 class). The SQL grows when JSON-escaped, so the SQL
  * cap alone does not bound the row: the push measures the manifest it is about to send and
  * leaves `migrations` off when the whole would pass this, well under the DO's limit.
+ *
+ * Since #1764 a control plane stores the manifest WITHOUT its migrations and each migration
+ * as its own row, which the 512 KiB SQL cap bounds. The push keeps this bound anyway: a
+ * control plane from before #1764 still stores the manifest whole.
  */
 export const DEPLOY_MANIFEST_BYTES_SAFE = 1.5 * 1024 * 1024;
 
