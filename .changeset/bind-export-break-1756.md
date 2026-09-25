@@ -16,7 +16,7 @@ A move is either of the two things that decide what code an app runs: binding it
 The refusal counts what would break. Pass `acknowledge: { exportBreak: true }` to move anyway, and the admin log records it.
 
 - The control plane's bind (`POST /tenants/:t/scopes/:s/version`), `adopt-serving` (per app and vertical-wide) and `rebind-vertical` take `acknowledge`, ask before moving any data, and refuse with the affected apps listed. `GET /tenants/:t/scopes/:s/binding-impact?versionId=` asks the same question without moving anything.
-- A private vertical's promote passes its own acknowledgement on to the apps it adopts. An app it never judged (not on the channel's previous version) is left where it is unless the promote was acknowledged, and the promote says so.
+- A private vertical's promote passes its export-break acknowledgement on to the apps it adopts, and its impact (`promote-impact` and the promote's own refusal) names what adopting each app still on an older version would break. Without the acknowledgement such an app is left where it is, every other app still moves, and the promote says which were left.
 - `substrat scope bind`, `scope adopt-serving` and `scope rebind` take `--ack-export-break` and print the affected apps.
 - The dashboard's Update and Bind list the affected apps in a confirm and send again acknowledged. A refused Update leaves nothing on the Activity trail, and an acknowledged one says it was acknowledged.
 - A version that is not admitted is refused as that before any acknowledgement is asked for.
