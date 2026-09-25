@@ -4,10 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppTraffic } from '../src/views/AppTraffic';
 import { InspectableTraffic } from '../src/components/InspectableTraffic';
 import { api, type TrafficSeries } from '../src/lib/api';
-import { StatusBand } from '../src/views/StatusBand';
 import { useTenantMetrics } from '../src/lib/use-tenant-metrics';
-import { useAppSchedules } from '../src/lib/use-app-schedules';
-import type { AppRow } from '../src/lib/api';
 import { classTotals, rangeLabel, resolveClockRange, seriesWindow, surfaceRows } from '../src/lib/app-traffic';
 import { applyOverlayPrefs, OVERLAY_PREFS_KEY, parseOverlayPrefs, resetOverlayPrefs } from '../src/lib/overlay-prefs';
 
@@ -164,18 +161,15 @@ describe('App › Overview traffic card (#1767)', () => {
     expect(metrics).toHaveBeenLastCalledWith('app-a', 24, { since: '2026-09-01T12:00:00.000Z', until: '2026-09-01T14:00:00.000Z' });
   });
 
-  it('the Errors tile and the traffic card share one 24h metrics read', async () => {
+  it('the Overview reads 24h metrics once, and the traffic card rides that read', async () => {
     vi.spyOn(api, 'appTraffic').mockResolvedValue(series);
     vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
-    vi.spyOn(api, 'appSchedules').mockResolvedValue({ running: { versionId: null, version: null }, schedules: null, freshness: null, lastSweepAt: null });
     const metrics = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
     window.matchMedia = ((q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
     const Both = () => {
       const m = useTenantMetrics('app-a');
-      const s = useAppSchedules('app-a');
       return (
         <>
-          <StatusBand app={{ app_scope_id: 'app-a' } as AppRow} versionLabel="1.0.0" updateAvailable={false} seat={null} metrics={m} schedules={s} />
           <AppTraffic scopeId="app-a" surfaces={[]} metrics24={m} />
         </>
       );

@@ -93,8 +93,8 @@ export function Apps({
   if (apps.length === 0) return <Onboarding onCreate={onCreate} />;
 
   return (
-    <Page>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+    <Page style={{ gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16 }}>
         <PageTitle title="Apps" subtitle={mode === 'health' ? 'Fleet health · one row per app, worst first. Open a row for its traffic, schedules and releases.' : 'The tools your team runs — each app is its own isolated scope.'} />
         <div style={{ flex: 1 }} />
         <Button icon={<Ic name="plus" />} onClick={onCreate}>Create App</Button>

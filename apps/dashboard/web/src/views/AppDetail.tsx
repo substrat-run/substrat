@@ -22,10 +22,10 @@ import { ReleaseComparisonCard, ReleasesCard, SchemaHistoryCard, useLedger, type
 import { AppPeers } from './AppPeers';
 import { AppEdges } from './AppEdges';
 import { AppSchedulesCard } from './AppSchedulesCard';
-import { StatusBand } from './StatusBand';
+import { AppHeader } from './AppHeader';
 import { EntityTimeline } from './EventHistory';
 import { useTenantMetrics } from '../lib/use-tenant-metrics';
-import { useAppSchedules } from '../lib/use-app-schedules';
+import { useAppSchedules, type SchedulesState } from '../lib/use-app-schedules';
 import { AppTraffic } from './AppTraffic';
 
 /**
@@ -92,11 +92,11 @@ function VisitControl({ surfaces }: { surfaces: SurfaceUrl[] }) {
   if (surfaces.length === 0) return null;
   if (surfaces.length === 1) {
     const only = surfaces[0]!;
-    return <Button onClick={() => window.open(`https://${only.hostname}`, '_blank')}>Visit ↗</Button>;
+    return <Button size="sm" onClick={() => window.open(`https://${only.hostname}`, '_blank')}>Visit ↗</Button>;
   }
   return (
     <div style={{ position: 'relative', display: 'inline-flex' }}>
-      <Button onClick={() => setOpen((o) => !o)}>Visit ▾</Button>
+      <Button size="sm" onClick={() => setOpen((o) => !o)}>Visit ▾</Button>
       {open && (
         <>
           <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 150 }} />
@@ -169,20 +169,20 @@ export function AppDetail({
   const surfaceUrls = deriveSurfaceUrls(hostnames, app.hostname);
 
   return (
-    <Page>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <span style={{ width: 10, height: 10, borderRadius: '50%', background: meta.accent }} />
-        <span style={{ fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>{app.name}</span>
-        <button type="button" aria-label="Rename" style={{ border: 0, background: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'inline-flex', padding: 0 }}>
-          <Ic name="pencil" size={14} />
-        </button>
-        <Pill kind={statusKind} pulse={app.status === 'provisioning'}>{statusLabel}</Pill>
-        <div style={{ flex: 1 }} />
-        <VisitControl surfaces={surfaceUrls} />
-        <button type="button" aria-label="More actions" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6, border: '1px solid var(--border-default)', background: 'var(--surface-card)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-          <Ic name="dots" size={16} />
-        </button>
-      </div>
+    <Page style={{ gap: 16 }}>
+      <AppHeader
+        app={app}
+        statusKind={statusKind}
+        statusLabel={statusLabel}
+        actions={
+          <>
+            <VisitControl surfaces={surfaceUrls} />
+            <button type="button" aria-label="More actions" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border-default)', background: 'var(--surface-card)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              <Ic name="dots" size={16} />
+            </button>
+          </>
+        }
+      />
 
       <Tabs
         tabs={APP_TABS.map((t) => ({ value: t.value, label: t.label, ...(t.count !== undefined ? { count: t.count } : {}) }))}
@@ -493,13 +493,16 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   })();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Full width, above everything: the four stats that answer "is this app OK?".
-          They are why Observability and Audit could move to the left menu (#1447). */}
-      <StatusBand app={app} versionLabel={versionLabel} updateAvailable={updateAvailable} seat={seat} metrics={metrics24} schedules={schedules} />
+      {/* The design's order (#1767): traffic, surfaces, schedules — full width, top to
+          bottom. The four-tile band that opened the tab is gone because each tile now has
+          a home: the verdict in the header, errors on the traffic card, the version and
+          its update beside Version below, and the seat on its own card. */}
       {/* What arrived at the app, by status class, with the shared overlays (#1767) —
           full width because it is a time axis, and the Overview's sparkline it replaced
           answered the same question in less space and with no way in. */}
       <AppTraffic scopeId={app.app_scope_id} surfaces={surfaceUrls} metrics24={metrics24} />
+      <AppSchedulesCard key={`schedules:${app.app_scope_id}`} scopeId={app.app_scope_id} schedules={schedules} />
+      <SchedulesAbsent scopeId={app.app_scope_id} schedules={schedules} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ ...card, padding: 20 }}>
@@ -507,7 +510,11 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
             <KV label="Vertical"><span>{meta.label}</span><MonoTag color="var(--layer-vertical)">vertical</MonoTag></KV>
             <KV label="Version">
               <span style={mono}>{versionLabel}</span>
-              {updateAvailable && <Pill kind="info">update available</Pill>}
+              {updateAvailable && (
+                <a href={teamPath(`/apps/${app.app_scope_id}/deployments`)} onClick={(e) => { e.preventDefault(); navigate(`/apps/${app.app_scope_id}/deployments`); }} style={{ display: 'inline-flex' }}>
+                  <Pill kind="info">update available →</Pill>
+                </a>
+              )}
             </KV>
             <KV label="Status"><Pill kind={statusKind}>{statusLabel}</Pill></KV>
             <KV label="Created"><span>{shortDate(app.created_at)}</span></KV>
@@ -548,7 +555,6 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>A hostname is assigned once provisioning completes.</div>
           )}
         </div>
-        <AppSchedulesCard key={`schedules:${app.app_scope_id}`} scopeId={app.app_scope_id} schedules={schedules} />
         <OwnerSeatCard key={app.app_scope_id} scopeId={app.app_scope_id} seat={seat} onClaimed={readSeat} />
         <AppPeers key={`peers:${app.app_scope_id}`} scopeId={app.app_scope_id} />
         <AppEdges key={`edges:${app.app_scope_id}`} scopeId={app.app_scope_id} />
@@ -606,6 +612,37 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
         )}
       </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * What the Schedules card says when it has no rows to draw: the card hides itself then,
+ * and the Health tile that used to say "No schedules" or "—" is gone, so this one line
+ * keeps that answer on the page. Nothing while the read is in flight.
+ */
+export function SchedulesAbsent({ scopeId, schedules }: { scopeId: string; schedules: SchedulesState }) {
+  const none = schedules.state === 'ok' && !(schedules.view.schedules?.length || schedules.view.freshness?.length);
+  if (!none && schedules.state !== 'error') return null;
+  // With no version running there is nothing that could have declared a schedule yet.
+  const noVersion = none && schedules.state === 'ok' && schedules.view.running.versionId === null;
+  const to = obsPath({ app: scopeId, view: 'schedules' });
+  return (
+    <div style={{ ...card, display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px' }}>
+      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Schedules and freshness</span>
+      <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+        {noVersion
+          ? 'no version is running yet — nothing has declared any'
+          : none
+            ? 'none declared by the running version — health cannot be judged from schedules'
+            : 'could not be read — not measured, not zero'}
+      </span>
+      <span style={{ flex: 1 }} />
+      {!none && (
+        <a href={teamPath(to)} onClick={(e) => { e.preventDefault(); navigate(to); }} style={{ fontSize: 12.5, color: 'var(--text-brand)' }}>
+          Open schedules →
+        </a>
+      )}
     </div>
   );
 }
@@ -866,7 +903,7 @@ export function Deployments({ app }: { app: AppRow }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ ...card, padding: 20, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+      <div style={{ ...card, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <Eyebrow>Running</Eyebrow>
         {running ? (
           <>
