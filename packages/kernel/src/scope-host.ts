@@ -2014,7 +2014,9 @@ export interface HostAdmin {
    * `bindScopeVersion` refuses on, as a read, so a route can ask it BEFORE it moves any data
    * and show the caller what an acknowledgement would break. `opts.servingRef` asks about the
    * route moving in the same act (an adopt: onto the serving script, then bound to its
-   * version). Access-logged.
+   * version). Refuses what the bind would refuse first — an unknown scope or version, or one
+   * not admitted — so a caller is never asked to acknowledge a bind that cannot happen.
+   * Access-logged.
    */
   bindingImpact(
     actor: PlatformActorId,

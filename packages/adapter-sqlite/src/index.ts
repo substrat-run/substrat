@@ -5712,13 +5712,26 @@ export class SqliteScopeHost implements ScopeHost {
         archivedAt: r.archived_at ?? null,
         createdAt: r.created_at,
       });
-    // The (version, scope) pair a bind and its impact read both start from (#1756).
+    // The (version, scope) pair a bind and its impact read both start from, and the refusals
+    // that come before any export-break question, in the order the bind makes them (#1756).
     const bindTarget = (tenantId: string, scopeId: string, versionId: string) => {
       const v = readVersion(versionId);
       if (!v) throw substratError('not_found', `unknown version ${versionId}`);
       const scope = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as ScopeRow | undefined;
       if (!scope || scope.tenant_id !== tenantId) {
         throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+      }
+      // The refusal this registry exists for. Without it, "a push lands pending"
+      // is a convention, and D-30's argument is that we cannot afford conventions
+      // where lockstep upgrades are the failure mode. Scoped to a SERVING bind, though:
+      // a PREVIEW fork serves no install (the builder's own tenant's data, non-canonical
+      // URL), so it may run pending PR code — the own-tenant blast radius that lets a
+      // private vertical self-admit, and what lets a LISTED vertical's builder keep
+      // previewing their own new code (issue #509 ask (d)).
+      if (v.admission !== 'admitted' && scope.kind !== 'preview') {
+        throw new Error(
+          `version ${versionId} is ${v.admission}, not admitted — it cannot be bound to a scope`,
+        );
       }
       return { v, scope };
     };
@@ -7289,18 +7302,6 @@ export class SqliteScopeHost implements ScopeHost {
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
         const { v, scope } = bindTarget(tenantId, scopeId, versionId);
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
-        // The refusal this registry exists for. Without it, "a push lands pending"
-        // is a convention, and D-30's argument is that we cannot afford conventions
-        // where lockstep upgrades are the failure mode. Scoped to a SERVING bind, though:
-        // a PREVIEW fork serves no install (the builder's own tenant's data, non-canonical
-        // URL), so it may run pending PR code — the own-tenant blast radius that lets a
-        // private vertical self-admit, and what lets a LISTED vertical's builder keep
-        // previewing their own new code (issue #509 ask (d)).
-        if (v.admission !== 'admitted' && scope.kind !== 'preview') {
-          throw new Error(
-            `version ${versionId} is ${v.admission}, not admitted — it cannot be bound to a scope`,
-          );
-        }
         // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
         // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
         if (!ack.exportBreak) {

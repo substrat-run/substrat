@@ -301,6 +301,31 @@ describe('the bind gate route (#1756)', () => {
     });
   });
 
+  it('a version not admitted is refused as that, before any acknowledgement is asked for', async () => {
+    // Unadmitted AND dropping the export: the answer is the admission refusal, so nobody is
+    // asked to acknowledge a break for a bind that could not happen anyway.
+    await host.admin.setVerticalListed(staff, PRODUCER, true);
+    const pending = ulid();
+    await host.admin.publishVersion(staff, {
+      id: pending, verticalSlug: PRODUCER, version: '9.9.9', manifestDigest: 'm-pending', permissionDigest: 'p',
+      migrationDigest: 'g', deploymentRef: `acme-ledger-${pending.toLowerCase()}`, manifestJson: exporting(null),
+    });
+    await host.admin.setVerticalListed(staff, PRODUCER, false);
+    await host.admin.bindScopeVersion(staff, t, producerScope, v1, { acknowledge: { exportBreak: true } });
+    calls.length = 0;
+    const res = await bind(asStaff, { versionId: pending });
+    expect(res.status).toBe(409);
+    const said = (await res.json()) as { error?: string; detail?: string; exportBreaks?: unknown };
+    expect(JSON.stringify(said)).toMatch(/not admitted/);
+    expect(said.exportBreaks).toBeUndefined();
+    expect(calls).toEqual([]);
+    // The twin: the admitted version that drops the same export asks for the acknowledgement.
+    const twin = await bind(asStaff, { versionId: dropped });
+    expect(twin.status).toBe(409);
+    expect(((await twin.json()) as { exportBreaks?: unknown }).exportBreaks).toBeDefined();
+    expect(await boundTo()).toBe(v1);
+  });
+
   it('an acknowledgement of something a bind has no gate for is refused as a malformed body', async () => {
     const before = await boundTo();
     const res = await bind(asStaff, { versionId: kept, acknowledge: { permissionChange: true } });

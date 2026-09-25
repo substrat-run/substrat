@@ -4187,7 +4187,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
     // #1756: the apps in this tenant the bind would break, asked BEFORE the carry and the
     // snapshot below, which move data. The host refuses too, whoever calls, but by then a
-    // refusal would land after the bytes had moved. An unknown scope has no impact to read, and
+    // refusal would land after the bytes had moved. It refuses what the bind would refuse
+    // first (a version not admitted) the same way. An unknown scope has no impact to read, and
     // the bind below refuses it as it always has.
     if (scope) await refuseOnBreaks(actor, tenantId, scopeId, versionId, { acknowledge });
     // A refusal throws a ControlPlaneError, which the app's error boundary relays with its
