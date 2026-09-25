@@ -1,4 +1,4 @@
-import { drainedEvent, errorCodeOf, instant } from '@substrat-run/contracts';
+import { drainedEvent, errorCodeOf, instant, substratError } from '@substrat-run/contracts';
 import type {
   AccessLogEntry,
   ConnectionId,
@@ -1644,8 +1644,9 @@ export async function runCrossVerticalFrom(
 /**
  * What each scope's RUNNING version imports, from the registry (#1705): one `listVerticals` when
  * a scope is on a serving script, then one `readImports` per distinct running version, at most
- * `concurrency` in flight. A read that throws is `unreadable`, and a failure on one version never
- * stops the others. A scope bound to no version gets no fact. The narrowing and the promote gate
+ * `concurrency` in flight. A failure on one version never stops the others: a read that throws is
+ * reported as `threw` beside the fact, since a caller may treat "the registry could not be asked"
+ * differently from "the manifest does not parse". A scope bound to no version gets no fact. The narrowing and the promote gate
  * both ask it, so the two cannot come to disagree about which code a scope runs.
  */
 async function runningImportsOf(
@@ -1654,7 +1655,7 @@ async function runningImportsOf(
   scopes: readonly Scope[],
   readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>,
   concurrency: number,
-): Promise<{ scope: Scope; key: string; versionId: string | null; fact: ManifestImports | undefined }[]> {
+): Promise<{ scope: Scope; key: string; versionId: string | null; fact: ManifestImports | undefined; threw?: string }[]> {
   const serving = await servingPointersFor(admin, actor, scopes);
   const versions = new Map<string, { slug: string; versionId: string }>();
   const keyed: { scope: Scope; key: string; versionId: string | null }[] = [];
@@ -1666,14 +1667,16 @@ async function runningImportsOf(
     keyed.push({ scope: s, key, versionId });
   }
   const facts = new Map<string, ManifestImports>();
+  const threw = new Map<string, string>();
   await mapBounded([...versions], concurrency, async ([key, v]) => {
     try {
       facts.set(key, await readImports(v.slug, v.versionId));
     } catch (err) {
       facts.set(key, { kind: 'unreadable', reason: message(err) });
+      threw.set(key, message(err));
     }
   });
-  return keyed.map((k) => ({ ...k, fact: facts.get(k.key) }));
+  return keyed.map((k) => ({ ...k, fact: facts.get(k.key), ...(threw.has(k.key) ? { threw: threw.get(k.key)! } : {}) }));
 }
 
 export function registryImportCandidates(input: {
@@ -1730,9 +1733,11 @@ export function registryImportCandidates(input: {
  *   on purpose, for a listed vertical's tenants still pinned to an older producer version: a
  *   refusal that names one tenant too many costs an acknowledgement, and one that names too few
  *   costs a silent stall.
- * - **A consumer version the registry cannot read** is not judged. It cannot be said to break,
- *   and refusing every promote over a manifest nobody can parse would make the gate one nobody
- *   can pass.
+ * - **A consumer version whose manifest does not parse** is not judged. It cannot be said to
+ *   break, and refusing every promote over a manifest nobody can parse would make the gate one
+ *   nobody can pass. A read that THREW is different: the registry could not be asked, so whom the
+ *   promote breaks is unknown, and this throws. The gate then refuses rather than failing open.
+ *   A failed directory read throws the same way.
  *
  * Cost: nothing at all unless an export changed. Then one fleet `listScopes`, one
  * `listVerticals` when a scope is on a serving script, and one `readImports` per distinct
@@ -1763,13 +1768,19 @@ export async function exportBreaksOf(input: {
   const consumers = scopes.filter((s) => s.vertical !== input.producer && installedIn.has(s.tenantId));
   if (consumers.length === 0) return [];
   const out: ExportBreak[] = [];
-  for (const { scope, versionId, fact } of await runningImportsOf(
+  for (const { scope, key, versionId, fact, threw } of await runningImportsOf(
     input.admin,
     input.actor,
     consumers,
     input.readImports,
     input.concurrency ?? 8,
   )) {
+    if (threw !== undefined) {
+      throw substratError(
+        'unavailable',
+        `cannot say whom this promotion breaks: the registry could not be asked what ${key} imports (${threw}) — retry`,
+      );
+    }
     if (fact?.kind !== 'imports') continue;
     for (const row of fact.rows) {
       const hit = row.from === input.producer ? changed.get(row.type) : undefined;
