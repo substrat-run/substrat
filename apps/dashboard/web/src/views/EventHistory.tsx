@@ -369,12 +369,14 @@ export function EntityTimeline({
   /** The open row, and whether its call's log lines are showing. One at a time: each open row is four scope reads. */
   const [open, setOpen] = useState<{ id: string; logs: boolean } | null>(null);
   // Which walk the state below belongs to, so a page that arrives after the record
-  // changed is discarded rather than appended to another record's story.
-  const walk = useRef('');
+  // changed is discarded rather than appended to another record's story. A counter,
+  // not the record's key: reopening the same record starts a new walk, and a page the
+  // old walk asked for must not pass as the new one's.
+  const walk = useRef(0);
 
   useEffect(() => {
     let live = true;
-    walk.current = `${scopeId}|${entityType}|${entityId}`;
+    walk.current += 1;
     setEntries(null);
     setCursor(null);
     // A page read for the previous record may still be in flight. Its `finally` is

@@ -161,6 +161,31 @@ describe('EntityTimeline', () => {
     expect(history).toHaveBeenLastCalledWith('s', 'account', 'a2', 'c2');
   });
 
+  it('a page read before the same record was reopened is dropped, not appended to the new walk', async () => {
+    const stale: Array<(v: unknown) => void> = [];
+    vi.spyOn(api, 'appEntityHistory').mockImplementation(async (_s, _t, id, cursor) => {
+      if (cursor === 'c1') return new Promise((res) => stale.push(res)) as never;
+      return { entries: [entry(id === 'a1' ? '01A' : '01B')], nextCursor: id === 'a1' ? 'c1' : null } as never;
+    });
+    const later = () => [...container.querySelectorAll('button')].find((b) => /Read later events|Reading…/.test(b.textContent ?? ''))!;
+    const open = (id: string) => act(async () => root.render(<EntityTimeline scopeId="s" entityType="account" entityId={id} onClose={() => undefined} />));
+    await open('a1');
+    await click(later()); // the first walk's read, left in flight
+    await open('a2');
+    await open('a1'); // the same record again: a new walk with the same key
+    await click(later()); // the new walk's own read, also in flight
+    expect(stale).toHaveLength(2);
+
+    // The first walk's page arrives late. It belongs to no walk that is still open.
+    await act(async () => stale[0]!({ entries: [entry('01X')], nextCursor: null }));
+    expect(types()).toEqual(['01A']);
+    // Nor may its `finally` re-enable the button while the new walk is still reading.
+    expect(later().disabled).toBe(true);
+
+    await act(async () => stale[1]!({ entries: [entry('01Y')], nextCursor: null }));
+    expect(types()).toEqual(['01Y', '01A']);
+  });
+
   it('says the newest events are missing when the walk has more pages', async () => {
     vi.spyOn(api, 'appEntityHistory').mockResolvedValue({ entries: [created], nextCursor: 'c1' } as never);
     await act(async () => root.render(<EntityTimeline scopeId="s" entityType="account" entityId="a1" onClose={() => undefined} />));
