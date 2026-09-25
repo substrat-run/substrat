@@ -44,6 +44,7 @@ import { placesReconcile, reconcilePlaces } from './places.js';
 import { deriveOperationHealth } from './operation-health.js';
 import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './connection-sweep.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
+import { deriveAppMetrics } from './app-metrics.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
 import { BoundScopeError, moveBoundScopes, readBoundScopes, retireBoundScopes } from './bound-scopes.js';
 import { listDeploymentsFromCp, ownedDeploymentFromCp, ownedDeploymentOrThrow, assertOwnedFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, versionPair, type Deployment } from './deployments.js';
@@ -4460,6 +4461,32 @@ app.get('/api/observability/traffic', async (c) => {
     }),
   );
   return c.json(deriveTeamSeries({ buckets, scopeIds, hours, now, window }));
+});
+
+/**
+ * One traffic row per app — requests, errors, p95 — for the Apps table (#1767). The
+ * plane groups by scope (`grain=scope`), because a per-app p95 cannot be folded from
+ * per-surface ones; `deriveAppMetrics` keeps an older plane's answer honest. Same 501
+ * posture as the team series: only "no reader" becomes `available: false`, and anything
+ * else is an outage that propagates.
+ */
+app.get('/api/observability/app-metrics', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const scopeIds = apps.map((a) => a.app_scope_id);
+  if (scopeIds.length === 0) return c.json(deriveAppMetrics({ rows: [], scopeIds }));
+  const hours = chartHours(c.req.query('hours'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const rows = await telemetry(c, node.tenantId, 'tenant-metrics', { grain: 'scope', hours }, () =>
+    cp.tenantMetrics({ grain: 'scope', hours }).catch((e: unknown) => {
+      if (e instanceof ControlPlaneError && e.status === 501) return null;
+      throw e;
+    }),
+  );
+  return c.json(deriveAppMetrics({ rows, scopeIds }));
 });
 
 app.get('/api/apps/:scopeId/observability/logs', async (c) => {

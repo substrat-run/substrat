@@ -1,4 +1,4 @@
-import type { AppOverlays, BoundScopesView, AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, TeamTrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppHealthRow, AppMetricsView, AppOverlays, BoundScopesView, AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, TeamTrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -668,3 +668,21 @@ export const MOCK_OBSERVABILITY_LOGS: ObservabilityLogEvent[] = [
   { timestamp: now - 19 * 60e3, level: 'log', message: '{"op":"listTickets","durationMs":11}', service: svcPrev, outcome: 'ok', trigger: 'default.listTickets', invocation: 'rpc', entrypoint: 'ScopeDO', requestId: 'QPD9D3939D9QDDPL', cpuTimeMs: 0.3, wallTimeMs: 11, raw: { $metadata: { trigger: 'default.listTickets', level: 'log' }, $workers: { eventType: 'rpc', entrypoint: 'ScopeDO', outcome: 'ok', cpuTimeMs: 0.3 } } },
   { timestamp: now - 26 * 60e3, level: 'warn', message: 'retrying webhook delivery (attempt 2)', service: svc, outcome: 'ok', trigger: 'POST /internal/webhook', invocation: 'fetch', entrypoint: null, requestId: 'ACW3W917W3KWYYTO', cpuTimeMs: 1.1, wallTimeMs: 12, raw: { $metadata: { trigger: 'POST /internal/webhook', level: 'warn' }, $workers: { eventType: 'fetch', outcome: 'ok', cpuTimeMs: 1.1 } } },
 ];
+
+/** Fleet verdicts for the Apps table (#1767): one of each state the table sorts on. */
+export const MOCK_FLEET_HEALTH: AppHealthRow[] = [
+  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', name: 'Acme HR', vertical: 'protocol', state: 'failing', reason: '3 operation failures and 1 failed schedule run recorded.', failures: 3, sweepFailures: 1, stale: 0, lastSweepAt: ago(4 * 60e3) },
+  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7LEGA', name: 'Acme Legal', vertical: 'protocol', state: 'stale', reason: '1 freshness expectation overdue — an event that should have arrived has not.', failures: 0, sweepFailures: 0, stale: 1, lastSweepAt: ago(9 * 60e3) },
+  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7FIEL', name: 'Acme Field Ops', vertical: 'workorder', state: 'silent', reason: 'No sweep has reached this app in the window — nothing is checking it.', failures: 0, sweepFailures: 0, stale: 0, lastSweepAt: null },
+  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7FINA', name: 'Acme Finance', vertical: 'invoicing', state: 'ok', reason: 'Swept, with nothing failing or overdue.', failures: 0, sweepFailures: 0, stale: 0, lastSweepAt: ago(2 * 60e3) },
+];
+
+export const MOCK_APP_METRICS: AppMetricsView = {
+  available: true,
+  rows: [
+    { scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', requests: 3344, errors: 33, p95: 310 },
+    { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7LEGA', requests: 1164, errors: 3, p95: 140 },
+    { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7FIEL', requests: 0, errors: 0, p95: null },
+    { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7FINA', requests: 0, errors: 0, p95: null },
+  ],
+};

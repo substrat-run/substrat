@@ -455,6 +455,28 @@ describe('cf tenant metrics', () => {
    * router can stamp, so the aggregate sums each of 2xx/3xx/4xx the same way it
    * already sums 5xx into `errors` — weighted by `_sample_interval`, never `count()`.
    */
+  /**
+   * #1767: the Apps table shows one p95 per app. Quantiles do not recombine — a p95 of
+   * per-surface p95s is not the app's p95 — so the scope grain groups at the source.
+   */
+  it('groups by scope alone on the scope grain, and by surface otherwise', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body: string }) => {
+        seen.push(init.body);
+        return new Response(JSON.stringify({ data: [{ scopeId: '01SCOPE', vertical: 'callout', surface: '', requests: '10', errors: '0', durationP50: 5, durationP95: 9 }] }), { status: 200 });
+      }),
+    );
+    const reader = createCfObservabilityReader({ accountId: 'acct', apiToken: 't', routerDataset: 'substrat_router_test' });
+    const rows = await reader.tenantMetrics!({ tenantId: '01TENANT', hours: 24, grain: 'scope' });
+    await reader.tenantMetrics!({ tenantId: '01TENANT', hours: 24 });
+    expect(seen[0]).toMatch(/GROUP BY scopeId, vertical\s/);
+    expect(seen[0]).not.toContain('blob3 AS surface');
+    expect(rows[0]).toMatchObject({ scopeId: '01SCOPE', surface: null, durationP95: 9 });
+    expect(seen[1]).toContain('GROUP BY scopeId, vertical, surface');
+  });
+
   it('sums every status class, weighted the same way `errors` already is', async () => {
     let sql = '';
     vi.stubGlobal(

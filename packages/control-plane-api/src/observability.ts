@@ -257,6 +257,13 @@ export interface ObservabilityReader {
     tenantId: string;
     scopeId?: string;
     vertical?: string;
+    /**
+     * `surface` (the default) answers one row per (scope, vertical, surface). `scope`
+     * answers one row per scope, `surface` null (#1767). A p95 cannot be recombined
+     * from per-surface p95s, so a per-app latency has to be grouped at the source
+     * rather than folded afterwards.
+     */
+    grain?: 'surface' | 'scope';
     hours: number;
     since?: string;
     until?: string;
