@@ -26,7 +26,6 @@ import {
   versionMigrationsOf,
   versionsAwaitSplit,
   writeVersionMigrations,
-  type VersionMigrationsSql,
   type SystemSwitchRecordFilter,
   type SystemSwitchRecordPrior,
   type SystemSwitchRecordRow,
@@ -276,10 +275,6 @@ export interface VersionRow {
   manifest_json: string | null;
   /** Push provenance (`versionOrigin` JSON) — null for a pre-tracking push. */
   origin_json: string | null;
-  /** How many SQL migrations the version stored apart (#1764). NULL = it carries none to show. */
-  migration_count: number | null;
-  /** 1 once the version's SQL is out of `manifest_json` (#1764). NULL = the backfill has not reached it. */
-  migrations_split: number | null;
   created_at: string;
 }
 
@@ -1090,19 +1085,11 @@ export class ControlPlaneDO extends DurableObject {
   private readonly sql: SqlStorage;
   /** The directory's store as the kernel's SQL handle — the switch record's helpers (#1674). */
   private readonly kernelSql: ReturnType<typeof switchSqlOver>;
-  /** The same store as the kernel's version-migrations helpers read it (#1764). */
-  private readonly versionSql: VersionMigrationsSql;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
     this.sql = ctx.storage.sql;
     this.kernelSql = switchSqlOver(this.sql);
-    this.versionSql = {
-      all: (q, ...params) => this.sql.exec(q, ...params).toArray() as Record<string, unknown>[],
-      run: (q, ...params) => {
-        this.sql.exec(q, ...params);
-      },
-    };
     this.applyDirectorySchema();
   }
 
@@ -1116,7 +1103,7 @@ export class ControlPlaneDO extends DurableObject {
    * restore, so a dump taken before the backfill is moved again.
    */
   private armVersionMigrationsBackfill(): void {
-    if (versionsAwaitSplit(this.versionSql)) void this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
+    if (versionsAwaitSplit(this.kernelSql)) void this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
   }
 
   /**
@@ -1125,7 +1112,7 @@ export class ControlPlaneDO extends DurableObject {
    * alarm's retry starts over from the same versions.
    */
   override async alarm(): Promise<void> {
-    const { more } = this.ctx.storage.transactionSync(() => splitVersionMigrationsBatch(this.versionSql));
+    const { more } = this.ctx.storage.transactionSync(() => splitVersionMigrationsBatch(this.kernelSql));
     if (more) await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
   }
 
@@ -2569,15 +2556,15 @@ export class ControlPlaneDO extends DurableObject {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
         v.id, v.verticalSlug, v.version, v.manifestDigest, v.permissionDigest,
         v.migrationDigest, v.deploymentRef, v.admission, v.admissionNote, v.manifestJson,
-        v.originJson, v.migrations === null ? null : v.migrations.length, v.createdAt,
+        v.originJson, v.migrations?.length ?? null, v.createdAt,
       );
-      writeVersionMigrations(this.versionSql, v.id, v.migrations);
+      writeVersionMigrations(this.kernelSql, v.id, v.migrations);
     });
   }
 
   /** One version's SQL migrations (#1764), or `undefined` for no such version. */
   readVersionMigrations(id: string): { verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined {
-    return versionMigrationsOf(this.versionSql, id);
+    return versionMigrationsOf(this.kernelSql, id);
   }
 
   /** Record what the serving script now runs — written only after a successful

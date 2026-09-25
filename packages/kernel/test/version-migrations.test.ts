@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { moduleId } from '@substrat-run/contracts';
 import {
   VERSION_MIGRATIONS_DDL,
   splitManifestMigrations,
@@ -7,7 +8,7 @@ import {
   versionMigrationsOf,
   versionsAwaitSplit,
   writeVersionMigrations,
-  type VersionMigrationsSql,
+  type SwitchSql,
 } from '../src/index.js';
 
 /**
@@ -16,14 +17,14 @@ import {
  * contract suite and the workerd backfill test hold the two to them end to end.
  */
 describe('version migrations stored apart (#1764)', () => {
-  const fresh = (): { db: DatabaseSync; sql: VersionMigrationsSql } => {
+  const fresh = (): { db: DatabaseSync; sql: SwitchSql } => {
     const db = new DatabaseSync(':memory:');
     db.exec(`CREATE TABLE vertical_versions (
       id TEXT PRIMARY KEY, vertical_slug TEXT NOT NULL, manifest_json TEXT,
       migration_count INTEGER, migrations_split INTEGER
     )`);
     db.exec(VERSION_MIGRATIONS_DDL);
-    const sql: VersionMigrationsSql = {
+    const sql: SwitchSql = {
       all: (q, ...p) => db.prepare(q).all(...p) as Record<string, unknown>[],
       run: (q, ...p) => {
         db.prepare(q).run(...p);
@@ -32,12 +33,13 @@ describe('version migrations stored apart (#1764)', () => {
     return { db, sql };
   };
   /** A version stored before #1764: its manifest as it came, not yet split. */
-  const legacy = (sql: VersionMigrationsSql, id: string, manifestJson: string | null) =>
+  const legacy = (sql: SwitchSql, id: string, manifestJson: string | null) =>
     sql.run('INSERT INTO vertical_versions (id, vertical_slug, manifest_json) VALUES (?, ?, ?)', id, 'acme', manifestJson);
 
+  const helpdesk = moduleId.parse('helpdesk');
   const migrations = [
-    { moduleId: 'helpdesk', version: '0001-init', sql: 'CREATE TABLE a (id TEXT);' },
-    { moduleId: 'helpdesk', version: '0002-more', sql: 'ALTER TABLE a ADD COLUMN b TEXT;' },
+    { moduleId: helpdesk, version: '0001-init', sql: 'CREATE TABLE a (id TEXT);' },
+    { moduleId: helpdesk, version: '0002-more', sql: 'ALTER TABLE a ADD COLUMN b TEXT;' },
   ];
   const manifest = (extra: Record<string, unknown> = {}) => JSON.stringify({ version: '1.0.0', entry: 'i.js', ...extra });
 
@@ -112,7 +114,7 @@ describe('version migrations stored apart (#1764)', () => {
   });
 
   describe('splitVersionMigrationsBatch', () => {
-    const seed = (sql: VersionMigrationsSql, n: number) => {
+    const seed = (sql: SwitchSql, n: number) => {
       const ids = Array.from({ length: n }, (_, i) => `v${String(i).padStart(3, '0')}`);
       ids.forEach((id, i) => {
         // Every fourth one was pushed before migrations were carried, and one ships none.

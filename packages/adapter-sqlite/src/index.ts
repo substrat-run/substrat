@@ -294,7 +294,6 @@ import {
   splitVersionMigrationsBatch,
   versionMigrationsOf,
   writeVersionMigrations,
-  type VersionMigrationsSql,
   type SystemSwitchReassert,
   type SystemSwitchRecordFilter,
   type SystemSwitchRecordPrior,
@@ -458,14 +457,6 @@ import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
 /** The kernel's schedule-switch SQL (#1666), over one scope's database handle. */
-/** The directory as the kernel's version-migrations helpers read it (#1764). */
-const versionSqlOf = (db: Database.Database): VersionMigrationsSql => ({
-  all: (sql, ...params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
-  run: (sql, ...params) => {
-    db.prepare(sql).run(...params);
-  },
-});
-
 const switchSqlOf = (db: Database.Database): SwitchSql => ({
   all: (sql, ...params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
   run: (sql, ...params) => {
@@ -1058,10 +1049,6 @@ interface VersionRow {
   manifest_json: string | null;
   /** Push provenance (`versionOrigin` JSON) — null for a pre-tracking push. */
   origin_json: string | null;
-  /** How many SQL migrations the version stored apart (#1764). NULL = it carries none to show. */
-  migration_count: number | null;
-  /** 1 once the version's SQL is out of `manifest_json` (#1764). NULL = the backfill has not reached it. */
-  migrations_split: number | null;
   created_at: string;
 }
 
@@ -2064,7 +2051,7 @@ export class SqliteScopeHost implements ScopeHost {
     // #1764: move the SQL out of every version stored before the split. A batch per
     // transaction, the same resumable step the Durable-Object adapter runs per alarm. This
     // adapter has no constructor budget to protect, so it runs them all on open.
-    const sql = versionSqlOf(this.directory);
+    const sql = switchSqlOf(this.directory);
     while (this.directory.transaction(() => splitVersionMigrationsBatch(sql))().more);
   }
 
@@ -6864,10 +6851,10 @@ export class SqliteScopeHost implements ScopeHost {
               selfAdmits ? AUTO_ADMISSION_NOTE : null,
               split.manifestJson,
               origin ? JSON.stringify(origin) : null,
-              split.migrations === null ? null : split.migrations.length,
+              split.migrations?.length ?? null,
               new Date().toISOString(),
             );
-          writeVersionMigrations(versionSqlOf(this.directory), audited.id, split.migrations);
+          writeVersionMigrations(switchSqlOf(this.directory), audited.id, split.migrations);
         })();
         this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
@@ -7325,7 +7312,7 @@ export class SqliteScopeHost implements ScopeHost {
         return v.manifest_json;
       },
       versionMigrations: async (actor, verticalSlug: string, versionId: string) => {
-        const v = versionMigrationsOf(versionSqlOf(this.directory), versionId);
+        const v = versionMigrationsOf(switchSqlOf(this.directory), versionId);
         if (!v || v.verticalSlug !== verticalSlug) {
           throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
         }
@@ -9911,9 +9898,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, 'vertical_versions', 'manifest_json', 'manifest_json TEXT');
     // Push provenance (git CI vs a terminal) — null for a pre-tracking push.
     this.ensureColumn(this.directory, 'vertical_versions', 'origin_json', 'origin_json TEXT');
-    // #1764: the SQL migrations moved out of the manifest, and the backfill's progress.
-    this.ensureColumn(this.directory, 'vertical_versions', 'migration_count', 'migration_count INTEGER');
-    this.ensureColumn(this.directory, 'vertical_versions', 'migrations_split', 'migrations_split INTEGER');
+    // #1764's `migration_count` and `migrations_split` are added in `ensureDirectorySchema`,
+    // BEFORE the DDL, because `VERSION_MIGRATIONS_DDL` indexes one of them.
     // #33: the SKU flag learns to express a plan. All nullable — a legacy row
     // reads as a perpetual boolean flag, exactly its pre-widening semantics.
     for (const [col, ddl] of [

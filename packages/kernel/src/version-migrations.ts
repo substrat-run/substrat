@@ -28,6 +28,7 @@ import {
   type DeclaredMigration,
   type ModuleId,
 } from '@substrat-run/contracts';
+import type { SwitchSql } from './system-switch.js';
 
 /**
  * The table, and the index the backfill walks. Interpolated into both adapters' directory DDL,
@@ -56,12 +57,6 @@ export const VERSION_MIGRATIONS_DDL = `
 /** True for a DDL statement the adapters hold back until `vertical_versions` has its columns. */
 export function isVersionMigrationsDdl(statement: string): boolean {
   return statement.includes('vertical_version_migrations') || statement.includes('vertical_versions_unsplit');
-}
-
-/** The SQL handle these helpers run on: a DO's `ctx.storage.sql` or a better-sqlite3 database. */
-export interface VersionMigrationsSql {
-  all(sql: string, ...params: (string | number | null)[]): Record<string, unknown>[];
-  run(sql: string, ...params: (string | number | null)[]): void;
 }
 
 /** A manifest with its SQL taken out, and the SQL. */
@@ -107,7 +102,7 @@ export function splitManifestMigrations(manifestJson: string | null, mode: 'push
 
 /** Replace one version's migration rows. The caller sets its `migration_count` and `migrations_split`. */
 export function writeVersionMigrations(
-  db: VersionMigrationsSql,
+  db: SwitchSql,
   versionId: string,
   migrations: readonly DeclaredMigration[] | null,
 ): void {
@@ -121,12 +116,18 @@ export function writeVersionMigrations(
   });
 }
 
-/** How many versions one backfill batch moves. */
-export const VERSION_MIGRATIONS_BATCH = 25;
+/** How many versions one backfill batch moves at most. */
+const BATCH_VERSIONS = 25;
+/**
+ * How much manifest one batch reads at most, in characters (the first version is always
+ * moved). A stored manifest can be up to about 1.5 MiB, and a batch holds the directory DO.
+ */
+const BATCH_MANIFEST_CHARS = 4 * 1024 * 1024;
 
 /**
- * Move the SQL out of the next `limit` versions stored before #1764. Returns how many it
- * moved, and whether any are left.
+ * Move the SQL out of the next versions stored before #1764: at most `limit` of them, and
+ * at most `BATCH_MANIFEST_CHARS` of manifest. Returns how many it moved, and whether any are
+ * left.
  *
  * Bounded so that no one run has to read the whole version history: the Durable-Object
  * adapter runs one batch per alarm and re-arms while any are left, so its constructor never
@@ -139,28 +140,41 @@ export const VERSION_MIGRATIONS_BATCH = 25;
  * simply moved again.
  */
 export function splitVersionMigrationsBatch(
-  db: VersionMigrationsSql,
-  limit: number = VERSION_MIGRATIONS_BATCH,
+  db: SwitchSql,
+  limit: number = BATCH_VERSIONS,
 ): { moved: number; more: boolean } {
-  const rows = db.all(
-    `SELECT id, manifest_json FROM vertical_versions
-      WHERE migrations_split IS NULL ORDER BY id LIMIT ?`,
-    limit + 1,
-  ) as { id: string; manifest_json: string | null }[];
-  const batch = rows.slice(0, limit);
-  for (const row of batch) {
-    const split = splitManifestMigrations(row.manifest_json, 'stored');
-    writeVersionMigrations(db, row.id, split.migrations);
-    db.run(
-      `UPDATE vertical_versions SET manifest_json = ?, migration_count = ?, migrations_split = 1 WHERE id = ?`,
-      split.manifestJson, split.migrations === null ? null : split.migrations.length, row.id,
-    );
+  // The ids come off the partial index alone; each manifest is read only when it is moved.
+  const ids = db.all(
+    'SELECT id FROM vertical_versions WHERE migrations_split IS NULL ORDER BY id LIMIT ?',
+    limit,
+  ) as { id: string }[];
+  let moved = 0;
+  let chars = 0;
+  for (const { id } of ids) {
+    if (moved > 0 && chars >= BATCH_MANIFEST_CHARS) break;
+    const { manifest_json: stored } = db.all('SELECT manifest_json FROM vertical_versions WHERE id = ?', id)[0] as {
+      manifest_json: string | null;
+    };
+    chars += stored?.length ?? 0;
+    const split = splitManifestMigrations(stored, 'stored');
+    writeVersionMigrations(db, id, split.migrations);
+    const count = split.migrations?.length ?? null;
+    // A manifest with nothing taken out is left where it is, not rewritten.
+    if (split.manifestJson === stored) {
+      db.run('UPDATE vertical_versions SET migration_count = ?, migrations_split = 1 WHERE id = ?', count, id);
+    } else {
+      db.run(
+        'UPDATE vertical_versions SET manifest_json = ?, migration_count = ?, migrations_split = 1 WHERE id = ?',
+        split.manifestJson, count, id,
+      );
+    }
+    moved++;
   }
-  return { moved: batch.length, more: rows.length > limit };
+  return { moved, more: versionsAwaitSplit(db) };
 }
 
 /** Whether any version still waits for the backfill. One probe of the partial index. */
-export function versionsAwaitSplit(db: VersionMigrationsSql): boolean {
+export function versionsAwaitSplit(db: SwitchSql): boolean {
   return db.all('SELECT 1 AS present FROM vertical_versions WHERE migrations_split IS NULL LIMIT 1').length > 0;
 }
 
@@ -170,23 +184,22 @@ export function versionsAwaitSplit(db: VersionMigrationsSql): boolean {
  * a reader must say as "not available", never as "no migrations".
  */
 export function versionMigrationsOf(
-  db: VersionMigrationsSql,
+  db: SwitchSql,
   versionId: string,
 ): { verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined {
+  // The manifest is read only for a version the backfill has not reached: its SQL, if any,
+  // is still in there. A split version's manifest carries none, so it is left unread.
   const row = db.all(
-    'SELECT vertical_slug, migration_count, migrations_split FROM vertical_versions WHERE id = ?',
+    `SELECT vertical_slug, migration_count, migrations_split,
+            CASE WHEN migrations_split IS NULL THEN manifest_json END AS manifest_json
+       FROM vertical_versions WHERE id = ?`,
     versionId,
-  )[0] as { vertical_slug: string; migration_count: number | null; migrations_split: number | null } | undefined;
+  )[0] as
+    | { vertical_slug: string; migration_count: number | null; migrations_split: number | null; manifest_json: string | null }
+    | undefined;
   if (!row) return undefined;
   if (row.migrations_split === null) {
-    // Not reached by the backfill yet: the SQL, if any, is still in the manifest.
-    const manifest = db.all('SELECT manifest_json FROM vertical_versions WHERE id = ?', versionId)[0] as
-      | { manifest_json: string | null }
-      | undefined;
-    return {
-      verticalSlug: row.vertical_slug,
-      migrations: splitManifestMigrations(manifest?.manifest_json ?? null, 'stored').migrations,
-    };
+    return { verticalSlug: row.vertical_slug, migrations: splitManifestMigrations(row.manifest_json, 'stored').migrations };
   }
   if (row.migration_count === null) return { verticalSlug: row.vertical_slug, migrations: null };
   const rows = db.all(

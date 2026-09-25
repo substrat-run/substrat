@@ -52,8 +52,8 @@ const SWITCHED_PREFIX = 'switched:';
 
 /** The two statement shapes the switch needs, over either adapter's SQLite handle. */
 export interface SwitchSql {
-  all(sql: string, ...params: (string | null)[]): Record<string, unknown>[];
-  run(sql: string, ...params: (string | null)[]): void;
+  all(sql: string, ...params: (string | number | null)[]): Record<string, unknown>[];
+  run(sql: string, ...params: (string | number | null)[]): void;
 }
 
 /**
