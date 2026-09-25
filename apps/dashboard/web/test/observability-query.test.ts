@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { queryWindow, readObsQuery, dragWindow } from '../src/lib/observability-query';
 import { obsPath } from '../src/lib/router';
 import { sectionQuery } from '../src/lib/obs-sections';
-import { parseLogColumns, moveColumn, DEFAULT_LOG_COLUMNS } from '../src/lib/log-columns';
+import { logChips, parseBarText, shortId, without } from '../src/lib/logs-chips';
 const window = { since: '2026-09-01T10:00:00.000Z', until: '2026-09-01T11:00:00.000Z' };
 describe('shared observability query', () => {
   it('round trips applied filters including punctuation and the historical interval', () => {
@@ -42,11 +42,35 @@ describe('shared observability query', () => {
     expect(dragWindow(25, 27, 100, window)).toBeNull();
   });
 });
-it('column preferences recover safely and reorder only known columns', () => {
-  expect(parseLogColumns('{broken')).toEqual(DEFAULT_LOG_COLUMNS);
-  expect(parseLogColumns('["raw","level","level","wallTimeMs"]')).toEqual(['level', 'wallTimeMs']);
-  expect(parseLogColumns('[]')).toEqual(DEFAULT_LOG_COLUMNS);
-  expect(moveColumn(['level', 'message', 'timestamp'], 'message', -1)).toEqual(['message', 'level', 'timestamp']);
+describe('Logs query bar chips (#1767)', () => {
+  const inv = '01J2Q8Z3V9K4W7X2M5N6P71041';
+  it("draws only the open mode's filters, and removing one clears exactly its keys", () => {
+    const q = { app: 'a', view: 'logs', level: 'error', search: 'boom', invocationId: inv, type: 't.x', groupBy: 'operation' };
+    expect(logChips(q, 'logs').map((c) => [c.key, c.value])).toEqual([
+      ['level', 'error'],
+      ['message', 'boom'],
+      ['invocation', shortId(inv)],
+    ]);
+    expect(logChips(q, 'events').map((c) => [c.key, c.value])).toEqual([
+      ['type', 't.x'],
+      ['group by', 'operation'],
+    ]);
+    // A payload grouping is one chip, and removing it clears the field with the grouping.
+    const field = logChips({ groupBy: 'type', field: 'currency' }, 'events');
+    expect(field).toEqual([{ key: 'group by', value: 'payload.currency', clears: ['groupBy', 'field'] }]);
+    expect(without({ ...q, field: 'currency' }, field[0]!.clears)).not.toHaveProperty('field');
+    expect(without(q, ['level'])).toEqual({ app: 'a', view: 'logs', search: 'boom', invocationId: inv, type: 't.x', groupBy: 'operation' });
+  });
+  it('reads typed text as a message search, or as the filter a key names — refusing a malformed one', () => {
+    expect(parseBarText('  timeout  ', 'logs')).toEqual({ add: { search: 'timeout' } });
+    expect(parseBarText('level:ERROR', 'logs')).toEqual({ add: { level: 'error' } });
+    expect(parseBarText(`invocation: ${inv}`, 'logs')).toEqual({ add: { invocationId: inv } });
+    expect(parseBarText('invocation:abc', 'logs')).toEqual({ error: expect.stringContaining('ULID') });
+    expect(parseBarText('level:loud', 'logs')).toEqual({ error: expect.stringContaining('error, warn') });
+    expect(parseBarText('receipt.sent', 'events')).toEqual({ add: { type: 'receipt.sent' } });
+    expect(parseBarText('', 'logs')).toBeNull();
+    expect(parseBarText('x'.repeat(201), 'logs')).toEqual({ error: expect.any(String) });
+  });
 });
 
 describe('switching Observability child (#1767)', () => {

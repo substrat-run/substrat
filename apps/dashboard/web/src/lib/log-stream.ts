@@ -21,7 +21,7 @@ export const LOG_MODES: { value: LogMode; label: string }[] = [
 export function modeHint(mode: LogMode): string {
   return mode === 'events'
     ? 'Events the app emitted, grouped · click an event type to narrow to it'
-    : 'Inspect a line for its fields · its level, message or invocation filters the list';
+    : 'Click a row for structured fields · any underlined value filters';
 }
 
 /**

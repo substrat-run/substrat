@@ -1,8 +1,9 @@
 import { exactTime, type ObsQuery } from '../lib/observability-query';
 import { useEffect, useState } from 'react';
-import { Button, Input, Select } from '@substrat-run/ui';
+import { Button, Input } from '@substrat-run/ui';
 import { type EventFacetResult, api, ApiError, type ObservabilityLogEvent, type TenantMetricsRow } from '../lib/api';
-import { DEV_MOCK, MOCK_INSTALLED_APP_SCOPE, MOCK_OBSERVABILITY_LOGS, MOCK_TENANT_METRICS } from '../lib/mock';
+import { DEV_MOCK, MOCK_INSTALLED_APP_SCOPE, MOCK_TENANT_METRICS } from '../lib/mock';
+import { MOCK_LOG_LINES } from '../lib/mock-pulse';
 import { GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
 import { LogList } from '../components/LogList';
@@ -23,8 +24,6 @@ import { mockEventFacets } from '../lib/mock-events';
  * those are a fact about the code and they belong on the Vertical page, where the fleet
  * question is already asked. The traffic panel links up to it for an owned vertical.
  */
-
-const LEVELS = ['All levels', 'error', 'warn', 'info', 'log', 'debug'];
 
 /** The page's window, as a panel's own header says it. Capped at 72h by the plane. */
 function windowLabel(hours: number): string {
@@ -187,9 +186,14 @@ export function TenantTrafficTable({ scopeId, hours, nonce, window }: { scopeId:
  *
  * At script grain the lines belong to the vertical's builder and still do. What this
  * shows is the subset written while serving THIS app, which is the viewing team's to read.
+ *
+ * The filters are the page's (#1767): the Logs query bar above the stream card owns them
+ * as chips in the URL, and this panel only reads them — a second set of controls here
+ * would be a second place the same filter could be half-applied.
  */
 export function TenantLogs({
-  filters, onFilters,
+  filters = {},
+  onFilters,
   scopeId,
   hours,
   nonce,
@@ -202,9 +206,9 @@ export function TenantLogs({
   onFilters?: (filters: Partial<ObsQuery>) => void;
   hours: number;
   nonce: number;
-  /** Whether the page's chart saw any request for this app in the window. It decides
-   *  which of two very different empty states this panel shows; undefined means the
-   *  chart could not say, and then the panel claims neither. */
+  /** Whether the app served any request over the page's range. It decides which of two
+   *  very different empty states this panel shows; undefined means nothing could say,
+   *  and then the panel claims neither. */
   hadTraffic?: boolean;
   /** The page's time cursor. The window this panel reads is the cursor's when there is
    *  one and the page's range when there is not — never both, since `hours` can only
@@ -214,13 +218,9 @@ export function TenantLogs({
    *  already say what this is, so the panel drops its own frame and title. */
   embedded?: boolean;
 }) {
-  const [localLevel, setLevel] = useState(LEVELS[0]);
-  const level = filters ? (filters.level || LEVELS[0]) : localLevel;
-  const [query, setQuery] = useState('');
-  const [localSearch, setSearch] = useState('');
-  const search = filters ? (filters.search ?? '') : localSearch;
-  const [invocation, setInvocation] = useState(filters?.invocationId ?? '');
-  useEffect(() => { setQuery(search); setInvocation(filters?.invocationId ?? ''); }, [search, filters?.invocationId]);
+  const level = filters.level;
+  const search = filters.search;
+  const invocationId = filters.invocationId;
   const [logs, setLogs] = useState<ObservabilityLogEvent[] | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
 
@@ -231,10 +231,11 @@ export function TenantLogs({
     void (async () => {
       try {
         const events = DEV_MOCK
-          ? MOCK_OBSERVABILITY_LOGS.filter(
+          ? MOCK_LOG_LINES.filter(
               (l) =>
-                (level === LEVELS[0] || l.level === level) &&
+                (!level || l.level === level) &&
                 (!search || (l.message ?? '').includes(search)) &&
+                (!invocationId || l.invocationId === invocationId) &&
                 // The preview narrows too, so a bar click visibly does something without
                 // a plane behind it.
                 (!cursor ||
@@ -243,13 +244,13 @@ export function TenantLogs({
                     l.timestamp <= Date.parse(cursor.to))),
             )
           : await api.appTenantLogs(scopeId, {
-              level: level === LEVELS[0] ? undefined : level,
-              search: search || undefined,
+              level,
+              search,
               // The cursor's window REPLACES the range; sending both would let `hours`,
               // which always ends at now, overrule the instant the reader clicked on.
               ...(cursor ? { since: cursor.from, until: cursor.to } : { hours }),
               limit: 100,
-              invocationId: filters?.invocationId,
+              invocationId,
             });
         if (live) setLogs(events);
       } catch (e) {
@@ -269,69 +270,50 @@ export function TenantLogs({
     return () => {
       live = false;
     };
-  }, [scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, filters?.invocationId]);
+  }, [scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, invocationId]);
 
+  const quiet = { padding: 16, fontSize: 13, color: 'var(--text-tertiary)' };
   return (
     <div style={embedded ? {} : { ...card, padding: 0, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
-        {!embedded && <span style={{ fontSize: 13, fontWeight: 600 }}>Logs</span>}
-        {!embedded && <MonoTag>this app</MonoTag>}
-        <Select
-          ariaLabel="Level"
-          options={LEVELS}
-          value={level}
-          onChange={(e) => onFilters ? onFilters({ level: e.target.value === LEVELS[0] ? undefined : e.target.value }) : setLevel(e.target.value)}
-          style={{ width: 110 }}
-        />
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (onFilters) onFilters({ search: query.trim() || undefined, invocationId: invocation.trim() || undefined });
-            else setSearch(query.trim());
-          }}
-          style={{ display: 'flex', gap: 8, flex: 1, minWidth: 220 }}
-        >
-          <Input
-            ariaLabel="Search messages"
-            placeholder="Message contains (case-sensitive)…"
-            maxLength={200}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            style={{ flex: 1 }}
-          />
-          {onFilters && <Input ariaLabel="Invocation ID" placeholder="Invocation ULID (optional)" pattern="[0-7][0-9A-HJKMNP-TV-Z]{25}" value={invocation} onChange={(e) => setInvocation(e.target.value)} />}
-          {/* No explicit type: the native default inside a form is `submit`. */}
-          <Button variant="ghost" size="sm">
-            Search
-          </Button>
-        </form>
-        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          {cursor ? `around ${cursorLabel(cursor)}` : `${windowLabel(hours)}, newest 100`}
-        </span>
-      </div>
-      <p style={{ padding: '0 14px', fontSize: 12 }}>Up to 100 recent lines from bounded invocation discovery (40 invocations, normally 20 lines each). Filters search that bounded coverage, not an exhaustive log archive. Empty results do not establish that no matching event occurred. Retention and sampling depend on the backend.</p>
-      {onFilters && <button style={{ margin: '0 14px 10px' }} onClick={() => onFilters({ level: undefined, search: undefined, invocationId: undefined })}>Clear log filters</button>}
+      {!embedded && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)' }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>Logs</span>
+          <MonoTag>this app</MonoTag>
+        </div>
+      )}
       {logsError ? (
-        <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>{logsError}</div>
+        <div style={quiet}>{logsError}</div>
       ) : logs === null ? (
-        <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading…</div>
+        <div style={quiet}>Loading…</div>
       ) : logs.length === 0 ? (
-        <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>
+        <div style={quiet}>
           {/* Two very different reasons for an empty list, and conflating them sent the
               last reader looking in the wrong place. Traffic with no lines means the
               version serving this app predates the stamped invocation line, so there is
               nothing to correlate — a re-push fixes it. No traffic means no traffic. */}
-          {/* Under a cursor the hint is withheld, not because it stopped being true but
-              because `hadTraffic` is a fact about the page's whole RANGE: attaching it to
-              a ten-minute window would answer a question about minutes with evidence
-              about days. */}
-          {hadTraffic && !cursor
+          {/* `hadTraffic` is a fact about the page's whole RANGE, so the caller withholds
+              it under a custom window: attaching it to ten minutes would answer a
+              question about minutes with evidence about days. (`window` is always set —
+              it is the range's own bounds without a cursor — so it cannot tell here.) */}
+          {hadTraffic
             ? 'No log events in this window. If this app’s version was deployed before per-request logging, its lines are not attributed to your team yet — a new deploy of the vertical starts that.'
             : 'No log events in this window.'}
         </div>
       ) : (
-        <LogList events={logs} onFilter={onFilters} />
+        <LogList events={logs} {...(onFilters ? { onFilter: onFilters } : {})} />
       )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '10px 16px', fontSize: 12, color: 'var(--text-tertiary)', borderTop: logs?.length ? undefined : '1px solid var(--border-subtle)' }}>
+        {/* The read has no total to report, so the footer says what it holds and where
+            the list stops rather than "N of M". */}
+        {logs && logs.length > 0 && (
+          <span>
+            Showing latest <span style={{ fontFamily: 'var(--font-mono)' }}>{logs.length}</span> {logs.length === 1 ? 'line' : 'lines'} ·
+          </span>
+        )}
+        <span title="Up to 100 recent lines from bounded invocation discovery (40 invocations, normally 20 lines each). Filters search that bounded coverage, not an exhaustive log archive. Retention and sampling depend on the backend.">
+          Bounded read — the newest 100 lines of the latest 40 invocations; an empty result does not prove nothing matched.
+        </span>
+      </div>
     </div>
   );
 }
