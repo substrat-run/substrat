@@ -709,6 +709,7 @@ export async function probePlanimaSecret(
     vertical: '',
     provider: 'planima',
     secret: parsed.data,
+    // Probe stub, not where expiry is set. Planima is a static token; the provider reports no expiry (api.ts), so null is the true answer. See connections.md §3.6.
     expiresAt: null,
     fetch: (input, init) =>
       options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),

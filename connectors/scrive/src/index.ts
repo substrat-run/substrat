@@ -982,6 +982,7 @@ export async function probeScriveSecret(
     vertical: '',
     provider: 'scrive',
     secret: parsed.data,
+    // Probe stub, not where expiry is set. Scrive holds OAuth1 personal access credentials (api.ts, scriveSecret): no refresh token, no horizon to record. See connections.md §3.6.
     expiresAt: null,
     fetch: (input, init) => options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),
   };
