@@ -32,14 +32,21 @@ afterEach(() => {
   globalThis.fetch = orig;
 });
 
-function plane(o: { refusal: string | null; migrations: MigrationDiff | null; serving?: string | null; failRegistry?: boolean }) {
+function plane(o: {
+  refusal: string | null;
+  migrations: MigrationDiff | null;
+  serving?: string | null;
+  failRegistry?: boolean;
+  /** #1705 PR 3: the listing an export-break refusal carries in its body. */
+  exportBreaks?: { affected: { scopeId: string; vertical: string; type: string; schemaVersion: number; incoming: number | null }[] };
+}) {
   const seen: string[] = [];
   globalThis.fetch = (async (input: string, init?: RequestInit) => {
     const url = new URL(input);
     seen.push(`${init?.method ?? 'GET'} ${url.pathname}${url.search}`);
     if (url.pathname.endsWith('/promote')) {
       return o.refusal
-        ? Response.json({ error: o.refusal }, { status: 409 })
+        ? Response.json({ error: o.refusal, ...(o.exportBreaks ? { exportBreaks: o.exportBreaks } : {}) }, { status: 409 })
         : Response.json({ channel: 'prod', versionId: 'v2' });
     }
     if (url.pathname.endsWith('/channels')) {
@@ -96,6 +103,29 @@ describe('substrat promote — a refusal prints both diffs (#1677)', () => {
     const seen = plane({ refusal: null, migrations: diff() });
     await expect(run()).resolves.toMatchObject({ versionId: 'v2' });
     expect(seen).toHaveLength(1);
+  });
+});
+
+describe('substrat promote — both refusal kinds survive together (#1677 × #1705 PR 3)', () => {
+  const EXPORT_REFUSAL =
+    'promotion drops or re-versions 1 exported event type(s) that 1 installed app(s) in 1 tenant(s) import — their edges would stop delivering it. Acknowledge it explicitly (exportBreak) to promote';
+  const exportBreaks = { affected: [{ scopeId: 's1', vertical: 'acme/board', type: 'crm.a', schemaVersion: 1, incoming: null }] };
+
+  it('an export-break refusal prints its listing, and reads no digest diff', async () => {
+    const seen = plane({ refusal: EXPORT_REFUSAL, migrations: diff(), exportBreaks });
+    const text = await refusalOf();
+    expect(text).toContain('acme/board (scope s1) imports crm.a v1 — this version no longer exports it');
+    expect(text).toContain('--ack-export-break');
+    expect(text).not.toContain('permission changes:');
+    expect(seen).toEqual(['POST /api/verticals/desk/channels/prod/promote']);
+  });
+
+  it('a digest refusal whose body also lists breaks prints the listing AND both diffs', async () => {
+    plane({ refusal: PERM_REFUSAL, migrations: diff(), exportBreaks });
+    const text = await refusalOf();
+    expect(text).toContain('acme/board (scope s1) imports crm.a v1');
+    expect(text).toContain('permission changes:');
+    expect(text).toMatch(/migration changes:\n {2}\+ desk 0002-priority/);
   });
 });
 
