@@ -586,3 +586,90 @@ describe('the repair route re-asserts the switch after the deployment reconciles
     expect(await host.runDueSchedules(TICK, t, twin)).toMatchObject({ fired: 1 });
   });
 });
+
+/**
+ * The install route (`POST /verticals/:slug/instances`, #1674): `provisionInstance` runs the
+ * deployment's own provision, and its seat recreates a wiped scope's system grants live
+ * exactly as a reconcile's does. The route is idempotent (K-31), so an already-bound scope
+ * can come back through it, and it writes the provisioned receipt, so no sweep follows. The
+ * directory's OFF has to be re-asserted here too. A brand-new install has no directory row
+ * yet (the console writes it after), and nothing is re-asserted for it.
+ */
+describe('the install route re-asserts the switch after the deployment provisions (#1674)', () => {
+  const t = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  let dir: string;
+  let host: SqliteScopeHost;
+
+  /** The deployment's provision: seats `tick:run` on a scope the directory knows. */
+  const reseatingDeployment = {
+    provisionInstance: async (input: { tenantId: string; scopeId: string; owner: string }) => {
+      const s = scopeId.parse(input.scopeId);
+      if (await host.admin.getScopeRecord(staff, t, s)) {
+        await host.admin.grantToSystem(staff, {
+          moduleId: TICK,
+          permission: 'tick:run' as PermissionKey,
+          node: { tenantId: t, scopeId: s },
+          grantedBy: staff,
+        });
+      }
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner };
+    },
+  } as unknown as VerticalClient;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-schedule-switch-install-'));
+    host = new SqliteScopeHost({ dir });
+    host.registerModule(tickModule);
+    await host.admin.createTenant(staff, { id: t, slug: 'acme-install', name: 'Acme' });
+    await host.admin.grantEntitlement(staff, t, 'tick');
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const app = () =>
+    createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'tick-vertical': reseatingDeployment },
+    });
+  const install = (s: string) =>
+    app().request('/verticals/tick-vertical/instances', {
+      method: 'POST',
+      headers: asStaff,
+      body: JSON.stringify({ tenantId: t, scopeId: s, owner: ulid(), slug: `s-${s.slice(-8).toLowerCase()}`, name: 'Install' }),
+    });
+  const boundScope = async (switchedOff: boolean) => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'tick-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    if (switchedOff) {
+      await host.admin.revokeFromSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+    }
+    // Wiped: the marker and the grants are gone; the directory's record is not.
+    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+    return s;
+  };
+
+  it('a wiped, already-bound scope re-provisioned through the install path comes back OFF', async () => {
+    const s = await boundScope(true);
+    expect((await install(s)).status).toBe(201);
+    expect(await host.runDueSchedules(TICK, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('twin: the same path with no record leaves the module on', async () => {
+    const s = await boundScope(false);
+    expect((await install(s)).status).toBe(201);
+    expect(await host.runDueSchedules(TICK, t, s)).toMatchObject({ fired: 1 });
+  });
+
+  it('twin: a brand-new install, with no directory row yet, re-asserts nothing and still succeeds', async () => {
+    const s = scopeId.parse(ulid());
+    expect((await install(s)).status).toBe(201);
+    expect(await host.admin.auditLog(staff, { scopeId: s, action: ['reassertSystemSwitch'] })).toEqual([]);
+  });
+});

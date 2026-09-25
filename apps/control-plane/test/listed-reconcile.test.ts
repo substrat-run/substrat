@@ -1,10 +1,28 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { ControlPlaneError, VerticalClient } from '@substrat-run/control-plane-api';
-import { platformActorId, principalId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import {
+  ControlPlaneError,
+  VerticalClient,
+  provisionSiblingHandler,
+  provisionTenantHandler,
+} from '@substrat-run/control-plane-api';
+import {
+  platformActorId,
+  platformRequestId,
+  principalId,
+  scopeId,
+  tenantId,
+  type PlatformRequest,
+  type ScopeId,
+  type TenantId,
+} from '@substrat-run/contracts';
 import { runPlatformSweep, ulid } from '@substrat-run/kernel';
-import { assertReconcileReaches, parseReconcileBatch, reconcileOrUnsupported } from '../src/worker.js';
+import {
+  assertReconcileReaches,
+  parseReconcileBatch,
+  reconcileOrUnsupported,
+} from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
@@ -263,3 +281,162 @@ describe('PROVISION_RECONCILE_BATCH (#1653)', () => {
     expect(parseReconcileBatch('lots')).toBeUndefined();
   });
 });
+
+/**
+ * #1674 — every hosted path that runs a vertical's provision or reconcile puts the
+ * directory's recorded OFF back afterwards, against the REAL directory DO.
+ *
+ * The fake deployment is the part a hosted scope's own store plays. A wipe loses the OFF
+ * marker; the deployment's seat then makes a wiped store `on` (a missing grant is created,
+ * #1659) and leaves a live `off` alone (the seat checks the marker). The control plane's own
+ * `provisionScope` never re-asserts a delegated scope, so a path that forgets the re-assert
+ * after the deployment's seat leaves the module on — and each path has its own test here,
+ * so a refactor that bypasses the shared helper at one site goes red at that site.
+ */
+describe('hosted provision and reconcile paths re-assert the schedule switch (#1674)', () => {
+  const staff = platformActorId.parse(ulid());
+  const suffix = ulid().toLowerCase().slice(-10);
+  const VERT = `switch-${suffix}`;
+  const MANAGER = `manager-${suffix}`;
+  const MODULE = '@test/hosted-tick';
+  type Position = 'on' | 'off' | 'wiped';
+  const store = new Map<string, Position>();
+
+  const seat = (s: string) => {
+    const at = store.get(s);
+    if (at === undefined || at === 'wiped') store.set(s, 'on');
+  };
+  const deployment = {
+    provisionInstance: async (input: { tenantId: string; scopeId: string; owner: string }) => {
+      seat(input.scopeId);
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner };
+    },
+    reconcileInstance: async (input: { tenantId: string; scopeId: string }) => {
+      seat(input.scopeId);
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: ulid() };
+    },
+    configureInstance: async () => undefined,
+  } as unknown as VerticalClient;
+
+  const hostOf = () =>
+    new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      systemSwitchDelegation: {
+        switch: async ({ scopeId: s, to }) => {
+          const at = store.get(s);
+          if (at === undefined || at === 'wiped') return { held: false, changed: false, permissions: [] };
+          store.set(s, to);
+          return { held: true, changed: at !== to, permissions: [] };
+        },
+        status: async ({ scopeId: s }) => {
+          const at = store.get(s);
+          return at === undefined || at === 'wiped' ? [] : [{ moduleId: MODULE as never, schedules: at }];
+        },
+      },
+    });
+  const deps = (host: CloudflareScopeHost) => ({ host, actor: staff, resolveVerticalForScope: async () => deployment });
+
+  let host: CloudflareScopeHost;
+  const t = tenantId.parse(ulid());
+  const managerTenant = tenantId.parse(ulid());
+  const managerScope = scopeId.parse(ulid());
+  const owner = principalId.parse(ulid());
+
+  /** A hosted scope the deployment has provisioned, optionally switched off, then wiped. */
+  const wipedScope = async (tenant: TenantId, switchedOff: boolean, id = scopeId.parse(ulid())) => {
+    await host.provisionScope(staff, { tenantId: tenant, scopeId: id, vertical: VERT });
+    await host.admin.activateScope(staff, tenant, id);
+    seat(id);
+    if (switchedOff) {
+      await host.admin.revokeFromSystem(staff, {
+        moduleId: MODULE as never,
+        node: { tenantId: tenant, scopeId: id },
+        reason: 'incident',
+      });
+    }
+    store.set(id, 'wiped');
+    return id;
+  };
+
+  beforeAll(async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    host = hostOf();
+    await host.admin.createTenant(staff, { id: t, slug: `sw-${suffix}`, name: 'Switch' });
+    await host.admin.registerVertical(staff, { slug: MANAGER, name: 'Manager', source: 'builtin', entitlements: ['tick'] });
+    await host.admin.setVerticalTenantProvisioner(staff, MANAGER, true);
+    await host.admin.createTenant(staff, { id: managerTenant, slug: `mgr-${suffix}`, name: 'Manager' });
+    await host.provisionScope(staff, { tenantId: managerTenant, scopeId: managerScope, vertical: MANAGER });
+    await host.admin.activateScope(staff, managerTenant, managerScope);
+  });
+
+  describe('the provision-sibling drain, re-drained onto the sibling an earlier pass minted', () => {
+    const parent = scopeId.parse(ulid());
+    beforeAll(async () => {
+      await host.provisionScope(staff, { tenantId: t, scopeId: parent, vertical: VERT });
+      await host.admin.activateScope(staff, t, parent);
+    });
+    const drain = (sibling: ScopeId) =>
+      provisionSiblingHandler(deps(host))(
+        { tenantId: t, scopeId: parent, vertical: VERT },
+        drainIntent('provision-sibling', { slug: `sib-${sibling.slice(-8).toLowerCase()}`, name: 'Sibling', owner }, { scopeId: sibling }),
+      );
+    it('a switched-off sibling whose storage was wiped comes back OFF', async () => {
+      const s = await wipedScope(t, true);
+      expect((await drain(s)).status).toBe('done');
+      expect(store.get(s)).toBe('off');
+    });
+    it('twin: with no record, the sibling comes back on', async () => {
+      const s = await wipedScope(t, false);
+      expect((await drain(s)).status).toBe('done');
+      expect(store.get(s)).toBe('on');
+    });
+  });
+
+  describe('the provision-tenant drain, re-drained with the same proposed ids', () => {
+    const drain = (tenant: TenantId, s: ScopeId) =>
+      provisionTenantHandler(deps(host))(
+        { tenantId: managerTenant, scopeId: managerScope, vertical: MANAGER },
+        drainIntent('provision-tenant', {
+          tenant: { id: tenant, slug: `cust-${tenant.slice(-10).toLowerCase()}`, name: 'Customer' },
+          instance: { vertical: VERT, scopeId: s, slug: 'main', name: 'Main', owner },
+          entitlements: [{ key: 'tick', plan: 'pro' }],
+        }),
+      );
+    const customer = async (switchedOff: boolean) => {
+      const tenant = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      expect((await drain(tenant, s)).status).toBe('done');
+      await wipedScope(tenant, switchedOff, s);
+      return { tenant, s };
+    };
+    it('a switched-off customer scope whose storage was wiped comes back OFF', async () => {
+      const { tenant, s } = await customer(true);
+      expect((await drain(tenant, s)).status).toBe('done');
+      expect(store.get(s)).toBe('off');
+    });
+    it('twin: with no record, the customer scope comes back on', async () => {
+      const { tenant, s } = await customer(false);
+      expect((await drain(tenant, s)).status).toBe('done');
+      expect(store.get(s)).toBe('on');
+    });
+  });
+});
+
+/** A minimal intent row for a drain handler, as the dispatcher hands it over. */
+function drainIntent(kind: string, payload: unknown, result: unknown = null): PlatformRequest {
+  return {
+    id: platformRequestId.parse(ulid()),
+    kind,
+    payload,
+    requestedBy: principalId.parse(ulid()),
+    impersonation: null,
+    status: 'pending',
+    attempts: 0,
+    lastError: null,
+    failure: null,
+    result,
+    requestedAt: new Date().toISOString() as PlatformRequest['requestedAt'],
+    settledAt: null,
+  };
+}

@@ -4198,6 +4198,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // one guessed from the serving pointer would claim a hook ran against code this
       // scope was not running.
       const provisioned = await admin.getScopeRecord(c.get('actor'), input.tenantId, input.scopeId);
+      // #1674: this route is idempotent (K-31), so an already-bound scope that was wiped can
+      // come back through it, re-seated live by the deployment — and the receipt below means
+      // no sweep follows. Re-assert the recorded OFF positions before it. Only once the
+      // directory row exists: a brand-new install's is written after this call (see above),
+      // has no record to re-assert, and `reassertSystemSwitches` refuses an unknown scope.
+      if (provisioned) {
+        await admin.reassertSystemSwitches(c.get('actor'), { tenantId: input.tenantId, scopeId: input.scopeId });
+      }
       if (provisioned?.verticalVersionId) {
         await admin.markScopeProvisioned(
           c.get('actor'),
