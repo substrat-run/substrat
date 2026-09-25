@@ -1,10 +1,33 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { ControlPlaneError, VerticalClient } from '@substrat-run/control-plane-api';
-import { platformActorId, principalId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import {
+  ControlPlaneError,
+  VerticalClient,
+  createControlPlaneApi,
+  DEV_ACTOR_HEADER,
+  UNSAFE_devPlatformActorAuth,
+  provisionSiblingHandler,
+  provisionTenantHandler,
+  setEntitlementsHandler,
+} from '@substrat-run/control-plane-api';
+import {
+  platformActorId,
+  platformRequestId,
+  principalId,
+  scopeId,
+  tenantId,
+  type PlatformRequest,
+  type ScopeId,
+  type TenantId,
+} from '@substrat-run/contracts';
 import { runPlatformSweep, ulid } from '@substrat-run/kernel';
-import { assertReconcileReaches, parseReconcileBatch, reconcileOrUnsupported } from '../src/worker.js';
+import {
+  assertReconcileReaches,
+  parseReconcileBatch,
+  reconcileOrUnsupported,
+  reconcileReachedScope,
+} from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
@@ -263,3 +286,377 @@ describe('PROVISION_RECONCILE_BATCH (#1653)', () => {
     expect(parseReconcileBatch('lots')).toBeUndefined();
   });
 });
+
+/**
+ * #1674 — every hosted path that runs a vertical's provision or reconcile puts the
+ * directory's recorded OFF back afterwards, against the REAL directory DO.
+ *
+ * The fake deployment is the part a hosted scope's own store plays. A wipe loses the OFF
+ * marker; the deployment's seat then makes a wiped store `on` (a missing grant is created,
+ * #1659) and leaves a live `off` alone (the seat checks the marker). The control plane's own
+ * `provisionScope` never re-asserts a delegated scope, so a path that forgets the re-assert
+ * after the deployment's seat leaves the module on — and each path has its own test here,
+ * so a refactor that bypasses the shared helper at one site goes red at that site.
+ */
+describe('hosted provision and reconcile paths re-assert the schedule switch (#1674)', () => {
+  const staff = platformActorId.parse(ulid());
+  const suffix = ulid().toLowerCase().slice(-10);
+  const VERT = `switch-${suffix}`;
+  const MANAGER = `manager-${suffix}`;
+  const MODULE = '@test/hosted-tick';
+  type Position = 'on' | 'off' | 'wiped';
+  const store = new Map<string, Position>();
+  /** Scopes whose deployment refuses the switch — a far end that cannot be reached. */
+  const unreachable = new Set<string>();
+
+  const seat = (s: string) => {
+    const at = store.get(s);
+    if (at === undefined || at === 'wiped') store.set(s, 'on');
+  };
+  const deployment = {
+    provisionInstance: async (input: { tenantId: string; scopeId: string; owner: string }) => {
+      seat(input.scopeId);
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner };
+    },
+    reconcileInstance: async (input: { tenantId: string; scopeId: string }) => {
+      seat(input.scopeId);
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: ulid() };
+    },
+    configureInstance: async () => undefined,
+    // A rewind to a bookmark taken before the switch was pulled: the grants come back live
+    // and the marker is gone — what a PITR restore of the scope's storage leaves behind.
+    rewindScope: async (s: string, bookmark: string) => {
+      store.set(s, 'on');
+      return { rewindingTo: bookmark };
+    },
+  } as unknown as VerticalClient;
+
+  const hostOf = () =>
+    new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      systemSwitchDelegation: {
+        switch: async ({ scopeId: s, to }) => {
+          if (unreachable.has(s)) throw new Error('vertical unreachable during system-switch');
+          const at = store.get(s);
+          if (at === undefined || at === 'wiped') return { held: false, changed: false, permissions: [] };
+          store.set(s, to);
+          return { held: true, changed: at !== to, permissions: [] };
+        },
+        status: async ({ scopeId: s }) => {
+          const at = store.get(s);
+          return at === undefined || at === 'wiped' ? [] : [{ moduleId: MODULE as never, schedules: at }];
+        },
+      },
+    });
+  const deps = (host: CloudflareScopeHost) => ({ host, actor: staff, resolveVerticalForScope: async () => deployment });
+
+  let host: CloudflareScopeHost;
+  const t = tenantId.parse(ulid());
+  const managerTenant = tenantId.parse(ulid());
+  const managerScope = scopeId.parse(ulid());
+  const owner = principalId.parse(ulid());
+
+  /** A hosted scope the deployment has provisioned, optionally switched off, then wiped. */
+  const wipedScope = async (tenant: TenantId, switchedOff: boolean, id = scopeId.parse(ulid())) => {
+    await host.provisionScope(staff, { tenantId: tenant, scopeId: id, vertical: VERT });
+    await host.admin.activateScope(staff, tenant, id);
+    seat(id);
+    if (switchedOff) {
+      await host.admin.revokeFromSystem(staff, {
+        moduleId: MODULE as never,
+        node: { tenantId: tenant, scopeId: id },
+        reason: 'incident',
+      });
+    }
+    store.set(id, 'wiped');
+    return id;
+  };
+
+  beforeAll(async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    host = hostOf();
+    await host.admin.createTenant(staff, { id: t, slug: `sw-${suffix}`, name: 'Switch' });
+    await host.admin.registerVertical(staff, { slug: MANAGER, name: 'Manager', source: 'builtin', entitlements: ['tick'] });
+    await host.admin.setVerticalTenantProvisioner(staff, MANAGER, true);
+    await host.admin.createTenant(staff, { id: managerTenant, slug: `mgr-${suffix}`, name: 'Manager' });
+    await host.provisionScope(staff, { tenantId: managerTenant, scopeId: managerScope, vertical: MANAGER });
+    await host.admin.activateScope(staff, managerTenant, managerScope);
+  });
+
+  describe('the sweep reconcile (`reconcileReachedScope`)', () => {
+    const payload = { entitlements: [], identityLinks: [], connectionGrants: [], connectionKeys: [] };
+    it('a switched-off scope whose storage was wiped comes back OFF', async () => {
+      const s = await wipedScope(t, true);
+      await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
+      expect(store.get(s)).toBe('off');
+    });
+    it('twin: with no record, the scope comes back on', async () => {
+      const s = await wipedScope(t, false);
+      await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
+      expect(store.get(s)).toBe('on');
+    });
+  });
+
+  describe('the set-entitlements drain (a reconcile)', () => {
+    const drain = (s: ScopeId) =>
+      setEntitlementsHandler(deps(host))(
+        { tenantId: managerTenant, scopeId: managerScope, vertical: MANAGER },
+        drainIntent('set-entitlements', { tenantId: t, authScopeId: s, plan: 'pro', entitlements: [{ key: 'tick', plan: 'pro' }] }),
+      );
+    it('a switched-off scope whose storage was wiped comes back OFF', async () => {
+      const s = await wipedScope(t, true);
+      expect((await drain(s)).status).toBe('done');
+      expect(store.get(s)).toBe('off');
+    });
+    it('twin: with no record, the scope comes back on', async () => {
+      const s = await wipedScope(t, false);
+      expect((await drain(s)).status).toBe('done');
+      expect(store.get(s)).toBe('on');
+    });
+  });
+
+  describe('the provision-sibling drain, re-drained onto the sibling an earlier pass minted', () => {
+    const parent = scopeId.parse(ulid());
+    beforeAll(async () => {
+      await host.provisionScope(staff, { tenantId: t, scopeId: parent, vertical: VERT });
+      await host.admin.activateScope(staff, t, parent);
+    });
+    const drain = (sibling: ScopeId) =>
+      provisionSiblingHandler(deps(host))(
+        { tenantId: t, scopeId: parent, vertical: VERT },
+        drainIntent('provision-sibling', { slug: `sib-${sibling.slice(-8).toLowerCase()}`, name: 'Sibling', owner }, { scopeId: sibling }),
+      );
+    it('a switched-off sibling whose storage was wiped comes back OFF', async () => {
+      const s = await wipedScope(t, true);
+      expect((await drain(s)).status).toBe('done');
+      expect(store.get(s)).toBe('off');
+    });
+    it('twin: with no record, the sibling comes back on', async () => {
+      const s = await wipedScope(t, false);
+      expect((await drain(s)).status).toBe('done');
+      expect(store.get(s)).toBe('on');
+    });
+  });
+
+  describe('a PITR rewind (the route a tenant owner can reach)', () => {
+    let running: string;
+    const payload = { entitlements: [], identityLinks: [], connectionGrants: [], connectionKeys: [] };
+    beforeAll(async () => {
+      await host.admin.registerVertical(staff, { slug: VERT, name: 'Switch', source: 'cli', ownerTenant: t });
+      running = ulid();
+      await host.admin.publishVersion(staff, {
+        id: running,
+        verticalSlug: VERT,
+        version: '1.0.0',
+        manifestDigest: 'm',
+        permissionDigest: 'p',
+        migrationDigest: 'g',
+        deploymentRef: `${VERT}-1-0-0`,
+      });
+      await host.admin.admitVersion(staff, running).catch(() => undefined);
+    });
+    const rewound = async (switchedOff: boolean) => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: VERT });
+      await host.admin.activateScope(staff, t, s);
+      await host.admin.bindScopeVersion(staff, t, s, running);
+      await host.admin.markScopeProvisioned(staff, t, s, running);
+      seat(s);
+      if (switchedOff) {
+        await host.admin.revokeFromSystem(staff, { moduleId: MODULE as never, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+      }
+      const app = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { [VERT]: deployment },
+      });
+      const res = await app.request(`/tenants/${t}/scopes/${s}/rewind`, {
+        method: 'POST',
+        headers: { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' },
+        body: JSON.stringify({ bookmark: 'before-the-incident' }),
+      });
+      expect(res.status).toBe(200);
+      return s;
+    };
+    const sweepOnly = (s: ScopeId) =>
+      runPlatformSweep(host, {
+        actor: staff,
+        fetch: (() => Promise.reject(new Error('unused'))) as never,
+        sweepers: {},
+        drainRetries: false,
+        runSchedules: false,
+        reconcileMigrations: false,
+        gcSnapshots: false,
+        provisionReconcileBatch: 10_000,
+        reconcileScopeFn: async (tenant, id) =>
+          id === s ? reconcileReachedScope(host.admin, { tenantId: tenant, scopeId: id }, deployment, payload) : 'unsupported',
+      });
+
+    it('a rewind that drops the OFF marker is switched off again by the next sweep', async () => {
+      const s = await rewound(true);
+      expect(store.get(s)).toBe('on'); // the rewind itself lost the switch
+      await sweepOnly(s);
+      expect(store.get(s)).toBe('off');
+    });
+
+    it('a re-assert that cannot reach the deployment fails the scope: no receipt, so the next pass retries', async () => {
+      const s = await rewound(true);
+      unreachable.add(s);
+      const report = await sweepOnly(s);
+      expect(report.errors.filter((e) => e.id === s).map((e) => e.kind)).toEqual(['provision-reconcile']);
+      expect((await host.admin.getScopeRecord(staff, t, s))?.provisionedVersionId).toBeNull();
+      // The twin, on the same scope: once the deployment answers, the pass re-asserts and
+      // writes the receipt it withheld.
+      unreachable.delete(s);
+      await sweepOnly(s);
+      expect(store.get(s)).toBe('off');
+      expect((await host.admin.getScopeRecord(staff, t, s))?.provisionedVersionId).toBe(running);
+    });
+
+    it('twin: with no record, the rewound scope stays on through the sweep', async () => {
+      const s = await rewound(false);
+      await sweepOnly(s);
+      expect(store.get(s)).toBe('on');
+    });
+  });
+
+  describe('adopt-serving (the scope starts routing to another store)', () => {
+    const ADOPT = `adopt-${suffix}`;
+    const REF = `${ADOPT}-serving`;
+    const legacy: ScopeId[] = [];
+    /** The serving script's copy of the data: the marker did not survive into it. */
+    const serving = {
+      exportScope: async (s: string) => ({ tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] }),
+      restoreScope: async (_t: string, s: string) => {
+        store.set(s, 'on');
+        return { tables: 0 };
+      },
+    } as unknown as VerticalClient;
+    const app = () =>
+      createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { [ADOPT]: serving },
+        resolveVerticalRef: async (ref) => (ref === REF ? serving : undefined),
+      });
+    beforeAll(async () => {
+      await host.admin.registerVertical(staff, { slug: ADOPT, name: 'Adopt', source: 'cli', ownerTenant: t });
+      // Two scopes born BEFORE the vertical serves in place: legacy, on per-version dispatch.
+      for (const switchedOff of [true, false, true]) {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: ADOPT });
+        await host.admin.activateScope(staff, t, s);
+        seat(s);
+        if (switchedOff) {
+          await host.admin.revokeFromSystem(staff, { moduleId: MODULE as never, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+        }
+        legacy.push(s);
+      }
+      const v = ulid();
+      await host.admin.publishVersion(staff, {
+        id: v,
+        verticalSlug: ADOPT,
+        version: '1.0.0',
+        manifestDigest: 'm',
+        permissionDigest: 'p',
+        migrationDigest: 'g',
+        deploymentRef: `${ADOPT}-1-0-0`,
+      });
+      await host.admin.admitVersion(staff, v).catch(() => undefined);
+      await host.admin.setVerticalServing(staff, ADOPT, { ref: REF, versionId: v, doClasses: ['ScopeDO'], migrationTag: 'v1' });
+    });
+    const adopt = async (s: ScopeId) => {
+      const res = await app().request(`/tenants/${t}/scopes/${s}/adopt-serving`, {
+        method: 'POST',
+        headers: { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(200);
+    };
+
+    it('a switched-off scope adopted onto a store that lost the marker comes back OFF', async () => {
+      await adopt(legacy[0]!);
+      expect(store.get(legacy[0]!)).toBe('off');
+    });
+
+    it('twin: with no record, the adopted scope stays on', async () => {
+      await adopt(legacy[1]!);
+      expect(store.get(legacy[1]!)).toBe('on');
+    });
+
+    const post = (s: ScopeId, path: string, body?: unknown) =>
+      app().request(`/tenants/${t}/scopes/${s}/${path}`, {
+        method: 'POST',
+        headers: { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+
+    it('a retried adopt whose first re-assert failed re-asserts, though the scope is already adopted (Copilot review)', async () => {
+      const s = legacy[2]!;
+      unreachable.add(s);
+      expect((await post(s, 'adopt-serving')).status).not.toBe(200);
+      expect(store.get(s)).toBe('on'); // routing flipped, the re-assert did not land
+      unreachable.delete(s);
+      const retry = await post(s, 'adopt-serving');
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toMatchObject({ alreadyAdopted: true });
+      expect(store.get(s)).toBe('off');
+    });
+
+    it('a retried rebind that finds the scope already bound re-asserts too (Copilot review)', async () => {
+      const s = legacy[2]!;
+      store.set(s, 'on'); // a rebind that flipped routing, then lost its re-assert
+      const retry = await post(s, 'rebind-vertical', { vertical: ADOPT });
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toMatchObject({ alreadyBound: true });
+      expect(store.get(s)).toBe('off');
+    });
+  });
+
+  describe('the provision-tenant drain, re-drained with the same proposed ids', () => {
+    const drain = (tenant: TenantId, s: ScopeId) =>
+      provisionTenantHandler(deps(host))(
+        { tenantId: managerTenant, scopeId: managerScope, vertical: MANAGER },
+        drainIntent('provision-tenant', {
+          tenant: { id: tenant, slug: `cust-${tenant.slice(-10).toLowerCase()}`, name: 'Customer' },
+          instance: { vertical: VERT, scopeId: s, slug: 'main', name: 'Main', owner },
+          entitlements: [{ key: 'tick', plan: 'pro' }],
+        }),
+      );
+    const customer = async (switchedOff: boolean) => {
+      const tenant = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      expect((await drain(tenant, s)).status).toBe('done');
+      await wipedScope(tenant, switchedOff, s);
+      return { tenant, s };
+    };
+    it('a switched-off customer scope whose storage was wiped comes back OFF', async () => {
+      const { tenant, s } = await customer(true);
+      expect((await drain(tenant, s)).status).toBe('done');
+      expect(store.get(s)).toBe('off');
+    });
+    it('twin: with no record, the customer scope comes back on', async () => {
+      const { tenant, s } = await customer(false);
+      expect((await drain(tenant, s)).status).toBe('done');
+      expect(store.get(s)).toBe('on');
+    });
+  });
+});
+
+/** A minimal intent row for a drain handler, as the dispatcher hands it over. */
+function drainIntent(kind: string, payload: unknown, result: unknown = null): PlatformRequest {
+  return {
+    id: platformRequestId.parse(ulid()),
+    kind,
+    payload,
+    requestedBy: principalId.parse(ulid()),
+    impersonation: null,
+    status: 'pending',
+    attempts: 0,
+    lastError: null,
+    failure: null,
+    result,
+    requestedAt: new Date().toISOString() as PlatformRequest['requestedAt'],
+    settledAt: null,
+  };
+}

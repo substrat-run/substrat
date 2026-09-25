@@ -19,6 +19,7 @@ export type {
   ConnectorDelegation,
   EventDrainDelegation,
   PeerSwitchDelegation,
+  ImportCursorDelegation,
   SystemSwitchDelegation,
 } from './host.js';
 export { defineScopeDO } from './scope-do.js';

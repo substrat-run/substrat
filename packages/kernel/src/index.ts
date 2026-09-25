@@ -214,7 +214,7 @@ export type {
 } from './list-index.js';
 export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
-export { createUlid, ulid, ulidTime, type UlidMint } from './ulid.js';
+export { createUlid, ulid, ulidCeiling, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { assertNoSpineWrite, guardSpine } from './spine-guard.js';
 export { DO_SQL_LIMITS, assertWithinSqlLimits, guardSqlLimits } from './sql-limits.js';
@@ -282,6 +282,26 @@ export {
   systemSwitchedOffMessage,
 } from './system-switch.js';
 export type { SwitchOutcome, SwitchSql, SystemGrantsEntry, SystemScheduleState } from './system-switch.js';
+export {
+  SYSTEM_SWITCHES_BACKFILL_SQL,
+  SYSTEM_SWITCHES_DDL,
+  forgetSystemSwitchesOf,
+  listSystemSwitchRecords,
+  recordSystemSwitchedOff,
+  recordSystemSwitchedOn,
+  restoreSystemSwitchRecord,
+  switchedOffModulesOf,
+  systemSwitchRecordsOf,
+  systemSwitchesTableExists,
+  withRecorded,
+} from './system-switch-record.js';
+export type {
+  SystemSwitchReassert,
+  SystemSwitchRecordFilter,
+  SystemSwitchRecordPrior,
+  SystemSwitchRecordRow,
+  SystemSwitchRecordWrite,
+} from './system-switch-record.js';
 export {
   PEER_SUBJECT_PREFIX,
   admitPeer,
@@ -435,6 +455,11 @@ export {
   CROSS_VERTICAL_CONSUMERS_PER_PASS,
   runCrossVerticalFrom,
   registryImportCandidates,
+  crossVerticalHealth,
+  exportBreaksOf,
+  exportBreakRefusal,
+  EXPORT_BREAK_REFUSAL,
+  isExportBreakRefusal,
 } from './platform-sweep.js';
 export type {
   CandidatesHint,
@@ -479,6 +504,8 @@ export {
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
   OUTBOX_MARK_SQL,
+  moveImportCursor,
+  importCursorSourceOf,
   exportedSinceQuery,
   exportReadQuery,
   exportReadPlan,

@@ -13,6 +13,7 @@ import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table,
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api, EgressReport } from '../lib/api';
+import { exportBreakAckNeeded, promoteAckSatisfied, type ImpactState } from '../lib/promote';
 import {
   admissionLabel,
   admissionTone,
@@ -64,6 +65,25 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   // digest diff requires. Null when closed.
   const [promote, setPromote] = useState<{ channel: ChannelName; versionId: string } | null>(null);
   const [ack, setAck] = useState<PromotionAcknowledgement>({});
+  // #1705 PR 3: whom the promotion in the dialog breaks, re-read whenever its target changes.
+  const [impact, setImpact] = useState<ImpactState>({ kind: 'loading' });
+  useEffect(() => {
+    if (!promote) return;
+    let cancelled = false;
+    setImpact({ kind: 'loading' });
+    setAck((a) => ({ ...a, exportBreak: false }));
+    api
+      .promotionImpact(vertical.slug, promote.channel, promote.versionId)
+      .then((r) => {
+        if (!cancelled) setImpact({ kind: 'ready', affected: r.affected, otherTenants: r.otherTenants ?? 0 });
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setImpact({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, vertical.slug, promote?.channel, promote?.versionId]);
 
   // The delete dialog's type-to-confirm guard. Null when closed.
   const [deleteInput, setDeleteInput] = useState<string | null>(null);
@@ -367,7 +387,8 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   const current = promote ? channelVersion(promote.channel) : undefined;
   const permChanged = !!(current && target && current.permissionDigest !== target.permissionDigest);
   const migChanged = !!(current && target && current.migrationDigest !== target.migrationDigest);
-  const ackSatisfied = (!permChanged || ack.permissionChange) && (!migChanged || ack.migrationChange);
+  const breaks = exportBreakAckNeeded(impact);
+  const ackSatisfied = promoteAckSatisfied({ permission: permChanged, migration: migChanged, exportBreak: breaks }, ack);
 
   const scopeColumns: TableColumn<Scope>[] = [
     {
@@ -1129,6 +1150,32 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                 checked={!!ack.migrationChange}
                 onChange={(v) => setAck((a) => ({ ...a, migrationChange: v }))}
               />
+            )}
+            {/* #1705 PR 3: installed apps that import an export this version drops or re-versions. */}
+            {breaks && impact.kind === 'ready' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                  These installed apps import an event this version no longer exports at the version they read:
+                </span>
+                {impact.affected.map((b) => (
+                  <span key={`${b.scopeId}:${b.type}`} style={{ fontSize: 12.5 }}>
+                    <Tag mono>{b.vertical}</Tag> in <Tag mono>{b.tenantId}</Tag> imports <Tag mono>{b.type}</Tag> v{b.schemaVersion}
+                    {b.incoming === null ? ' — no longer exported' : ` — now v${b.incoming}`}
+                  </span>
+                ))}
+                <Checkbox
+                  label="Installed apps stop receiving these events"
+                  description="Their edges withhold the type until each app is updated. Nothing is lost, and nothing arrives either."
+                  checked={!!ack.exportBreak}
+                  onChange={(v) => setAck((a) => ({ ...a, exportBreak: v }))}
+                />
+              </div>
+            )}
+            {impact.kind === 'error' && (
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                Could not read which installed apps this promotion affects ({impact.message}). The registry still refuses one
+                that breaks an import.
+              </span>
             )}
             {!ackSatisfied && (
               <span style={{ fontSize: 12, color: 'var(--status-warning-fg, var(--text-tertiary))' }}>

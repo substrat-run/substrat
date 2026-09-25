@@ -40,6 +40,17 @@ const ULID_SHAPE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const unencodable = (t: number): string =>
   `not an encodable ULID instant: ${t} (want 0..${MAX_ULID_TIME})`;
 
+/** The ten base32 digits of an instant 48 bits can hold. The caller has range-checked it. */
+function encodeTime(time: number): string {
+  let ts = '';
+  let t = time;
+  for (let i = 0; i < 10; i++) {
+    ts = B32[t % 32] + ts;
+    t = Math.floor(t / 32);
+  }
+  return ts;
+}
+
 /** A monotonic ULID mint. `now` is epoch milliseconds; it defaults to the wall clock. */
 export interface UlidMint {
   (now?: number): string;
@@ -116,15 +127,9 @@ export function createUlid(): UlidMint {
     if (time < 0 || time > MAX_ULID_TIME) throw new RangeError(unencodable(time));
     lastTime = time;
 
-    let ts = '';
-    let t = time;
-    for (let i = 0; i < 10; i++) {
-      ts = B32[t % 32] + ts;
-      t = Math.floor(t / 32);
-    }
     let r = '';
     for (const d of lastRand) r += B32[d];
-    return ts + r;
+    return encodeTime(time) + r;
   }) as UlidMint;
 
   mint.seedFrom = (id: string): void => {
@@ -158,6 +163,16 @@ const processUlid = createUlid();
 
 export function ulid(now: number = Date.now()): string {
   return processUlid(now);
+}
+
+/**
+ * The greatest ULID a millisecond can carry (#1705 PR 3): every id minted at or before `now`
+ * sorts at or below it, and every id minted after sorts above. It is what "skip to now" moves
+ * a watermark to, because a watermark is compared with `id > cursor`.
+ */
+export function ulidCeiling(now: number): string {
+  if (!Number.isSafeInteger(now) || now < 0 || now > MAX_ULID_TIME) throw new RangeError(unencodable(now));
+  return encodeTime(now) + 'Z'.repeat(16);
 }
 
 /**

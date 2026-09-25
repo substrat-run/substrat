@@ -36,7 +36,7 @@ import {
   readDeclaredModel,
 } from './push.js';
 import { printVersions } from './versions.js';
-import { promote, type PromoteResult } from './promote.js';
+import { exportBreakLines, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
 import { cliVersion, warnIfDistStale } from './version.js';
@@ -133,7 +133,7 @@ Usage:
                                                instead of the CLI's internals. --json prints
                                                the registry as data instead of prose
   substrat promote  <slug> --version <versionId>
-                    [--ack-permissions] [--ack-migrations]  (prod is the only channel)
+                    [--ack-permissions] [--ack-migrations] [--ack-export-break]  (prod is the only channel)
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
@@ -511,20 +511,29 @@ async function cmdPromote(): Promise<void> {
   const channel = flag('channel') ?? 'prod';
   const version = flag('version');
   if (!slug || slug.startsWith('--') || !version) {
-    console.error('usage: substrat promote <slug> --version <versionId> [--ack-permissions] [--ack-migrations]');
+    console.error(
+      'usage: substrat promote <slug> --version <versionId> [--ack-permissions] [--ack-migrations] [--ack-export-break]',
+    );
     process.exit(1);
   }
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   console.log(`authenticating with ${as}`);
   const acknowledge =
-    argv.includes('--ack-permissions') || argv.includes('--ack-migrations')
+    argv.includes('--ack-permissions') || argv.includes('--ack-migrations') || argv.includes('--ack-export-break')
       ? {
           ...(argv.includes('--ack-permissions') ? { permissionChange: true } : {}),
           ...(argv.includes('--ack-migrations') ? { migrationChange: true } : {}),
+          ...(argv.includes('--ack-export-break') ? { exportBreak: true } : {}),
         }
       : undefined;
   const ch = await promote({ controlPlaneUrl, header, slug, channel, versionId: version, acknowledge });
   console.log(`✓ ${slug} → ${ch.channel} now points at ${ch.versionId}`);
+  if (ch.exportBreaks) {
+    console.error(
+      `\n⚠ acknowledged: this version drops or re-versions an export these apps import — their edges stop delivering it:\n` +
+        exportBreakLines(ch.exportBreaks).join('\n'),
+    );
+  }
   reportStoreBackfill(ch);
 }
 

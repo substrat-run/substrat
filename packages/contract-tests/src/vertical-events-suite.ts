@@ -10,6 +10,8 @@ import {
   tenantId,
   z,
   type ImportBatch,
+  type ImportCursorMove,
+  type ImportCursorMoved,
   type PermissionKey,
   type PrincipalId,
   type ScopeId,
@@ -17,6 +19,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
+  crossVerticalHealth,
   runPlatformSweep,
   ulid,
   type CrossVerticalReach,
@@ -238,6 +241,8 @@ interface BoardView {
   imports: { event_id: string; source_vertical: string; source_scope_id: string; type: string; hops: number; withheld: string | null }[];
   deliveries: { event_id: string; consumer_module: string; error: string | null }[];
   outbox: { id: string; type: string; caused_by: string | null; actor: string }[];
+  /** #1705 PR 3: what a replay moved aside, never deleted. */
+  replays: { replay_id: string; kind: string; event_id: string; consumer_module: string }[];
 }
 
 const boardRead: OperationHandler<undefined, BoardView> = async (ctx) => {
@@ -253,6 +258,9 @@ const boardRead: OperationHandler<undefined, BoardView> = async (ctx) => {
       'SELECT event_id, consumer_module, error FROM _substrat_deliveries ORDER BY event_id, consumer_module',
     ),
     outbox: ctx.sql.query('SELECT id, type, caused_by, actor FROM _substrat_outbox ORDER BY id'),
+    replays: ctx.sql.query(
+      'SELECT replay_id, kind, event_id, consumer_module FROM _substrat_import_replays ORDER BY kind, event_id',
+    ),
   };
 };
 
@@ -332,6 +340,20 @@ export interface VerticalEventsFixture {
    * through the directory is the whole install.
    */
   afterInstall?: (tenantId: TenantId, scopeId: ScopeId, vertical: string) => Promise<void>;
+  /**
+   * How the replay lever is pulled (#1705 PR 3). Absent, through the consumer host's own
+   * `admin.moveImportCursor`. The hosted fixture pulls it on a control-plane host whose
+   * delegation crosses the consumer deployment's `/internal/import-cursor`.
+   */
+  lever?: (tenantId: TenantId, scopeId: ScopeId, move: ImportCursorMove) => Promise<ImportCursorMoved>;
+  /**
+   * How edge health reads the consumer's door (#1705 PR 3). Absent, the health read's default
+   * (`admin.peerGrantsStatus` on the consumer host).
+   */
+  door?: (
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ) => Promise<readonly { vertical: string; calls: string; switchedOff?: { reason: string } | null }[]>;
 }
 
 const noFetch: FetchLike = async () => new Response('unused', { status: 200 });
@@ -449,6 +471,29 @@ export function verticalEventsContractSuite(
       });
       return { report, runs };
     };
+    const lever = (t: TenantId, s: ScopeId, move: ImportCursorMove): Promise<ImportCursorMoved> =>
+      fx.lever ? fx.lever(t, s, move) : fx.consumer.admin.moveImportCursor(staff, t, s, move);
+    const replay = (after: string | null): ImportCursorMove => ({
+      mode: 'replay',
+      from: CRM_VERTICAL,
+      after: after === null ? null : eventId.parse(after),
+      acknowledge: 'rerun-handlers',
+      reason: 'the board app lost a day of associations',
+    });
+    const skip = (through: string): ImportCursorMove => ({
+      mode: 'skip',
+      from: CRM_VERTICAL,
+      through: through === 'now' ? 'now' : eventId.parse(through),
+      acknowledge: 'skip-events',
+      reason: 'the board app starts from today',
+    });
+    const refusal = (x: Promise<unknown>): Promise<unknown> => x.then(() => undefined, (e: unknown) => e);
+    /**
+     * Let the clock pass the millisecond an event was minted in. "Skip to now" passes over earlier
+     * milliseconds only, so a test that needs an event skipped must not share the skip's. A timer,
+     * not a spin: on workerd the clock does not move without I/O.
+     */
+    const nextMillisecond = () => new Promise<void>((r) => setTimeout(r, 2));
     const edgesOf = (report: PlatformSweepReport, t: TenantId) =>
       (report.crossVertical?.edges ?? []).filter((e) => e.tenantId === t);
     /** The edge INTO one consumer scope. crm imports from board too, so a tenant has two. */
@@ -799,6 +844,512 @@ export function verticalEventsContractSuite(
       });
       await sweep();
       expect((await board(t, c)).associations.map((r) => r.crm_id)).toEqual([during]);
+    });
+
+    // -- the replay lever (#1705 PR 3) ---------------------------------------------------------
+
+    it('replay from the start: every handler runs again, and the first delivery\'s record is moved aside, not deleted', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Alpha');
+      await create(t, p, 'Beta');
+      await sweep();
+      const before = await board(t, c);
+      const created = (v: BoardView) => v.outbox.filter((o) => o.type === 'board.association-created');
+      expect(created(before)).toHaveLength(2);
+
+      const moved = await lever(t, c, replay(null));
+      expect(moved).toMatchObject({ mode: 'replay', cursor: null, source: { vertical: CRM_VERTICAL, scopeId: p } });
+      expect(moved.previous).not.toBeNull();
+      expect(moved.archived).toEqual({ journal: 2, deliveries: 2 });
+      // The evidence of the first delivery stays, under the act that moved it.
+      const aside = await board(t, c);
+      expect(aside.replays.filter((r) => r.kind === 'journal').map((r) => r.event_id)).toEqual(
+        before.imports.map((i) => i.event_id),
+      );
+      expect(aside.replays.filter((r) => r.kind === 'delivery')).toHaveLength(2);
+      expect(new Set(aside.replays.map((r) => r.replay_id))).toEqual(new Set([moved.replayId]));
+      // ...and it has left the LIVE journal, so the redelivery journals each event afresh: an event
+      // first withheld for its version is decided again rather than kept as withheld forever.
+      expect(aside.imports).toEqual([]);
+      expect(aside.deliveries).toEqual([]);
+      // The admin log names the act, its reason and what it moved.
+      const log = await fx.consumer.admin.auditLog(staff, { tenantId: t, action: ['moveImportCursor'] });
+      expect(log.map((e) => (e.after as { phase?: string }).phase).sort()).toEqual(['applied', 'intent']);
+      expect(log.every((e) => (e.after as { replayId?: string }).replayId === moved.replayId)).toBe(true);
+
+      // The next pass delivers both again, and each handler RUNS again: that is what a replay is.
+      const { report } = await sweep();
+      expect(into(report, c)).toMatchObject({ state: 'delivered', delivered: 2, duplicates: 0 });
+      const after = await board(t, c);
+      expect(created(after)).toHaveLength(4);
+      expect(after.associations.map((r) => r.name)).toEqual(['Alpha', 'Beta']);
+      expect(after.imports.map((i) => i.event_id)).toEqual(before.imports.map((i) => i.event_id));
+    });
+
+    it('replay from a point: only the events after it run again', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Kept');
+      await create(t, p, 'Replayed');
+      await sweep();
+      const [first, second] = (await board(t, c)).imports;
+
+      const moved = await lever(t, c, replay(first!.event_id));
+      expect(moved).toMatchObject({ cursor: first!.event_id, archived: { journal: 1, deliveries: 1 } });
+      await sweep();
+      const view = await board(t, c);
+      // The positive twin of the whole-history replay: the first event's handler did not run again.
+      const createdFor = (id: string) =>
+        view.outbox.filter((o) => o.type === 'board.association-created' && o.caused_by === id).length;
+      expect(createdFor(first!.event_id)).toBe(1);
+      expect(createdFor(second!.event_id)).toBe(2);
+    });
+
+    it('skip to now: nothing before the skip is delivered, what comes after is, and a replay reaches back', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Before the skip');
+      await nextMillisecond();
+      const moved = await lever(t, c, skip('now'));
+      expect(moved).toMatchObject({ mode: 'skip', previous: null, archived: { journal: 0, deliveries: 0 } });
+      expect(moved.cursor).not.toBeNull();
+
+      await sweep();
+      expect((await board(t, c)).associations).toEqual([]);
+      await create(t, p, 'After the skip');
+      await sweep();
+      expect((await board(t, c)).associations.map((r) => r.name)).toEqual(['After the skip']);
+
+      // Recoverable: the producer's outbox kept what was skipped.
+      await lever(t, c, replay(null));
+      await sweep();
+      expect((await board(t, c)).associations.map((r) => r.name).sort()).toEqual(['After the skip', 'Before the skip']);
+    });
+
+    it('a pass that read before a move is refused by the watermark\'s compare-and-set, and cannot undo it', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Read before the skip');
+      await nextMillisecond();
+      const read = await fx.producer.admin.readExportedEvents(staff, t, p, {
+        consumer: BOARD_VERTICAL,
+        after: null,
+        wants: [{ type: 'crm.customer-created', schemaVersion: 1 }],
+        limit: 100,
+      });
+      const moved = await lever(t, c, skip('now'));
+      const late = await fx.consumer.deliverToPeer(t, c, {
+        source: { vertical: CRM_VERTICAL, scopeId: p },
+        after: null,
+        next: read.next!,
+        events: read.events,
+        withheld: read.withheld,
+      });
+      expect(late).toMatchObject({ stale: true, delivered: 0, cursor: moved.cursor });
+      expect((await board(t, c)).associations).toEqual([]);
+    });
+
+    it('the lever holds each mode to its direction, and a replay needs something to replay', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      // Nothing taken yet: there is nothing to run again.
+      expect(String(await refusal(lever(t, c, replay(null))))).toMatch(/nothing to replay/);
+      await create(t, p, 'One');
+      await create(t, p, 'Two');
+      await sweep();
+      const [first, second] = (await board(t, c)).imports;
+      // A skip behind the watermark is a replay, and a replay ahead of it is a skip.
+      expect(String(await refusal(lever(t, c, skip(first!.event_id))))).toMatch(/skip moves the watermark forward/);
+      expect(String(await refusal(lever(t, c, replay(ulid()))))).toMatch(/replay moves the watermark back/);
+      // Neither refusal moved anything: the next pass is idle.
+      expect(into((await sweep()).report, c)).toMatchObject({ state: 'idle' });
+      // The positive twins, each in its own direction.
+      await expect(lever(t, c, replay(first!.event_id))).resolves.toMatchObject({ cursor: first!.event_id });
+      await expect(lever(t, c, skip(second!.event_id))).resolves.toMatchObject({ cursor: second!.event_id });
+    });
+
+    it('a skip cannot be aimed past now: the future is refused, and the edge still reads behind', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Waiting');
+      // The greatest ULID there is: a watermark past every event ever to be written.
+      expect(String(await refusal(lever(t, c, skip('7ZZZZZZZZZZZZZZZZZZZZZZZZZ'))))).toMatch(/at most now.*future/);
+      expect((await fx.consumer.admin.importState(staff, t, c)).cursors).toEqual([]);
+      expect(await healthOf(t, c)).toMatchObject({ state: 'behind' });
+      // The twin: to now, it moves, and an event written after it still arrives.
+      await nextMillisecond();
+      await lever(t, c, skip('now'));
+      await create(t, p, 'After');
+      await sweep();
+      expect((await board(t, c)).associations.map((r) => r.name)).toEqual(['After']);
+    });
+
+    it('skip to now never drops an event of its own millisecond: on the boundary it delivers', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      const moved = await lever(t, c, skip('now'));
+      // Whatever is written next, however soon, sorts after the watermark: it cannot have been
+      // minted in a millisecond earlier than the skip's.
+      await create(t, p, 'Right after');
+      await sweep();
+      expect((await board(t, c)).associations.map((r) => r.name)).toEqual(['Right after']);
+      expect(moved.cursor! < ulid()).toBe(true);
+    });
+
+    it('the replay history is part of the scope: a dump carries it, and a restore puts it back or takes it away', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Dumped');
+      await sweep();
+      const beforeReplay = await fx.consumer.admin.exportScope(staff, t, c);
+      const moved = await lever(t, c, replay(null));
+      const afterReplay = await fx.consumer.admin.exportScope(staff, t, c);
+      const table = afterReplay.tables.find((x) => x.name === '_substrat_import_replays');
+      expect(table?.rows.length).toBe(2);
+      // Restoring the dump from before the replay takes the history away, as it rewinds the data.
+      await fx.consumer.restoreScope(staff, t, c, beforeReplay);
+      expect((await board(t, c)).replays).toEqual([]);
+      // Restoring the dump from after it puts the history back, under the same act.
+      await fx.consumer.restoreScope(staff, t, c, afterReplay);
+      const back = (await board(t, c)).replays;
+      expect(back).toHaveLength(2);
+      expect(new Set(back.map((r) => r.replay_id))).toEqual(new Set([moved.replayId]));
+    });
+
+    it('the lever moves only an edge the consumer imports: a skip cannot plant a watermark for one that does not exist', async () => {
+      const t = await newTenant();
+      await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      // Installed in the tenant, and imported by nobody.
+      await install(t, 'acme/ledger');
+      const plant = { ...skip('now'), from: 'acme/ledger' } as ImportCursorMove;
+      expect(String(await refusal(lever(t, c, plant)))).toMatch(/imports nothing from 'acme\/ledger'/);
+      expect((await fx.consumer.admin.importState(staff, t, c)).cursors).toEqual([]);
+      // The twin: the edge it does import moves.
+      await expect(lever(t, c, skip('now'))).resolves.toMatchObject({ source: { vertical: CRM_VERTICAL } });
+    });
+
+    it('a replay without its acknowledgement never reaches the store', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Acknowledged');
+      await sweep();
+      const { acknowledge: _, ...bare } = replay(null) as ImportCursorMove & { mode: 'replay' };
+      await expect(lever(t, c, bare as unknown as ImportCursorMove)).rejects.toThrow();
+      const wrong = { ...replay(null), acknowledge: 'skip-events' } as unknown as ImportCursorMove;
+      await expect(lever(t, c, wrong)).rejects.toThrow();
+      expect((await board(t, c)).replays).toEqual([]);
+      // The twin: acknowledged, it moves.
+      await expect(lever(t, c, replay(null))).resolves.toMatchObject({ archived: { journal: 1 } });
+    });
+
+    it('the lever never crosses a tenant: another tenant\'s scope is not found, and the producer is the consumer\'s own tenant\'s', async () => {
+      const t = await newTenant();
+      const u = await newTenant();
+      const pt = await install(t, CRM_VERTICAL);
+      const ct = await install(t, BOARD_VERTICAL);
+      const pu = await install(u, CRM_VERTICAL);
+      const cu = await install(u, BOARD_VERTICAL);
+      await create(t, pt, 'T');
+      await create(u, pu, 'U');
+      await sweep();
+      const cursorOf = async (tt: TenantId, cc: ScopeId) =>
+        (await fx.consumer.admin.importState(staff, tt, cc)).cursors.map((x) => [x.source, x.cursor]);
+      const uBefore = await cursorOf(u, cu);
+
+      // u's consumer scope named under t: not found, and nothing moved anywhere.
+      expect(String(await refusal(lever(t, cu, replay(null))))).toMatch(/unknown scope|not found|conflict/i);
+      expect(await cursorOf(u, cu)).toEqual(uBefore);
+      // t's replay resolves t's producer, and moves t's edge only.
+      const moved = await lever(t, ct, replay(null));
+      expect(moved.source.scopeId).toBe(pt);
+      expect(await cursorOf(u, cu)).toEqual(uBefore);
+      // A tenant with no producer has no edge to move.
+      const v = await newTenant();
+      const cv = await install(v, BOARD_VERTICAL);
+      expect(String(await refusal(lever(v, cv, skip('now'))))).toMatch(/not installed in this tenant/);
+    });
+
+    // -- edge health (#1705 PR 3) --------------------------------------------------------------
+
+    const health = (t: TenantId, override: Partial<CrossVerticalReach> = {}) =>
+      crossVerticalHealth(fx.consumer, {
+        actor: staff,
+        tenantId: t,
+        crossVertical: { reach: { ...reach, ...override } },
+        ...(fx.door ? { door: fx.door } : {}),
+      });
+    const healthOf = async (t: TenantId, c: ScopeId, override: Partial<CrossVerticalReach> = {}) =>
+      (await health(t, override)).edges.find((e) => e.consumer.scopeId === c);
+
+    it('edge health: behind before a pass (with its lag), caught up after, and the pass that delivered', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Waiting');
+
+      const before = await healthOf(t, c);
+      expect(before).toMatchObject({
+        state: 'behind',
+        producer: { vertical: CRM_VERTICAL, scopeId: p },
+        watermark: null,
+        lastDelivered: null,
+      });
+      expect(before?.oldestPending).not.toBeNull();
+      expect(before?.lagMs).toBeGreaterThanOrEqual(0);
+      // The probe delivered nothing: the view is a read.
+      expect((await board(t, c)).associations).toEqual([]);
+
+      await sweep();
+      const after = await healthOf(t, c);
+      expect(after).toMatchObject({ state: 'caught-up', oldestPending: null, lagMs: null, reason: null });
+      expect(after?.watermark).not.toBeNull();
+      // A door that cannot be read changes nothing about a caught-up edge: its reason stays null.
+      const unreadDoor = await crossVerticalHealth(fx.consumer, {
+        actor: staff,
+        tenantId: t,
+        crossVertical: { reach },
+        door: async () => {
+          throw new Error('door unreadable');
+        },
+      });
+      expect(unreadDoor.edges.find((e) => e.consumer.scopeId === c)).toMatchObject({ state: 'caught-up', reason: null });
+      // What the consumer asks for and the producer does not export, reported beside the state.
+      // (The sweep-run history is covered where the rows are durable: the control plane's route.)
+      expect(after?.unexported).toEqual([{ type: 'crm.customer-noted', schemaVersion: 1 }]);
+    });
+
+    it('edge health: paused by the producer, and paused at the consumer\'s door, each saying why', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Held');
+      await fx.producer.admin.revokeFromPeer(staff, { vertical: BOARD_VERTICAL, node: { tenantId: t, scopeId: p }, reason: 'stop exports' });
+      expect(await healthOf(t, c)).toMatchObject({
+        state: 'paused',
+        reason: expect.stringContaining(`does not grant vertical:${BOARD_VERTICAL} customer:read`),
+      });
+      await fx.producer.admin.restoreToPeer(staff, { vertical: BOARD_VERTICAL, node: { tenantId: t, scopeId: p }, reason: 'ok' });
+      // The twin: granted again, the edge is merely behind.
+      expect(await healthOf(t, c)).toMatchObject({ state: 'behind' });
+
+      await fx.consumer.admin.revokeFromPeer(staff, {
+        vertical: CRM_VERTICAL,
+        node: { tenantId: t, scopeId: c },
+        reason: 'board stops taking CRM changes',
+      });
+      expect(await healthOf(t, c)).toMatchObject({
+        state: 'paused',
+        reason: expect.stringContaining(`has '${CRM_VERTICAL}' switched off`),
+      });
+      // Paused at the door, the backlog is still dated.
+      expect((await healthOf(t, c))?.oldestPending).not.toBeNull();
+    });
+
+    it('edge health: a producer missing from the tenant is unresolved, and a side that cannot be asked is unavailable, never healthy', async () => {
+      const t = await newTenant();
+      const c = await install(t, BOARD_VERTICAL);
+      expect(await healthOf(t, c)).toMatchObject({
+        state: 'unresolved',
+        reason: `'${CRM_VERTICAL}' is not installed in this tenant`,
+      });
+
+      const u = await newTenant();
+      const pu = await install(u, CRM_VERTICAL);
+      const cu = await install(u, BOARD_VERTICAL);
+      await create(u, pu, 'Unknown');
+      // The consumer cannot be asked.
+      const noConsumer = await healthOf(u, cu, {
+        importState: async () => {
+          throw new Error('the deployment serving this scope predates cross-vertical events — redeploy it');
+        },
+      });
+      expect(noConsumer).toMatchObject({ state: 'unavailable', producer: { vertical: '*' }, reason: expect.stringMatching(/redeploy/) });
+      // The producer cannot be asked.
+      const noProducer = await healthOf(u, cu, {
+        readExports: async () => {
+          throw new Error('vertical unreachable');
+        },
+      });
+      expect(noProducer).toMatchObject({ state: 'unavailable', producer: { vertical: CRM_VERTICAL }, reason: expect.stringMatching(/unreachable/) });
+      // The twin: asked, it answers.
+      expect(await healthOf(u, cu)).toMatchObject({ state: 'behind' });
+    });
+
+    it('edge health focused on one app shows its edges into it and out of it, and nothing else', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      const focused = (focus: ScopeId) =>
+        crossVerticalHealth(fx.consumer, {
+          actor: staff,
+          tenantId: t,
+          focus,
+          crossVertical: { reach },
+          ...(fx.door ? { door: fx.door } : {}),
+        });
+      const all = await health(t);
+      // crm imports from board and board from crm: two edges in the tenant.
+      expect(all.edges).toHaveLength(2);
+      // On the board app, both touch it: board ← crm (into), crm ← board (out of).
+      const onBoard = await focused(c);
+      expect(onBoard.edges.map((e) => `${e.consumer.scopeId}:${e.producer.vertical}`).sort()).toEqual(
+        [`${c}:${CRM_VERTICAL}`, `${p}:${BOARD_VERTICAL}`].sort(),
+      );
+      // A scope that is no install at all has no edges, and asks nothing.
+      expect((await focused(scopeId.parse(ulid()))).edges).toEqual([]);
+
+      // A consumer that cannot be asked stays on its PRODUCER's view, as a failure there: tagged
+      // with the producer, since it names none itself, so a per-app filter keeps it.
+      const unreachable = await crossVerticalHealth(fx.consumer, {
+        actor: staff,
+        tenantId: t,
+        focus: p,
+        crossVertical: {
+          reach: {
+            ...reach,
+            importState: (tt, s) =>
+              s === c ? Promise.reject(new Error('the board deployment is down')) : reach.importState(tt, s),
+          },
+        },
+        ...(fx.door ? { door: fx.door } : {}),
+      });
+      const out = unreachable.edges.find((e) => e.consumer.scopeId === c);
+      expect(out).toMatchObject({ state: 'unavailable', producer: { vertical: CRM_VERTICAL, scopeId: p } });
+      expect(out?.reason).toMatch(/board deployment is down/);
+      // Unfocused, the same failure names no producer: the tenant view shows it under '*'.
+      const tenantWide = await health(t, {
+        importState: (tt, s) => (s === c ? Promise.reject(new Error('down')) : reach.importState(tt, s)),
+      });
+      expect(tenantWide.edges.find((e) => e.consumer.scopeId === c)).toMatchObject({ producer: { vertical: '*', scopeId: null } });
+    });
+
+    it('edge health reads each edge\'s history on its own: a noisy edge cannot push out a quiet one\'s last delivery', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      const quiet = `${c}:${CRM_VERTICAL}`;
+      const noisy = `${p}:${BOARD_VERTICAL}`;
+      const row = (unit: string, outcome: 'ok' | 'failed', scope: ScopeId) => ({
+        kind: 'vertical-events' as const,
+        unit,
+        outcome,
+        tenantId: t,
+        scopeId: scope,
+        operation: 'sweep.vertical-events:test',
+        error: outcome === 'ok' ? null : 'the producer is unreachable',
+      });
+      await fx.consumer.admin.recordSweepRun(row(quiet, 'ok', c));
+      // Far more than any one tenant-wide window: the quiet edge's row is the oldest by far.
+      for (let i = 0; i < 250; i++) await fx.consumer.admin.recordSweepRun(row(noisy, 'failed', p));
+      const view = await health(t);
+      expect(view.history.available).toBe(true);
+      expect(view.edges.find((e) => e.consumer.scopeId === c)?.lastDelivered).not.toBeNull();
+      expect(view.edges.find((e) => e.consumer.scopeId === p)).toMatchObject({
+        lastDelivered: null,
+        lastProblem: { outcome: 'failed', error: 'the producer is unreachable' },
+      });
+    });
+
+    it('edge health never crosses a tenant: one tenant\'s view names only its own edges', async () => {
+      const t = await newTenant();
+      const u = await newTenant();
+      await install(t, CRM_VERTICAL);
+      const ct = await install(t, BOARD_VERTICAL);
+      await install(u, CRM_VERTICAL);
+      const cu = await install(u, BOARD_VERTICAL);
+      const view = await health(t);
+      expect(view.edges.some((e) => e.consumer.scopeId === ct)).toBe(true);
+      expect(view.edges.every((e) => e.tenantId === t)).toBe(true);
+      expect(view.edges.some((e) => e.consumer.scopeId === cu)).toBe(false);
+    });
+
+    // -- the promote refusal (#1705 PR 3) ------------------------------------------------------
+
+    it('a promote that drops or re-versions an export an installed app imports is refused, and acknowledged it passes', async () => {
+      // Fresh slugs: a channel is per vertical and fleet-wide, so this test must own its pair.
+      const tag = ulid().slice(-8).toLowerCase();
+      const producer = `acme/ex-${tag}`;
+      const consumer = `acme/in-${tag}`;
+      const TYPE = 'crm.customer-created';
+      for (const slug of [producer, consumer]) {
+        await fx.consumer.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+      }
+      const registry = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
+      const exporting = (v: number | null) =>
+        registry(v === null ? {} : { exports: [{ type: TYPE, schemaVersion: v, readPermission: 'customer:read', declaredBy: ['@test/x'] }] });
+      const publish = async (slug: string, manifestJson: string, perm = 'p') => {
+        const id = ulid();
+        await fx.consumer.admin.publishVersion(staff, {
+          id,
+          verticalSlug: slug,
+          version: `1.0.${id.slice(-4).toLowerCase()}`,
+          manifestDigest: `m-${id}`,
+          permissionDigest: perm,
+          migrationDigest: 'g',
+          deploymentRef: null,
+          manifestJson,
+        });
+        await fx.consumer.admin.admitVersion(staff, id);
+        return id;
+      };
+      const prodOf = async (slug: string) =>
+        (await fx.consumer.admin.listChannels(staff, slug)).find((ch) => ch.channel === 'prod')?.versionId;
+
+      // The producer exports TYPE v1. A tenant runs it beside a consumer whose version imports it.
+      const v1 = await publish(producer, exporting(1));
+      await fx.consumer.admin.promoteVersion(staff, producer, 'prod', v1);
+      const imports = registry({ imports: [{ from: producer, type: TYPE, schemaVersion: 1, declaredBy: ['@test/y'] }] });
+      const consumerVersion = await publish(consumer, imports);
+      const t = await newTenant();
+      const u = await newTenant();
+      const bindAt = async (tenant: TenantId, slug: string, version?: string) => {
+        const sc = scopeId.parse(ulid());
+        await fx.consumer.provisionScope(staff, { tenantId: tenant, scopeId: sc, vertical: slug });
+        await fx.consumer.admin.activateScope(staff, tenant, sc);
+        if (version) await fx.consumer.admin.bindScopeVersion(staff, tenant, sc, version);
+        return sc;
+      };
+      await bindAt(t, producer, v1);
+      const ct = await bindAt(t, consumer, consumerVersion);
+      // A tenant that runs the consumer but not the producer has no edge, so nothing of it breaks.
+      await bindAt(u, consumer, consumerVersion);
+
+      // The twin first: a version that keeps the export promotes with no new acknowledgement.
+      const same = await publish(producer, exporting(1));
+      await expect(fx.consumer.admin.promotionImpact(staff, producer, 'prod', same)).resolves.toEqual([]);
+      await fx.consumer.admin.promoteVersion(staff, producer, 'prod', same);
+
+      // Dropped: refused, the channel unmoved, and the refusal counts without naming a tenant.
+      const dropped = await publish(producer, exporting(null));
+      const refused = await refusal(fx.consumer.admin.promoteVersion(staff, producer, 'prod', dropped));
+      expect(String(refused)).toMatch(/drops or re-versions 1 exported event type\(s\) that 1 installed app\(s\) in 1 tenant\(s\)/);
+      expect(String(refused)).not.toContain(t);
+      expect(await prodOf(producer)).toBe(same);
+      // The listing is the read beside it, and names exactly the app in the producer's tenant.
+      expect(await fx.consumer.admin.promotionImpact(staff, producer, 'prod', dropped)).toEqual([
+        { tenantId: t, scopeId: ct, vertical: consumer, version: consumerVersion, type: TYPE, schemaVersion: 1, incoming: null },
+      ]);
+
+      // Re-versioned is a break too, and says what it became.
+      const bumped = await publish(producer, exporting(2));
+      expect((await fx.consumer.admin.promotionImpact(staff, producer, 'prod', bumped))[0]).toMatchObject({ incoming: 2 });
+
+      // Acknowledged, it promotes, and the admin log records the acknowledgement.
+      await fx.consumer.admin.promoteVersion(staff, producer, 'prod', dropped, { exportBreak: true });
+      expect(await prodOf(producer)).toBe(dropped);
+      const log = await fx.consumer.admin.auditLog(staff, { action: 'promoteVersion' });
+      expect(log.some((e) => JSON.stringify(e.after).includes('"exportBreak":true'))).toBe(true);
     });
 
     it('a fork is neither read nor fed, and two primary installs are refused rather than guessed between', async () => {

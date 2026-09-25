@@ -1055,6 +1055,8 @@ export async function restoreAppData(
   if (input.controlPlane) {
     await input.controlPlane.restoreScope(input.appScopeId, input.tables);
   } else {
+    // No schedule-switch re-assert here (#1674): a CP-less host has no directory, so no switch
+    // is recorded to put back. The control-plane branch above restores through the route that does.
     const staff = platformActorId.parse(ulid());
     await host.restoreScope(staff, input.node.tenantId, input.appScopeId, {
       tenantId: input.node.tenantId,

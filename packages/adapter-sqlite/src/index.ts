@@ -21,6 +21,11 @@ import {
   domainEventInput,
   exportReadInput,
   importBatch,
+  importCursorMove,
+  type ImportCursorMoved,
+  exportsOfManifestJson,
+  importsOfManifestJson,
+  type ExportBreak,
   type ExportedBatch,
   type ExportReadInput,
   type ImportBatch,
@@ -44,6 +49,7 @@ import {
   connectionSecret,
   systemGrant,
   systemSwitch,
+  systemSwitchRecord,
   peerSwitch,
   verticalCaller,
   verticalSlug as verticalSlugOf,
@@ -272,6 +278,20 @@ import {
   systemScheduleState,
   systemSwitchedOff,
   systemSwitchedOffMessage,
+  SYSTEM_SWITCHES_BACKFILL_SQL,
+  SYSTEM_SWITCHES_DDL,
+  forgetSystemSwitchesOf,
+  listSystemSwitchRecords,
+  recordSystemSwitchedOff,
+  recordSystemSwitchedOn,
+  restoreSystemSwitchRecord,
+  switchedOffModulesOf,
+  systemSwitchRecordsOf,
+  systemSwitchesTableExists,
+  withRecorded,
+  type SystemSwitchReassert,
+  type SystemSwitchRecordFilter,
+  type SystemSwitchRecordPrior,
   type SwitchOutcome,
   type SwitchSql,
   type PeerGrantsRow,
@@ -370,6 +390,10 @@ import {
   exportedSinceQuery,
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
+  moveImportCursor,
+  importCursorSourceOf,
+  exportBreaksOf,
+  exportBreakRefusal,
   CrossVerticalRegistry,
   exportReadPlan,
   exportReadQuery,
@@ -1397,7 +1421,7 @@ export class SqliteScopeHost implements ScopeHost {
     mkdirSync(this.dir, { recursive: true });
     this.directory = new Database(join(this.dir, '_directory.sqlite'));
     this.directory.pragma('journal_mode = WAL');
-    this.applyDirectorySchema();
+    this.ensureDirectorySchema();
     this.loadRoles();
     this.checker =
       options.checker ??
@@ -1854,6 +1878,7 @@ export class SqliteScopeHost implements ScopeHost {
         PRIMARY KEY (scope_id, subject_id)
       );
       ${IMPERSONATION_DDL}
+      ${SYSTEM_SWITCHES_DDL}
       CREATE TABLE IF NOT EXISTS _substrat_admin_log (
         id TEXT PRIMARY KEY,
         actor TEXT NOT NULL,
@@ -1986,6 +2011,25 @@ export class SqliteScopeHost implements ScopeHost {
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
+  }
+
+  /**
+   * `applyDirectorySchema`, plus the backfill of the schedule switch's record (#1674) from
+   * the admin log. Whether the table exists is asked BEFORE the DDL creates it, so the
+   * backfill runs only on an application that creates the table: once on a directory that
+   * never had it, and again after a directory restore whose dump predates it (from that
+   * dump's own log). A directory that already holds the table is never backfilled over.
+   *
+   * One transaction (Copilot review, #1674): the table and its backfill commit together, so
+   * a backfill that fails leaves no table behind, and the next start tries again rather than
+   * reading an empty table as already migrated.
+   */
+  private ensureDirectorySchema(): void {
+    this.directory.transaction(() => {
+      const switchRecordIsNew = !systemSwitchesTableExists(switchSqlOf(this.directory));
+      this.applyDirectorySchema();
+      if (switchRecordIsNew) this.directory.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+    })();
   }
 
   registerExecutor(
@@ -2440,6 +2484,9 @@ export class SqliteScopeHost implements ScopeHost {
         const seat = seatScopeTuple(peer.subject, peer.relation, peer.object, null);
         rt.db.prepare(seat.sql).run(...seat.params);
       }
+      // #1674: re-assert the recorded OFF positions after the seat, in the same turn
+      // (`system-switch-record.ts`).
+      this.reassertSwitchesInTurn(rt, actor, input.tenantId, input.scopeId);
     });
     // Audit a real provision only; an idempotent re-provision changed nothing.
     if (!existing) {
@@ -2451,6 +2498,37 @@ export class SqliteScopeHost implements ScopeHost {
         record,
       );
     }
+  }
+
+  /**
+   * `HostAdmin.reassertSystemSwitches`' body (#1674), run inside a turn the caller already
+   * holds on the scope's actor: every module the directory records OFF on the scope is
+   * switched off again. Already off answers `changed: false` and writes nothing, and a
+   * module the scope does not hold is left alone. Audited only when something moved.
+   */
+  private reassertSwitchesInTurn(
+    rt: ScopeRuntime,
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): SystemSwitchReassert[] {
+    const at = new Date().toISOString();
+    return switchedOffModulesOf(switchSqlOf(this.directory), tenantId, scopeId).map((moduleId) => {
+      const outcome = rt.db.transaction(() =>
+        switchSystemSchedules(switchSqlOf(rt.db), { moduleId, scopeId, to: 'off', at }),
+      )();
+      if (outcome.changed) {
+        this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, {
+          operationId: ulid(),
+          moduleId,
+          schedules: 'off',
+          phase: 'applied',
+          changed: true,
+          permissions: outcome.permissions,
+        });
+      }
+      return { moduleId, held: outcome.held, changed: outcome.changed };
+    });
   }
 
   async provisionTenantStore(
@@ -3168,6 +3246,7 @@ export class SqliteScopeHost implements ScopeHost {
     // orphaned bytes with no record (the §9 hazard).
     this.directory.prepare('DELETE FROM hostnames WHERE scope_id = ?').run(scopeId);
     rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
+    forgetSystemSwitchesOf(switchSqlOf(this.directory), scopeId);
     this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
     this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
       forkedFrom: rec.forkedFrom,
@@ -3553,6 +3632,42 @@ export class SqliteScopeHost implements ScopeHost {
       await this.dispatch(rt, null);
       await this.dispatchExecutors(rt, null);
       return result;
+    });
+  }
+
+  /**
+   * A stored version's manifest, unaudited: the platform reading its own code metadata (#1705).
+   * `undefined` when the registry has no such version (under `slug`, when one is named).
+   */
+  private manifestJsonOf(versionId: string, slug?: string): string | null | undefined {
+    const row = (
+      slug === undefined
+        ? this.directory.prepare('SELECT manifest_json FROM vertical_versions WHERE id = ?').get(versionId)
+        : this.directory
+            .prepare('SELECT manifest_json FROM vertical_versions WHERE id = ? AND vertical_slug = ?')
+            .get(versionId, slug)
+    ) as { manifest_json: string | null } | undefined;
+    return row ? row.manifest_json : undefined;
+  }
+
+  /** #1705 PR 3: the promote gate's question, over two stored versions (`exportBreaksOf`). */
+  private exportBreaksBetween(
+    actor: PlatformActorId,
+    producer: string,
+    outgoingId: string,
+    incomingId: string,
+  ): Promise<ExportBreak[]> {
+    return exportBreaksOf({
+      admin: this.admin,
+      actor,
+      producer,
+      outgoing: exportsOfManifestJson(this.manifestJsonOf(outgoingId)),
+      incoming: exportsOfManifestJson(this.manifestJsonOf(incomingId)),
+      readImports: async (slug, versionId) => {
+        const manifest = this.manifestJsonOf(versionId, slug);
+        if (manifest === undefined) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
+        return importsOfManifestJson(manifest);
+      },
     });
   }
 
@@ -5543,31 +5658,37 @@ export class SqliteScopeHost implements ScopeHost {
             `(allowed from: ${from.join('|')})`,
         );
       }
-      // Stamp/clear archived_at so the reap sweep can age scopes (§4.4). Entering
-      // `archived` records when; `unarchive` (→ active, a restore) clears it so a later
-      // re-archive dates from the new event; `reaped` keeps it as terminal history.
-      if (to === 'archived') {
-        this.directory
-          .prepare('UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?')
-          .run(to, new Date().toISOString(), scopeId);
-      } else if (to === 'active') {
-        this.directory
-          .prepare('UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?')
-          .run(to, scopeId);
-      } else {
-        this.directory.prepare('UPDATE scopes SET status = ? WHERE scope_id = ?').run(to, scopeId);
-      }
-      // The audit target carries the scope's vertical (control-plane.md §4.4:
-      // "vertical stays null until §4.2 lifecycle actions that name one"). It is
-      // read from the scope rather than passed in, so the trail cannot disagree
-      // with the directory about which deployment the action touched.
-      this.recordAdmin(
-        actor,
-        action,
-        { tenantId, scopeId, vertical: row.vertical },
-        { status: row.status },
-        { status: to, ...afterExtra },
-      );
+      // One directory transaction: the status, the audit row and — on a reap — the scope's
+      // switch records (#1674). Reaped is terminal, so a cleanup that failed after the flip
+      // could never be retried; together, a failure leaves the scope where it was.
+      this.directory.transaction(() => {
+        // Stamp/clear archived_at so the reap sweep can age scopes (§4.4). Entering
+        // `archived` records when; `unarchive` (→ active, a restore) clears it so a later
+        // re-archive dates from the new event; `reaped` keeps it as terminal history.
+        if (to === 'archived') {
+          this.directory
+            .prepare('UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?')
+            .run(to, new Date().toISOString(), scopeId);
+        } else if (to === 'active') {
+          this.directory
+            .prepare('UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?')
+            .run(to, scopeId);
+        } else {
+          this.directory.prepare('UPDATE scopes SET status = ? WHERE scope_id = ?').run(to, scopeId);
+        }
+        if (to === 'reaped') forgetSystemSwitchesOf(switchSqlOf(this.directory), scopeId);
+        // The audit target carries the scope's vertical (control-plane.md §4.4:
+        // "vertical stays null until §4.2 lifecycle actions that name one"). It is
+        // read from the scope rather than passed in, so the trail cannot disagree
+        // with the directory about which deployment the action touched.
+        this.recordAdmin(
+          actor,
+          action,
+          { tenantId, scopeId, vertical: row.vertical },
+          { status: row.status },
+          { status: to, ...afterExtra },
+        );
+      })();
     };
 
     const writeTenantTuple = (
@@ -5669,6 +5790,40 @@ export class SqliteScopeHost implements ScopeHost {
       const target = { tenantId, scopeId };
       const base = { operationId, moduleId: input.moduleId, schedules: to };
       this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
+      // The directory's record (#1674): ON before the scope moves, OFF after it held — see
+      // `recordSystemSwitchedOn` for why that order is the safe one.
+      const at = new Date().toISOString();
+      const directorySql = switchSqlOf(this.directory);
+      const record = { tenantId, scopeId, moduleId: input.moduleId, actor, reason: input.reason, operationId, at };
+      const errorOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
+      let prior: SystemSwitchRecordPrior = null;
+      if (to === 'on') {
+        try {
+          prior = recordSystemSwitchedOn(directorySql, record);
+        } catch (err) {
+          // Nothing has moved: fail the call here, audited — the Cloudflare adapter's posture.
+          try {
+            this.recordAdmin(actor, action, target, null, { ...base, phase: 'failed', error: errorOf(err) });
+          } catch {
+            // Best effort: the original error is what the caller must see.
+          }
+          throw err;
+        }
+      }
+      /** A record write after the scope moved (review #5): retried once, never swallowed. */
+      const recordWrite = (write: () => void): string | null => {
+        try {
+          write();
+          return null;
+        } catch {
+          try {
+            write();
+            return null;
+          } catch (err) {
+            return errorOf(err);
+          }
+        }
+      };
       let outcome: SwitchOutcome;
       try {
         // A turn on the scope actor (#1666 review), exactly as the job store (#1577): `invoke`
@@ -5679,37 +5834,53 @@ export class SqliteScopeHost implements ScopeHost {
         const rt = this.runtime(tenantId, scopeId);
         outcome = await rt.actor.turn(() =>
           rt.db.transaction(() =>
-            switchSystemSchedules(switchSqlOf(rt.db), {
-              moduleId: input.moduleId,
-              scopeId,
-              to,
-              at: new Date().toISOString(),
-            }),
+            switchSystemSchedules(switchSqlOf(rt.db), { moduleId: input.moduleId, scopeId, to, at }),
           )(),
         );
       } catch (err) {
+        const recordError = recordWrite(() => restoreSystemSwitchRecord(directorySql, record, prior));
         try {
           this.recordAdmin(actor, action, target, null, {
             ...base,
             phase: 'failed',
-            error: err instanceof Error ? err.message : String(err),
+            error: errorOf(err),
+            ...(recordError ? { recordError } : {}),
           });
         } catch {
           // Best effort: the original error is what the caller must see.
         }
         throw err;
       }
+      // OFF is recorded once the scope held it. A refused ON moved nothing, so its record
+      // write is undone: left `on`, the next reconcile of a wiped scope would leave the
+      // module running.
+      const recordError =
+        to === 'off' && outcome.held
+          ? recordWrite(() => recordSystemSwitchedOff(directorySql, record))
+          : to === 'on' && !outcome.held
+            ? recordWrite(() => restoreSystemSwitchRecord(directorySql, record, prior))
+            : null;
       this.recordAdmin(actor, action, target, null, {
         ...base,
         phase: outcome.held ? 'applied' : 'refused',
         changed: outcome.changed,
         permissions: outcome.permissions,
+        ...(recordError ? { recordError } : {}),
       });
       if (!outcome.held) {
         throw substratError(
           'not_found',
           `scope ${scopeId} holds no system grant for module '${input.moduleId}' — nothing to switch ${to} ` +
-            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')`,
+            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')` +
+            (recordError ? `; and its directory record could not be put back (${recordError})` : ''),
+        );
+      }
+      if (recordError) {
+        throw substratError(
+          'unavailable',
+          `module '${input.moduleId}' is switched ${to} on scope ${scopeId}, but the directory's record of it ` +
+            `could not be written (${recordError}) — repeat the call to record it; a wipe of this scope would ` +
+            `otherwise lose the switch`,
         );
       }
       return {
@@ -5869,10 +6040,12 @@ export class SqliteScopeHost implements ScopeHost {
       );
       const offModules = new Set(states.filter((s) => s.schedules === 'off').map((s) => s.moduleId));
       const explanations = offModules.size > 0 ? lastSwitchedOff(tenantId, scopeId, offModules) : new Map();
-      const result = states.map((s) => ({
+      const recorded = systemSwitchRecordsOf(switchSqlOf(this.directory), tenantId, scopeId);
+      const result = withRecorded(states, recorded).map((s) => ({
         moduleId: s.moduleId as ModuleId,
         schedules: s.schedules,
         switchedOff: explanations.get(s.moduleId) ?? null,
+        recorded: s.recorded,
       }));
       // K-24: reading the switch's position and any live incident reason is itself
       // access-logged, the same as every other HostAdmin read.
@@ -6199,6 +6372,24 @@ export class SqliteScopeHost implements ScopeHost {
       // #1674: the switch's status read — same gate, the admin log to explain an `off`
       // entry. Nothing to delegate here: the pure adapter's scope storage IS the store.
       systemGrantsStatus: systemGrantsStatusOf,
+      // #1674: the switch's directory record — the fleet read, and the re-assert (whose body
+      // is `reassertSwitchesInTurn`; this is the scope check and the turn around it).
+      listSystemSwitches: async (actor: PlatformActorId, filter?: SystemSwitchRecordFilter) => {
+        const rows = listSystemSwitchRecords(switchSqlOf(this.directory), filter);
+        this.recordAccess(
+          actor,
+          'listSystemSwitches',
+          { tenantId: (filter?.tenantId as TenantId | undefined) ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows.map((r) => systemSwitchRecord.parse(r));
+      },
+      reassertSystemSwitches: async (actor: PlatformActorId, node: { tenantId: TenantId; scopeId: ScopeId }) => {
+        this.assertScope(node.tenantId, node.scopeId);
+        const rt = this.runtime(node.tenantId, node.scopeId);
+        return rt.actor.turn(() => this.reassertSwitchesInTurn(rt, actor, node.tenantId, node.scopeId));
+      },
       peerGrantsStatus: peerGrantsStatusOf,
       // #1672 — the platform's two capability verbs, both a turn on the scope actor
       // (#1678: every scope-level admin write takes one, so none lands mid-invoke inside a
@@ -6793,6 +6984,18 @@ export class SqliteScopeHost implements ScopeHost {
           note,
         });
       },
+      promotionImpact: async (actor, verticalSlug: string, channel, versionId: string): Promise<ExportBreak[]> => {
+        const incoming = readVersion(versionId);
+        if (!incoming || incoming.verticalSlug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        const current = this.directory
+          .prepare('SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = ?')
+          .get(verticalSlug, channel) as { version_id: string } | undefined;
+        const breaks = current ? await this.exportBreaksBetween(actor, verticalSlug, current.version_id, versionId) : [];
+        this.recordAccess(actor, 'promotionImpact', { tenantId: null }, { verticalSlug, channel, versionId }, breaks.length);
+        return breaks;
+      },
       promoteVersion: async (
         actor,
         verticalSlug: string,
@@ -6831,6 +7034,11 @@ export class SqliteScopeHost implements ScopeHost {
               `promotion changes migrations (${outgoing.migrationDigest} → ` +
                 `${incoming.migrationDigest}) — acknowledge it explicitly to promote`,
             );
+          }
+          // #1705 PR 3: an export an installed consumer imports, dropped or re-versioned.
+          if (!ack.exportBreak) {
+            const breaks = await this.exportBreaksBetween(actor, verticalSlug, outgoing.id, incoming.id);
+            if (breaks.length > 0) throw substratError('precondition_failed', exportBreakRefusal(breaks));
           }
         }
 
@@ -7009,7 +7217,7 @@ export class SqliteScopeHost implements ScopeHost {
        * Record that this scope's provision has now run against `versionId` (#1172).
        * Written only after a provision or reconcile succeeded — a receipt, never a hope.
        */
-      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string) => {
+      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string | null) => {
         const scope = this.directory
           .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
           .get(scopeId) as { tenant_id: string } | undefined;
@@ -7192,6 +7400,55 @@ export class SqliteScopeHost implements ScopeHost {
         const cursors = this.importCursors(this.scopeReadDbFor(tenantId, scopeId));
         this.recordAccess(actor, 'importState', { tenantId, scopeId }, null, cursors.length);
         return { consumes, cursors } as ImportState;
+      },
+      moveImportCursor: async (actor, tenantId, scopeId, raw): Promise<ImportCursorMoved> => {
+        // #1705 PR 3: the replay lever. Parsed at the door: the acknowledgement literal is part
+        // of the input, and a move without it never reaches the store.
+        const move = importCursorMove.parse(raw);
+        this.assertScopeReachable(tenantId, scopeId);
+        const rec = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as {
+          vertical: string | null;
+        };
+        const source = await importCursorSourceOf(
+          (t, v) => this.admin.resolveVerticalInstance(t, v),
+          { tenantId, scopeId, vertical: rec.vertical },
+          move.from,
+        );
+        const replayId = ulid();
+        const target = { tenantId, scopeId };
+        const base = { replayId, mode: move.mode, from: move.from, source: source.scopeId };
+        this.recordAdmin(actor, 'moveImportCursor', target, null, { ...base, phase: 'intent', reason: move.reason });
+        let moved: ImportCursorMoved;
+        try {
+          const rt = this.runtime(tenantId, scopeId);
+          const now = Date.parse(this.clock());
+          // One turn on the scope actor, which is where `deliverToPeer` runs: a delivery on this
+          // edge is either wholly before the move or refused by its compare-and-set after it.
+          moved = await rt.actor.turn(() =>
+            rt.db.transaction(() =>
+              moveImportCursor(switchSqlOf(rt.db), { move, source, replayId, now, imports: this.crossVertical.consumes() }),
+            )(),
+          );
+        } catch (err) {
+          try {
+            this.recordAdmin(actor, 'moveImportCursor', target, null, {
+              ...base,
+              phase: 'failed',
+              error: err instanceof Error ? err.message : String(err),
+            });
+          } catch {
+            // Best effort: the original error is what the caller must see.
+          }
+          throw err;
+        }
+        this.recordAdmin(actor, 'moveImportCursor', target, null, {
+          ...base,
+          phase: 'applied',
+          previous: moved.previous,
+          cursor: moved.cursor,
+          archived: moved.archived,
+        });
+        return moved;
       },
       redrainEvents: async (actor, tenantId, scopeId, input) => {
         // Directory check first, on mark's reasoning: "nothing to reopen" and "you may not
@@ -7888,7 +8145,7 @@ export class SqliteScopeHost implements ScopeHost {
         })();
         // Carry a copy taken before a directory migration forward to the running
         // code's shape — the same assertion a cold start makes.
-        this.applyDirectorySchema();
+        this.ensureDirectorySchema();
         // Roles are held in memory (`loadRoles`), so a restore that only rewrote the
         // table would leave every permission check reading the PRE-restore roles until
         // the process restarted — the exact silent-divergence a recovery must not have.
@@ -8177,6 +8434,7 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_roles', // operator-defined roles
           '_substrat_entitlements', // per-tenant SKU flags
           'orgs', // K-22 org records
+          '_substrat_system_switches', // #1674: the schedule switch's record, per scope
         ];
         const clear = this.directory.transaction(() => {
           for (const table of tables) {

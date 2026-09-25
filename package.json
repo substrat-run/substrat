@@ -23,6 +23,8 @@
     "lint:skills": "node tools/skill-paths.mjs",
     "lint:permissions": "tsx tools/permission-diff.mts",
     "lint:model": "tsx tools/model-diff.mts",
+    "lint:export-schemas": "tsx tools/export-schema-diff.mts",
+    "test:export-schemas": "tsx --test tools/export-schema-diff.test.mts",
     "lint:api": "tsx tools/api-diff.mts",
     "lint:client": "tsx tools/client-emit.mts",
     "lint:migrations": "pnpm -r --if-present --filter='!./.builder/projects/**' run emit:migrations",

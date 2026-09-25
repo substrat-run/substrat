@@ -353,5 +353,12 @@ export type ChannelHistoryEntry = z.infer<typeof channelHistoryEntry>;
 export const promotionAcknowledgement = z.object({
   permissionChange: z.boolean().optional(),
   migrationChange: z.boolean().optional(),
+  /**
+   * #1705 PR 3: the promotion drops or re-versions an exported event type that an installed
+   * consumer in some tenant imports. That consumer's edge stops delivering the type, whatever
+   * the permission diff said. A separate flag from `permissionChange`, which the same change
+   * also trips: this one is about OTHER apps' deployed code, and the refusal lists them.
+   */
+  exportBreak: z.boolean().optional(),
 });
 export type PromotionAcknowledgement = z.infer<typeof promotionAcknowledgement>;

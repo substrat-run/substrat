@@ -5,6 +5,8 @@ import type {
   ImportedEvent,
   ImportResult,
   ImportState,
+  ImportCursorMove,
+  ImportCursorMoved,
   AdminAction,
   BecomeCapabilityInput,
   CapabilityExchange,
@@ -57,6 +59,7 @@ import type {
   SystemGrant,
   PeerGrantsStatusEntry,
   SystemGrantsStatusEntry,
+  SystemSwitchRecord,
   SystemSwitch,
   SystemSwitchResult,
   PeerCoverage,
@@ -72,6 +75,7 @@ import type {
   PermissionKey,
   PlatformActorId,
   ChannelName,
+  ExportBreak,
   ChannelHistoryEntry,
   DnsRecord,
   HostnameBinding,
@@ -143,6 +147,7 @@ import type { CapabilityVerbs } from './capability.js';
 import { substratError } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { SealedSecret } from './secret-box.js';
+import type { SystemSwitchReassert, SystemSwitchRecordFilter } from './system-switch-record.js';
 import type { SearchHit, SearchOptions } from './search-index.js';
 import type { EntityVersion } from './entity-version.js';
 import type { UndrainedEvents } from './outbox-event.js';
@@ -1622,6 +1627,36 @@ export interface HostAdmin {
     actor: PlatformActorId,
     node: { tenantId: TenantId; scopeId: ScopeId },
   ): Promise<SystemGrantsStatusEntry[]>;
+  /**
+   * The fleet read (#1674): the directory's record of the schedule switch, across every
+   * scope. `revokeFromSystem` and `restoreToSystem` write it (`system-switch-record.ts`),
+   * so "which scopes have a module switched off" is one directory read, not a walk of every
+   * scope's store. Unset `position` means both. Access-logged (K-24).
+   *
+   * It is the RECORD, not the gate: the scope's own marker is what the runner reads, and
+   * `systemGrantsStatus` reports both side by side (`schedules` and `recorded`).
+   */
+  listSystemSwitches(actor: PlatformActorId, filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecord[]>;
+  /**
+   * Put the directory's OFF positions back into one scope (#1674), for a scope whose storage
+   * lost them: a wipe then re-provision, or a restore of a dump taken before the switch was
+   * pulled. Every module the record holds `off` on the scope is switched off again, through
+   * the same switch `revokeFromSystem` moves (delegated for a hosted scope exactly as that
+   * is). A module whose marker is already live answers `changed: false` and writes nothing,
+   * and one the scope does not hold at all (`held: false`) is left alone.
+   *
+   * Called AFTER provisioning's seat, never before: the seat recreates the grants a wipe
+   * lost, and OFF then tombstones exactly those and records them, so a later
+   * `restoreToSystem` gives them back. A record never turns a module ON.
+   *
+   * Audited as `reassertSystemSwitch`, only when something changed. Throws when a switch
+   * could not be reached, so a caller that records a receipt (the sweep's reconcile) does
+   * not record one for a scope left on.
+   */
+  reassertSystemSwitches(
+    actor: PlatformActorId,
+    node: { tenantId: TenantId; scopeId: ScopeId },
+  ): Promise<SystemSwitchReassert[]>;
 
   /**
    * The PEER kill switch (#1706): turn one calling vertical off on one scope — the tenant's lever
@@ -1890,6 +1925,12 @@ export interface HostAdmin {
    *
    * Only admitted versions may be promoted, for the same reason they are the only
    * ones bindable.
+   *
+   * **#1705 PR 3: refuses a promotion that breaks an installed consumer** unless it is
+   * acknowledged (`exportBreak`). A break is an exported (type, schemaVersion) the outgoing
+   * version promised and the incoming one drops or re-versions, which a running consumer imports
+   * (`exportBreaksOf`). The refusal counts what breaks and names no tenant, since this layer does
+   * not know who is asking. `promotionImpact` is the listing, for a caller that may see it.
    */
   promoteVersion(
     actor: PlatformActorId,
@@ -1898,6 +1939,18 @@ export interface HostAdmin {
     versionId: string,
     acknowledge?: PromotionAcknowledgement,
   ): Promise<void>;
+  /**
+   * Which installed consumers promoting `versionId` to `channel` would break (#1705 PR 3): the
+   * `exportBreaksOf` answer the promote gate refuses on, as a read. Empty for a first promote,
+   * and when no export changed. Access-logged: it reads which tenants run what. A route that
+   * shows it to a confined caller narrows it to that caller's own tenant.
+   */
+  promotionImpact(
+    actor: PlatformActorId,
+    verticalSlug: string,
+    channel: ChannelName,
+    versionId: string,
+  ): Promise<ExportBreak[]>;
   /** Ordered by channel name; `page.cursor` is a channel name. */
   listChannels(
     actor: PlatformActorId,
@@ -1954,12 +2007,16 @@ export interface HostAdmin {
    * Written only after a provision or reconcile SUCCEEDS. Marking optimistically would
    * silence the sweep for a repair that failed, which is the one case that must keep
    * being retried.
+   *
+   * `null` clears it back to "unknown", which the sweep reconciles on its next pass. That
+   * is for something that undid what a provision did — a PITR rewind (#1674) takes the
+   * scope's grants and its schedule switch back to the bookmark.
    */
   markScopeProvisioned(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    versionId: string,
+    versionId: string | null,
   ): Promise<void>;
 
   // -- the stable serving script (#286) ---------------------------------------
@@ -2383,6 +2440,30 @@ export interface HostAdmin {
    * because the version serving it is the one whose handlers will run.
    */
   importState(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<ImportState>;
+
+  /**
+   * The replay lever (#1705 PR 3): move this CONSUMER scope's watermark on the edge from
+   * `move.from`. Replay re-delivers from a point, and skip passes events over. The semantics,
+   * the refusals and why a bare rewind would replay nothing are in `moveImportCursor`
+   * (vertical-events.ts). The acknowledgement literal is part of the input, because a replay
+   * runs each importing handler again, and anything those handlers send or call outside the app
+   * happens again (`REPLAY_EFFECT`).
+   *
+   * The producer is resolved HERE, from the directory, in this scope's tenant, by the sweep's
+   * own rule (`importCursorSourceOf`). The caller names a vertical, never a scope. The consumer
+   * must itself be its vertical's one primary instance, since a fork or a preview is no end of
+   * an edge. Audited as an admin write, with an intent row before the move and its outcome after,
+   * both carrying the act's `replayId`.
+   *
+   * Takes effect on the next pass: a sweep or a kick reads from the new watermark. A pass already
+   * in flight is refused by the batch's compare-and-set (`stale`), so it cannot undo the move.
+   */
+  moveImportCursor(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    move: ImportCursorMove,
+  ): Promise<ImportCursorMoved>;
 
   /**
    * Clear `drained_at` on events stamped BEFORE `drainedBefore`, so the drain ships them
@@ -4295,6 +4376,14 @@ export interface ScopeHost {
    * nothing.
    */
   registeredImports?(): { from: string; type: string; schemaVersion: number }[];
+
+  /**
+   * Whether scopes bound to a vertical are served by that vertical's OWN deployment rather than
+   * by this host (#1705 PR 3): true on the shared control plane. Such a host's own verbs cannot
+   * see those scopes, so a cross-vertical read with no reach of its own must say it cannot answer
+   * rather than report "no edges". Optional: absent reads as false.
+   */
+  servesScopesElsewhere?(): boolean;
 
   /**
    * Run every schedule that is DUE for this scope (#383) — the recurring-work

@@ -149,6 +149,7 @@ import {
   exportedSinceQuery,
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
+  moveImportCursor,
   CrossVerticalRegistry,
   exportReadPlan,
   exportReadQuery,
@@ -181,6 +182,8 @@ import type {
   ImportedEvent,
   ImportResult,
   ImportState,
+  ImportCursorMoveAt,
+  ImportCursorMoved,
   ImpersonationSession,
   Instant,
   MintedCapability,
@@ -748,6 +751,20 @@ function cellToJson(v: unknown): unknown {
  */
 const IS_CREATE_TRIGGER = /^\s*CREATE\s+(TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i;
 const ENDS_WITH_END = /\bEND\s*$/i;
+
+/**
+ * The kernel's two-method SQL handle (`SwitchSql`) over a Durable Object's storage — what the
+ * shared switch rules (#1666) and the directory's switch record (#1674) run through. One
+ * wrapper for both DOs, as the pure adapter has one `switchSqlOf`.
+ */
+export function switchSqlOver(sql: SqlStorage): SwitchSql {
+  return {
+    all: (q, ...params) => sql.exec(q, ...params).toArray() as Record<string, unknown>[],
+    run: (q, ...params) => {
+      sql.exec(q, ...params);
+    },
+  };
+}
 
 export function splitSqlStatements(sql: string): string[] {
   const out: string[] = [];
@@ -2976,12 +2993,7 @@ export function defineScopeDO(
 
     /** The kernel's schedule-switch SQL (#1666), over this DO's storage. */
     private switchSql(): SwitchSql {
-      return {
-        all: (sql, ...params) => this.sql.exec(sql, ...params).toArray() as Record<string, unknown>[],
-        run: (sql, ...params) => {
-          this.sql.exec(sql, ...params);
-        },
-      };
+      return switchSqlOver(this.sql);
     }
 
     /**
@@ -3039,6 +3051,22 @@ export function defineScopeDO(
     async switchSystemSchedules(moduleId: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome> {
       return this.queue.enqueue(() =>
         this.ctx.storage.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
+      );
+    }
+
+    /**
+     * The replay lever on this scope (#1705 PR 3): the kernel's `moveImportCursor`, queued with
+     * every `importApply` on this scope and run as one `transactionSync`. A delivery on the same
+     * edge is therefore wholly before the move, or refused by its compare-and-set after it.
+     * Migrated first: the rows a replay moves aside go to `_substrat_import_replays`.
+     */
+    async importCursorMove(input: ImportCursorMoveAt & { now: number }): Promise<ImportCursorMoved> {
+      await this.ensureMigrations();
+      // The consumer's own running imports decide whether the edge exists: read here, in the
+      // deployment whose handlers would run, never from the platform's request.
+      const imports = this.crossVertical.consumes();
+      return this.queue.enqueue(() =>
+        this.ctx.storage.transactionSync(() => moveImportCursor(this.switchSql(), { ...input, imports })),
       );
     }
 

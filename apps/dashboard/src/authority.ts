@@ -30,6 +30,9 @@ import type {
   PreviewAuth,
   PrincipalId,
   PeerGrantsStatusEntry,
+  EdgeHealthReport,
+  ImportCursorMove,
+  ImportCursorMoved,
   PeerSwitchResult,
   Scope,
   ScopeDump,
@@ -44,7 +47,7 @@ import type {
   OwnerClaimLink,
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
-import { readPromotionReview, type PromotionReview } from './promotion-review.js';
+import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
 import { LIST_PAGE_MAX, denialQuery, problemDetail } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-api';
 
@@ -824,6 +827,16 @@ export class TenantNarrowedControlPlane {
           }
           return res.registry ?? null;
         },
+        exportBreaks: async (id) => {
+          const res = await this.call<ExportBreaks | undefined>(
+            `/verticals/${encodeURIComponent(verticalSlug)}/channels/prod/promote-impact?versionId=${encodeURIComponent(id)}`,
+          );
+          // An OK answer with no listing is not "breaks nothing" — it is no answer.
+          if (!res || typeof res !== 'object' || !Array.isArray(res.affected)) {
+            throw new ControlPlaneError(502, `whom promoting ${id} would break could not be read`);
+          }
+          return res;
+        },
       },
       versionId,
     );
@@ -1414,7 +1427,7 @@ export class TenantNarrowedControlPlane {
     verticalSlug: string,
     channel: string,
     versionId: string,
-    acknowledge?: { permissionChange?: boolean; migrationChange?: boolean },
+    acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean },
   ): Promise<void> {
     return this.post(
       `/verticals/${encodeURIComponent(verticalSlug)}/channels/${encodeURIComponent(channel)}/promote`,
@@ -1848,6 +1861,27 @@ export class TenantNarrowedControlPlane {
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/peer-grants`, {
       method: to === 'off' ? 'DELETE' : 'POST',
       body: JSON.stringify({ vertical, reason }),
+    });
+  }
+
+  /**
+   * Where each cross-vertical edge of this tenant stands (#1705 PR 3), read live by the control
+   * plane through the sweep's own reach. A failure surfaces as the `ApiError` it is: "no edge"
+   * and "could not be read" are different answers.
+   */
+  crossVerticalEdges(focus?: ScopeId): Promise<EdgeHealthReport> {
+    const q = focus ? `?scopeId=${focus}` : '';
+    return this.call(`/tenants/${this.tenantId}/cross-vertical/edges${q}`);
+  }
+
+  /**
+   * The replay lever on a consumer scope of this tenant (#1705 PR 3). The move carries its
+   * acknowledgement literal, and the control plane refuses one without it in the words it stands for.
+   */
+  moveImportCursor(scopeId: ScopeId, move: ImportCursorMove): Promise<ImportCursorMoved> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/import-cursor`, {
+      method: 'POST',
+      body: JSON.stringify(move),
     });
   }
 

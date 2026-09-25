@@ -3,6 +3,21 @@ import {
   importsOfManifestJson,
   buildPermissionRegistry,
   eventsExportedBy,
+  exportedEventSchemasOf,
+  EDGE_STATE,
+  edgeBadge,
+  unexportedNote,
+  LEVER_EFFECT,
+  REPLAY_EFFECT,
+  SKIP_EFFECT,
+  importCursorMove,
+  lagText,
+  leverOffered,
+  leverRequest,
+  type EdgeHealth,
+  emitModel,
+  emittedModel,
+  z,
   moduleManifest,
   sweepRunsPayload,
   type ModuleManifest,
@@ -119,6 +134,51 @@ describe('eventsExportedBy — the PII rule at declaration (#1705)', () => {
   });
 });
 
+describe('exportedEventSchemasOf — the payload another vertical parses, into the model (#1705 PR 3, D-22)', () => {
+  const output = z.object({ id: z.string(), name: z.string(), note: z.string().optional(), secret: z.string() });
+  const op = (payload?: string[], out: z.ZodType = output) => ({
+    output: out,
+    emits: { entity: 'thing', entityIdFrom: 'id', type: 'm.made', schemaVersion: 1, piiClass: 'none', ...(payload ? { payload } : {}) },
+  });
+  const exported = [{ type: 'm.made', schemaVersion: 1, readPermission: 'thing:read' }];
+
+  it('is the output picked to the declared payload fields, and nothing else of it', () => {
+    const [e] = exportedEventSchemasOf({ 'm/make': op(['id', 'name', 'note']) }, exported);
+    expect(e).toMatchObject({ type: 'm.made', schemaVersion: 1, readPermission: 'thing:read' });
+    expect(Object.keys((e!.payload as { properties: object }).properties).sort()).toEqual(['id', 'name', 'note']);
+    expect((e!.payload as { required: string[] }).required.sort()).toEqual(['id', 'name']);
+    expect(JSON.stringify(e!.payload)).not.toContain('secret');
+    expect(e!.payload).not.toHaveProperty('$schema');
+  });
+
+  it('an operation that declares no payload promises an empty object', () => {
+    const [e] = exportedEventSchemasOf({ 'm/make': op() }, exported);
+    expect((e!.payload as { properties: object }).properties).toEqual({});
+  });
+
+  it('refuses two operations promising different shapes under one (type, version); the same shape twice is fine', () => {
+    expect(() => exportedEventSchemasOf({ 'm/a': op(['id']), 'm/b': op(['id', 'name']) }, exported)).toThrow(
+      /m\/a and m\/b with different payloads/,
+    );
+    expect(exportedEventSchemasOf({ 'm/a': op(['id']), 'm/b': op(['id']) }, exported)).toHaveLength(1);
+  });
+
+  it('refuses a payload drawn from a non-object output, and an export nobody emits', () => {
+    expect(() => exportedEventSchemasOf({ 'm/make': op(['id'], z.array(z.string())) }, exported)).toThrow(/not an object/);
+    expect(() => exportedEventSchemasOf({}, exported)).toThrow(/no operation emits it/);
+  });
+
+  it('lands in the emitted model, sorted, and a model that exports nothing is unchanged', () => {
+    const entities = { thing: { table: 'things', fields: z.object({ id: z.string() }) } };
+    const none = emitModel(entities);
+    expect(none).not.toHaveProperty('exports');
+    const withExports = emitModel(entities, { exports: exportedEventSchemasOf({ 'm/make': op(['id']) }, exported) });
+    expect(Object.keys(withExports.exports ?? {})).toEqual(['m.made']);
+    // What a control plane re-parses at a trust boundary still parses.
+    expect(emittedModel.parse(JSON.parse(JSON.stringify(withExports)))).toEqual(withExports);
+  });
+});
+
 describe('permission registry: the edges, and a digest that does not move for nothing (#1705)', () => {
   const noEdges = { manifest: manifest({ emits: [], consumes: [{ type: 'x.y', schemaVersion: 1 }] }) };
   const withEdges = (id: string) => ({
@@ -189,5 +249,73 @@ describe('importsOfManifestJson (#1705 PR 2)', () => {
     const out = importsOfManifestJson(json);
     expect(out.kind).toBe('unreadable');
     expect(out.kind === 'unreadable' && out.reason).toMatch(reason);
+  });
+});
+
+describe('what the console and the dashboard say about an edge (#1705 PR 3)', () => {
+  const APP = '01J0000000000000000000APP0';
+  const edge = (over: Partial<EdgeHealth>): EdgeHealth =>
+    ({
+      tenantId: '01J0000000000000000000TNT0',
+      consumer: { scopeId: APP, vertical: 'acme/board' },
+      producer: { vertical: 'acme/crm', scopeId: '01J0000000000000000000PRD0' },
+      state: 'caught-up',
+      reason: null,
+      watermark: null,
+      oldestPending: null,
+      lagMs: null,
+      unexported: [],
+      lastDelivered: null,
+      lastProblem: null,
+      ...over,
+    }) as EdgeHealth;
+
+  it('never renders an edge nobody could ask as healthy: only caught-up is green', () => {
+    expect(EDGE_STATE.unavailable.tone).toBe('danger');
+    expect(Object.entries(EDGE_STATE).filter(([, v]) => v.tone === 'success').map(([k]) => k)).toEqual(['caught-up']);
+  });
+
+  it('a caught-up edge whose producer does not export some imported type is not green, and says which', () => {
+    const missing = edge({ unexported: [{ type: 'crm.customer-noted', schemaVersion: 1 }] as EdgeHealth['unexported'] });
+    expect(edgeBadge(missing).tone).toBe('warning');
+    expect(edgeBadge(missing).label).toMatch(/never arrive/);
+    expect(unexportedNote(missing)).toMatch(/'acme\/crm' does not export crm\.customer-noted v1/);
+    // The twin: nothing missing, the state's own badge and no note.
+    expect(edgeBadge(edge({}))).toEqual(EDGE_STATE['caught-up']);
+    expect(unexportedNote(edge({}))).toBeNull();
+    // A state that is already not green keeps its own tone.
+    expect(edgeBadge(edge({ state: 'paused', unexported: missing.unexported })).tone).toBe('danger');
+  });
+
+  it('offers the lever only on a resolved, reachable edge INTO the viewed scope', () => {
+    expect(leverOffered(edge({}), APP)).toBe(true);
+    expect(leverOffered(edge({ consumer: { scopeId: '01J0000000000000000000OTH0' as EdgeHealth['consumer']['scopeId'], vertical: 'acme/x' } }), APP)).toBe(false);
+    expect(leverOffered(edge({ state: 'unresolved', producer: { vertical: 'acme/crm', scopeId: null } }), APP)).toBe(false);
+    expect(leverOffered(edge({ state: 'unavailable' }), APP)).toBe(false);
+  });
+
+  it("says what a lever does in the platform's own words, and sends the matching acknowledgement", () => {
+    expect(LEVER_EFFECT.replay).toBe(REPLAY_EFFECT);
+    expect(LEVER_EFFECT.replay).toContain('anything they send or call outside this app happens again');
+    expect(LEVER_EFFECT.skip).toBe(SKIP_EFFECT);
+    expect(importCursorMove.parse(leverRequest('replay', 'acme/crm', ' lost a day '))).toMatchObject({
+      mode: 'replay',
+      after: null,
+      acknowledge: 'rerun-handlers',
+      reason: 'lost a day',
+    });
+    expect(importCursorMove.parse(leverRequest('skip', 'acme/crm', 'start today'))).toMatchObject({
+      mode: 'skip',
+      through: 'now',
+      acknowledge: 'skip-events',
+    });
+  });
+
+  it('writes a lag a person can read', () => {
+    expect(lagText(null)).toBeNull();
+    expect(lagText(12_000)).toBe('12s');
+    expect(lagText(5 * 60_000)).toBe('5 min');
+    expect(lagText(3 * 3_600_000)).toBe('3 h');
+    expect(lagText(3 * 86_400_000)).toBe('3 days');
   });
 });

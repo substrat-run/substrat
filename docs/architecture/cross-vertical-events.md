@@ -8,8 +8,8 @@ description: How one vertical receives another vertical's events in the same ten
 
 **Status:** building. The contract, both adapters and the platform-sweep phase are in #1705's
 first PR. The hosted transport (the control plane reaching both scopes over `/internal`, with the
-router kick for prompt delivery) is in the second. The replay lever, the edge-health view, the
-payload-schema classifier and the registry refusal remain. **Related:** #1706 (workload identity between
+router kick for prompt delivery) is in the second. The third adds the replay lever, the edge-health
+view, the payload-schema rule in CI and the promote refusal. **Related:** #1706 (workload identity between
 verticals, which supplies the principal and the `peers` grant used here), #1582 (a scope-wide
 read after a watermark), #938 (live reads), #427 (`provides`/`requires`).
 
@@ -142,11 +142,29 @@ attributable.
   versions (K-39's loud failure). It is never handed to a handler.
 - **Promote.** `exports` and `imports` sit in the permission registry, omitted when empty so no
   existing digest moves. An edge change therefore moves `digests.permission` and needs
-  acknowledging, and it renders in both verticals' `PERMISSIONS.md`.
-- **CI (next).** Each exported type's payload JSON Schema goes into the checked-in model artifact.
-  A base-versus-head rule then refuses a removed, retyped or newly required field without a
-  schemaVersion bump. That rule applies to exports only, because there the reader is another
-  team's deployed code.
+  acknowledging, and it renders in both verticals' `PERMISSIONS.md`. On top of that, a promote
+  whose incoming version drops or re-versions an exported (type, schemaVersion) that the outgoing
+  version promised, and that a running consumer imports, is refused unless acknowledged
+  (`exportBreak`, `substrat promote --ack-export-break`). A consumer is a primary, active scope of
+  another vertical in a tenant where the producer is installed, whose running version declares the
+  import (`exportBreaksOf`). That over-approximates a listed vertical's tenants still pinned to an
+  older producer version, on purpose. The host's refusal counts and names no tenant, because it
+  does not know who is asking. The promote route lists the affected apps: a confined caller sees
+  its own tenant's apps and the rest as a count, as the store backfill does. `bindScopeVersion`
+  does not run this check yet: moving one scope to a version that drops an export is not refused
+  (#1756).
+- **CI.** Each exported type's payload JSON Schema is in the checked-in `model.json`
+  (`exportedEventSchemasOf` → `emitModel`'s `exports`, held to the code by `lint:model --check`).
+  That it is there at all is enforced: `lint:permissions` refuses (exit 2) a vertical whose
+  manifest exports a (type, schemaVersion) its `model.json` does not carry. No vertical in the repo
+  exports yet, so the three gates pass over nothing today. The first export is held by all three.
+  `lint:export-schemas` compares it with the merge-base. At an unchanged schemaVersion it refuses a
+  removed, retyped, newly required or no-longer-required field, and a version that went down. A
+  newly required field is a break even though the producer always sends it now, because events
+  already in the outbox at that version lack it, and a consumer backfilling or replaying reads
+  them. The rule applies to exports only, because there the reader is another team's deployed
+  code. A base the checkout does not hold is exit 2. Read as "no model.json at base", it would pass
+  every break as a new file.
 
 ## Cost on a fleet-wide cron
 
@@ -292,9 +310,61 @@ every pass that moved something or could not run, in the console's Sweep runs vi
 edge is silent by construction, because nothing throws and nothing is lost, so this row is
 where a person first sees it.
 
-## Not yet
+## The replay lever
 
-- A lever to move the watermark (replay from N, skip to now).
-- The payload-schema classifier, and a registry refusal for a promote that drops or re-versions
-  an export someone imports.
-- An edge-health view beside schedule health.
+`HostAdmin.moveImportCursor` moves a consumer's watermark on one edge, and a bare rewind would not
+be a replay. Three guards stand between an event and a second run of its handler:
+
+1. The watermark moves forward only (`IMPORT_CURSOR_ADVANCE_SQL`), the delivery path's own guard.
+2. `_substrat_deliveries` holds a row per (event, module) that ran, and delivery skips any pair it
+   finds. Rewound but not cleared, every replayed event would come back as a duplicate, and
+   nothing would run.
+3. `_substrat_imports` is `INSERT OR IGNORE`. Left in place, an event first withheld for its version
+   would stay recorded as withheld after the consumer's upgrade released it.
+
+So a **replay** (`after: <event id> | null`) moves the replayed range's rows in (2) and (3) into
+`_substrat_import_replays` under the act's `replayId`, clears them from the live tables, and sets
+the watermark back, all in one transaction on the consumer's queue. The rows are moved, not
+deleted, because they are the record that a handler ran on an event, when, and what it reported.
+The admin log's intent and outcome rows carry the same `replayId`. A **skip** (`through: <event id>
+| 'now'`) only moves the watermark forward, and never past now. `'now'` passes over every
+earlier millisecond: an event minted in the skip's own millisecond is delivered, never dropped.
+Each mode is held to its direction, so the acknowledgement names what actually moves.
+
+- **The guarantee changes, by design.** "Once per (event, module)" becomes "once per (event,
+  module) per replay": every importing handler runs again, and what it emits is new events that
+  fan out again. So a replay needs `acknowledge: 'rerun-handlers'`, which stands for the sentence
+  the dashboard and console show before it, and which the route refuses a missing literal with:
+  *handlers run again; anything they send or call outside this app happens again*. A skip needs
+  `acknowledge: 'skip-events'`.
+- **Between the move and the redelivery**, a cause walk through a moved event's id ends at
+  `missing`, and an export read in the consumer's scope counts fewer hops for a chain through it.
+  Both heal when the next pass redelivers. The undercount only loosens the loop bound for that
+  window: a loop between two verticals may run a round or two longer before the hop cap cuts it.
+  The cap bounds loops; it authorizes nothing, so no event crosses that the producer's exports,
+  its grants and the PII rule would not already release.
+- **A pass in flight cannot undo a move.** The batch's compare-and-set refuses it as `stale`.
+- **Authority.** The producer is resolved from the directory, in the consumer's tenant, by the
+  sweep's own rule, and never taken from the caller. Staff (the console) and the tenant's own
+  credential (the dashboard, for someone who may manage the tenant's apps) may pull it, which is
+  the peer switch's posture: the edge is between two of the tenant's apps, and what a replay runs
+  lands in the tenant's own scope. Builders may not. Hosted, the move is made in the consumer's
+  deployment over `/internal/import-cursor`, which proves it serves the scope before it answers.
+- **The history table follows no new path.** The lake drains only the outbox. Dumps, forks,
+  restores and wipes enumerate tables from `sqlite_master`, so a restore rewinds the history with
+  the data. Erasure's delivery-error rewrite reaches only deliveries of events in the scope's OWN
+  outbox, and an imported event never is. A future consumer-side erasure of imported copies must
+  reach this table's `row` too (#1757).
+
+## Edge health
+
+`crossVerticalHealth` is the sweep's walk with the delivery taken out. It uses the same reach, the
+same narrowing and the same resolution of both ends, so it cannot disagree with the next pass about
+which edges exist. Per edge it makes one probe read of the producer after the watermark
+(`limit: 1`), which tells `behind` from `caught-up` and dates the oldest waiting event. It reads the
+consumer's door from its peer switch, since a consumer refusing the producer is otherwise visible
+only at delivery. The tenant's recent `vertical-events` sweep-run rows supply the last pass that
+delivered and the last that did not. A side that could not be asked is `unavailable`: its own
+state, red in the console and the dashboard, and never green. A failed read of the whole view is
+shown as a failure, never as "no edges". `GET /tenants/:t/cross-vertical/edges` serves it to staff
+and to the tenant.
