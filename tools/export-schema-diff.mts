@@ -69,6 +69,37 @@ function shape(schema: unknown): string {
   return JSON.stringify(strip(schema));
 }
 
+/**
+ * The schema with every local `$ref` (`#/$defs/…`, `#/definitions/…`) replaced by what it points
+ * at, recursively, and the definitions dropped. `z.toJSONSchema` moves a schema used more than once
+ * into `$defs`. Compared unresolved, a break INSIDE a definition would read as an unchanged
+ * `{"$ref": …}` on both sides and pass. A reference that loops back on itself is left as the
+ * reference (its target is compared where it is first inlined).
+ */
+export function resolveRefs(schema: unknown, root: unknown = schema, seen: readonly string[] = []): unknown {
+  if (Array.isArray(schema)) return schema.map((v) => resolveRefs(v, root, seen));
+  if (schema === null || typeof schema !== 'object') return schema;
+  const obj = schema as Record<string, unknown>;
+  const ref = obj.$ref;
+  if (typeof ref === 'string' && ref.startsWith('#/') && !seen.includes(ref)) {
+    let target: unknown = root;
+    for (const part of ref.slice(2).split('/')) {
+      target = target !== null && typeof target === 'object' ? (target as Record<string, unknown>)[part.replace(/~1/g, '/').replace(/~0/g, '~')] : undefined;
+    }
+    if (target !== undefined) {
+      const { $ref: _ref, ...siblings } = obj;
+      const resolved = resolveRefs(target, root, [...seen, ref]) as Record<string, unknown>;
+      return Object.keys(siblings).length ? { ...resolved, ...(resolveRefs(siblings, root, seen) as object) } : resolved;
+    }
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === '$defs' || k === 'definitions') continue;
+    out[k] = resolveRefs(v, root, seen);
+  }
+  return out;
+}
+
 const propertiesOf = (s: Record<string, unknown>): Record<string, unknown> =>
   s.properties !== null && typeof s.properties === 'object' ? (s.properties as Record<string, unknown>) : {};
 const requiredOf = (s: Record<string, unknown>): Set<string> =>
@@ -99,11 +130,13 @@ export function classifyExports(
       continue;
     }
     if (h.schemaVersion !== b.schemaVersion) continue; // the explicit break (K-39)
-    const bp = propertiesOf(b.payload);
-    const hp = propertiesOf(h.payload);
+    const bs = resolveRefs(b.payload) as Record<string, unknown>;
+    const hs = resolveRefs(h.payload) as Record<string, unknown>;
+    const bp = propertiesOf(bs);
+    const hp = propertiesOf(hs);
     const isObject = (s: Record<string, unknown>) => s.type === 'object' || 'properties' in s;
-    if (!isObject(b.payload) || !isObject(h.payload)) {
-      if (shape(b.payload) !== shape(h.payload)) {
+    if (!isObject(bs) || !isObject(hs)) {
+      if (shape(bs) !== shape(hs)) {
         out.push({ file, type, rule: 'retyped', field: null, detail: 'the payload schema changed' });
       }
       continue;
@@ -115,8 +148,8 @@ export function classifyExports(
         out.push({ file, type, rule: 'retyped', field, detail: `'${field}' changed from ${shape(bp[field])} to ${shape(hp[field])}` });
       }
     }
-    const br = requiredOf(b.payload);
-    const hr = requiredOf(h.payload);
+    const br = requiredOf(bs);
+    const hr = requiredOf(hs);
     for (const field of [...hr].sort()) {
       if (!br.has(field)) {
         out.push({
