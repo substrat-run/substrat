@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Ic, StrataGlyph, type IconName } from '../lib/icons';
-import { teamPath } from '../lib/router';
+import { obsPath, teamPath } from '../lib/router';
 import { initials } from '../lib/format';
 import type { Team } from '../lib/api';
+import { OBS_SECTIONS, defaultView, type ObsSection } from '../lib/obs-sections';
 
 export type NavKey =
   | 'overview'
@@ -67,7 +68,7 @@ const GROUPS: NavGroup[] = [
   },
 ];
 
-function NavRow({ item, active, onNav }: { item: NavItem; active: boolean; onNav: (k: NavKey) => void }) {
+function NavRow({ item, active, parent = false, onNav }: { item: NavItem; active: boolean; parent?: boolean; onNav: (k: NavKey) => void }) {
   const [hover, setHover] = useState(false);
   return (
     <a
@@ -87,15 +88,65 @@ function NavRow({ item, active, onNav }: { item: NavItem; active: boolean; onNav
         borderRadius: 6,
         textDecoration: 'none',
         background: active ? 'var(--surface-active)' : hover ? 'var(--surface-hover)' : 'transparent',
-        color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+        color: active || parent ? 'var(--text-primary)' : 'var(--text-secondary)',
         fontSize: 14,
-        fontWeight: active ? 500 : 400,
+        fontWeight: active || parent ? 500 : 400,
       }}
     >
       <span style={{ display: 'inline-flex', width: 16, color: active ? 'var(--text-brand)' : 'var(--text-tertiary)' }}>
         <Ic name={item.icon} />
       </span>
       <span style={{ flex: 1 }}>{item.label}</span>
+    </a>
+  );
+}
+
+/**
+ * The Observability group's children (#1767): Pulse · Processes · Logs, shown while any
+ * of them is open. The group row itself opens Pulse, so a reader who never expands it
+ * still lands somewhere — the children are where they go next, not a gate in front.
+ */
+function ObsChildren({ active, onNav }: { active: ObsSection; onNav: (s: ObsSection) => void }) {
+  return (
+    <div
+      role="group"
+      aria-label="Observability"
+      style={{ display: 'flex', flexDirection: 'column', gap: 1, margin: '1px 0 4px 17px', paddingLeft: 9, borderLeft: '1px solid var(--border-default)' }}
+    >
+      {OBS_SECTIONS.map((s) => (
+        <ObsChildRow key={s.key} label={s.label} href={teamPath(obsPath({ view: defaultView(s.key) }))} active={active === s.key} onClick={() => onNav(s.key)} />
+      ))}
+    </div>
+  );
+}
+
+function ObsChildRow({ label, href, active, onClick }: { label: string; href: string; active: boolean; onClick: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <a
+      href={href}
+      aria-current={active ? 'page' : undefined}
+      onClick={(e) => {
+        e.preventDefault();
+        onClick();
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        height: 28,
+        padding: '0 10px',
+        borderRadius: 6,
+        textDecoration: 'none',
+        background: active ? 'var(--surface-active)' : hover ? 'var(--surface-hover)' : 'transparent',
+        color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+        fontSize: 13,
+        fontWeight: active ? 500 : 400,
+      }}
+    >
+      {label}
     </a>
   );
 }
@@ -108,6 +159,9 @@ export interface Crumb {
 export interface DashShellProps {
   active: NavKey;
   onNav: (k: NavKey) => void;
+  /** Which Observability child is open; only read while `active` is `observability`. */
+  obsSection: ObsSection;
+  onObsNav: (s: ObsSection) => void;
   org: string;
   /** Every team the signed-in user belongs to — drives the sidebar switcher. */
   teams: Team[];
@@ -134,7 +188,7 @@ export function DashShell(props: DashShellProps) {
           width: 232,
           flexShrink: 0,
           boxSizing: 'border-box',
-          background: 'var(--surface-page)',
+          background: 'var(--surface-card)',
           borderRight: '1px solid var(--border-default)',
           padding: '12px 8px',
           display: 'flex',
@@ -171,7 +225,14 @@ export function DashShell(props: DashShellProps) {
                 </h2>
               )}
               {group.items.map((it) => (
-                <NavRow key={it.key} item={it} active={props.active === it.key} onNav={props.onNav} />
+                <div key={it.key} style={{ display: 'contents' }}>
+                  {/* A parent whose child is open reads as where you are (primary text,
+                      weight 500) without the active fill — the fill belongs to the child. */}
+                  <NavRow item={it} active={props.active === it.key && it.key !== 'observability'} parent={props.active === 'observability' && it.key === 'observability'} onNav={props.onNav} />
+                  {it.key === 'observability' && props.active === 'observability' && (
+                    <ObsChildren active={props.obsSection} onNav={props.onObsNav} />
+                  )}
+                </div>
               ))}
             </div>
           );
@@ -231,7 +292,7 @@ export function DashShell(props: DashShellProps) {
               gap: 8,
               height: 32,
               padding: '0 10px',
-              width: 220,
+              width: 340,
               borderRadius: 6,
               border: '1px solid var(--border-default)',
               background: 'var(--surface-card)',

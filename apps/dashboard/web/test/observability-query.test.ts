@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { queryWindow, readObsQuery, dragWindow } from '../src/lib/observability-query';
 import { obsPath } from '../src/lib/router';
+import { sectionQuery } from '../src/lib/obs-sections';
 import { parseLogColumns, moveColumn, DEFAULT_LOG_COLUMNS } from '../src/lib/log-columns';
 const window = { since: '2026-09-01T10:00:00.000Z', until: '2026-09-01T11:00:00.000Z' };
 describe('shared observability query', () => {
@@ -46,4 +47,16 @@ it('column preferences recover safely and reorder only known columns', () => {
   expect(parseLogColumns('["raw","level","level","wallTimeMs"]')).toEqual(['level', 'wallTimeMs']);
   expect(parseLogColumns('[]')).toEqual(DEFAULT_LOG_COLUMNS);
   expect(moveColumn(['level', 'message', 'timestamp'], 'message', -1)).toEqual(['message', 'level', 'timestamp']);
+});
+
+describe('switching Observability child (#1767)', () => {
+  it('keeps a relative preset, so a 1h view does not reset to 24h', () => {
+    expect(sectionQuery('?app=a&view=traffic&hours=1&level=error', 'logs')).toEqual({ app: 'a', view: 'logs', hours: '1' });
+  });
+  it('keeps an explicit window over the preset beside it', () => {
+    expect(sectionQuery(`?view=logs&hours=72&from=${window.since}&to=${window.until}`, 'pulse')).toEqual({ view: 'traffic', from: window.since, to: window.until });
+  });
+  it('leaves the view off for the bare Observability breadcrumb', () => {
+    expect(sectionQuery('?app=a&view=events&hours=72')).toEqual({ app: 'a', hours: '72' });
+  });
 });
