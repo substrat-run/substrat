@@ -292,6 +292,31 @@ export function outboundOfManifestJson(manifestJson: string | null | undefined):
  * declaration existed. The directory read lifts it with the outbound surface, in one query, so
  * the router judges both from the dispatch it already resolved.
  */
+/**
+ * The cross-vertical imports a STORED manifest declares (#1705): its permission registry's
+ * `imports` rows. The hosted sweep reads them to decide which scopes it calls at all, so a
+ * version that imports nothing costs no scope call. `[]` for no manifest, an unparseable one,
+ * a manifest with no registry, or one pushed before `imports` existed. Each of those imports
+ * nothing the platform could name, and reading one as "imports something" would put every
+ * legacy install back on every pass. Rows of the wrong shape are dropped rather than trusted.
+ */
+export function importsOfManifestJson(
+  manifestJson: string | null | undefined,
+): { from: string; type: string; schemaVersion: number }[] {
+  if (!manifestJson) return [];
+  try {
+    const m = JSON.parse(manifestJson) as { registry?: { imports?: unknown } };
+    const rows = m.registry?.imports;
+    if (!Array.isArray(rows)) return [];
+    return rows.flatMap((r) => {
+      const p = permissionRegistryImport.safeParse(r);
+      return p.success ? [{ from: p.data.from, type: p.data.type, schemaVersion: p.data.schemaVersion }] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
 export function callsOfManifestJson(manifestJson: string | null | undefined): string[] | null {
   if (!manifestJson) return null;
   try {

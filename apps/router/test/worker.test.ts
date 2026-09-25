@@ -654,7 +654,7 @@ describe('router kick (platform-intents)', () => {
     expect(new URL(call.url).pathname).toBe('/internal/drain-scope');
     expect(call.secret).toBe('sekret'); // presents the global platform secret
     // The RESOLVED node from the directory, never anything the caller could name.
-    expect(call.body).toEqual({ tenantId: T, scopeId: S });
+    expect(call.body).toEqual({ tenantId: T, scopeId: S, platformRequests: true, exports: false });
   });
 
   it('does NOT kick when the response carries no platform-intent flag', async () => {
@@ -695,6 +695,80 @@ describe('router kick (platform-intents)', () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  /**
+   * #1705 PR 2: a response that committed an event another vertical imports asks the control
+   * plane to run that producer's outgoing edges now. The flag is a RESPONSE header; the kick
+   * names the scope this router resolved.
+   */
+  describe('exported events (#1705)', () => {
+    /** A vertical that answers with the given response headers, and records what it received. */
+    const verticalAnswering = (headers: Record<string, string>) => {
+      const received: Request[] = [];
+      return {
+        binding: {
+          fetch: async (req: Request) => {
+            received.push(req);
+            return new Response('ok', { status: 200, headers });
+          },
+        } as unknown as Fetcher,
+        received: () => received,
+      };
+    };
+    const envWith = (vertical: Fetcher, kick: ReturnType<typeof kickSpy>) =>
+      ({
+        ROUTER_SECRET: SECRET,
+        CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+        VERTICAL_FSM: vertical,
+        CONTROL_PLANE_KICK: kick.binding,
+        PLATFORM_SECRET: 'sekret',
+      }) as unknown as Env;
+
+    it('kicks the RESOLVED scope with `exports` when the vertical flags an exported event', async () => {
+      const kick = kickSpy();
+      const { ctx, settle } = collectingCtx();
+      const vertical = verticalAnswering({ 'x-substrat-exported-events': '1' });
+      const res = await worker.fetch(get('https://acme.example.com/api/invoke'), envWith(vertical.binding, kick), ctx);
+      expect(res.status).toBe(200);
+      await settle();
+      expect(kick.calls()).toHaveLength(1);
+      expect(new URL(kick.calls()[0]!.url).pathname).toBe('/internal/drain-scope');
+      expect(kick.calls()[0]!.body).toEqual({ tenantId: T, scopeId: S, platformRequests: false, exports: true });
+    });
+
+    it('carries both flags when the response raised both', async () => {
+      const kick = kickSpy();
+      const { ctx, settle } = collectingCtx();
+      const vertical = verticalAnswering({ 'x-substrat-exported-events': '1', 'x-substrat-platform-request': '1' });
+      await worker.fetch(get('https://acme.example.com/api/invoke'), envWith(vertical.binding, kick), ctx);
+      await settle();
+      expect(kick.calls().map((c) => c.body)).toEqual([
+        { tenantId: T, scopeId: S, platformRequests: true, exports: true },
+      ]);
+    });
+
+    it('a caller cannot forge the kick: the flag on a REQUEST is stripped before the vertical and starts nothing', async () => {
+      const kick = kickSpy();
+      const { ctx, settle } = collectingCtx();
+      // The vertical flags nothing. The caller sets the flag, and a spoofed scope beside it.
+      const vertical = verticalAnswering({});
+      const forged = new Request('https://acme.example.com/api/invoke', {
+        headers: {
+          'x-substrat-exported-events': '1',
+          'x-substrat-platform-request': '1',
+          'x-substrat-scope': '01JZZZZZZZZZZZZZZZZZZZZZZZ',
+        },
+      });
+      await worker.fetch(forged, envWith(vertical.binding, kick), ctx);
+      await settle();
+      expect(kick.calls()).toHaveLength(0);
+      // Nor did the vertical ever see it, so no harness could echo it back as its own.
+      const seen = vertical.received()[0]!;
+      expect(seen.headers.get('x-substrat-exported-events')).toBeNull();
+      expect(seen.headers.get('x-substrat-platform-request')).toBeNull();
+      expect(seen.headers.get('x-substrat-scope')).toBe(S);
+    });
   });
 
   it('stays silent when the kick is simply not wired (dev / self-host)', async () => {

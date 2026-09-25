@@ -35,12 +35,14 @@ import {
 import type { PlatformActorId, TenantId, ScopeId } from '@substrat-run/contracts';
 import {
   runPlatformSweep,
+  runCrossVerticalFrom,
   assertPlatformCall,
   PlatformCallError,
   webCryptoSecretBox,
   globalFetch,
   analyticsEngineConnectorCallRecorder,
   type AnalyticsEngineDatasetLike,
+  type CrossVerticalOptions,
   type SecretBox,
 } from '@substrat-run/kernel';
 import {
@@ -102,7 +104,14 @@ import {
   type PlatformRuntime,
   type DoNamespaceReader,
 } from '@substrat-run/control-plane-api';
-import { ControlPlaneError, VerticalClient, retireClientsOfReapedScope, versionReachedAt, type ScopeDeployment } from '@substrat-run/control-plane-api';
+import {
+  ControlPlaneError,
+  VerticalClient,
+  hostedCrossVerticalReach,
+  retireClientsOfReapedScope,
+  versionReachedAt,
+  type ScopeDeployment,
+} from '@substrat-run/control-plane-api';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
@@ -241,6 +250,13 @@ interface Env extends StaffAuthEnv, ConnectorEnv {
    * value falls back to the default rather than to either extreme.
    */
   PROVISION_RECONCILE_BATCH?: string;
+  /**
+   * #1705: consumer scopes one cross-vertical pass visits, at most. Unset is the kernel's
+   * default (`CROSS_VERTICAL_CONSUMERS_PER_PASS`), and `0` pauses the phase: nothing is read or
+   * delivered, watermarks hold, and the producers' outboxes keep the backlog. A garbled value
+   * is the default, never either extreme, the same parse as `PROVISION_RECONCILE_BATCH`.
+   */
+  CROSS_VERTICAL_CONSUMERS_PER_PASS?: string;
   /**
    * Days a reap's stored copy (`scopes/…` in SCOPE_BACKUPS, #493) is kept before the
    * sweep drops it (#557). UNSET keeps every copy forever — the platform never deletes
@@ -877,6 +893,30 @@ function eventDrainDelegationFor(env: Env): EventDrainDelegation | undefined {
 }
 
 /**
+ * The cross-vertical phase's platform half (#1705 PR 2), for both the scheduled sweep and the
+ * router kick (`/internal/drain-scope` with `exports`). Every edge's two scopes live in vertical
+ * deployments, so the reach goes over their `/internal` surface, resolved by the same ladder
+ * every other delegated verb uses (`hostedCrossVerticalReach`).
+ *
+ * Undefined without DISPATCH/PLATFORM_SECRET, and then the phase does not run at all. The
+ * alternative is the kernel's default reach, which is THIS host's own verbs over the
+ * placeholder namespace. Those refuse a hosted scope (`assertServedHere`), so every edge would
+ * report `failed` every tick, a fleet of red for a deployment that simply cannot reach a vertical.
+ */
+function crossVerticalFor(env: Env, host: CloudflareScopeHost): CrossVerticalOptions | undefined {
+  if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
+  const maxConsumers = parseNonNegativeInteger(env.CROSS_VERTICAL_CONSUMERS_PER_PASS);
+  return {
+    reach: hostedCrossVerticalReach({
+      admin: host.admin,
+      actor: SWEEP_ACTOR,
+      clientForScope: resolveVerticalForScopeFor(env),
+    }),
+    ...(maxConsumers !== undefined ? { maxConsumers } : {}),
+  };
+}
+
+/**
  * The two per-tenant store clients, minted on the platform's own Cloudflare credential.
  *
  * They are built TOGETHER, in one place, because they are one capability with two
@@ -1257,6 +1297,7 @@ export default {
     const digestSince = env.STAFF_ALERT_EMAIL
       ? await failureDigestWatermark({ admin: host.admin, actor: SWEEP_ACTOR, passStartedAt: new Date() })
       : undefined;
+    const crossVertical = crossVerticalFor(env, host);
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
       // Sanctioned egress for the connector sweepers below.
@@ -1342,6 +1383,11 @@ export default {
       ...(env.SUBSTRAT_OUTBOX_STREAM && eventDrainDelegationFor(env)
         ? { eventSink: createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM) }
         : {}),
+      // #1705 PR 2: cross-vertical events, for every hosted edge. The phase narrows to the
+      // scopes whose running version imports something before it calls any, so a fleet with no
+      // importer costs the directory reads and nothing else. The router kick runs one
+      // producer's edges sooner (`/internal/drain-scope`); this is the backstop.
+      ...(crossVertical ? { crossVertical } : {}),
     });
     // Log whenever the pass DID something — reaps, errors, or any platform-intent
     // activity (drained/failed/still-pending). The last one matters most (#444): a
@@ -1358,6 +1404,10 @@ export default {
     // never reach the lake while they stay that way, so a pass that met any says so here —
     // they are not `errors` (nothing about the pass failed), and would otherwise be silent.
     const skipped = report.eventDrain?.skipped;
+    // #1705: an edge that moved, paused or could not resolve. The counts only; each edge and
+    // its reason is already a `vertical-events` sweep-run row.
+    const cv = report.crossVertical;
+    const cvActive = cv != null && (cv.delivered > 0 || cv.withheld > 0 || cv.paused > 0 || cv.unresolved > 0);
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
@@ -1368,7 +1418,8 @@ export default {
       pr.pending > 0 ||
       (rc !== null && rc.behind > 0) ||
       (al !== null && (al.shipped > 0 || al.pruned > 0)) ||
-      skipped !== undefined
+      skipped !== undefined ||
+      cvActive
     ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
@@ -1380,6 +1431,18 @@ export default {
         // object the rows landed in, so a question about a pruned row has an address.
         ...(al ? { accessLog: al } : {}),
         ...(skipped ? { eventDrainSkipped: skipped } : {}),
+        ...(cvActive
+          ? {
+              crossVertical: {
+                delivered: cv.delivered,
+                withheld: cv.withheld,
+                paused: cv.paused,
+                unresolved: cv.unresolved,
+                candidates: cv.candidates,
+                deferred: cv.deferred,
+              },
+            }
+          : {}),
         errors: report.errors,
       });
     }
@@ -1616,16 +1679,46 @@ export default {
         if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
         throw e;
       }
-      const body = (await c.req.json().catch(() => ({}))) as { tenantId?: unknown; scopeId?: unknown };
+      const body = (await c.req.json().catch(() => ({}))) as {
+        tenantId?: unknown;
+        scopeId?: unknown;
+        platformRequests?: unknown;
+        exports?: unknown;
+      };
       const ids = tenantId.safeParse(body.tenantId);
       const sids = scopeId.safeParse(body.scopeId);
       if (!ids.success || !sids.success) {
         return c.json({ error: 'tenantId and scopeId (ULIDs) are required' }, 400);
       }
+      // #1705 PR 2: what the response that prompted the kick flagged. A router that predates
+      // the flags sends neither, and means the intent drain, which is all a kick used to be.
+      const exportsKick = body.exports === true;
+      const intentsKick = body.platformRequests === true || body.exports === undefined;
       // Runs inline: the router backgrounds this call with `ctx.waitUntil`, so completing the
       // drain here is what keeps the subrequest alive long enough to actually settle the intents.
-      const report = await drainOneScope(c.env, ids.data, sids.data);
-      return c.json(report);
+      const report = intentsKick
+        ? await drainOneScope(c.env, ids.data, sids.data)
+        : { drained: 0, done: 0, failed: 0, pending: 0 };
+      // The scope's response committed an exported type: run THIS producer's outgoing edges now,
+      // so a consumer in another vertical has it in seconds rather than at the next sweep. The
+      // same phase as the sweep, narrowed to the producer (its tenant, its resolved instance, the
+      // consumers whose running code imports from it), under the same watermark compare-and-set,
+      // so a kick and a sweep that overlap cannot move an edge twice.
+      if (!exportsKick) return c.json(report);
+      const host = hostFor(c.env);
+      const crossVertical = crossVerticalFor(c.env, host);
+      if (!crossVertical) return c.json(report);
+      const edges = await runCrossVerticalFrom(
+        host,
+        {
+          actor: SWEEP_ACTOR,
+          crossVertical,
+          recordSweepRun: (e) => void host.admin.recordSweepRun(e).catch(() => undefined),
+        },
+        { tenantId: ids.data, scopeId: sids.data },
+      );
+      if (edges.errors.length > 0) console.log('drain-scope: cross-vertical', { scopeId: sids.data, errors: edges.errors });
+      return c.json({ ...report, crossVertical: edges.crossVertical });
     });
 
     // The email relay (#303). A hosted vertical that holds the `emailSender` grant cannot send

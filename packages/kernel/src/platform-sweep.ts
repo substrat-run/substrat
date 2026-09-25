@@ -18,7 +18,7 @@ import type {
   ImportState,
   WantedEvent,
 } from '@substrat-run/contracts';
-import type { ExecutorDrainReport, FetchLike, ScopeHost, SweepRunInput } from './scope-host.js';
+import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput } from './scope-host.js';
 import { backoffAt } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
@@ -666,8 +666,13 @@ export interface CrossVerticalReach {
    * (`ScopeHost.registeredImports`). A host that imports nothing gets no candidates; one that
    * does gets every listed scope, which is right where one host is the deployment for all of
    * them (a self-host). The control plane passes the registry's answer per scope.
+   *
+   * `hint.from` is set when only one producer's edges are being run (the router kick,
+   * `runCrossVerticalFrom`): a scope whose code imports nothing from that vertical may then be
+   * dropped too. Ignoring the hint is correct, only dearer: an edge from another producer is
+   * never run on such a pass anyway.
    */
-  candidates?(scopes: readonly Scope[]): Promise<readonly Scope[]> | readonly Scope[];
+  candidates?(scopes: readonly Scope[], hint?: { from: string }): Promise<readonly Scope[]> | readonly Scope[];
   /** The consumer's running imports and its watermark per producer. */
   importState(tenantId: TenantId, scopeId: ScopeId): Promise<ImportState>;
   /** The producer's release after a watermark, decided by the producer's own code. */
@@ -1382,10 +1387,12 @@ export async function runPlatformSweep(
  */
 async function sweepCrossVertical(
   host: ScopeHost,
-  options: PlatformSweepOptions,
+  options: Pick<PlatformSweepOptions, 'actor' | 'recordSweepRun' | 'concurrency'>,
   cv: CrossVerticalOptions,
   failedThisPass: ReadonlySet<string>,
-  report: PlatformSweepReport,
+  report: Pick<PlatformSweepReport, 'errors'>,
+  /** Run only this producer's outgoing edges (the router kick). Absent: every edge. */
+  only?: { tenantId: TenantId; scopeId: ScopeId },
 ): Promise<CrossVerticalReport> {
   const out: CrossVerticalReport = {
     edges: [],
@@ -1403,9 +1410,9 @@ async function sweepCrossVertical(
   };
   // The default narrowing: this host's own code. A host that predates `registeredImports`
   // imports nothing it could name, and is treated as importing nothing.
-  const candidatesOf =
+  const candidatesOf: NonNullable<CrossVerticalReach['candidates']> =
     reach.candidates?.bind(reach) ??
-    ((scopes: readonly Scope[]) => ((host.registeredImports?.() ?? []).length > 0 ? scopes : []));
+    ((scopes) => ((host.registeredImports?.() ?? []).length > 0 ? scopes : []));
   // Normalized for the eventDrainBatch reason: a fractional or NaN budget would reach a SQL
   // LIMIT, and every edge would fail every tick as though the fleet were broken.
   const configured = cv.budget ?? EVENT_DRAIN_BATCH;
@@ -1414,9 +1421,22 @@ async function sweepCrossVertical(
   // fork is a copy of somebody's data. Delivering into it would feed a copy as though it were
   // the install, and reading from it would publish a copy's history to another vertical. A
   // preview is not the install either.
-  const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
-    (s) => isPrimaryScope(s) && s.vertical !== null,
-  );
+  //
+  // A producer-scoped run reads only that tenant's scopes: both ends of an edge are in one
+  // tenant, so nothing outside it can be a consumer of this producer or change how it resolves.
+  const scopes = (
+    await host.admin.listScopes(options.actor, { status: 'active', ...(only ? { tenantId: only.tenantId } : {}) })
+  ).filter((s) => isPrimaryScope(s) && s.vertical !== null);
+  // The kick names a scope, and the edges run are the ones whose producer RESOLVES to it. A
+  // fork, a preview, a second install or a scope of another tenant is not a producer, so a
+  // kick naming one runs nothing (the sweep would resolve the same way).
+  let from: string | null = null;
+  if (only) {
+    const named = scopes.find((s) => s.id === only.scopeId && s.tenantId === only.tenantId);
+    const resolved = named ? resolveVerticalInstanceFrom(scopes, named.tenantId, named.vertical!) : null;
+    if (!named || resolved?.outcome !== 'resolved' || resolved.instance.scopeId !== named.id) return out;
+    from = named.vertical!;
+  }
 
   const record = (edge: CrossVerticalEdge): void => {
     out.edges.push(edge);
@@ -1452,7 +1472,7 @@ async function sweepCrossVertical(
 
   // Narrowed BEFORE any scope is called, then capped. The resolution below still needs every
   // primary scope (a producer is any of them), and that is the one directory read above.
-  const candidates = await candidatesOf(scopes);
+  const candidates = await candidatesOf(scopes, ...(from !== null ? [{ from }] : []));
   out.candidates = candidates.length;
   const configuredCap = cv.maxConsumers ?? CROSS_VERTICAL_CONSUMERS_PER_PASS;
   const cap = Number.isFinite(configuredCap) && configuredCap >= 0 ? Math.floor(configuredCap) : CROSS_VERTICAL_CONSUMERS_PER_PASS;
@@ -1470,6 +1490,7 @@ async function sweepCrossVertical(
     }
     const bySource = new Map<string, WantedEvent[]>();
     for (const c of state.consumes) {
+      if (from !== null && c.from !== from) continue;
       const list = bySource.get(c.from) ?? [];
       list.push({ type: c.type, schemaVersion: c.schemaVersion });
       bySource.set(c.from, list);
@@ -1481,6 +1502,78 @@ async function sweepCrossVertical(
     }
   });
   return out;
+}
+
+/**
+ * Run ONE producer's outgoing edges now (#1705 PR 2): the half of the router kick that makes a
+ * cross-vertical event arrive in seconds rather than at the next sweep.
+ *
+ * The same phase, under the same rules, narrowed. It reads the producer's tenant only, runs only
+ * edges whose producer RESOLVES to `producer` (so a fork, a preview or a second install runs
+ * nothing), asks `candidates` with `{ from }` so a consumer that imports nothing from this
+ * vertical is never called, and keeps the per-pass consumer cap. What it moves is exactly what
+ * the next sweep would have moved: the watermark's compare-and-set makes the two safe to overlap,
+ * and an edge a kick has taken reads as `idle` to the sweep that follows.
+ */
+export async function runCrossVerticalFrom(
+  host: ScopeHost,
+  options: Pick<PlatformSweepOptions, 'actor' | 'recordSweepRun' | 'concurrency'> & {
+    crossVertical: CrossVerticalOptions;
+  },
+  producer: { tenantId: TenantId; scopeId: ScopeId },
+): Promise<{ crossVertical: CrossVerticalReport; errors: PlatformSweepReport['errors'] }> {
+  const report: Pick<PlatformSweepReport, 'errors'> = { errors: [] };
+  const crossVertical = await sweepCrossVertical(host, options, options.crossVertical, new Set(), report, producer);
+  return { crossVertical, errors: report.errors };
+}
+
+/**
+ * The control plane's `CrossVerticalReach.candidates` (#1705 PR 2): narrow the listed scopes to
+ * those whose RUNNING version declares an import, read from the version registry and never from
+ * a scope.
+ *
+ * Per pass that is one `listVerticals` (the serving pointers, only when some scope is on a
+ * serving script) and one `versionManifest` per DISTINCT running version, cached for the pass,
+ * both directory reads. With no importing version anywhere, no scope is called at all. A
+ * version whose manifest was not retained, or predates the `imports` rows, imports nothing it
+ * could name, and is treated as importing nothing. The same fallback the host's own
+ * `registeredImports` default gives an old host.
+ *
+ * `importsOf` parses a stored manifest (`importsOfManifestJson` in contracts), injected so this
+ * module does not decide how a manifest is stored.
+ */
+export function registryImportCandidates(input: {
+  admin: Pick<HostAdmin, 'listVerticals' | 'versionManifest'>;
+  actor: PlatformActorId;
+  importsOf: (manifestJson: string | null) => readonly { from: string }[];
+}): NonNullable<CrossVerticalReach['candidates']> {
+  return async (scopes, hint) => {
+    const serving = new Map<string, ServingPointer>();
+    if (scopes.some((s) => s.servingRef)) {
+      for (const v of await input.admin.listVerticals(input.actor)) {
+        if (v.servingRef && v.servingVersionId) serving.set(v.slug, { ref: v.servingRef, versionId: v.servingVersionId });
+      }
+    }
+    const sourcesOf = new Map<string, Promise<Set<string>>>();
+    const out: Scope[] = [];
+    for (const s of scopes) {
+      if (!s.vertical) continue;
+      const running = runningVersionOf(s, serving.get(s.vertical));
+      if (!running) continue;
+      const cacheKey = `${s.vertical}\u0000${running}`;
+      let sources = sourcesOf.get(cacheKey);
+      if (!sources) {
+        const slug = s.vertical;
+        sources = input.admin
+          .versionManifest(input.actor, slug, running)
+          .then((json) => new Set(input.importsOf(json).map((i) => i.from)));
+        sourcesOf.set(cacheKey, sources);
+      }
+      const from = await sources;
+      if (hint ? from.has(hint.from) : from.size > 0) out.push(s);
+    }
+    return out;
+  };
 }
 
 async function sweepEdge(

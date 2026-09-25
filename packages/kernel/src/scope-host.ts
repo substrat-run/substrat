@@ -686,6 +686,16 @@ export interface ScopeStubOptions {
    * sweep interval, nothing more.
    */
   onPlatformRequests?: (count: number) => void;
+  /**
+   * Fired after an invoke through this stub COMMITS having added outbox rows of a type this
+   * deployment exports to other verticals (#1705), with how many. Its own emits and those of
+   * the in-scope consumers that ran in its post-commit tail both count. A vertical's request
+   * handler flags its response `x-substrat-exported-events` (`EXPORTED_EVENTS_HEADER`), and
+   * the router's drain kick then also runs this producer's outgoing edges, so delivery takes
+   * seconds instead of one sweep interval. Never fired for a rolled-back operation, or by a
+   * deployment that exports nothing. Purely advisory, like `onPlatformRequests`.
+   */
+  onExportedEvents?: (count: number) => void;
 }
 
 export interface SqlMigration {

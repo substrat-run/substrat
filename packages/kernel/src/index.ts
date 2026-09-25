@@ -226,6 +226,7 @@ export {
   PlatformCallError,
   PLATFORM_SECRET_HEADER,
   PLATFORM_REQUEST_HEADER,
+  EXPORTED_EVENTS_HEADER,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
 } from './platform-call.js';
 export {
@@ -430,6 +431,8 @@ export {
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,
   CROSS_VERTICAL_CONSUMERS_PER_PASS,
+  runCrossVerticalFrom,
+  registryImportCandidates,
 } from './platform-sweep.js';
 export type {
   CrossVerticalEdge,
@@ -472,6 +475,8 @@ export {
   IMPORT_CURSOR_OF_SQL,
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
+  OUTBOX_MARK_SQL,
+  exportedSinceQuery,
   exportReadQuery,
   exportReadPlan,
   exportsOf,

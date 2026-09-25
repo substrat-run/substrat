@@ -948,6 +948,8 @@ interface ScopeStubRpc {
     capability?: { honoured: boolean };
     /** #1706: present iff the DO understood `verticalCaller`, on the same reasoning. */
     vertical?: { honoured: boolean };
+    /** #1705 PR 2: exported-type rows the commit added; absent means none (or an older DO). */
+    exported?: number;
   }>;
   /** Trade a capability secret for a session or a principal (#1672) — the kernel's
    *  `exchangeCapability`, run in this scope's own storage. */
@@ -1218,6 +1220,8 @@ interface ScopeStubRpc {
   importStateRead(): Promise<ImportState>;
   /** #1705: apply a batch another vertical exported, under the watermark's compare-and-set. */
   importApply(batch: ImportBatch, tenantId: TenantId, scopeId: ScopeId): Promise<ImportResult>;
+  /** #1705 PR 2: was this scope provisioned here for this tenant — read without migrating. */
+  servesTenant(tenantId: TenantId): Promise<boolean>;
   redrainEvents(drainedBefore: string): Promise<number>;
   /** How many rows that reopen WOULD touch, touching none of them (#1545). */
   redrainCount(drainedBefore: string): Promise<number>;
@@ -3652,6 +3656,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // kick is what collapses its dispatch latency from sweep-cadence to seconds.
         const enqueued = envelope.platformRequests + (drained.routedToPlatform ?? 0);
         if (enqueued > 0) options?.onPlatformRequests?.(enqueued);
+        if ((envelope.exported ?? 0) > 0) options?.onExportedEvents?.(envelope.exported!);
         if (envelope.concurrency) invokeOptions?.onEntityVersion?.(envelope.concurrency.version);
         if (envelope.idempotency?.replayed) invokeOptions?.onIdempotentReplay?.();
         return envelope.result as O;
@@ -7284,6 +7289,59 @@ export class CloudflareScopeHost implements ScopeHost {
     return peerSwitchOutcome.parse(
       await this.scopeStub(scopeId).switchPeer(verticalSlug.parse(vertical), scopeId, to, new Date().toISOString()),
     );
+  }
+
+  // -- the cross-vertical far ends (#1705 PR 2) --------------------------------
+  // The shared control plane runs the cross-vertical phase for every hosted edge and reaches the
+  // scopes over `/internal/exported-events`, `/internal/import-state` and `/internal/import-events`,
+  // which land here. The platform resolved the pair and the tenant; what runs HERE is what only
+  // this deployment can decide: what its own code exports and to whom, and what its own code
+  // imports and runs. Each verb first proves the scope is one this deployment serves
+  // (`assertServesLocally`), because a CP-less host has no directory and an unprovisioned DO
+  // answers every read with a plausible empty result.
+
+  /** The producer's release after a watermark (#1705), for a scope served HERE. */
+  async exportedEventsLocal(tenantId: TenantId, scopeId: ScopeId, raw: ExportReadInput): Promise<ExportedBatch> {
+    const input = exportReadInput.parse(raw);
+    await this.assertServesLocally(tenantId, scopeId, 'readExportedEvents');
+    return exportedBatch.parse(await this.scopeStub(scopeId).exportedEventsRead(input, tenantId, scopeId));
+  }
+
+  /**
+   * The consumer's imports and watermarks (#1705), for a scope served HERE. A deployment that
+   * imports nothing answers so without a call, as `admin.importState` does: that is a fact
+   * about this code, and it names no scope.
+   */
+  async importStateLocal(tenantId: TenantId, scopeId: ScopeId): Promise<ImportState> {
+    if (this.crossVertical.consumes().length === 0) return { consumes: [], cursors: [] };
+    await this.assertServesLocally(tenantId, scopeId, 'importState');
+    return importState.parse(await this.scopeStub(scopeId).importStateRead());
+  }
+
+  /** Apply a producer's batch (#1705) to a scope served HERE, through the peer door's gate. */
+  async importEventsLocal(tenantId: TenantId, scopeId: ScopeId, batch: ImportBatch): Promise<ImportResult> {
+    await this.assertServesLocally(tenantId, scopeId, 'deliverToPeer');
+    return this.deliverToPeer(tenantId, scopeId, batch);
+  }
+
+  /**
+   * The served-here gate for a CP-less host (#1705 PR 2): the scope must have been provisioned
+   * in THIS deployment's namespace, for THIS tenant (`ScopeDO.servesTenant`). On a host with a
+   * directory the directory's own gate runs as well, so the shared control plane still refuses
+   * a scope bound to a vertical. Refused `conflict`, not `not_found`: over `/internal` a 404
+   * means "this deployment predates the route", and the platform reads it as exactly that.
+   */
+  private async assertServesLocally(tenantId: TenantId, scopeId: ScopeId, verb: string): Promise<void> {
+    if (!this.cpLess) {
+      this.assertServedHere(await this.scopeRecordForRead(tenantId, scopeId), scopeId, verb);
+    }
+    if (!(await this.scopeStub(scopeId).servesTenant(tenantId))) {
+      throw substratError(
+        'conflict',
+        `${verb} cannot answer for scope ${scopeId}: this deployment holds no scope provisioned for tenant ` +
+          `${tenantId} under that id — the platform resolved the scope to a deployment that does not serve it`,
+      );
+    }
   }
 }
 

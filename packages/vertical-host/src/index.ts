@@ -109,6 +109,13 @@ import {
   verticalSlug as verticalSlugOf,
   type PeerSwitchOutcome,
   type VerticalCaller,
+  exportReadInput,
+  importBatch,
+  type ExportReadInput,
+  type ExportedBatch,
+  type ImportBatch,
+  type ImportResult,
+  type ImportState,
 } from '@substrat-run/contracts';
 
 /**
@@ -280,6 +287,16 @@ export interface VerticalScopeHost {
   ): Promise<unknown>;
   /** The far end of the peer kill switch (#1706). Optional, 501 when absent, like the rest. */
   peerSwitchLocal?(scopeId: ScopeId, vertical: string, to: 'on' | 'off'): Promise<PeerSwitchOutcome>;
+  /**
+   * The cross-vertical far ends (#1705 PR 2): the producer's release after a watermark, the
+   * consumer's imports and watermarks, and a batch applied to the consumer. Each proves the
+   * scope is one this deployment serves before it answers. OPTIONAL like the switches: a host
+   * built before them answers 501 here, which the platform reports as "redeploy the vertical",
+   * never as an empty export list or a watermark of "never read".
+   */
+  exportedEventsLocal?(tenantId: TenantId, scopeId: ScopeId, input: ExportReadInput): Promise<ExportedBatch>;
+  importStateLocal?(tenantId: TenantId, scopeId: ScopeId): Promise<ImportState>;
+  importEventsLocal?(tenantId: TenantId, scopeId: ScopeId, batch: ImportBatch): Promise<ImportResult>;
 }
 
 /**
@@ -433,6 +450,16 @@ const peerSwitchBody = z.object({
   vertical: verticalSlugOf,
   to: z.enum(['on', 'off']),
 });
+
+/**
+ * `/internal/exported-events` body (#1705 PR 2): the producer scope the platform resolved, and
+ * the read it asks for. `input.consumer` is the platform's word for who receives, taken from its
+ * directory. The producer then answers from its OWN exports and the consumer's grants here.
+ */
+const exportedEventsBody = z.object({ tenantId: tenantIdOf, scopeId: scopeIdOf, input: exportReadInput });
+
+/** `/internal/import-events` body (#1705 PR 2): the consumer scope, and the batch to apply. */
+const importEventsBody = z.object({ tenantId: tenantIdOf, scopeId: scopeIdOf, batch: importBatch });
 
 /** `/internal/connector-grant` body (#574) — the delivery half of `grantToConnection`. */
 const connectorGrantBody = z.object({
@@ -1000,6 +1027,40 @@ export function mountPlatformSurface<Env extends object>(
       return c.json({ error: 'this deployment cannot switch peers (#1706) — redeploy it' }, 501);
     }
     return c.json(await host.peerSwitchLocal(body.scopeId, body.vertical, body.to));
+  });
+
+  // The cross-vertical far ends (#1705 PR 2). The shared control plane runs the phase for every
+  // hosted edge, and the two scopes of an edge live in two vertical deployments it can reach
+  // only through here. Behind the platform secret like every `/internal` verb. The body only
+  // NAMES the scope the platform resolved. The host proves it serves that scope for that tenant,
+  // then this deployment's own code decides what leaves (its exports, the consumer's grants
+  // here) and what runs (its imports, the producer's admission at its door). A host built before
+  // these answers 501, never an empty list: "nothing to export" and "cannot answer" must not
+  // look alike to the platform.
+  app.post('/internal/exported-events', async (c) => {
+    const body = exportedEventsBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.exportedEventsLocal) {
+      return c.json({ error: 'this deployment cannot export events to other verticals (#1705) — redeploy it' }, 501);
+    }
+    return c.json(await host.exportedEventsLocal(body.tenantId, body.scopeId, body.input));
+  });
+  app.get('/internal/import-state', async (c) => {
+    const tenantId = tenantIdOf.parse(c.req.query('tenantId'));
+    const scopeId = scopeIdOf.parse(c.req.query('scopeId'));
+    const host = deps.hostFor(c.env);
+    if (!host.importStateLocal) {
+      return c.json({ error: 'this deployment cannot import events from other verticals (#1705) — redeploy it' }, 501);
+    }
+    return c.json(await host.importStateLocal(tenantId, scopeId));
+  });
+  app.post('/internal/import-events', async (c) => {
+    const body = importEventsBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.importEventsLocal) {
+      return c.json({ error: 'this deployment cannot import events from other verticals (#1705) — redeploy it' }, 501);
+    }
+    return c.json(await host.importEventsLocal(body.tenantId, body.scopeId, body.batch));
   });
 
   app.post('/internal/platform-requests/settle', async (c) => {

@@ -250,6 +250,29 @@ export function exportsOf(
   return out;
 }
 
+/**
+ * The outbox's insertion mark (#1705 PR 2): the kick's "before", taken ahead of an invoke.
+ *
+ * `rowid`, not the event id. A ULID minted in the same millisecond as the newest row can sort
+ * BELOW it, so "ids above the newest id" can miss an event this invoke wrote. `rowid` is
+ * assigned max + 1 on insert, and nothing an invoke does deletes the outbox's newest row, so
+ * every row the invoke and its consumers add sits above the mark.
+ */
+export const OUTBOX_MARK_SQL = 'SELECT COALESCE(MAX(rowid), 0) AS mark FROM _substrat_outbox';
+
+/**
+ * How many rows of the exported `types` were added after `mark` (#1705 PR 2). This is the
+ * count `ScopeStubOptions.onExportedEvents` reports. A seek on the rowid, so it walks only
+ * what the invoke added. Callers skip it entirely when the deployment exports nothing.
+ */
+export function exportedSinceQuery(types: readonly string[], mark: number): { sql: string; params: unknown[] } {
+  if (types.length === 0) throw new Error('exportedSinceQuery: no types to count');
+  return {
+    sql: `SELECT COUNT(*) AS n FROM _substrat_outbox WHERE rowid > ? AND type IN (${types.map(() => '?').join(', ')})`,
+    params: [mark, ...types],
+  };
+}
+
 /** The consumer's watermark per producer, oldest source first. */
 export const IMPORT_CURSORS_SQL =
   'SELECT source_scope_id, source_vertical, cursor, updated_at FROM _substrat_import_cursors ORDER BY source_scope_id';

@@ -57,6 +57,19 @@ export const CONNECTOR_ATTACHMENT_RECORD_HEADER = 'x-substrat-attachment';
 export const PLATFORM_REQUEST_HEADER = 'x-substrat-platform-request';
 
 /**
+ * The RESPONSE header a vertical sets when the operation it just ran committed an event of a
+ * type this deployment EXPORTS to other verticals (#1705). The router reads it beside
+ * {@link PLATFORM_REQUEST_HEADER} and asks the control plane to run this producer's outgoing
+ * edges now, so a consumer in another vertical receives the event in seconds rather than at
+ * the next sweep. Like its sibling it carries no payload and no privilege: the control plane
+ * takes the tenant and scope from the route the router resolved, never from the response, and a
+ * spurious flag costs one pass over that producer's own edges. The router strips every
+ * `x-substrat-*` header from an inbound request, so only a response can raise it. Fed by
+ * `ScopeStubOptions.onExportedEvents`.
+ */
+export const EXPORTED_EVENTS_HEADER = 'x-substrat-exported-events';
+
+/**
  * Throw unless this request proves it came from the platform.
  *
  * **An unset secret is a failure, not a bypass.** That is the opposite of how the
