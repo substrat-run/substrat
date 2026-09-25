@@ -1,4 +1,4 @@
-import type { PermissionRegistry } from '@substrat-run/contracts';
+import type { MigrationDiff, PermissionRegistry } from '@substrat-run/contracts';
 
 /**
  * What the promote dialog needs to show a permission diff BEFORE a promote (#1677): the
@@ -15,6 +15,14 @@ export interface PromotionReview {
   incoming: { versionId: string };
   servingRegistry: PermissionRegistry | null;
   incomingRegistry: PermissionRegistry | null;
+  /**
+   * The SQL migrations the incoming version adds on top of the serving one (#1677). `null`
+   * when there is nothing to compare (a first promotion, or promoting what already serves)
+   * or when the incoming version's manifest carries no SQL. Null is never "no migrations":
+   * if the registry's gate then refuses on the migration digest, the dialog says the SQL is
+   * not available and still asks.
+   */
+  migrations: MigrationDiff | null;
 }
 
 /**
@@ -28,6 +36,8 @@ export interface PromotionReviewReader {
   /** The version the `prod` channel points at, or null when no version has been promoted. */
   prodVersionId(): Promise<string | null>;
   registry(versionId: string): Promise<PermissionRegistry | null>;
+  /** What `versionId` adds on top of `baseId`, or null when its manifest carries no SQL. */
+  migrations(versionId: string, baseId: string): Promise<MigrationDiff | null>;
 }
 
 export async function readPromotionReview(
@@ -44,11 +54,14 @@ export async function readPromotionReview(
       incoming: { versionId: incomingVersionId },
       servingRegistry: null,
       incomingRegistry: null,
+      migrations: null,
     };
   }
-  const [servingRegistry, incomingRegistry] = await Promise.all([
+  const same = servingId === incomingVersionId;
+  const [servingRegistry, incomingRegistry, migrations] = await Promise.all([
     reader.registry(servingId),
-    servingId === incomingVersionId ? undefined : reader.registry(incomingVersionId),
+    same ? undefined : reader.registry(incomingVersionId),
+    same ? null : reader.migrations(incomingVersionId, servingId),
   ]);
   return {
     serving: { versionId: servingId },
@@ -56,5 +69,6 @@ export async function readPromotionReview(
     servingRegistry,
     // Promoting the version prod already serves changes nothing; one read answers both.
     incomingRegistry: incomingRegistry === undefined ? servingRegistry : incomingRegistry,
+    migrations,
   };
 }

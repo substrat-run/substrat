@@ -25,6 +25,7 @@ import type {
   InvocationEvents,
   DeadLetter,
   PermissionDenial,
+  MigrationDiff,
   PermissionRegistry,
   PlatformRequest,
   PreviewAuth,
@@ -823,6 +824,16 @@ export class TenantNarrowedControlPlane {
             throw new ControlPlaneError(502, `the registry of version ${id} could not be read`);
           }
           return res.registry ?? null;
+        },
+        migrations: async (id, baseId) => {
+          const res = await this.call<{ migrations?: MigrationDiff | null } | undefined>(
+            `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(id)}/migrations?base=${encodeURIComponent(baseId)}`,
+          );
+          // The same rule as the registry: an OK answer with no readable body is no answer.
+          if (!res || typeof res !== 'object' || !('migrations' in res)) {
+            throw new ControlPlaneError(502, `the migrations of version ${id} could not be read`);
+          }
+          return res.migrations ?? null;
         },
       },
       versionId,

@@ -77,9 +77,17 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
   let sabotage: ((path: string) => Response | Promise<Response> | undefined) | null;
 
   const subs = { owner: 'sub-owner', viewer: 'sub-viewer' } as const;
-  const v = { v1: ulid(), v2: ulid(), v3: ulid(), v4: ulid(), old: ulid() };
+  const v = { v1: ulid(), v2: ulid(), v3: ulid(), v4: ulid(), old: ulid(), s1: ulid(), s2: ulid() };
+  const INIT = { moduleId: 'hr', version: '0001-init', sql: 'CREATE TABLE person (id TEXT PRIMARY KEY);' };
+  const ADD = { moduleId: 'hr', version: '0002-salary', sql: 'ALTER TABLE person ADD COLUMN salary TEXT;' };
 
-  async function publish(id: string, version: string, digests: { p: string; m: string }, registry: ReturnType<typeof registryOf> | null) {
+  async function publish(
+    id: string,
+    version: string,
+    digests: { p: string; m: string },
+    registry: ReturnType<typeof registryOf> | null,
+    migrations?: { moduleId: string; version: string; sql: string }[],
+  ) {
     await host.admin.publishVersion(staff, {
       id,
       verticalSlug: SLUG,
@@ -96,6 +104,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
               compatibilityDate: '2026-07-01',
               registry,
               digests: { manifest: `manifest-${version}`, permission: digests.p, migration: digests.m },
+              ...(migrations ? { migrations } : {}),
             }),
           }
         : {}),
@@ -126,6 +135,9 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
     await publish(v.v3, '1.2.0', { p: 'perm-1', m: 'mig-3' }, registryOf());
     await publish(v.v4, '2.0.0', { p: 'perm-4', m: 'mig-4' }, registryOf(['hr:admin', 'hr:export']));
     await publish(v.old, '0.1.0', { p: 'perm-0', m: 'mig-0' }, null); // pushed before D-39: no registry
+    // s1 → s2 adds one SQL migration and moves NO digest: what #1754 is about.
+    await publish(v.s1, '3.0.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), [INIT]);
+    await publish(v.s2, '3.1.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), [INIT, ADD]);
 
     const plane = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
     env = {
@@ -171,7 +183,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
 
     it('a first promotion has nothing serving, and nothing to diff', async () => {
       const body = (await (await get(subs.owner, reviewPath(v.v1))).json()) as PromoteReviewWire;
-      expect(body).toEqual({ serving: null, incoming: { versionId: v.v1 }, servingRegistry: null, incomingRegistry: null });
+      expect(body).toEqual({ serving: null, incoming: { versionId: v.v1 }, servingRegistry: null, incomingRegistry: null, migrations: null });
     });
 
     it('a version pushed before registries were kept reads as null — the answer, not a failure', async () => {
@@ -210,6 +222,16 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       it('the registry read answering an empty body', async () => {
         await promoteTo(v.v1);
         sabotage = (p) => (p.endsWith('/registry') ? new Response('not json', { status: 200 }) : undefined);
+        expect((await get(subs.owner, reviewPath(v.v2))).status).toBeGreaterThanOrEqual(500);
+      });
+      it('the migrations read answering 500', async () => {
+        await promoteTo(v.v1);
+        sabotage = (p) => (p.endsWith('/migrations') ? Response.json({ error: 'boom' }, { status: 500 }) : undefined);
+        expect((await get(subs.owner, reviewPath(v.v2))).status).toBe(500);
+      });
+      it('the migrations read answering an empty body', async () => {
+        await promoteTo(v.v1);
+        sabotage = (p) => (p.endsWith('/migrations') ? new Response('not json', { status: 200 }) : undefined);
         expect((await get(subs.owner, reviewPath(v.v2))).status).toBeGreaterThanOrEqual(500);
       });
       it('the channel read failing — which would otherwise read as "nothing serves yet", a first promotion', async () => {
@@ -298,7 +320,8 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       expect(await d.run()).toBe('promoted');
       expect(d.shown).toHaveLength(1);
       expect(d.shown[0]!.permission).toBeNull();
-      expect(d.shown[0]!.migration).toEqual({ digests: 'mig-1 → mig-3' });
+      // v3's manifest carries no SQL: "not available", and the tick is still required.
+      expect(d.shown[0]!.migration).toEqual({ digests: 'mig-1 → mig-3', sql: null, enforced: true });
       expect(sentAcks).toEqual([undefined, { migrationChange: true }]);
       expect(await prod()).toBe(v.v3);
     });
@@ -323,6 +346,22 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       expect(await d.run()).toBe('promoted');
       expect(d.shown[0]!.permission).toEqual({ kind: 'unverifiable', why: 'incoming-has-no-registry' });
       expect(await prod()).toBe(v.old);
+    });
+
+    it('SQL-only → the migrations the gate cannot see are shown and asked for, migrationChange alone', async () => {
+      await promoteTo(v.s1);
+      // The gate itself would let this through with no acknowledgement at all (#1754) …
+      const declined = drive(v.s2, {});
+      expect(await declined.run()).toBe('cancelled');
+      expect(declined.shown[0]!.migration).toMatchObject({ enforced: false, sql: { baseline: 'version', added: [ADD], changed: [] } });
+      expect(sentAcks).toEqual([]);
+      expect(await prod()).toBe(v.s1);
+
+      // … so the dialog is what asks, and a tick is what promotes.
+      const d = drive(v.s2, { migrationChange: true });
+      expect(await d.run()).toBe('promoted');
+      expect(sentAcks).toEqual([{ migrationChange: true }]);
+      expect(await prod()).toBe(v.s2);
     });
 
     it('a review that could not be read blocks the promote, with the plane unreachable', async () => {

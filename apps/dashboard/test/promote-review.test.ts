@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import type { MigrationDiff } from '@substrat-run/contracts';
 import { diffRegistries, hasRegistryChange, registryDirection, type RegistryLike } from '../web/src/lib/registry-diff.js';
 import {
   classifyRefusal,
   honour,
+  planMigration,
   planPermission,
   promoteWithCheckpoint,
   type Acks,
@@ -41,6 +43,7 @@ const review = (over: Partial<PromoteReviewWire> = {}): PromoteReviewWire => ({
   incoming: { versionId: 'v2' },
   servingRegistry: reg(),
   incomingRegistry: reg(),
+  migrations: null,
   ...over,
 });
 
@@ -180,7 +183,7 @@ describe('honour', () => {
     expect(honour(shown({}), { permissionChange: true, migrationChange: true })).toEqual({});
   });
   it('keeps what an earlier round acknowledged', () => {
-    expect(honour(shown({ migration: { digests: null }, acknowledged: { permissionChange: true } }), { migrationChange: true })).toEqual({
+    expect(honour(shown({ migration: { digests: null, sql: null, enforced: false }, acknowledged: { permissionChange: true } }), { migrationChange: true })).toEqual({
       permissionChange: true,
       migrationChange: true,
     });
@@ -303,7 +306,7 @@ describe('promoteWithCheckpoint', () => {
       expect(await promoteWithCheckpoint({ review: async () => review(), promote: g.promote, ask: d.ask })).toBe('promoted');
       expect(d.shown).toHaveLength(1);
       expect(d.shown[0]!.permission).toBeNull();
-      expect(d.shown[0]!.migration).toEqual({ digests: 'ccc333 → ddd444' });
+      expect(d.shown[0]!.migration).toEqual({ digests: 'ccc333 → ddd444', sql: null, enforced: true });
       expect(g.sent).toEqual([undefined, { migrationChange: true }]);
       expect(g.sent[1]).not.toHaveProperty('permissionChange');
     });
@@ -417,5 +420,62 @@ describe('promoteWithCheckpoint', () => {
       expect(sent).toEqual([{ permissionChange: true }]);
       expect(d.shown).toHaveLength(1);
     });
+  });
+});
+
+/**
+ * The migrations a promote would run (#1677 part b). The gate's migration digest does not
+ * cover SQL (#1754), so the review is what raises a SQL-only change, and the dialog asks for
+ * it on its own. That acknowledgement is client-side, and these hold it to the same rules as
+ * the rest: shown before it can be given, ticked on its own, and never skipped.
+ */
+describe('the migration section from the review (#1677)', () => {
+  const ADD = { moduleId: 'desk', version: '0002-priority', sql: 'ALTER TABLE ticket ADD COLUMN priority TEXT;' };
+  const withSql = (over: Partial<MigrationDiff> = {}): PromoteReviewWire =>
+    review({ migrations: { baseline: 'version', added: [ADD], changed: [], total: 1, truncated: false, ...over } });
+
+  it('planMigration: shown when the review adds or edits one, not for an empty diff or a null', () => {
+    expect(planMigration(withSql())).toEqual({ digests: null, sql: withSql().migrations, enforced: false });
+    expect(planMigration(withSql({ added: [], total: 0 }))).toBeNull();
+    expect(planMigration(review())).toBeNull();
+  });
+
+  it('a SQL-only change the gate does not see is asked for BEFORE the promote, and sent only if ticked', async () => {
+    const g = gate({});
+    const d = dialog({ migrationChange: true });
+    expect(await promoteWithCheckpoint({ review: async () => withSql(), promote: g.promote, ask: d.ask })).toBe('promoted');
+    expect(d.shown).toHaveLength(1);
+    expect(d.shown[0]!.migration).toMatchObject({ enforced: false, sql: { added: [ADD] } });
+    expect(g.sent).toEqual([{ migrationChange: true }]);
+  });
+
+  it('not ticked → nothing is promoted, though the gate would have let it through', async () => {
+    const g = gate({});
+    expect(await promoteWithCheckpoint({ review: async () => withSql(), promote: g.promote, ask: dialog({}).ask })).toBe('cancelled');
+    expect(await promoteWithCheckpoint({ review: async () => withSql(), promote: g.promote, ask: dialog(null).ask })).toBe('cancelled');
+    expect(g.sent).toEqual([]);
+  });
+
+  it('the permission tick does not cover it', async () => {
+    const g = gate({ permission: true });
+    const both = { ...withSql(), incomingRegistry: widened.incomingRegistry };
+    expect(await promoteWithCheckpoint({ review: async () => both, promote: g.promote, ask: dialog({ permissionChange: true }).ask })).toBe('cancelled');
+    expect(g.sent).toEqual([]);
+  });
+
+  it('a gate refusal with SQL in the review shows the SQL, now enforced', async () => {
+    const g = gate({ migration: true });
+    const noSqlChange = withSql({ added: [], total: 0 });
+    const d = dialog({ migrationChange: true });
+    expect(await promoteWithCheckpoint({ review: async () => noSqlChange, promote: g.promote, ask: d.ask })).toBe('promoted');
+    expect(d.shown[0]!.migration).toEqual({ digests: 'ccc333 → ddd444', sql: noSqlChange.migrations, enforced: true });
+  });
+
+  it('a gate refusal with NO SQL carried still requires the tick — never fails open', async () => {
+    const g = gate({ migration: true });
+    const d = dialog(null);
+    expect(await promoteWithCheckpoint({ review: async () => review(), promote: g.promote, ask: d.ask })).toBe('cancelled');
+    expect(d.shown[0]!.migration).toEqual({ digests: 'ccc333 → ddd444', sql: null, enforced: true });
+    expect(g.sent).toEqual([undefined]);
   });
 });
