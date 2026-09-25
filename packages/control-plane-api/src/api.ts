@@ -4566,20 +4566,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // and `substrat promote` show before a migration change is acknowledged. `?base=` names the
   // version to compare against (the one `prod` serves); without it every migration is listed.
   // Owner-narrowed like `/registry`, and never widened: migration SQL describes a schema.
-  // `migrations` is null for a version whose manifest carries none (pushed before the field,
-  // or over the push's cap), which a reader must show as "SQL not available", never as
-  // "no migrations". Bounded in count and bytes (`migrationsOnTop`).
+  // `migrations` is null for a version that carries none (pushed before the field, or over
+  // the push's cap), which a reader must show as "SQL not available", never as
+  // "no migrations". Bounded in count and bytes (`migrationsOnTop`). The SQL is stored apart
+  // from the manifest (#1764), so this reads it without parsing either manifest.
   app.get('/verticals/:slug/versions/:id/migrations', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (await notOwned(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
-    // `versionManifest` refuses a version of another vertical, so `base` cannot reach one.
-    const migrationsOf = async (id: string) => {
-      const json = await admin.versionManifest(c.get('actor'), slug, id);
-      return json ? (storedDeployManifest.parse(JSON.parse(json)).migrations ?? null) : null;
-    };
+    // `versionMigrations` refuses a version of another vertical, so `base` cannot reach one.
+    const migrationsOf = (id: string) => admin.versionMigrations(c.get('actor'), slug, id);
     const base = c.req.query('base');
     const [incoming, baseline] = await Promise.all([
       migrationsOf(c.req.param('id')),

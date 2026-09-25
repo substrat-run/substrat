@@ -141,6 +141,7 @@ import type {
   IssueEntry,
   IssueStatus,
   IssueStatusInput,
+  DeclaredMigration,
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
@@ -2051,6 +2052,19 @@ export interface HostAdmin {
    * version can be bound per-version but never served in place.
    */
   versionManifest(actor: PlatformActorId, verticalSlug: string, versionId: string): Promise<string | null>;
+  /**
+   * One version's SQL migrations (#1764), in the order the host runs them. They are stored
+   * apart from the manifest, which `versionManifest` returns without them. Null for a version
+   * that carries none that can be shown (pushed before #1677, or over the push's caps), which
+   * a reader must show as "not available", never as "no migrations". `[]` is a version whose
+   * modules ship none. Refuses a version of another vertical, like `versionManifest`.
+   * Access-logged: an owner read for the promote review, never a bulk or background path.
+   */
+  versionMigrations(
+    actor: PlatformActorId,
+    verticalSlug: string,
+    versionId: string,
+  ): Promise<DeclaredMigration[] | null>;
   /**
    * Point a scope's ROUTING at the serving script its data now lives in. Per-scope
    * truth, deliberately not derived from the vertical: rerouting a scope whose DOs

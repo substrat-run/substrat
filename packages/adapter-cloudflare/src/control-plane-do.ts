@@ -20,11 +20,17 @@ import {
   switchedOffModulesOf,
   systemSwitchRecordsOf,
   systemSwitchesTableExists,
+  VERSION_MIGRATIONS_DDL,
+  splitVersionMigrationsBatch,
+  versionMigrationsOf,
+  versionsAwaitSplit,
+  writeVersionMigrations,
   type SystemSwitchRecordFilter,
   type SystemSwitchRecordPrior,
   type SystemSwitchRecordRow,
   type SystemSwitchRecordWrite,
   MODEL_USAGE_RETENTION_DAYS,
+  ulid,
   isPrimaryScope,
   resolveVerticalInstanceFrom,
   type ImpersonationRow,
@@ -32,6 +38,7 @@ import {
 import { splitSqlStatements, switchSqlOver } from './scope-do.js';
 import type {
   AdminLogEntry,
+  DeclaredMigration,
   ListPage,
   OpsFailureEntry,
   SweepRunEntry,
@@ -44,7 +51,7 @@ import type {
   TenantStatus,
   VerticalResolution,
 } from '@substrat-run/contracts';
-import { assertReplayableDump } from '@substrat-run/contracts';
+import { assertReplayableDump, opsFailureFingerprint } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -716,10 +723,16 @@ const DIRECTORY_DDL = `
     -- The full DeployManifest as pushed (JSON). What promote/backout rebuild the
     -- serving upload's metadata from — the archive script stores the module BYTES,
     -- this stores the shape (entry, compat, doClasses, bindings). NULL = pre-#286 push.
+    -- Stored WITHOUT its SQL migrations, which live in vertical_version_migrations (#1764).
     manifest_json     TEXT,
+    -- How many migration rows the version stored. NULL = it carries no SQL to show.
+    migration_count   INTEGER,
+    -- 1 once the SQL is out of manifest_json. NULL = stored before #1764, not yet backfilled.
+    migrations_split  INTEGER,
     created_at        TEXT NOT NULL,
     UNIQUE (vertical_slug, version)
   );
+  ${VERSION_MIGRATIONS_DDL}
   CREATE TABLE IF NOT EXISTS vertical_channels (
     vertical_slug TEXT NOT NULL,
     channel       TEXT NOT NULL,
@@ -1042,6 +1055,13 @@ const DIRECTORY_DDL = `
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
 `;
 
+/**
+ * `DIRECTORY_DDL`, split once into what runs before the column additions and after (#1764).
+ * Checked at module load: it is a constant, so a drift is a build that never works rather
+ * than a directory that quietly skips or double-runs a statement.
+ */
+export const DIRECTORY_DDL_PLAN = assertDirectoryDdlPlan(planDirectoryDdl(DIRECTORY_DDL));
+
 /** The scope columns added after the directory's first shape shipped. */
 const SCOPE_COLUMNS_ADDED = [
   'parent_scope_id TEXT',
@@ -1062,16 +1082,142 @@ const SCOPE_COLUMNS_ADDED = [
   'archived_at TEXT',
 ] as const;
 
+/**
+ * A directory DDL's statements in the order `applyDirectorySchema` runs them: `loop` before
+ * the column additions, `afterColumns` after. `VERSION_MIGRATIONS_DDL` indexes a column a
+ * directory from before #1764 gets only from those additions, so its statements are held back.
+ *
+ * Held back by EXACT statement, never by a name a statement contains: a later statement that
+ * merely mentions the table runs in the loop like any other, rather than being skipped. And
+ * `missing` names any held-back statement the DDL does not carry, which would mean the
+ * fragment and the DDL had parted company (its test holds it empty).
+ */
+export function planDirectoryDdl(ddl: string): { loop: string[]; afterColumns: string[]; missing: string[] } {
+  const all = splitSqlStatements(ddl);
+  const afterColumns = splitSqlStatements(VERSION_MIGRATIONS_DDL);
+  const held = new Set(afterColumns);
+  return {
+    loop: all.filter((stmt) => !held.has(stmt)),
+    afterColumns,
+    missing: afterColumns.filter((stmt) => !all.includes(stmt)),
+  };
+}
+
+/** Refuses a plan whose held-back statements the DDL does not carry; returns it otherwise. */
+export function assertDirectoryDdlPlan<P extends { missing: string[] }>(plan: P): P {
+  if (plan.missing.length > 0) {
+    throw new Error(
+      `the directory DDL does not carry ${plan.missing.length} statement(s) of VERSION_MIGRATIONS_DDL — ` +
+        `interpolate the fragment whole: ${plan.missing[0]}`,
+    );
+  }
+  return plan;
+}
+
+/**
+ * The pause before each #1764 backfill batch. A batch holds the directory DO, which every
+ * control-plane request goes through, so batches are spaced rather than run back to back.
+ */
+const BACKFILL_PAUSE_MS = 1000;
+/** The longest a failing #1764 backfill waits before it tries again. */
+const BACKFILL_BACKOFF_MAX_MS = 60 * 60 * 1000;
+
+/**
+ * The actor a directory's own ops-failure rows carry: the directory DO acting for itself, with
+ * no request behind it. A fixed ULID, as the sweeper's is.
+ */
+export const DIRECTORY_ACTOR = '01JZ00000000000000000000DR';
+/** The operation a failing #1764 backfill is recorded under in `_substrat_ops_failures`. */
+export const BACKFILL_OPERATION = 'directory.version-migrations-backfill';
+
+/**
+ * Where the #1764 backfill keeps how many batches have failed in a row: in the DO's storage,
+ * not in the instance, so an eviction between failures does not reset the backoff (or keep
+ * `backoff-capped` from ever being reached). Cleared only after a batch succeeds.
+ */
+export const BACKFILL_FAILURES_KEY = 'versionMigrationsBackfillFailures';
+
+/** How long the backfill waits after its `failures`-th failure in a row: doubling, capped. */
+export function backfillBackoffMs(failures: number): number {
+  return Math.min(BACKFILL_PAUSE_MS * 2 ** failures, BACKFILL_BACKOFF_MAX_MS);
+}
+
 export class ControlPlaneDO extends DurableObject {
   private readonly sql: SqlStorage;
   /** The directory's store as the kernel's SQL handle — the switch record's helpers (#1674). */
   private readonly kernelSql: ReturnType<typeof switchSqlOver>;
+  /** Settles once the constructor's #1764 backfill check has run (awaited by the tests). */
+  readonly backfillArmed: Promise<void>;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
     this.sql = ctx.storage.sql;
     this.kernelSql = switchSqlOver(this.sql);
     this.applyDirectorySchema();
+    this.backfillArmed = ctx.blockConcurrencyWhile(() => this.armVersionMigrationsBackfill());
+  }
+
+  /**
+   * Schedule the #1764 backfill when a version still carries its SQL in its manifest.
+   *
+   * Only the probe runs here, never the backfill: this is on the constructor's path, and a
+   * directory DO that cannot construct is a control plane that is down. The probe reads the
+   * partial index of versions not yet split, so it costs the same for ten versions or ten
+   * thousand. The alarm then moves a bounded batch per run. A restore arms its own new episode
+   * instead (`importDump`).
+   */
+  private async armVersionMigrationsBackfill(): Promise<void> {
+    if (!versionsAwaitSplit(this.kernelSql)) return;
+    // An alarm already set is kept: it is the backfill's own next run, and a backoff retry
+    // pulled forward to 1 s by any ordinary request would make the backoff meaningless.
+    if ((await this.ctx.storage.getAlarm()) !== null) return;
+    await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
+  }
+
+  /**
+   * One bounded batch of the #1764 backfill, then re-arm while versions are left. A batch
+   * and its progress marks commit together, so a run that fails moved nothing.
+   *
+   * A failure is caught and the alarm re-armed with a doubling backoff (capped at an hour),
+   * rather than thrown: workerd's own alarm retries give up after a few attempts, and the
+   * backfill would then stay stopped until the DO was next constructed. Nothing is lost
+   * meanwhile, because a version the backfill has not reached reads from its manifest.
+   */
+  override async alarm(): Promise<void> {
+    let more: boolean;
+    try {
+      more = this.ctx.storage.transactionSync(() => splitVersionMigrationsBatch(this.kernelSql)).more;
+    } catch (err) {
+      const failures = ((await this.ctx.storage.get<number>(BACKFILL_FAILURES_KEY)) ?? 0) + 1;
+      await this.ctx.storage.put(BACKFILL_FAILURES_KEY, failures);
+      const delay = backfillBackoffMs(failures);
+      console.error(`substrat: version-migrations backfill failed, retrying in ${delay} ms`, err);
+      // Visible where staff look, not only in logs: once when it starts failing, and once
+      // more when the backoff reaches its cap (a backfill that is stuck, not unlucky).
+      const stage =
+        failures === 1 ? 'first-failure'
+        : delay === BACKFILL_BACKOFF_MAX_MS && backfillBackoffMs(failures - 1) < delay ? 'backoff-capped'
+        : null;
+      if (stage) {
+        try {
+          this.recordOpsFailure({
+            id: ulid(), actor: DIRECTORY_ACTOR, operation: BACKFILL_OPERATION, stage,
+            tenant_id: null, scope_id: null, vertical: null, version: null, status: null,
+            message: `failed ${failures} time(s) in a row, retrying in ${delay} ms: ${String(err)}`.slice(0, 2000),
+            reference: null, origin: null, code: null,
+            fingerprint: opsFailureFingerprint({ operation: BACKFILL_OPERATION, stage }), at: new Date().toISOString(),
+          });
+        } catch (recordErr) {
+          console.error('substrat: could not record the version-migrations backfill failure', recordErr);
+        }
+      }
+      await this.ctx.storage.setAlarm(Date.now() + delay);
+      return;
+    }
+    if ((await this.ctx.storage.get<number>(BACKFILL_FAILURES_KEY)) !== undefined) {
+      await this.ctx.storage.delete(BACKFILL_FAILURES_KEY);
+    }
+    if (more) await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
   }
 
   /**
@@ -1086,11 +1232,13 @@ export class ControlPlaneDO extends DurableObject {
    */
   private applyDirectorySchema(): void {
     const switchRecordIsNew = !systemSwitchesTableExists(this.kernelSql);
-    for (const stmt of splitSqlStatements(DIRECTORY_DDL)) {
+    for (const stmt of DIRECTORY_DDL_PLAN.loop) {
       if (switchRecordIsNew && stmt.includes('_substrat_system_switches')) continue;
       this.sql.exec(stmt);
     }
     this.ensureDirectoryColumns();
+    // #1764's, held back by `planDirectoryDdl`: its index names a column added just above.
+    for (const stmt of DIRECTORY_DDL_PLAN.afterColumns) this.sql.exec(stmt);
     if (switchRecordIsNew) {
       this.ctx.storage.transactionSync(() => {
         for (const stmt of splitSqlStatements(SYSTEM_SWITCHES_DDL)) this.sql.exec(stmt);
@@ -1294,6 +1442,9 @@ export class ControlPlaneDO extends DurableObject {
     // Push provenance (git CI vs a terminal), as pushed-alongside JSON. NULL = pushed
     // before origin tracking, or by an old CLI.
     this.addColumn('vertical_versions', 'origin_json TEXT');
+    // #1764: the SQL migrations moved out of the manifest, and the backfill's progress.
+    this.addColumn('vertical_versions', 'migration_count INTEGER');
+    this.addColumn('vertical_versions', 'migrations_split INTEGER');
     // #33: the SKU flag learns to express a plan. All nullable — a legacy row
     // reads as a perpetual boolean flag, exactly its pre-widening semantics.
     this.addColumn('_substrat_entitlements', 'expires_at TEXT');
@@ -1337,10 +1488,13 @@ export class ControlPlaneDO extends DurableObject {
    * did before the restore, which is the opposite of what a recovery is for.
    */
   exportDump(): ScopeDumpTable[] {
+    // Not `_cf_*` either: workerd's own tables (the #1764 backfill's alarm creates
+    // `_cf_METADATA`), which are not the directory's and which it refuses to drop on restore.
     const defs = this.sql
       .exec(
         `SELECT name, sql FROM sqlite_master
-          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*'
+            AND sql IS NOT NULL
           ORDER BY name`,
       )
       .toArray() as unknown as { name: string; sql: string }[];
@@ -1373,8 +1527,12 @@ export class ControlPlaneDO extends DurableObject {
   async importDump(tables: ScopeDumpTable[]): Promise<void> {
     await this.ctx.storage.transaction(async () => {
       this.sql.exec('PRAGMA defer_foreign_keys = ON');
+      // `_cf_*` is workerd's, and dropping it is refused (SQLITE_AUTH), as `exportDump` says.
       const existing = this.sql
-        .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+        .exec(
+          `SELECT name FROM sqlite_master
+            WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*'`,
+        )
         .toArray() as unknown as { name: string }[];
       for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
       // Same untrusted dump, same two holes as the scope path (#1143): names reaching
@@ -1394,6 +1552,18 @@ export class ControlPlaneDO extends DurableObject {
     // schema assertions, and an ALTER that has to be tolerated (duplicate column) must
     // not take the restore's data down with it.
     this.applyDirectorySchema();
+    // A restore is a new #1764 backfill episode. It replaced the data the old failure count and
+    // backoff were about, so neither may delay or silence it: the count is cleared and the next
+    // batch armed outright, a pause away. (An ordinary construction keeps a pending alarm; this
+    // does not.) A dump taken before the backfill lands unsplit versions, so it runs again.
+    // The restore has committed by now, so failing to arm must not report it as failed: the
+    // next construction arms the backfill, since it finds none set.
+    try {
+      await this.ctx.storage.delete(BACKFILL_FAILURES_KEY);
+      if (versionsAwaitSplit(this.kernelSql)) await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
+    } catch (err) {
+      console.error('substrat: the restore committed, but its version-migrations backfill was not armed', err);
+    }
   }
 
   // -- tenant registry (control-plane.md §4.1) --------------------------------
@@ -2454,6 +2624,11 @@ export class ControlPlaneDO extends DurableObject {
   deleteVertical(slug: string): void {
     this.sql.exec('DELETE FROM vertical_channels WHERE vertical_slug = ?', slug);
     this.sql.exec('DELETE FROM vertical_channel_history WHERE vertical_slug = ?', slug);
+    this.sql.exec(
+      `DELETE FROM vertical_version_migrations
+        WHERE version_id IN (SELECT id FROM vertical_versions WHERE vertical_slug = ?)`,
+      slug,
+    );
     this.sql.exec('DELETE FROM vertical_versions WHERE vertical_slug = ?', slug);
     this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug);
   }
@@ -2473,23 +2648,37 @@ export class ControlPlaneDO extends DurableObject {
       .toArray()[0] as unknown as VersionRow | undefined;
   }
 
+  /**
+   * A version and its SQL migrations (#1764), in one transaction. `manifestJson` arrives with
+   * the SQL already split off (`splitManifestMigrations`); `migrations` is null for a version
+   * that carries none to show.
+   */
   insertVersion(v: {
     id: string; verticalSlug: string; version: string; manifestDigest: string;
     permissionDigest: string; migrationDigest: string; deploymentRef: string | null;
     admission: string; admissionNote: string | null; manifestJson: string | null;
     originJson: string | null;
+    migrations: DeclaredMigration[] | null;
     createdAt: string;
   }): void {
-    this.sql.exec(
-      `INSERT INTO vertical_versions
-         (id, vertical_slug, version, manifest_digest, permission_digest,
-          migration_digest, deployment_ref, admission, admission_note, manifest_json,
-          origin_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      v.id, v.verticalSlug, v.version, v.manifestDigest, v.permissionDigest,
-      v.migrationDigest, v.deploymentRef, v.admission, v.admissionNote, v.manifestJson,
-      v.originJson, v.createdAt,
-    );
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        `INSERT INTO vertical_versions
+           (id, vertical_slug, version, manifest_digest, permission_digest,
+            migration_digest, deployment_ref, admission, admission_note, manifest_json,
+            origin_json, migration_count, migrations_split, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+        v.id, v.verticalSlug, v.version, v.manifestDigest, v.permissionDigest,
+        v.migrationDigest, v.deploymentRef, v.admission, v.admissionNote, v.manifestJson,
+        v.originJson, v.migrations?.length ?? null, v.createdAt,
+      );
+      writeVersionMigrations(this.kernelSql, v.id, v.migrations);
+    });
+  }
+
+  /** One version's SQL migrations (#1764), or `undefined` for no such version. */
+  readVersionMigrations(id: string): { verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined {
+    return versionMigrationsOf(this.kernelSql, id);
   }
 
   /** Record what the serving script now runs — written only after a successful

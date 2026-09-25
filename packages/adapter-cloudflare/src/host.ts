@@ -203,6 +203,7 @@ import {
   type PeerSwitchResult,
   type VerticalCaller,
   type VerticalResolution,
+  type DeclaredMigration,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -321,6 +322,7 @@ import {
   noopConnectorCallRecorder,
   recordConnectorCall,
   settleConnectionUse,
+  splitManifestMigrations,
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
@@ -581,8 +583,12 @@ interface ControlPlaneStub {
     permissionDigest: string; migrationDigest: string; deploymentRef: string | null;
     admission: string; admissionNote: string | null; manifestJson: string | null;
     originJson: string | null;
+    migrations: DeclaredMigration[] | null;
     createdAt: string;
   }): Promise<void>;
+  readVersionMigrations(
+    id: string,
+  ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string): Promise<void>;
@@ -4858,9 +4864,13 @@ export class CloudflareScopeHost implements ScopeHost {
         // The manifest is retained for the serving upload (#286), not audited — a whole
         // manifest per publish would drown the admin log in bundle metadata.
         const { manifestJson, origin, ...audited } = parsed;
+        // The SQL migrations are stored apart from the manifest (#1764), so no read of the
+        // version but the promote review's carries them.
+        const split = splitManifestMigrations(manifestJson ?? null, 'push');
         await this.cp.insertVersion({
           ...audited,
-          manifestJson: manifestJson ?? null,
+          manifestJson: split.manifestJson,
+          migrations: split.migrations,
           originJson: origin ? JSON.stringify(origin) : null,
           admission: selfAdmits ? 'admitted' : 'pending',
           admissionNote: selfAdmits ? AUTO_ADMISSION_NOTE : null,
@@ -5222,6 +5232,14 @@ export class CloudflareScopeHost implements ScopeHost {
         }
         await this.recordAccess(actor, 'versionManifest', {}, { verticalSlug, versionId }, v.manifest_json ? 1 : 0);
         return v.manifest_json;
+      },
+      versionMigrations: async (actor, verticalSlug: string, versionId: string) => {
+        const v = await this.cp.readVersionMigrations(versionId);
+        if (!v || v.verticalSlug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        await this.recordAccess(actor, 'versionMigrations', {}, { verticalSlug, versionId }, v.migrations?.length ?? 0);
+        return v.migrations;
       },
       setScopeServingRef: async (actor, tenantId, scopeId, servingRef) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
