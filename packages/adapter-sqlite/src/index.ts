@@ -23,6 +23,9 @@ import {
   importBatch,
   importCursorMove,
   type ImportCursorMoved,
+  exportsOfManifestJson,
+  importsOfManifestJson,
+  type ExportBreak,
   type ExportedBatch,
   type ExportReadInput,
   type ImportBatch,
@@ -373,6 +376,8 @@ import {
   IMPORT_RECORD_SQL,
   moveImportCursor,
   importCursorSourceOf,
+  exportBreaksOf,
+  exportBreakRefusal,
   type CursorMoveSql,
   CrossVerticalRegistry,
   exportReadPlan,
@@ -3563,6 +3568,38 @@ export class SqliteScopeHost implements ScopeHost {
       await this.dispatch(rt, null);
       await this.dispatchExecutors(rt, null);
       return result;
+    });
+  }
+
+  /** A stored version's manifest, unaudited: the platform reading its own code metadata (#1705). */
+  private manifestJsonOf(versionId: string): string | null {
+    return (
+      (this.directory.prepare('SELECT manifest_json FROM vertical_versions WHERE id = ?').get(versionId) as
+        | { manifest_json: string | null }
+        | undefined)?.manifest_json ?? null
+    );
+  }
+
+  /** #1705 PR 3: the promote gate's question, over two stored versions (`exportBreaksOf`). */
+  private exportBreaksBetween(
+    actor: PlatformActorId,
+    producer: string,
+    outgoingId: string,
+    incomingId: string,
+  ): Promise<ExportBreak[]> {
+    return exportBreaksOf({
+      admin: this.admin,
+      actor,
+      producer,
+      outgoing: exportsOfManifestJson(this.manifestJsonOf(outgoingId)),
+      incoming: exportsOfManifestJson(this.manifestJsonOf(incomingId)),
+      readImports: async (slug, versionId) => {
+        const row = this.directory
+          .prepare('SELECT manifest_json FROM vertical_versions WHERE id = ? AND vertical_slug = ?')
+          .get(versionId, slug) as { manifest_json: string | null } | undefined;
+        if (!row) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
+        return importsOfManifestJson(row.manifest_json);
+      },
     });
   }
 
@@ -6803,6 +6840,18 @@ export class SqliteScopeHost implements ScopeHost {
           note,
         });
       },
+      promotionImpact: async (actor, verticalSlug: string, channel, versionId: string): Promise<ExportBreak[]> => {
+        const incoming = readVersion(versionId);
+        if (!incoming || incoming.verticalSlug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        const current = this.directory
+          .prepare('SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = ?')
+          .get(verticalSlug, channel) as { version_id: string } | undefined;
+        const breaks = current ? await this.exportBreaksBetween(actor, verticalSlug, current.version_id, versionId) : [];
+        this.recordAccess(actor, 'promotionImpact', { tenantId: null }, { verticalSlug, channel, versionId }, breaks.length);
+        return breaks;
+      },
       promoteVersion: async (
         actor,
         verticalSlug: string,
@@ -6841,6 +6890,11 @@ export class SqliteScopeHost implements ScopeHost {
               `promotion changes migrations (${outgoing.migrationDigest} → ` +
                 `${incoming.migrationDigest}) — acknowledge it explicitly to promote`,
             );
+          }
+          // #1705 PR 3: an export an installed consumer imports, dropped or re-versioned.
+          if (!ack.exportBreak) {
+            const breaks = await this.exportBreaksBetween(actor, verticalSlug, outgoing.id, incoming.id);
+            if (breaks.length > 0) throw substratError('precondition_failed', exportBreakRefusal(breaks));
           }
         }
 

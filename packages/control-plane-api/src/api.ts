@@ -102,7 +102,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { CrossVerticalOptions, OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
-import { crossVerticalHealth, migrationProgress, ulid } from '@substrat-run/kernel';
+import { crossVerticalHealth, exportBreakRefusal, migrationProgress, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
@@ -4897,6 +4897,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
     }
     const { versionId, acknowledge } = promoteVersionBody.parse(await c.req.json());
+    // #1705 PR 3: the installed consumers this promotion would break (an export they import,
+    // dropped or re-versioned). Read here, where the caller is known, so the listing can be
+    // narrowed the way the store backfill below is: a confined caller sees its own tenant's
+    // apps, and the rest as a count, never another tenant's id. The host refuses the same
+    // promotion without `exportBreak` whoever calls it, and this answer only adds the listing.
+    const breaks = await admin.promotionImpact(c.get('actor'), slug, channel, versionId);
+    const breakPin = confinedTenant(p);
+    const exportBreaks =
+      breaks.length === 0
+        ? null
+        : {
+            affected: breakPin ? breaks.filter((b) => b.tenantId === breakPin) : breaks,
+            ...(breakPin && breaks.some((b) => b.tenantId !== breakPin)
+              ? { otherTenants: new Set(breaks.filter((b) => b.tenantId !== breakPin).map((b) => b.tenantId)).size }
+              : {}),
+          };
+    if (exportBreaks && !acknowledge?.exportBreak) {
+      return c.json({ error: exportBreakRefusal(breaks), exportBreaks }, 409);
+    }
     // The blast-radius moment: refuses a changed digest without the acknowledgement,
     // and refuses a non-admitted version. Both are enforced below the seam and
     // surface as a 4xx through mapError, not a 500.
@@ -4952,6 +4971,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     ).size;
     return c.json({
       ...promoted,
+      // What the acknowledged break reached, so a promoter who passed `exportBreak` reads it.
+      ...(exportBreaks ? { exportBreaks } : {}),
       ...(backfill.minted.length || backfill.error
         ? {
             storeBackfill: {

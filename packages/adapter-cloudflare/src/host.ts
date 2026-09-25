@@ -12,6 +12,8 @@ import {
   type ImportResult,
   type ImportState,
   importsOfManifestJson,
+  exportsOfManifestJson,
+  type ExportBreak,
   type ManifestImports,
   importCursorMove,
   importCursorMoveAt,
@@ -304,6 +306,8 @@ import {
   systemSwitchedOffMessage,
   CrossVerticalRegistry,
   importCursorSourceOf,
+  exportBreaksOf,
+  exportBreakRefusal,
   collectPeers,
   peerSeats,
   connectorCallRecord,
@@ -4781,6 +4785,19 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.cp.setAdmission(versionId, 'admitted', null);
         await this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission }, { admission: 'admitted' });
       },
+      promotionImpact: async (actor, verticalSlug: string, channel, versionId: string): Promise<ExportBreak[]> => {
+        const incoming = await this.cp.readVersion(versionId);
+        if (!incoming || incoming.vertical_slug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        const current = await this.cp.readChannel(verticalSlug, channel);
+        const outgoing = current ? await this.cp.readVersion(current.version_id) : undefined;
+        const breaks = outgoing
+          ? await this.exportBreaksBetween(actor, verticalSlug, outgoing.manifest_json, incoming.manifest_json)
+          : [];
+        await this.recordAccess(actor, 'promotionImpact', { tenantId: null }, { verticalSlug, channel, versionId }, breaks.length);
+        return breaks;
+      },
       rejectVersion: async (actor, versionId: string, note: string) => {
         const v = await this.cp.readVersion(versionId);
         if (!v) throw substratError('not_found', `unknown version ${versionId}`);
@@ -4826,6 +4843,11 @@ export class CloudflareScopeHost implements ScopeHost {
               `promotion changes migrations (${outgoing.migration_digest} → ` +
                 `${incoming.migration_digest}) — acknowledge it explicitly to promote`,
             );
+          }
+          // #1705 PR 3: an export an installed consumer imports, dropped or re-versioned.
+          if (!ack.exportBreak) {
+            const breaks = await this.exportBreaksBetween(actor, verticalSlug, outgoing.manifest_json, incoming.manifest_json);
+            if (breaks.length > 0) throw substratError('precondition_failed', exportBreakRefusal(breaks));
           }
         }
 
@@ -7473,6 +7495,23 @@ export class CloudflareScopeHost implements ScopeHost {
       archived: moved.archived,
     });
     return moved;
+  }
+
+  /** #1705 PR 3: the promote gate's question, over two stored manifests (`exportBreaksOf`). */
+  private exportBreaksBetween(
+    actor: PlatformActorId,
+    producer: string,
+    outgoingManifest: string | null,
+    incomingManifest: string | null,
+  ): Promise<ExportBreak[]> {
+    return exportBreaksOf({
+      admin: this.admin,
+      actor,
+      producer,
+      outgoing: exportsOfManifestJson(outgoingManifest),
+      incoming: exportsOfManifestJson(incomingManifest),
+      readImports: (slug, versionId) => this.versionImports(slug, versionId),
+    });
   }
 
   /**

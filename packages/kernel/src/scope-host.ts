@@ -74,6 +74,7 @@ import type {
   PermissionKey,
   PlatformActorId,
   ChannelName,
+  ExportBreak,
   ChannelHistoryEntry,
   DnsRecord,
   HostnameBinding,
@@ -1876,6 +1877,12 @@ export interface HostAdmin {
    *
    * Only admitted versions may be promoted, for the same reason they are the only
    * ones bindable.
+   *
+   * **#1705 PR 3: refuses a promotion that breaks an installed consumer** unless it is
+   * acknowledged (`exportBreak`). A break is an exported (type, schemaVersion) the outgoing
+   * version promised and the incoming one drops or re-versions, which a running consumer imports
+   * (`exportBreaksOf`). The refusal counts what breaks and names no tenant, since this layer does
+   * not know who is asking. `promotionImpact` is the listing, for a caller that may see it.
    */
   promoteVersion(
     actor: PlatformActorId,
@@ -1884,6 +1891,18 @@ export interface HostAdmin {
     versionId: string,
     acknowledge?: PromotionAcknowledgement,
   ): Promise<void>;
+  /**
+   * Which installed consumers promoting `versionId` to `channel` would break (#1705 PR 3): the
+   * `exportBreaksOf` answer the promote gate refuses on, as a read. Empty for a first promote,
+   * and when no export changed. Access-logged: it reads which tenants run what. A route that
+   * shows it to a confined caller narrows it to that caller's own tenant.
+   */
+  promotionImpact(
+    actor: PlatformActorId,
+    verticalSlug: string,
+    channel: ChannelName,
+    versionId: string,
+  ): Promise<ExportBreak[]>;
   /** Ordered by channel name; `page.cursor` is a channel name. */
   listChannels(
     actor: PlatformActorId,

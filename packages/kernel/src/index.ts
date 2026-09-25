@@ -435,6 +435,8 @@ export {
   runCrossVerticalFrom,
   registryImportCandidates,
   crossVerticalHealth,
+  exportBreaksOf,
+  exportBreakRefusal,
 } from './platform-sweep.js';
 export type {
   CandidatesHint,

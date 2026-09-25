@@ -359,3 +359,114 @@ describe('the edge health route (#1705 PR 3)', () => {
     expect(own.body.edges.map((e) => e.state)).toEqual(['unresolved']);
   });
 });
+
+describe('the promote refusal over HTTP: who is named to whom (#1705 PR 3)', () => {
+  const PUSH_SECRET = 'test-push-token-secret';
+  const t = tenantId.parse(ulid());
+  const u = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  const FEED = 'acme/feed';
+  const READER = 'acme/reader';
+  const TYPE = 'feed.item-posted';
+  let asBuilder: Record<string, string>;
+  let dir: string;
+  let host: SqliteScopeHost;
+  let app: ReturnType<typeof createControlPlaneApi>;
+  let v1: string;
+  let v2: string;
+
+  const registry = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
+  const publish = async (slug: string, manifestJson: string) => {
+    const id = ulid();
+    await host.admin.publishVersion(staff, {
+      id,
+      verticalSlug: slug,
+      version: `1.0.${id.slice(-4).toLowerCase()}`,
+      manifestDigest: `m-${id}`,
+      permissionDigest: 'p',
+      migrationDigest: 'g',
+      deploymentRef: null,
+      manifestJson,
+    });
+    await host.admin.admitVersion(staff, id);
+    return id;
+  };
+  const bindAt = async (tenant: TenantId, slug: string, version: string) => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tenant, scopeId: s, vertical: slug });
+    await host.admin.activateScope(staff, tenant, s);
+    await host.admin.bindScopeVersion(staff, tenant, s, version);
+    return s;
+  };
+  const promote = (headers: Record<string, string>, slug: string, body: unknown) =>
+    app.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-export-break-'));
+    host = new SqliteScopeHost({ dir });
+    app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      authenticateBuilder: firstBuilderAuth(pushTokenBuilderAuth(PUSH_SECRET)),
+      pushTokenSecret: PUSH_SECRET,
+    });
+    await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
+    await host.admin.createTenant(staff, { id: u, slug: 'umbra', name: 'Umbra' });
+    await host.admin.registerVertical(staff, { slug: FEED, name: 'Feed', source: 'cli', ownerTenant: t });
+    await host.admin.registerVertical(staff, { slug: READER, name: 'Reader', source: 'cli' });
+    v1 = await publish(
+      FEED,
+      registry({ exports: [{ type: TYPE, schemaVersion: 1, readPermission: 'feed:read', declaredBy: ['@test/feed'] }] }),
+    );
+    await host.admin.promoteVersion(staff, FEED, 'prod', v1);
+    const reader = await publish(READER, registry({ imports: [{ from: FEED, type: TYPE, schemaVersion: 1, declaredBy: ['@test/reader'] }] }));
+    // The feed and a reader in BOTH tenants: two edges a drop would break.
+    for (const tenant of [t, u]) {
+      await bindAt(tenant, FEED, v1);
+      await bindAt(tenant, READER, reader);
+    }
+    v2 = await publish(FEED, registry({}));
+    const push = await mintPushToken(PUSH_SECRET, { actor: await pushActorFor(t), tenantId: t, tenantSlug: 'acme' });
+    asBuilder = { [SERVICE_TOKEN_HEADER]: push, 'content-type': 'application/json' };
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  type Refused = { error: string; exportBreaks: { affected: { tenantId: string }[]; otherTenants?: number } };
+
+  it('refuses the builder, naming its own tenant\'s app and counting the other tenant, never naming it', async () => {
+    const res = await promote(asBuilder, 'feed', { versionId: v2 });
+    expect(res.status).toBe(409);
+    const text = await res.text();
+    const body = JSON.parse(text) as Refused;
+    expect(body.exportBreaks.affected.map((b) => b.tenantId)).toEqual([t]);
+    expect(body.exportBreaks.otherTenants).toBe(1);
+    expect(text).not.toContain(u);
+    expect(body.error).toMatch(/in 2 tenant\(s\)/);
+    expect((await host.admin.listChannels(staff, FEED)).find((c) => c.channel === 'prod')?.versionId).toBe(v1);
+  });
+
+  it('refuses staff too, naming every affected app', async () => {
+    const res = await promote(asStaff, FEED, { versionId: v2 });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as Refused;
+    expect(body.exportBreaks.affected.map((b) => b.tenantId).sort()).toEqual([t, u].sort());
+    expect(body.exportBreaks.otherTenants).toBeUndefined();
+  });
+
+  it('acknowledged, it promotes, and the response still narrows the listing', async () => {
+    const res = await promote(asBuilder, 'feed', { versionId: v2, acknowledge: { exportBreak: true } });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(JSON.parse(text)).toMatchObject({ versionId: v2, exportBreaks: { otherTenants: 1 } });
+    expect(text).not.toContain(u);
+  });
+});

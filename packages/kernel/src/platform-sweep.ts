@@ -11,6 +11,8 @@ import type {
   DrainedEvent,
 } from '@substrat-run/contracts';
 import type {
+  ExportBreak,
+  ManifestExports,
   EdgeHealth,
   EdgeHealthReport,
   SweepRunEntry,
@@ -1697,6 +1699,110 @@ export function registryImportCandidates(input: {
     if (known.length > 0) hint?.known?.(known);
     return out;
   };
+}
+
+/**
+ * Who a promote breaks (#1705 PR 3): the installed consumers whose RUNNING code imports an
+ * exported (type, schemaVersion) that the outgoing version promised and the incoming one drops
+ * or exports at another version. The promote gate refuses on a non-empty answer unless it is
+ * acknowledged (`exportBreak`), and the refusal lists them.
+ *
+ * - **What changed** is outgoing versus incoming, from the two versions' registries. An outgoing
+ *   version whose registry states no exports (a first promote, or a push by a CLI older than
+ *   0.34.0) promised nothing the registry can name, so nothing is judged broken. Nothing it
+ *   exported at run time could be listed either, which is what the permission-digest gate
+ *   beside this one is for.
+ * - **Who is a consumer** is the edge's own rule: a primary, active scope of ANOTHER vertical, in
+ *   a tenant where the producer is installed (any primary, active install, so two installs still
+ *   count), whose running version (`runningVersionOf`) declares the import. That over-approximates
+ *   on purpose, for a listed vertical's tenants still pinned to an older producer version: a
+ *   refusal that names one tenant too many costs an acknowledgement, and one that names too few
+ *   costs a silent stall.
+ * - **A consumer version the registry cannot read** is not judged. It cannot be said to break,
+ *   and refusing every promote over a manifest nobody can parse would make the gate one nobody
+ *   can pass.
+ *
+ * Cost: nothing at all unless an export changed. Then one fleet `listScopes`, one
+ * `listVerticals` when a scope is on a serving script, and one `readImports` per distinct
+ * running consumer version, at most `concurrency` in flight.
+ */
+export async function exportBreaksOf(input: {
+  admin: Pick<HostAdmin, 'listScopes' | 'listVerticals'>;
+  actor: PlatformActorId;
+  producer: string;
+  outgoing: ManifestExports;
+  incoming: ManifestExports;
+  readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>;
+  concurrency?: number;
+}): Promise<ExportBreak[]> {
+  if (input.outgoing.kind !== 'exports') return [];
+  const incoming = new Map(input.incoming.kind === 'exports' ? input.incoming.rows.map((r) => [r.type, r.schemaVersion]) : []);
+  const changed = new Map<string, { schemaVersion: number; incoming: number | null }>();
+  for (const r of input.outgoing.rows) {
+    const now = incoming.get(r.type) ?? null;
+    if (now !== r.schemaVersion) changed.set(r.type, { schemaVersion: r.schemaVersion, incoming: now });
+  }
+  if (changed.size === 0) return [];
+
+  const scopes = (await input.admin.listScopes(input.actor, { status: 'active' })).filter(
+    (s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null,
+  );
+  const installedIn = new Set(scopes.filter((s) => s.vertical === input.producer).map((s) => s.tenantId as string));
+  const consumers = scopes.filter((s) => s.vertical !== input.producer && installedIn.has(s.tenantId));
+  if (consumers.length === 0) return [];
+  const serving = await servingPointersFor(input.admin, input.actor, consumers);
+  const running = new Map<string, { slug: string; versionId: string }>();
+  const keyed = consumers.map((s) => {
+    const versionId = runningVersionOf(s, serving.get(s.vertical));
+    const key = `${s.vertical}@${versionId ?? ''}`;
+    if (versionId && !running.has(key)) running.set(key, { slug: s.vertical, versionId });
+    return { scope: s, key, versionId };
+  });
+  const facts = new Map<string, ManifestImports>();
+  await mapBounded([...running], input.concurrency ?? 8, async ([key, v]) => {
+    try {
+      facts.set(key, await input.readImports(v.slug, v.versionId));
+    } catch (err) {
+      facts.set(key, { kind: 'unreadable', reason: message(err) });
+    }
+  });
+  const out: ExportBreak[] = [];
+  for (const { scope, key, versionId } of keyed) {
+    const fact = facts.get(key);
+    if (fact?.kind !== 'imports') continue;
+    for (const row of fact.rows) {
+      const hit = row.from === input.producer ? changed.get(row.type) : undefined;
+      if (!hit || hit.schemaVersion !== row.schemaVersion) continue;
+      out.push({
+        tenantId: scope.tenantId,
+        scopeId: scope.id,
+        vertical: scope.vertical as ExportBreak['vertical'],
+        version: versionId,
+        type: row.type,
+        schemaVersion: row.schemaVersion,
+        incoming: hit.incoming,
+      });
+    }
+  }
+  return out.sort(
+    (a, b) => a.tenantId.localeCompare(b.tenantId) || a.scopeId.localeCompare(b.scopeId) || a.type.localeCompare(b.type),
+  );
+}
+
+/**
+ * The refusal a promote gets for a non-empty `exportBreaksOf` (#1705 PR 3). Counts only: the
+ * adapters do not know who is promoting, and a builder must not learn from an error which other
+ * tenants import its events. The route that knows the caller lists what they may see.
+ */
+export function exportBreakRefusal(breaks: readonly ExportBreak[]): string {
+  const types = new Set(breaks.map((b) => b.type)).size;
+  const apps = new Set(breaks.map((b) => b.scopeId)).size;
+  const tenants = new Set(breaks.map((b) => b.tenantId)).size;
+  return (
+    `promotion drops or re-versions ${types} exported event type(s) that ${apps} installed app(s) in ` +
+    `${tenants} tenant(s) import — their edges would stop delivering it. Acknowledge it explicitly ` +
+    `(exportBreak) to promote, or keep the export and bump its consumers first`
+  );
 }
 
 async function sweepEdge(

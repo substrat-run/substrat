@@ -1117,6 +1117,84 @@ export function verticalEventsContractSuite(
       expect(view.edges.some((e) => e.consumer.scopeId === cu)).toBe(false);
     });
 
+    // -- the promote refusal (#1705 PR 3) ------------------------------------------------------
+
+    it('a promote that drops or re-versions an export an installed app imports is refused, and acknowledged it passes', async () => {
+      // Fresh slugs: a channel is per vertical and fleet-wide, so this test must own its pair.
+      const tag = ulid().slice(-8).toLowerCase();
+      const producer = `acme/ex-${tag}`;
+      const consumer = `acme/in-${tag}`;
+      const TYPE = 'crm.customer-created';
+      for (const slug of [producer, consumer]) {
+        await fx.consumer.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+      }
+      const registry = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
+      const exporting = (v: number | null) =>
+        registry(v === null ? {} : { exports: [{ type: TYPE, schemaVersion: v, readPermission: 'customer:read', declaredBy: ['@test/x'] }] });
+      const publish = async (slug: string, manifestJson: string, perm = 'p') => {
+        const id = ulid();
+        await fx.consumer.admin.publishVersion(staff, {
+          id,
+          verticalSlug: slug,
+          version: `1.0.${id.slice(-4).toLowerCase()}`,
+          manifestDigest: `m-${id}`,
+          permissionDigest: perm,
+          migrationDigest: 'g',
+          deploymentRef: null,
+          manifestJson,
+        });
+        await fx.consumer.admin.admitVersion(staff, id);
+        return id;
+      };
+      const prodOf = async (slug: string) =>
+        (await fx.consumer.admin.listChannels(staff, slug)).find((ch) => ch.channel === 'prod')?.versionId;
+
+      // The producer exports TYPE v1. A tenant runs it beside a consumer whose version imports it.
+      const v1 = await publish(producer, exporting(1));
+      await fx.consumer.admin.promoteVersion(staff, producer, 'prod', v1);
+      const imports = registry({ imports: [{ from: producer, type: TYPE, schemaVersion: 1, declaredBy: ['@test/y'] }] });
+      const consumerVersion = await publish(consumer, imports);
+      const t = await newTenant();
+      const u = await newTenant();
+      const bindAt = async (tenant: TenantId, slug: string, version?: string) => {
+        const sc = scopeId.parse(ulid());
+        await fx.consumer.provisionScope(staff, { tenantId: tenant, scopeId: sc, vertical: slug });
+        await fx.consumer.admin.activateScope(staff, tenant, sc);
+        if (version) await fx.consumer.admin.bindScopeVersion(staff, tenant, sc, version);
+        return sc;
+      };
+      await bindAt(t, producer, v1);
+      const ct = await bindAt(t, consumer, consumerVersion);
+      // A tenant that runs the consumer but not the producer has no edge, so nothing of it breaks.
+      await bindAt(u, consumer, consumerVersion);
+
+      // The twin first: a version that keeps the export promotes with no new acknowledgement.
+      const same = await publish(producer, exporting(1));
+      await expect(fx.consumer.admin.promotionImpact(staff, producer, 'prod', same)).resolves.toEqual([]);
+      await fx.consumer.admin.promoteVersion(staff, producer, 'prod', same);
+
+      // Dropped: refused, the channel unmoved, and the refusal counts without naming a tenant.
+      const dropped = await publish(producer, exporting(null));
+      const refused = await refusal(fx.consumer.admin.promoteVersion(staff, producer, 'prod', dropped));
+      expect(String(refused)).toMatch(/drops or re-versions 1 exported event type\(s\) that 1 installed app\(s\) in 1 tenant\(s\)/);
+      expect(String(refused)).not.toContain(t);
+      expect(await prodOf(producer)).toBe(same);
+      // The listing is the read beside it, and names exactly the app in the producer's tenant.
+      expect(await fx.consumer.admin.promotionImpact(staff, producer, 'prod', dropped)).toEqual([
+        { tenantId: t, scopeId: ct, vertical: consumer, version: consumerVersion, type: TYPE, schemaVersion: 1, incoming: null },
+      ]);
+
+      // Re-versioned is a break too, and says what it became.
+      const bumped = await publish(producer, exporting(2));
+      expect((await fx.consumer.admin.promotionImpact(staff, producer, 'prod', bumped))[0]).toMatchObject({ incoming: 2 });
+
+      // Acknowledged, it promotes, and the admin log records the acknowledgement.
+      await fx.consumer.admin.promoteVersion(staff, producer, 'prod', dropped, { exportBreak: true });
+      expect(await prodOf(producer)).toBe(dropped);
+      const log = await fx.consumer.admin.auditLog(staff, { action: 'promoteVersion' });
+      expect(log.some((e) => JSON.stringify(e.after).includes('"exportBreak":true'))).toBe(true);
+    });
+
     it('a fork is neither read nor fed, and two primary installs are refused rather than guessed between', async () => {
       const t = await newTenant();
       const p = await install(t, CRM_VERTICAL);
