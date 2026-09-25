@@ -127,6 +127,10 @@ shipped that is the honest boundary. A restore also does not bring back what was
 directory: the staff roster (its own D1 database), worker secrets, or the key that any sealed
 credential was sealed with.
 
+The directory's record of each schedule kill switch (`GET /system-switches`) rolls back to the
+copy too, while each scope's own switch stays where it was. After a restore, repeat any switch
+pulled since the copy was taken, so the record holds it again.
+
 **Self-hosting note.** On the SQLite adapter there is no DO point-in-time recovery to fall back
 on, so `exportDirectory`/`restoreDirectory` are not a second line of defence there — they are
 the only one. Both adapters implement the same pair, and the same contract tests prove it.

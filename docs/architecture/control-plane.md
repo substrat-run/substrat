@@ -957,6 +957,13 @@ restore → keep serving), which is what turns this from a claim into a procedur
 4. **Then re-check what the directory does not hold.** A restored directory brings back the map;
    it does not bring back what was never in it, and a recovery that stops at step 3 is only
    partly done:
+   - **The schedule kill switch's record rolls back with it** (#1674). `_substrat_system_switches`
+     is a directory table, so it comes back as it stood when the copy was taken, while each
+     scope's own OFF marker is untouched. A switch pulled after the copy is gone from the
+     record, and the next wipe of that scope would then lose it. Compare `GET /system-switches`
+     with the admin log's `revokeFromSystem` / `restoreToSystem` rows since the dump's
+     `capturedAt`, and repeat any OFF pulled since: the call is idempotent and re-records it.
+     A dump taken before the table existed is backfilled from its own admin log instead.
    - **The staff roster is in D1** (`AUTH_DB`, `staff_actor` — §4.4/#42), deliberately outside
      the directory DO. A directory restore does not restore who may sign in; that database has
      its own backup story (Time Travel), and recovering into a *new* deployment means pointing
