@@ -54,6 +54,17 @@ describe('instanceAuthFor', () => {
     expect(typeof provider.handle).toBe('function');
   });
 
+  it('answers 503 for a delivered plaintext issuer, and never falls through to the default provider', async () => {
+    const delivered = (issuer: string) =>
+      call({ [AUTH_CONFIG_KEY]: JSON.stringify({ mode: 'oidc', issuer, clientId: 'c', clientSecret: 's' }) }, { OIDC_ISSUER: 'https://default.example' });
+    const plain = await delivered('http://auth.example.com');
+    expect(() => plain.provider()).toThrow(AuthConfigError);
+    expect(() => plain.provider()).toThrow(/https/);
+    // Its twins build a provider: https, and a loopback dev issuer.
+    expect(typeof (await delivered('https://auth.example.com')).provider().resolve).toBe('function');
+    expect(typeof (await delivered('http://localhost:8879')).provider().resolve).toBe('function');
+  });
+
   it('refuses a half-delivered choice with a 503, not a crash', async () => {
     const instance = await call({
       [AUTH_CONFIG_KEY]: JSON.stringify({ mode: 'oidc', issuer: 'https://issuer.example' }),
@@ -104,12 +115,11 @@ describe('parseAuthChoice', () => {
     expect(parseAuthChoice(JSON.stringify({ mode: 'oidc', issuer: 'not-a-url' }))).toBeNull();
   });
 
-  it('will not take a plaintext issuer: a login would send its client secret in the clear', () => {
-    const choice = (issuer: string) => parseAuthChoice(JSON.stringify({ mode: 'oidc', issuer, clientId: 'c', clientSecret: 's' }));
-    expect(choice('http://auth.example.com')).toBeNull();
-    // Its twins: https, and a loopback dev issuer, parse.
-    expect(choice('https://auth.example.com')).toMatchObject({ issuer: 'https://auth.example.com' });
-    expect(choice('http://localhost:8879')).toMatchObject({ issuer: 'http://localhost:8879' });
+  it('keeps a plaintext issuer as the delivered choice — refusing it is the provider\'s job, not a fall-through', () => {
+    // Read as "nothing delivered" it would quietly become the deployment's default identity
+    // provider; kept, it reaches `selectAuthProvider`, which fails it loudly (below).
+    const raw = JSON.stringify({ mode: 'oidc', issuer: 'http://auth.example.com', clientId: 'c', clientSecret: 's' });
+    expect(parseAuthChoice(raw)).toMatchObject({ issuer: 'http://auth.example.com' });
   });
 });
 

@@ -29,9 +29,7 @@ import type { AuthProvider } from './provider.js';
  */
 export const authChoice = z.object({
   mode: z.literal('oidc'),
-  // https or loopback: an `http://` issuer is not a delivery that parses, so it reads as "nothing
-  // delivered" (below) and never becomes a login that sends its secret in the clear.
-  issuer: z.string().url().refine(isHttpsOrLoopbackUrl, 'an issuer must be https').optional(),
+  issuer: z.string().url().optional(),
   clientId: z.string().min(1).optional(),
   clientSecret: z.string().optional(),
   audience: z.string().optional(),
@@ -185,6 +183,13 @@ export function selectAuthProvider(opts: {
         503,
         "this instance's OIDC configuration is incomplete — set issuer and clientId",
       );
+    }
+    // Refused HERE, loudly, and not in the schema above: a schema refusal reads as "nothing
+    // delivered" and the instance would quietly run the deployment's default identity provider
+    // instead. The relying party sends its client secret to this issuer, so it is https (or a
+    // loopback dev issuer) or the instance answers 503.
+    if (!isHttpsOrLoopbackUrl(identity.issuer)) {
+      throw new AuthConfigError(503, "this instance's OIDC issuer must be https");
     }
     return oidcRpAuthProvider({
       issuer: identity.issuer,
