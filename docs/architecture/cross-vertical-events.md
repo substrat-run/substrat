@@ -186,9 +186,14 @@ new, one `deliverToPeer`. With no importer anywhere, it makes none.
 
 Hosted, each of those calls is one `/internal` request to the deployment serving the scope, and one
 Durable Object round trip there. The served-here check is one more round trip to the same object.
-A router kick costs the same for one producer: one tenant-filtered directory read, the registry
-reads for that tenant's scopes, and the calls above for the consumers that import from it. The
-control plane's `CROSS_VERTICAL_CONSUMERS_PER_PASS` sets `maxConsumers`, and `0` pauses the phase.
+A router kick's pass costs the same for one producer: one tenant-filtered directory read, the
+registry reads for that tenant's scopes (none, once cached), and the calls above for the
+consumers that import from it. **Per unit of time:** at most one such pass per producer per
+`CROSS_VERTICAL_KICK_WINDOW_MS` (5 s), plus one trailing pass per burst, fleet-wide, because one
+Durable Object per producer holds the bit. That works out to at most 12 passes a minute for one
+producer, however many responses it flags. The control plane's
+`CROSS_VERTICAL_CONSUMERS_PER_PASS` sets `maxConsumers` for the sweep and the kick alike, and `0`
+pauses the phase.
 
 ## The hosted transport
 
@@ -237,8 +242,22 @@ post-commit tail) fires `ScopeStubOptions.onExportedEvents`, and the vertical fl
 `x-substrat-exported-events` (`EXPORTED_EVENTS_HEADER`) beside the existing
 `x-substrat-platform-request`. A worker wires both with one call,
 `...kickFlags((name, value) => c.header(name, value))`. The router's drain kick then carries
-`{ platformRequests, exports }`, and `/internal/drain-scope` runs that producer's outgoing edges
-(`runCrossVerticalFrom`). Delivery then takes seconds.
+`{ platformRequests, exports }`, and `/internal/drain-scope` asks that producer's **kick
+coalescer** to run its outgoing edges (`runCrossVerticalFrom`). Delivery then takes seconds.
+
+- **The flag is tenant-controlled, so the bound is the platform's.** Tenant code sets the header
+  and can set it on every response. The coalescer is one Durable Object per producer scope. It
+  holds a start time and a dirty bit, nothing else. Passes for one producer start at least
+  `CROSS_VERTICAL_KICK_WINDOW_MS` (5 s) apart. A kick while a pass runs, or inside the window,
+  only marks the producer dirty, and a dirty producer gets one trailing pass at the window's end,
+  by alarm. So a burst costs one pass plus one trailing pass, fleet-wide, whatever the tenant
+  sends. The trailing pass is what keeps coalescing lossless: an event committed after the first
+  pass read the outbox still moves within one window.
+- **The coalescer holds no authority.** Its pass is the sweep's own, with the same reach and
+  gates, and it re-resolves the producer as its tenant's primary instance. It is handed only
+  the scope the router resolved.
+- **A lost kick costs latency, never an event.** If the coalescer is unbound, unavailable, or
+  its pass throws, nothing fails on the request path, and the scheduled sweep moves the edge.
 
 - **Both flags are response headers.** The router strips every inbound `x-substrat-*` header
   before it forwards a request, so a caller can neither raise the flag nor get a vertical to echo

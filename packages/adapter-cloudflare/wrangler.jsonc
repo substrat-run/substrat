@@ -46,7 +46,12 @@
       { "name": "PC_V1_SCOPE", "class_name": "PreviewV1ScopeDO" },
       { "name": "PC_V2_SCOPE", "class_name": "PreviewV2ScopeDO" },
       { "name": "PC_V3_SCOPE", "class_name": "PreviewV3ScopeDO" },
-      { "name": "PC_CONTROL_PLANE", "class_name": "ControlPlaneDO" }
+      { "name": "PC_CONTROL_PLANE", "class_name": "ControlPlaneDO" },
+      // #1705 PR 2: the cross-vertical kick's coalescer, three ways, and the log its passes write.
+      { "name": "KICK_TEST", "class_name": "KickTestDO" },
+      { "name": "KICK_THROW", "class_name": "KickThrowDO" },
+      { "name": "KICK_REAL", "class_name": "KickRealDO" },
+      { "name": "KICK_LOG", "class_name": "KickLogDO" }
     ]
   },
   "migrations": [
@@ -77,6 +82,10 @@
     {
       "tag": "v7",
       "new_sqlite_classes": ["PreviewV1ScopeDO", "PreviewV2ScopeDO", "PreviewV3ScopeDO"]
+    },
+    {
+      "tag": "v8",
+      "new_sqlite_classes": ["KickTestDO", "KickThrowDO", "KickRealDO", "KickLogDO"]
     }
   ]
 }

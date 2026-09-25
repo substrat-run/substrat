@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:test';
+import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import {
@@ -27,6 +27,7 @@ import { runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type F
 import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vertical-host';
 import { ControlPlaneError, VerticalClient, hostedCrossVerticalReach } from '@substrat-run/control-plane-api';
 import { CloudflareScopeHost, type EventDrainDelegation } from '../src/host.js';
+import { kickCoalescerName, type KickCoalescerDo, type KickOutcome } from '../src/kick-coalescer-do.js';
 import { warmControlPlane } from './do-warmup.js';
 
 // #1705 on workerd: the export read (the (type, id) seek and the recursive hop walk), the
@@ -555,5 +556,95 @@ describe('the hosted narrowing over a real directory (#1705 PR 2)', () => {
     // The twin: the audited verb does write one, which is why the narrowing does not use it.
     await dir.admin.versionManifest(sweeper, BOARD_VERTICAL, NONE);
     expect((await dir.admin.accessLog(staff, { actor: sweeper, method: 'versionManifest' })).length).toBe(1);
+  });
+});
+
+/**
+ * #1705 PR 2 — the router kick's global bound. A tenant's code sets the response header that
+ * asks for a kick, so it can ask on every response. One Durable Object per producer holds the
+ * only state that decides how often a pass runs: passes for one producer start at least a window
+ * apart, and a burst costs one pass plus one trailing pass, whatever the tenant sends.
+ */
+describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 PR 2)', () => {
+  const log = () => env.KICK_LOG.get(env.KICK_LOG.idFromName('log')) as unknown as { lines(): Promise<string[]> };
+  const passesFor = async (s: string) => (await log().lines()).filter((l) => l.endsWith(`:${s}`) && l.startsWith('pass:'));
+  const coalescer = (ns: DurableObjectNamespace, t: string, s: string) =>
+    ns.get(ns.idFromName(kickCoalescerName(tenantId.parse(t), scopeId.parse(s))));
+  const kick = (stub: DurableObjectStub, t: string, s: string): Promise<KickOutcome> =>
+    (stub as unknown as KickCoalescerDo).kick(tenantId.parse(t), scopeId.parse(s));
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('a burst of kicks inside the window is one pass, then one trailing pass by alarm, and no more', async () => {
+    const t = ulid();
+    const s = ulid();
+    const stub = coalescer(env.KICK_TEST, t, s);
+    const outcomes = await Promise.all(Array.from({ length: 8 }, () => kick(stub, t, s)));
+    expect(outcomes.filter((o) => o === 'ran')).toHaveLength(1);
+    expect(outcomes.filter((o) => o !== 'ran')).toHaveLength(7);
+    expect(await passesFor(s)).toHaveLength(1);
+    // The trailing pass is armed for the window's end, not run now.
+    expect(await runInDurableObject(stub, (_i, state) => state.storage.getAlarm())).not.toBeNull();
+    await sleep(600);
+    await runDurableObjectAlarm(stub);
+    expect(await passesFor(s)).toHaveLength(2);
+    // Nothing was kicked since the trailing pass started: no third pass.
+    await sleep(600);
+    await runDurableObjectAlarm(stub);
+    expect(await passesFor(s)).toHaveLength(2);
+  });
+
+  it('an alarm before the window has passed runs nothing and re-arms', async () => {
+    const t = ulid();
+    const s = ulid();
+    const stub = coalescer(env.KICK_TEST, t, s);
+    expect(await kick(stub, t, s)).toBe('ran');
+    expect(await kick(stub, t, s)).toBe('deferred');
+    await runDurableObjectAlarm(stub);
+    expect(await passesFor(s)).toHaveLength(1);
+    expect(await runInDurableObject(stub, (_i, state) => state.storage.getAlarm())).not.toBeNull();
+  });
+
+  it('two producers do not coalesce with each other', async () => {
+    const t = ulid();
+    const [a, b] = [ulid(), ulid()];
+    expect(await kick(coalescer(env.KICK_TEST, t, a), t, a)).toBe('ran');
+    expect(await kick(coalescer(env.KICK_TEST, t, b), t, b)).toBe('ran');
+    expect(await passesFor(a)).toHaveLength(1);
+    expect(await passesFor(b)).toHaveLength(1);
+  });
+
+  it('a pass that throws does not fail the kick: it is lost, and the sweep is the backstop', async () => {
+    const t = ulid();
+    const s = ulid();
+    await expect(kick(coalescer(env.KICK_THROW, t, s), t, s)).resolves.toBe('ran');
+  });
+
+  it('holds no authority: a kick naming a fork, or another tenant, runs no edge through the real pass', async () => {
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const u = tenantId.parse(ulid());
+    const p = scopeId.parse(ulid());
+    await warmControlPlane(env.VE_CONTROL_PLANE);
+    const dir = new CloudflareScopeHost({
+      scope: env.CRM_SCOPE,
+      controlPlane: env.VE_CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    dir.registerModule(crmExportMod);
+    await dir.admin.createTenant(staff, { id: t, slug: `ve-kick-${t.toLowerCase()}`, name: 'Kick' });
+    await dir.provisionScope(staff, { tenantId: t, scopeId: p, vertical: CRM_VERTICAL });
+    await dir.admin.activateScope(staff, t, p);
+    const fork = await dir.snapshotScope(staff, t, p);
+    const lines = async (s: string) => (await log().lines()).filter((l) => l.includes(s));
+
+    await kick(coalescer(env.KICK_REAL, t, fork), t, fork);
+    await kick(coalescer(env.KICK_REAL, u, p), u, p);
+    // Each pass ran, and neither got as far as asking for a consumer.
+    expect(await lines(fork)).toEqual([`pass:${fork}`]);
+    expect((await lines(p)).filter((l) => l.startsWith('candidates:'))).toEqual([]);
+
+    // The twin: the real producer, under its own tenant, is resolved and its consumers asked for.
+    await kick(coalescer(env.KICK_REAL, t, p), t, p);
+    expect((await lines(p)).filter((l) => l.startsWith('candidates:'))).toEqual([`candidates:${p}:${CRM_VERTICAL}`]);
   });
 });

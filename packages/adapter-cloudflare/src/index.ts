@@ -27,6 +27,16 @@ export { OperationQueue } from './serialization.js';
 export { doScopedSql } from './sql.js';
 export { createDoTupleChecker } from './checker.js';
 export { definePlatformSweeperDO, PLATFORM_SWEEPER_NAME } from './platform-sweeper-do.js';
+// #1705 PR 2: the global bound on the router's cross-vertical kick, one object per producer.
+export {
+  defineKickCoalescerDO,
+  kickCoalescerName,
+  CROSS_VERTICAL_KICK_WINDOW_MS,
+  type KickCoalescerConfig,
+  type KickCoalescerDo,
+  type KickOutcome,
+  type KickProducer,
+} from './kick-coalescer-do.js';
 export type { PlatformSweeperDoConfig, PlatformSweepOutcome } from './platform-sweeper-do.js';
 export { defineScopeSweeperDO, SCOPE_SWEEPER_NAME } from './scope-sweeper-do.js';
 export type {

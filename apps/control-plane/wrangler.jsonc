@@ -111,13 +111,21 @@
 			// entitlements, identities, and the admin audit log. One singleton DO.
 			{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
 			// A module-less placeholder scope DO — see src/worker.ts's header.
-			{ "name": "SCOPE", "class_name": "ScopeDO" }
+			{ "name": "SCOPE", "class_name": "ScopeDO" },
+			// #1705 PR 2: one per producer scope, the global bound on the router's
+			// cross-vertical kick. It holds a start time and a dirty bit, nothing else.
+			{ "name": "CROSS_VERTICAL_KICK", "class_name": "CrossVerticalKickDO" }
 		]
 	},
 	"migrations": [
 		{
 			"tag": "v1",
 			"new_sqlite_classes": ["ControlPlaneDO", "ScopeDO"]
+		},
+		{
+			// #1705 PR 2. Removing the class later needs a `deleted_classes` migration.
+			"tag": "v2",
+			"new_sqlite_classes": ["CrossVerticalKickDO"]
 		}
 	],
 	// Pushed verticals are reached through the WfP dispatch namespace, not static
@@ -269,10 +277,14 @@
 			"durable_objects": {
 				"bindings": [
 					{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
-					{ "name": "SCOPE", "class_name": "ScopeDO" }
+					{ "name": "SCOPE", "class_name": "ScopeDO" },
+					{ "name": "CROSS_VERTICAL_KICK", "class_name": "CrossVerticalKickDO" }
 				]
 			},
-			"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ControlPlaneDO", "ScopeDO"] }],
+			"migrations": [
+				{ "tag": "v1", "new_sqlite_classes": ["ControlPlaneDO", "ScopeDO"] },
+				{ "tag": "v2", "new_sqlite_classes": ["CrossVerticalKickDO"] }
+			],
 			// Own dispatch namespace — a test control plane must never push verticals
 			// into prod's `substrat-verticals`. Create: wrangler dispatch-namespace create substrat-verticals-test
 			"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals-test" }], // differs

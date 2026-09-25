@@ -6,7 +6,7 @@ import { platformActorId, principalId, tenantId } from '@substrat-run/contracts'
 import { ulid } from '@substrat-run/kernel';
 import { mintSession, type OidcEnv } from '@substrat-run/oidc-rp';
 import { d1StaffRoster, listStaff } from '../src/staff-roster.js';
-import { drainKickOf, platformStoreClients } from '../src/worker.js';
+import worker, { drainKickOf, kickCrossVertical, platformStoreClients } from '../src/worker.js';
 
 /**
  * Slice 1's definition of done, as an automated workerd test (first-flow.md §4):
@@ -350,6 +350,58 @@ describe('router kick — /internal/drain-scope', () => {
       body: JSON.stringify({ tenantId: ulid(), scopeId: ulid(), platformRequests: false, exports: true }),
     });
     expect(res.status).toBe(403);
+  });
+
+  /**
+   * #1705 PR 2, end to end through the route. The suite's own environment binds no platform
+   * secret, and must not (the refusals above depend on it), so these call the worker with that
+   * one variable added and every other binding real, the coalescer's namespace included.
+   */
+  describe('the exports branch (#1705 PR 2)', () => {
+    const SECRET = 'drain-kick-test-secret';
+    const kickRoute = (over: Partial<typeof env> & Record<string, unknown>, body: object) =>
+      worker.fetch(
+        new Request('https://cp.test/internal/drain-scope', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-substrat-platform': SECRET },
+          body: JSON.stringify(body),
+        }),
+        { ...env, PLATFORM_SECRET: SECRET, ...over } as never,
+      );
+
+    it('asks the producer\'s coalescer, and a second kick inside the window is deferred, not a second pass', async () => {
+      const t = ulid();
+      const s = ulid();
+      const body = { tenantId: t, scopeId: s, platformRequests: false, exports: true };
+      const first = await kickRoute({}, body);
+      expect(first.status).toBe(200);
+      expect(await first.json()).toEqual({ drained: 0, done: 0, failed: 0, pending: 0, crossVertical: 'ran' });
+      const second = await kickRoute({}, body);
+      expect(await second.json()).toMatchObject({ crossVertical: 'deferred' });
+      // Another producer is its own coalescer.
+      const other = await kickRoute({}, { ...body, scopeId: ulid() });
+      expect(await other.json()).toMatchObject({ crossVertical: 'ran' });
+    });
+
+    it('a coalescer that is unavailable loses the kick quietly: 200, and the sweep is the backstop', async () => {
+      const broken = {
+        idFromName: () => ({}),
+        get: () => ({
+          kick: async () => {
+            throw new Error('Durable Object is overloaded');
+          },
+        }),
+      };
+      const res = await kickRoute({ CROSS_VERTICAL_KICK: broken }, { tenantId: ulid(), scopeId: ulid(), platformRequests: false, exports: true });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ crossVertical: 'lost' });
+    });
+
+    it('an unbound coalescer runs nothing, and says so', async () => {
+      await expect(
+        kickCrossVertical({ CROSS_VERTICAL_KICK: undefined }, { tenantId: tenantId.parse(ulid()), scopeId: ulid() as never }),
+      ).resolves.toBe('unwired');
+    });
   });
 
   it('reads what the kick asks for: a legacy router means the intent drain, and only `true` runs edges', () => {

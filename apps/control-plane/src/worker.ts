@@ -51,6 +51,10 @@ import {
   createD1TenantStores,
   createR2BlobStores,
   defineScopeDO,
+  defineKickCoalescerDO,
+  kickCoalescerName,
+  type KickCoalescerDo,
+  type KickOutcome,
   type ConnectorDelegation,
   type EventDrainDelegation,
   type PeerSwitchDelegation,
@@ -133,6 +137,59 @@ import {
 
 /** The placeholder scope-DO class: kernel only, no modules. */
 export const ScopeDO = defineScopeDO([], {});
+
+/**
+ * #1705 PR 2: the router kick's global bound. One instance per producer scope decides WHEN a
+ * producer's outgoing edges run: at most one pass per `CROSS_VERTICAL_KICK_WINDOW_MS`, and a burst
+ * costs one pass plus one trailing pass. The pass is the sweep's own: `runCrossVerticalFrom`,
+ * over the same reach and gates, which re-resolves the producer as its tenant's primary instance.
+ * So the object holds no authority. It is handed only the scope the router resolved.
+ */
+export const CrossVerticalKickDO = defineKickCoalescerDO<Env>({
+  run: (env, producer) => runCrossVerticalPass(env, producer),
+  onError: (err) => console.error('cross-vertical kick: the pass failed; the sweep is the backstop', err),
+});
+
+/** One producer's outgoing edges, now: the kick's pass. The sweep's reach, gates and recorder. */
+async function runCrossVerticalPass(env: Env, producer: { tenantId: TenantId; scopeId: ScopeId }): Promise<void> {
+  const host = hostFor(env);
+  const crossVertical = crossVerticalFor(env, host);
+  if (!crossVertical) return;
+  // Awaited before the pass resolves (review finding 8): a row written after the object's
+  // turn ends has nothing keeping it alive.
+  const recorded: Promise<unknown>[] = [];
+  const out = await runCrossVerticalFrom(
+    host,
+    {
+      actor: SWEEP_ACTOR,
+      crossVertical,
+      recordSweepRun: (e) => recorded.push(host.admin.recordSweepRun(e).catch(() => undefined)),
+    },
+    producer,
+  );
+  await Promise.allSettled(recorded);
+  if (out.errors.length > 0) console.log('cross-vertical kick', { scopeId: producer.scopeId, errors: out.errors });
+}
+
+/**
+ * Ask the producer's coalescer for a pass (#1705 PR 2). Never throws: an unbound namespace, or an
+ * object that is unavailable or throws, loses this kick. The flagged event then waits for the
+ * scheduled sweep, which is what a kick is an optimisation over.
+ */
+export async function kickCrossVertical(
+  env: Pick<Env, 'CROSS_VERTICAL_KICK'>,
+  producer: { tenantId: TenantId; scopeId: ScopeId },
+): Promise<KickOutcome | 'unwired' | 'lost'> {
+  const ns = env.CROSS_VERTICAL_KICK;
+  if (!ns) return 'unwired';
+  try {
+    const stub = ns.get(ns.idFromName(kickCoalescerName(producer.tenantId, producer.scopeId))) as unknown as KickCoalescerDo;
+    return await stub.kick(producer.tenantId, producer.scopeId);
+  } catch (err) {
+    console.warn('cross-vertical kick lost; the sweep is the backstop', { scopeId: producer.scopeId, err });
+    return 'lost';
+  }
+}
 export { ControlPlaneDO };
 
 interface Env extends StaffAuthEnv, ConnectorEnv {
@@ -257,6 +314,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv {
    * is the default, never either extreme, the same parse as `PROVISION_RECONCILE_BATCH`.
    */
   CROSS_VERTICAL_CONSUMERS_PER_PASS?: string;
+  /**
+   * #1705 PR 2: one Durable Object per producer scope, the global bound on the router's
+   * cross-vertical kick (`defineKickCoalescerDO`). Absent, a kick asking for edges runs nothing
+   * and the scheduled sweep delivers them: never a pass per flagged response.
+   */
+  CROSS_VERTICAL_KICK?: DurableObjectNamespace;
   /**
    * Days a reap's stored copy (`scopes/…` in SCOPE_BACKUPS, #493) is kept before the
    * sweep drops it (#557). UNSET keeps every copy forever — the platform never deletes
@@ -1720,26 +1783,13 @@ export default {
       const report = kick.intents
         ? await drainOneScope(c.env, ids.data, sids.data)
         : { drained: 0, done: 0, failed: 0, pending: 0 };
-      // The scope's response committed an exported type: run THIS producer's outgoing edges now,
-      // so a consumer in another vertical has it in seconds rather than at the next sweep. The
-      // same phase as the sweep, narrowed to the producer (its tenant, its resolved instance, the
-      // consumers whose running code imports from it), under the same watermark compare-and-set,
-      // so a kick and a sweep that overlap cannot move an edge twice.
+      // The scope's response committed an exported type: ask for THIS producer's outgoing edges.
+      // Through its coalescer, never inline: the flag is a header tenant code sets, and a pass
+      // per flagged response would let one vertical drive this worker and the directory as hard
+      // as it likes. The coalescer runs at most one pass per window for the producer, and a
+      // lost kick costs latency, never an event (the sweep is the backstop).
       if (!kick.exports) return c.json(report);
-      const host = hostFor(c.env);
-      const crossVertical = crossVerticalFor(c.env, host);
-      if (!crossVertical) return c.json(report);
-      const edges = await runCrossVerticalFrom(
-        host,
-        {
-          actor: SWEEP_ACTOR,
-          crossVertical,
-          recordSweepRun: (e) => void host.admin.recordSweepRun(e).catch(() => undefined),
-        },
-        { tenantId: ids.data, scopeId: sids.data },
-      );
-      if (edges.errors.length > 0) console.log('drain-scope: cross-vertical', { scopeId: sids.data, errors: edges.errors });
-      return c.json({ ...report, crossVertical: edges.crossVertical });
+      return c.json({ ...report, crossVertical: await kickCrossVertical(c.env, { tenantId: ids.data, scopeId: sids.data }) });
     });
 
     // The email relay (#303). A hosted vertical that holds the `emailSender` grant cannot send

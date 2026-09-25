@@ -6,7 +6,7 @@
  * the exported bindings via `CloudflareScopeHost` — see contract.test.ts.
  */
 import { platformActorId } from '@substrat-run/contracts';
-import { runPlatformSweep, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
+import { runCrossVerticalFrom, runPlatformSweep, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
 import {
   boardImportMod,
   brokenMod,
@@ -21,6 +21,8 @@ import { defineScopeDO } from '../src/scope-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
 import { defineScopeSweeperDO } from '../src/scope-sweeper-do.js';
+import { defineKickCoalescerDO } from '../src/kick-coalescer-do.js';
+import { DurableObject } from 'cloudflare:workers';
 
 export const ScopeDO = defineScopeDO(contractTestModules, contractTestBareOps);
 
@@ -153,6 +155,81 @@ export const ScopeSweeperDO = defineScopeSweeperDO<ScopeSweeperEnv>({
     // the batch test asserting ONE freshness entry is the cross-module regression.
     host.registerModule(freshnessMod);
     return host;
+  },
+});
+
+// -- the cross-vertical kick's global bound (vertical-events.test.ts, #1705 PR 2) ----------
+
+interface KickEnv {
+  KICK_LOG: DurableObjectNamespace;
+  CRM_SCOPE: DurableObjectNamespace;
+  VE_CONTROL_PLANE: DurableObjectNamespace;
+}
+
+/** Where the kick tests' passes write what they did, so a test can read it back. */
+export class KickLogDO extends DurableObject {
+  async record(line: string): Promise<void> {
+    const lines = (await this.ctx.storage.get<string[]>('lines')) ?? [];
+    await this.ctx.storage.put('lines', [...lines, line]);
+  }
+  async lines(): Promise<string[]> {
+    return (await this.ctx.storage.get<string[]>('lines')) ?? [];
+  }
+}
+
+const kickLog = (env: KickEnv) =>
+  env.KICK_LOG.get(env.KICK_LOG.idFromName('log')) as unknown as { record(line: string): Promise<void> };
+
+/**
+ * A coalescer whose pass only records that it ran, and for whom. A short window, so a test can
+ * outlast it and see the trailing pass run.
+ */
+export const KickTestDO = defineKickCoalescerDO<KickEnv>({
+  windowMs: 500,
+  run: async (env, producer) => kickLog(env).record(`pass:${producer.tenantId}:${producer.scopeId}`),
+});
+
+/** A coalescer whose every pass throws. The kick must still answer, never throw. */
+export const KickThrowDO = defineKickCoalescerDO<KickEnv>({
+  windowMs: 60_000,
+  run: async () => {
+    throw new Error('the pass failed');
+  },
+  onError: () => undefined,
+});
+
+/**
+ * A coalescer whose pass is the REAL `runCrossVerticalFrom`, over the cross-vertical suite's
+ * directory, with a reach that only records. It shows the object holds no authority: a kick
+ * naming a fork (or any scope that is not its vertical's resolved instance) calls nothing.
+ */
+export const KickRealDO = defineKickCoalescerDO<KickEnv>({
+  windowMs: 60_000,
+  run: async (env, producer) => {
+    const log = kickLog(env);
+    await log.record(`pass:${producer.scopeId}`);
+    const host = new CloudflareScopeHost({ scope: env.CRM_SCOPE, controlPlane: env.VE_CONTROL_PLANE });
+    const refuse = async (): Promise<never> => {
+      throw new Error('the recording reach answers nothing');
+    };
+    await runCrossVerticalFrom(
+      host,
+      {
+        actor: platformActorId.parse('01JZ00000000000000000000KK'),
+        crossVertical: {
+          reach: {
+            candidates: async (scopes, hint) => {
+              await log.record(`candidates:${producer.scopeId}:${hint?.from ?? '-'}`);
+              return scopes.filter((s) => s.tenantId === producer.tenantId);
+            },
+            importState: refuse,
+            readExports: refuse,
+            deliver: refuse,
+          },
+        },
+      },
+      producer,
+    );
   },
 });
 
