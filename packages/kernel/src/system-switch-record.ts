@@ -63,7 +63,10 @@ export const SYSTEM_SWITCHES_DDL = `
  * `applied`, `refused` or `failed`. Only calls whose outcome is `applied` count, because a
  * refused call moved nothing and a failed one may not have. Of those, only the LATEST per
  * (tenant, scope, module) is taken, by the intent's ULID id. `at` is the intent's, the
- * same instant the status read's who/why join reports.
+ * same instant the status read's who/why join reports. A key whose calls include no
+ * applied OFF gets no row, even when its latest applied call is an ON: a live
+ * `restoreToSystem` of a module never switched off writes none either
+ * (`recordSystemSwitchedOn`), and the backfill must not record what the live path would not.
  *
  * `INSERT OR IGNORE`, so a row the switch wrote itself is never overwritten by history.
  * The adapters run it only on the construction that creates the table, so it runs once.
@@ -74,21 +77,15 @@ export const SYSTEM_SWITCHES_BACKFILL_SQL = `
       FROM _substrat_admin_log
      WHERE action IN ('revokeFromSystem', 'restoreToSystem')
        AND json_extract(after, '$.phase') = 'applied'
-  )
-  INSERT OR IGNORE INTO _substrat_system_switches
-    (tenant_id, scope_id, module_id, position, actor, reason, operation_id, switched_at)
-  SELECT tenant_id, scope_id, module_id, position, actor, reason, operation_id, at FROM (
-    SELECT i.tenant_id AS tenant_id, i.scope_id AS scope_id,
+  ),
+  intents AS (
+    SELECT i.id AS id, i.tenant_id AS tenant_id, i.scope_id AS scope_id,
            json_extract(i.after, '$.moduleId') AS module_id,
            CASE i.action WHEN 'revokeFromSystem' THEN 'off' ELSE 'on' END AS position,
            i.actor AS actor,
            json_extract(i.after, '$.reason') AS reason,
            json_extract(i.after, '$.operationId') AS operation_id,
-           i.at AS at,
-           ROW_NUMBER() OVER (
-             PARTITION BY i.tenant_id, i.scope_id, json_extract(i.after, '$.moduleId')
-             ORDER BY i.id DESC
-           ) AS latest
+           i.at AS at
       FROM _substrat_admin_log i
       JOIN applied a
         ON a.action = i.action AND a.operation_id = json_extract(i.after, '$.operationId')
@@ -97,7 +94,18 @@ export const SYSTEM_SWITCHES_BACKFILL_SQL = `
        AND json_extract(i.after, '$.phase') = 'intent'
        AND json_extract(i.after, '$.moduleId') IS NOT NULL
        AND json_extract(i.after, '$.reason') IS NOT NULL
-  ) WHERE latest = 1
+  ),
+  ranked AS (
+    SELECT *,
+           ROW_NUMBER() OVER (PARTITION BY tenant_id, scope_id, module_id ORDER BY id DESC) AS latest,
+           MAX(position = 'off') OVER (PARTITION BY tenant_id, scope_id, module_id) AS ever_off
+      FROM intents
+  )
+  INSERT OR IGNORE INTO _substrat_system_switches
+    (tenant_id, scope_id, module_id, position, actor, reason, operation_id, switched_at)
+  SELECT tenant_id, scope_id, module_id, position, actor, reason, operation_id, at
+    FROM ranked
+   WHERE latest = 1 AND ever_off = 1
 `;
 
 /** "Does the record table exist yet?" — asked BEFORE the DDL, so the backfill runs once. */

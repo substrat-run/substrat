@@ -84,6 +84,16 @@ describe('the schedule switch record (#1674)', () => {
       expect(rows(sql)).toEqual([{ scopeId: S, moduleId: M, position: 'on', reason: 'fixed' }]);
     });
 
+    it('an applied ON with no applied OFF before it writes no row — as a live restore of a never-switched module does', () => {
+      const { db, sql } = fresh();
+      audit(db, { to: 'on', outcome: 'applied', reason: 'no-op restore' });
+      audit(db, { to: 'off', outcome: 'refused', reason: 'typo', module: '@m/y' });
+      audit(db, { to: 'on', outcome: 'applied', reason: 'no-op restore', module: '@m/y' });
+      create(db);
+      db.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      expect(rows(sql)).toEqual([]);
+    });
+
     it('counts only APPLIED calls: a refused OFF alone writes no row, and neither does a failed one', () => {
       const { db, sql } = fresh();
       audit(db, { to: 'off', outcome: 'refused', reason: 'typo', module: '@m/typo' });
