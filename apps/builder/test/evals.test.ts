@@ -39,12 +39,12 @@ async function scratchRoot(): Promise<LocalWorkspace> {
 	const root = await mkdtemp(join(tmpdir(), 'builder-evals-'));
 	roots.push(root);
 	const ws = new LocalWorkspace({ root });
-	await ws.exec('git init -q');
+	await ws.exec('git init -q && git config gc.auto 0 && git config maintenance.auto false');
 	return ws;
 }
 
 afterEach(async () => {
-	await Promise.all(roots.splice(0).map((r) => rm(r, { recursive: true, force: true })));
+	await Promise.all(roots.splice(0).map((r) => rm(r, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })));
 });
 
 const FIXTURE: EvalFixture = {

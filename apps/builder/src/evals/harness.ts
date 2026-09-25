@@ -558,7 +558,10 @@ export async function prepareProject(
 				`(the wipe below must never reach a real project)`,
 		);
 	}
-	await ws.exec(`rm -rf ${JSON.stringify(projectDir)}`);
+	// Retry: a straggling git writer under .git makes one rm -rf fail ENOTEMPTY (#1761).
+	await ws.exec(
+		`for i in 1 2 3 4 5; do rm -rf ${JSON.stringify(projectDir)} && break; sleep 0.2; done`,
+	);
 	const ensured = await ensureVerticalRepo(ws, projectDir);
 	if (ensured.mode !== 'project') {
 		throw new Error(`${projectDir} came up in ${ensured.mode} mode — expected a fresh project repo`);

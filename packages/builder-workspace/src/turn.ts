@@ -69,6 +69,9 @@ export async function ensureVerticalRepo(
 	if (init.exitCode !== 0) {
 		throw new Error(`git init failed in ${verticalDir}: ${init.stderr || init.stdout}`);
 	}
+	// No background gc/maintenance: a detached `git gc` writing under .git races
+	// any cleanup of the directory (ENOTEMPTY on .git/info, #1761).
+	await ws.exec('git config gc.auto 0 && git config maintenance.auto false', { cwd: verticalDir });
 	// The project's own ignores — build noise, never source.
 	await ws.writeFile(
 		`${verticalDir}/.gitignore`,
