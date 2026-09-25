@@ -23,8 +23,10 @@ import type { VerticalClient } from './vertical-client.js';
  *   it has not seen. The answers are cached by (slug, version) in `importsCache`, because a
  *   pushed version's manifest never changes. So a fleet of known versions costs no registry read
  *   at all. A scope whose running version declares no import is never called, so a fleet with no
- *   importer makes zero `/internal` calls. A version the registry cannot answer for keeps its
- *   scopes, and is never cached: the next pass asks again.
+ *   importer makes zero `/internal` calls, with one deliberate exception. A scope the registry
+ *   cannot answer for (an unknown version, an unreadable manifest, or a vertical bound with no
+ *   version, `<slug>@(no version)`) is asked once per SWEEP pass, never on a kick. Excluding it
+ *   could lose an edge with no trace. Such an answer is never cached: the next pass asks again.
  * - It keeps the scopes the pass listed, so resolving a scope's deployment costs no further
  *   directory read for a scope the pass already has.
  */

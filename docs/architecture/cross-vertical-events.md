@@ -176,13 +176,21 @@ phase never asks every scope whether it imports anything:
   own `importState` decides. It is reported as a failed `version:<slug>@<version>` sweep-run row.
   Excluding a consumer wrongly would lose its edge with no trace. Including one wrongly costs a
   call.
+- **So "zero calls with no importer" has one exception, and it is deliberate.** A scope the
+  registry cannot answer for is asked once per sweep tick, whether or not it imports anything:
+  a version the registry does not know, an unreadable manifest, or a scope bound to a vertical
+  but to no version (`<slug>@(no version)`). It is never asked on a kick pass. The cost is one
+  `importState` per such scope per tick, and each tick names them in a `version:` row, so the
+  fix (re-push, or bind a version) is visible. A fleet whose every scope runs a version with a
+  readable manifest that imports nothing makes zero `/internal` calls.
 - **Capped.** At most `maxConsumers` candidates per pass (default 100), in a window with a random
   start (the provision reconcile's rule), so a consumer that fails every pass holds no slot
   forever. The rest are `deferred`, not dropped, because watermarks hold.
 
 A pass is therefore bounded by `maxConsumers × (1 + 2 × sources)` scope calls: one
 `importState` per consumer, then per source one `readExportedEvents` and, only when something is
-new, one `deliverToPeer`. With no importer anywhere, it makes none.
+new, one `deliverToPeer`. With no importer anywhere, and no version the registry cannot answer
+for, it makes none.
 
 Hosted, each of those calls is one `/internal` request to the deployment serving the scope, and one
 Durable Object round trip there. The served-here check is one more round trip to the same object.
