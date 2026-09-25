@@ -558,8 +558,18 @@ export async function prepareProject(
 				`(the wipe below must never reach a real project)`,
 		);
 	}
-	await ws.exec(`rm -rf ${JSON.stringify(projectDir)}`);
+	// Retry: a straggling git writer under .git makes one rm -rf fail ENOTEMPTY (#1761).
+	// The trailing test makes the last attempt's failure the exit code, not `sleep`'s.
+	const dirArg = JSON.stringify(projectDir);
+	const wipe = await ws.exec(
+		`for i in 1 2 3 4 5; do rm -rf ${dirArg} && break; sleep 0.2; done; [ ! -e ${dirArg} ]`,
+	);
+	if (wipe.exitCode !== 0) {
+		throw new Error(`could not remove ${projectDir}: ${wipe.stderr || wipe.stdout}`);
+	}
 	const ensured = await ensureVerticalRepo(ws, projectDir);
+	// Eval repos only: no background gc/maintenance racing the next wipe (#1761).
+	await ws.exec('git config gc.auto 0 && git config maintenance.auto false', { cwd: projectDir });
 	if (ensured.mode !== 'project') {
 		throw new Error(`${projectDir} came up in ${ensured.mode} mode — expected a fresh project repo`);
 	}

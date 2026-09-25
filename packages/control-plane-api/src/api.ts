@@ -4655,6 +4655,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'forbidden' }, 403);
     }
     input.verticalSlug = slug;
+    // `manifestJson` is a string the schema cannot look inside, and every reader
+    // (registry, outbound, assets, promote) parses it with `storedDeployManifest` and 500s on
+    // a row it refuses. Hold it to that same parser here, at the trust boundary. The STORED
+    // form, not the push-time one: this route keeps accepting what the platform already holds
+    // (no `registry`, pre-#286 nulls), and refuses only what no reader could open. The string
+    // is stored as sent — re-serializing would drop keys a newer publisher carries.
+    if (input.manifestJson != null) {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(input.manifestJson);
+      } catch {
+        return c.json({ error: 'manifestJson is not valid JSON' }, 400);
+      }
+      const checked = storedDeployManifest.safeParse(raw);
+      if (!checked.success) {
+        const issue = checked.error.issues[0]!;
+        return c.json(
+          { error: `manifestJson is not a deploy manifest: ${issue.path.join('.') || '(root)'}: ${issue.message}` },
+          400,
+        );
+      }
+    }
     await admin.publishVersion(c.get('actor'), input);
     const version = await admin.getVersion(c.get('actor'), input.id, slug);
     return c.json(version, 201);
