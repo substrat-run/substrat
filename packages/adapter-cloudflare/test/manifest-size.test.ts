@@ -25,6 +25,7 @@ import {
 } from '@substrat-run/kernel';
 import type { ScopeDumpTable } from '@substrat-run/contracts';
 import {
+  BACKFILL_FAILURES_KEY,
   BACKFILL_OPERATION,
   ControlPlaneDO,
   DIRECTORY_DDL_PLAN,
@@ -481,19 +482,25 @@ describe('the #1764 backfill survives a failing batch', () => {
     });
   });
 
-  it('a construction or a restore keeps a pending backoff alarm, and arms one only when none is set', async () => {
+  it('a construction keeps a pending backoff alarm; a restore starts a new episode', async () => {
     await inDirectory(async (_d, state) => {
       expect(unsplit(state)).toBeGreaterThan(0); // the poisoned version still waits
+      expect(await state.storage.get(BACKFILL_FAILURES_KEY)).toBeGreaterThan(0);
       const far = Date.now() + 60 * 60 * 1000;
       await state.storage.setAlarm(far);
       // An ordinary request after an eviction constructs the DO: the hour-long retry stands.
       const again = new ControlPlaneDO(state, env) as Directory;
       await again.backfillArmed;
       expect(await state.storage.getAlarm()).toBe(far);
-      // So does a restore, which re-checks for unsplit versions.
+      // A restore replaces the data the backoff was about: the count is cleared, and the next
+      // batch is armed a pause away rather than an hour.
+      const restoredAt = Date.now();
       await again.importDump(again.exportDump());
-      expect(await state.storage.getAlarm()).toBe(far);
-      // With none set, the construction arms the next batch, a pause away.
+      expect(await state.storage.get(BACKFILL_FAILURES_KEY)).toBeUndefined();
+      const rearmed = (await state.storage.getAlarm())!;
+      expect(rearmed - restoredAt).toBeGreaterThanOrEqual(1000);
+      expect(rearmed).toBeLessThan(far);
+      // With none set, a construction arms the next batch, a pause away.
       await state.storage.deleteAlarm();
       const armedBefore = Date.now();
       await (new ControlPlaneDO(state, env) as Directory).backfillArmed;

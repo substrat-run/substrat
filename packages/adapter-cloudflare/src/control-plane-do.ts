@@ -1163,8 +1163,8 @@ export class ControlPlaneDO extends DurableObject {
    * Only the probe runs here, never the backfill: this is on the constructor's path, and a
    * directory DO that cannot construct is a control plane that is down. The probe reads the
    * partial index of versions not yet split, so it costs the same for ten versions or ten
-   * thousand. The alarm then moves a bounded batch per run. Also reached after a directory
-   * restore, so a dump taken before the backfill is moved again.
+   * thousand. The alarm then moves a bounded batch per run. A restore arms its own new episode
+   * instead (`importDump`).
    */
   private async armVersionMigrationsBackfill(): Promise<void> {
     if (!versionsAwaitSplit(this.kernelSql)) return;
@@ -1552,8 +1552,12 @@ export class ControlPlaneDO extends DurableObject {
     // schema assertions, and an ALTER that has to be tolerated (duplicate column) must
     // not take the restore's data down with it.
     this.applyDirectorySchema();
-    // A dump taken before the #1764 backfill lands unsplit versions, so it runs again.
-    await this.armVersionMigrationsBackfill();
+    // A restore is a new #1764 backfill episode. It replaced the data the old failure count and
+    // backoff were about, so neither may delay or silence it: the count is cleared and the next
+    // batch armed outright, a pause away. (An ordinary construction keeps a pending alarm; this
+    // does not.) A dump taken before the backfill lands unsplit versions, so it runs again.
+    await this.ctx.storage.delete(BACKFILL_FAILURES_KEY);
+    if (versionsAwaitSplit(this.kernelSql)) await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
   }
 
   // -- tenant registry (control-plane.md §4.1) --------------------------------
