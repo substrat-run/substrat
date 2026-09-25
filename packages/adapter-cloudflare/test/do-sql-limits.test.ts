@@ -140,6 +140,11 @@ describe('the SQL limits of a Durable Object: the boundary (#1741)', () => {
   });
 });
 
+/** The slice of the ScopeDO's RPC surface the #1776 block below calls directly. */
+interface ScopeInstance {
+  freshnessProbe(types: string[]): Promise<Record<string, { observedAt: string | null; stateOutcome: string | null }>>;
+}
+
 /**
  * #1776: the platform's own statements that take a list bind it as ONE JSON array, so a list
  * longer than `boundParameters` runs. These lists are bounded by what a manifest declares, not
@@ -190,7 +195,7 @@ describe('platform list statements past the parameter limit (#1776)', () => {
 
   // The access path the table is read by: the plan minus json_each's own lines. The old form,
   // one `?` per type, is planned for a list short enough to run, and must read the same way.
-  const access = (detail: string): string => detail.split(' | ').filter((l) => l.includes('_substrat_outbox'))[0]!;
+  const access = (detail: string): string => detail.split(' | ').find((l) => l.includes('_substrat_outbox'))!;
   const oldForm = (q: { sql: string; params: unknown[] }, few: readonly string[]) => ({
     sql: q.sql.replace('(SELECT value FROM json_each(?))', `(${few.map(() => '?').join(', ')})`),
     params: q.params.flatMap((p): unknown[] => (p === JSON.stringify(few) ? [...few] : [p])),
@@ -234,10 +239,6 @@ describe('platform list statements past the parameter limit (#1776)', () => {
     expect(access(now)).toContain('_substrat_outbox_drained');
   });
 });
-
-interface ScopeInstance {
-  freshnessProbe(types: string[]): Promise<Record<string, { observedAt: string | null; stateOutcome: string | null }>>;
-}
 
 /** The largest n in [1, hi] that runs, and what n + 1 said. Throws if `hi` itself runs. */
 const limitOf = (sql: SqlStorage, t: Trial, hi: number): { max: number; refusal: string } => {
