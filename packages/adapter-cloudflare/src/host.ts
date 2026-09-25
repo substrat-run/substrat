@@ -2516,9 +2516,10 @@ export class CloudflareScopeHost implements ScopeHost {
       await this.scopeStub(input.scopeId).seatTuple(seat.subject, seat.relation, seat.object, null);
     }
     // #1674: re-assert the recorded OFF positions after the seat (`system-switch-record.ts`).
-    // Only where this seat landed in the scope's real store: a delegated scope is seated by
-    // its deployment, later, and re-asserted after that deployment's reconcile instead.
-    if (!(this.systemSwitchDelegation && record.vertical !== null)) {
+    // Only where this seat landed in the scope's real store — a CP-less host, or a scope
+    // bound to no vertical. A scope a vertical's deployment serves is seated there, later,
+    // and re-asserted after that deployment's reconcile instead.
+    if (this.cpLess || record.vertical === null) {
       await this.admin.reassertSystemSwitches(actor, { tenantId: input.tenantId, scopeId: input.scopeId });
     }
     // Audit a real provision only; an idempotent re-provision changed nothing.
@@ -4223,6 +4224,18 @@ export class CloudflareScopeHost implements ScopeHost {
       const { tenantId, scopeId } = node;
       const { vertical, move } = await systemSwitchTarget(tenantId, scopeId);
       const modules = await this.cp.switchedOffModulesOf(tenantId, scopeId);
+      // A hosted scope with no delegation configured (Copilot review): this host's own
+      // namespace is the module-less placeholder, where the switch would answer `held: false`
+      // quietly — a re-assert reported done, and a receipt written, while the deployment
+      // serving the scope keeps its schedules running. Refused loudly instead, as the status
+      // read is, and only when a re-assert is owed: nothing recorded, nothing to refuse.
+      if (modules.length > 0 && !this.cpLess && vertical !== null && !this.systemSwitchDelegation) {
+        throw substratError(
+          'unavailable',
+          `no delegation configured for hosted scope ${scopeId} (vertical '${vertical}') — cannot re-assert ` +
+            `its switched-off schedules in the deployment serving it`,
+        );
+      }
       const at = new Date().toISOString();
       const results: SystemSwitchReassert[] = [];
       for (const moduleId of modules) {

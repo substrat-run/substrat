@@ -619,6 +619,34 @@ describe('#1674 — a hosted scope is re-asserted through the delegation, after 
     expect(deployment.position).toBe('off');
   });
 
+  it('a hosted scope on a host with NO delegation: the re-assert refuses `unavailable` instead of reaching the placeholder (Copilot review)', async () => {
+    // Without DISPATCH/PLATFORM_SECRET the control plane configures no delegation, and this
+    // host's own SCOPE namespace is the module-less placeholder. A re-assert that switched
+    // THERE would answer success, and a reconcile would write its receipt, while the
+    // deployment serving the scope kept its schedules running.
+    const bare = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    bare.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await bare.admin.createTenant(staff, { id: t, slug: `bare-${t.slice(-10).toLowerCase()}`, name: 'Bare' });
+    await bare.admin.grantEntitlement(staff, t, 'sched');
+    await bare.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    await bare.admin.activateScope(staff, t, s);
+    await bare.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+    const refused = await bare.admin
+      .reassertSystemSwitches(staff, { tenantId: t, scopeId: s })
+      .then(() => null, (e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('unavailable');
+    expect(String(refused)).toMatch(/no delegation configured for hosted scope/);
+    // …and a re-provision of that scope is not taken down by it: the CP-full seat landed in
+    // the placeholder, which is not where this scope's switch lives, so it re-asserts nothing.
+    await expect(bare.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' })).resolves.toBeUndefined();
+  });
+
   it('a far end that cannot be reached fails the re-assert, so no caller records a receipt for a scope left on', async () => {
     const { host, node, deployment } = await setup();
     deployment.fail = true;
