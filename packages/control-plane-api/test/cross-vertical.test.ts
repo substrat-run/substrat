@@ -146,7 +146,11 @@ describe('hostedCrossVerticalReach — the hosted cost bound (#1705 PR 2)', () =
           forkedFrom: null,
         }) as unknown as Scope,
     );
-  const run = async (scopes: Scope[]) => {
+  /** One pass over `scopes` through the real reach, with a client that records each call. */
+  const run = async (
+    scopes: Scope[],
+    clientForScope?: Parameters<typeof hostedCrossVerticalReach>[0]['clientForScope'],
+  ) => {
     const calls: string[] = [];
     const client = new VerticalClient({
       fetch: (async (u: string) => {
@@ -162,8 +166,7 @@ describe('hostedCrossVerticalReach — the hosted cost bound (#1705 PR 2)', () =
       versionManifest: async (_a: unknown, _slug: string, v: string) => manifests[v] ?? null,
       getScopeRecord: async (_a: unknown, _t: unknown, id: string) => scopes.find((x) => x.id === id),
     };
-    const host = { admin } as unknown as ScopeHost;
-    const report = await runPlatformSweep(host, {
+    const report = await runPlatformSweep({ admin } as unknown as ScopeHost, {
       actor: ACTOR,
       fetch: (() => Promise.reject(new Error('unused'))) as unknown as FetchLike,
       sweepers: {},
@@ -172,7 +175,11 @@ describe('hostedCrossVerticalReach — the hosted cost bound (#1705 PR 2)', () =
       reconcileMigrations: false,
       runSchedules: false,
       crossVertical: {
-        reach: hostedCrossVerticalReach({ admin: admin as never, actor: ACTOR, clientForScope: async () => client }),
+        reach: hostedCrossVerticalReach({
+          admin: admin as never,
+          actor: ACTOR,
+          clientForScope: clientForScope ?? (async () => client),
+        }),
       },
     });
     return { calls, report };
@@ -192,25 +199,7 @@ describe('hostedCrossVerticalReach — the hosted cost bound (#1705 PR 2)', () =
 
   it('a scope with no serving deployment fails its edge loudly, never answers "imports nothing"', async () => {
     const [only] = scopesOn(1, IMPORTS);
-    const admin = {
-      listScopes: async () => [only],
-      listConnections: async () => [],
-      listVerticals: async () => [],
-      versionManifest: async (_a: unknown, _slug: string, v: string) => manifests[v] ?? null,
-      getScopeRecord: async () => only,
-    };
-    const report = await runPlatformSweep({ admin } as unknown as ScopeHost, {
-      actor: ACTOR,
-      fetch: (() => Promise.reject(new Error('unused'))) as unknown as FetchLike,
-      sweepers: {},
-      drainRetries: false,
-      gcSnapshots: false,
-      reconcileMigrations: false,
-      runSchedules: false,
-      crossVertical: {
-        reach: hostedCrossVerticalReach({ admin: admin as never, actor: ACTOR, clientForScope: async () => undefined }),
-      },
-    });
+    const { report } = await run([only!], async () => undefined);
     expect(report.errors).toEqual([
       expect.objectContaining({ kind: 'vertical-events', id: only!.id, error: expect.stringMatching(/no deployment serving scope/) }),
     ]);

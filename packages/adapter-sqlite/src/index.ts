@@ -4060,7 +4060,7 @@ export class SqliteScopeHost implements ScopeHost {
         // #1705 PR 2: exported-type rows this invoke (and its consumers' tail) committed, for
         // `onExportedEvents`. Counted only in a deployment that exports something, and never
         // for a read-only session, which commits nothing.
-        const exportTypes = session?.mode === 'read-only' ? [] : [...this.crossVertical.exports().keys()];
+        const exportTypes = session?.mode === 'read-only' ? [] : this.crossVertical.exportTypes();
         let exported = 0;
         // #129: read inside the transaction, reported after it commits — a tag
         // handed out for writes that were rolled back is a tag nobody may hold.

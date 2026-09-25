@@ -39,9 +39,22 @@ export function hostedCrossVerticalReach(input: {
   const narrow = registryImportCandidates({
     admin: input.admin,
     actor: input.actor,
-    importsOf: (json) => importsOfManifestJson(json),
+    importsOf: importsOfManifestJson,
   });
-  const clientFor = async (tenantId: TenantId, scopeId: ScopeId, verb: string): Promise<VerticalClient> => {
+  // One resolution per scope for the life of this reach (one pass, or one kick): a producer is
+  // read once per consumer that imports from it, and the ladder is directory reads each time.
+  // A failed resolution is not kept, so the next verb asks again exactly as before.
+  const resolving = new Map<string, Promise<VerticalClient>>();
+  const clientFor = (tenantId: TenantId, scopeId: ScopeId, verb: string): Promise<VerticalClient> => {
+    const key = `${tenantId}\u0000${scopeId}`;
+    const hit = resolving.get(key);
+    if (hit) return hit;
+    const pending = resolve(tenantId, scopeId, verb);
+    resolving.set(key, pending);
+    pending.catch(() => resolving.delete(key));
+    return pending;
+  };
+  const resolve = async (tenantId: TenantId, scopeId: ScopeId, verb: string): Promise<VerticalClient> => {
     const known = listed.get(scopeId);
     const rec = known && known.tenantId === tenantId ? known : await input.admin.getScopeRecord(input.actor, tenantId, scopeId);
     const client = rec?.vertical ? await input.clientForScope(rec) : undefined;

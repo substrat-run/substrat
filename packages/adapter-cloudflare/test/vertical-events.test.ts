@@ -132,8 +132,13 @@ const key = (k: string) => permissionKey.parse(k);
 const CRM_OWNER: RoleDefinition = { key: 'crm-owner', permissions: [key('customer:write')], source: 'vertical' };
 const BOARD_OWNER: RoleDefinition = { key: 'board-owner', permissions: [key('association:read')], source: 'vertical' };
 
-/** The three cross-vertical far ends, hidden: a host built before them, behind the current routes. */
-const CROSS_VERTICAL_VERBS = new Set(['exportedEventsLocal', 'importStateLocal', 'importEventsLocal']);
+/** The three cross-vertical routes and the host verb each calls: what an older script lacks. */
+const CROSS_VERTICAL_ROUTES = {
+  '/internal/exported-events': 'exportedEventsLocal',
+  '/internal/import-state': 'importStateLocal',
+  '/internal/import-events': 'importEventsLocal',
+} as const;
+const CROSS_VERTICAL_VERBS = new Set<string>(Object.values(CROSS_VERTICAL_ROUTES));
 
 /**
  * One vertical's deployment. `era` says how old its script is:
@@ -149,9 +154,7 @@ function deployment(
 ) {
   const app = new Hono<{ Bindings: Record<string, never> }>();
   if (era === 'routes-predate') {
-    for (const path of ['/internal/exported-events', '/internal/import-state', '/internal/import-events']) {
-      app.all(path, (c) => c.notFound());
-    }
+    for (const path of Object.keys(CROSS_VERTICAL_ROUTES)) app.all(path, (c) => c.notFound());
   }
   const hostFor = (): CloudflareScopeHost => {
     const host = new CloudflareScopeHost({ scope });
@@ -193,6 +196,12 @@ function deployment(
   return { client, hostFor, paths, provision };
 }
 
+/** The platform's routing for the two fixture verticals: each scope to its vertical's deployment. */
+const routeTo =
+  (crm: { client: VerticalClient }, board: { client: VerticalClient }) =>
+  async (rec: { vertical: string | null }): Promise<VerticalClient | undefined> =>
+    rec.vertical === CRM_VERTICAL ? crm.client : rec.vertical === BOARD_VERTICAL ? board.client : undefined;
+
 verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', async () => {
   await warmControlPlane(env.VE_CONTROL_PLANE);
   const secretBox = webCryptoSecretBox('test-key', new Uint8Array(32).fill(7));
@@ -207,8 +216,7 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
   const { candidates: _registry, ...transport } = hostedCrossVerticalReach({
     admin: consumer.admin,
     actor: platformActorId.parse(ulid()),
-    clientForScope: async (rec) =>
-      rec.vertical === CRM_VERTICAL ? crm.client : rec.vertical === BOARD_VERTICAL ? board.client : undefined,
+    clientForScope: routeTo(crm, board),
   });
   return {
     producer,
@@ -311,8 +319,7 @@ describe('a producer deployment that predates the cross-vertical routes (#1705 P
     const reach = hostedCrossVerticalReach({
       admin: dir.admin,
       actor: staff,
-      clientForScope: async (rec) =>
-        rec.vertical === CRM_VERTICAL ? crm.client : rec.vertical === BOARD_VERTICAL ? board.client : undefined,
+      clientForScope: routeTo(crm, board),
     });
     const report = await runPlatformSweep(dir, {
       actor: staff,

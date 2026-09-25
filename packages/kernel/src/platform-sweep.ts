@@ -521,6 +521,24 @@ export function runningVersionOf(
 }
 
 /**
+ * Every vertical's serving pointer, for `runningVersionOf` — one `listVerticals` read, and only
+ * when some scope is actually on a serving script, since nothing else can differ from its
+ * binding. Shared by the provision reconcile (#1653) and the cross-vertical narrowing (#1705).
+ */
+async function servingPointersFor(
+  admin: Pick<HostAdmin, 'listVerticals'>,
+  actor: PlatformActorId,
+  scopes: readonly Pick<Scope, 'servingRef'>[],
+): Promise<Map<string, ServingPointer>> {
+  const serving = new Map<string, ServingPointer>();
+  if (!scopes.some((s) => s.servingRef)) return serving;
+  for (const v of await admin.listVerticals(actor)) {
+    if (v.servingRef && v.servingVersionId) serving.set(v.slug, { ref: v.servingRef, versionId: v.servingVersionId });
+  }
+  return serving;
+}
+
+/**
  * This pass's share of the behind scopes: at most `batch`, as a contiguous window over
  * the id order, starting at `rng()` of the way round and wrapping. Deterministic for a
  * given `rng`, which is what makes the fairness claim testable.
@@ -1007,16 +1025,7 @@ export async function runPlatformSweep(
     const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
       (s) => isPrimaryScope(s) && !failedThisPass.has(s.id),
     );
-    // One directory read for every vertical's serving pointer — and only when some scope
-    // is actually on a serving script, since nothing else can differ from its binding.
-    const serving = new Map<string, ServingPointer>();
-    if (scopes.some((s) => s.servingRef)) {
-      for (const v of await host.admin.listVerticals(options.actor)) {
-        if (v.servingRef && v.servingVersionId) {
-          serving.set(v.slug, { ref: v.servingRef, versionId: v.servingVersionId });
-        }
-      }
-    }
+    const serving = await servingPointersFor(host.admin, options.actor, scopes);
     const behind: { id: ScopeId; tenantId: TenantId; target: string }[] = [];
     for (const s of scopes) {
       const running = runningVersionOf(s, s.vertical ? serving.get(s.vertical) : null);
@@ -1426,16 +1435,16 @@ async function sweepCrossVertical(
   // tenant, so nothing outside it can be a consumer of this producer or change how it resolves.
   const scopes = (
     await host.admin.listScopes(options.actor, { status: 'active', ...(only ? { tenantId: only.tenantId } : {}) })
-  ).filter((s) => isPrimaryScope(s) && s.vertical !== null);
+  ).filter((s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null);
   // The kick names a scope, and the edges run are the ones whose producer RESOLVES to it. A
   // fork, a preview, a second install or a scope of another tenant is not a producer, so a
   // kick naming one runs nothing (the sweep would resolve the same way).
   let from: string | null = null;
   if (only) {
     const named = scopes.find((s) => s.id === only.scopeId && s.tenantId === only.tenantId);
-    const resolved = named ? resolveVerticalInstanceFrom(scopes, named.tenantId, named.vertical!) : null;
+    const resolved = named ? resolveVerticalInstanceFrom(scopes, named.tenantId, named.vertical) : null;
     if (!named || resolved?.outcome !== 'resolved' || resolved.instance.scopeId !== named.id) return out;
-    from = named.vertical!;
+    from = named.vertical;
   }
 
   const record = (edge: CrossVerticalEdge): void => {
@@ -1477,7 +1486,7 @@ async function sweepCrossVertical(
   // every watermark holds, and the next pass asks again.
   let candidates: readonly Scope[];
   try {
-    candidates = await candidatesOf(scopes, ...(from !== null ? [{ from }] : []));
+    candidates = await candidatesOf(scopes, from !== null ? { from } : undefined);
   } catch (err) {
     report.errors.push({ kind: 'vertical-events', id: 'candidates', error: message(err) });
     return out;
@@ -1557,31 +1566,33 @@ export function registryImportCandidates(input: {
   importsOf: (manifestJson: string | null) => readonly { from: string }[];
 }): NonNullable<CrossVerticalReach['candidates']> {
   return async (scopes, hint) => {
-    const serving = new Map<string, ServingPointer>();
-    if (scopes.some((s) => s.servingRef)) {
-      for (const v of await input.admin.listVerticals(input.actor)) {
-        if (v.servingRef && v.servingVersionId) serving.set(v.slug, { ref: v.servingRef, versionId: v.servingVersionId });
-      }
-    }
+    const serving = await servingPointersFor(input.admin, input.actor, scopes);
+    // One read per distinct running version, all in flight together, then the filter.
     const sourcesOf = new Map<string, Promise<Set<string>>>();
-    const out: Scope[] = [];
+    const keyed: { scope: Scope; key: string }[] = [];
     for (const s of scopes) {
       if (!s.vertical) continue;
       const running = runningVersionOf(s, serving.get(s.vertical));
       if (!running) continue;
-      const cacheKey = `${s.vertical}\u0000${running}`;
-      let sources = sourcesOf.get(cacheKey);
-      if (!sources) {
-        const slug = s.vertical;
-        sources = input.admin
-          .versionManifest(input.actor, slug, running)
-          .then((json) => new Set(input.importsOf(json).map((i) => i.from)));
-        sourcesOf.set(cacheKey, sources);
+      const key = `${s.vertical}\u0000${running}`;
+      if (!sourcesOf.has(key)) {
+        sourcesOf.set(
+          key,
+          input.admin
+            .versionManifest(input.actor, s.vertical, running)
+            .then((json) => new Set(input.importsOf(json).map((i) => i.from))),
+        );
       }
-      const from = await sources;
-      if (hint ? from.has(hint.from) : from.size > 0) out.push(s);
+      keyed.push({ scope: s, key });
     }
-    return out;
+    const resolved = new Map<string, Set<string>>();
+    await Promise.all([...sourcesOf].map(async ([key, sources]) => resolved.set(key, await sources)));
+    return keyed
+      .filter(({ key }) => {
+        const from = resolved.get(key)!;
+        return hint ? from.has(hint.from) : from.size > 0;
+      })
+      .map(({ scope }) => scope);
   };
 }
 

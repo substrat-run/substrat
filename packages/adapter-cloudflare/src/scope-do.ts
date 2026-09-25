@@ -2091,7 +2091,7 @@ export function defineScopeDO(
         // #1705 PR 2: the outbox's insertion mark, so the envelope can say whether this
         // invoke (or a consumer in its tail) committed an exported type. Only in a deployment
         // that exports something, and never for a read-only session, which commits nothing.
-        const exportTypes = impersonation?.mode === 'read-only' ? [] : [...this.crossVertical.exports().keys()];
+        const exportTypes = impersonation?.mode === 'read-only' ? [] : this.crossVertical.exportTypes();
         const exportMark = exportTypes.length > 0 ? this.outboxMark() : null;
         let result: unknown;
         let committedVersion: string | null = null;

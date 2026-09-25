@@ -1703,10 +1703,10 @@ export default {
       if (!ids.success || !sids.success) {
         return c.json({ error: 'tenantId and scopeId (ULIDs) are required' }, 400);
       }
-      const { intents: intentsKick, exports: exportsKick } = drainKickOf(body);
+      const kick = drainKickOf(body);
       // Runs inline: the router backgrounds this call with `ctx.waitUntil`, so completing the
       // drain here is what keeps the subrequest alive long enough to actually settle the intents.
-      const report = intentsKick
+      const report = kick.intents
         ? await drainOneScope(c.env, ids.data, sids.data)
         : { drained: 0, done: 0, failed: 0, pending: 0 };
       // The scope's response committed an exported type: run THIS producer's outgoing edges now,
@@ -1714,7 +1714,7 @@ export default {
       // same phase as the sweep, narrowed to the producer (its tenant, its resolved instance, the
       // consumers whose running code imports from it), under the same watermark compare-and-set,
       // so a kick and a sweep that overlap cannot move an edge twice.
-      if (!exportsKick) return c.json(report);
+      if (!kick.exports) return c.json(report);
       const host = hostFor(c.env);
       const crossVertical = crossVerticalFor(c.env, host);
       if (!crossVertical) return c.json(report);

@@ -48,8 +48,7 @@ import {
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
 import {
-  EXPORTED_EVENTS_HEADER,
-  PLATFORM_REQUEST_HEADER,
+  kickFlags,
   readRoutedNode,
   RouterAssertionError,
   type ScopeStub,
@@ -221,15 +220,12 @@ async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
   const principal = await authenticatedPrincipal(c.req.raw, c.env);
   if (!principal) throw new HTTPException(401, { message: await unauthorizedReason(c.env, node) });
   return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
-    // An operation that called `ctx.requestPlatform` flags its response, and the router
-    // drains this scope within seconds instead of at the next sweep. Leave it wired even
-    // if nothing requests anything yet: the host calls this only when a committed invoke
-    // enqueued at least one intent, so it costs nothing until then, and without it every
-    // platform intent waits up to a quarter of an hour.
-    onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
-    // #1705: an event another of the tenant's apps imports was committed; the same kick then
-    // delivers it in seconds instead of at the next sweep.
-    onExportedEvents: () => c.header(EXPORTED_EVENTS_HEADER, '1'),
+    // An operation that called `ctx.requestPlatform`, or committed an event another of the
+    // tenant's apps imports, flags its response, and the router has the platform act on this
+    // scope within seconds instead of at the next sweep. Leave it wired even if nothing uses
+    // either yet: the host raises a flag only when a committed invoke did one of the two, so
+    // it costs nothing until then, and without it each waits up to a quarter of an hour.
+    ...kickFlags((name, value) => c.header(name, value)),
   });
 }
 

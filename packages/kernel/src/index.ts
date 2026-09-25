@@ -227,6 +227,7 @@ export {
   PLATFORM_SECRET_HEADER,
   PLATFORM_REQUEST_HEADER,
   EXPORTED_EVENTS_HEADER,
+  kickFlags,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
 } from './platform-call.js';
 export {

@@ -1,4 +1,5 @@
 import type { HeaderReader } from './routed-node.js';
+import type { ScopeStubOptions } from './scope-host.js';
 
 /**
  * Authenticating a call FROM the platform TO a vertical (K-31).
@@ -68,6 +69,21 @@ export const PLATFORM_REQUEST_HEADER = 'x-substrat-platform-request';
  * `ScopeStubOptions.onExportedEvents`.
  */
 export const EXPORTED_EVENTS_HEADER = 'x-substrat-exported-events';
+
+/**
+ * Both kick flags as the stub options that raise them (#1705 PR 2): spread into `getScope`'s
+ * options with the handler's header setter. One call per worker rather than one line per flag,
+ * so a flag added later reaches every vertical that uses this, and not only the ones that
+ * remembered the line. A vertical that skips it still works, and waits for the sweep.
+ */
+export function kickFlags(
+  setHeader: (name: string, value: string) => void,
+): Pick<ScopeStubOptions, 'onPlatformRequests' | 'onExportedEvents'> {
+  return {
+    onPlatformRequests: () => setHeader(PLATFORM_REQUEST_HEADER, '1'),
+    onExportedEvents: () => setHeader(EXPORTED_EVENTS_HEADER, '1'),
+  };
+}
 
 /**
  * Throw unless this request proves it came from the platform.

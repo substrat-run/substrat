@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { platformActorId, connectionId, scopeId, tenantId } from '@substrat-run/contracts';
+import { platformActorId, connectionId, importsOfManifestJson, scopeId, tenantId } from '@substrat-run/contracts';
 import type { MigrationFailure, MigrationStraggler, Scope, Tenant } from '@substrat-run/contracts';
 import {
   isPrimaryScope,
@@ -1685,6 +1685,17 @@ describe('runPlatformSweep · event drain skips (#1636, #1641)', () => {
  * Object wake (an `/internal` hop too, when hosted), so the phase must call no scope when nothing
  * imports, must call only candidates, and must cap what one pass visits.
  */
+/** Only the cross-vertical phase: every other phase off, so the fakes need nothing else. */
+const quiet: Omit<PlatformSweepOptions, 'crossVertical'> = {
+  actor: ACTOR,
+  fetch: FETCH,
+  sweepers: {},
+  drainRetries: false,
+  gcSnapshots: false,
+  reconcileMigrations: false,
+  runSchedules: false,
+};
+
 describe('runPlatformSweep · cross-vertical cost (#1705)', () => {
   const scopesOf = (n: number, vertical = 'acme/board') =>
     Array.from({ length: n }, () => ({
@@ -1709,15 +1720,6 @@ describe('runPlatformSweep · cross-vertical cost (#1705)', () => {
       ...(imports ? { registeredImports: imports } : {}),
     } as unknown as ScopeHost;
     return { host, calls };
-  };
-  const quiet: Omit<PlatformSweepOptions, 'crossVertical'> = {
-    actor: ACTOR,
-    fetch: FETCH,
-    sweepers: {},
-    drainRetries: false,
-    gcSnapshots: false,
-    reconcileMigrations: false,
-    runSchedules: false,
   };
 
   it('a host that imports nothing calls no scope at all, however large the fleet', async () => {
@@ -1816,11 +1818,7 @@ describe('registryImportCandidates (#1705 PR 2)', () => {
     };
     return { admin: admin as never, reads };
   };
-  const importsOf = (json: string | null) => {
-    if (!json) return [];
-    const imports = (JSON.parse(json) as { registry?: { imports?: { from: string }[] } }).registry?.imports;
-    return imports ?? [];
-  };
+  const importsOf = importsOfManifestJson;
   const hostWith = (scopes: Scope[]) => {
     const called: string[] = [];
     const host = { admin: { listScopes: async () => scopes, listConnections: async () => [] } } as unknown as ScopeHost;
@@ -1838,15 +1836,6 @@ describe('registryImportCandidates (#1705 PR 2)', () => {
       },
     });
     return { host, called, reachOver };
-  };
-  const quiet: Omit<PlatformSweepOptions, 'crossVertical'> = {
-    actor: ACTOR,
-    fetch: FETCH,
-    sweepers: {},
-    drainRetries: false,
-    gcSnapshots: false,
-    reconcileMigrations: false,
-    runSchedules: false,
   };
 
   it('a fleet whose running versions import nothing makes zero scope calls, and one registry read per version', async () => {

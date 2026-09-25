@@ -80,13 +80,14 @@ function directory(rows: Record<string, Row>) {
 }
 
 /** A vertical that echoes back what it was asked, so we can assert on the assertion. */
-function spyVertical(): { binding: Fetcher; seen: () => Request } {
+/** A vertical that answers `ok` with the given response headers, and records what it was sent. */
+function spyVertical(headers: Record<string, string> = {}): { binding: Fetcher; seen: () => Request } {
   let last: Request | undefined;
   return {
     binding: {
       fetch: async (req: Request) => {
         last = req;
-        return new Response('ok');
+        return new Response('ok', { headers });
       },
     } as unknown as Fetcher,
     seen: () => {
@@ -703,19 +704,6 @@ describe('router kick (platform-intents)', () => {
    * names the scope this router resolved.
    */
   describe('exported events (#1705)', () => {
-    /** A vertical that answers with the given response headers, and records what it received. */
-    const verticalAnswering = (headers: Record<string, string>) => {
-      const received: Request[] = [];
-      return {
-        binding: {
-          fetch: async (req: Request) => {
-            received.push(req);
-            return new Response('ok', { status: 200, headers });
-          },
-        } as unknown as Fetcher,
-        received: () => received,
-      };
-    };
     const envWith = (vertical: Fetcher, kick: ReturnType<typeof kickSpy>) =>
       ({
         ROUTER_SECRET: SECRET,
@@ -728,7 +716,7 @@ describe('router kick (platform-intents)', () => {
     it('kicks the RESOLVED scope with `exports` when the vertical flags an exported event', async () => {
       const kick = kickSpy();
       const { ctx, settle } = collectingCtx();
-      const vertical = verticalAnswering({ 'x-substrat-exported-events': '1' });
+      const vertical = spyVertical({ 'x-substrat-exported-events': '1' });
       const res = await worker.fetch(get('https://acme.example.com/api/invoke'), envWith(vertical.binding, kick), ctx);
       expect(res.status).toBe(200);
       await settle();
@@ -740,7 +728,7 @@ describe('router kick (platform-intents)', () => {
     it('carries both flags when the response raised both', async () => {
       const kick = kickSpy();
       const { ctx, settle } = collectingCtx();
-      const vertical = verticalAnswering({ 'x-substrat-exported-events': '1', 'x-substrat-platform-request': '1' });
+      const vertical = spyVertical({ 'x-substrat-exported-events': '1', 'x-substrat-platform-request': '1' });
       await worker.fetch(get('https://acme.example.com/api/invoke'), envWith(vertical.binding, kick), ctx);
       await settle();
       expect(kick.calls().map((c) => c.body)).toEqual([
@@ -752,7 +740,7 @@ describe('router kick (platform-intents)', () => {
       const kick = kickSpy();
       const { ctx, settle } = collectingCtx();
       // The vertical flags nothing. The caller sets the flag, and a spoofed scope beside it.
-      const vertical = verticalAnswering({});
+      const vertical = spyVertical({});
       const forged = new Request('https://acme.example.com/api/invoke', {
         headers: {
           'x-substrat-exported-events': '1',
@@ -764,7 +752,7 @@ describe('router kick (platform-intents)', () => {
       await settle();
       expect(kick.calls()).toHaveLength(0);
       // Nor did the vertical ever see it, so no harness could echo it back as its own.
-      const seen = vertical.received()[0]!;
+      const seen = vertical.seen();
       expect(seen.headers.get('x-substrat-exported-events')).toBeNull();
       expect(seen.headers.get('x-substrat-platform-request')).toBeNull();
       expect(seen.headers.get('x-substrat-scope')).toBe(S);

@@ -220,7 +220,8 @@ The sweep is the backstop, and one tick is a long time for an event another app 
 invoke that commits an event of an exported type (its own emit, or one a consumer made in its
 post-commit tail) fires `ScopeStubOptions.onExportedEvents`, and the vertical flags its response
 `x-substrat-exported-events` (`EXPORTED_EVENTS_HEADER`) beside the existing
-`x-substrat-platform-request`. The router's drain kick then carries
+`x-substrat-platform-request`. A worker wires both with one call,
+`...kickFlags((name, value) => c.header(name, value))`. The router's drain kick then carries
 `{ platformRequests, exports }`, and `/internal/drain-scope` runs that producer's outgoing edges
 (`runCrossVerticalFrom`). Delivery then takes seconds.
 

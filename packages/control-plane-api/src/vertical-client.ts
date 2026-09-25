@@ -1218,10 +1218,7 @@ export class VerticalClient {
    * verbatim. A JSON 200 of the wrong shape is a 502, never a guess.
    */
   async exportedEvents(input: { tenantId: TenantId; scopeId: ScopeId; input: ExportReadInput }): Promise<ExportedBatch> {
-    return this.crossVerticalCall('exported-events', '/internal/exported-events', input.scopeId, exportedBatch, {
-      method: 'POST',
-      body: input,
-    });
+    return this.crossVerticalCall('exported-events', '/internal/exported-events', input.scopeId, exportedBatch, input);
   }
 
   /**
@@ -1232,9 +1229,7 @@ export class VerticalClient {
    */
   async importState(input: { tenantId: TenantId; scopeId: ScopeId }): Promise<ImportState> {
     const q = new URLSearchParams({ tenantId: input.tenantId, scopeId: input.scopeId });
-    return this.crossVerticalCall('import-state', `/internal/import-state?${q}`, input.scopeId, importState, {
-      method: 'GET',
-    });
+    return this.crossVerticalCall('import-state', `/internal/import-state?${q}`, input.scopeId, importState);
   }
 
   /**
@@ -1243,19 +1238,19 @@ export class VerticalClient {
    * twice meets its own journal rows and runs nothing twice, and a stale one is refused.
    */
   async importEvents(input: { tenantId: TenantId; scopeId: ScopeId; batch: ImportBatch }): Promise<ImportResult> {
-    return this.crossVerticalCall('import-events', '/internal/import-events', input.scopeId, importResult, {
-      method: 'POST',
-      body: input,
-    });
+    return this.crossVerticalCall('import-events', '/internal/import-events', input.scopeId, importResult, input);
   }
 
-  /** The three cross-vertical verbs' one transport and skew rule (see `exportedEvents`). */
+  /**
+   * The three cross-vertical verbs' one transport and skew rule (see `exportedEvents`): a POST
+   * of `body` when there is one, a GET otherwise.
+   */
   private async crossVerticalCall<T>(
     verb: string,
     path: string,
     scopeId: ScopeId,
     schema: { safeParse(v: unknown): { success: true; data: T } | { success: false } },
-    init: { method: 'GET' } | { method: 'POST'; body: unknown },
+    body?: unknown,
   ): Promise<T> {
     const predates = (): ControlPlaneError =>
       new ControlPlaneError(
@@ -1264,15 +1259,14 @@ export class VerticalClient {
           `Nothing was read or delivered; the edge's watermark holds.`,
       );
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const secret = { [PLATFORM_SECRET_HEADER]: this.options.platformSecret };
     const res = await this.reach(verb, () =>
-      this.options.fetch(`${base}${path}`, {
-        method: init.method,
-        headers: {
-          [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
-          ...(init.method === 'POST' ? { 'content-type': 'application/json' } : {}),
-        },
-        ...(init.method === 'POST' ? { body: JSON.stringify(init.body) } : {}),
-      }),
+      this.options.fetch(
+        `${base}${path}`,
+        body === undefined
+          ? { method: 'GET', headers: secret }
+          : { method: 'POST', headers: { ...secret, 'content-type': 'application/json' }, body: JSON.stringify(body) },
+      ),
     );
     if (res.status === 404) throw predates();
     if (!res.ok) throw await this.refusal(verb, res);

@@ -20,7 +20,7 @@ import { HTTPException } from 'hono/http-exception';
 import { principalId, scopeId, tenantId, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
-import { EXPORTED_EVENTS_HEADER, PLATFORM_REQUEST_HEADER, readRoutedNode, RouterAssertionError, type ScopeStub, invocationLog } from '@substrat-run/kernel';
+import { kickFlags, readRoutedNode, RouterAssertionError, type ScopeStub, invocationLog } from '@substrat-run/kernel';
 import {
   AuthConfigError,
   IdentityDO,
@@ -294,10 +294,7 @@ async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
   const principal = await principalFor(c.env, c.req.raw);
   if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
   return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
-    onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
-    // #1705: an event another of the tenant's apps imports was committed; the same kick then
-    // delivers it in seconds instead of at the next sweep.
-    onExportedEvents: () => c.header(EXPORTED_EVENTS_HEADER, '1'),
+    ...kickFlags((name, value) => c.header(name, value)),
   });
 }
 

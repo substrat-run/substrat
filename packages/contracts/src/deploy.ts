@@ -287,12 +287,6 @@ export function outboundOfManifestJson(manifestJson: string | null | undefined):
 }
 
 /**
- * The declared outgoing peer calls of a STORED manifest (#1706) — `outboundOfManifestJson`'s
- * sibling, and null on the same terms: no manifest, unparseable, or a version pushed before the
- * declaration existed. The directory read lifts it with the outbound surface, in one query, so
- * the router judges both from the dispatch it already resolved.
- */
-/**
  * The cross-vertical imports a STORED manifest declares (#1705): its permission registry's
  * `imports` rows. The hosted sweep reads them to decide which scopes it calls at all, so a
  * version that imports nothing costs no scope call. `[]` for no manifest, an unparseable one,
@@ -317,6 +311,12 @@ export function importsOfManifestJson(
   }
 }
 
+/**
+ * The declared outgoing peer calls of a STORED manifest (#1706) — `outboundOfManifestJson`'s
+ * sibling, and null on the same terms: no manifest, unparseable, or a version pushed before the
+ * declaration existed. The directory read lifts it with the outbound surface, in one query, so
+ * the router judges both from the dispatch it already resolved.
+ */
 export function callsOfManifestJson(manifestJson: string | null | undefined): string[] | null {
   if (!manifestJson) return null;
   try {

@@ -309,12 +309,7 @@ async function kickDrain(
       new Request('https://control-plane/internal/drain-scope', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-substrat-platform': secret },
-        body: JSON.stringify({
-          tenantId: target.tenantId,
-          scopeId: target.scopeId,
-          platformRequests: flags.platformRequests,
-          exports: flags.exports,
-        }),
+        body: JSON.stringify({ tenantId: target.tenantId, scopeId: target.scopeId, ...flags }),
       }),
     );
   } catch {

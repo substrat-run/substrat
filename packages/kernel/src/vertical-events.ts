@@ -350,6 +350,8 @@ export class CrossVerticalRegistry {
   private readonly exportsByType = new Map<string, EventExport & { declaredBy: string }>();
   private readonly importVersion = new Map<string, { schemaVersion: number; declaredBy: string }>();
   private readonly registered: RegisteredImport[] = [];
+  /** `exportTypes()`, kept current by `register`: an invoke reads it, and must not rebuild a map to. */
+  private exportTypeList: string[] = [];
 
   register(
     manifest: Pick<ModuleManifest, 'id' | 'events'>,
@@ -398,6 +400,7 @@ export class CrossVerticalRegistry {
     for (const e of manifest.events.exports ?? []) {
       if (!this.exportsByType.has(e.type)) this.exportsByType.set(e.type, { ...e, declaredBy: manifest.id });
     }
+    this.exportTypeList = [...this.exportsByType.keys()];
     for (const [key, decl] of declared) {
       if (!this.importVersion.has(key)) this.importVersion.set(key, { schemaVersion: decl.schemaVersion, declaredBy: manifest.id });
     }
@@ -407,6 +410,11 @@ export class CrossVerticalRegistry {
   /** type → export, over every registered module: what this deployment releases. */
   exports(): Map<string, EventExport> {
     return new Map([...this.exportsByType].map(([t, { declaredBy: _, ...e }]) => [t, e]));
+  }
+
+  /** The exported type names (#1705 PR 2), for the per-invoke kick count. Empty: exports nothing. */
+  exportTypes(): readonly string[] {
+    return this.exportTypeList;
   }
 
   /** What this deployment imports, one row per (source, type), sorted. */
