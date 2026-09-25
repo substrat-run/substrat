@@ -543,7 +543,7 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     beforeAll(async () => {
       await host.admin.registerVertical(staff, { slug: ADOPT, name: 'Adopt', source: 'cli', ownerTenant: t });
       // Two scopes born BEFORE the vertical serves in place: legacy, on per-version dispatch.
-      for (const switchedOff of [true, false]) {
+      for (const switchedOff of [true, false, true]) {
         const s = scopeId.parse(ulid());
         await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: ADOPT });
         await host.admin.activateScope(staff, t, s);
@@ -582,6 +582,34 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     it('twin: with no record, the adopted scope stays on', async () => {
       await adopt(legacy[1]!);
       expect(store.get(legacy[1]!)).toBe('on');
+    });
+
+    const post = (s: ScopeId, path: string, body?: unknown) =>
+      app().request(`/tenants/${t}/scopes/${s}/${path}`, {
+        method: 'POST',
+        headers: { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+
+    it('a retried adopt whose first re-assert failed re-asserts, though the scope is already adopted (Copilot review)', async () => {
+      const s = legacy[2]!;
+      unreachable.add(s);
+      expect((await post(s, 'adopt-serving')).status).not.toBe(200);
+      expect(store.get(s)).toBe('on'); // routing flipped, the re-assert did not land
+      unreachable.delete(s);
+      const retry = await post(s, 'adopt-serving');
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toMatchObject({ alreadyAdopted: true });
+      expect(store.get(s)).toBe('off');
+    });
+
+    it('a retried rebind that finds the scope already bound re-asserts too (Copilot review)', async () => {
+      const s = legacy[2]!;
+      store.set(s, 'on'); // a rebind that flipped routing, then lost its re-assert
+      const retry = await post(s, 'rebind-vertical', { vertical: ADOPT });
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toMatchObject({ alreadyBound: true });
+      expect(store.get(s)).toBe('off');
     });
   });
 

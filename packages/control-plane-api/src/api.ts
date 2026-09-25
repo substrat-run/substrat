@@ -2179,7 +2179,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (scope.kind === 'preview') {
       throw new ControlPlaneError(409, 'preview scopes cannot adopt the production serving script');
     }
-    if (scope.servingRef) return { servingRef: scope.servingRef, alreadyAdopted: true };
+    if (scope.servingRef) {
+      // #1674 (Copilot review): an adopt that flipped routing and then failed to re-assert is
+      // retried HERE, so the retry re-asserts too — else a store that lost its OFF marker in
+      // the copy would stay on for good. Cheap and idempotent when nothing is owed.
+      await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
+      return { servingRef: scope.servingRef, alreadyAdopted: true };
+    }
     if (!scope.vertical) {
       throw new ControlPlaneError(409, 'scope has no vertical — nothing to adopt onto');
     }
@@ -2294,6 +2300,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     }
     if (scope.vertical === target && scope.servingRef === serving.ref) {
+      // #1674: a rebind retried after its re-assert failed lands here; re-assert, as adopt does.
+      await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
       return { servingRef: serving.ref, versionId: serving.versionId, alreadyBound: true };
     }
     if (opts.abandonData) {
