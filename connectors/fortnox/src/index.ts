@@ -548,6 +548,7 @@ export async function probeFortnoxSecret(
     vertical: '',
     provider: 'fortnox',
     secret: parsed.data,
+    // Probe stub, not where expiry is set. Fortnox mints 1h access tokens via client_credentials and has NO refresh token (api.ts); recording the access token expiry here would warn on every row. See connections.md §3.6.
     expiresAt: null,
     fetch: (input, init) =>
       options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),

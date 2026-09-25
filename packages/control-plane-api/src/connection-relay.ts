@@ -140,6 +140,7 @@ export async function relayConnectionUpsert(
       label: input.label ?? input.provider,
       externalAccountRef: input.externalAccountRef,
       scopes: input.scopes,
+      // Whatever the caller supplies; no shipped connector does (connections.md §3.6), so today this is undefined and the row reads "not reported".
       expiresAt: input.expiresAt,
       secret: input.secret,
       // §3.5.1 — the authorizing tenant principal, proven by the vertical's own
