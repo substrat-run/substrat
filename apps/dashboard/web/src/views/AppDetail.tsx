@@ -18,6 +18,7 @@ import { DnsRecords } from './Domains';
 import { ReleaseComparisonCard, SchemaHistoryCard } from './ReleaseCards';
 import { AppPeers } from './AppPeers';
 import { AppEdges } from './AppEdges';
+import { AppSchedulesCard } from './AppSchedulesCard';
 import { StatusBand } from './StatusBand';
 import { InvocationStrip } from './InvocationStrip';
 import { InvocationLogsStrip } from './InvocationLogsStrip';
@@ -596,6 +597,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
             </a>
           </div>
         </div>
+        <AppSchedulesCard key={`schedules:${app.app_scope_id}`} scopeId={app.app_scope_id} />
         <OwnerSeatCard key={app.app_scope_id} scopeId={app.app_scope_id} seat={seat} onClaimed={readSeat} />
         <AppPeers key={`peers:${app.app_scope_id}`} scopeId={app.app_scope_id} />
         <AppEdges key={`edges:${app.app_scope_id}`} scopeId={app.app_scope_id} />

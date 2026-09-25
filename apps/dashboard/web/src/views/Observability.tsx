@@ -403,9 +403,17 @@ export function Observability({
         />
       )}
       {scopeId && active === 'schedules' && (
-        <AppSchedules key={`${scopeId}:${nonce}`} scopeId={scopeId} window={panelWindow} />
+        <AppSchedules
+          key={`${scopeId}:${nonce}`}
+          scopeId={scopeId}
+          window={panelWindow}
+          focused={cursor !== null}
+          {...(app ? { appName: app.name } : {})}
+          onOpen={(next) => onNav({ app: scopeId, ...next })}
+        />
       )}
-      {!needsApp && (active === 'flow' || active === 'schedules' || active === 'health') && <p style={{ fontSize: 12 }}>This view is a current snapshot. Schedule highlights cover only the returned recent runs; it is not a complete historical query.</p>}
+      {!needsApp && (active === 'flow' || active === 'health') && <p style={{ fontSize: 12 }}>This view is a current snapshot. Schedule highlights cover only the returned recent runs; it is not a complete historical query.</p>}
+      {!needsApp && active === 'schedules' && <p style={{ fontSize: 12 }}>Each schedule shows the last 20 runs the read returns; it is not a complete historical query.</p>}
       {app && active === 'flow' && <Flow key={`${app.app_scope_id}:${nonce}`} app={app} />}
     </Page>
   );
