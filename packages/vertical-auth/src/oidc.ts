@@ -9,10 +9,14 @@ import type { AuthProvider, AuthSubject } from './provider.js';
  * VERIFIES the presented JWT against the issuer's JWKS and reads the subject. There are no
  * server-side auth endpoints to run, so `handle` is informational.
  *
- * workerd-safe: `jose` + Web Crypto only (the same stack `@substrat-run/oidc-rp` uses).
+ * workerd-safe: `jose`, Web Crypto and `@substrat-run/oidc-rp/discovery` (the bound discovery
+ * the login path uses; no login flow and no `hono`).
  */
 export interface OidcConfig {
-  /** The issuer URL (`iss`) — its `/.well-known/openid-configuration` gives the JWKS. */
+  /**
+   * The issuer URL (`iss`). Must be `https` (loopback `http` for a dev issuer); its
+   * `/.well-known/openid-configuration` gives the JWKS, and must name this issuer.
+   */
   issuer: string;
   /** Expected audience (`aud`), if the issuer sets one for this app. */
   audience?: string;
@@ -27,7 +31,8 @@ export interface OidcConfig {
   /**
    * With `clientId`: this app's MCP resource identifier on an origin — `mcpResourceOf` from
    * `@substrat-run/contracts`, handed in rather than imported so this subpath keeps its
-   * jose-only dependency. An access token whose `aud` names it is this app's own too.
+   * small dependency set (jose + oidc-rp's discovery). An access token whose `aud` names it is
+   * this app's own too.
    */
   resourceOf?: (origin: string) => string;
   /** Override the JWKS URI (skip discovery) — e.g. a self-hosted issuer. */
@@ -136,8 +141,8 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
       // browser-login path: a boolean when the issuer asserts one, and the `"true"` /
       // `"false"` strings some issuers in the Auth0 lineage emit instead — anything else,
       // the claim's absence included, stays `undefined` rather than becoming a guess.
-      // Written out here rather than imported so this subpath keeps its two-module
-      // dependency (jose + this file) and a bearer-only consumer needs no hono.
+      // Written out here rather than imported so this subpath keeps a small dependency
+      // set (jose + oidc-rp's discovery, no login flow) and a bearer-only consumer needs no hono.
       const verified = meta['email_verified'];
       return {
         sub: String(payload.sub),
