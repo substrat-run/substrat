@@ -8,7 +8,8 @@ description: How one vertical receives another vertical's events in the same ten
 
 **Status:** building. The contract, both adapters and the platform-sweep phase are in #1705's
 first PR. The hosted transport (the control plane reaching both scopes over `/internal`, with the
-router kick for prompt delivery) is the second. **Related:** #1706 (workload identity between
+router kick for prompt delivery) is in the second. The replay lever, the edge-health view, the
+payload-schema classifier and the registry refusal remain. **Related:** #1706 (workload identity between
 verticals, which supplies the principal and the `peers` grant used here), #1582 (a scope-wide
 read after a watermark), #938 (live reads), #427 (`provides`/`requires`).
 
@@ -159,7 +160,11 @@ phase never asks every scope whether it imports anything:
   a version's permission registry as `imports`), so it is read where the code is described,
   never from the scope. The default is the host's own `registeredImports()`: a deployment that
   imports nothing makes **zero** scope calls per pass, however large the fleet. The control
-  plane narrows per scope from the registry.
+  plane narrows per scope from the registry (`registryImportCandidates`). It reads the version
+  each scope RUNS (`runningVersionOf`), then that version's stored manifest's `registry.imports`,
+  once per distinct running version per pass, plus one `listVerticals` when a scope is on a
+  serving script. Those are directory reads, not scope wakes. A version whose manifest was not
+  retained, or predates `imports`, is read as importing nothing.
 - **Capped.** At most `maxConsumers` candidates per pass (default 100), in a window with a random
   start (the provision reconcile's rule), so a consumer that fails every pass holds no slot
   forever. The rest are `deferred`, not dropped, because watermarks hold.
@@ -167,6 +172,68 @@ phase never asks every scope whether it imports anything:
 A pass is therefore bounded by `maxConsumers × (1 + 2 × sources)` scope calls: one
 `importState` per consumer, then per source one `readExportedEvents` and, only when something is
 new, one `deliverToPeer`. With no importer anywhere, it makes none.
+
+Hosted, each of those calls is one `/internal` request to the deployment serving the scope, and one
+Durable Object round trip there. The served-here check is one more round trip to the same object.
+A router kick costs the same for one producer: one tenant-filtered directory read, the registry
+reads for that tenant's scopes, and the calls above for the consumers that import from it. The
+control plane's `CROSS_VERTICAL_CONSUMERS_PER_PASS` sets `maxConsumers`, and `0` pauses the phase.
+
+## The hosted transport
+
+On the hosted path neither end of an edge lives in the control plane. Each scope's storage is in
+its own vertical's dispatch deployment, and the control plane's `SCOPE` namespace is the
+module-less placeholder. So the control plane runs the phase (in its scheduled sweep, and on the
+router kick below) and reaches both ends over the platform-secret-gated `/internal` surface every
+vertical mounts with `mountPlatformSurface`:
+
+| Step | Route | Far end |
+| --- | --- | --- |
+| The consumer's imports and watermarks | `GET /internal/import-state` | `importStateLocal` |
+| The producer's release after a watermark | `POST /internal/exported-events` | `exportedEventsLocal` |
+| The batch, applied under the compare-and-set | `POST /internal/import-events` | `importEventsLocal` |
+
+`hostedCrossVerticalReach` (control-plane-api) is that reach. It resolves each scope's deployment
+by the ladder every delegated verb uses (serving script, then bound version, then slug). A scope
+whose vertical resolves no deployment fails its edge. It never answers "imports nothing".
+
+**An empty answer and "cannot answer" never look alike.** "Nothing new" is a real answer, so a
+deployment that cannot give one must not produce it. A script that predates the routes answers
+404 or its SPA shell, and `VerticalClient` turns either into a 501 that says to redeploy. A
+current script over a host without the far ends answers the route's own 501. Either way the
+edge reports `failed` with that reason, and its watermark holds. It never reports `idle` over a
+backlog.
+
+**Every far end proves the scope is one it serves.** A vertical's deployment is CP-less and has no
+directory. An unprovisioned Durable Object answers every read with something plausible, such as a
+watermark of "never read", which a pass would act on by re-delivering from the start. So each far
+end first checks that the scope was provisioned in this deployment for this tenant. Provisioning
+projects the vertical's role definitions under the tenant (`_substrat_roles`), and a restore
+re-projects them. The check reads that without migrating, and refuses `conflict` otherwise. The
+refusal is 409 on the wire, which the platform cannot mistake for the 404 of a script that
+predates the route. On the shared control plane the directory's own gate (`assertServedHere`)
+still refuses a hosted scope outright.
+
+### The router kick
+
+The sweep is the backstop, and one tick is a long time for an event another app is waiting on. An
+invoke that commits an event of an exported type (its own emit, or one a consumer made in its
+post-commit tail) fires `ScopeStubOptions.onExportedEvents`, and the vertical flags its response
+`x-substrat-exported-events` (`EXPORTED_EVENTS_HEADER`) beside the existing
+`x-substrat-platform-request`. The router's drain kick then carries
+`{ platformRequests, exports }`, and `/internal/drain-scope` runs that producer's outgoing edges
+(`runCrossVerticalFrom`). Delivery then takes seconds.
+
+- **Both flags are response headers.** The router strips every inbound `x-substrat-*` header
+  before it forwards a request, so a caller can neither raise the flag nor get a vertical to echo
+  one. The kick names the scope the router resolved, never one a response names.
+- **A kick runs what the next sweep would run, narrowed.** It reads the producer's tenant only.
+  It runs only the edges whose producer RESOLVES to the kicked scope, so a fork, a preview or a
+  second install runs nothing. It asks the registry only for consumers that import from that
+  vertical, and it keeps the consumer cap. The watermark's compare-and-set makes an overlapping
+  kick and sweep safe.
+- **What it does not cover.** Exported events committed by a peer call, a schedule or a
+  cross-vertical delivery do not pass through a routed response. They wait for the sweep.
 
 ## Where it is visible
 
@@ -178,8 +245,6 @@ where a person first sees it.
 
 ## Not yet
 
-- The hosted transport: `/internal` routes, the control-plane reach, and the router kick for
-  delivery in seconds rather than at the next sweep.
 - A lever to move the watermark (replay from N, skip to now).
 - The payload-schema classifier, and a registry refusal for a promote that drops or re-versions
   an export someone imports.
