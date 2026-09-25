@@ -22,6 +22,7 @@ import {
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
   UNSAFE_devPlatformActorAuth,
+  type VerticalClient,
 } from '../src/index.js';
 
 /**
@@ -510,5 +511,78 @@ describe('the fleet read route (#1674)', () => {
       schedules: 'off',
       recorded: 'off',
     });
+  });
+});
+
+/**
+ * The repair route (`POST /tenants/:t/scopes/:s/provision`, #1674): a hosted reconcile runs
+ * in the vertical's own deployment, whose seat recreates a wiped scope's system grants live
+ * (#1659), and the control plane re-asserts the directory's OFF after it. The fake
+ * deployment does exactly that seat: it grants `tick:run` back, which is what the real one
+ * does to a scope that lost its marker, and nothing else.
+ */
+describe('the repair route re-asserts the switch after the deployment reconciles (#1674)', () => {
+  const t = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  let dir: string;
+  let host: SqliteScopeHost;
+  let reconciles = 0;
+
+  const reseatingDeployment = () =>
+    ({
+      reconcileInstance: async (input: { tenantId: string; scopeId: string }) => {
+        reconciles++;
+        await host.admin.grantToSystem(staff, {
+          moduleId: TICK,
+          permission: 'tick:run' as PermissionKey,
+          node: { tenantId: t, scopeId: scopeId.parse(input.scopeId) },
+          grantedBy: staff,
+        });
+        return { tenantId: input.tenantId, scopeId: input.scopeId, owner: ulid() };
+      },
+    }) as unknown as VerticalClient;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-schedule-switch-repair-'));
+    host = new SqliteScopeHost({ dir });
+    host.registerModule(tickModule);
+    await host.admin.createTenant(staff, { id: t, slug: 'acme-repair', name: 'Acme' });
+    await host.admin.grantEntitlement(staff, t, 'tick');
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a wiped scope that the deployment re-seats comes back OFF, and its twin with no record stays on', async () => {
+    const app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'tick-vertical': reseatingDeployment() },
+    });
+    const scopeWithSwitch = async (switchedOff: boolean) => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'tick-vertical' });
+      await host.admin.activateScope(staff, t, s);
+      if (switchedOff) {
+        await host.admin.revokeFromSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+      }
+      // Wiped: the marker and the grants are gone; the directory's record is not.
+      await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+      return s;
+    };
+    const repair = (s: string) => app.request(`/tenants/${t}/scopes/${s}/provision`, { method: 'POST', headers: asStaff });
+
+    const off = await scopeWithSwitch(true);
+    const before = reconciles;
+    expect((await repair(off)).status).toBe(200);
+    expect(reconciles).toBe(before + 1);
+    expect(await host.runDueSchedules(TICK, t, off)).toMatchObject({ fired: 0, switchedOff: true });
+
+    const twin = await scopeWithSwitch(false);
+    expect((await repair(twin)).status).toBe(200);
+    expect(await host.runDueSchedules(TICK, t, twin)).toMatchObject({ fired: 1 });
   });
 });
