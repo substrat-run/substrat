@@ -4954,7 +4954,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await admin.promoteVersion(c.get('actor'), slug, channel, versionId, acknowledge);
     } catch (err) {
       if (!isExportBreakRefusal(err)) throw err;
-      return c.json({ error: err.message, exportBreaks: await breaksOf() }, 409);
+      // The refusal stands whether or not the listing can be read. A listing that fails turns
+      // into a note, never into a 500 that would hide that the promote was refused.
+      const listing = await breaksOf().then(
+        (exportBreaks) => ({ exportBreaks }),
+        (e: unknown) => ({
+          exportBreaks: null,
+          exportBreaksUnavailable: `which apps it breaks could not be read: ${e instanceof Error ? e.message : String(e)}`,
+        }),
+      );
+      return c.json({ error: err.message, ...listing }, 409);
     }
     // The in-place serve (#286), prod only, AFTER every promote gate has passed —
     // uploading first would deploy to live scopes before the acknowledgement check.

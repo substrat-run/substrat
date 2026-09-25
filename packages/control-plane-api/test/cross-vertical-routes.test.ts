@@ -458,6 +458,24 @@ describe('the promote refusal over HTTP: who is named to whom (#1705 PR 3)', () 
     expect((await host.admin.listChannels(staff, FEED)).find((c) => c.channel === 'prod')?.versionId).toBe(v1);
   });
 
+  it('a listing that cannot be read is a note on the refusal, never a 500', async () => {
+    const read = host.admin.promotionImpact;
+    host.admin.promotionImpact = async () => {
+      throw new Error('registry down');
+    };
+    try {
+      const res = await promote(asStaff, FEED, { versionId: v2 });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        error: expect.stringMatching(/drops or re-versions/),
+        exportBreaks: null,
+        exportBreaksUnavailable: expect.stringMatching(/registry down/),
+      });
+    } finally {
+      host.admin.promotionImpact = read;
+    }
+  });
+
   it('refuses staff too, naming every affected app', async () => {
     const res = await promote(asStaff, FEED, { versionId: v2 });
     expect(res.status).toBe(409);
