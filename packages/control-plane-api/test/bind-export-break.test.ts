@@ -585,7 +585,9 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     expect(scripts.get(stable)?.get(legacy)?.[0]?.rows).toEqual([['Acme AB']]);
   });
 
-  it('an install refused after the serve is left where it is; every other install still moves, and the backfill still runs', async () => {
+  // An owned install still on a version that exports TYPE, beside an app that imports it, while the
+  // channel (and an install on the serving script) are on a version that exports nothing.
+  const laggingWorld = async () => {
     const pin = `lag-${ulid().slice(-6).toLowerCase()}`;
     const t = tenantId.parse(ulid());
     await host.admin.createTenant(staff, { id: t, slug: pin, name: pin });
@@ -623,9 +625,14 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     await host.admin.activateScope(staff, t, deskScope);
     await host.admin.bindScopeVersion(staff, t, deskScope, deskVersion);
 
+    const next = await push(pin, manifest('0.2.0', false));
+    return { t, slug, stable, onServing, lagging, old, deskScope, next };
+  };
+
+  it('an install refused after the serve is left where it is; every other install still moves, and the backfill still runs', async () => {
+    const { t, slug, stable, onServing, lagging, old, deskScope, next } = await laggingWorld();
     // The channel's previous version exports nothing, so the promote gate passes; the adopt of the
     // lagging install is what breaks the desk.
-    const next = await push(pin, manifest('0.2.0', false));
     const listScopes = vi.spyOn(host.admin, 'listScopes');
     let res: Response;
     try {
@@ -648,5 +655,25 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     // The twin: promoting again acknowledged moves it.
     expect((await promote(slug, next.id, { exportBreak: true })).status).toBe(200);
     expect(await host.admin.getScopeRecord(staff, t, lagging)).toMatchObject({ servingRef: stable, verticalVersionId: next.id });
+  });
+
+  it("the promote's impact names the lagging install's break, so its acknowledgement covers what was shown", async () => {
+    const { slug, deskScope, next } = await laggingWorld();
+    const impact = async (versionId: string) =>
+      ((await (
+        await app.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote-impact?versionId=${versionId}`, { headers: auth })
+      ).json()) as { affected: { scopeId: string }[] }).affected;
+    // The gate alone sees nothing (the channel's version exports nothing); the adopt would break the desk.
+    await expect(host.admin.promotionImpact(staff, slug, 'prod', next.id)).resolves.toEqual([]);
+    expect((await impact(next.id)).map((b) => b.scopeId)).toEqual([deskScope]);
+    // Promoted acknowledged, the listing it answers with is the same one.
+    const res = await promote(slug, next.id, { permissionChange: true, exportBreak: true });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { exportBreaks?: { affected: { scopeId: string }[] } }).exportBreaks?.affected.map((b) => b.scopeId)).toEqual([
+      deskScope,
+    ]);
+    // The twin: with no install left behind, a further version that exports nothing breaks nothing.
+    const later = await push(slug.split('/')[0]!, manifest('0.3.0', false));
+    expect(await impact(later.id)).toEqual([]);
   });
 });

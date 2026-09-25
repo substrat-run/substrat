@@ -86,6 +86,7 @@ import {
 } from '@substrat-run/contracts';
 import type {
   BindAcknowledgement,
+  ChannelName,
   Connection,
   ConnectionActivity,
   ExportBreak,
@@ -5111,6 +5112,43 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
+  /**
+   * Which installed apps promoting `versionId` to `channel` would break: the promote gate's own
+   * answer (`promotionImpact`, judged from the channel's previous version), and — for a PRIVATE,
+   * dispatch-backed vertical's prod — what adopting each owned install still on its own version
+   * would break (#1756). That adopt runs after the serve and carries the promote's acknowledgement,
+   * so the acknowledgement must be asked against both, or it would cover breaks nobody was shown.
+   * Over-approximates for a host that cannot serve in place, where no adopt runs: an extra line
+   * costs a read, a missing one a silent stall.
+   */
+  const promoteImpactOf = async (
+    actor: PlatformActorId,
+    slug: string,
+    channel: ChannelName,
+    versionId: string,
+  ): Promise<ExportBreak[]> => {
+    const gate = await admin.promotionImpact(actor, slug, channel, versionId);
+    if (channel !== 'prod') return gate;
+    const v = await verticalOf(actor, slug);
+    if (!v || v.ownerTenant === null || v.listed) return gate;
+    const incoming = await admin.getVersion(actor, versionId, slug);
+    if (!incoming?.deploymentRef || incoming.admission !== 'admitted') return gate;
+    const lagging = (
+      await admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug, status: ['active'] })
+    ).filter((s) => !s.forkedFrom && s.kind !== 'preview' && !s.servingRef && s.verticalVersionId !== versionId);
+    const seen = new Set(gate.map((b) => `${b.scopeId}|${b.type}`));
+    const out = [...gate];
+    for (const s of lagging) {
+      // After the adopt it runs the promoted version, served in place: that pointer move, from
+      // what it runs now, is the move to judge.
+      for (const b of await admin.bindingImpact(actor, s.tenantId, s.id, versionId)) {
+        const key = `${b.scopeId}|${b.type}`;
+        if (!seen.has(key)) (seen.add(key), out.push(b));
+      }
+    }
+    return out;
+  };
+
   // #1705 PR 3: which installed apps promoting `?versionId=` would break (an export they import,
   // dropped or re-versioned), BEFORE promoting, so a dialog can show it and ask for the
   // acknowledgement up front, as it does for the digests. The promote's own 409 carries the same
@@ -5125,7 +5163,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const v = await verticalOf(p.actor, slug);
       if (!v || v.ownerTenant !== pin) return c.json({ error: 'forbidden' }, 403);
     }
-    const breaks = await admin.promotionImpact(c.get('actor'), slug, channel, versionId);
+    const breaks = await promoteImpactOf(c.get('actor'), slug, channel, versionId);
     const { visible, otherTenants } = narrowToCaller(breaks, pin);
     return c.json({ affected: visible, ...(otherTenants ? { otherTenants } : {}) });
   });
@@ -5176,7 +5214,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // rest as a count, never another tenant's id. Read only when there is something to say: on
     // the refusal, and before an acknowledged promotion moves the channel it is measured from.
     const breaksOf = async () => {
-      const breaks = await admin.promotionImpact(c.get('actor'), slug, channel, versionId);
+      const breaks = await promoteImpactOf(c.get('actor'), slug, channel, versionId);
       if (breaks.length === 0) return null;
       const { visible, otherTenants } = narrowToCaller(breaks, confinedTenant(p));
       return { affected: visible, ...(otherTenants ? { otherTenants } : {}) };
