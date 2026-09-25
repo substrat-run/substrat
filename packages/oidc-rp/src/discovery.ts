@@ -60,11 +60,13 @@ async function fetchDiscovery(url: string): Promise<Response> {
 /**
  * An issuer identifier as a comparison key: parsed, so the host's case and a default port do
  * not matter, with one trailing slash dropped. The path stays case-sensitive. Null when it is
- * not a URL at all.
+ * not a URL, or carries a query, a fragment or userinfo: an issuer identifier has none, and
+ * dropping them would make two different identifiers compare equal.
  */
 function issuerKey(issuer: string): string | null {
   try {
     const u = new URL(issuer);
+    if (u.search || u.hash || u.username || u.password) return null;
     return `${u.origin}${u.pathname}`.replace(/\/$/, '');
   } catch {
     return null;
@@ -82,10 +84,9 @@ const discoveryCache = new Map<string, Promise<Discovery>>();
  */
 export function discoverIssuer(issuer: string): Promise<Discovery> {
   const key = issuerKey(issuer);
-  if (!key || !isHttpsOrLoopback(new URL(issuer))) {
-    // Not cached: nothing was asked of anyone.
-    return Promise.reject(new Error('OIDC issuer is not https'));
-  }
+  // Not cached, either refusal: nothing was asked of anyone.
+  if (!key) return Promise.reject(new Error('OIDC issuer is not a valid issuer identifier'));
+  if (!isHttpsOrLoopback(new URL(issuer))) return Promise.reject(new Error('OIDC issuer is not https'));
   const cached = discoveryCache.get(key);
   if (cached) return cached;
   const url = `${key}/.well-known/openid-configuration`;

@@ -151,6 +151,21 @@ describe('discovery is bound to the configured issuer', () => {
     await expect(beginLogin(env, APP)).rejects.toThrow(/different issuer/);
   });
 
+  it('is not an issuer identifier when the configured one carries a query, fragment or userinfo', async () => {
+    for (const bad of [`${issuer}?tenant=1`, `${issuer}#frag`, `https://user:pw@${new URL(issuer).host}`]) {
+      env = { ...env, OIDC_ISSUER: bad };
+      await expect(beginLogin(env, APP), bad).rejects.toThrow(/not a valid issuer/);
+    }
+    expect(requests).toEqual([]);
+  });
+
+  it('refuses a document whose issuer differs only by a query, fragment or userinfo', async () => {
+    for (const bad of [`${issuer}?x=1`, `${issuer}#f`, `https://user@${new URL(issuer).host}`]) {
+      doc = { issuer: bad };
+      await expect(beginLogin(env, APP), bad).rejects.toThrow(/different issuer/);
+    }
+  });
+
   it('does not cache the refusal: an issuer that is corrected is usable', async () => {
     doc = { issuer: 'https://other.test' };
     await expect(login()).rejects.toThrow(/different issuer/);
