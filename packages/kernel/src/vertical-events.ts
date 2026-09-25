@@ -26,7 +26,13 @@
 
 import {
   EXPORT_HOP_CAP,
+  substratError,
   type ConsumedEventRef,
+  type ImportCursorMove,
+  type ImportCursorMoved,
+  type ScopeId,
+  type TenantId,
+  type VerticalResolution,
   type EventExport,
   type ModuleManifest,
   type ExportedBatch,
@@ -36,6 +42,7 @@ import {
 } from '@substrat-run/contracts';
 import { domainEventOf, type OutboxEnvelopeRow } from './outbox-event.js';
 import type { ImportHandler } from './scope-host.js';
+import { ulidCeiling } from './ulid.js';
 
 export const VERTICAL_EVENTS_DDL = `
   -- #1705: every event this scope has received from another vertical. The envelope only, and
@@ -80,6 +87,25 @@ export const VERTICAL_EVENTS_DDL = `
   -- every pass, for all the unexported activity since the last exported event. With it, the read
   -- seeks each type's range and costs what it returns.
   CREATE INDEX IF NOT EXISTS _substrat_outbox_type_id ON _substrat_outbox (type, id);
+  -- #1705 PR 3: what a REPLAY moved out of the live journal. A replay re-delivers events this
+  -- scope already took, and the live tables are also the dedupe (a row in _substrat_deliveries
+  -- means "do not run this handler again"). So the rows for the replayed range leave them. They
+  -- are moved here rather than dropped, because they are the record that a handler ran on an
+  -- event, when, and what it reported: evidence the spine keeps. One row per moved row, the
+  -- whole row as JSON under the replay that moved it. Nothing reads this to deliver.
+  CREATE TABLE IF NOT EXISTS _substrat_import_replays (
+    -- The act (a ULID). The admin log's row for the replay carries the same id.
+    replay_id TEXT NOT NULL,
+    replayed_at TEXT NOT NULL,
+    source_scope_id TEXT NOT NULL,
+    -- 'journal': a _substrat_imports row. 'delivery': a _substrat_deliveries row.
+    kind TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    -- The handler's module on a 'delivery' row, and '' on a 'journal' row.
+    consumer_module TEXT NOT NULL,
+    row TEXT NOT NULL,
+    PRIMARY KEY (replay_id, kind, event_id, consumer_module)
+  );
 `;
 
 /**
@@ -312,6 +338,216 @@ export const IMPORT_RECORD_SQL = `
      entity_type, entity_id, hops, withheld, imported_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
+
+// -- the replay lever (#1705 PR 3) -----------------------------------------------------------
+
+/**
+ * The producer end of the edge a lever moves, resolved by the sweep's own rule (#1705 PR 3).
+ *
+ * Both ends must be their tenant's one primary instance, exactly as `sweepEdge` requires. A
+ * watermark on any other pair is one no pass reads, so a move there would report success and
+ * change nothing. `resolve` is the directory's `resolveVerticalInstance`, and it takes the
+ * CONSUMER's tenant, so a producer in another tenant is not found rather than moved.
+ */
+export async function importCursorSourceOf(
+  resolve: (tenantId: TenantId, vertical: string) => Promise<VerticalResolution>,
+  consumer: { tenantId: TenantId; scopeId: ScopeId; vertical: string | null },
+  from: string,
+): Promise<{ vertical: string; scopeId: ScopeId }> {
+  if (consumer.vertical === null) {
+    throw substratError('precondition_failed', `scope ${consumer.scopeId} runs no vertical, so it imports nothing`);
+  }
+  if (from === consumer.vertical) {
+    throw substratError('precondition_failed', `'${from}' is this scope's own vertical — an edge names ANOTHER vertical`);
+  }
+  const self = await resolve(consumer.tenantId, consumer.vertical);
+  if (self.outcome !== 'resolved' || self.instance.scopeId !== consumer.scopeId) {
+    throw substratError(
+      'precondition_failed',
+      `scope ${consumer.scopeId} is not its tenant's one primary instance of '${consumer.vertical}' — ` +
+        `a fork, a preview or a second install is no end of an edge`,
+    );
+  }
+  const producer = await resolve(consumer.tenantId, from);
+  if (producer.outcome !== 'resolved') {
+    throw substratError(
+      producer.outcome === 'not-installed' ? 'not_found' : 'precondition_failed',
+      producer.outcome === 'not-installed'
+        ? `'${from}' is not installed in this tenant`
+        : `this tenant has more than one primary instance of '${from}' — the edge waits until one is chosen`,
+    );
+  }
+  return { vertical: from, scopeId: producer.instance.scopeId };
+}
+
+/**
+ * The SQL a lever needs, and nothing else. Both adapters hand `moveImportCursor` one of these
+ * over their own store, inside their own transaction, on the scope's own queue, so a pass
+ * delivering on the same edge can never interleave with the move.
+ */
+export interface CursorMoveSql {
+  /**
+   * Run a write. Its change count is not used: a Durable Object's `rowsWritten` counts index
+   * writes too, so the two adapters would disagree about how many rows a replay moved.
+   */
+  run(sql: string, ...params: unknown[]): unknown;
+  /** Read at most one row. */
+  get<T>(sql: string, ...params: unknown[]): T | undefined;
+}
+
+/**
+ * Copy the replayed range's delivery rows into `_substrat_import_replays`. Params: replay id,
+ * replayed at, source scope, after ('' = the whole history).
+ *
+ * The rows are the import handlers' own. An imported event is never in this scope's outbox,
+ * so no in-scope consumer ever journals one, and joining through `_substrat_imports` on the
+ * source names exactly this edge's rows.
+ */
+const ARCHIVE_DELIVERIES_SQL = `
+  INSERT INTO _substrat_import_replays
+    (replay_id, replayed_at, source_scope_id, kind, event_id, consumer_module, row)
+  SELECT ?, ?, i.source_scope_id, 'delivery', d.event_id, d.consumer_module,
+         json_object('delivered_at', d.delivered_at, 'error', d.error, 'attempts', d.attempts,
+                     'next_attempt_at', d.next_attempt_at, 'invocation_id', d.invocation_id)
+    FROM _substrat_deliveries d
+    JOIN _substrat_imports i ON i.event_id = d.event_id
+   WHERE i.source_scope_id = ? AND i.event_id > ?
+`;
+
+/** How many rows the two archive statements are about to move. Params: (source scope, after) twice. */
+const REPLAY_RANGE_COUNT_SQL = `
+  SELECT (SELECT COUNT(*) FROM _substrat_imports WHERE source_scope_id = ? AND event_id > ?) AS journal,
+         (SELECT COUNT(*) FROM _substrat_deliveries d JOIN _substrat_imports i ON i.event_id = d.event_id
+           WHERE i.source_scope_id = ? AND i.event_id > ?) AS deliveries
+`;
+
+/** Copy the replayed range's journal rows. Params as `ARCHIVE_DELIVERIES_SQL`. */
+const ARCHIVE_JOURNAL_SQL = `
+  INSERT INTO _substrat_import_replays
+    (replay_id, replayed_at, source_scope_id, kind, event_id, consumer_module, row)
+  SELECT ?, ?, source_scope_id, 'journal', event_id, '',
+         json_object('source_vertical', source_vertical, 'type', type, 'schema_version', schema_version,
+                     'occurred_at', occurred_at, 'entity_type', entity_type, 'entity_id', entity_id,
+                     'hops', hops, 'withheld', withheld, 'imported_at', imported_at)
+    FROM _substrat_imports
+   WHERE source_scope_id = ? AND event_id > ?
+`;
+
+/** Then clear them from the live tables. Deliveries first: their predicate reads the journal. */
+const CLEAR_DELIVERIES_SQL = `
+  DELETE FROM _substrat_deliveries
+   WHERE event_id IN (SELECT event_id FROM _substrat_imports WHERE source_scope_id = ? AND event_id > ?)
+`;
+const CLEAR_JOURNAL_SQL = 'DELETE FROM _substrat_imports WHERE source_scope_id = ? AND event_id > ?';
+
+/**
+ * Set a watermark to any value, backwards included. `IMPORT_CURSOR_ADVANCE_SQL` can only move
+ * it forward, and that is the delivery path's guard. The lever is the one writer allowed past it.
+ */
+const CURSOR_SET_SQL = `
+  INSERT INTO _substrat_import_cursors (source_scope_id, source_vertical, cursor, updated_at)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT (source_scope_id) DO UPDATE SET
+    source_vertical = excluded.source_vertical,
+    cursor = excluded.cursor,
+    updated_at = excluded.updated_at
+`;
+/** "Never read": the absence of a row, which is how a new edge already reads. */
+const CURSOR_CLEAR_SQL = 'DELETE FROM _substrat_import_cursors WHERE source_scope_id = ?';
+
+/**
+ * Move one edge's watermark (#1705 PR 3). The adapter supplies the store, the transaction, the
+ * queue, the clock and the act's id. Everything the move decides is decided here, once, for
+ * both adapters.
+ *
+ * Why a bare rewind is not a replay. Three guards stand between an event and a second run of
+ * its handler, and a replay must pass each one on purpose:
+ *
+ *   1. `IMPORT_CURSOR_ADVANCE_SQL` moves the watermark forward only. The lever sets it here.
+ *   2. `_substrat_deliveries` holds a row per (event, module) that ran, and the delivery path
+ *      skips any pair it finds. Rewound but not cleared, every replayed event would come back
+ *      as a `duplicate` and nothing would run.
+ *   3. `_substrat_imports` is `INSERT OR IGNORE`. Left in place, an event first withheld for its
+ *      version would stay recorded as withheld after the consumer's upgrade released it.
+ *
+ * So a replay moves the range's rows in (2) and (3) into `_substrat_import_replays` under
+ * `replayId`, then clears them, then sets the watermark. The evidence stays, and the live tables
+ * take the events again. Two things are true between the move and the redelivery, and are
+ * stated rather than hidden: a cause walk through a moved event's id ends at `missing`, and an
+ * export read in this scope counts fewer hops for a chain through it. Both heal when the next
+ * pass redelivers, and neither can release an event that should not cross.
+ *
+ * Refused, with the reason a person reads:
+ * - a replay whose `after` is AHEAD of the watermark (that is a skip), or a skip whose `through`
+ *   is BEHIND it (that is a replay). The acknowledgement names one direction, and it must be
+ *   the direction that moves;
+ * - a replay on an edge that has delivered nothing yet: there is nothing to run again.
+ */
+export function moveImportCursor(
+  sql: CursorMoveSql,
+  input: {
+    move: ImportCursorMove;
+    source: { vertical: string; scopeId: string };
+    replayId: string;
+    /** ISO 8601, for the rows. */
+    at: string;
+    /** "now" for a skip, as the watermark's ceiling. */
+    now: number;
+  },
+): ImportCursorMoved {
+  const { move, source } = input;
+  const previous = sql.get<{ cursor: string }>(IMPORT_CURSOR_OF_SQL, source.scopeId)?.cursor ?? null;
+  const moved = (cursor: string | null, archived: { journal: number; deliveries: number }): ImportCursorMoved => ({
+    replayId: input.replayId,
+    mode: move.mode,
+    source: source as ImportCursorMoved['source'],
+    previous: previous as ImportCursorMoved['previous'],
+    cursor: cursor as ImportCursorMoved['cursor'],
+    archived,
+  });
+  if (move.mode === 'skip') {
+    const through = move.through === 'now' ? ulidCeiling(input.now) : move.through;
+    if (previous !== null && through < previous) {
+      throw substratError(
+        'precondition_failed',
+        `a skip moves the watermark forward, and ${through} is behind it (${previous}) — ` +
+          `to deliver events again, replay (mode 'replay')`,
+      );
+    }
+    sql.run(CURSOR_SET_SQL, source.scopeId, source.vertical, through, input.at);
+    return moved(through, { journal: 0, deliveries: 0 });
+  }
+  if (previous === null) {
+    throw substratError(
+      'precondition_failed',
+      `this scope has taken nothing from '${source.vertical}' yet — there is nothing to replay; ` +
+        `the next pass delivers the whole exported history`,
+    );
+  }
+  if (move.after !== null && move.after > previous) {
+    throw substratError(
+      'precondition_failed',
+      `a replay moves the watermark back, and ${move.after} is ahead of it (${previous}) — ` +
+        `to pass over events, skip (mode 'skip')`,
+    );
+  }
+  const floor = move.after ?? '';
+  const counted = sql.get<{ journal: number; deliveries: number }>(
+    REPLAY_RANGE_COUNT_SQL,
+    source.scopeId,
+    floor,
+    source.scopeId,
+    floor,
+  );
+  const archived = { journal: Number(counted?.journal ?? 0), deliveries: Number(counted?.deliveries ?? 0) };
+  sql.run(ARCHIVE_DELIVERIES_SQL, input.replayId, input.at, source.scopeId, floor);
+  sql.run(ARCHIVE_JOURNAL_SQL, input.replayId, input.at, source.scopeId, floor);
+  sql.run(CLEAR_DELIVERIES_SQL, source.scopeId, floor);
+  sql.run(CLEAR_JOURNAL_SQL, source.scopeId, floor);
+  if (move.after === null) sql.run(CURSOR_CLEAR_SQL, source.scopeId);
+  else sql.run(CURSOR_SET_SQL, source.scopeId, source.vertical, move.after, input.at);
+  return moved(move.after, archived);
+}
 
 /** The note a withheld event's dead letter carries at the consumer. Names the reason, never the content. */
 export function withheldNote(reason: WithheldEvent['reason'], vertical: string): string {

@@ -111,6 +111,9 @@ import {
   type VerticalCaller,
   exportReadInput,
   importBatch,
+  importCursorMoveAt,
+  type ImportCursorMoveAt,
+  type ImportCursorMoved,
   type ExportReadInput,
   type ExportedBatch,
   type ImportBatch,
@@ -297,6 +300,12 @@ export interface VerticalScopeHost {
   exportedEventsLocal?(tenantId: TenantId, scopeId: ScopeId, input: ExportReadInput): Promise<ExportedBatch>;
   importStateLocal?(tenantId: TenantId, scopeId: ScopeId): Promise<ImportState>;
   importEventsLocal?(tenantId: TenantId, scopeId: ScopeId, batch: ImportBatch): Promise<ImportResult>;
+  /**
+   * The replay lever's far end (#1705 PR 3): move the consumer's watermark on one edge, under the
+   * platform's `replayId`. Optional for the same reason: a host built before it answers 501,
+   * and nothing moved.
+   */
+  importCursorLocal?(tenantId: TenantId, scopeId: ScopeId, at: ImportCursorMoveAt): Promise<ImportCursorMoved>;
 }
 
 /**
@@ -460,6 +469,9 @@ const exportedEventsBody = z.object({ tenantId: tenantIdOf, scopeId: scopeIdOf, 
 
 /** `/internal/import-events` body (#1705 PR 2): the consumer scope, and the batch to apply. */
 const importEventsBody = z.object({ tenantId: tenantIdOf, scopeId: scopeIdOf, batch: importBatch });
+
+/** `/internal/import-cursor` body (#1705 PR 3): the consumer scope, and the move the platform resolved. */
+const importCursorBody = z.object({ tenantId: tenantIdOf, scopeId: scopeIdOf, at: importCursorMoveAt });
 
 /** `/internal/connector-grant` body (#574) — the delivery half of `grantToConnection`. */
 const connectorGrantBody = z.object({
@@ -1061,6 +1073,17 @@ export function mountPlatformSurface<Env extends object>(
       return c.json({ error: 'this deployment cannot import events from other verticals (#1705) — redeploy it' }, 501);
     }
     return c.json(await host.importEventsLocal(body.tenantId, body.scopeId, body.batch));
+  });
+  app.post('/internal/import-cursor', async (c) => {
+    const body = importCursorBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.importCursorLocal) {
+      return c.json(
+        { error: 'this deployment cannot move an import watermark (#1705) — redeploy it. Nothing was moved.' },
+        501,
+      );
+    }
+    return c.json(await host.importCursorLocal(body.tenantId, body.scopeId, body.at));
   });
 
   app.post('/internal/platform-requests/settle', async (c) => {

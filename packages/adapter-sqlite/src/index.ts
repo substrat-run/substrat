@@ -21,6 +21,8 @@ import {
   domainEventInput,
   exportReadInput,
   importBatch,
+  importCursorMove,
+  type ImportCursorMoved,
   type ExportedBatch,
   type ExportReadInput,
   type ImportBatch,
@@ -369,6 +371,9 @@ import {
   exportedSinceQuery,
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
+  moveImportCursor,
+  importCursorSourceOf,
+  type CursorMoveSql,
   CrossVerticalRegistry,
   exportReadPlan,
   exportReadQuery,
@@ -431,6 +436,12 @@ const switchSqlOf = (db: Database.Database): SwitchSql => ({
   run: (sql, ...params) => {
     db.prepare(sql).run(...params);
   },
+});
+
+/** The kernel's replay-lever SQL (#1705 PR 3), over one scope's database handle. */
+const cursorMoveSqlOf = (db: Database.Database): CursorMoveSql => ({
+  run: (sql, ...params) => db.prepare(sql).run(...params),
+  get: <T>(sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined,
 });
 
 /**
@@ -7191,6 +7202,55 @@ export class SqliteScopeHost implements ScopeHost {
         const cursors = this.importCursors(this.scopeReadDbFor(tenantId, scopeId));
         this.recordAccess(actor, 'importState', { tenantId, scopeId }, null, cursors.length);
         return { consumes, cursors } as ImportState;
+      },
+      moveImportCursor: async (actor, tenantId, scopeId, raw): Promise<ImportCursorMoved> => {
+        // #1705 PR 3: the replay lever. Parsed at the door: the acknowledgement literal is part
+        // of the input, and a move without it never reaches the store.
+        const move = importCursorMove.parse(raw);
+        this.assertScopeReachable(tenantId, scopeId);
+        const rec = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as {
+          vertical: string | null;
+        };
+        const source = await importCursorSourceOf(
+          (t, v) => this.admin.resolveVerticalInstance(t, v),
+          { tenantId, scopeId, vertical: rec.vertical },
+          move.from,
+        );
+        const replayId = ulid();
+        const target = { tenantId, scopeId };
+        const base = { replayId, mode: move.mode, from: move.from, source: source.scopeId };
+        this.recordAdmin(actor, 'moveImportCursor', target, null, { ...base, phase: 'intent', reason: move.reason });
+        let moved: ImportCursorMoved;
+        try {
+          const rt = this.runtime(tenantId, scopeId);
+          const at = this.clock();
+          // One turn on the scope actor, which is where `deliverToPeer` runs: a delivery on this
+          // edge is either wholly before the move or refused by its compare-and-set after it.
+          moved = await rt.actor.turn(() =>
+            rt.db.transaction(() =>
+              moveImportCursor(cursorMoveSqlOf(rt.db), { move, source, replayId, at, now: Date.parse(at) }),
+            )(),
+          );
+        } catch (err) {
+          try {
+            this.recordAdmin(actor, 'moveImportCursor', target, null, {
+              ...base,
+              phase: 'failed',
+              error: err instanceof Error ? err.message : String(err),
+            });
+          } catch {
+            // Best effort: the original error is what the caller must see.
+          }
+          throw err;
+        }
+        this.recordAdmin(actor, 'moveImportCursor', target, null, {
+          ...base,
+          phase: 'applied',
+          previous: moved.previous,
+          cursor: moved.cursor,
+          archived: moved.archived,
+        });
+        return moved;
       },
       redrainEvents: async (actor, tenantId, scopeId, input) => {
         // Directory check first, on mark's reasoning: "nothing to reopen" and "you may not

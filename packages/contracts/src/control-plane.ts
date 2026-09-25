@@ -150,6 +150,11 @@ export const adminAction = z.enum([
   // pair, same intent-then-outcome rows.
   'revokeFromPeer',
   'restoreToPeer',
+  // #1705 PR 3 — the replay lever: a consumer's watermark on one cross-vertical edge moved
+  // by hand (replay from a point, or skip to now). A replay runs handlers again, so the row
+  // answers who did that, when and why. It carries the `replayId` that names the journal
+  // rows the replay moved aside into `_substrat_import_replays`.
+  'moveImportCursor',
   // #40 — the directory's own disaster-recovery write: replace THE DIRECTORY (tenants,
   // scopes, hostnames, verticals, identities) with a stored dump. Carries no tenant,
   // because its blast radius is every tenant. The entry lands in the log it just

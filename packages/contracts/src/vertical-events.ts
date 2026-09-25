@@ -197,3 +197,105 @@ export type ImportedEvent = Omit<ExportedEvent, 'hops'> & {
 
 /** How many vertical boundaries a cause chain may cross before its next export is withheld. */
 export const EXPORT_HOP_CAP = 8;
+
+// -- the replay lever (#1705 PR 3) -----------------------------------------------------------
+
+/**
+ * What a replay costs, in the words a person is shown before they pull the lever. The literal
+ * the request must carry (`acknowledge: 'rerun-handlers'`) stands for exactly this sentence.
+ */
+export const REPLAY_EFFECT =
+  'handlers run again; anything they send or call outside this app happens again';
+
+/** What a skip costs, in the words a person is shown before they pull the lever. */
+export const SKIP_EFFECT =
+  "the skipped events are never handed to this app's handlers, unless a later replay reaches back to them";
+
+/**
+ * Move a consumer's watermark on one edge (#1705 PR 3): the lever behind "replay from N" and
+ * "skip to now".
+ *
+ * The edge is named by the PRODUCER's vertical slug. Which scope that is, is the platform's to
+ * resolve from its directory, in the consumer's tenant, exactly as the sweep does. A caller
+ * never names the producer's scope.
+ *
+ * - `replay`: re-deliver every event after `after` (`null`: the whole exported history). Each
+ *   importing module's handler runs AGAIN for every replayed event, and what it emits is a new
+ *   event that fans out again. "Once per (event, module)" becomes "once per (event, module) per
+ *   replay". Hence the acknowledgement, whose literal stands for `REPLAY_EFFECT`.
+ * - `skip`: move the watermark forward to `through` (`'now'`: every event that exists yet), so
+ *   what lies between is never delivered. Recoverable, since the producer's outbox keeps the
+ *   events and a later replay reaches back to them. Still acknowledged, because nothing else
+ *   tells the person that the app will simply not see those events.
+ *
+ * The mode is held to its direction: a replay refuses a target ahead of the watermark and a
+ * skip refuses one behind it, so the acknowledgement a person gave always matches what moved.
+ */
+export const importCursorMove = z.discriminatedUnion('mode', [
+  z.object({
+    mode: z.literal('replay'),
+    from: verticalSlug,
+    after: eventId.nullable(),
+    acknowledge: z.literal('rerun-handlers'),
+    reason: z.string().trim().min(1).max(500),
+  }),
+  z.object({
+    mode: z.literal('skip'),
+    from: verticalSlug,
+    through: z.union([eventId, z.literal('now')]),
+    acknowledge: z.literal('skip-events'),
+    reason: z.string().trim().min(1).max(500),
+  }),
+]);
+export type ImportCursorMove = z.infer<typeof importCursorMove>;
+
+/**
+ * The refusal a lever request without its acknowledgement gets (#1705 PR 3), or `null` when the
+ * acknowledgement matches the mode. Said in the words the literal stands for, so a caller that
+ * left it out is told what it would have agreed to, not that a string did not match.
+ */
+export function importCursorAcknowledgementMissing(raw: unknown): string | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const r = raw as { mode?: unknown; acknowledge?: unknown };
+  if (r.mode === 'replay' && r.acknowledge !== 'rerun-handlers') {
+    return `a replay needs acknowledge: 'rerun-handlers' — ${REPLAY_EFFECT}`;
+  }
+  if (r.mode === 'skip' && r.acknowledge !== 'skip-events') {
+    return `a skip needs acknowledge: 'skip-events' — ${SKIP_EFFECT}`;
+  }
+  return null;
+}
+
+/**
+ * The far end's half of the lever (#1705 PR 3): the move, plus the producer the platform
+ * resolved. A CP-less deployment has no directory to resolve it from, so the control plane
+ * asserts it, as it asserts `ImportBatch.source`. `replayId` is the act the platform's admin
+ * rows already name, so the rows the far end moves aside carry the same id.
+ */
+export const importCursorMoveAt = z.object({
+  move: importCursorMove,
+  source: z.object({ vertical: verticalSlug, scopeId }),
+  replayId: z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/),
+});
+export type ImportCursorMoveAt = z.infer<typeof importCursorMoveAt>;
+
+/**
+ * What a move did (#1705 PR 3).
+ *
+ * `replayId` names the act: the admin-log row carries it, and so does every journal row the
+ * replay moved into `_substrat_import_replays`. A replay does not delete the record that a
+ * delivery happened. It moves it aside, so the live journal can take the event again and the
+ * evidence of the first delivery stays. `archived` counts what moved (0 on a skip).
+ */
+export const importCursorMoved = z.object({
+  replayId: z.string().min(1),
+  mode: z.enum(['replay', 'skip']),
+  source: z.object({ vertical: verticalSlug, scopeId }),
+  previous: eventId.nullable(),
+  cursor: eventId.nullable(),
+  archived: z.object({
+    journal: z.number().int().nonnegative(),
+    deliveries: z.number().int().nonnegative(),
+  }),
+});
+export type ImportCursorMoved = z.infer<typeof importCursorMoved>;

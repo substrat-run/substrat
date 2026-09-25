@@ -78,6 +78,8 @@ import {
   PROBLEM_CONTENT_TYPE,
   toProblem,
   redrainEventsInput,
+  importCursorMove,
+  importCursorAcknowledgementMissing,
   REDRAIN_BATCH,
 } from '@substrat-run/contracts';
 import type {
@@ -6677,6 +6679,32 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       filter as Parameters<typeof admin.listSweepRuns>[1],
     );
     return c.json(pageOf(entries, filter.limit, (e) => e.id));
+  });
+
+  // -- the replay lever (#1705 PR 3): move a consumer's watermark on one edge ----
+  // Staff (the console) and a tenant credential (the dashboard, for someone who may manage the
+  // tenant's apps) may pull it: the edge is between two of the tenant's own apps, and what a
+  // replay runs lands in the tenant's own scope. The peer switch's posture, for that reason.
+  // Builders may not: this route is absent from BUILDER_ROUTES, which is default-deny.
+  //
+  // The acknowledgement is refused HERE with the sentence it stands for, rather than left to a
+  // Zod message about a literal. The person pulling the lever has to be told, in words, that a
+  // replay runs handlers again and repeats what they send or call outside the app.
+  app.post('/tenants/:tenantId/scopes/:scopeId/import-cursor', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const raw: unknown = await c.req.json().catch(() => ({}));
+    const refused = importCursorAcknowledgementMissing(raw);
+    if (refused) return c.json({ error: refused }, 400);
+    const move = importCursorMove.parse(raw);
+    const actor = c.get('actor');
+    // K-3 first, so a scope of another tenant reads as absent before anything is reached.
+    if (!(await admin.getScopeRecord(actor, tenantId, scopeId))) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    return c.json(await admin.moveImportCursor(actor, tenantId, scopeId, move));
   });
 
   // -- issues (#1233): failures grouped by fingerprint, with a lifecycle --------

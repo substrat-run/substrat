@@ -5,6 +5,8 @@ import type {
   ImportedEvent,
   ImportResult,
   ImportState,
+  ImportCursorMove,
+  ImportCursorMoved,
   AdminAction,
   BecomeCapabilityInput,
   CapabilityExchange,
@@ -2367,6 +2369,30 @@ export interface HostAdmin {
    * because the version serving it is the one whose handlers will run.
    */
   importState(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<ImportState>;
+
+  /**
+   * The replay lever (#1705 PR 3): move this CONSUMER scope's watermark on the edge from
+   * `move.from`. Replay re-delivers from a point, and skip passes events over. The semantics,
+   * the refusals and why a bare rewind would replay nothing are in `moveImportCursor`
+   * (vertical-events.ts). The acknowledgement literal is part of the input, because a replay
+   * runs each importing handler again, and anything those handlers send or call outside the app
+   * happens again (`REPLAY_EFFECT`).
+   *
+   * The producer is resolved HERE, from the directory, in this scope's tenant, by the sweep's
+   * own rule (`importCursorSourceOf`). The caller names a vertical, never a scope. The consumer
+   * must itself be its vertical's one primary instance, since a fork or a preview is no end of
+   * an edge. Audited as an admin write, with an intent row before the move and its outcome after,
+   * both carrying the act's `replayId`.
+   *
+   * Takes effect on the next pass: a sweep or a kick reads from the new watermark. A pass already
+   * in flight is refused by the batch's compare-and-set (`stale`), so it cannot undo the move.
+   */
+  moveImportCursor(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    move: ImportCursorMove,
+  ): Promise<ImportCursorMoved>;
 
   /**
    * Clear `drained_at` on events stamped BEFORE `drainedBefore`, so the drain ships them

@@ -149,6 +149,7 @@ import {
   exportedSinceQuery,
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
+  moveImportCursor,
   CrossVerticalRegistry,
   exportReadPlan,
   exportReadQuery,
@@ -181,6 +182,8 @@ import type {
   ImportedEvent,
   ImportResult,
   ImportState,
+  ImportCursorMoveAt,
+  ImportCursorMoved,
   ImpersonationSession,
   Instant,
   MintedCapability,
@@ -3039,6 +3042,28 @@ export function defineScopeDO(
     async switchSystemSchedules(moduleId: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome> {
       return this.queue.enqueue(() =>
         this.ctx.storage.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
+      );
+    }
+
+    /**
+     * The replay lever on this scope (#1705 PR 3): the kernel's `moveImportCursor`, queued with
+     * every `importApply` on this scope and run as one `transactionSync`. A delivery on the same
+     * edge is therefore wholly before the move, or refused by its compare-and-set after it.
+     * Migrated first: the rows a replay moves aside go to `_substrat_import_replays`.
+     */
+    async importCursorMove(input: ImportCursorMoveAt & { at: string; now: number }): Promise<ImportCursorMoved> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(() =>
+        this.ctx.storage.transactionSync(() =>
+          moveImportCursor(
+            {
+              run: (q, ...params) => this.sql.exec(q, ...params),
+              get: <T>(q: string, ...params: unknown[]) =>
+                this.sql.exec(q, ...params).toArray()[0] as T | undefined,
+            },
+            input,
+          ),
+        ),
       );
     }
 

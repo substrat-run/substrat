@@ -161,6 +161,22 @@ export function ulid(now: number = Date.now()): string {
 }
 
 /**
+ * The greatest ULID a millisecond can carry (#1705 PR 3): every id minted at or before `now`
+ * sorts at or below it, and every id minted after sorts above. It is what "skip to now" moves
+ * a watermark to, because a watermark is compared with `id > cursor`.
+ */
+export function ulidCeiling(now: number): string {
+  if (!Number.isSafeInteger(now) || now < 0 || now > MAX_ULID_TIME) throw new RangeError(unencodable(now));
+  let ts = '';
+  let t = now;
+  for (let i = 0; i < 10; i++) {
+    ts = B32[t % 32] + ts;
+    t = Math.floor(t / 32);
+  }
+  return ts + 'Z'.repeat(16);
+}
+
+/**
  * The epoch-millisecond timestamp a ULID carries in its first ten characters.
  *
  * Refuses anything that is not a ULID rather than decoding a prefix: a truncated id

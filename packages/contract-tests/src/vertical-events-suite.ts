@@ -10,6 +10,8 @@ import {
   tenantId,
   z,
   type ImportBatch,
+  type ImportCursorMove,
+  type ImportCursorMoved,
   type PermissionKey,
   type PrincipalId,
   type ScopeId,
@@ -238,6 +240,8 @@ interface BoardView {
   imports: { event_id: string; source_vertical: string; source_scope_id: string; type: string; hops: number; withheld: string | null }[];
   deliveries: { event_id: string; consumer_module: string; error: string | null }[];
   outbox: { id: string; type: string; caused_by: string | null; actor: string }[];
+  /** #1705 PR 3: what a replay moved aside, never deleted. */
+  replays: { replay_id: string; kind: string; event_id: string; consumer_module: string }[];
 }
 
 const boardRead: OperationHandler<undefined, BoardView> = async (ctx) => {
@@ -253,6 +257,9 @@ const boardRead: OperationHandler<undefined, BoardView> = async (ctx) => {
       'SELECT event_id, consumer_module, error FROM _substrat_deliveries ORDER BY event_id, consumer_module',
     ),
     outbox: ctx.sql.query('SELECT id, type, caused_by, actor FROM _substrat_outbox ORDER BY id'),
+    replays: ctx.sql.query(
+      'SELECT replay_id, kind, event_id, consumer_module FROM _substrat_import_replays ORDER BY kind, event_id',
+    ),
   };
 };
 
@@ -332,6 +339,12 @@ export interface VerticalEventsFixture {
    * through the directory is the whole install.
    */
   afterInstall?: (tenantId: TenantId, scopeId: ScopeId, vertical: string) => Promise<void>;
+  /**
+   * How the replay lever is pulled (#1705 PR 3). Absent, through the consumer host's own
+   * `admin.moveImportCursor`. The hosted fixture pulls it on a control-plane host whose
+   * delegation crosses the consumer deployment's `/internal/import-cursor`.
+   */
+  lever?: (tenantId: TenantId, scopeId: ScopeId, move: ImportCursorMove) => Promise<ImportCursorMoved>;
 }
 
 const noFetch: FetchLike = async () => new Response('unused', { status: 200 });
@@ -449,6 +462,23 @@ export function verticalEventsContractSuite(
       });
       return { report, runs };
     };
+    const lever = (t: TenantId, s: ScopeId, move: ImportCursorMove): Promise<ImportCursorMoved> =>
+      fx.lever ? fx.lever(t, s, move) : fx.consumer.admin.moveImportCursor(staff, t, s, move);
+    const replay = (after: string | null): ImportCursorMove => ({
+      mode: 'replay',
+      from: CRM_VERTICAL,
+      after: after === null ? null : eventId.parse(after),
+      acknowledge: 'rerun-handlers',
+      reason: 'the board app lost a day of associations',
+    });
+    const skip = (through: string): ImportCursorMove => ({
+      mode: 'skip',
+      from: CRM_VERTICAL,
+      through: through === 'now' ? 'now' : eventId.parse(through),
+      acknowledge: 'skip-events',
+      reason: 'the board app starts from today',
+    });
+    const refusal = (x: Promise<unknown>): Promise<unknown> => x.then(() => undefined, (e: unknown) => e);
     const edgesOf = (report: PlatformSweepReport, t: TenantId) =>
       (report.crossVertical?.edges ?? []).filter((e) => e.tenantId === t);
     /** The edge INTO one consumer scope. crm imports from board too, so a tenant has two. */
@@ -799,6 +829,170 @@ export function verticalEventsContractSuite(
       });
       await sweep();
       expect((await board(t, c)).associations.map((r) => r.crm_id)).toEqual([during]);
+    });
+
+    // -- the replay lever (#1705 PR 3) ---------------------------------------------------------
+
+    it('replay from the start: every handler runs again, and the first delivery\'s record is moved aside, not deleted', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Alpha');
+      await create(t, p, 'Beta');
+      await sweep();
+      const before = await board(t, c);
+      const created = (v: BoardView) => v.outbox.filter((o) => o.type === 'board.association-created');
+      expect(created(before)).toHaveLength(2);
+
+      const moved = await lever(t, c, replay(null));
+      expect(moved).toMatchObject({ mode: 'replay', cursor: null, source: { vertical: CRM_VERTICAL, scopeId: p } });
+      expect(moved.previous).not.toBeNull();
+      expect(moved.archived).toEqual({ journal: 2, deliveries: 2 });
+      // The evidence of the first delivery stays, under the act that moved it.
+      const aside = await board(t, c);
+      expect(aside.replays.filter((r) => r.kind === 'journal').map((r) => r.event_id)).toEqual(
+        before.imports.map((i) => i.event_id),
+      );
+      expect(aside.replays.filter((r) => r.kind === 'delivery')).toHaveLength(2);
+      expect(new Set(aside.replays.map((r) => r.replay_id))).toEqual(new Set([moved.replayId]));
+      // The admin log names the act, its reason and what it moved.
+      const log = await fx.consumer.admin.auditLog(staff, { tenantId: t, action: ['moveImportCursor'] });
+      expect(log.map((e) => (e.after as { phase?: string }).phase).sort()).toEqual(['applied', 'intent']);
+      expect(log.every((e) => (e.after as { replayId?: string }).replayId === moved.replayId)).toBe(true);
+
+      // The next pass delivers both again, and each handler RUNS again: that is what a replay is.
+      const { report } = await sweep();
+      expect(into(report, c)).toMatchObject({ state: 'delivered', delivered: 2, duplicates: 0 });
+      const after = await board(t, c);
+      expect(created(after)).toHaveLength(4);
+      expect(after.associations.map((r) => r.name)).toEqual(['Alpha', 'Beta']);
+      expect(after.imports.map((i) => i.event_id)).toEqual(before.imports.map((i) => i.event_id));
+    });
+
+    it('replay from a point: only the events after it run again', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Kept');
+      await create(t, p, 'Replayed');
+      await sweep();
+      const [first, second] = (await board(t, c)).imports;
+
+      const moved = await lever(t, c, replay(first!.event_id));
+      expect(moved).toMatchObject({ cursor: first!.event_id, archived: { journal: 1, deliveries: 1 } });
+      await sweep();
+      const view = await board(t, c);
+      // The positive twin of the whole-history replay: the first event's handler did not run again.
+      const createdFor = (id: string) =>
+        view.outbox.filter((o) => o.type === 'board.association-created' && o.caused_by === id).length;
+      expect(createdFor(first!.event_id)).toBe(1);
+      expect(createdFor(second!.event_id)).toBe(2);
+    });
+
+    it('skip to now: nothing before the skip is delivered, what comes after is, and a replay reaches back', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Before the skip');
+      const moved = await lever(t, c, skip('now'));
+      expect(moved).toMatchObject({ mode: 'skip', previous: null, archived: { journal: 0, deliveries: 0 } });
+      expect(moved.cursor).not.toBeNull();
+
+      await sweep();
+      expect((await board(t, c)).associations).toEqual([]);
+      await create(t, p, 'After the skip');
+      await sweep();
+      expect((await board(t, c)).associations.map((r) => r.name)).toEqual(['After the skip']);
+
+      // Recoverable: the producer's outbox kept what was skipped.
+      await lever(t, c, replay(null));
+      await sweep();
+      expect((await board(t, c)).associations.map((r) => r.name).sort()).toEqual(['After the skip', 'Before the skip']);
+    });
+
+    it('a pass that read before a move is refused by the watermark\'s compare-and-set, and cannot undo it', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Read before the skip');
+      const read = await fx.producer.admin.readExportedEvents(staff, t, p, {
+        consumer: BOARD_VERTICAL,
+        after: null,
+        wants: [{ type: 'crm.customer-created', schemaVersion: 1 }],
+        limit: 100,
+      });
+      const moved = await lever(t, c, skip('now'));
+      const late = await fx.consumer.deliverToPeer(t, c, {
+        source: { vertical: CRM_VERTICAL, scopeId: p },
+        after: null,
+        next: read.next!,
+        events: read.events,
+        withheld: read.withheld,
+      });
+      expect(late).toMatchObject({ stale: true, delivered: 0, cursor: moved.cursor });
+      expect((await board(t, c)).associations).toEqual([]);
+    });
+
+    it('the lever holds each mode to its direction, and a replay needs something to replay', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      // Nothing taken yet: there is nothing to run again.
+      expect(String(await refusal(lever(t, c, replay(null))))).toMatch(/nothing to replay/);
+      await create(t, p, 'One');
+      await create(t, p, 'Two');
+      await sweep();
+      const [first, second] = (await board(t, c)).imports;
+      // A skip behind the watermark is a replay, and a replay ahead of it is a skip.
+      expect(String(await refusal(lever(t, c, skip(first!.event_id))))).toMatch(/skip moves the watermark forward/);
+      expect(String(await refusal(lever(t, c, replay(ulid()))))).toMatch(/replay moves the watermark back/);
+      // Neither refusal moved anything: the next pass is idle.
+      expect(into((await sweep()).report, c)).toMatchObject({ state: 'idle' });
+      // The positive twins, each in its own direction.
+      await expect(lever(t, c, replay(first!.event_id))).resolves.toMatchObject({ cursor: first!.event_id });
+      await expect(lever(t, c, skip(second!.event_id))).resolves.toMatchObject({ cursor: second!.event_id });
+    });
+
+    it('a replay without its acknowledgement never reaches the store', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Acknowledged');
+      await sweep();
+      const { acknowledge: _, ...bare } = replay(null) as ImportCursorMove & { mode: 'replay' };
+      await expect(lever(t, c, bare as unknown as ImportCursorMove)).rejects.toThrow();
+      const wrong = { ...replay(null), acknowledge: 'skip-events' } as unknown as ImportCursorMove;
+      await expect(lever(t, c, wrong)).rejects.toThrow();
+      expect((await board(t, c)).replays).toEqual([]);
+      // The twin: acknowledged, it moves.
+      await expect(lever(t, c, replay(null))).resolves.toMatchObject({ archived: { journal: 1 } });
+    });
+
+    it('the lever never crosses a tenant: another tenant\'s scope is not found, and the producer is the consumer\'s own tenant\'s', async () => {
+      const t = await newTenant();
+      const u = await newTenant();
+      const pt = await install(t, CRM_VERTICAL);
+      const ct = await install(t, BOARD_VERTICAL);
+      const pu = await install(u, CRM_VERTICAL);
+      const cu = await install(u, BOARD_VERTICAL);
+      await create(t, pt, 'T');
+      await create(u, pu, 'U');
+      await sweep();
+      const cursorOf = async (tt: TenantId, cc: ScopeId) =>
+        (await fx.consumer.admin.importState(staff, tt, cc)).cursors.map((x) => [x.source, x.cursor]);
+      const uBefore = await cursorOf(u, cu);
+
+      // u's consumer scope named under t: not found, and nothing moved anywhere.
+      expect(String(await refusal(lever(t, cu, replay(null))))).toMatch(/unknown scope|not found|conflict/i);
+      expect(await cursorOf(u, cu)).toEqual(uBefore);
+      // t's replay resolves t's producer, and moves t's edge only.
+      const moved = await lever(t, ct, replay(null));
+      expect(moved.source.scopeId).toBe(pt);
+      expect(await cursorOf(u, cu)).toEqual(uBefore);
+      // A tenant with no producer has no edge to move.
+      const v = await newTenant();
+      const cv = await install(v, BOARD_VERTICAL);
+      expect(String(await refusal(lever(v, cv, skip('now'))))).toMatch(/not installed in this tenant/);
     });
 
     it('a fork is neither read nor fed, and two primary installs are refused rather than guessed between', async () => {

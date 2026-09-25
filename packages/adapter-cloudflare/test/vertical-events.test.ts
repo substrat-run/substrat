@@ -140,6 +140,7 @@ const CROSS_VERTICAL_ROUTES = {
   '/internal/exported-events': 'exportedEventsLocal',
   '/internal/import-state': 'importStateLocal',
   '/internal/import-events': 'importEventsLocal',
+  '/internal/import-cursor': 'importCursorLocal',
 } as const;
 const CROSS_VERTICAL_VERBS = new Set<string>(Object.values(CROSS_VERTICAL_ROUTES));
 
@@ -222,10 +223,28 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
     clientForScope: routeTo(crm, board),
     readImports: (slug, versionId) => consumer.versionImports(slug, versionId),
   });
+  // #1705 PR 3: the replay lever as the shared control plane pulls it. The directory resolves the
+  // producer and writes the admin rows, and the delegation moves the watermark in the consumer's
+  // deployment, over its `/internal/import-cursor`, as `importCursorDelegationFor` does.
+  const leverActor = platformActorId.parse(ulid());
+  const leverHost = new CloudflareScopeHost({
+    scope: env.BOARD_SCOPE,
+    controlPlane: env.VE_CONTROL_PLANE,
+    secretBox,
+    importCursorDelegation: {
+      move: async (a) => {
+        const rec = await consumer.admin.getScopeRecord(leverActor, a.tenantId, a.scopeId);
+        const client = rec ? await routeTo(crm, board)(rec) : undefined;
+        if (!client) throw new Error(`no deployment serving scope ${a.scopeId}`);
+        return client.importCursorMove(a);
+      },
+    },
+  });
   return {
     producer,
     consumer,
     transport,
+    lever: (t, s, move) => leverHost.admin.moveImportCursor(leverActor, t, s, move),
     afterInstall: async (t, s, vertical) => {
       await (vertical === CRM_VERTICAL ? crm : board).provision(t, s);
     },
@@ -234,7 +253,9 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
     // pass here and prove nothing about the transport.
     cleanup: async () => {
       expect(crm.paths).toContain('/internal/exported-events');
-      expect(board.paths).toEqual(expect.arrayContaining(['/internal/import-state', '/internal/import-events']));
+      expect(board.paths).toEqual(
+        expect.arrayContaining(['/internal/import-state', '/internal/import-events', '/internal/import-cursor']),
+      );
     },
   };
 });
@@ -285,6 +306,18 @@ describe('the cross-vertical far ends refuse a scope this deployment does not se
     expect(errorCodeOf(await refusal(crm.hostFor().exportedEventsLocal(u, p, read)))).toBe('conflict');
     expect(errorCodeOf(await refusal(board.hostFor().importStateLocal(u, c)))).toBe('conflict');
     expect(errorCodeOf(await refusal(board.hostFor().importEventsLocal(u, c, batch)))).toBe('conflict');
+  });
+
+  it('the replay lever\'s far end refuses a scope it never provisioned, or its own under another tenant (#1705 PR 3)', async () => {
+    const at = {
+      move: { mode: 'skip' as const, from: CRM_VERTICAL, through: 'now' as const, acknowledge: 'skip-events' as const, reason: 'r' },
+      source: { vertical: CRM_VERTICAL, scopeId: p },
+      replayId: ulid(),
+    };
+    expect(errorCodeOf(await refusal(board.hostFor().importCursorLocal(t, foreign, at)))).toBe('conflict');
+    expect(errorCodeOf(await refusal(board.hostFor().importCursorLocal(u, c, at)))).toBe('conflict');
+    // The twin: its own scope, for its own tenant, moves.
+    await expect(board.hostFor().importCursorLocal(t, c, at)).resolves.toMatchObject({ mode: 'skip', replayId: at.replayId });
   });
 
   it('a deployment that imports nothing still refuses a scope it does not serve, before saying so', async () => {
@@ -431,6 +464,29 @@ describe('a producer deployment that predates the cross-vertical routes (#1705 P
         expect(e.message).toMatch(said);
       }
       expect(old.paths).toEqual(['/internal/import-state', '/internal/import-events']);
+    });
+
+    // #1705 PR 3: the lever on an old consumer deployment. A 501 either way, and "nothing moved"
+    // is true, because the route never ran. Never a move reported as made.
+    it(`${era} consumer: import-cursor answers 501, and the watermark holds`, async () => {
+      const old = deployment(env.BOARD_SCOPE, boardImportMod, BOARD_OWNER, era);
+      const said = era === 'routes-predate' ? /predates cross-vertical events/ : /cannot move an import watermark.*redeploy it/;
+      const before = (await board.client.importState({ tenantId: t, scopeId: c })).cursors;
+      const e = (await old.client
+        .importCursorMove({
+          tenantId: t,
+          scopeId: c,
+          at: {
+            move: { mode: 'skip', from: CRM_VERTICAL, through: 'now', acknowledge: 'skip-events', reason: 'skew' },
+            source: { vertical: CRM_VERTICAL, scopeId: p },
+            replayId: ulid(),
+          },
+        })
+        .then(() => null, (err: unknown) => err)) as ControlPlaneError;
+      expect(e).toBeInstanceOf(ControlPlaneError);
+      expect(e.status).toBe(501);
+      expect(e.message).toMatch(said);
+      expect((await board.client.importState({ tenantId: t, scopeId: c })).cursors).toEqual(before);
     });
   }
 
