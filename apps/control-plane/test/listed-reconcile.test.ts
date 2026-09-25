@@ -306,6 +306,8 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
   const MODULE = '@test/hosted-tick';
   type Position = 'on' | 'off' | 'wiped';
   const store = new Map<string, Position>();
+  /** Scopes whose deployment refuses the switch — a far end that cannot be reached. */
+  const unreachable = new Set<string>();
 
   const seat = (s: string) => {
     const at = store.get(s);
@@ -335,6 +337,7 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
       controlPlane: env.CONTROL_PLANE,
       systemSwitchDelegation: {
         switch: async ({ scopeId: s, to }) => {
+          if (unreachable.has(s)) throw new Error('vertical unreachable during system-switch');
           const at = store.get(s);
           if (at === undefined || at === 'wiped') return { held: false, changed: false, permissions: [] };
           store.set(s, to);
@@ -495,6 +498,20 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
       expect(store.get(s)).toBe('on'); // the rewind itself lost the switch
       await sweepOnly(s);
       expect(store.get(s)).toBe('off');
+    });
+
+    it('a re-assert that cannot reach the deployment fails the scope: no receipt, so the next pass retries', async () => {
+      const s = await rewound(true);
+      unreachable.add(s);
+      const report = await sweepOnly(s);
+      expect(report.errors.filter((e) => e.id === s).map((e) => e.kind)).toEqual(['provision-reconcile']);
+      expect((await host.admin.getScopeRecord(staff, t, s))?.provisionedVersionId).toBeNull();
+      // The twin, on the same scope: once the deployment answers, the pass re-asserts and
+      // writes the receipt it withheld.
+      unreachable.delete(s);
+      await sweepOnly(s);
+      expect(store.get(s)).toBe('off');
+      expect((await host.admin.getScopeRecord(staff, t, s))?.provisionedVersionId).toBe(running);
     });
 
     it('twin: with no record, the rewound scope stays on through the sweep', async () => {
