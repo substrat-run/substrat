@@ -43,6 +43,31 @@ describe('flowLayout (#1767)', () => {
     expect(l.nodes.find((n) => n.id === consumerId('digest'))?.health).toBe('ok');
   });
 
+  it('draws a consumer health it could not read as unknown, never healthy', () => {
+    const unread = flowLayout(graph, null).nodes.filter((n) => n.column === 'consumer');
+    expect(unread.map((n) => n.health)).toEqual(['unknown', 'unknown', 'unknown']);
+    expect(unread[0]?.sublabel).toBe('dead letters unread');
+    // An empty page that WAS read is a different answer, and says healthy.
+    expect(flowLayout(graph, []).nodes.filter((n) => n.column === 'consumer').every((n) => n.health === 'ok')).toBe(true);
+  });
+
+  it('gives a dead letter naming an executor or an undeclared consumer a failing node of its own', () => {
+    const [first] = MOCK_DEAD_LETTERS;
+    const l = flowLayout(graph, [
+      { ...first!, consumer: 'executor:mailer', eventType: 'ticket.created' },
+      { ...first!, consumer: 'executor:mailer', eventType: 'ticket.created' },
+      { ...first!, consumer: 'retired', eventType: 'ticket.replied' },
+    ]);
+    expect(l.nodes.find((n) => n.id === consumerId('executor:mailer'))).toMatchObject({ column: 'consumer', health: 'fail', sublabel: 'executor · 2 dead letters' });
+    expect(l.nodes.find((n) => n.id === consumerId('retired'))).toMatchObject({ column: 'consumer', health: 'fail', sublabel: 'not declared · 1 dead letter' });
+    // Fed by the event types it gave up on, so selecting it lights where they came from.
+    expect(l.edges.some((e) => e.from === 'event:ticket.created' && e.to === consumerId('executor:mailer'))).toBe(true);
+    expect(highlight(l.edges, consumerId('retired')).nodes.has('module:tickets')).toBe(true);
+    // Every dead letter is on the map: the failing nodes account for all three.
+    const onMap = l.nodes.filter((n) => n.health === 'fail' && n.column === 'consumer').map((n) => n.sublabel);
+    expect(onMap).toEqual(['executor · 2 dead letters', 'not declared · 1 dead letter']);
+  });
+
   it('lights every ancestor and descendant, and only the edges on those paths', () => {
     const l = flowLayout(graph);
     const h = highlight(l.edges, 'event:ticket.created');
@@ -104,5 +129,13 @@ describe('Flow view', () => {
     await act(async () => root.render(<Flow app={app} />));
     expect(container.textContent).toContain('not a statement that nothing gave up');
     expect(container.textContent).not.toContain('No delivery in this app has given up');
+    // …and the map agrees: no consumer is ticked healthy over a list nobody could read.
+    const consumers = [...container.querySelectorAll('[data-node^="consumer:"]')];
+    expect(consumers.length).toBeGreaterThan(0);
+    for (const c of consumers) {
+      expect(c.textContent).toContain('?');
+      expect(c.textContent).not.toContain('✓');
+    }
+    expect(container.textContent).toContain('? not known');
   });
 });

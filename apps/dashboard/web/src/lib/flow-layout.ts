@@ -26,10 +26,14 @@ export const FLOW_COLUMNS: { key: FlowColumnKey; label: string }[] = [
   { key: 'egress', label: 'Outbound hosts' },
 ];
 
-/** ✓ healthy, ▲ degraded, ● failing, ◌ declared and unused (drawn dashed). */
-export type FlowHealth = 'ok' | 'warn' | 'fail' | 'unused';
+/**
+ * ✓ healthy, ▲ degraded, ● failing, ◌ declared and unused (drawn dashed), ? not known —
+ * a consumer whose dead letters could not be read. Unknown is its own mark because the
+ * alternative is ✓, and a green tick over data nobody read is a claim the map cannot make.
+ */
+export type FlowHealth = 'ok' | 'warn' | 'fail' | 'unused' | 'unknown';
 
-export const HEALTH_GLYPH: Record<FlowHealth, string> = { ok: '✓', warn: '▲', fail: '●', unused: '◌' };
+export const HEALTH_GLYPH: Record<FlowHealth, string> = { ok: '✓', warn: '▲', fail: '●', unused: '◌', unknown: '?' };
 
 export interface LaidNode {
   id: string;
@@ -81,7 +85,12 @@ export function nodeHealth(n: Pick<FlowNode, 'silent' | 'stale' | 'status'>): Fl
 /** The consumer node's id for a module, kept apart from the module's own node. */
 export const consumerId = (moduleId: string): string => `consumer:${moduleId}`;
 
-export function flowLayout(graph: FlowGraph, deadLetters: readonly DeadLetter[] = []): FlowLayout {
+/**
+ * `deadLetters` is the rows loaded so far, or `null` when none could be read (still
+ * loading, or the read failed). Null leaves every consumer without a failure seen
+ * `unknown` rather than `ok`.
+ */
+export function flowLayout(graph: FlowGraph, deadLetters: readonly DeadLetter[] | null = []): FlowLayout {
   const cols = new Map<FlowColumnKey, LaidNode[]>(FLOW_COLUMNS.map((c) => [c.key, []]));
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const nodes: Omit<LaidNode, 'x' | 'y'>[] = graph.nodes.map((n) => ({
@@ -96,8 +105,13 @@ export function flowLayout(graph: FlowGraph, deadLetters: readonly DeadLetter[] 
   // Dead letters name their consumer by module id. Only the rows loaded so far are
   // counted, so a consumer is marked failing when one is seen and never cleared by
   // absence — the list is paged, and an unloaded page is not a clean bill.
-  const dead = new Map<string, number>();
-  for (const d of deadLetters) dead.set(d.consumer, (dead.get(d.consumer) ?? 0) + 1);
+  const dead = new Map<string, { n: number; types: Set<string> }>();
+  for (const d of deadLetters ?? []) {
+    const had = dead.get(d.consumer) ?? { n: 0, types: new Set<string>() };
+    had.n += 1;
+    had.types.add(d.eventType);
+    dead.set(d.consumer, had);
+  }
 
   const edges: Omit<LaidEdge, 'd' | 'dashed'>[] = [];
   const consumers = new Map<string, string[]>();
@@ -113,17 +127,43 @@ export function flowLayout(graph: FlowGraph, deadLetters: readonly DeadLetter[] 
     }
   }
   for (const [moduleId, types] of [...consumers].sort(([a], [b]) => a.localeCompare(b))) {
-    const failed = dead.get(moduleId) ?? 0;
+    const failed = dead.get(moduleId)?.n ?? 0;
+    const unread = deadLetters === null && failed === 0;
     nodes.push({
       id: consumerId(moduleId),
       column: 'consumer',
       label: moduleId,
-      sublabel: failed > 0 ? `${failed} dead ${failed === 1 ? 'letter' : 'letters'}` : null,
+      sublabel: failed > 0 ? deadLetterCount(failed) : unread ? 'dead letters unread' : null,
       title:
         `${moduleId} handles ${types.length} event ${types.length === 1 ? 'type' : 'types'}: ${types.join(', ')}.` +
-        (failed > 0 ? ` ${failed} ${failed === 1 ? 'delivery' : 'deliveries'} to it gave up.` : ''),
-      health: failed > 0 ? 'fail' : 'ok',
+        (failed > 0 ? ` ${failed} ${failed === 1 ? 'delivery' : 'deliveries'} to it gave up.` : '') +
+        (unread ? ' Its dead letters could not be read, so whether any delivery to it gave up is not known.' : ''),
+      health: failed > 0 ? 'fail' : unread ? 'unknown' : 'ok',
     });
+  }
+
+  // A dead letter can name a consumer the declaration draws no node for: an executor
+  // (`executor:<id>`, a connector or platform handler), or a module the running version
+  // no longer declares as consuming anything. Each gets a failing node of its own in the
+  // consumers column, fed by the event types it gave up on, so every dead letter the
+  // panel lists is also somewhere on the map.
+  const eventNode = new Map(graph.nodes.filter((n) => n.kind === 'event').map((n) => [n.label, n.id]));
+  for (const [consumer, { n, types }] of [...dead].filter(([c]) => !consumers.has(c)).sort(([a], [b]) => a.localeCompare(b))) {
+    const executor = consumer.startsWith('executor:');
+    nodes.push({
+      id: consumerId(consumer),
+      column: 'consumer',
+      label: consumer,
+      sublabel: `${executor ? 'executor' : 'not declared'} · ${deadLetterCount(n)}`,
+      title:
+        `${consumer} ${executor ? 'is an executor, which the declaration does not draw' : 'is not a consumer the running version declares — it was removed, or stopped consuming'}. ` +
+        `${n} ${n === 1 ? 'delivery' : 'deliveries'} to it gave up, for ${[...types].sort().join(', ')}.`,
+      health: 'fail',
+    });
+    for (const t of types) {
+      const from = eventNode.get(t);
+      if (from) edges.push({ from, to: consumerId(consumer), kind: 'consumes' });
+    }
   }
 
   const laid: LaidNode[] = [];
@@ -155,6 +195,8 @@ export function flowLayout(graph: FlowGraph, deadLetters: readonly DeadLetter[] 
     height: TOP + rows * ROW_STEP,
   };
 }
+
+const deadLetterCount = (n: number) => `${n} dead ${n === 1 ? 'letter' : 'letters'}`;
 
 type Link = Pick<LaidEdge, 'from' | 'to'>;
 

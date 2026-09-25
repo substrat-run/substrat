@@ -30,12 +30,14 @@ const TONE: Record<FlowHealth | 'good', string> = {
   warn: 'var(--status-warning-fg)',
   fail: 'var(--status-danger-fg)',
   unused: 'var(--text-tertiary)',
+  unknown: 'var(--status-warning-fg)',
 };
 const BAR: Record<FlowHealth, string> = {
   ok: 'var(--border-strong)',
   warn: 'var(--status-warning-fg)',
   fail: 'var(--status-danger-fg)',
   unused: 'var(--border-strong)',
+  unknown: 'var(--status-warning-fg)',
 };
 
 /** An in-app anchor: a real href for middle-click, the left-click handed to the router. */
@@ -147,7 +149,7 @@ function PanelRow({
  * clicking it again clears. Nodes are buttons, so the picture is keyboard-reachable and
  * each one reads out its column, name and the worker's sentence about it.
  */
-function FlowMap({ graph, deadLetters, app }: { graph: FlowGraph; deadLetters: readonly DeadLetter[]; app: AppRow }) {
+function FlowMap({ graph, deadLetters, app }: { graph: FlowGraph; deadLetters: readonly DeadLetter[] | null; app: AppRow }) {
   const layout = useMemo(() => flowLayout(graph, deadLetters), [graph, deadLetters]);
   const [sel, setSel] = useState<string | null>(null);
   const lit = useMemo(() => (sel ? highlight(layout.edges, sel) : null), [layout, sel]);
@@ -558,7 +560,7 @@ function DeclaredVsObserved({ view, app }: { view: FlowFindingsView; app: AppRow
   );
 }
 
-function Legend() {
+function Legend({ unknown }: { unknown: boolean }) {
   const item = (bar: ReactNode, label: string, color = 'var(--text-tertiary)') => (
     <span style={{ display: 'flex', alignItems: 'center', gap: 5, color }}>
       {bar}
@@ -572,6 +574,7 @@ function Legend() {
       {item(bar('var(--status-warning-fg)'), '▲ degraded', 'var(--status-warning-fg)')}
       {item(bar('var(--status-danger-fg)'), '● failing', 'var(--status-danger-fg)')}
       {item(<span style={{ width: 12, height: 10, border: '1px dashed var(--border-strong)', boxSizing: 'border-box' }} />, 'declared, unused')}
+      {unknown && item(bar('var(--status-warning-fg)'), '? not known', 'var(--status-warning-fg)')}
     </span>
   );
 }
@@ -628,13 +631,15 @@ export function Flow({ app }: { app: AppRow }) {
           <span style={{ fontFamily: 'var(--font-mono)' }}>{app.vertical_slug}</span> · flow · declared by the running version, observed over the
           events this app holds
         </div>
-        <Legend />
+        <Legend unknown={dead.entries === null} />
       </div>
       {/* The design's map-plus-340px-panel, as a wrapping row: the map takes nearly all the
           free space beside the panel, and below ~840px the panel drops under it full width. */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
         {view.graph.available && view.graph.nodes.length > 0 ? (
-          <FlowMap graph={view.graph} deadLetters={dead.entries ?? []} app={app} />
+          // Null until a page of dead letters is in hand: a consumer's health is not
+          // known before then, and the map must not draw it as healthy (#1779 review).
+          <FlowMap graph={view.graph} deadLetters={dead.entries} app={app} />
         ) : (
           <div style={{ ...card, padding: 16, fontSize: 12.5, color: 'var(--text-secondary)', flex: '999 1 480px' }}>
             {view.graph.available
