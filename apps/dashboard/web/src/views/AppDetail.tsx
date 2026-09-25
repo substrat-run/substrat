@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type EffectsTree, type EffectsTerminal, type EventEffects, type EventDelivery, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type TrafficSeries } from '../lib/api';
+import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type EffectsTree, type EffectsTerminal, type EventEffects, type EventDelivery, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
 import { diffRegistries, hasRegistryChange } from '../lib/registry-diff';
 import { actorLabel, authorizationLabel, callButtonTitle, callLogsButtonTitle, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
-import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_APP_TRAFFIC, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
+import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { renderModelHtml } from '@substrat-run/model-view';
 import { oidcCallbackUrl } from '@substrat-run/contracts';
 import { relativeTime, shortDate, shortId, untilTime } from '../lib/format';
@@ -21,7 +21,7 @@ import { AppEdges } from './AppEdges';
 import { StatusBand } from './StatusBand';
 import { InvocationStrip } from './InvocationStrip';
 import { InvocationLogsStrip } from './InvocationLogsStrip';
-import { Sparkline } from '../components/Sparkline';
+import { AppTraffic } from './AppTraffic';
 
 /**
  * App detail (screens 1i, 1j, 1k, 1l). The header and the Overview tab render REAL
@@ -373,12 +373,6 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   // would caption the previous app's version until the new read lands, and for ever if
   // it does not.
   const [dep, setDep] = useState<Deployment | null | undefined>(undefined);
-  // The app's own last 24 hours (#1447), for the sparkline card below the Production card.
-  // `undefined` while asking; `'error'` when the read failed — a transient 500 or a lost
-  // connection, which is not the same fact as a plane that cannot bucket; a series with
-  // `available: false` for that (and for a worker predating the route, which answers the
-  // same way a 501 does). The card draws a flat line for none of them.
-  const [traffic, setTraffic] = useState<TrafficSeries | 'error' | undefined>(undefined);
   // The owner seat, read ONCE here for both the status band's tile and the card below —
   // see OwnerSeatCard. `undefined` = still asking, `null` = the platform cannot answer.
   const [seat, setSeat] = useState<OwnerSeatView | null | undefined>(undefined);
@@ -391,25 +385,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   // version, #1345), and in the render right after navigating `dep` still holds the
   // previous app's deployments — which must not become this app's version key.
   const depScope = useRef<string | null>(null);
-  /** The traffic read, on its own so the card's retry can ask again without a remount. */
-  const readTraffic = (forScope: string, still: () => boolean) => {
-    setTraffic(undefined);
-    api
-      .appTraffic(forScope, 24)
-      .then((t) => still() && setTraffic(t))
-      // A 501 (or a worker predating the route) says the plane cannot bucket, which is
-      // what `available: false` means; anything else is a read that failed, and the
-      // card must not present that as a capability the plane lacks.
-      .catch((e) =>
-        still() &&
-        setTraffic(
-          e instanceof ApiError && (e.status === 501 || e.status === 404)
-            ? { buckets: [], markers: [], bucketMinutes: 60, available: false }
-            : 'error',
-        ),
-      );
-  };
-  // Its own generation, beside `seatScope` (which the traffic read also uses): the seat
+  // Its own generation, beside `seatScope`: the seat
   // effect re-runs on the running VERSION as well as the scope, so a scope guard alone
   // lets a slow answer for the version this app just moved off overwrite the new one's.
   const readSeat = (forScope: string) => {
@@ -423,18 +399,15 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
     if (DEV_MOCK) {
       setEvents(mockEventsFor(app));
       setDep(MOCK_DEPLOYMENTS[0] ?? null);
-      setTraffic(MOCK_APP_TRAFFIC);
       setSeat({ state: 'claimed', owner: app.created_by, firstSignIn: null, claimLink: null });
       return;
     }
     let live = true;
     seatScope.current = app.app_scope_id;
     setDep(undefined);
-    setTraffic(undefined);
     setSeat(undefined);
     // An active app's seat is read by the effect below, once its running version is known.
     if (app.status !== 'active') setSeat(null);
-    readTraffic(app.app_scope_id, () => live);
     api
       .appEvents(app.app_scope_id)
       .then((p) => {
@@ -516,6 +489,10 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
       {/* Full width, above everything: the four stats that answer "is this app OK?".
           They are why Observability and Audit could move to the left menu (#1447). */}
       <StatusBand app={app} versionLabel={versionLabel} updateAvailable={updateAvailable} seat={seat} />
+      {/* What arrived at the app, by status class, with the shared overlays (#1767) —
+          full width because it is a time axis, and the Overview's sparkline it replaced
+          answered the same question in less space and with no way in. */}
+      <AppTraffic scopeId={app.app_scope_id} surfaces={surfaceUrls} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ ...card, padding: 20 }}>
@@ -564,38 +541,6 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>A hostname is assigned once provisioning completes.</div>
           )}
         </div>
-        {/* Under the address it serves: what actually arrived there today. The full
-            chart, its overlays and every other window live one click away in
-            Observability (#1447) — this is the glance that decides whether to go. */}
-        <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <Eyebrow>Last 24 hours</Eyebrow>
-          {traffic === undefined ? (
-            <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading traffic…</div>
-          ) : traffic === 'error' ? (
-            <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
-              Traffic could not be read just now.{' '}
-              <a
-                href="#"
-                onClick={(e) => { e.preventDefault(); readTraffic(app.app_scope_id, () => seatScope.current === app.app_scope_id); }}
-                style={{ color: 'var(--text-brand)' }}
-              >
-                Try again
-              </a>
-            </div>
-          ) : (
-            <Sparkline series={traffic} />
-          )}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-            <span style={{ ...mono, fontSize: 12, color: 'var(--text-tertiary)' }}>{trafficTotals(traffic)}</span>
-            <a
-              href={teamPath(obsPath({ app: app.app_scope_id }))}
-              onClick={(e) => { e.preventDefault(); navigate(obsPath({ app: app.app_scope_id })); }}
-              style={{ color: 'var(--text-brand)', fontSize: 12.5 }}
-            >
-              Open in Observability →
-            </a>
-          </div>
-        </div>
         <OwnerSeatCard key={app.app_scope_id} scopeId={app.app_scope_id} seat={seat} onClaimed={readSeat} />
         <AppPeers key={`peers:${app.app_scope_id}`} scopeId={app.app_scope_id} />
         <AppEdges key={`edges:${app.app_scope_id}`} scopeId={app.app_scope_id} />
@@ -623,9 +568,9 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 12 }}>
           <Eyebrow>Activity</Eyebrow>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            {/* Observability's entrance used to sit here too. It now rides the sparkline
-                card in the left column, beside the traffic that prompts the question —
-                one entrance per thing, where the reader already is. */}
+            {/* Observability's entrance used to sit here too. It now rides the traffic
+                card above, beside the traffic that prompts the question — one entrance
+                per thing, where the reader already is. */}
             <a
               href={teamPath(`/audit?app=${app.app_scope_id}`)}
               onClick={(e) => { e.preventDefault(); navigate(`/audit?app=${app.app_scope_id}`); }}
@@ -655,16 +600,6 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
       </div>
     </div>
   );
-}
-
-/** The sparkline's caption — totals in mono, or the honest absence of them. */
-function trafficTotals(series: TrafficSeries | 'error' | undefined): string {
-  if (series === undefined) return '…';
-  if (series === 'error' || !series.available || series.buckets.length === 0) return '—';
-  const requests = series.buckets.reduce((n, b) => n + b.requests, 0);
-  const errors = series.buckets.reduce((n, b) => n + b.errors, 0);
-  const rate = requests === 0 ? '—' : `${((errors / requests) * 100).toFixed(2)}%`;
-  return `${requests.toLocaleString()} req · ${errors.toLocaleString()} err · ${rate}`;
 }
 
 type TimelineDot = 'success' | 'info' | 'neutral' | 'danger';

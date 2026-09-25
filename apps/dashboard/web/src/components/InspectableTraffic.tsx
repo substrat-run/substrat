@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ComponentProps, type PointerEvent } from 'react';
 import { TrafficChart } from './TrafficChart';
+import { OverlayChips } from './OverlayChips';
 import { dragWindow, exactTime } from '../lib/observability-query';
+import { applyOverlayPrefs, useOverlayPrefs } from '../lib/overlay-prefs';
 import type { OverlayMarker } from '../lib/api';
 
 type Props = ComponentProps<typeof TrafficChart> & {
@@ -15,7 +17,6 @@ export function InspectableTraffic({ window, onRange, ...props }: Props) {
   const [hover, setHover] = useState<number | null>(null);
   const [focused, setFocused] = useState(false);
   const [pinned, setPinned] = useState<number | null>(null);
-  const [hidden, setHidden] = useState<string[]>([]);
   const [change, setChange] = useState<string | null>(null);
   const dismiss = () => {
     setPinned(null);
@@ -101,9 +102,11 @@ export function InspectableTraffic({ window, onRange, ...props }: Props) {
   };
   const active = pinned ?? hover;
   const bucket = active === null ? undefined : props.buckets[active];
-  const enabled = (kind: string) => !hidden.includes(kind);
-  const overlayMarkers = (props.overlays?.markers ?? []).filter((m) => enabled(m.kind));
-  const releases = props.markers.filter(() => enabled('releases'));
+  // The chips' state is shared by every chart (#1767), so hiding a kind here hides it on
+  // the app page's chart too, and the change timeline below lists only what is drawn.
+  const shown = applyOverlayPrefs(useOverlayPrefs(), props.markers, props.overlays);
+  const overlayMarkers = shown.overlays?.markers ?? [];
+  const releases = shown.markers;
   const changes = [
     ...releases.map((m) => ({
       key: `${m.kind}:${m.at}:${m.versionId}`,
@@ -155,16 +158,17 @@ export function InspectableTraffic({ window, onRange, ...props }: Props) {
           </p>
         </details>
       </div>
+      {(props.overlays || props.markers.length > 0) && (
+        <div style={{ marginBottom: 8 }}>
+          <OverlayChips label="On every chart" />
+        </div>
+      )}
       <div style={{ position: 'relative' }}>
         <TrafficChart
           {...props}
           plotWindow={window}
           markers={releases}
-          overlays={
-            props.overlays
-              ? { ...props.overlays, markers: overlayMarkers, spans: enabled('stale') ? props.overlays.spans : [] }
-              : undefined
-          }
+          {...(shown.overlays ? { overlays: shown.overlays } : {})}
           onInspect={(index) => {
             setHover(index);
             setFocused(index !== null);
@@ -173,22 +177,26 @@ export function InspectableTraffic({ window, onRange, ...props }: Props) {
             if (!suppressClick.current) setPinned(props.buckets.findIndex((b) => b.start === start));
           }}
           onMarker={(m) => setChange(changes.find((c) => c.marker === m)?.key ?? null)}
+          // Inside the plot's own box: the glyph rail now sits above it, so a box
+          // positioned against this wrapper would cover the rail and miss the bars.
+          plotOverlay={
+            selection && (
+              <div
+                aria-hidden
+                style={{
+                  pointerEvents: 'none',
+                  position: 'absolute',
+                  top: 0,
+                  bottom: 0,
+                  left: `${Math.min(selection.a, selection.b) * 100}%`,
+                  width: `${Math.abs(selection.b - selection.a) * 100}%`,
+                  background: 'var(--brand-500)',
+                  opacity: 0.2,
+                }}
+              />
+            )
+          }
         />
-        {selection && (
-          <div
-            aria-hidden
-            style={{
-              pointerEvents: 'none',
-              position: 'absolute',
-              top: 0,
-              height: props.height ?? 96,
-              left: `${Math.min(selection.a, selection.b) * 100}%`,
-              width: `${Math.abs(selection.b - selection.a) * 100}%`,
-              background: 'var(--brand-500)',
-              opacity: 0.2,
-            }}
-          />
-        )}
       </div>
       <div
         style={{ minHeight: 60, padding: '10px 0', fontSize: 12 }}
@@ -241,27 +249,6 @@ export function InspectableTraffic({ window, onRange, ...props }: Props) {
       </div>
       {props.overlays || props.markers.length > 0 ? (
         <>
-          <fieldset style={{ border: 0, padding: 0, display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12 }}>
-            <legend>Change overlays</legend>
-            {(['releases', 'migration', 'run-failed', 'failure', 'stale'] as const).map((kind) => (
-              <label key={kind}>
-                <input
-                  type="checkbox"
-                  checked={enabled(kind)}
-                  onChange={() => setHidden((h) => (h.includes(kind) ? h.filter((k) => k !== kind) : [...h, kind]))}
-                />
-                {
-                  {
-                    releases: 'Versions / promotions',
-                    migration: 'Migrations',
-                    'run-failed': 'Failed schedules',
-                    failure: 'Failures',
-                    stale: 'Stale spans',
-                  }[kind]
-                }
-              </label>
-            ))}
-          </fieldset>
           <details>
             <summary style={{ cursor: 'pointer', marginTop: 10 }}>
               Change timeline · {changes.length} records (including chart clusters)
