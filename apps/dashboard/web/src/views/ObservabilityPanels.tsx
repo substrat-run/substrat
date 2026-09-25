@@ -7,6 +7,8 @@ import { GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
 import { LogList } from '../components/LogList';
 import { navigate, teamPath } from '../lib/router';
+import { EVENT_GROUPS, bucketRows, dimensionLabel, type BucketRow, type EventGroup } from '../lib/log-stream';
+import { mockEventFacets } from '../lib/mock-events';
 
 /**
  * The panels the team Observability page composes for ONE app (#1447) — its traffic per
@@ -193,6 +195,7 @@ export function TenantLogs({
   nonce,
   hadTraffic,
   window: cursor,
+  embedded = false,
 }: {
   scopeId: string;
   filters?: ObsQuery;
@@ -207,6 +210,9 @@ export function TenantLogs({
    *  one and the page's range when there is not — never both, since `hours` can only
    *  end at now and would silently overrule an instant in the past. */
   window?: { from: string; to: string };
+  /** Drawn as the Lines mode of the Logs stream card (#1767): the card and its tab
+   *  already say what this is, so the panel drops its own frame and title. */
+  embedded?: boolean;
 }) {
   const [localLevel, setLevel] = useState(LEVELS[0]);
   const level = filters ? (filters.level || LEVELS[0]) : localLevel;
@@ -266,10 +272,10 @@ export function TenantLogs({
   }, [scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, filters?.invocationId]);
 
   return (
-    <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+    <div style={embedded ? {} : { ...card, padding: 0, overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>Logs</span>
-        <MonoTag>this app</MonoTag>
+        {!embedded && <span style={{ fontSize: 13, fontWeight: 600 }}>Logs</span>}
+        {!embedded && <MonoTag>this app</MonoTag>}
         <Select
           ariaLabel="Level"
           options={LEVELS}
@@ -401,10 +407,13 @@ export function EventExplorer({
   hours,
   focusEventType,
   window: cursor,
+  embedded = false,
 }: {
   scopeId: string;
   hours: number;
   focusEventType?: string;
+  /** Drawn as the Events mode of the Logs stream card (#1767), which supplies the frame. */
+  embedded?: boolean;
   nonce?: number;
   query?: ObsQuery;
   onQuery?: (q: Partial<ObsQuery>) => void;
@@ -414,10 +423,6 @@ export function EventExplorer({
 }) {
   const [groupBy, setGroupBy] = useState(query?.groupBy ?? 'type');
   const [field, setField] = useState(query?.field ?? '');
-  // Seeded from the flow map's deep link when there is one. A type arriving this way is
-  // ALREADY applied — the reader asked for it by following the link, so making them press
-  // Group again would be asking the same question twice.
-  const [type, setType] = useState(focusEventType ?? '');
   const [result, setResult] = useState<EventFacetResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -438,26 +443,36 @@ export function EventExplorer({
   const [applied, setApplied] = useState<AppliedFacet>(() => ({
     groupBy: query?.groupBy ?? 'type',
     field: query?.field ?? '',
+    // Seeded from the flow map's deep link when there is one. A type arriving this way is
+    // ALREADY applied — the reader asked for it by following the link, so making them press
+    // Group again would be asking the same question twice.
     type: query?.type ?? focusEventType ?? '',
     hours,
     ...facetWindow(hours, cursor),
   }));
-  const submit = () => {
-    onQuery?.({ groupBy, field: field.trim() || undefined, type: type.trim() || undefined });
-    setApplied({
-      groupBy,
-      field: field.trim(),
-      type: type.trim(),
-      hours,
-      ...facetWindow(hours, cursor),
-    });
+  /**
+   * "Payload field" picked but no field named yet. Kept apart from `field` because a
+   * half-chosen grouping is not a query: the bars stay on the last answer until a field
+   * is submitted, and the header keeps saying which grouping they answer.
+   */
+  const [fieldMode, setFieldMode] = useState(false);
+  // Every change to the question lands in the URL, so a grouping is a link like any other
+  // view. The window is re-resolved here for the reason `facetWindow` gives.
+  const apply = (next: { groupBy: string; field: string; type: string }) => {
+    onQuery?.({ groupBy: next.groupBy, field: next.field || undefined, type: next.type || undefined });
+    setGroupBy(next.groupBy);
+    setField(next.field);
+    setApplied({ ...next, hours, ...facetWindow(hours, cursor) });
   };
-
+  const submitField = () => {
+    const f = field.trim();
+    if (f) apply({ groupBy, field: f, type: applied.type });
+  };
   useEffect(() => {
     const nextType = query?.type ?? focusEventType ?? '';
     const nextGroupBy = query?.groupBy ?? 'type';
     const nextField = query?.field ?? '';
-    setType(nextType); setGroupBy(nextGroupBy); setField(nextField);
+    setGroupBy(nextGroupBy); setField(nextField); setFieldMode(false);
     setApplied((a) => a.type === nextType && a.groupBy === nextGroupBy && a.field === nextField
       ? a : { ...a, type: nextType, groupBy: nextGroupBy, field: nextField });
   }, [query?.type, query?.groupBy, query?.field, focusEventType]);
@@ -491,14 +506,14 @@ export function EventExplorer({
     // like an answer.
     setResult(null);
     setLoading(true);
-    api
-      .appFacets(scopeId, {
-        groupBy: applied.field ? undefined : applied.groupBy,
-        field: applied.field || undefined,
-        type: applied.type || undefined,
-        since: applied.since,
-        until: applied.until,
-      })
+    const facetQuery = {
+      groupBy: applied.field ? undefined : applied.groupBy,
+      field: applied.field || undefined,
+      type: applied.type || undefined,
+      since: applied.since,
+      until: applied.until,
+    };
+    (DEV_MOCK ? Promise.resolve(mockEventFacets(facetQuery)) : api.appFacets(scopeId, facetQuery))
       .then((r) => live && (setResult(r), setLoading(false)))
       .catch(
         (e) =>
@@ -513,7 +528,9 @@ export function EventExplorer({
     };
   }, [scopeId, applied, nonce]);
 
-  const widest = Math.max(1, ...(result?.buckets ?? []).map((b) => b.count));
+  const group: EventGroup = fieldMode || applied.field ? 'field' : (groupBy as EventGroup);
+  const rows = result ? bucketRows(result, applied.field ? 'field' : (applied.groupBy as EventGroup)) : [];
+  const frame = embedded ? {} : { ...card, overflow: 'hidden' as const };
 
   /**
    * The card stays and says what is missing, rather than hiding: a page one row shorter
@@ -524,8 +541,8 @@ export function EventExplorer({
    */
   if (absent) {
     return (
-      <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
-        <h3 style={{ margin: 0, fontSize: 15 }}>Events</h3>
+      <div style={{ ...frame, padding: 16, display: 'grid', gap: 10 }}>
+        {!embedded && <h3 style={{ margin: 0, fontSize: 15 }}>Events</h3>}
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
           This app publishes no event stream, so there is nothing to group. An app that is
           not built on the kernel keeps no event spine &mdash; an auth server holds accounts,
@@ -536,77 +553,129 @@ export function EventExplorer({
     );
   }
 
+  const columns = 'minmax(0,1fr) 72px 220px 168px';
+  const windowText = applied.cursored
+    ? cursorLabel({ from: applied.since, to: applied.until })
+    : `The ${windowLabel(applied.hours)}`;
+
   return (
-    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
-      <div>
-        <h3 style={{ margin: 0, fontSize: 15 }}>Events</h3>
-        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-          Group this app&rsquo;s events by a dimension or a payload field, and count them.
-        </p>
+    <div style={frame}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '10px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Group by</span>
+        <div role="group" aria-label="Group by" style={{ display: 'flex', gap: 2, padding: 2, border: '1px solid var(--border-default)', borderRadius: 8, background: 'var(--surface-inset)' }}>
+          {EVENT_GROUPS.map((g) => {
+            const on = group === g.value;
+            return (
+              <button
+                key={g.value}
+                type="button"
+                aria-pressed={on}
+                onClick={() => {
+                  if (g.value === 'field') {
+                    setFieldMode(true);
+                    return;
+                  }
+                  // A dimension CLEARS the payload field, because the read gives the
+                  // field precedence: leaving both set would group by the old field while
+                  // the control showed the new dimension.
+                  setFieldMode(false);
+                  apply({ groupBy: g.value, field: '', type: applied.type });
+                }}
+                style={{
+                  height: 24,
+                  padding: '0 9px',
+                  border: 0,
+                  borderRadius: 6,
+                  font: 'inherit',
+                  fontSize: 12,
+                  cursor: 'pointer',
+                  color: on ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                  background: on ? 'var(--surface-card)' : 'transparent',
+                  boxShadow: on ? 'var(--shadow-xs)' : 'none',
+                }}
+              >
+                {g.label}
+              </button>
+            );
+          })}
+        </div>
+        {group === 'field' && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitField();
+            }}
+            style={{ display: 'flex', gap: 6, alignItems: 'center' }}
+          >
+            <Input
+              mono
+              size="sm"
+              ariaLabel="Group by payload field"
+              value={field}
+              onChange={(e) => setField(e.target.value)}
+              placeholder="top-level field"
+              style={{ width: 150 }}
+            />
+            <Button size="sm" variant="ghost">
+              Group
+            </Button>
+          </form>
+        )}
+        {applied.type && (
+          <span
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, height: 24, padding: '0 4px 0 8px', borderRadius: 999, background: 'var(--surface-brand-subtle)', border: '1px solid var(--border-brand)', fontSize: 12 }}
+          >
+            <span style={{ color: 'var(--text-tertiary)' }}>type</span>
+            <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{applied.type}</span>
+            <button
+              type="button"
+              aria-label="Clear event type"
+              title="Remove filter"
+              onClick={() => apply({ groupBy: applied.groupBy, field: applied.field, type: '' })}
+              style={{ width: 16, height: 16, border: 0, background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', padding: 0, fontSize: 14, lineHeight: 1 }}
+            >
+              ×
+            </button>
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        {result && (
+          <span data-event-totals style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{result.total.toLocaleString('en-US')}</span>{' '}
+            event{result.total === 1 ? '' : 's'} ·{' '}
+            {/* Erased is only ever non-zero under a payload grouping: an envelope
+                dimension survives an erasure, so it is always 0 there and says so. */}
+            <span style={{ fontFamily: 'var(--font-mono)', color: result.erased > 0 ? 'var(--status-warning-fg)' : undefined }}>
+              {result.erased.toLocaleString('en-US')}
+            </span>{' '}
+            erased
+            {result.truncated && <> · largest buckets only</>}
+          </span>
+        )}
       </div>
+      {group === 'field' && (
+        // Any top-level field is accepted today. Restricting this to fields the model does
+        // not class as personal data is #1762; until then the note says only what holds.
+        <div style={{ padding: '6px 16px', fontSize: 11.5, color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
+          Groups by the value of one top-level payload field. Events whose payload was erased are counted apart, never as &ldquo;no value&rdquo;.
+        </div>
+      )}
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <Select
-          ariaLabel="Group by dimension"
-          options={[
-            { value: 'type', label: 'Event type' },
-            { value: 'operation', label: 'Operation' },
-            { value: 'actor', label: 'Actor' },
-            { value: 'version', label: 'Version' },
-            { value: 'entityType', label: 'Entity type' },
-            { value: 'piiClass', label: 'PII class' },
-          ]}
-          value={groupBy}
-          // Choosing a dimension CLEARS the payload field, because submit gives the field
-          // precedence: leaving both set would group by the old field while the select
-          // showed the new dimension, and the header would agree with the select.
-          onChange={(e) => {
-            setGroupBy(e.target.value);
-            setField('');
-          }}
-          style={{ width: 150 }}
-        />
-        <Input
-          mono
-          ariaLabel="Group by payload field"
-          value={field}
-          onChange={(e) => setField(e.target.value)}
-          placeholder="…or a top-level payload field"
-          style={{ width: 190 }}
-        />
-        <Input
-          mono
-          ariaLabel="Narrow to one event type"
-          value={type}
-          onChange={(e) => setType(e.target.value)}
-          placeholder="event type (optional)"
-          style={{ width: 200 }}
-        />
-        <Button size="sm" variant="ghost" onClick={submit}>
-          Group
-        </Button>
-      </div>
-
-      {err && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{err}</div>}
-
-      {loading && !err && <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Grouping…</div>}
+      {err && <div style={{ padding: '12px 16px', fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{err}</div>}
+      {loading && !err && <div style={{ padding: '12px 16px', fontSize: 12.5, color: 'var(--text-tertiary)' }}>Grouping…</div>}
 
       {result && (
         <>
-          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-            {result.total.toLocaleString()} event{result.total === 1 ? '' : 's'} matched{' '}
-            {applied.cursored
-              ? `around ${cursorLabel({ from: applied.since, to: applied.until })}`
-              : `in the ${windowLabel(applied.hours)}`}
-            {result.erased > 0 && (
-              <span style={{ color: 'var(--status-warning-fg)' }}>
-                {' '}· {result.erased.toLocaleString()} with an erased payload, counted apart and not grouped
-              </span>
-            )}
-            {result.truncated && <span> · showing the largest buckets only</span>}
+          <div
+            style={{ display: 'grid', gridTemplateColumns: columns, gap: '0 12px', alignItems: 'center', height: 28, padding: '0 16px', fontSize: 10.5, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}
+          >
+            <span>{dimensionLabel(applied.field ? 'field' : (applied.groupBy as EventGroup), applied.field)}</span>
+            <span style={{ textAlign: 'right' }}>Events</span>
+            <span />
+            <span style={{ textAlign: 'right' }}>Last seen</span>
           </div>
-          {result.buckets.length === 0 ? (
-            <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          {rows.length === 0 ? (
+            <div style={{ padding: '12px 16px', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
               {/* Empty buckets over a non-empty match is a different answer from no match
                   at all, and saying "nothing matched" under a line reading "N events
                   matched" is how a reader concludes the page is broken. Events that
@@ -619,28 +688,82 @@ export function EventExplorer({
                   : 'The matching events produced no groupable value.'}
             </div>
           ) : (
-            <div style={{ display: 'grid', gap: 4 }}>
-              {result.buckets.map((b) => (
-                <div key={b.value ?? '\u0000null'} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5 }}>
-                  <span style={{ fontFamily: 'var(--font-mono)', minWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: b.value === null ? 'var(--text-tertiary)' : 'var(--text-primary)' }}>
-                    {/* "No value extracted", which is weaker than absent: SQLite returns
-                        the same null for a missing key and for an explicit JSON null.
-                        What it is NOT is erased — that count is above, and the two are
-                        different answers. */}
-                    {b.value ?? 'no value'}
-                  </span>
-                  <span style={{ flex: 1, height: 6, background: 'var(--surface-inset)', borderRadius: 3, overflow: 'hidden' }}>
-                    <span style={{ display: 'block', width: `${(b.count / widest) * 100}%`, height: '100%', background: 'var(--brand-500)' }} />
-                  </span>
-                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', minWidth: 56, textAlign: 'right' }}>
-                    {b.count.toLocaleString()}
-                  </span>
-                </div>
-              ))}
-            </div>
+            rows.map((b) => (
+              <BucketLine
+                key={b.key}
+                row={b}
+                columns={columns}
+                onNarrow={
+                  b.narrow
+                    ? () => apply({ groupBy: b.narrow!.groupBy!, field: '', type: b.narrow!.type! })
+                    : undefined
+                }
+              />
+            ))
           )}
         </>
       )}
+
+      <div style={{ padding: '10px 16px', fontSize: 12, color: 'var(--text-tertiary)' }}>
+        {windowText} · erased = payload removed by an erasure request, counted apart and never grouped
+        {result?.truncated ? ' · the tail beyond the largest buckets exists and is not shown' : ''}
+      </div>
     </div>
+  );
+}
+
+/**
+ * One bucket: its value, count, a bar against the largest, and when it last fired. A
+ * bucket that can be narrowed to is a button; one that cannot is plain text, since a
+ * row that looks clickable and does nothing is a dead end.
+ */
+function BucketLine({ row, columns, onNarrow }: { row: BucketRow; columns: string; onNarrow?: () => void }) {
+  const [hover, setHover] = useState(false);
+  const style = {
+    display: 'grid',
+    gridTemplateColumns: columns,
+    gap: '0 12px',
+    alignItems: 'center',
+    width: '100%',
+    height: 34,
+    padding: '0 16px',
+    boxSizing: 'border-box' as const,
+    border: 0,
+    borderBottom: '1px solid var(--border-subtle)',
+    background: onNarrow && hover ? 'var(--surface-hover)' : 'transparent',
+    color: 'var(--text-primary)',
+    font: 'inherit',
+    textAlign: 'left' as const,
+    cursor: onNarrow ? 'pointer' : 'default',
+  };
+  const cells = (
+    <>
+      {/* "no value" is the extraction-null bucket, which is weaker than absent: SQLite
+          returns the same null for a missing key and an explicit JSON null. What it is
+          NOT is erased — that count is in the header, and the two are different answers. */}
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: row.isNull ? 'var(--text-tertiary)' : 'var(--text-primary)' }}>
+        {row.label}
+      </span>
+      <span style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{row.count.toLocaleString('en-US')}</span>
+      <span style={{ height: 8, borderRadius: 2, background: 'var(--surface-inset)', position: 'relative' }}>
+        <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: row.width, borderRadius: 2, background: 'var(--brand-400)' }} />
+      </span>
+      <span style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-secondary)' }} title={row.lastSeen ?? undefined}>
+        {row.lastSeen ? `${row.lastSeen.slice(5, 16).replace('T', ' ')} UTC` : '—'}
+      </span>
+    </>
+  );
+  if (!onNarrow) return <div style={style}>{cells}</div>;
+  return (
+    <button
+      type="button"
+      title={`Narrow to ${row.label} and group it by operation`}
+      onClick={onNarrow}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={style}
+    >
+      {cells}
+    </button>
   );
 }

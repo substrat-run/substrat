@@ -20,6 +20,7 @@ import { AppSchedules } from './AppSchedules';
 import { FleetHealth } from './FleetHealth';
 import { Flow } from './Flow';
 import { EventExplorer, TenantLogs, TenantTrafficTable } from './ObservabilityPanels';
+import { LogStream } from '../components/LogStream';
 import { SECTION_VIEWS, defaultView, sectionLabel, sectionOf, type ObsSection } from '../lib/obs-sections';
 
 /** One shared, URL-owned query window for traffic, logs, event facets and changes.
@@ -344,7 +345,8 @@ export function Observability({
 
       {/* Hidden while the page asks for an app: every entry would be disabled, and a row of
           dead buttons above "Pick an app" says the same thing twice. */}
-      {SECTION_VIEWS[section].length > 1 && !needsApp && (
+      {/* Logs draws its sub-views as the stream card's mode tabs instead (#1767). */}
+      {SECTION_VIEWS[section].length > 1 && !needsApp && section !== 'logs' && (
       <Segmented
         label="Sub-view"
         options={VIEWS.filter((v) => SECTION_VIEWS[section].includes(v.key)).map((v) => ({
@@ -376,31 +378,39 @@ export function Observability({
           landing on the default Traffic panel would hide the very reason the row exists. */}
       {active === 'health' && <FleetHealth key={nonce} apps={apps} onOpen={(s) => onNav({ app: s, view: 'schedules' })} />}
       {scopeId && active === 'traffic' && <TenantTrafficTable scopeId={scopeId} hours={hours} nonce={nonce} window={requestWindow} />}
-      {scopeId && active === 'logs' && (
-        <TenantLogs
-          scopeId={scopeId}
-          filters={q}
-          onFilters={(filters) => navigateQuery({ ...q, ...filters })}
-          hours={hours}
-          nonce={nonce}
-          // Straight off the chart above, so the log panel can tell "no traffic" from
-          // "traffic whose lines are not attributed yet" without a second read.
-          {...(series?.available && thisApp ? { hadTraffic: thisApp.requests > 0 } : {})}
-          window={panelWindow}
-        />
-      )}
-      {/* Event filters stay mounted on refresh; snapshot panels refresh by remount. */}
-      {scopeId && active === 'events' && (
-        <EventExplorer
-          key={scopeId}
-          nonce={nonce}
-          query={q}
-          onQuery={(filters) => navigateQuery({ ...q, ...filters })}
-          scopeId={scopeId}
-          hours={hours}
-          {...(focusEventType ? { focusEventType } : {})}
-          window={panelWindow}
-        />
+      {/* One card, two modes. A tab switch is a sub-view switch — same URL key, and the
+          cursor comes along for the reason the Segmented above gives. */}
+      {scopeId && section === 'logs' && (
+        <LogStream mode={active === 'events' ? 'events' : 'logs'} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
+          {active === 'logs' && (
+            <TenantLogs
+              embedded
+              scopeId={scopeId}
+              filters={q}
+              onFilters={(filters) => navigateQuery({ ...q, ...filters })}
+              hours={hours}
+              nonce={nonce}
+              // Straight off the chart above, so the log panel can tell "no traffic" from
+              // "traffic whose lines are not attributed yet" without a second read.
+              {...(series?.available && thisApp ? { hadTraffic: thisApp.requests > 0 } : {})}
+              window={panelWindow}
+            />
+          )}
+          {/* Event filters stay mounted on refresh; snapshot panels refresh by remount. */}
+          {active === 'events' && (
+            <EventExplorer
+              key={scopeId}
+              embedded
+              nonce={nonce}
+              query={q}
+              onQuery={(filters) => navigateQuery({ ...q, ...filters })}
+              scopeId={scopeId}
+              hours={hours}
+              {...(focusEventType ? { focusEventType } : {})}
+              window={panelWindow}
+            />
+          )}
+        </LogStream>
       )}
       {scopeId && active === 'schedules' && (
         <AppSchedules key={`${scopeId}:${nonce}`} scopeId={scopeId} window={panelWindow} />
