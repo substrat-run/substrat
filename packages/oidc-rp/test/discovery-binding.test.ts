@@ -185,5 +185,7 @@ describe('the discovery fetch', () => {
   it('follows one that stays on the issuer origin (positive twin)', async () => {
     discoveryRedirect = `${issuer}/moved/.well-known/openid-configuration`;
     expect((await beginLogin(env, APP)).location).toContain('/authorize');
+    // Asked not to follow, so it is this code that judges each hop, never the runtime.
+    expect(requests.filter((r) => r.url.includes('openid-configuration')).every((r) => r.redirect === 'manual')).toBe(true);
   });
 });
