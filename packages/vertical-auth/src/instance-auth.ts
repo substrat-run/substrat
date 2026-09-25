@@ -1,4 +1,5 @@
 import { SHARED_ISSUER_CONFIG_KEY, resolveScopedEnvSpec, z, type EnvVarSpec } from '@substrat-run/contracts';
+import { isHttpsOrLoopbackUrl } from '@substrat-run/oidc-rp/discovery';
 import { oidcAuthProvider } from './oidc.js';
 import { oidcRpAuthProvider } from './oidc-rp-provider.js';
 import type { IdentityStub } from './identity-do.js';
@@ -28,7 +29,9 @@ import type { AuthProvider } from './provider.js';
  */
 export const authChoice = z.object({
   mode: z.literal('oidc'),
-  issuer: z.string().url().optional(),
+  // https or loopback: an `http://` issuer is not a delivery that parses, so it reads as "nothing
+  // delivered" (below) and never becomes a login that sends its secret in the clear.
+  issuer: z.string().url().refine(isHttpsOrLoopbackUrl, 'an issuer must be https').optional(),
   clientId: z.string().min(1).optional(),
   clientSecret: z.string().optional(),
   audience: z.string().optional(),

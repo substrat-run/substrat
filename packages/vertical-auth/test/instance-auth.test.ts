@@ -103,6 +103,14 @@ describe('parseAuthChoice', () => {
     expect(parseAuthChoice(JSON.stringify({ mode: 'builtin' }))).toBeNull();
     expect(parseAuthChoice(JSON.stringify({ mode: 'oidc', issuer: 'not-a-url' }))).toBeNull();
   });
+
+  it('will not take a plaintext issuer: a login would send its client secret in the clear', () => {
+    const choice = (issuer: string) => parseAuthChoice(JSON.stringify({ mode: 'oidc', issuer, clientId: 'c', clientSecret: 's' }));
+    expect(choice('http://auth.example.com')).toBeNull();
+    // Its twins: https, and a loopback dev issuer, parse.
+    expect(choice('https://auth.example.com')).toMatchObject({ issuer: 'https://auth.example.com' });
+    expect(choice('http://localhost:8879')).toMatchObject({ issuer: 'http://localhost:8879' });
+  });
 });
 
 /**

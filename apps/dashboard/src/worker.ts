@@ -30,6 +30,7 @@ import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, ty
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
+import { appAuthChoiceBody } from './app-auth-body.js';
 import { McpReconcileGate, clearAppMcpResources, isSharedIssuer, issuerFor, logUnsettled, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
@@ -655,18 +656,6 @@ async function createTeam(host: ScopeHost, env: Env, user: { id: string; email?:
   await mirrorBuilderIdentity(env, host, user.id, t);
   return { tenantId: t, scopeId: s, principal: owner };
 }
-
-/** An Identity choice as the API accepts it — install form and Settings tab alike. */
-const appAuthChoiceBody = z.discriminatedUnion('source', [
-  z.object({ source: z.literal('auth-server'), scopeId: z.string().min(1) }),
-  z.object({
-    source: z.literal('external'),
-    issuer: z.string().url(),
-    clientId: z.string().min(1),
-    clientSecret: z.string().optional(),
-    audience: z.string().optional(),
-  }),
-]);
 
 const createAppBody = z.object({
   verticalSlug: z.string().min(1),
