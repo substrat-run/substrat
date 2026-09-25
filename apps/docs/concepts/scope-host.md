@@ -316,6 +316,48 @@ host.defineOperation('acme/create-priced-workorder', async (ctx, input) => {
 });
 ```
 
+## SQL limits on `ctx.sql`
+
+A scope's database is a Durable Object's SQLite when deployed and `better-sqlite3` locally,
+and the Durable Object's build sets four limits far below stock SQLite's. A statement over one
+runs in every local test and fails on the first deployed call, so **the node adapter enforces
+the same values on `ctx.sql`** and refuses with the Durable Object's own message. Your suite
+sees what production sees.
+
+| Limit | Value | The refusal |
+|---|---|---|
+| Terms in one compound `SELECT` (`UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`) | **5** | `too many terms in compound SELECT` |
+| Bound parameters in one statement | **100** | `too many SQL variables at offset N` (`variable number must be between ?1 and ?100` for `?101`) |
+| Statement length | **100 000 bytes** (UTF-8, the whole string) | `statement too long` |
+| `LIKE` / `GLOB` pattern length | **50 bytes** (UTF-8) | `LIKE or GLOB pattern too complex` |
+
+These are measured against a real Durable Object, not read from documentation
+(`packages/adapter-cloudflare/test/do-sql-limits.test.ts`), and exported as `DO_SQL_LIMITS`
+from `@substrat-run/kernel`. How they are counted:
+
+- **Compound terms** are the operands of one chain. A subquery, a CTE body and a view body each
+  count their own, so `SELECT … FROM (five terms) UNION ALL …` is fine. A multi-row `VALUES`
+  list is **not** a compound: five thousand rows ran.
+- **Bound parameters** are the highest parameter number, not the number written: `:a + :a` is
+  one, `?100` is a hundred. A dynamic `IN (${ids.map(() => '?')})` is a hundred members at
+  most, less whatever else the statement binds. Pass a list of unknown length as **one JSON
+  array** and read it with `json_each`, which has no such limit:
+
+  ```ts
+  ctx.sql.query('SELECT * FROM acme_items WHERE id IN (SELECT value FROM json_each(?))', [
+    JSON.stringify(ids),
+  ]);
+  ```
+- **Statement length** is the whole string handed to `ctx.sql`, so a multi-statement string
+  counts once.
+- **`LIKE`** is a pattern built from input: a search term becomes `%term%` plus an escape per
+  wildcard. Bound the term in bytes, or match with `instr(lower(col), lower(?))`.
+
+Only your module's `ctx.sql` is judged. The platform's own statements are the platform's
+responsibility, and they already run on a real Durable Object in this repository's suites.
+A vertical's tenant relational store (a declared `tenantStoreNeed`, D1 when hosted) is a
+different database with its own limits and is not covered here.
+
 ## Event consumers
 
 A module can subscribe to event types (declared in its manifest under

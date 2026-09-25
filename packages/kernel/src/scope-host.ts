@@ -199,6 +199,22 @@ export interface PageParams {
 
 export type SqlValue = string | number | bigint | Uint8Array | null;
 
+/**
+ * The SQL door a module holds: `ctx.sql`.
+ *
+ * **It carries the Durable Object's SQL limits, on every adapter** (#1741) — a statement over
+ * one is refused with the hosted message, so a vertical's own suite fails where production
+ * would (`DO_SQL_LIMITS`, measured in `adapter-cloudflare/test/do-sql-limits.test.ts`):
+ *
+ * - **5** terms in one compound `SELECT` (`UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT`; a
+ *   subquery or CTE body counts its own; multi-row `VALUES` is not a compound);
+ * - **100** bound parameters in one statement (the highest number, `?N` included) — bind a
+ *   list of unknown length as ONE JSON array and read it with `json_each`;
+ * - **100 000 bytes** of statement, UTF-8, the whole string;
+ * - **50 bytes** of `LIKE`/`GLOB` pattern, UTF-8.
+ *
+ * Only module-facing SQL is judged; see `guardSqlLimits`.
+ */
 export interface ScopedSql {
   query<T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): T[];
   exec(sql: string, params?: readonly SqlValue[]): { changes: number };
