@@ -7339,8 +7339,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * CP-less, which is every pushed vertical, there is no directory. The scope must have been
    * provisioned in THIS deployment's namespace, for THIS tenant (`ScopeDO.servesTenant`).
    *
-   * Refused `conflict`, not `not_found`, in both cases. Over `/internal` a 404 means "this
-   * deployment predates the route", and the platform reads it as exactly that.
+   * A scope this host does not hold is refused `conflict`, not `not_found`: over `/internal` a
+   * 404 means "this deployment predates the route", and the platform reads it as exactly that.
+   * One exception: the SHARED control plane (a directory host with delegations) refuses a scope
+   * bound to a vertical `unavailable`, through `assertServedHere`, the same answer its peer door
+   * gives. It never mounts these routes, so no `/internal` caller meets that answer.
    */
   private async assertServesLocally(tenantId: TenantId, scopeId: ScopeId, verb: string): Promise<void> {
     if (!this.cpLess) {
