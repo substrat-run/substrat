@@ -1363,7 +1363,7 @@ export function verticalEventsContractSuite(
       const registry = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
       const exporting = (v: number | null) =>
         registry(v === null ? {} : { exports: [{ type: TYPE, schemaVersion: v, readPermission: 'customer:read', declaredBy: ['@test/x'] }] });
-      const publish = async (slug: string, manifestJson: string) => {
+      const publish = async (slug: string, manifestJson: string, migrationDigest = 'g') => {
         const id = ulid();
         await fx.consumer.admin.publishVersion(staff, {
           id,
@@ -1371,7 +1371,7 @@ export function verticalEventsContractSuite(
           version: `1.0.${id.slice(-4).toLowerCase()}`,
           manifestDigest: `m-${id}`,
           permissionDigest: 'p',
-          migrationDigest: 'g',
+          migrationDigest,
           deploymentRef: null,
           manifestJson,
         });
@@ -1380,7 +1380,8 @@ export function verticalEventsContractSuite(
       };
       const v1 = await publish(producer, exporting(1));
       const kept = await publish(producer, exporting(1));
-      const dropped = await publish(producer, exporting(null));
+      // Crosses a migration too, so a bind asking for a snapshot would take one.
+      const dropped = await publish(producer, exporting(null), 'g2');
       const bumped = await publish(producer, exporting(2));
       const consumerVersion = await publish(
         consumer,
@@ -1417,7 +1418,8 @@ export function verticalEventsContractSuite(
       expect(await fx.consumer.admin.bindingImpact(staff, t, pt, dropped)).toEqual([
         { tenantId: t, scopeId: ct, vertical: consumer, version: consumerVersion, type: TYPE, schemaVersion: 1, incoming: null },
       ]);
-      // Refused with a snapshot asked for too: the refusal comes first, so no archive is taken.
+      // Refused with a snapshot asked for too, on a bind that crosses a migration: the refusal
+      // comes first, so no archive is taken.
       const before = (await fx.consumer.admin.listScopes(staff, { tenantId: t })).length;
       await refusal(fx.consumer.admin.bindScopeVersion(staff, t, pt, dropped, { snapshot: true }));
       expect((await fx.consumer.admin.listScopes(staff, { tenantId: t })).length).toBe(before);
@@ -1445,9 +1447,13 @@ export function verticalEventsContractSuite(
         expect(await boundTo(t, copy)).toBe(dropped);
       }
 
-      // Acknowledged, it binds, and the admin log records the acknowledgement.
-      await fx.consumer.admin.bindScopeVersion(staff, t, pt, dropped, { acknowledge: { exportBreak: true } });
+      // Acknowledged, it binds, and the admin log records the acknowledgement. The snapshot the
+      // refused binds above did not take is taken here, which is what made their count mean
+      // something.
+      const beforeAck = (await fx.consumer.admin.listScopes(staff, { tenantId: t })).length;
+      await fx.consumer.admin.bindScopeVersion(staff, t, pt, dropped, { snapshot: true, acknowledge: { exportBreak: true } });
       expect(await boundTo(t, pt)).toBe(dropped);
+      expect((await fx.consumer.admin.listScopes(staff, { tenantId: t })).length).toBe(beforeAck + 1);
       const log = await fx.consumer.admin.auditLog(staff, { action: 'bindScopeVersion' });
       expect(log.some((e) => e.scopeId === pt && JSON.stringify(e.after).includes('"exportBreak":true'))).toBe(true);
     });
