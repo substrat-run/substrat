@@ -212,6 +212,7 @@ export type {
   ListIndexPlan,
   ListQueryParams,
 } from './list-index.js';
+export { moduleMigrations } from './module-migrations.js';
 export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidCeiling, ulidTime, type UlidMint } from './ulid.js';

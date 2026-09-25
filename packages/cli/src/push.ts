@@ -165,18 +165,47 @@ export function flattenDeclaredFreshness(
 }
 
 /**
+ * The kernel function that lists a module's migrations in the order the hosts apply them —
+ * authored, then the derived search and list indexes. It is read from the VERTICAL's own
+ * kernel, the code its deployed worker runs, so the push never keeps a second copy.
+ */
+export type ModuleMigrationsFn = (registration: PermissionsInput['modules'][number]) => readonly { version: string; sql: string }[];
+
+/**
  * Every module's SQL migrations, flattened with the owning module (#1677) — what the
  * manifest carries so a promote can show the migrations it would run. Read off the same
  * `modules` the permission entry exports, which are `ModuleRegistration`s carrying their
  * `migrations` beside the manifest.
  *
- * `migrations` is undefined (and `omitted` says why) when the set is over the manifest's caps.
- * The field is then left off, which the promote dialog reads as "SQL not available" and still
- * asks for the acknowledgement: metadata must never be what fails a push.
+ * Through `moduleMigrations`, the kernel's own list, because a host also applies migrations
+ * nobody authored: the indexes a module's `searchables` and `lists` declare. Changing those
+ * runs real schema SQL. Without the function (a vertical on a kernel older than it, or none
+ * resolvable) a module declaring either cannot be carried completely, so the field is left
+ * off rather than carried short; one declaring neither has only its authored set.
+ *
+ * `migrations` is undefined (and `omitted` says why) when the set is over the manifest's caps,
+ * or incomplete as above. The field is then left off, which the promote dialog reads as "SQL
+ * not available" and still asks for the acknowledgement: metadata must never fail a push.
  */
-export function flattenDeclaredMigrations(permissions: PermissionsInput): { migrations?: DeclaredMigration[]; omitted?: string } {
+export function flattenDeclaredMigrations(
+  permissions: PermissionsInput,
+  moduleMigrations?: ModuleMigrationsFn,
+): { migrations?: DeclaredMigration[]; omitted?: string } {
+  const derives = (m: PermissionsInput['modules'][number]) =>
+    (m.manifest.searchables?.length ?? 0) > 0 || (m.manifest.lists?.length ?? 0) > 0;
+  if (!moduleMigrations && permissions.modules.some(derives)) {
+    return {
+      omitted:
+        "a module declares searchables or lists, and the vertical's @substrat-run/kernel has no moduleMigrations " +
+        'to derive their index migrations with (upgrade the kernel)',
+    };
+  }
   const migrations = permissions.modules.flatMap((m) =>
-    (m.migrations ?? []).map((s) => ({ moduleId: m.manifest.id, version: s.version, sql: s.sql })),
+    (moduleMigrations ? moduleMigrations(m) : (m.migrations ?? [])).map((s) => ({
+      moduleId: m.manifest.id,
+      version: s.version,
+      sql: s.sql,
+    })),
   );
   if (migrations.length > DECLARED_MIGRATIONS_MAX) {
     return { omitted: `${migrations.length} migrations, over the ${DECLARED_MIGRATIONS_MAX} a manifest carries` };
@@ -263,10 +292,20 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
   // immediately after import. The unique name avoids the ESM import cache across pushes.
   const out = join(dir, `.substrat.permissions.${Date.now()}.mjs`);
   try {
-    let mod: { permissions?: PermissionsInput; envSpec?: unknown };
+    let mod: { permissions?: PermissionsInput; envSpec?: unknown; __substratKernel?: { moduleMigrations?: unknown } | null };
     try {
       await build({
-        entryPoints: [entryPath],
+        // The entry, plus the vertical's OWN kernel (#1677), imported where the vertical
+        // resolves it: `packages: 'external'` keeps the specifier, so it loads from the
+        // vertical's node_modules. Optional — a vertical with none still reads as data.
+        stdin: {
+          contents:
+            `export * from ${JSON.stringify(entryPath)};\n` +
+            `export const __substratKernel = await import('@substrat-run/kernel').catch(() => null);\n`,
+          resolveDir: dir,
+          sourcefile: 'substrat-surface.mjs',
+          loader: 'js',
+        },
         bundle: true,
         platform: 'node',
         format: 'esm',
@@ -277,6 +316,7 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       // @vite-ignore: this is a real filesystem path imported at runtime, never a bundler input —
       // the comment keeps vitest/vite from trying to resolve it through their transform pipeline.
       mod = (await import(/* @vite-ignore */ pathToFileURL(out).href)) as {
+        __substratKernel?: { moduleMigrations?: unknown } | null;
         permissions?: PermissionsInput;
         envSpec?: unknown;
       };
@@ -325,7 +365,12 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       freshness: flattenDeclaredFreshness(mod.permissions),
       declaredEvents: declaredEvents.events,
       declaredEventsTruncated: declaredEvents.truncated,
-      migrations: flattenDeclaredMigrations(mod.permissions),
+      migrations: flattenDeclaredMigrations(
+        mod.permissions,
+        typeof mod.__substratKernel?.moduleMigrations === 'function'
+          ? (mod.__substratKernel.moduleMigrations as ModuleMigrationsFn)
+          : undefined,
+      ),
     };
   } finally {
     rmSync(out, { force: true });

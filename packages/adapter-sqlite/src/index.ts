@@ -363,6 +363,7 @@ import {
   listIndexPlans,
   listQuery,
   cursorOf,
+  moduleMigrations,
   type ListIndexPlan,
   type PageParams,
   isSearchIndexTable,
@@ -2274,7 +2275,9 @@ export class SqliteScopeHost implements ScopeHost {
     this.crossVertical.register(manifest, registration.imports);
     this.modules.set(manifest.id, {
       id: manifest.id,
-      migrations: [...migrations, ...searchMigrations, ...listMigrations],
+      // The order the kernel writes once (#1677): authored, then search, then list indexes.
+      // The two derived sets are still computed above, for the duplicate-version refusals.
+      migrations: moduleMigrations(registration),
       consumers,
       schedules: manifest.schedules ?? [],
       freshness: manifest.freshness ?? [],

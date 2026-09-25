@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DECLARED_MIGRATIONS_MAX, DECLARED_MIGRATIONS_SQL_BYTES_MAX, DEPLOY_MANIFEST_BYTES_SAFE, type DeployManifest } from '@substrat-run/contracts';
+import {
+  DECLARED_MIGRATIONS_MAX,
+  DECLARED_MIGRATIONS_SQL_BYTES_MAX,
+  DEPLOY_MANIFEST_BYTES_SAFE,
+  migrationsOnTop,
+  type DeployManifest,
+} from '@substrat-run/contracts';
 import { boundManifest, flattenDeclaredMigrations } from '../src/push.js';
 
 /**
@@ -20,12 +26,26 @@ import { boundManifest, flattenDeclaredMigrations } from '../src/push.js';
 const pushJs = fileURLToPath(new URL('../dist/push.js', import.meta.url));
 const built = existsSync(pushJs);
 
-/** `migrations` per module, as a `ModuleRegistration` carries them. */
-type ModuleSpec = { id: string; migrations?: { version: string; sql: string }[] };
+/** `migrations` per module, as a `ModuleRegistration` carries them; `searchables` and `lists`
+ *  as its manifest declares them (#1677: the host derives index migrations from those). */
+type ModuleSpec = {
+  id: string;
+  migrations?: { version: string; sql: string }[];
+  searchables?: unknown[];
+  lists?: unknown[];
+};
+
+/** The workspace kernel, linked into a fixture the way a vertical's node_modules has it. */
+const workspaceKernel = fileURLToPath(new URL('../../kernel', import.meta.url));
+const kernelBuilt = existsSync(join(workspaceKernel, 'dist', 'index.js'));
 
 const STORES = [{ binding: 'SCOPE', class: 'ScopeDO' }];
 
-function vertical(modules: ModuleSpec[], stores: { binding: string; class: string }[] = STORES): string {
+function vertical(
+  modules: ModuleSpec[],
+  stores: { binding: string; class: string }[] = STORES,
+  opts: { kernel?: boolean } = {},
+): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'substrat-cli-migrations-')));
   writeFileSync(
     join(dir, 'package.json'),
@@ -38,9 +58,18 @@ function vertical(modules: ModuleSpec[], stores: { binding: string; class: strin
   mkdirSync(join(dir, 'src'), { recursive: true });
   writeFileSync(join(dir, 'src', 'worker.ts'), 'export default {};\n');
   const entries = modules.map((m) => ({
-    manifest: { id: m.id, permissions: [{ key: `${m.id.split('/').pop()}:read`, description: 'Read' }] },
+    manifest: {
+      id: m.id,
+      permissions: [{ key: `${m.id.split('/').pop()}:read`, description: 'Read' }],
+      ...(m.searchables ? { searchables: m.searchables } : {}),
+      ...(m.lists ? { lists: m.lists } : {}),
+    },
     ...(m.migrations ? { migrations: m.migrations } : {}),
   }));
+  if (opts.kernel) {
+    mkdirSync(join(dir, 'node_modules', '@substrat-run'), { recursive: true });
+    symlinkSync(workspaceKernel, join(dir, 'node_modules', '@substrat-run', 'kernel'), 'dir');
+  }
   writeFileSync(join(dir, 'perms.mjs'), `export const permissions = ${JSON.stringify({ modules: entries, roles: [] })};\n`);
   return dir;
 }
@@ -134,6 +163,51 @@ describe.runIf(built)('push carries each module’s SQL migrations (#1677)', () 
     const before = pushed(vertical([{ id: 'helpdesk', migrations: [INIT] }]));
     const after = pushed(vertical([{ id: 'helpdesk', migrations: [INIT] }], [...STORES, { binding: 'IDENTITY', class: 'IdentityDO' }]));
     expect(after.digests.migration).not.toBe(before.digests.migration);
+  });
+});
+
+/**
+ * The migrations nobody authored (#1677, a Copilot finding on #1766): a host also applies the
+ * indexes a module's `searchables` and `lists` declare, derived by the kernel. The push carries
+ * them through the vertical's OWN kernel's `moduleMigrations`, the function the hosts store.
+ */
+describe.runIf(built && kernelBuilt)('push carries the derived index migrations too', () => {
+  const TABLE = { version: '0001-init', sql: 'CREATE TABLE ticket (id TEXT PRIMARY KEY, title TEXT, status TEXT, created_at TEXT);' };
+  const searchables = [{ entityType: 'ticket', fields: ['title'], table: 'ticket', idColumn: 'id', tokenizer: 'unicode61' }];
+  const lists = [{ entityType: 'ticket', sortable: ['created_at', 'id'], filterable: ['status'], table: 'ticket', idColumn: 'id' }];
+
+  it('in the host’s order: authored, then the search index, then the list index', () => {
+    const m = pushed(vertical([{ id: 'helpdesk', migrations: [TABLE], searchables, lists }], STORES, { kernel: true }));
+    expect(m.migrations?.map((x) => x.version.split('/')[0])).toEqual(['0001-init', 'search', 'list']);
+    expect(m.migrations?.[2]?.sql).toMatch(/CREATE INDEX/);
+  });
+
+  it('a push that changes ONLY `lists` shows as a migration the promote would run', () => {
+    const before = pushed(vertical([{ id: 'helpdesk', migrations: [TABLE], lists }], STORES, { kernel: true }));
+    const after = pushed(
+      vertical([{ id: 'helpdesk', migrations: [TABLE], lists: [{ ...lists[0], filterable: ['status', 'title'] }] }], STORES, { kernel: true }),
+    );
+    const diff = migrationsOnTop(after.migrations!, before.migrations!);
+    expect(diff.total).toBeGreaterThan(0);
+    expect(diff.added.map((a) => a.version)).toEqual([expect.stringMatching(/^list\/ticket:/)]);
+  });
+
+  it('and one that changes ONLY `searchables` likewise', () => {
+    const before = pushed(vertical([{ id: 'helpdesk', migrations: [TABLE], searchables }], STORES, { kernel: true }));
+    const after = pushed(
+      vertical([{ id: 'helpdesk', migrations: [TABLE], searchables: [{ ...searchables[0], fields: ['title', 'status'] }] }], STORES, {
+        kernel: true,
+      }),
+    );
+    expect(migrationsOnTop(after.migrations!, before.migrations!).added.map((a) => a.version)).toEqual([
+      expect.stringMatching(/^search\/ticket:/),
+    ]);
+  });
+
+  it('without a kernel to derive them, a module declaring lists carries NO migrations — never a short set', () => {
+    const { manifest, stderr } = pushedWith(vertical([{ id: 'helpdesk', migrations: [TABLE], lists }]));
+    expect(manifest.migrations).toBeUndefined();
+    expect(stderr).toMatch(/declares searchables or lists/);
   });
 });
 
