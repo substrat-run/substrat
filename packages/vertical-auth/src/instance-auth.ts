@@ -1,5 +1,5 @@
 import { SHARED_ISSUER_CONFIG_KEY, resolveScopedEnvSpec, z, type EnvVarSpec } from '@substrat-run/contracts';
-import { isHttpsOrLoopbackUrl } from '@substrat-run/oidc-rp/discovery';
+import { issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import { oidcAuthProvider } from './oidc.js';
 import { oidcRpAuthProvider } from './oidc-rp-provider.js';
 import type { IdentityStub } from './identity-do.js';
@@ -160,8 +160,11 @@ export function authorizationServersOf(opts: {
   settings: Record<string, string | undefined>;
 }): string[] {
   const { identity, settings } = opts;
-  if (identity?.mode === 'oidc') return identity.issuer ? [identity.issuer] : [];
-  if (settings.AUTH_PROVIDER === 'oidc') return settings.OIDC_ISSUER ? [settings.OIDC_ISSUER] : [];
+  // Empty for an issuer `selectAuthProvider` refuses too (`issuerRefusal`): the metadata must
+  // not send a client to an authorization server this instance will not talk to.
+  const named = (issuer: string | undefined): string[] => (issuer && issuerRefusal(issuer) === null ? [issuer] : []);
+  if (identity?.mode === 'oidc') return named(identity.issuer);
+  if (settings.AUTH_PROVIDER === 'oidc') return named(settings.OIDC_ISSUER);
   return [];
 }
 
@@ -188,9 +191,8 @@ export function selectAuthProvider(opts: {
     // delivered" and the instance would quietly run the deployment's default identity provider
     // instead. The relying party sends its client secret to this issuer, so it is https (or a
     // loopback dev issuer) or the instance answers 503.
-    if (!isHttpsOrLoopbackUrl(identity.issuer)) {
-      throw new AuthConfigError(503, "this instance's OIDC issuer must be https");
-    }
+    const refused = issuerRefusal(identity.issuer);
+    if (refused) throw new AuthConfigError(503, `this instance's OIDC issuer is refused: ${refused}`);
     return oidcRpAuthProvider({
       issuer: identity.issuer,
       clientId: identity.clientId,
@@ -205,6 +207,8 @@ export function selectAuthProvider(opts: {
     if (!settings.OIDC_ISSUER) {
       throw new AuthConfigError(500, 'AUTH_PROVIDER=oidc but OIDC_ISSUER is unset');
     }
+    const refused = issuerRefusal(settings.OIDC_ISSUER);
+    if (refused) throw new AuthConfigError(503, `this instance's OIDC issuer is refused: ${refused}`);
     return oidcAuthProvider({
       issuer: settings.OIDC_ISSUER,
       ...(settings.OIDC_AUDIENCE ? { audience: settings.OIDC_AUDIENCE } : {}),

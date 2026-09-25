@@ -155,6 +155,23 @@ describe('authorizationServersOf', () => {
    * cannot proceed without a provider; metadata is a description, and an instance with
    * no login truthfully has no authorization server to name.
    */
+  it('names no issuer that provider selection refuses (plaintext, or not an identifier), on either path', () => {
+    for (const bad of ['http://auth.example.com', 'https://auth.example.com?x=1', 'https://u:p@auth.example.com']) {
+      const delivered = { identity: { mode: 'oidc' as const, issuer: bad, clientId: 'c' }, settings: settingsOf() };
+      expect(authorizationServersOf(delivered), bad).toEqual([]);
+      expect(() => selectAuthProvider({ ...delivered, sessionSecret: 's' }), bad).toThrow(AuthConfigError);
+      const fallback = { identity: null, settings: settingsOf({ AUTH_PROVIDER: 'oidc', OIDC_ISSUER: bad }) };
+      expect(authorizationServersOf(fallback), bad).toEqual([]);
+      expect(() => selectAuthProvider({ ...fallback, sessionSecret: 's' }), bad).toThrow(AuthConfigError);
+    }
+    // Twins, agreeing: https and a loopback dev issuer are named AND build a provider.
+    for (const ok of ['https://auth.example.com', 'http://localhost:8879']) {
+      const delivered = { identity: { mode: 'oidc' as const, issuer: ok, clientId: 'c' }, settings: settingsOf() };
+      expect(authorizationServersOf(delivered)).toEqual([ok]);
+      expect(() => selectAuthProvider({ ...delivered, sessionSecret: 's' })).not.toThrow();
+    }
+  });
+
   it('answers empty — never throws — where provider selection refuses', () => {
     const unconfigured = { identity: null, settings: settingsOf() };
     expect(authorizationServersOf(unconfigured)).toEqual([]);
