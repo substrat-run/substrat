@@ -194,12 +194,13 @@ describe('peerInvokeHandler (#1706)', () => {
 
   describe('the caller’s `substrat.calls` gates this leg too (#1706)', () => {
     /** Publish a version of the caller whose stored manifest declares `calls`. */
+    let versionCounter = 0;
     const publish = async (calls: string[] | undefined): Promise<string> => {
       const id = ulid();
       await host.admin.publishVersion(staff, {
         id,
         verticalSlug: 'acme/board-room',
-        version: `1.0.${Math.floor(Math.random() * 1000)}`,
+        version: `1.0.${versionCounter++}`,
         manifestDigest: `m-${id}`,
         permissionDigest: 'p',
         migrationDigest: 'g',
