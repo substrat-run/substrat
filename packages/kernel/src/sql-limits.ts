@@ -7,9 +7,12 @@
  * deployed scope — `customer/get` in an adopter vertical counted rows with a 29-term
  * `UNION ALL` and broke on the first hosted call. #1655 closed the same gap for a `LIKE`
  * pattern (`tools/vitest/like-pattern-limit.cjs`, which has to patch the driver because
- * `better-sqlite3` exposes no `sqlite3_limit`). These four limits can be judged from the
- * statement text, so the adapter judges them itself, and a vertical's OWN suite sees what
- * a Durable Object sees.
+ * `better-sqlite3` exposes no `sqlite3_limit`). Three of the four limits below can be judged
+ * from the statement text, so the adapter judges them itself, and a vertical's OWN suite sees
+ * what a Durable Object sees. The pattern limit cannot: a pattern is often built at run time,
+ * and judging it exactly means replacing `like()` on every connection, a JavaScript call per
+ * row that also switches off SQLite's `LIKE` prefix index optimisation. That cost is fine in a
+ * test preload and not in an adapter self-hosters run, so it stays a preload's job.
  *
  * The values are MEASURED, not read from documentation:
  * `packages/adapter-cloudflare/test/do-sql-limits.test.ts` drives a real Durable Object's
@@ -21,7 +24,7 @@
  * | terms in one compound SELECT  | 5              | `too many terms in compound SELECT`                 |
  * | bound parameters              | 100            | `too many SQL variables at offset N`                |
  * | statement length              | 100 000 bytes  | `statement too long` (`SQLITE_TOOBIG`)              |
- * | `LIKE`/`GLOB` pattern length  | 50 bytes       | `LIKE or GLOB pattern too complex` (not judged here) |
+ * | `LIKE`/`GLOB` pattern length  | 50 bytes       | `LIKE or GLOB pattern too complex` (not judged here: preload only) |
  *
  * What is NOT a limit, measured: a multi-row `VALUES` list — SQLite does not count its rows
  * as compound terms; 5 000 rows ran on the DO. So `INSERT … VALUES (…),(…),…` is bounded by
@@ -65,6 +68,37 @@ const byteOffset = (sql: string, index: number): number => byteLength(sql.slice(
 
 const COMPOUND_OPERATORS = new Set(['union', 'intersect', 'except']);
 const isWord = (c: string): boolean => /[A-Za-z0-9_$\u0080-￿]/.test(c);
+
+/**
+ * Where a `:name`, `@name` or `$name` parameter token ends — SQLite's own tokenizer rule
+ * (`sqlite3GetToken`, the variable case), which is wider than an identifier:
+ *  - identifier characters (letters, digits, `_`, `$`, anything non-ASCII) continue it;
+ *  - `::` continues it, so `$a::b` is ONE parameter (the pair adds nothing to the name);
+ *  - a `(` starts a Tcl-style suffix that runs to the next `)` or whitespace, and ends the
+ *    token: `$a(b c)` is not one parameter but `$a(b` and, past the space, other words.
+ * A scanner that stopped at the first `:` or `(` counted the rest as more parameters, so a
+ * valid statement could be refused for holding over 100 variables.
+ */
+function endOfNamedParameter(sql: string, from: number): number {
+  const n = sql.length;
+  let i = from + 1;
+  while (i < n) {
+    const c = sql[i]!;
+    if (isWord(c)) {
+      i += 1;
+    } else if (c === '(') {
+      i += 1;
+      while (i < n && !/\s/.test(sql[i]!) && sql[i] !== ')') i += 1;
+      if (sql[i] === ')') i += 1;
+      break;
+    } else if (c === ':' && sql[i + 1] === ':') {
+      i += 2;
+    } else {
+      break;
+    }
+  }
+  return i;
+}
 
 /**
  * Refuse a statement a Durable Object's SQLite would refuse for its length, its compound
@@ -162,12 +196,12 @@ export function assertWithinSqlLimits(sql: string): void {
     }
     if (c === ':' || c === '@' || c === '$') {
       const start = i;
-      i += 1;
-      while (i < n && isWord(sql[i]!)) i += 1;
-      const name = sql.slice(start, i);
-      if (name.length > 1 && !named.has(name)) {
+      i = endOfNamedParameter(sql, i);
+      // SQLite keys a slot on the WHOLE token, sigil included: `:a` and `@a` are two variables.
+      const token = sql.slice(start, i);
+      if (token.length > 1 && !named.has(token)) {
         nVar += 1;
-        named.set(name, nVar);
+        named.set(token, nVar);
         bindOne(start, nVar);
       }
       continue;

@@ -72,6 +72,28 @@ describe('bound parameters', () => {
     expect(() => assertWithinSqlLimits(`SELECT ${Array.from({ length: P + 1 }, (_, i) => `:p${i}`).join(',')}`)).toThrow(/too many SQL variables/);
   });
 
+  it('reads an extended $name as ONE token, the way SQLite tokenizes it (::, and a (…) suffix)', () => {
+    // 60 distinct extended names is 60 variables. A scanner that stopped at `::` or `(` would
+    // read each as several and refuse this statement, which a Durable Object runs.
+    const sql = `SELECT ${Array.from({ length: 60 }, (_, i) => `$ns${i}::part(arg${i})`).join(' + ')}`;
+    expect(() => assertWithinSqlLimits(sql)).not.toThrow();
+    expect(() => assertWithinSqlLimits(`SELECT ${Array.from({ length: 60 }, () => '$a::b(c) + $a::b(c)').join(' + ')}`)).not.toThrow();
+    // A(b c) ends at the space: `$a(b` is the parameter, and `c)` are other tokens.
+    expect(() => assertWithinSqlLimits('SELECT $a(b c) FROM t')).not.toThrow();
+    // …and the count is still right past the limit.
+    const over = `SELECT ${Array.from({ length: P + 1 }, (_, i) => `$ns${i}::part(arg)`).join(' + ')}`;
+    expect(() => assertWithinSqlLimits(over)).toThrow(/too many SQL variables/);
+  });
+
+  it('counts one slot per DISTINCT token, sigil included: :x twice is one, :x and @x are two', () => {
+    const many = (token: string, n: number): string => `SELECT ${Array.from({ length: n }, () => token).join('+')}`;
+    expect(() => assertWithinSqlLimits(many(':x', P * 3))).not.toThrow();
+    const both = `SELECT ${Array.from({ length: P / 2 + 1 }, (_, i) => `:x${i} + @x${i}`).join(' + ')}`;
+    expect(() => assertWithinSqlLimits(both)).toThrow(/too many SQL variables/);
+    const same = `SELECT ${Array.from({ length: P }, (_, i) => `:x${i} + :x${i}`).join(' + ')}`;
+    expect(() => assertWithinSqlLimits(same)).not.toThrow();
+  });
+
   it('numbers again from one in each statement of a multi-statement string', () => {
     expect(() => assertWithinSqlLimits(`SELECT ${marks(P)}; SELECT ${marks(P)}`)).not.toThrow();
   });

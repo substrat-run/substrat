@@ -321,15 +321,19 @@ host.defineOperation('acme/create-priced-workorder', async (ctx, input) => {
 A scope's database is a Durable Object's SQLite when deployed and `better-sqlite3` locally,
 and the Durable Object's build sets four limits far below stock SQLite's. A statement over one
 runs in every local test and fails on the first deployed call, so **the node adapter enforces
-the same values on `ctx.sql`** and refuses with the Durable Object's own message. Your suite
-sees what production sees.
+the first three of these on `ctx.sql`** and refuses with the Durable Object's own message. Your
+suite sees what production sees for them. The `LIKE`/`GLOB` pattern limit is **not** enforced by
+the adapter: node's SQLite allows 50 000 bytes, and this repository's own suites emulate the limit
+with a test preload (`tools/vitest/like-pattern-limit.cjs`) that a vertical's suite does not get.
+Enforcing it in the adapter would replace SQLite's `like()` on every connection, a JavaScript call
+per row and no `LIKE` prefix index for self-hosters. Bound the pattern yourself (below).
 
 | Limit | Value | The refusal |
 |---|---|---|
 | Terms in one compound `SELECT` (`UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`) | **5** | `too many terms in compound SELECT` |
 | Bound parameters in one statement | **100** | `too many SQL variables at offset N` (`variable number must be between ?1 and ?100` for `?101`) |
 | Statement length | **100 000 bytes** (UTF-8, the whole string) | `statement too long` |
-| `LIKE` / `GLOB` pattern length | **50 bytes** (UTF-8) | `LIKE or GLOB pattern too complex` |
+| `LIKE` / `GLOB` pattern length | **50 bytes** (UTF-8), not adapter-enforced | `LIKE or GLOB pattern too complex` |
 
 These are measured against a real Durable Object, not read from documentation
 (`packages/adapter-cloudflare/test/do-sql-limits.test.ts`), and exported as `DO_SQL_LIMITS`
