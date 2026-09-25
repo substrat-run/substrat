@@ -209,6 +209,7 @@ import {
   entitlementDenial,
   foldMeterReading,
   guardSpine,
+  guardSqlLimits,
   parseValidationRecords,
   resolveScopeRecord,
   ulid,
@@ -9846,7 +9847,7 @@ export class SqliteScopeHost implements ScopeHost {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
       principal,
-      sql: guardSecrets(scopedSql(rt.db), minted),
+      sql: guardSecrets(guardSqlLimits(scopedSql(rt.db)), minted),
       now: () => at,
       emit: (event: DomainEventInput) => {
         assertImpersonationWrites(impersonation, 'ctx.emit');

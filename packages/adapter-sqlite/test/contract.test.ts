@@ -26,6 +26,7 @@ import {
   listContractSuite,
   inputParseContractSuite,
   spineGuardContractSuite,
+  sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
@@ -306,6 +307,20 @@ inputParseContractSuite('adapter-sqlite', async () => {
 // the permission in front of it.
 spineGuardContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-spine-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1741: the SQL limits a Durable Object enforces on ctx.sql — here the pure host enforces
+// them itself (`guardSqlLimits`), so a vertical's suite fails where production would.
+sqlLimitsContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-sqllimits-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   return {
     host,

@@ -217,6 +217,7 @@ export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { assertNoSpineWrite, guardSpine } from './spine-guard.js';
+export { DO_SQL_LIMITS, assertWithinSqlLimits, guardSqlLimits } from './sql-limits.js';
 export { assertPermissionKey } from './check-key.js';
 export { assertModuleEnqueueableKind } from './platform-kinds.js';
 export { readRoutedNode, RouterAssertionError } from './routed-node.js';
