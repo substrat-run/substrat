@@ -264,8 +264,8 @@ it('preserves URL event grouping and type through refresh without remounting con
     'app-a',
     expect.objectContaining({ groupBy: 'operation', type: 'receipt.sent', ...windowRange }),
   );
-  expect(container.querySelector<HTMLSelectElement>('[aria-label="Group by dimension"]')!.value).toBe('operation');
-  expect(container.querySelector<HTMLInputElement>('[aria-label="Narrow to one event type"]')!.value).toBe(
+  expect(container.querySelector('[aria-label="Group by"] [aria-pressed="true"]')!.textContent).toBe('Operation');
+  expect(container.querySelector('[aria-label="Clear event type"]')!.parentElement!.textContent).toContain(
     'receipt.sent',
   );
 });
@@ -345,12 +345,16 @@ describe('menu children (#1767)', () => {
     return onNav;
   };
   const heading = () => container.querySelector('h1')!.textContent;
-  const subViews = () => [...container.querySelectorAll('[aria-label="Sub-view"] button')].map((b) => b.textContent);
+  const modes = () => [...container.querySelectorAll('[data-log-modes] button')].map((b) => b.textContent);
 
-  it('titles the page by the child and offers only that child’s sub-views', async () => {
-    await render('events', 'app-a');
+  it('titles the page by the child and draws its sub-views as the stream card’s modes', async () => {
+    vi.spyOn(api, 'appFacets').mockResolvedValue({ buckets: [], total: 0, erased: 0, truncated: false });
+    const onNav = await render('events', 'app-a');
     expect(heading()).toBe('Logs');
-    expect(subViews()).toEqual(['Logs', 'Events']);
+    expect(modes()).toEqual(['Lines', 'Events']);
+    expect(container.querySelector('[aria-label="Sub-view"]')).toBeNull();
+    click(button('Lines'));
+    expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-a', view: 'logs' }));
   });
 
   it('asks for an app on Logs with All apps, instead of falling back to Pulse', async () => {
