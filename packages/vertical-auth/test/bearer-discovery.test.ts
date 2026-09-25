@@ -53,7 +53,7 @@ beforeEach(() => {
     if (url === 'https://evil.test/.well-known/openid-configuration') {
       return Response.json({ issuer, jwks_uri: 'https://evil.test/jwks' });
     }
-    if (url === `${issuer}/jwks`) return Response.json(goodJwks);
+    if (url === `${issuer}/jwks` || url === 'http://localhost:9911/jwks') return Response.json(goodJwks);
     if (url === 'https://evil.test/jwks') return Response.json(evilJwks);
     throw new Error(`unexpected fetch in test: ${url}`);
   };
@@ -99,6 +99,20 @@ describe('a bearer verifier looks its keys up through the bound discovery', () =
     const plain = 'http://plain-issuer.example.test';
     expect(await resolve(oidcAuthProvider({ issuer: plain }), await token(goodKey, plain))).toBeNull();
     expect(requests).toEqual([]);
+  });
+
+  it('holds a jwksUri override to the same transport rule, and never fetches a plaintext one', async () => {
+    const plain = 'http://keys.example.test/jwks';
+    expect(await resolve(oidcAuthProvider({ issuer, jwksUri: plain }), await token(goodKey))).toBeNull();
+    // A plaintext loopback override needs a loopback issuer, like every other endpoint.
+    expect(await resolve(oidcAuthProvider({ issuer, jwksUri: 'http://localhost:9/jwks' }), await token(goodKey))).toBeNull();
+    expect(requests.some((r) => r.startsWith('http://'))).toBe(false);
+    // Twin: an https override on another origin is the caller's choice, and is used.
+    doc = {};
+    expect(await resolve(oidcAuthProvider({ issuer, jwksUri: `${issuer}/jwks` }), await token(goodKey))).toBe('user-1');
+    // Twin: a loopback issuer may point at a loopback override.
+    const lb = 'http://localhost:9911';
+    expect(await resolve(oidcAuthProvider({ issuer: lb, jwksUri: `${lb}/jwks` }), await token(goodKey, lb))).toBe('user-1');
   });
 
   it('retries after a failure instead of refusing for the isolate’s life', async () => {

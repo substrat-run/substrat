@@ -234,8 +234,23 @@ describe('federated logout', () => {
     expect(to.searchParams.get('client_id')).toBe(cfg.clientId);
   });
 
-  it('still sends the hint to a loopback endpoint — the dev issuer', async () => {
+  it('withholds the hint from a plaintext loopback endpoint an https issuer names', async () => {
     endSessionEndpoint = 'http://localhost:8879/logout';
+    const provider = oidcRpAuthProvider(cfg);
+    const hint = cookiesOf(await signIn(provider)).get(LOGOUT_HINT_COOKIE)!;
+    const out = await provider.handle(
+      new Request(`${APP}/api/auth/logout?federated`, {
+        headers: { cookie: `${LOGOUT_HINT_COOKIE}=${encodeURIComponent(hint)}` },
+      }),
+    );
+    expect(new URL(out.headers.get('location')!).searchParams.has('id_token_hint')).toBe(false);
+  });
+
+  it('still sends the hint to a loopback endpoint — the dev issuer', async () => {
+    // Plaintext loopback is for a loopback issuer only: the issuer here is the dev one.
+    ISSUER = `http://localhost:${8800 + issuers}`;
+    cfg = { ...cfg, issuer: ISSUER };
+    endSessionEndpoint = `${ISSUER}/logout`;
     const provider = oidcRpAuthProvider(cfg);
     const jar = cookiesOf(await signIn(provider));
     const hint = jar.get(LOGOUT_HINT_COOKIE)!;
