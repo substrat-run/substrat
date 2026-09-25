@@ -419,6 +419,7 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
   const staff = platformActorId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
   const TYPE = 'crm.customer-created';
+  const TYPE2 = 'crm.customer-touched';
   let dir: string;
   let host: SqliteScopeHost;
   let app: ReturnType<typeof createControlPlaneApi>;
@@ -457,7 +458,8 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const manifest = (version: string, exported: boolean, migration = 'g1') => ({
+  // `exported`: TYPE when true, the named type when a string, nothing when false.
+  const manifest = (version: string, exported: boolean | string, migration = 'g1') => ({
     version,
     entry: 'worker.js',
     compatibilityDate: '2025-01-01',
@@ -468,7 +470,9 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
       permissions: [{ key: 'customer:read', description: 'read customers', declaredBy: ['@test/crm'] }],
       roles: [],
       entityGrants: [],
-      ...(exported ? { exports: [{ type: TYPE, schemaVersion: 1, readPermission: 'customer:read', declaredBy: ['@test/crm'] }] } : {}),
+      ...(exported
+        ? { exports: [{ type: exported === true ? TYPE : exported, schemaVersion: 1, readPermission: 'customer:read', declaredBy: ['@test/crm'] }] }
+        : {}),
     },
   });
   const push = async (pin: string, m: object): Promise<{ id: string; verticalSlug: string }> => {
@@ -587,14 +591,16 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
 
   // An owned install still on a version that exports TYPE, beside an app that imports it, while the
   // channel (and an install on the serving script) are on a version that exports nothing.
-  const laggingWorld = async () => {
+  const laggingWorld = async (opts: { gateBreak?: boolean } = {}) => {
     const pin = `lag-${ulid().slice(-6).toLowerCase()}`;
     const t = tenantId.parse(ulid());
     await host.admin.createTenant(staff, { id: t, slug: pin, name: pin });
     // `old` exports TYPE and is never promoted; the channel starts at `served`, which does not.
     const old = await push(pin, manifest('0.1.0', true));
     const slug = old.verticalSlug;
-    const served = await push(pin, manifest('0.1.1', false));
+    // With `gateBreak`, the channel's version exports a second type a second app imports: the
+    // promote gate then breaks that app, and the lagging install's adopt breaks the first.
+    const served = await push(pin, manifest('0.1.1', opts.gateBreak ? TYPE2 : false));
     expect((await promote(slug, served.id)).status).toBe(200);
     const stable = stableDeploymentRefFor(slug);
     const install = async (versionId: string) => {
@@ -624,9 +630,25 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     await host.provisionScope(staff, { tenantId: t, scopeId: deskScope, vertical: desk });
     await host.admin.activateScope(staff, t, deskScope);
     await host.admin.bindScopeVersion(staff, t, deskScope, deskVersion);
+    let desk2Scope: ScopeId | null = null;
+    if (opts.gateBreak) {
+      const desk2 = `${pin}/desk2`;
+      await host.admin.registerVertical(staff, { slug: desk2, name: 'desk2', source: 'cli' });
+      const desk2Version = ulid();
+      await host.admin.publishVersion(staff, {
+        id: desk2Version, verticalSlug: desk2, version: '1.0.0', manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g',
+        deploymentRef: null,
+        manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], imports: [{ from: slug, type: TYPE2, schemaVersion: 1, declaredBy: ['@test/desk2'] }] } }),
+      });
+      await host.admin.admitVersion(staff, desk2Version);
+      desk2Scope = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: desk2Scope, vertical: desk2 });
+      await host.admin.activateScope(staff, t, desk2Scope);
+      await host.admin.bindScopeVersion(staff, t, desk2Scope, desk2Version);
+    }
 
     const next = await push(pin, manifest('0.2.0', false));
-    return { t, slug, stable, onServing, lagging, old, deskScope, next };
+    return { t, slug, stable, onServing, lagging, old, deskScope, desk2Scope, next };
   };
 
   it('an install refused after the serve is left where it is; every other install still moves, and the backfill still runs', async () => {
@@ -675,5 +697,16 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     // The twin: with no install left behind, a further version that exports nothing breaks nothing.
     const later = await push(slug.split('/')[0]!, manifest('0.3.0', false));
     expect(await impact(later.id)).toEqual([]);
+  });
+
+  it("the promote's refusal counts what it lists: the gate's break and the lagging install's, together", async () => {
+    const { slug, deskScope, desk2Scope, next } = await laggingWorld({ gateBreak: true });
+    // The gate alone breaks one app (desk2 loses TYPE2); the lagging install's adopt breaks another.
+    expect((await host.admin.promotionImpact(staff, slug, 'prod', next.id)).map((b) => b.scopeId)).toEqual([desk2Scope]);
+    const res = await promote(slug, next.id, { permissionChange: true });
+    expect(res.status).toBe(409);
+    const said = (await res.json()) as { error: string; exportBreaks: { affected: { scopeId: string }[] } };
+    expect(said.exportBreaks.affected.map((b) => b.scopeId).sort()).toEqual([deskScope, desk2Scope!].sort());
+    expect(said.error).toMatch(/^promotion drops or re-versions 2 exported event type\(s\) that 2 installed app\(s\) in 1 tenant\(s\)/);
   });
 });

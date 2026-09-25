@@ -111,6 +111,7 @@ import {
   BIND_EXPORT_BREAK_REFUSAL,
   bindExportBreakRefusal,
   crossVerticalHealth,
+  exportBreakRefusal,
   isBindExportBreakRefusal,
   isExportBreakRefusal,
   migrationProgress,
@@ -5213,8 +5214,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // the way the store backfill below is: a confined caller sees its own tenant's apps and the
     // rest as a count, never another tenant's id. Read only when there is something to say: on
     // the refusal, and before an acknowledged promotion moves the channel it is measured from.
+    // The whole answer is kept beside the narrowed listing, so the refusal's sentence counts the
+    // same breaks the listing lists (in counts, which name no tenant) — the host's own sentence
+    // counts only the gate's half of them.
+    let counted: ExportBreak[] = [];
     const breaksOf = async () => {
       const breaks = await promoteImpactOf(c.get('actor'), slug, channel, versionId);
+      counted = breaks;
       if (breaks.length === 0) return null;
       const { visible, otherTenants } = narrowToCaller(breaks, confinedTenant(p));
       return { affected: visible, ...(otherTenants ? { otherTenants } : {}) };
@@ -5236,7 +5242,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           exportBreaksUnavailable: `which apps it breaks could not be read: ${e instanceof Error ? e.message : String(e)}`,
         }),
       );
-      return c.json({ error: err.message, ...listing }, 409);
+      return c.json({ error: listing.exportBreaks ? exportBreakRefusal(counted) : err.message, ...listing }, 409);
     }
     // The in-place serve (#286), prod only, AFTER every promote gate has passed —
     // uploading first would deploy to live scopes before the acknowledgement check.
