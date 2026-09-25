@@ -855,6 +855,10 @@ export function verticalEventsContractSuite(
       );
       expect(aside.replays.filter((r) => r.kind === 'delivery')).toHaveLength(2);
       expect(new Set(aside.replays.map((r) => r.replay_id))).toEqual(new Set([moved.replayId]));
+      // ...and it has left the LIVE journal, so the redelivery journals each event afresh: an event
+      // first withheld for its version is decided again rather than kept as withheld forever.
+      expect(aside.imports).toEqual([]);
+      expect(aside.deliveries).toEqual([]);
       // The admin log names the act, its reason and what it moved.
       const log = await fx.consumer.admin.auditLog(staff, { tenantId: t, action: ['moveImportCursor'] });
       expect(log.map((e) => (e.after as { phase?: string }).phase).sort()).toEqual(['applied', 'intent']);
