@@ -1,5 +1,18 @@
 # @substrat-run/connector-fortnox
 
+## 0.4.23
+
+### Patch Changes
+
+- a3216e6: Document why no connector records `Connection.expiresAt`: Scrive (OAuth1 personal access credentials), Fortnox (`client_credentials`, 1h access tokens) and Planima (a static token) have no refresh credential with a horizon, so "not reported" is the true answer. Comments and tests only; no behaviour change.
+- Updated dependencies [a235648]
+- Updated dependencies [6fc9950]
+- Updated dependencies [48fea30]
+- Updated dependencies [a6f4db1]
+- Updated dependencies [45b927e]
+  - @substrat-run/contracts@0.121.0
+  - @substrat-run/kernel@0.121.0
+
 ## 0.4.22
 
 ### Patch Changes

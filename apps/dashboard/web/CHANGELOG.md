@@ -1,5 +1,44 @@
 # @substrat-run/dashboard-web
 
+## 0.14.0
+
+### Minor Changes
+
+- a420a3f: An app's Overview now opens with a "Traffic by status" chart: successful requests in a neutral grey, refused (4xx) in amber and failed (5xx) in red, with a table of requests, errors and latency by surface underneath. Drag across the chart to zoom into a window, which re-reads it in finer bars, or click a bar to pin it and open the logs for exactly that window. Every time chart now marks pushes, go-lives, migrations, failed runs, recorded failures and stale spans the same way, and the overlay chips above a chart hide or show a kind on all of them at once.
+- fcfbbc3: The Apps page now opens on a health table. It lists every app, worst first, with its health verdict, the reason behind it, and its requests, error rate and p95 over the last 24 hours. Chips above the table filter by verdict and show how many apps have each one. Apps that are still installing, or whose install failed, show that state instead of a health verdict, and a failed install can be retried from its row. The card grid is still available from the view toggle. Observability → Pulse → Health shows the same table.
+
+  The control plane's tenant metrics read accepts `grain=scope`, which returns one row per app. A p95 cannot be combined from per-surface p95s, so the per-app figure is grouped where it is read.
+
+  The table loads every app before ordering them, not just the first page. When a team has more apps with traffic than the read covers (the busiest 200), an app past that shows "—" with the reason, never 0. `TENANT_METRICS_LIMIT` exports that cap. `grain=scope` groups by the app alone, so an app moved to another vertical during the window still gets one p95.
+
+- f9b7ea4: A record's history in the Data tab is now an Event history table: one row per event, newest first, with its time, type, actor, operation and a link to the request's log lines. Selecting an event opens it in place to show why it happened, what it set off and how each delivery stands, what else the same request recorded, and which permission or grant allowed it — with a clear warning line when a support engineer acted as someone else. Where the previous event carried the same field, its old value is shown struck through beside the new one.
+- 9a82529: An app's Deployments tab now opens with a release comparison: the version the app runs beside the one it could move to, with permission and schema changes tagged added, changed or removed, and the Update button in the same card. A Releases list shows when each version was pushed and when it went live as two separate columns, names who moved prod, counts the installs on each version, and says so when a go-live was rolled back. Schema history shows each migration with columns for rows and duration, which read "—" until the platform records them.
+- 2cbdfcf: Processes › Flow now draws an app as six columns, left to right: triggers, modules, events, consumers, connections and outbound hosts. Each node shows its health as a coloured edge and a mark (✓ healthy, ▲ degraded, ● failing, dashed for declared but unused), and clicking one highlights everything that feeds it and everything it feeds. Dead letters, operation health, connection usage and declared-vs-observed findings sit beside the map, and each row links to the event explorer or the app's integrations.
+- 29cf8f4: Logs in Observability is now one stream card with two modes, Lines and Events, chosen by tabs along its top. Events groups an app's emitted events by event type, operation, actor, version, entity type, PII class or a payload field, with a bar per group and when each group last fired. Clicking an event type narrows the view to that type, grouped by the operation that emitted it. Existing links to the logs and events views still open the same mode.
+- 499debf: Observability's Schedules view now draws each schedule's runs as ticks at their real times on the page's time axis, with failed runs in red and a verdict in plain words: Healthy, Late, Never run, Sweeper silent, Fresh or Stale. A late schedule or a stale freshness rule is shaded from the moment it went wrong. An app's Overview gains a Schedules and freshness card that shows each schedule's recent runs as a strip and each freshness rule as a sentence, for example "No receipt.landed for 26h and counting". The card links to the full view.
+- 165b886: Observability now has three entries in the left menu: Pulse (traffic, health, schedules), Processes (the flow map) and Logs (log lines and events). Each opens with its own heading, and the sub-view switch offers only that entry's views. Opening Logs or Processes with All apps selected asks you to pick an app instead of sending you back to the traffic chart. Switching between the three keeps the selected app and time window. Existing Observability links still open the same view. The sidebar uses the card surface, and the ⌘K field is wider.
+
+### Patch Changes
+
+- 45b927e: Promoting a version now shows the migrations it would run, each with its SQL.
+
+  `substrat push` carries every module's SQL migrations in the deploy manifest: the module, the migration's version and its SQL, in the order the host runs them. That includes the index migrations nobody writes by hand, which a module's `searchables` and `lists` declare. The kernel's new `moduleMigrations` is the one list of them in order: both hosts apply exactly it, and the push reads it from the vertical's own kernel. A vertical whose kernel predates it, and whose modules declare searchables or lists, carries no SQL rather than a short list. It is a new optional `migrations` field, so earlier CLIs and stored versions keep working. A version pushed before this field existed has no SQL to show. A set too large to carry is left out with a warning, and the push still goes through: over 2000 migrations, over 512 KiB of SQL, or a manifest that carrying them would take past 1.5 MiB. That last bound is the one that matters, because the platform stores each manifest in a single database row with a limit of about 2 MB, and JSON escaping can make SQL much larger than its own size.
+
+  A new owner-only read, `GET /verticals/:slug/versions/:id/migrations?base=<versionId>`, returns the migrations a version adds on top of another, bounded in count and size. It also lists apart any shipped migration whose SQL was edited, since a scope that already ran it will not run it again. Only the vertical's own team can read it, because migration SQL describes a schema.
+
+  In the dashboard's promote dialog, the schema section lists each new migration by id, with its SQL collapsed underneath. For a version that carries no SQL (pushed by an older CLI, or over the size a manifest carries), it says "SQL not available for this version" and asks for the acknowledgement, whether or not the registry refuses. `substrat promote` prints the permission diff and the new migrations' SQL when the registry refuses, so `--ack-permissions` and `--ack-migrations` answer something you have read. The permission diff is the dashboard's own, now in `@substrat-run/contracts`, and a change it does not itemise (an export or import, which module declares a key) is named rather than printed as no change.
+
+  A change to SQL migrations alone does not yet move the migration digest the registry compares, so the registry does not require an acknowledgement for it. The dashboard asks anyway, and says that it is the one asking.
+
+  Listing a vertical's versions no longer reads each version's whole manifest, only the two fields a version record shows, so a vertical with a long migration history lists as fast as before.
+
+- Updated dependencies [a235648]
+- Updated dependencies [6fc9950]
+- Updated dependencies [48fea30]
+- Updated dependencies [45b927e]
+  - @substrat-run/contracts@0.121.0
+  - @substrat-run/model-view@0.2.22
+
 ## 0.13.0
 
 ### Minor Changes

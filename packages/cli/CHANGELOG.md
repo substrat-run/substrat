@@ -1,5 +1,40 @@
 # @substrat-run/cli
 
+## 0.35.0
+
+### Minor Changes
+
+- 6fc9950: Cross-vertical events gain a replay lever, an edge-health view, a payload-schema rule in CI, and a promote refusal (#1705).
+
+  **The replay lever.** `HostAdmin.moveImportCursor(actor, tenantId, scopeId, move)` moves a consumer's watermark on the edge from one producer vertical. `mode: 'replay'` re-delivers after a point (`after: null` is the whole history). It needs `acknowledge: 'rerun-handlers'`, because every importing handler runs again, and anything they send or call outside the app happens again (`REPLAY_EFFECT`). `mode: 'skip'` passes events over up to a point (`through: 'now'`). It needs `acknowledge: 'skip-events'`, and a later replay can reach back to what it skipped. A replay moves the replayed range's delivery and journal rows into the new spine table `_substrat_import_replays`, under the act's `replayId`, rather than deleting them. The producer is resolved from the directory in the consumer's tenant, never taken from the caller. `@substrat-run/control-plane-api` serves it as `POST /tenants/:t/scopes/:s/import-cursor` to staff and to the tenant's own credential, and refuses a missing acknowledgement in those words. `@substrat-run/vertical-host` adds `POST /internal/import-cursor` (optional `importCursorLocal`, 501 when absent), and `VerticalClient.importCursorMove` reaches it. On the control plane, `CloudflareScopeHostOptions.importCursorDelegation` routes the move to the deployment serving the scope.
+
+  **Edge health.** `crossVerticalHealth(host, { actor, tenantId, crossVertical })` reads every edge of one tenant live, through the sweep's own reach: `caught-up`, `behind` (with the oldest waiting event's lag), `paused` (by the producer's grant or the consumer's door), `unresolved`, or `unavailable` when a side could not be asked. `unavailable` never renders as healthy. Each edge carries its last delivering sweep pass and the last one that did not deliver. `GET /tenants/:t/cross-vertical/edges` serves it. The dashboard shows it per app, and the console per scope, both with the lever behind a ticked acknowledgement.
+
+  **D-22 for exported events.** `exportedEventSchemasOf(operations, eventsExportedBy(…))` derives each exported type's payload as JSON Schema, and `emitModel(…, { exports })` carries it in `model.json` (omitted when empty, so no existing model changes). `pnpm lint:export-schemas --base <ref>` compares it with the merge-base. At an unchanged schemaVersion it refuses a removed, retyped, newly required or no-longer-required field, and a schemaVersion that went down. A base the checkout lacks is exit 2, never read as a new file. CI runs it on every PR and push.
+
+  **The promote refusal.** `promoteVersion` refuses a version that drops or re-versions an exported (type, schemaVersion) the outgoing version promised and a running consumer imports, unless acknowledged with `exportBreak` (`substrat promote --ack-export-break`). The refusal counts the break and names no tenant. `HostAdmin.promotionImpact` lists the affected apps, and the promote route returns that list with a 409: a confined caller sees its own tenant's apps and a count of the rest. `@substrat-run/contracts` adds `exportsOfManifestJson` and `exportBreak`.
+
+- 45b927e: Promoting a version now shows the migrations it would run, each with its SQL.
+
+  `substrat push` carries every module's SQL migrations in the deploy manifest: the module, the migration's version and its SQL, in the order the host runs them. That includes the index migrations nobody writes by hand, which a module's `searchables` and `lists` declare. The kernel's new `moduleMigrations` is the one list of them in order: both hosts apply exactly it, and the push reads it from the vertical's own kernel. A vertical whose kernel predates it, and whose modules declare searchables or lists, carries no SQL rather than a short list. It is a new optional `migrations` field, so earlier CLIs and stored versions keep working. A version pushed before this field existed has no SQL to show. A set too large to carry is left out with a warning, and the push still goes through: over 2000 migrations, over 512 KiB of SQL, or a manifest that carrying them would take past 1.5 MiB. That last bound is the one that matters, because the platform stores each manifest in a single database row with a limit of about 2 MB, and JSON escaping can make SQL much larger than its own size.
+
+  A new owner-only read, `GET /verticals/:slug/versions/:id/migrations?base=<versionId>`, returns the migrations a version adds on top of another, bounded in count and size. It also lists apart any shipped migration whose SQL was edited, since a scope that already ran it will not run it again. Only the vertical's own team can read it, because migration SQL describes a schema.
+
+  In the dashboard's promote dialog, the schema section lists each new migration by id, with its SQL collapsed underneath. For a version that carries no SQL (pushed by an older CLI, or over the size a manifest carries), it says "SQL not available for this version" and asks for the acknowledgement, whether or not the registry refuses. `substrat promote` prints the permission diff and the new migrations' SQL when the registry refuses, so `--ack-permissions` and `--ack-migrations` answer something you have read. The permission diff is the dashboard's own, now in `@substrat-run/contracts`, and a change it does not itemise (an export or import, which module declares a key) is named rather than printed as no change.
+
+  A change to SQL migrations alone does not yet move the migration digest the registry compares, so the registry does not require an acknowledgement for it. The dashboard asks anyway, and says that it is the one asking.
+
+  Listing a vertical's versions no longer reads each version's whole manifest, only the two fields a version record shows, so a vertical with a long migration history lists as fast as before.
+
+### Patch Changes
+
+- Updated dependencies [a235648]
+- Updated dependencies [6fc9950]
+- Updated dependencies [48fea30]
+- Updated dependencies [45b927e]
+  - @substrat-run/contracts@0.121.0
+  - @substrat-run/model-view@0.2.22
+
 ## 0.34.1
 
 ### Patch Changes
