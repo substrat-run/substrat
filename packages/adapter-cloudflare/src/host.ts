@@ -574,7 +574,7 @@ interface ControlPlaneStub {
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string): Promise<void>;
-  markScopeProvisioned(scopeId: string, versionId: string): Promise<void>;
+  markScopeProvisioned(scopeId: string, versionId: string | null): Promise<void>;
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
@@ -5034,7 +5034,7 @@ export class CloudflareScopeHost implements ScopeHost {
        * reconciled against rather than whatever the scope happens to be bound to by the
        * time the write lands.
        */
-      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string) => {
+      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string | null) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         await this.cp.markScopeProvisioned(scopeId, versionId);

@@ -1970,12 +1970,16 @@ export interface HostAdmin {
    * Written only after a provision or reconcile SUCCEEDS. Marking optimistically would
    * silence the sweep for a repair that failed, which is the one case that must keep
    * being retried.
+   *
+   * `null` clears it back to "unknown", which the sweep reconciles on its next pass. That
+   * is for something that undid what a provision did — a PITR rewind (#1674) takes the
+   * scope's grants and its schedule switch back to the bookmark.
    */
   markScopeProvisioned(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    versionId: string,
+    versionId: string | null,
   ): Promise<void>;
 
   // -- the stable serving script (#286) ---------------------------------------

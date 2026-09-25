@@ -2517,7 +2517,7 @@ export class ControlPlaneDO extends DurableObject {
    * the field is that it is a receipt. Marked optimistically it would silence the sweep
    * for a repair that failed, which is the one outcome that must keep being retried.
    */
-  markScopeProvisioned(scopeId: string, versionId: string): void {
+  markScopeProvisioned(scopeId: string, versionId: string | null): void {
     this.sql.exec(
       'UPDATE scopes SET provisioned_version_id = ? WHERE scope_id = ?',
       versionId, scopeId,

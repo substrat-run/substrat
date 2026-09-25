@@ -7094,7 +7094,7 @@ export class SqliteScopeHost implements ScopeHost {
        * Record that this scope's provision has now run against `versionId` (#1172).
        * Written only after a provision or reconcile succeeded — a receipt, never a hope.
        */
-      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string) => {
+      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string | null) => {
         const scope = this.directory
           .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
           .get(scopeId) as { tenant_id: string } | undefined;
