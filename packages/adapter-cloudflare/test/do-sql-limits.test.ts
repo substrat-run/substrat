@@ -83,6 +83,17 @@ describe('the SQL limits of a Durable Object, measured (#1741)', () => {
     expect(found.refusal).toBe(`too many SQL variables at offset ${offset}: SQLITE_ERROR`);
   });
 
+  it('the way round the limit: one JSON array through json_each carries any number of values', async () => {
+    const ids = Array.from({ length: DO_SQL_LIMITS.boundParameters * 5 }, (_, i) => `id-${i}`);
+    const count = await run(
+      (sql) =>
+        sql
+          .exec(`SELECT COUNT(*) AS n FROM (SELECT 'id-3' AS id UNION ALL SELECT 'id-499' UNION ALL SELECT 'other') WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids))
+          .one().n,
+    );
+    expect(count).toBe(2);
+  });
+
   it('a numbered parameter past the limit', async () => {
     const outcome = await run((sql) =>
       attempt(sql, (n) => ({ sql: `SELECT ?${n}`, params: Array(n).fill(1) }), DO_SQL_LIMITS.boundParameters + 1),

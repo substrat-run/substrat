@@ -223,9 +223,11 @@ const operations = {
     const hits = ctx.search('item', input.q, { limit: fetch });
     if (hits.length === 0) return { results: [], limit, capped: false };
 
+    // The hits go in as ONE bound JSON array, not one `?` each: a hit list is as long as the
+    // kernel's ceiling (100) and a Durable Object allows 100 bound parameters in all (#1741).
     const rows = ctx.sql.query<ItemRow>(
-      `SELECT * FROM todo_items WHERE list_id = ? AND id IN (${hits.map(() => '?').join(', ')})`,
-      [input.listId, ...hits.map((h) => h.id)],
+      `SELECT * FROM todo_items WHERE list_id = ? AND id IN (SELECT value FROM json_each(?))`,
+      [input.listId, JSON.stringify(hits.map((h) => h.id))],
     );
     // `IN (…)` returns rows in whatever order the table hands them back, so the
     // rank has to be put back deliberately: a search that lists the best match
@@ -259,8 +261,8 @@ const operations = {
     if (hits.length === 0) return { results: [], limit, capped: false };
 
     const rows = ctx.sql.query<ItemRow>(
-      `SELECT * FROM todo_items WHERE id IN (${hits.map(() => '?').join(', ')})`,
-      hits.map((h) => h.id),
+      `SELECT * FROM todo_items WHERE id IN (SELECT value FROM json_each(?))`,
+      [JSON.stringify(hits.map((h) => h.id))],
     );
     const byId = new Map(rows.map((row) => [row.id, row]));
     const reachable = new Map<string, boolean>();
