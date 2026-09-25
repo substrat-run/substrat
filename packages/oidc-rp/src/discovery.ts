@@ -143,7 +143,8 @@ export function discoverIssuer(issuer: string): Promise<Discovery> {
       const d = (await r.json()) as Discovery;
       // OIDC Discovery §4.3: the `issuer` the document states MUST be the one it was fetched
       // for. The ID token is checked against `d.issuer` and its keys come from `d.jwks_uri`, so
-      // without this the document vouches for itself. Fail closed, and (below) do not cache it.
+      // without this the document vouches for itself. Fail closed: the refusal is not kept as a
+      // success, only remembered for the short failure window (`DISCOVERY_FAILURE_TTL_MS`, below).
       if (typeof d.issuer !== 'string' || issuerKey(d.issuer) !== key) {
         throw new Error(`OIDC discovery at ${url} names a different issuer`);
       }
