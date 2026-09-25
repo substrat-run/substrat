@@ -34,6 +34,9 @@ export type RegisterOidcClientFn = (
   input: { appName: string; redirectUri: string },
 ) => Promise<RegisteredClient>;
 
+/** How long a whole client registration may take — the auth-server's own discovery bound. */
+export const REGISTRATION_TIMEOUT_MS = 10_000;
+
 /**
  * Register a relying party at `issuer` via dynamic client registration. The endpoint
  * comes from the issuer's own discovery document (`registration_endpoint`), with the
@@ -51,8 +54,12 @@ export async function registerOidcClient(
   issuer: string,
   input: { appName: string; redirectUri: string },
   fetchImpl: typeof globalThis.fetch = globalThis.fetch.bind(globalThis),
+  timeoutMs = REGISTRATION_TIMEOUT_MS,
 ): Promise<RegisteredClient> {
-  const discovery = await readDiscovery(issuer, { fetch: fetchImpl });
+  // One bound for the whole registration — every discovery hop and the POST — so an issuer
+  // that accepts the connection and never answers fails the install instead of holding it.
+  const signal = AbortSignal.timeout(timeoutMs);
+  const discovery = await readDiscovery(issuer, { fetch: fetchImpl, signal });
   const named = discovery.registration_endpoint;
   if (named !== undefined && typeof named !== 'string') {
     throw new Error(`client registration at ${issuer}: the discovery document's registration_endpoint is not a URL`);
@@ -66,6 +73,7 @@ export async function registerOidcClient(
     method: 'POST',
     // A 30x is a failure, not a place to send the request (and take the secret from) instead.
     redirect: 'manual',
+    signal,
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       client_name: input.appName,

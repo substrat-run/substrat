@@ -159,6 +159,37 @@ describe('registerOidcClient', () => {
     expect(f.posts).toEqual([{ url: REGISTER, redirect: 'manual' }]);
   });
 
+  it('bounds the whole registration: an issuer that never answers fails within the timeout', async () => {
+    // Hangs until aborted, like a connection that is accepted and never answered.
+    const hangAt = (hangOn: 'discovery' | 'post') => {
+      const signals: Array<AbortSignal | undefined> = [];
+      const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+        const url = String(input);
+        signals.push(init?.signal ?? undefined);
+        const isDiscovery = url.endsWith('/.well-known/openid-configuration');
+        if (isDiscovery && hangOn === 'post') return Response.json(DOC);
+        return await new Promise<Response>((_, reject) => {
+          if (!init?.signal) return; // no bound: hang forever, and the race below says so
+          init.signal.addEventListener('abort', () => reject(init.signal!.reason));
+        });
+      }) as unknown as typeof fetch;
+      return { fetchImpl, signals };
+    };
+    for (const stage of ['discovery', 'post'] as const) {
+      const { fetchImpl, signals } = hangAt(stage);
+      const outcome = await Promise.race([
+        registerOidcClient(ISSUER, { appName: 'X', redirectUri: 'https://x/cb' }, fetchImpl, 50).then(
+          () => 'resolved',
+          (e: unknown) => `rejected: ${e instanceof Error ? e.name : String(e)}`,
+        ),
+        new Promise<string>((r) => setTimeout(() => r('still hanging'), 2_000)),
+      ]);
+      expect(outcome, stage).toBe('rejected: TimeoutError');
+      // Every request carried the one bound.
+      expect(signals.every((s) => s instanceof AbortSignal), stage).toBe(true);
+    }
+  });
+
   it('refuses a plaintext issuer before anything is fetched', async () => {
     const f = issuerFetch();
     await expect(register(f.fetchImpl, 'http://auth-acme.global.substrat.test')).rejects.toThrow(/not https/);
