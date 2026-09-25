@@ -326,7 +326,7 @@ describe('the status read route (#1674)', () => {
 
     const initial = await get(route(s), asStaff);
     expect(initial.status).toBe(200);
-    expect(await initial.json()).toEqual([{ moduleId: TICK, schedules: 'on', switchedOff: null }]);
+    expect(await initial.json()).toEqual([{ moduleId: TICK, schedules: 'on', switchedOff: null, recorded: null }]);
     expect(await runnerState()).toBe('on');
 
     const before = new Date().toISOString();
@@ -335,14 +335,19 @@ describe('the status read route (#1674)', () => {
     expect(offRead.status).toBe(200);
     const offEntries = (await offRead.json()) as { moduleId: string; schedules: string; switchedOff: { actor: string; reason: string; at: string } | null }[];
     expect(offEntries).toEqual([
-      { moduleId: TICK, schedules: 'off', switchedOff: { actor: staff, reason: 'incident: runaway tick', at: expect.any(String) } },
+      {
+        moduleId: TICK,
+        schedules: 'off',
+        switchedOff: { actor: staff, reason: 'incident: runaway tick', at: expect.any(String) },
+        recorded: 'off',
+      },
     ]);
     expect(offEntries[0]!.switchedOff!.at >= before).toBe(true);
     expect(await runnerState()).toBe('off');
 
     await on(s);
     const onRead = await get(route(s), asStaff);
-    expect(await onRead.json()).toEqual([{ moduleId: TICK, schedules: 'on', switchedOff: null }]);
+    expect(await onRead.json()).toEqual([{ moduleId: TICK, schedules: 'on', switchedOff: null, recorded: 'on' }]);
     expect(await runnerState()).toBe('on');
   });
 
@@ -362,5 +367,148 @@ describe('the status read route (#1674)', () => {
     const s = await newScope();
     const foreign = await get(route(s, tenantId.parse(ulid())), asStaff);
     expect(foreign.status).toBe(404);
+  });
+});
+
+/**
+ * The fleet read (#1674): `GET /system-switches` — every scope with a module switched off,
+ * from the directory's record, with no walk of every scope's store. Staff and the service
+ * token only: a tenant credential and a builder are each refused, each beside a staff read
+ * of the same route that succeeds.
+ */
+describe('the fleet read route (#1674)', () => {
+  const TENANT_SECRET = 'test-tenant-token-secret';
+  const PUSH_SECRET = 'test-push-token-secret';
+  const t = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const serviceActor = platformActorId.parse('01JZ00000000000000000000SF');
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  let asTenant: Record<string, string>;
+  let asBuilder: Record<string, string>;
+  let dir: string;
+  let host: SqliteScopeHost;
+  let app: ReturnType<typeof createControlPlaneApi>;
+
+  const switchRoute = (s: string) => `/tenants/${t}/scopes/${s}/system-grants`;
+  const off = (s: string) =>
+    app.request(switchRoute(s), { method: 'DELETE', headers: asStaff, body: JSON.stringify({ moduleId: TICK, reason: 'incident' }) });
+  const on = (s: string) =>
+    app.request(switchRoute(s), { method: 'POST', headers: asStaff, body: JSON.stringify({ moduleId: TICK, reason: 'resolved' }) });
+  const fleet = async (query: string, headers: Record<string, string> = asStaff) =>
+    app.request(`/system-switches?${query}`, { method: 'GET', headers });
+  type Entry = { scopeId: string; position: string; operationId: string; vertical: string | null };
+  const page = async (query: string) => {
+    const res = await fleet(query);
+    expect(res.status).toBe(200);
+    return (await res.json()) as { entries: Entry[]; nextCursor: string | null };
+  };
+
+  const newScope = async () => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'tick-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    return s;
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-schedule-switch-fleet-'));
+    host = new SqliteScopeHost({ dir });
+    host.registerModule(tickModule);
+    app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      authenticateTenantService: tenantTokenAuth(TENANT_SECRET, serviceActor),
+      authenticateBuilder: firstBuilderAuth(pushTokenBuilderAuth(PUSH_SECRET)),
+      tenantTokenSecret: TENANT_SECRET,
+      pushTokenSecret: PUSH_SECRET,
+    });
+    await host.admin.createTenant(staff, { id: t, slug: 'acme-fleet', name: 'Acme' });
+    await host.admin.grantEntitlement(staff, t, 'tick');
+    const minted = await app.request('/tenant-tokens', {
+      method: 'POST',
+      headers: asStaff,
+      body: JSON.stringify({ tenantId: t }),
+    });
+    expect(minted.status).toBe(201);
+    asTenant = { [SERVICE_TOKEN_HEADER]: ((await minted.json()) as { token: string }).token, 'content-type': 'application/json' };
+    const push = await mintPushToken(PUSH_SECRET, { actor: await pushActorFor(t), tenantId: t, tenantSlug: 'acme-fleet' });
+    asBuilder = { [SERVICE_TOKEN_HEADER]: push, 'content-type': 'application/json' };
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('lists what is switched off by default, drops a restored scope from it, and `position=all` shows both', async () => {
+    const a = await newScope();
+    const b = await newScope();
+    await off(a);
+    await off(b);
+    await on(b);
+    const offOnly = await page(`tenantId=${t}`);
+    expect(offOnly.entries.map((e) => [e.scopeId, e.position])).toEqual([[a, 'off']]);
+    expect(offOnly.entries[0]).toMatchObject({ vertical: 'tick-vertical', moduleId: TICK, reason: 'incident', actor: staff });
+    const all = await page(`tenantId=${t}&position=all`);
+    expect(all.entries.map((e) => e.scopeId).sort()).toEqual([a, b].sort());
+    expect((await page(`tenantId=${t}&position=on`)).entries.map((e) => e.scopeId)).toEqual([b]);
+    expect((await page(`scopeId=${b}`)).entries).toEqual([]);
+    expect((await page(`vertical=other-vertical&tenantId=${t}`)).entries).toEqual([]);
+  });
+
+  it('pages by operation id, and the last page says so', async () => {
+    const tenantScopes = await page(`tenantId=${t}&position=all&limit=200`);
+    const already = tenantScopes.entries.length;
+    for (let i = 0; i < 3; i++) await off(await newScope());
+    const walked: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const next: { entries: Entry[]; nextCursor: string | null } = await page(
+        `tenantId=${t}&position=all&limit=2${cursor ? `&cursor=${cursor}` : ''}`,
+      );
+      walked.push(...next.entries.map((e) => e.operationId));
+      cursor = next.nextCursor;
+      pages++;
+    } while (cursor !== null && pages < 10);
+    expect(walked).toHaveLength(already + 3);
+    expect(new Set(walked).size).toBe(walked.length);
+    expect([...walked].sort()).toEqual(walked);
+  });
+
+  it("REFUSES a tenant's credential — even naming its own tenant — with staff reading the same route as the positive twin", async () => {
+    const s = await newScope();
+    await off(s);
+    expect((await fleet(`tenantId=${t}`, asTenant)).status).toBe(403);
+    expect((await fleet('', asTenant)).status).toBe(403);
+    const twin = await fleet(`tenantId=${t}`, asStaff);
+    expect(twin.status).toBe(200);
+    expect(((await twin.json()) as { entries: Entry[] }).entries.map((e) => e.scopeId)).toContain(s);
+  });
+
+  it('REFUSES a builder, with staff reading the same route as the positive twin', async () => {
+    const s = await newScope();
+    await off(s);
+    expect((await fleet(`tenantId=${t}`, asBuilder)).status).toBe(403);
+    expect((await fleet(`tenantId=${t}`, asStaff)).status).toBe(200);
+  });
+
+  it('a restore of a backup from before the switch is put back off by the directory record, in the same request', async () => {
+    const s = await newScope();
+    const before = await host.admin.exportScope(staff, t, scopeId.parse(s));
+    await off(s);
+    const restored = await app.request(`/tenants/${t}/scopes/${s}/restore`, {
+      method: 'POST',
+      headers: asStaff,
+      body: JSON.stringify(before),
+    });
+    expect(restored.status).toBe(200);
+    const r = await host.runDueSchedules(TICK, t, scopeId.parse(s));
+    expect(r).toMatchObject({ fired: 0, switchedOff: true });
+    const status = await app.request(switchRoute(s), { method: 'GET', headers: asStaff });
+    expect(((await status.json()) as { schedules: string; recorded: string }[])[0]).toMatchObject({
+      schedules: 'off',
+      recorded: 'off',
+    });
   });
 });

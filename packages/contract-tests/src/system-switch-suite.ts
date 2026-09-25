@@ -285,13 +285,18 @@ export function systemSwitchContractSuite(
      */
     it('the status read agrees with the runner through on, off, and on again — and names who, when, why while off', async () => {
       const s = await newScope();
-      expect(await status(s)).toEqual([{ moduleId: SCHED, schedules: 'on', switchedOff: null }]);
+      expect(await status(s)).toEqual([{ moduleId: SCHED, schedules: 'on', switchedOff: null, recorded: null }]);
       expect((await host.runDueSchedules(SCHED, t, s)).switchedOff).toBeUndefined();
 
       const before = new Date().toISOString();
       await off(s);
       expect(await status(s)).toEqual([
-        { moduleId: SCHED, schedules: 'off', switchedOff: { actor: staff, reason, at: expect.any(String) } },
+        {
+          moduleId: SCHED,
+          schedules: 'off',
+          switchedOff: { actor: staff, reason, at: expect.any(String) },
+          recorded: 'off',
+        },
       ]);
       const entries = await status(s);
       expect(entries[0]!.switchedOff!.at >= before).toBe(true);
@@ -307,7 +312,7 @@ export function systemSwitchContractSuite(
       expect((await status(s))[0]!.switchedOff).toMatchObject({ actor: staff, reason: 'still investigating' });
 
       await on(s);
-      expect(await status(s)).toEqual([{ moduleId: SCHED, schedules: 'on', switchedOff: null }]);
+      expect(await status(s)).toEqual([{ moduleId: SCHED, schedules: 'on', switchedOff: null, recorded: 'on' }]);
       expect((await host.runDueSchedules(SCHED, t, s)).switchedOff).toBeUndefined();
     });
 
@@ -315,11 +320,11 @@ export function systemSwitchContractSuite(
       const s = await newScope();
       // JOBS declares no schedules, so provisioning seats it nothing — it holds no grant
       // and no marker, and the enumeration (unlike `ungranted`) reports nothing for it.
-      expect(await status(s)).toEqual([{ moduleId: SCHED, schedules: 'on', switchedOff: null }]);
+      expect(await status(s)).toEqual([{ moduleId: SCHED, schedules: 'on', switchedOff: null, recorded: null }]);
 
       await grant(s, 'jobs:write', JOBS);
       expect(await status(s)).toEqual(
-        expect.arrayContaining([{ moduleId: JOBS, schedules: 'on', switchedOff: null }]),
+        expect.arrayContaining([{ moduleId: JOBS, schedules: 'on', switchedOff: null, recorded: null }]),
       );
 
       await off(s, JOBS);
@@ -328,9 +333,135 @@ export function systemSwitchContractSuite(
         moduleId: JOBS,
         schedules: 'off',
         switchedOff: { actor: staff, reason, at: expect.any(String) },
+        recorded: 'off',
       });
       // The other module is untouched by JOBS's switch.
-      expect(entries.find((e) => e.moduleId === SCHED)).toEqual({ moduleId: SCHED, schedules: 'on', switchedOff: null });
+      expect(entries.find((e) => e.moduleId === SCHED)).toEqual({
+        moduleId: SCHED,
+        schedules: 'on',
+        switchedOff: null,
+        recorded: null,
+      });
+    });
+
+    // -- the directory's record (#1674) --------------------------------------------------
+
+    const records = (s: ScopeId) => host.admin.listSystemSwitches(staff, { tenantId: t, scopeId: s });
+    /** The scope's storage, gone: an empty restore re-asserts the bare spine (#321). */
+    const wipe = (s: ScopeId) =>
+      host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+    const reassert = (s: ScopeId) => host.admin.reassertSystemSwitches(staff, { tenantId: t, scopeId: s });
+
+    it('the record follows every move — off, on, off — and agrees with the per-scope read each time', async () => {
+      const s = await newScope();
+      expect(await records(s)).toEqual([]);
+
+      const first = await off(s);
+      expect(await records(s)).toEqual([
+        {
+          tenantId: t,
+          scopeId: s,
+          moduleId: SCHED,
+          vertical: null,
+          position: 'off',
+          actor: staff,
+          reason,
+          operationId: first.operationId,
+          at: expect.any(String),
+        },
+      ]);
+      expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
+
+      const back = await on(s);
+      expect(await records(s)).toEqual([
+        expect.objectContaining({ position: 'on', reason: 'resolved', operationId: back.operationId }),
+      ]);
+      expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['on', 'on']]);
+
+      const again = await off(s);
+      expect(await records(s)).toEqual([
+        expect.objectContaining({ position: 'off', reason, operationId: again.operationId }),
+      ]);
+      expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
+    });
+
+    it('the fleet read lists a switched-off scope, and drops it from `off` once restored', async () => {
+      const a = await newScope();
+      const b = await newScope();
+      await off(a);
+      await off(b);
+      await on(b);
+      const offHere = await host.admin.listSystemSwitches(staff, { tenantId: t, position: 'off' });
+      expect(offHere.map((r) => r.scopeId)).toContain(a);
+      expect(offHere.map((r) => r.scopeId)).not.toContain(b);
+      const onHere = await host.admin.listSystemSwitches(staff, { tenantId: t, position: 'on' });
+      expect(onHere.map((r) => r.scopeId)).toContain(b);
+    });
+
+    it('a refused switch records nothing — so no reconcile can switch off a module installed later', async () => {
+      const s = await newScope();
+      const stranger = moduleId.parse('@test/not-held');
+      await off(s, stranger).catch(() => undefined);
+      await on(s, stranger).catch(() => undefined);
+      expect(await records(s)).toEqual([]);
+      expect(await reassert(s)).toEqual([]);
+    });
+
+    it('a WIPED scope, re-provisioned, stays off: the seat recreates the grants, the record takes them back, ON returns them', async () => {
+      const s = await newScope();
+      await off(s);
+      await wipe(s);
+      // The storage no longer knows the switch was pulled; the directory still does.
+      expect(await status(s)).toEqual([
+        { moduleId: SCHED, schedules: 'ungranted', switchedOff: null, recorded: 'off' },
+      ]);
+
+      // The reconcile seats `sched:tick` live again (#1659: a missing tuple is created) —
+      // and re-asserts OFF after it, so the schedules stay off.
+      await provision(s);
+      expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
+      expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
+      const reasserted = await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: ['reassertSystemSwitch'] });
+      expect(reasserted.map((e) => e.after)).toEqual([
+        expect.objectContaining({ moduleId: SCHED, changed: true, permissions: ['sched:tick'] }),
+      ]);
+      // The explanation is still the operator's: the re-assert is its own action.
+      expect((await status(s))[0]!.switchedOff).toMatchObject({ actor: staff, reason });
+
+      // What OFF took from the freshly seated scope, ON gives back.
+      expect(await on(s)).toEqual({ ...moved('on', true), permissions: ['sched:tick'] });
+      expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: SCHEDULES, failed: 0 });
+    });
+
+    it('a restore of a dump from BEFORE the switch shows the drift, and the re-assert puts it back off', async () => {
+      const s = await newScope();
+      const before = await host.admin.exportScope(staff, t, s);
+      await off(s);
+      await host.restoreScope(staff, t, s, before);
+      // The dump carried the grant live and no marker: the scope says on, the record off.
+      expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['on', 'off']]);
+
+      expect(await reassert(s)).toEqual([{ moduleId: SCHED, held: true, changed: true }]);
+      expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
+      expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
+
+      // Idempotent: the marker is live, so a second pass moves and audits nothing more.
+      expect(await reassert(s)).toEqual([{ moduleId: SCHED, held: true, changed: false }]);
+      const rows = await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: ['reassertSystemSwitch'] });
+      expect(rows).toHaveLength(1);
+    });
+
+    it('a record never turns a module ON: a live marker beside a record of `on` stays off', async () => {
+      const s = await newScope();
+      await off(s);
+      const whileOff = await host.admin.exportScope(staff, t, s);
+      await on(s);
+      await host.restoreScope(staff, t, s, whileOff);
+      // The dump brought the marker back; the record says on. The marker wins.
+      expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'on']]);
+      expect(await reassert(s)).toEqual([]);
+      await provision(s);
+      expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
     });
   });
 }

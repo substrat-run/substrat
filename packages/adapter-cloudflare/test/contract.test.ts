@@ -473,7 +473,12 @@ describe('#1674 — the status read is delegated exactly like the switch, and jo
 
     const status = await host.admin.systemGrantsStatus(staff, { tenantId: t, scopeId: s });
     expect(status).toEqual([
-      { moduleId: SCHED, schedules: 'off', switchedOff: { actor: staff, reason: 'incident 99', at: expect.any(String) } },
+      {
+        moduleId: SCHED,
+        schedules: 'off',
+        switchedOff: { actor: staff, reason: 'incident 99', at: expect.any(String) },
+        recorded: 'off',
+      },
     ]);
     expect(statusCalls).toEqual([{ tenantId: t, scopeId: s }]);
     // The placeholder DO's own grant was never touched by the delegated write (#1666's own
@@ -483,7 +488,7 @@ describe('#1674 — the status read is delegated exactly like the switch, and jo
 
     await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'resolved' });
     expect(await host.admin.systemGrantsStatus(staff, { tenantId: t, scopeId: s })).toEqual([
-      { moduleId: SCHED, schedules: 'on', switchedOff: null },
+      { moduleId: SCHED, schedules: 'on', switchedOff: null, recorded: 'on' },
     ]);
   });
 
@@ -492,7 +497,12 @@ describe('#1674 — the status read is delegated exactly like the switch, and jo
     await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'local incident' });
     const status = await host.admin.systemGrantsStatus(staff, { tenantId: t, scopeId: s });
     expect(status).toEqual([
-      { moduleId: SCHED, schedules: 'off', switchedOff: { actor: staff, reason: 'local incident', at: expect.any(String) } },
+      {
+        moduleId: SCHED,
+        schedules: 'off',
+        switchedOff: { actor: staff, reason: 'local incident', at: expect.any(String) },
+        recorded: 'off',
+      },
     ]);
     expect(statusCalls).toEqual([]);
   });
@@ -525,6 +535,103 @@ describe('#1674 — the status read is delegated exactly like the switch, and jo
     );
     expect(errorCodeOf(refused)).toBe('unavailable');
     expect(String(refused)).toMatch(/no delegation configured for hosted scope/);
+  });
+});
+
+/**
+ * #1674 — the directory's record for a HOSTED scope. The record lives HERE, in the shared
+ * control plane's directory, while the switch lives in the deployment serving the scope;
+ * the re-assert reaches that switch over the SAME delegation `revokeFromSystem` does. The
+ * fake deployment models the one thing that matters: a store whose marker can be lost.
+ */
+describe('#1674 — a hosted scope is re-asserted through the delegation, after the deployment seats', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+  type Deployment = { position: 'on' | 'off' | 'wiped'; fail: boolean; switchCalls: string[] };
+
+  const setup = async () => {
+    const deployment: Deployment = { position: 'on', fail: false, switchCalls: [] };
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      systemSwitchDelegation: {
+        switch: async (a) => {
+          deployment.switchCalls.push(a.to);
+          if (deployment.fail) throw new Error('vertical unreachable during system-switch');
+          // A wiped store holds nothing for the module until its own provision seats it.
+          if (deployment.position === 'wiped') return { held: false, changed: false, permissions: [] };
+          const changed = deployment.position !== a.to;
+          deployment.position = a.to;
+          return { held: true, changed, permissions: changed ? [permissionKey.parse('sched:tick')] : [] };
+        },
+        status: async () =>
+          deployment.position === 'wiped' ? [] : [{ moduleId: SCHED, schedules: deployment.position }],
+      },
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `hosted-rec-${t.slice(-10).toLowerCase()}`, name: 'Hosted' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    const node = { tenantId: t, scopeId: s };
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'incident 7' });
+    deployment.switchCalls.length = 0;
+    return { host, t, s, node, deployment };
+  };
+
+  it('a wiped deployment store: drift shows, the reconcile reseats it on, and the re-assert switches it off THERE', async () => {
+    const { host, s, node, deployment } = await setup();
+    deployment.position = 'wiped';
+    expect(await host.admin.systemGrantsStatus(staff, node)).toEqual([
+      { moduleId: SCHED, schedules: 'ungranted', switchedOff: null, recorded: 'off' },
+    ]);
+    // The deployment's own reconcile seats the grant live (#1659) — the window this closes.
+    deployment.position = 'on';
+    expect(await host.admin.reassertSystemSwitches(staff, node)).toEqual([
+      { moduleId: SCHED, held: true, changed: true },
+    ]);
+    expect(deployment.switchCalls).toEqual(['off']);
+    expect(deployment.position).toBe('off');
+    const log = await host.admin.auditLog(staff, { scopeId: s, action: ['reassertSystemSwitch'] });
+    expect(log.map((e) => [e.vertical, (e.after as { moduleId: string }).moduleId])).toEqual([['sched-vertical', SCHED]]);
+    expect((await host.admin.systemGrantsStatus(staff, node))[0]).toMatchObject({
+      schedules: 'off',
+      recorded: 'off',
+      switchedOff: { reason: 'incident 7' },
+    });
+  });
+
+  it('a far end that cannot be reached fails the re-assert, so no caller records a receipt for a scope left on', async () => {
+    const { host, node, deployment } = await setup();
+    deployment.fail = true;
+    await expect(host.admin.reassertSystemSwitches(staff, node)).rejects.toThrow(/unreachable/);
+  });
+
+  it("the CP's own provisionScope never re-asserts a delegated scope — that would run before the deployment seats it", async () => {
+    const { host, t, s, deployment } = await setup();
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    expect(deployment.switchCalls).toEqual([]);
+  });
+
+  it('a restore through the record: ON updates it before the far end moves, and a failed ON puts it back', async () => {
+    const { host, node, deployment } = await setup();
+    deployment.fail = true;
+    await expect(
+      host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'fixed' }),
+    ).rejects.toThrow(/unreachable/);
+    // The far end did not move, so neither does the record: still off, still the incident.
+    expect(await host.admin.listSystemSwitches(staff, { scopeId: node.scopeId })).toEqual([
+      expect.objectContaining({ position: 'off', reason: 'incident 7', vertical: 'sched-vertical' }),
+    ]);
+    deployment.fail = false;
+    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'fixed' });
+    expect(await host.admin.listSystemSwitches(staff, { scopeId: node.scopeId })).toEqual([
+      expect.objectContaining({ position: 'on', reason: 'fixed' }),
+    ]);
+    expect(await host.admin.reassertSystemSwitches(staff, node)).toEqual([]);
   });
 });
 
