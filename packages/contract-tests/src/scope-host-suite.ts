@@ -1432,6 +1432,40 @@ export function scopeHostContractSuite(
       ).rejects.toThrow(/unknown scope/);
     });
 
+    it('stamps and reopens more events than a Durable Object binds parameters (#1776)', async () => {
+      // A DO's SQLite refuses the 101st bound parameter (#1741), and the drain batch is 200
+      // by default. A statement binding one `?` per event id therefore failed every default
+      // drain of a busy scope on the hosted host, while node, which allows far more, stayed
+      // green. Its own scope, so the counts below are this test's events and nothing else.
+      const sBig = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sBig, vertical: 'connector-vertical' });
+      await host.admin.activateScope(staff, t1, sBig);
+      const stub = await host.getScope(alice, t1, sBig);
+      await stub.invoke('test/emit-burst', { entityId: ulid(), count: 350 });
+
+      const pending = await host.admin.readUndrainedEvents(staff, t1, sBig, 1000);
+      expect(pending).toHaveLength(350);
+      const ids = pending.map((e) => e.id);
+      // 150: past the limit. Then 200, the default batch, overlapping the first so the
+      // count has to tell a stamped row from an unstamped one inside one oversized list.
+      await expect(host.admin.markEventsDrained(staff, t1, sBig, ids.slice(0, 150))).resolves.toBe(150);
+      await expect(host.admin.markEventsDrained(staff, t1, sBig, ids.slice(100, 350))).resolves.toBe(200);
+      await expect(host.admin.readUndrainedEvents(staff, t1, sBig, 1000)).resolves.toHaveLength(0);
+
+      // …and the stamp is per row and undrained-only: the overlap kept its FIRST instant.
+      const stamps = (await host.admin.auditLog(staff, { tenantId: t1 }))
+        .filter((r) => r.action === 'drainEvents' && r.scopeId === sBig)
+        .map((r) => r.after as { drained: number; requested: number; drainedAt: string });
+      expect(stamps.map((s) => [s.drained, s.requested]).sort()).toEqual([[150, 150], [200, 250]]);
+
+      // The reopen: every one of the 350 in one call, past the limit the same way.
+      const latest = stamps.map((s) => s.drainedAt).sort().at(-1)!;
+      const justAfter = new Date(Date.parse(latest) + 1).toISOString();
+      await expect(host.admin.redrainEvents(staff, t1, sBig, { drainedBefore: justAfter })).resolves.toBe(350);
+      const reopened = await host.admin.readUndrainedEvents(staff, t1, sBig, 1000);
+      expect(reopened.map((e) => e.id)).toEqual(ids);
+    });
+
     it('facets the outbox, and keeps an ERASED payload out of the null bucket (#1239)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       const subject = ulid();

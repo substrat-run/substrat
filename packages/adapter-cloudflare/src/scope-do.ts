@@ -1449,13 +1449,16 @@ export function defineScopeDO(
         // on it would claim twice the egress it performed, and would drift again
         // with any future index. The queue has this scope to itself, so a count
         // taken here is the count the loop below goes on to change.
-        const placeholders = eventIds.map(() => '?').join(',');
+        //
+        // The ids travel as ONE JSON array (#1776): a DO binds at most 100 parameters, and a
+        // drain batch is 200 by default, so one `?` per id failed every default drain. `IN` over
+        // a subquery is a set test, as the list was, so a repeated id is still counted once.
         const drained = (
           this.sql
             .exec(
               `SELECT COUNT(*) AS c FROM _substrat_outbox
-                WHERE drained_at IS NULL AND id IN (${placeholders})`,
-              ...eventIds,
+                WHERE drained_at IS NULL AND id IN (SELECT value FROM json_each(?))`,
+              JSON.stringify(eventIds),
             )
             .toArray()[0] as { c: number }
         ).c;
@@ -1490,23 +1493,26 @@ export function defineScopeDO(
      */
     async redrainEvents(drainedBefore: string): Promise<number> {
       return await this.queue.enqueue(() => {
-        const ids = this.sql
-          .exec(
-            `SELECT id FROM _substrat_outbox
-              WHERE drained_at IS NOT NULL AND drained_at < ?
-              ORDER BY id LIMIT ?`,
-            drainedBefore,
-            REDRAIN_BATCH,
-          )
-          .toArray() as { id: string }[];
-        if (ids.length === 0) return 0;
-        // By id, not by the window again: the rows just chosen are exactly the rows
-        // cleared, so the count returned cannot drift from what the statement touched.
+        // The batch is chosen by ONE subquery, written once, that both statements read. It
+        // used to be chosen as a list of ids bound back one `?` each, which a DO refuses past
+        // 100 parameters (#1776) while the batch is 5000. The two statements run in the same
+        // synchronous turn, so nothing writes between them, and `ORDER BY id` over the primary
+        // key makes the LIMIT pick the same rows twice: the count is the rows the update clears.
+        const batch = `SELECT id FROM _substrat_outbox
+                        WHERE drained_at IS NOT NULL AND drained_at < ?
+                        ORDER BY id LIMIT ?`;
+        const reopened = (
+          this.sql.exec(`SELECT COUNT(*) AS c FROM (${batch})`, drainedBefore, REDRAIN_BATCH).toArray()[0] as {
+            c: number;
+          }
+        ).c;
+        if (reopened === 0) return 0;
         this.sql.exec(
-          `UPDATE _substrat_outbox SET drained_at = NULL WHERE id IN (${ids.map(() => '?').join(',')})`,
-          ...ids.map((r) => r.id),
+          `UPDATE _substrat_outbox SET drained_at = NULL WHERE id IN (${batch})`,
+          drainedBefore,
+          REDRAIN_BATCH,
         );
-        return ids.length;
+        return reopened;
       });
     }
 
