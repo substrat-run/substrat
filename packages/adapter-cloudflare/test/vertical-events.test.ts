@@ -326,9 +326,17 @@ describe('the cross-vertical far ends refuse a scope this deployment does not se
     expect((s as ControlPlaneError).status).toBe(409);
     // The twin: the same calls for the served pair answer.
     await expect(crm.client.exportedEvents({ tenantId: t, scopeId: p, input: read })).resolves.toMatchObject({ events: [] });
-    // The batch the first case applied moved this watermark: the answer is the scope's real state.
+    // Self-contained: apply this case's own batch from wherever the watermark stands, over the
+    // wire, then read it back. The answer is the scope's real state, not an empty default.
+    const before = await board.client.importState({ tenantId: t, scopeId: c });
+    const mine = {
+      ...batch,
+      after: before.cursors.find((x) => x.source === p)?.cursor ?? null,
+      next: eventId.parse(ulid()),
+    };
+    await expect(board.client.importEvents({ tenantId: t, scopeId: c, batch: mine })).resolves.toMatchObject({ stale: false });
     expect((await board.client.importState({ tenantId: t, scopeId: c })).cursors).toEqual([
-      expect.objectContaining({ source: p, cursor: batch.next }),
+      expect.objectContaining({ source: p, cursor: mine.next }),
     ]);
   });
 });
