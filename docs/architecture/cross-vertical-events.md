@@ -327,9 +327,9 @@ So a **replay** (`after: <event id> | null`) moves the replayed range's rows in 
 the watermark back, all in one transaction on the consumer's queue. The rows are moved, not
 deleted, because they are the record that a handler ran on an event, when, and what it reported.
 The admin log's intent and outcome rows carry the same `replayId`. A **skip** (`through: <event id>
-| 'now'`) only moves the watermark forward. `'now'` is the greatest ULID of the current
-millisecond. Each mode is held to its direction, so the acknowledgement names what actually
-moves.
+| 'now'`) only moves the watermark forward, and never past now. `'now'` passes over every
+earlier millisecond: an event minted in the skip's own millisecond is delivered, never dropped.
+Each mode is held to its direction, so the acknowledgement names what actually moves.
 
 - **The guarantee changes, by design.** "Once per (event, module)" becomes "once per (event,
   module) per replay": every importing handler runs again, and what it emits is new events that
@@ -339,7 +339,10 @@ moves.
   `acknowledge: 'skip-events'`.
 - **Between the move and the redelivery**, a cause walk through a moved event's id ends at
   `missing`, and an export read in the consumer's scope counts fewer hops for a chain through it.
-  Both heal when the next pass redelivers, and neither can release an event that should not cross.
+  Both heal when the next pass redelivers. The undercount only loosens the loop bound for that
+  window: a loop between two verticals may run a round or two longer before the hop cap cuts it.
+  The cap bounds loops; it authorizes nothing, so no event crosses that the producer's exports,
+  its grants and the PII rule would not already release.
 - **A pass in flight cannot undo a move.** The batch's compare-and-set refuses it as `stale`.
 - **Authority.** The producer is resolved from the directory, in the consumer's tenant, by the
   sweep's own rule, and never taken from the caller. Staff (the console) and the tenant's own

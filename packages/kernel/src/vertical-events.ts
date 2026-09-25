@@ -466,7 +466,9 @@ const CURSOR_CLEAR_SQL = 'DELETE FROM _substrat_import_cursors WHERE source_scop
  * take the events again. Two things are true between the move and the redelivery, and are
  * stated rather than hidden: a cause walk through a moved event's id ends at `missing`, and an
  * export read in this scope counts fewer hops for a chain through it. Both heal when the next
- * pass redelivers, and neither can release an event that should not cross.
+ * pass redelivers. The undercount only loosens the loop bound (the hop cap bounds loops, and
+ * authorizes nothing), so a loop may run a round longer; no event crosses that exports, grants
+ * and the PII rule would not already release.
  *
  * Refused, with the reason a person reads:
  * - a replay whose `after` is AHEAD of the watermark (that is a skip), or a skip whose `through`
