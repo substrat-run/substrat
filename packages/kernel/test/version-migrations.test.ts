@@ -10,7 +10,7 @@ import {
   writeVersionMigrations,
   type SwitchSql,
 } from '../src/index.js';
-import { UNSPLIT_IDS_SQL, UNSPLIT_PROBE_SQL } from '../src/version-migrations.js';
+import { BATCH_MANIFEST_CHARS, UNSPLIT_IDS_SQL, UNSPLIT_PROBE_SQL } from '../src/version-migrations.js';
 
 /**
  * #1764: a version's SQL migrations, stored apart from its manifest, executed against a real
@@ -164,6 +164,31 @@ describe('version migrations stored apart (#1764)', () => {
       while (splitVersionMigrationsBatch(sql, 3).more);
       expect(versionMigrationsOf(sql, ids[1]!)?.migrations).toEqual(migrations.slice(0, 1));
       expect(sql.all(`SELECT COUNT(*) AS n FROM vertical_version_migrations WHERE version_id = ?`, ids[1]!)).toEqual([{ n: 1 }]);
+    });
+
+    it('a batch never passes the manifest bound by one more manifest, and the first always moves', () => {
+      const { sql } = fresh();
+      // Near-limit manifests: two fit (2 × 0.45 of the bound), the third would pass it.
+      const padded = (i: number, share: number) =>
+        manifest({ migrations: [{ ...migrations[0]!, version: `000${i}` }], pad: 'x'.repeat(Math.floor(BATCH_MANIFEST_CHARS * share)) });
+      for (let i = 0; i < 5; i++) legacy(sql, `v${i}`, padded(i, 0.45));
+      const split = () => sql.all('SELECT id FROM vertical_versions WHERE migrations_split = 1 ORDER BY id').map((r) => r.id as string);
+
+      expect(splitVersionMigrationsBatch(sql)).toEqual({ moved: 2, more: true });
+      expect(split()).toEqual(['v0', 'v1']);
+      expect(splitVersionMigrationsBatch(sql)).toEqual({ moved: 2, more: true });
+      expect(splitVersionMigrationsBatch(sql)).toEqual({ moved: 1, more: false });
+      // Exactly at the bound is still taken: two manifests summing to it move together.
+      const { sql: at } = fresh();
+      legacy(at, 'a', 'x'.repeat(BATCH_MANIFEST_CHARS / 2));
+      legacy(at, 'b', 'x'.repeat(BATCH_MANIFEST_CHARS / 2));
+      legacy(at, 'c', 'x');
+      expect(splitVersionMigrationsBatch(at)).toEqual({ moved: 2, more: true });
+      // A manifest over the bound on its own still moves, alone: the first is always taken.
+      const { sql: over } = fresh();
+      legacy(over, 'big', 'x'.repeat(BATCH_MANIFEST_CHARS + 1));
+      legacy(over, 'next', 'x');
+      expect(splitVersionMigrationsBatch(over)).toEqual({ moved: 1, more: true });
     });
 
     it('the two reads that find unsplit versions are answered from the partial index, not a scan', () => {

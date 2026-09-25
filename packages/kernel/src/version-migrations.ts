@@ -129,7 +129,7 @@ const BATCH_VERSIONS = 25;
  * How much manifest one batch reads at most, in characters (the first version is always
  * moved). A stored manifest can be up to about 1.5 MiB, and a batch holds the directory DO.
  */
-const BATCH_MANIFEST_CHARS = 4 * 1024 * 1024;
+export const BATCH_MANIFEST_CHARS = 4 * 1024 * 1024;
 
 /**
  * Move the SQL out of the next versions stored before #1764: at most `limit` of them, and
@@ -155,11 +155,16 @@ export function splitVersionMigrationsBatch(
   let moved = 0;
   let chars = 0;
   for (const { id } of ids) {
-    if (moved > 0 && chars >= BATCH_MANIFEST_CHARS) break;
+    // The candidate is measured before it is taken, so a batch never passes the bound by one
+    // more manifest. The first is always taken, or a manifest over the bound would never move.
+    const { size } = db.all('SELECT COALESCE(length(manifest_json), 0) AS size FROM vertical_versions WHERE id = ?', id)[0] as {
+      size: number;
+    };
+    if (moved > 0 && chars + size > BATCH_MANIFEST_CHARS) break;
+    chars += size;
     const { manifest_json: stored } = db.all('SELECT manifest_json FROM vertical_versions WHERE id = ?', id)[0] as {
       manifest_json: string | null;
     };
-    chars += stored?.length ?? 0;
     const split = splitManifestMigrations(stored, 'stored');
     writeVersionMigrations(db, id, split.migrations);
     const count = split.migrations?.length ?? null;
