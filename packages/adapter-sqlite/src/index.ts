@@ -274,6 +274,7 @@ import {
   systemSwitchedOffMessage,
   SYSTEM_SWITCHES_BACKFILL_SQL,
   SYSTEM_SWITCHES_DDL,
+  forgetSystemSwitchesOf,
   listSystemSwitchRecords,
   recordSystemSwitchedOff,
   recordSystemSwitchedOn,
@@ -3229,6 +3230,7 @@ export class SqliteScopeHost implements ScopeHost {
     // orphaned bytes with no record (the §9 hazard).
     this.directory.prepare('DELETE FROM hostnames WHERE scope_id = ?').run(scopeId);
     rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
+    forgetSystemSwitchesOf(switchSqlOf(this.directory), scopeId);
     this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
     this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
       forkedFrom: rec.forkedFrom,
@@ -8103,6 +8105,7 @@ export class SqliteScopeHost implements ScopeHost {
         await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped', {
           backupRef: opts?.backupRef ?? null,
         });
+        forgetSystemSwitchesOf(switchSqlOf(this.directory), scopeId);
       },
       // -- subject erasure (#37) ----------------------------------------------
       sealSubjectPayloads: async (actor, tenantId, scopeId, items) => {
@@ -8308,6 +8311,7 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_roles', // operator-defined roles
           '_substrat_entitlements', // per-tenant SKU flags
           'orgs', // K-22 org records
+          '_substrat_system_switches', // #1674: the schedule switch's record, per scope
         ];
         const clear = this.directory.transaction(() => {
           for (const table of tables) {

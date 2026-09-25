@@ -12,6 +12,7 @@ import {
   sweepRunsIntentHasKind,
   SYSTEM_SWITCHES_BACKFILL_SQL,
   SYSTEM_SWITCHES_DDL,
+  forgetSystemSwitchesOf,
   listSystemSwitchRecords,
   recordSystemSwitchedOff,
   recordSystemSwitchedOn,
@@ -1483,6 +1484,7 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_roles', // operator-defined roles
       '_substrat_entitlements', // per-tenant SKU flags
       'orgs', // K-22 org records
+      '_substrat_system_switches', // #1674: the schedule switch's record, per scope
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
@@ -2531,6 +2533,7 @@ export class ControlPlaneDO extends DurableObject {
    */
   deleteScopeDirectory(scopeId: string): void {
     this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
+    forgetSystemSwitchesOf(this.kernelSql, scopeId);
     this.sql.exec('DELETE FROM scopes WHERE scope_id = ?', scopeId);
   }
 
@@ -3290,6 +3293,11 @@ export class ControlPlaneDO extends DurableObject {
   /** One scope's recorded positions, by module — the status read's `recorded` join. */
   systemSwitchRecordsOf(tenantId: string, scopeId: string): [string, 'on' | 'off'][] {
     return [...systemSwitchRecordsOf(this.kernelSql, tenantId, scopeId)];
+  }
+
+  /** A reaped scope's switch records go with it (#1674) — see `forgetSystemSwitchesOf`. */
+  forgetSystemSwitches(scopeId: string): void {
+    forgetSystemSwitchesOf(this.kernelSql, scopeId);
   }
 
   /** The modules a re-assert switches back off on one scope. */

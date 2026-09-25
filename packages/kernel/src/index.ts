@@ -284,6 +284,7 @@ export type { SwitchOutcome, SwitchSql, SystemGrantsEntry, SystemScheduleState }
 export {
   SYSTEM_SWITCHES_BACKFILL_SQL,
   SYSTEM_SWITCHES_DDL,
+  forgetSystemSwitchesOf,
   listSystemSwitchRecords,
   recordSystemSwitchedOff,
   recordSystemSwitchedOn,

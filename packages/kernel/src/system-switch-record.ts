@@ -339,3 +339,12 @@ export function restoreSystemSwitchRecord(
 ): void {
   if (prior) setRecordRow(db, on, prior, on.operationId);
 }
+
+/**
+ * Forget one scope's switch records — the scope's directory row is going too (a reaped
+ * preview or fork, a reaped scope). Without this the fleet read keeps listing a switch on
+ * a scope that no longer exists. The admin log keeps the history, as it keeps the scope's.
+ */
+export function forgetSystemSwitchesOf(db: SwitchSql, scopeId: string): void {
+  db.run(`DELETE FROM _substrat_system_switches WHERE scope_id = ?`, scopeId);
+}

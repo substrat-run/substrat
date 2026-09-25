@@ -464,6 +464,24 @@ export function systemSwitchContractSuite(
       expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
     });
 
+    it('a deleted preview and a reaped scope leave the fleet read (#1674 review)', async () => {
+      const preview = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: preview, kind: 'preview' });
+      await host.admin.activateScope(staff, t, preview);
+      await off(preview);
+      const reaped = await newScope();
+      await off(reaped);
+      const listed = async () =>
+        (await host.admin.listSystemSwitches(staff, { tenantId: t })).map((r) => r.scopeId);
+      expect(await listed()).toEqual(expect.arrayContaining([preview, reaped]));
+
+      await host.deleteSnapshot(staff, t, preview);
+      await host.admin.archiveScope(staff, t, reaped);
+      await host.admin.reapScope(staff, t, reaped, { force: true });
+      expect(await listed()).not.toContain(preview);
+      expect(await listed()).not.toContain(reaped);
+    });
+
     it('a record never turns a module ON: a live marker beside a record of `on` stays off', async () => {
       const s = await newScope();
       await off(s);
