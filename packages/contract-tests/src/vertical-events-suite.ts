@@ -966,6 +966,22 @@ export function verticalEventsContractSuite(
       await expect(lever(t, c, skip(second!.event_id))).resolves.toMatchObject({ cursor: second!.event_id });
     });
 
+    it('a skip cannot be aimed past now: the future is refused, and the edge still reads behind', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Waiting');
+      // The greatest ULID there is: a watermark past every event ever to be written.
+      expect(String(await refusal(lever(t, c, skip('7ZZZZZZZZZZZZZZZZZZZZZZZZZ'))))).toMatch(/at most now.*future/);
+      expect((await fx.consumer.admin.importState(staff, t, c)).cursors).toEqual([]);
+      expect(await healthOf(t, c)).toMatchObject({ state: 'behind' });
+      // The twin: to now, it moves, and an event written after it still arrives.
+      await lever(t, c, skip('now'));
+      await create(t, p, 'After');
+      await sweep();
+      expect((await board(t, c)).associations.map((r) => r.name)).toEqual(['After']);
+    });
+
     it('a replay without its acknowledgement never reaches the store', async () => {
       const t = await newTenant();
       const p = await install(t, CRM_VERTICAL);

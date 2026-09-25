@@ -467,6 +467,8 @@ const CURSOR_CLEAR_SQL = 'DELETE FROM _substrat_import_cursors WHERE source_scop
  * - a replay whose `after` is AHEAD of the watermark (that is a skip), or a skip whose `through`
  *   is BEHIND it (that is a replay). The acknowledgement names one direction, and it must be
  *   the direction that moves;
+ * - a skip past now, which would pass over events not yet written while the edge read as
+ *   caught up;
  * - a replay on an edge that has delivered nothing yet: there is nothing to run again.
  */
 export function moveImportCursor(
@@ -491,7 +493,16 @@ export function moveImportCursor(
     archived,
   });
   if (move.mode === 'skip') {
-    const through = move.through === 'now' ? ulidCeiling(input.now) : move.through;
+    const ceiling = ulidCeiling(input.now);
+    const through = move.through === 'now' ? ceiling : move.through;
+    // Not into the future: a watermark past now would pass over every event yet to be written,
+    // silently, and the edge would then read as caught up. "Now" is as far as a skip reaches.
+    if (through > ceiling) {
+      throw substratError(
+        'precondition_failed',
+        `a skip reaches at most now, and ${through} is in the future — it would pass over events not yet written`,
+      );
+    }
     if (previous !== null && through < previous) {
       throw substratError(
         'precondition_failed',
