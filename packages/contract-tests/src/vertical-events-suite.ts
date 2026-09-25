@@ -1190,6 +1190,33 @@ export function verticalEventsContractSuite(
       expect(tenantWide.edges.find((e) => e.consumer.scopeId === c)).toMatchObject({ producer: { vertical: '*', scopeId: null } });
     });
 
+    it('edge health reads each edge\'s history on its own: a noisy edge cannot push out a quiet one\'s last delivery', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      const quiet = `${c}:${CRM_VERTICAL}`;
+      const noisy = `${p}:${BOARD_VERTICAL}`;
+      const row = (unit: string, outcome: 'ok' | 'failed', scope: ScopeId) => ({
+        kind: 'vertical-events' as const,
+        unit,
+        outcome,
+        tenantId: t,
+        scopeId: scope,
+        operation: 'sweep.vertical-events:test',
+        error: outcome === 'ok' ? null : 'the producer is unreachable',
+      });
+      await fx.consumer.admin.recordSweepRun(row(quiet, 'ok', c));
+      // Far more than any one tenant-wide window: the quiet edge's row is the oldest by far.
+      for (let i = 0; i < 250; i++) await fx.consumer.admin.recordSweepRun(row(noisy, 'failed', p));
+      const view = await health(t);
+      expect(view.history.available).toBe(true);
+      expect(view.edges.find((e) => e.consumer.scopeId === c)?.lastDelivered).not.toBeNull();
+      expect(view.edges.find((e) => e.consumer.scopeId === p)).toMatchObject({
+        lastDelivered: null,
+        lastProblem: { outcome: 'failed', error: 'the producer is unreachable' },
+      });
+    });
+
     it('edge health never crosses a tenant: one tenant\'s view names only its own edges', async () => {
       const t = await newTenant();
       const u = await newTenant();

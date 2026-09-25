@@ -15,7 +15,6 @@ import type {
   ManifestExports,
   EdgeHealth,
   EdgeHealthReport,
-  SweepRunEntry,
   ExportReadInput,
   ExportedBatch,
   ImportBatch,
@@ -1953,8 +1952,6 @@ async function sweepEdge(
 
 // -- edge health (#1705 PR 3) ---------------------------------------------------------------
 
-/** Sweep-run rows read per health view: the tenant's recent `vertical-events` history. */
-const EDGE_HEALTH_HISTORY = 200;
 
 /** Where a consumer's door stands for each peer, as `admin.peerGrantsStatus` answers it. */
 type DoorRead = (
@@ -2042,9 +2039,7 @@ export async function crossVerticalHealth(
     for (const id of ids) knownImporters.add(id);
   };
 
-  // The directory and the history do not depend on each other.
-  const [listed, history] = await Promise.all([
-    (async () => {
+  const listed = await (async () => {
       const scopes = (await host.admin.listScopes(actor, { status: 'active', tenantId })).filter(
         (s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null,
       );
@@ -2059,12 +2054,7 @@ export async function crossVerticalHealth(
     })().then(
       (v) => ({ ok: true as const, ...v }),
       (err: unknown) => ({ ok: false as const, error: message(err) }),
-    ),
-    host.admin.listSweepRuns(actor, { kind: 'vertical-events', tenantId, limit: EDGE_HEALTH_HISTORY }).then(
-      (rows) => ({ ok: true as const, rows }),
-      (err: unknown) => ({ ok: false as const, error: message(err) }),
-    ),
-  ]);
+    );
   if (!listed.ok) {
     report.unavailable = `could not list this tenant's apps that import events: ${listed.error}`;
     return report;
@@ -2073,29 +2063,9 @@ export async function crossVerticalHealth(
   const focusScope = 'focus' in listed ? listed.focus : undefined;
   const focusVertical = focusScope?.vertical;
 
-  // The history, newest first per edge (the read is already newest first).
-  const lastOk = new Map<string, SweepRunEntry>();
-  const lastProblem = new Map<string, SweepRunEntry>();
-  if (history.ok) {
-    for (const r of history.rows) {
-      const into = r.outcome === 'ok' ? lastOk : lastProblem;
-      const seen = into.get(r.unit);
-      if (!seen || r.id > seen.id) into.set(r.unit, r);
-    }
-  } else {
-    report.history = { available: false, reason: `the sweep history could not be read: ${history.error}` };
-  }
-  const historyOf = (unit: string): Pick<EdgeHealth, 'lastDelivered' | 'lastProblem'> => {
-    const ok = lastOk.get(unit);
-    const problem = lastProblem.get(unit);
-    return {
-      lastDelivered: ok ? { at: ok.at } : null,
-      lastProblem:
-        problem && (!ok || problem.id > ok.id)
-          ? { at: problem.at, outcome: problem.outcome as 'failed' | 'skipped', error: problem.error ?? null }
-          : null,
-    };
-  };
+  // Which sweep-run unit each edge's history is filed under: `<consumer>:<producer vertical>`,
+  // or `<consumer>:*` for a consumer that could not be asked (whatever the view tags it with).
+  const unitOf = new Map<EdgeHealth, string>();
 
   await mapBounded(candidates, concurrency, async (consumer) => {
     const vertical = consumer.vertical ?? '';
@@ -2108,9 +2078,14 @@ export async function crossVerticalHealth(
       oldestPending: null,
       lagMs: null,
       unexported: [],
-      ...historyOf(`${consumer.id}:${from}`),
+      lastDelivered: null,
+      lastProblem: null,
       ...rest,
     });
+    const filed = (e: EdgeHealth, unitFrom: string): EdgeHealth => {
+      unitOf.set(e, `${consumer.id}:${unitFrom}`);
+      return e;
+    };
     // Into the focus, every source. Into anyone else, only the focus's own vertical.
     const wanted = (from: string) => focusVertical === undefined || consumer.id === options.focus || from === focusVertical;
     // The consumer's imports and its door, together: the door read is wasted only on a consumer
@@ -2130,9 +2105,12 @@ export async function crossVerticalHealth(
     // vertical), so it is tagged with the focus: a view of the producer must show the failure
     // rather than filter out an edge whose other end is unknown.
     const unasked = (reason: string): EdgeHealth =>
-      focusScope && consumer.id !== focusScope.id
-        ? edge(focusScope.vertical, { state: 'unavailable', reason, producer: { vertical: focusScope.vertical, scopeId: focusScope.id } })
-        : edge('*', { state: 'unavailable', reason });
+      filed(
+        focusScope && consumer.id !== focusScope.id
+          ? edge(focusScope.vertical, { state: 'unavailable', reason, producer: { vertical: focusScope.vertical, scopeId: focusScope.id } })
+          : edge('*', { state: 'unavailable', reason }),
+        '*',
+      );
     if (!stateRead.ok) {
       report.edges.push(unasked(`could not ask this app what it imports: ${stateRead.error}`));
       return;
@@ -2155,7 +2133,7 @@ export async function crossVerticalHealth(
       : null;
     const sources = [...wantsBySource(state.consumes, wanted)];
     await mapBounded(sources, concurrency, async ([from, wants]) => {
-      report.edges.push(await edgeHealthOf(from, wants));
+      report.edges.push(filed(await edgeHealthOf(from, wants), from));
     });
 
     async function edgeHealthOf(from: string, wants: WantedEvent[]): Promise<EdgeHealth> {
@@ -2209,6 +2187,29 @@ export async function crossVerticalHealth(
         state: first ? 'behind' : 'caught-up',
         reason: first ? `events are waiting past the watermark; the next pass takes them${doorNote}` : doorNote ? doorNote.trim() : null,
       });
+    }
+  });
+  // The history, read per edge: the last pass that delivered, and the last that did not when it is
+  // newer. Per edge rather than one window over the tenant, so a noisy edge's rows cannot push a
+  // quiet edge's last delivery out of the read. One read when the newest row is a delivery, two
+  // otherwise. A failed read costs the history, never the live state.
+  await mapBounded(report.edges, concurrency, async (e) => {
+    const unit = unitOf.get(e);
+    if (unit === undefined) return;
+    try {
+      const runs = (filter: { outcome?: 'ok' }) =>
+        host.admin.listSweepRuns(actor, { kind: 'vertical-events', tenantId, unit, limit: 1, ...filter });
+      const [latest] = await runs({});
+      if (!latest) return;
+      if (latest.outcome === 'ok') {
+        e.lastDelivered = { at: latest.at };
+        return;
+      }
+      const [ok] = await runs({ outcome: 'ok' });
+      e.lastDelivered = ok ? { at: ok.at } : null;
+      e.lastProblem = { at: latest.at, outcome: latest.outcome as 'failed' | 'skipped', error: latest.error ?? null };
+    } catch (err) {
+      report.history = { available: false, reason: `the sweep history could not be read: ${message(err)}` };
     }
   });
   report.edges.sort(
