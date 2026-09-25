@@ -240,8 +240,30 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
   const want = ids.map((_, i) => expected(i));
   let before: ScopeDumpTable[] = [];
 
+  /** Whether the directory has the #1764 schema at all: the table, the index, the two columns. */
+  const schemaOf = (state: DurableObjectState) => ({
+    objects: state.storage.sql
+      .exec(
+        `SELECT name FROM sqlite_master
+          WHERE name IN ('vertical_version_migrations', 'vertical_versions_unsplit') ORDER BY name`,
+      )
+      .toArray()
+      .map((r) => r.name),
+    columns: state.storage.sql
+      .exec("SELECT name FROM pragma_table_info('vertical_versions') WHERE name IN ('migration_count', 'migrations_split')")
+      .toArray()
+      .map((r) => r.name),
+  });
+
   beforeAll(async () => {
     await inDirectory((instance, state) => {
+      // The directory exactly as the code before #1764 left it: no table, no index, neither
+      // column. That is the shape the deploy constructs over, and a dump taken then carries.
+      state.storage.sql.exec('DROP INDEX vertical_versions_unsplit');
+      state.storage.sql.exec('DROP TABLE vertical_version_migrations');
+      state.storage.sql.exec('ALTER TABLE vertical_versions DROP COLUMN migration_count');
+      state.storage.sql.exec('ALTER TABLE vertical_versions DROP COLUMN migrations_split');
+      expect(schemaOf(state)).toEqual({ objects: [], columns: [] });
       ids.forEach((id, i) =>
         state.storage.sql.exec(
           `INSERT INTO vertical_versions (id, vertical_slug, version, manifest_digest, permission_digest,
@@ -251,14 +273,21 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
         ),
       );
       before = instance.exportDump();
+      const versions = before.find((t) => t.name === 'vertical_versions')!;
+      expect(versions.columns).not.toContain('migrations_split');
+      expect(before.map((t) => t.name)).not.toContain('vertical_version_migrations');
     });
   });
 
   it('constructs over them without moving a single version, and arms the alarm', async () => {
     await inDirectory(async (_instance, state) => {
       await state.storage.deleteAlarm();
-      expect(unsplit(state)).toBe(ids.length);
       const deployed = new ControlPlaneDO(state, env) as Directory;
+      // The construction built the #1764 schema over the old directory…
+      expect(schemaOf(state)).toEqual({
+        objects: ['vertical_version_migrations', 'vertical_versions_unsplit'],
+        columns: ['migration_count', 'migrations_split'],
+      });
       // The constructor's whole cost is one probe of the partial index: nothing moved.
       expect(unsplit(state)).toBe(ids.length);
       expect(await state.storage.getAlarm()).not.toBeNull();
@@ -297,6 +326,8 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
   it('a restore of a dump taken before the backfill comes back unsplit, and is moved again', async () => {
     await inDirectory(async (instance, state) => {
       await instance.importDump(before);
+      // The restore replayed the old shape, and the schema re-assert built #1764's back over it.
+      expect(schemaOf(state).columns).toEqual(['migration_count', 'migrations_split']);
       expect(unsplit(state)).toBe(ids.length);
       expect(await state.storage.getAlarm()).not.toBeNull();
       expect(reads(instance)).toEqual(want);
