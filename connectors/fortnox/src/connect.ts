@@ -150,6 +150,7 @@ function bareConnection(secret: FortnoxSecret, fetchImpl: FetchLike): ConnectorC
     vertical: '',
     provider: 'fortnox',
     secret,
+    // Probe stub, not where expiry is set. client_credentials: no refresh token, so no refresh horizon exists (api.ts). See connections.md §3.6.
     expiresAt: null,
     fetch: fetchImpl,
   };

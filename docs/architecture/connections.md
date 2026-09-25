@@ -480,12 +480,31 @@ read, never one that touches ciphertext.
 
 ### 3.6 Token refresh
 
-Scrive is OAuth2: 1-hour access token, 30-day refresh. So refresh is not optional and it is not
-request-time-only — a connection that idles past 30 days is dead and the tenant must be told
-before a signature request fails.
+> **Correction (#1690).** This section used to say *"Scrive is OAuth2: 1-hour access token,
+> 30-day refresh"* and to conclude that refresh needs a driver. That described an OAuth2 design
+> **no shipped connector adopted**, and it is kept here as a plain statement so nobody re-derives
+> it from the old text.
 
-Refresh needs the **same driver** §2.1 introduces. That is an argument for building the driver
-once, properly, rather than a Scrive-specific timer.
+What the three connectors actually hold:
+
+| Connector | Credential | Refresh token | Horizon to record |
+|---|---|---|---|
+| Scrive | OAuth1 "personal access credentials" — four static parts, PLAINTEXT signature ([`connectors/scrive/src/api.ts:25-40`](../../connectors/scrive/src/api.ts)); `oauth2.scrive.com` rejects them | none | none — no expiry is reported |
+| Fortnox | `client_credentials` triple; a 1-hour access token is minted on demand and cached per instance ([`connectors/fortnox/src/api.ts:30-75`](../../connectors/fortnox/src/api.ts), `:238-300`) | none — the single-use rotating refresh token belongs to the authorization-code flow this connector deliberately avoids | none. The only expiry the code computes (`:300`) is the **access** token's, which must never be stored as `Connection.expiresAt`: it would make every row warn hourly |
+| Planima | one static token ([`connectors/planima/src/api.ts:26,63`](../../connectors/planima/src/api.ts)) | none | none — the provider reports no expiry |
+
+So `Connection.expiresAt` is `null` for all three, and that is the true answer, not a gap: the
+Health → Connections view (§3.7) shows "not reported" because there is nothing to report. The
+`expiresAt: null` inside the connectors is a **probe stub** for a credential with no row yet; a
+real row is written by the connect flows (`apps/dashboard/src/integrations.ts`,
+`packages/control-plane-api/src/connection-relay.ts`), which pass `expiresAt` through when a
+caller supplies one.
+
+The early warning (`deriveExpiryWarning`, contracts) stays wired end to end for a **future OAuth2
+connector** whose provider has a refresh credential with a horizon. That connector would record
+the refresh credential's horizon, slid on each rotation — from the provider's token response
+where it sends one — and would need the refresh **driver** §2.1 introduces, built once rather
+than as a provider-specific timer.
 
 ### 3.7 Health
 
@@ -499,7 +518,7 @@ view. What the columns *mean* is one pure function, `deriveConnectionHealth` in 
 `expired`, **never used** when there is
 no outcome at all — deliberately not healthy, for §3.8's reason — **stale** once the last success is
 7 days old, and **healthy** otherwise. Seven days is a stated trade-off: it fires three weeks before
-a 30-day Scrive refresh (§3.6) idles out, and it misreads a connection that only a monthly job uses,
+a 30-day refresh credential (the OAuth2 shape §3.6 describes; no shipped connector has one) idles out, and it misreads a connection that only a monthly job uses,
 which is why the response carries the window it applied. Rows are projected through an allow-list
 (`toConnectionHealthEntry`) rather than spread. Connector dead letters are counted per provider from
 the ops-failure record, where a CP-less vertical's terminal `connector:<provider>` intent lands. An

@@ -226,6 +226,7 @@ export async function upsertLocalConnection(
   if (live.length === 0) {
     id = connectionId.parse(ulid());
     await host.admin.createConnection(actor, {
+      // No expiresAt: none of scrive, fortnox or planima has a refresh credential with a horizon (connections.md §3.6), so null ("not reported") is true.
       id,
       tenantId: input.tenantId,
       vertical: input.vertical,
