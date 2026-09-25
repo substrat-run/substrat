@@ -19,7 +19,8 @@ export interface PromoteReviewWire {
   incoming: { versionId: string };
   servingRegistry: RegistryLike | null;
   incomingRegistry: RegistryLike | null;
-  /** What the incoming version's migrations add on top of the serving one's; null = nothing to show. */
+  /** What the incoming version's migrations add on top of the serving one's. Null = no SQL to
+   *  show, which `planMigration` asks about whenever there is something to compare. */
   migrations: MigrationDiff | null;
 }
 
@@ -48,10 +49,12 @@ export type PermissionSection =
  * asking:
  *
  * - From the review, when the incoming version's migrations add to or edit the serving
- *   version's. `enforced: false`: the registry's gate does not see SQL-only changes (its
- *   migration digest covers the Durable-Object classes, #1754), so this acknowledgement is
- *   the dialog's own. It is still required: showing SQL a person may skip is how a schema
- *   change slips through.
+ *   version's, or when its manifest carries no SQL at all (pushed by an older CLI, or over
+ *   the size a manifest carries), so nothing can say whether they changed. `enforced: false`:
+ *   the registry's gate does not see SQL-only changes (its migration digest covers the
+ *   Durable-Object classes, #1754), so this acknowledgement is the dialog's own. It is still
+ *   required: showing SQL a person may skip — or not showing it — is how a schema change
+ *   slips through.
  * - From the gate's own refusal on the migration digest. `enforced: true`, with the digest
  *   pair. `sql` is the review's diff when it has one, and null when the incoming version's
  *   manifest carries no SQL — "not available", and the acknowledgement is still required.
@@ -62,10 +65,18 @@ export interface MigrationSection {
   enforced: boolean;
 }
 
-/** The migration section a review yields before anything is sent, or null when it shows no change. */
+/**
+ * The migration section a review yields before anything is sent. Null only when the review
+ * SHOWS no change — a diff with nothing in it — or has nothing to compare (a first promotion,
+ * or promoting what already serves). A version whose manifest carries no SQL is not "no
+ * change": it is "SQL not available", and it is asked about, because the gate will not ask
+ * for a SQL-only change (#1754) and this would otherwise promote one with no prompt at all.
+ */
 export function planMigration(review: PromoteReviewWire): MigrationSection | null {
+  if (review.serving === null || review.serving.versionId === review.incoming.versionId) return null;
   const sql = review.migrations;
-  return sql && sql.total > 0 ? { digests: null, sql, enforced: false } : null;
+  if (sql === null) return { digests: null, sql: null, enforced: false };
+  return sql.total > 0 ? { digests: null, sql, enforced: false } : null;
 }
 
 /** What the dialog is asked to put in front of a person. */

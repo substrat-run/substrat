@@ -77,7 +77,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
   let sabotage: ((path: string) => Response | Promise<Response> | undefined) | null;
 
   const subs = { owner: 'sub-owner', viewer: 'sub-viewer' } as const;
-  const v = { v1: ulid(), v2: ulid(), v3: ulid(), v4: ulid(), old: ulid(), s1: ulid(), s2: ulid() };
+  const v = { v1: ulid(), v2: ulid(), v3: ulid(), v4: ulid(), old: ulid(), s1: ulid(), s2: ulid(), noSql: ulid() };
   const INIT = { moduleId: 'hr', version: '0001-init', sql: 'CREATE TABLE person (id TEXT PRIMARY KEY);' };
   const ADD = { moduleId: 'hr', version: '0002-salary', sql: 'ALTER TABLE person ADD COLUMN salary TEXT;' };
 
@@ -86,7 +86,9 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
     version: string,
     digests: { p: string; m: string },
     registry: ReturnType<typeof registryOf> | null,
-    migrations?: { moduleId: string; version: string; sql: string }[],
+    // New-CLI shape by default: `[]` ships no SQL. `null` leaves the field off, as a version
+    // pushed before migrations were carried.
+    migrations: { moduleId: string; version: string; sql: string }[] | null = [],
   ) {
     await host.admin.publishVersion(staff, {
       id,
@@ -138,6 +140,8 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
     // s1 → s2 adds one SQL migration and moves NO digest: what #1754 is about.
     await publish(v.s1, '3.0.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), [INIT]);
     await publish(v.s2, '3.1.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), [INIT, ADD]);
+    // Same digests as v1, and no SQL carried (an older CLI, or over the cap): the gate sees nothing.
+    await publish(v.noSql, '3.2.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), null);
 
     const plane = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
     env = {
@@ -320,8 +324,12 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       expect(await d.run()).toBe('promoted');
       expect(d.shown).toHaveLength(1);
       expect(d.shown[0]!.permission).toBeNull();
-      // v3's manifest carries no SQL: "not available", and the tick is still required.
-      expect(d.shown[0]!.migration).toEqual({ digests: 'mig-1 → mig-3', sql: null, enforced: true });
+      // v3 adds no SQL (its digest moved on a Durable-Object class): an empty diff, shown as one.
+      expect(d.shown[0]!.migration).toEqual({
+        digests: 'mig-1 → mig-3',
+        sql: { baseline: 'version', added: [], changed: [], total: 0, truncated: false },
+        enforced: true,
+      });
       expect(sentAcks).toEqual([undefined, { migrationChange: true }]);
       expect(await prod()).toBe(v.v3);
     });
@@ -342,9 +350,13 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       await promoteTo(v.v1);
       expect(await drive(v.old, null).run()).toBe('cancelled');
       expect(await prod()).toBe(v.v1);
-      const d = drive(v.old, { permissionChange: true }, { migrationChange: true });
+      // Nothing carried, so both kinds are asked about up front: the SQL is "not available",
+      // never "unchanged".
+      const d = drive(v.old, { permissionChange: true, migrationChange: true });
       expect(await d.run()).toBe('promoted');
+      expect(d.shown).toHaveLength(1);
       expect(d.shown[0]!.permission).toEqual({ kind: 'unverifiable', why: 'incoming-has-no-registry' });
+      expect(d.shown[0]!.migration).toEqual({ digests: null, sql: null, enforced: false });
       expect(await prod()).toBe(v.old);
     });
 
@@ -362,6 +374,19 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       expect(await d.run()).toBe('promoted');
       expect(sentAcks).toEqual([{ migrationChange: true }]);
       expect(await prod()).toBe(v.s2);
+    });
+
+    it('no SQL carried and no digest moved → still asked, as "not available"; the gate alone would not have', async () => {
+      await promoteTo(v.v1);
+      const declined = drive(v.noSql, {});
+      expect(await declined.run()).toBe('cancelled');
+      expect(declined.shown[0]!.migration).toEqual({ digests: null, sql: null, enforced: false });
+      expect(sentAcks).toEqual([]);
+      expect(await prod()).toBe(v.v1);
+
+      const d = drive(v.noSql, { migrationChange: true });
+      expect(await d.run()).toBe('promoted');
+      expect(sentAcks).toEqual([{ migrationChange: true }]);
     });
 
     it('a review that could not be read blocks the promote, with the plane unreachable', async () => {

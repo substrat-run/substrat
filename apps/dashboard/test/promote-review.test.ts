@@ -43,7 +43,8 @@ const review = (over: Partial<PromoteReviewWire> = {}): PromoteReviewWire => ({
   incoming: { versionId: 'v2' },
   servingRegistry: reg(),
   incomingRegistry: reg(),
-  migrations: null,
+  // A new-CLI version whose SQL adds nothing: the "no change" baseline. `null` is not that.
+  migrations: { baseline: 'version', added: [], changed: [], total: 0, truncated: false },
   ...over,
 });
 
@@ -306,7 +307,8 @@ describe('promoteWithCheckpoint', () => {
       expect(await promoteWithCheckpoint({ review: async () => review(), promote: g.promote, ask: d.ask })).toBe('promoted');
       expect(d.shown).toHaveLength(1);
       expect(d.shown[0]!.permission).toBeNull();
-      expect(d.shown[0]!.migration).toEqual({ digests: 'ccc333 → ddd444', sql: null, enforced: true });
+      // The SQL diff is empty (the digest moved on a Durable-Object class), and is shown as such.
+      expect(d.shown[0]!.migration).toEqual({ digests: 'ccc333 → ddd444', sql: review().migrations, enforced: true });
       expect(g.sent).toEqual([undefined, { migrationChange: true }]);
       expect(g.sent[1]).not.toHaveProperty('permissionChange');
     });
@@ -434,10 +436,26 @@ describe('the migration section from the review (#1677)', () => {
   const withSql = (over: Partial<MigrationDiff> = {}): PromoteReviewWire =>
     review({ migrations: { baseline: 'version', added: [ADD], changed: [], total: 1, truncated: false, ...over } });
 
-  it('planMigration: shown when the review adds or edits one, not for an empty diff or a null', () => {
+  it('planMigration: shown when the review adds or edits one; null only for an empty diff or nothing to compare', () => {
     expect(planMigration(withSql())).toEqual({ digests: null, sql: withSql().migrations, enforced: false });
     expect(planMigration(withSql({ added: [], total: 0 }))).toBeNull();
-    expect(planMigration(review())).toBeNull();
+    expect(planMigration(review({ serving: null, migrations: null }))).toBeNull();
+    expect(planMigration(review({ serving: { versionId: 'v2' }, migrations: null }))).toBeNull();
+  });
+
+  it('planMigration: NO SQL carried is "not available" and asked about — never read as no change', () => {
+    expect(planMigration(review({ migrations: null }))).toEqual({ digests: null, sql: null, enforced: false });
+  });
+
+  it('a version with no SQL, which the gate lets through, still waits for the migration tick', async () => {
+    const g = gate({});
+    const declined = dialog({});
+    expect(await promoteWithCheckpoint({ review: async () => review({ migrations: null }), promote: g.promote, ask: declined.ask })).toBe('cancelled');
+    expect(declined.shown[0]!.migration).toEqual({ digests: null, sql: null, enforced: false });
+    expect(g.sent).toEqual([]);
+    const ticked = dialog({ migrationChange: true });
+    expect(await promoteWithCheckpoint({ review: async () => review({ migrations: null }), promote: g.promote, ask: ticked.ask })).toBe('promoted');
+    expect(g.sent).toEqual([{ migrationChange: true }]);
   });
 
   it('a SQL-only change the gate does not see is asked for BEFORE the promote, and sent only if ticked', async () => {
@@ -471,11 +489,12 @@ describe('the migration section from the review (#1677)', () => {
     expect(d.shown[0]!.migration).toEqual({ digests: 'ccc333 → ddd444', sql: noSqlChange.migrations, enforced: true });
   });
 
-  it('a gate refusal with NO SQL carried still requires the tick — never fails open', async () => {
+  it('a gate refusal with NO SQL carried was already asked about, and the tick carries through', async () => {
     const g = gate({ migration: true });
-    const d = dialog(null);
-    expect(await promoteWithCheckpoint({ review: async () => review(), promote: g.promote, ask: d.ask })).toBe('cancelled');
-    expect(d.shown[0]!.migration).toEqual({ digests: 'ccc333 → ddd444', sql: null, enforced: true });
-    expect(g.sent).toEqual([undefined]);
+    const d = dialog({ migrationChange: true });
+    expect(await promoteWithCheckpoint({ review: async () => review({ migrations: null }), promote: g.promote, ask: d.ask })).toBe('promoted');
+    expect(d.shown).toHaveLength(1);
+    expect(d.shown[0]!.migration).toEqual({ digests: null, sql: null, enforced: false });
+    expect(g.sent).toEqual([{ migrationChange: true }]);
   });
 });

@@ -19,8 +19,8 @@ export interface PromotionReview {
    * The SQL migrations the incoming version adds on top of the serving one (#1677). `null`
    * when there is nothing to compare (a first promotion, or promoting what already serves)
    * or when the incoming version's manifest carries no SQL. Null is never "no migrations":
-   * if the registry's gate then refuses on the migration digest, the dialog says the SQL is
-   * not available and still asks.
+   * with something serving and a different version incoming, the dialog says the SQL is not
+   * available and asks, whether or not the registry's gate refuses (#1754).
    */
   migrations: MigrationDiff | null;
 }

@@ -16,15 +16,22 @@ export function PromoteMigrations({ section }: { section: MigrationSection }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {sql === null ? (
         <div style={muted}>
-          SQL not available for this version — the migration digest changed
-          {section.digests ? (
+          SQL not available for this version
+          {section.enforced ? (
             <>
               {' '}
-              (<span style={mono}>{section.digests}</span>)
+              — the migration digest changed
+              {section.digests ? (
+                <>
+                  {' '}
+                  (<span style={mono}>{section.digests}</span>)
+                </>
+              ) : null}
             </>
           ) : null}
-          . It was pushed before versions carried their migrations, or its set was too large to carry. Read the migrations in the
-          repository before you acknowledge.
+          . It was pushed by a CLI older than migrations in the manifest, or its migrations were over the size a manifest
+          carries, so this dialog cannot show what they do{section.enforced ? '' : ', or whether they changed'}. Read the migrations
+          in the repository before you acknowledge.
         </div>
       ) : (
         <>
