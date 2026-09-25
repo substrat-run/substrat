@@ -726,6 +726,9 @@ function Timeline({ items }: { items: Array<{ dot: TimelineDot; body: React.Reac
   );
 }
 
+/** Versions read while looking for the newest admitted push, before the look is given up. */
+const ADMITTED_SEARCH_CAP = 200;
+
 export function Deployments({ app }: { app: AppRow }) {
   const [dep, setDep] = useState<AppDeployments | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -733,6 +736,8 @@ export function Deployments({ app }: { app: AppRow }) {
   const [updating, setUpdating] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // The look for the newest admitted push (below) ran out — a failed read or the page cap.
+  const [searchGaveUp, setSearchGaveUp] = useState(false);
   // Which version's static-asset panel is open (#340) — one at a time, fetched on open
   // rather than with the versions list: an asset manifest is per version and most rows
   // are never expanded.
@@ -752,6 +757,7 @@ export function Deployments({ app }: { app: AppRow }) {
       return;
     }
     let live = true;
+    setSearchGaveUp(false);
     api
       .appDeployments(app.app_scope_id)
       .then((d) => live && setDep(d))
@@ -787,6 +793,21 @@ export function Deployments({ app }: { app: AppRow }) {
     }
   };
 
+  // "Is an admitted push waiting for prod?" is a question about the NEWEST admitted version,
+  // and the first page can hold only pending or rejected pushes. Keep walking older pages
+  // until one is found, the history ends, or the cap is hit — the answer must come from
+  // complete data, or the card must say it does not have it (#1782 review).
+  const lookingForAdmitted = !DEV_MOCK && !!dep && !!dep.nextCursor && !dep.versions.some((v) => v.admission === 'admitted') && !searchGaveUp;
+  useEffect(() => {
+    if (!lookingForAdmitted || loadingOlder || !dep) return;
+    if (dep.versions.length >= ADMITTED_SEARCH_CAP) {
+      setSearchGaveUp(true);
+      return;
+    }
+    loadOlderVersions().catch(() => setSearchGaveUp(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lookingForAdmitted, loadingOlder, dep]);
+
   if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load deployments — {err}</div>;
   if (!dep) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading deployments…</div>;
 
@@ -808,6 +829,9 @@ export function Deployments({ app }: { app: AppRow }) {
   // The stuck state this tab must not leave unexplained: the newest admitted version
   // isn't what prod points at, so no update can be offered until someone promotes it.
   const newestAdmitted = dep.versions.find((v) => v.admission === 'admitted');
+  // Newest-first pages: the first admitted one found IS the newest. Not found and more
+  // history unread is "not known", never "there is none".
+  const admittedKnown = !!newestAdmitted || !dep.nextCursor;
   const awaitingPromotion = !updateAvailable && !!newestAdmitted && newestAdmitted.id !== prod?.versionId;
   // Prod was promoted but its in-place serve failed (#321): the channel points at a version
   // the scopes are NOT running. Surface it — this is exactly the silent state the field
@@ -821,6 +845,16 @@ export function Deployments({ app }: { app: AppRow }) {
   const updateIn = updatePlacement(updateAvailable, !!prodVersion);
   const target: ComparisonTarget | null =
     updateIn === 'card' && prodVersion ? { version: prodVersion, state: 'update' } : awaitingPromotion && newestAdmitted ? { version: newestAdmitted, state: 'unpromoted' } : null;
+  // Why the card has no target to name, when the reason is that the tab does not KNOW —
+  // and must not fall back to "latest" for it.
+  const unknown: string | null =
+    updateIn === 'bar'
+      ? 'An update is available, but prod’s version is older than the releases loaded here, so it cannot be compared. Use “Update to latest” above.'
+      : target === null && !updateAvailable && !admittedKnown
+        ? searchGaveUp
+          ? 'Could not check whether a newer version is waiting for prod.'
+          : 'Checking for a newer version…'
+        : null;
   const pickVersion = (versionId: string) => {
     setPicked(versionId);
     document.getElementById(`version-${versionId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -925,6 +959,7 @@ export function Deployments({ app }: { app: AppRow }) {
         dep={dep}
         running={running}
         target={target}
+        unknown={unknown}
         ledger={ledger}
         actions={
           target?.state === 'update' ? (

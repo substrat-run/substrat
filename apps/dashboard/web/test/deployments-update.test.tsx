@@ -69,6 +69,9 @@ describe('Deployments tab — the Update action', () => {
     expect(updateButtons()).toHaveLength(1);
     expect(updateButtons()[0]!.textContent).toBe('Update to latest');
     expect(runningBar().contains(updateButtons()[0]!)).toBe(true);
+    // Not knowing what prod is must never read as being current.
+    expect(container.textContent).not.toContain('Running the latest version');
+    expect(comparisonHeader().parentElement!.textContent).toContain('An update is available');
   });
 
   it('(c) no update: no Update button anywhere', async () => {
@@ -90,5 +93,28 @@ describe('Deployments tab — the Update action', () => {
     root = createRoot(container);
     await render({ ...MOCK_APP_DEPLOYMENTS, boundVersionId: V300, listed: true });
     expect(comparisonHeader().textContent).toContain('the Substrat team promotes it to prod');
+  });
+
+  describe('the newest admitted push is not on the first page', () => {
+    const pending = { ...MOCK_APP_DEPLOYMENTS.versions[0]!, id: 'PENDING1', version: '0.5.0-pending', admission: 'pending' as const };
+    const page1: AppDeployments = { ...MOCK_APP_DEPLOYMENTS, boundVersionId: V300, versions: [pending], nextCursor: 'c1' };
+    const page2: AppDeployments = { ...MOCK_APP_DEPLOYMENTS, boundVersionId: V300, nextCursor: null };
+
+    it('walks older pages until an admitted version is found, then offers the promotion', async () => {
+      const spy = vi.spyOn(api, 'appDeployments').mockImplementation((_s, o) => Promise.resolve(o?.cursor === 'c1' ? page2 : page1));
+      await act(async () => root.render(<Deployments app={app} />));
+      expect(spy).toHaveBeenCalledTimes(2);
+      const header = comparisonHeader();
+      expect(header.textContent).toContain('0.4.0-beta.7');
+      expect([...header.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Promote on Verticals']);
+    });
+
+    it('when the look fails, says it does not know rather than claiming the latest', async () => {
+      vi.spyOn(api, 'appDeployments').mockImplementation((_s, o) => (o?.cursor === 'c1' ? Promise.reject(new Error('down')) : Promise.resolve(page1)));
+      await act(async () => root.render(<Deployments app={app} />));
+      expect(container.textContent).toContain('Could not check whether a newer version is waiting for prod.');
+      expect(container.textContent).not.toContain('Running the latest version');
+      expect(updateButtons()).toHaveLength(0);
+    });
   });
 });

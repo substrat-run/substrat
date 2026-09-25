@@ -123,6 +123,7 @@ export function ReleaseComparisonCard({
   dep,
   running,
   target,
+  unknown,
   ledger,
   actions,
 }: {
@@ -130,6 +131,8 @@ export function ReleaseComparisonCard({
   dep: AppDeployments;
   running: DeploymentVersion | undefined;
   target: ComparisonTarget | null;
+  /** Set when there is no target because the tab does not know it — never rendered as "latest". */
+  unknown?: string | null;
   ledger: Ledger | null;
   actions?: ReactNode;
 }) {
@@ -219,7 +222,7 @@ export function ReleaseComparisonCard({
     };
   }, [app.app_scope_id, dep.slug, dep.owned, targetId, targetState, targetMigrates]);
 
-  if (!running && !target) return null;
+  if (!running && !target && !unknown) return null;
   const wentLive = (id: string) => ledger?.rows.find((r) => r.versionId === id)?.wentLiveAt ?? null;
   const runningLive = running ? wentLive(running.id) : null;
   const columns: Array<[string, DiffColumn]> = [
@@ -278,6 +281,8 @@ export function ReleaseComparisonCard({
             </div>
           ))}
         </div>
+      ) : unknown ? (
+        <div style={{ padding: '12px 16px', fontSize: 12.5, color: 'var(--text-secondary)' }}>{unknown}</div>
       ) : (
         <div style={{ padding: '12px 16px', fontSize: 12.5, color: 'var(--text-secondary)' }}>
           Running the latest version — nothing to update to.
