@@ -1,6 +1,6 @@
 import { socialProviderList } from 'better-auth/social-providers';
 import type { GenericOAuthConfig } from 'better-auth/plugins/generic-oauth';
-import { isAllowedEndpoint, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
+import { isAllowedEndpoint, issuerRefusal, sameIssuer } from '@substrat-run/oidc-rp/discovery';
 import type { SqlExec } from './introspect.js';
 
 /**
@@ -319,6 +319,9 @@ function judge(row: ProviderRow): Judgement {
   if (!stored || typeof stored !== 'object') return { refusal: 'its stored discovery document is not readable' };
   const issuer = stored.issuer;
   if (typeof issuer !== 'string' || issuerRefusal(issuer)) return { refusal: 'its stored issuer is not usable' };
+  // The document's issuer must be the configured one, as `readDiscovery` required at save time:
+  // a row edited or imported with the two apart is not the provider its endpoints belong to.
+  if (!sameIssuer(issuerOf(row.issuer!), issuer)) return { refusal: 'its stored issuer is not the configured one' };
   if (typeof stored.authorization_endpoint !== 'string' || typeof stored.token_endpoint !== 'string') {
     return { refusal: 'its stored endpoints are incomplete' };
   }

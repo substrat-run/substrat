@@ -734,6 +734,8 @@ describe('rows becoming Better Auth config', () => {
       ['plaintext end-session', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, end_session_endpoint: 'http://id.acme.test/logout' }) }],
       ['issuer carrying credentials', { issuer: 'https://user:hunter2@id.acme.test' }],
       ['stored issuer not usable', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, issuer: 'http://id.acme.test' }) }],
+      ['stored issuer is another one', { endpoints: JSON.stringify({ ...ACME_DISCOVERY, issuer: 'https://other.acme.test' }) }],
+      ['configured issuer is another one', { issuer: 'https://id.acme.test/tenant' }],
       ['nothing stored', { endpoints: null }],
       ['unreadable', { endpoints: '{not json' }],
     ];
@@ -759,6 +761,11 @@ describe('rows becoming Better Auth config', () => {
       endpoints: JSON.stringify({ issuer: dev, authorization_endpoint: `${dev}/auth`, token_endpoint: `${dev}/token` }),
     });
     expect(genericEndpointsRefusal(loopback)).toBeNull();
+    // The issuers compare the way discovery compares them: host case, a default port, one
+    // trailing slash and a pasted well-known suffix do not make them different.
+    for (const configured of ['https://ID.acme.test:443/', 'https://id.acme.test/.well-known/openid-configuration']) {
+      expect(genericEndpointsRefusal(genericRow({ issuer: configured })), configured).toBeNull();
+    }
     // A catalogue row is never judged by this.
     expect(genericEndpointsRefusal(row())).toBeNull();
   });

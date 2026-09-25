@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { readDiscovery, type DiscoveryFetch } from '../src/discovery.js';
+import { readDiscovery, sameIssuer, type DiscoveryFetch } from '../src/discovery.js';
 
 /**
  * `readDiscovery` — the uncached read `discoverIssuer` caches, for the paths that must see the
@@ -108,5 +108,15 @@ describe('readDiscovery', () => {
   it('refuses a body that is not a JSON object', async () => {
     const { fetch } = stub(() => Response.json(null));
     await expect(readDiscovery(ISSUER, { fetch })).rejects.toThrow(/not a JSON object/);
+  });
+});
+
+describe('sameIssuer', () => {
+  it('compares the way discovery does, and never matches an invalid identifier', () => {
+    expect(sameIssuer('https://Issuer.test:443/', ISSUER)).toBe(true);
+    expect(sameIssuer(`${ISSUER}/Tenant`, `${ISSUER}/tenant`)).toBe(false);
+    expect(sameIssuer('https://other.test', ISSUER)).toBe(false);
+    expect(sameIssuer(`https://u:p@issuer.test`, `https://u:p@issuer.test`)).toBe(false);
+    expect(sameIssuer('not a url', 'not a url')).toBe(false);
   });
 });

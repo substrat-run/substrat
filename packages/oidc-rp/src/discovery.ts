@@ -107,6 +107,16 @@ function issuerKey(issuer: string): string | null {
 }
 
 /**
+ * Do `a` and `b` name the same issuer, compared the way discovery compares them (`issuerKey`)?
+ * False when either is not a valid issuer identifier. For a caller holding an issuer a document
+ * stated earlier — a stored row — that must still be the one it is configured with.
+ */
+export function sameIssuer(a: string, b: string): boolean {
+  const key = issuerKey(a);
+  return key !== null && key === issuerKey(b);
+}
+
+/**
  * Why `issuer` cannot be a configured issuer, or null when it can: it is a valid issuer
  * identifier (no query, fragment or userinfo) and `https`, or a loopback `http` dev issuer.
  * The one predicate for every place an issuer is accepted, so a save-time check can never
