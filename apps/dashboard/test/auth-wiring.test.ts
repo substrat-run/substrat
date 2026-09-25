@@ -9,30 +9,56 @@ import { registerOidcClient, authConfigFor } from '../src/auth-wiring.js';
  */
 
 const ISSUER = 'https://auth-acme.global.substrat.test';
+const REGISTER = `${ISSUER}/api/auth/oauth2/register`;
+const DOC = {
+  issuer: ISSUER,
+  authorization_endpoint: `${ISSUER}/api/auth/oauth2/authorize`,
+  token_endpoint: `${ISSUER}/api/auth/oauth2/token`,
+  jwks_uri: `${ISSUER}/api/auth/jwks`,
+  registration_endpoint: REGISTER,
+};
 
-function issuerFetch(overrides: { registration?: () => unknown } = {}): {
+/**
+ * An issuer, as the injected fetch sees it. `discovery` replaces the document (or the whole
+ * response); anything that is not the discovery URL is taken as a registration POST — so a
+ * registration sent somewhere it should not be is RECORDED, not thrown away as unexpected.
+ */
+function issuerFetch(
+  overrides: {
+    discovery?: () => Response;
+    doc?: Record<string, unknown>;
+    registration?: () => unknown;
+  } = {},
+): {
   fetchImpl: typeof fetch;
   registrations: Array<Record<string, unknown>>;
+  posts: Array<{ url: string; redirect?: string }>;
+  discoveries: Array<{ url: string; redirect?: string }>;
 } {
   const registrations: Array<Record<string, unknown>> = [];
-  const fetchImpl = (async (input: unknown, init?: { body?: unknown }) => {
+  const posts: Array<{ url: string; redirect?: string }> = [];
+  const discoveries: Array<{ url: string; redirect?: string }> = [];
+  const fetchImpl = (async (input: unknown, init?: RequestInit) => {
     const url = String(input);
-    if (url === `${ISSUER}/.well-known/openid-configuration`) {
-      return Response.json({ issuer: ISSUER, registration_endpoint: `${ISSUER}/api/auth/oauth2/register` });
+    if (url.endsWith('/.well-known/openid-configuration')) {
+      discoveries.push({ url, redirect: init?.redirect });
+      if (overrides.discovery) return overrides.discovery();
+      return Response.json(overrides.doc ?? DOC);
     }
-    if (url === `${ISSUER}/api/auth/oauth2/register`) {
-      registrations.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      if (overrides.registration) return overrides.registration() as Response;
-      return Response.json({ client_id: 'generated-id', client_secret: 'generated-secret' });
-    }
-    throw new Error(`unexpected fetch: ${url}`);
+    posts.push({ url, redirect: init?.redirect });
+    registrations.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    if (overrides.registration) return overrides.registration() as Response;
+    return Response.json({ client_id: 'generated-id', client_secret: 'generated-secret' });
   }) as unknown as typeof fetch;
-  return { fetchImpl, registrations };
+  return { fetchImpl, registrations, posts, discoveries };
 }
+
+const register = (fetchImpl: typeof fetch, issuer = ISSUER) =>
+  registerOidcClient(issuer, { appName: 'X', redirectUri: 'https://x/cb' }, fetchImpl);
 
 describe('registerOidcClient', () => {
   it('registers at the DISCOVERED endpoint with the callback redirect and secret-post auth', async () => {
-    const { fetchImpl, registrations } = issuerFetch();
+    const { fetchImpl, registrations, posts, discoveries } = issuerFetch();
     const client = await registerOidcClient(
       ISSUER,
       { appName: 'People', redirectUri: 'https://people-acme.global.substrat.test/api/auth/callback' },
@@ -48,18 +74,86 @@ describe('registerOidcClient', () => {
         token_endpoint_auth_method: 'client_secret_post',
       },
     ]);
+    // Neither request follows a redirect: the discovery GET is walked same-origin by
+    // oidc-rp, and the POST's response carries the client secret.
+    expect(discoveries).toEqual([{ url: `${ISSUER}/.well-known/openid-configuration`, redirect: 'manual' }]);
+    expect(posts).toEqual([{ url: REGISTER, redirect: 'manual' }]);
   });
 
   it('surfaces a refusal with the issuer named, and rejects a credential-less response', async () => {
     const refusing = issuerFetch({ registration: () => Response.json({ error: 'registration disabled' }, { status: 403 }) });
-    await expect(
-      registerOidcClient(ISSUER, { appName: 'X', redirectUri: 'https://x/cb' }, refusing.fetchImpl),
-    ).rejects.toThrow(/registration at .* failed \(403\)/);
+    await expect(register(refusing.fetchImpl)).rejects.toThrow(/registration at .* failed \(403\)/);
 
     const empty = issuerFetch({ registration: () => Response.json({}) });
-    await expect(
-      registerOidcClient(ISSUER, { appName: 'X', redirectUri: 'https://x/cb' }, empty.fetchImpl),
-    ).rejects.toThrow(/no client credentials/);
+    await expect(register(empty.fetchImpl)).rejects.toThrow(/no client credentials/);
+  });
+
+  it('treats a redirect from the registration endpoint as a failure', async () => {
+    const moved = issuerFetch({
+      registration: () => new Response(null, { status: 307, headers: { location: 'https://elsewhere.test/register' } }),
+    });
+    await expect(register(moved.fetchImpl)).rejects.toThrow(/failed \(307\)/);
+    expect(moved.posts).toEqual([{ url: REGISTER, redirect: 'manual' }]);
+  });
+
+  it('refuses a plaintext registration_endpoint from an https issuer, and sends nothing to it', async () => {
+    for (const plaintext of ['http://localhost:8080/register', 'http://auth-acme.global.substrat.test/register']) {
+      const f = issuerFetch({ doc: { ...DOC, registration_endpoint: plaintext } });
+      await expect(register(f.fetchImpl), plaintext).rejects.toThrow(/registration_endpoint is not https/);
+      expect(f.posts).toEqual([]);
+    }
+    const notUrl = issuerFetch({ doc: { ...DOC, registration_endpoint: 42 } });
+    await expect(register(notUrl.fetchImpl)).rejects.toThrow(/registration_endpoint/);
+    expect(notUrl.posts).toEqual([]);
+  });
+
+  it('admits a plaintext loopback registration_endpoint for a loopback dev issuer (the positive twin)', async () => {
+    const dev = 'http://localhost:8879';
+    const f = issuerFetch({
+      doc: {
+        issuer: dev,
+        authorization_endpoint: `${dev}/authorize`,
+        token_endpoint: `${dev}/token`,
+        jwks_uri: `${dev}/jwks`,
+        registration_endpoint: `${dev}/register`,
+      },
+    });
+    expect(await register(f.fetchImpl, dev)).toEqual({ clientId: 'generated-id', clientSecret: 'generated-secret' });
+    expect(f.posts).toEqual([{ url: `${dev}/register`, redirect: 'manual' }]);
+  });
+
+  it('refuses a document that names a different issuer, or is served from off the issuer origin', async () => {
+    const other = issuerFetch({ doc: { ...DOC, issuer: 'https://other.test' } });
+    await expect(register(other.fetchImpl)).rejects.toThrow(/different issuer/);
+    expect(other.posts).toEqual([]);
+
+    const away = issuerFetch({
+      discovery: () =>
+        new Response(null, { status: 302, headers: { location: 'https://other.test/.well-known/openid-configuration' } }),
+    });
+    await expect(register(away.fetchImpl)).rejects.toThrow(/away from its origin/);
+    expect(away.discoveries).toHaveLength(1);
+    expect(away.posts).toEqual([]);
+  });
+
+  it('does not fall back when discovery fails: an issuer a login would refuse gets no client', async () => {
+    const down = issuerFetch({ discovery: () => new Response('down', { status: 503 }) });
+    await expect(register(down.fetchImpl)).rejects.toThrow(/discovery failed \(503\)/);
+    expect(down.posts).toEqual([]);
+  });
+
+  it('falls back to the default path ON THE ISSUER ORIGIN when the document names no registration_endpoint', async () => {
+    const { registration_endpoint: _omit, ...withoutRegistration } = DOC;
+    const f = issuerFetch({ doc: withoutRegistration });
+    expect(await register(f.fetchImpl, `${ISSUER}/`)).toEqual({ clientId: 'generated-id', clientSecret: 'generated-secret' });
+    expect(f.posts).toEqual([{ url: REGISTER, redirect: 'manual' }]);
+  });
+
+  it('refuses a plaintext issuer before anything is fetched', async () => {
+    const f = issuerFetch();
+    await expect(register(f.fetchImpl, 'http://auth-acme.global.substrat.test')).rejects.toThrow(/not https/);
+    expect(f.discoveries).toEqual([]);
+    expect(f.posts).toEqual([]);
   });
 });
 

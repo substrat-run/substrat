@@ -9,9 +9,9 @@ import { buildAuth, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
 import {
   PROVIDER_CATALOGUE,
-  discoveryUrlOf,
   genericProvidersFrom,
   isReservedProviderId,
+  issuerOf,
   publicProvidersFrom,
   readProviders,
   socialProvidersFrom,
@@ -242,13 +242,18 @@ const supabaseRow = (over: Partial<ProviderRow> = {}): ProviderRow =>
  * discovery fetch at all.
  */
 const discoveryHits: string[] = [];
+/** Per-test discovery answers, by URL — checked before the fixed ones below. */
+const served = new Map<string, () => Response>();
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   discoveryHits.length = 0;
+  served.clear();
   globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const target = String(input instanceof Request ? input.url : input);
     if (target.includes('/.well-known/openid-configuration')) {
       discoveryHits.push(target);
+      const answer = served.get(target);
+      if (answer) return answer();
       if (target === 'https://id.acme.test/.well-known/openid-configuration') {
         return Response.json(ACME_DISCOVERY);
       }
@@ -277,6 +282,8 @@ beforeEach(() => {
           issuer: 'http://localhost:8080/realms/dev',
           authorization_endpoint: 'http://localhost:8080/realms/dev/protocol/openid-connect/auth',
           token_endpoint: 'http://localhost:8080/realms/dev/protocol/openid-connect/token',
+          jwks_uri: 'http://localhost:8080/realms/dev/protocol/openid-connect/certs',
+          userinfo_endpoint: 'http://localhost:8080/realms/dev/protocol/openid-connect/userinfo',
         });
       }
       return new Response('not found', { status: 404 });
@@ -447,6 +454,69 @@ describe('the providers admin surface', () => {
     expect(sneaky.status).toBe(400);
     expect(((await sneaky.json()) as { error: string }).error).toContain('https');
     expect(readProviders(sql)).toEqual([]);
+  });
+
+  it('holds each endpoint to the ISSUER: an https upstream cannot name a plaintext loopback one', async () => {
+    const cookie = await signInAs(ADMIN);
+    // Plaintext loopback is the dev exception for a loopback ISSUER. Judged per endpoint, an
+    // https upstream could name one, and the client secret, a code or a token would go there.
+    for (const key of ['authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'end_session_endpoint', 'jwks_uri']) {
+      served.set('https://id.acme.test/.well-known/openid-configuration', () =>
+        Response.json({ ...ACME_DISCOVERY, [key]: 'http://localhost:9999/x' }),
+      );
+      const res = await addAcme(cookie);
+      expect(res.status, key).toBe(400);
+      expect(((await res.json()) as { error: string }).error, key).toContain(key);
+    }
+    // `jwks_uri` is required, as every platform relying party requires it.
+    const { jwks_uri: _omit, ...noJwks } = ACME_DISCOVERY;
+    served.set('https://id.acme.test/.well-known/openid-configuration', () => Response.json(noJwks));
+    const missing = await addAcme(cookie);
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { error: string }).error).toContain('jwks_uri');
+    expect(readProviders(sql)).toEqual([]);
+    // The positive twin is the loopback Keycloak below: a loopback issuer's own plaintext
+    // loopback endpoints are admitted.
+  });
+
+  it('follows a redirect only while it stays on the issuer origin', async () => {
+    const cookie = await signInAs(ADMIN);
+    served.set('https://id.acme.test/.well-known/openid-configuration', () =>
+      new Response(null, { status: 302, headers: { location: 'https://elsewhere.test/.well-known/openid-configuration' } }),
+    );
+    const away = await addAcme(cookie);
+    expect(away.status).toBe(400);
+    expect(((await away.json()) as { error: string }).error).toContain('away from its origin');
+    // The off-origin document was never asked for.
+    expect(discoveryHits).toEqual(['https://id.acme.test/.well-known/openid-configuration']);
+    expect(readProviders(sql)).toEqual([]);
+
+    // Positive twin: a same-origin bounce is followed, and the document it lands on is used.
+    discoveryHits.length = 0;
+    served.set('https://id.acme.test/.well-known/openid-configuration', () =>
+      new Response(null, { status: 301, headers: { location: '/.well-known/openid-configuration/' } }),
+    );
+    served.set('https://id.acme.test/.well-known/openid-configuration/', () => Response.json(ACME_DISCOVERY));
+    expect((await addAcme(cookie)).status).toBe(201);
+    expect(discoveryHits).toEqual([
+      'https://id.acme.test/.well-known/openid-configuration',
+      'https://id.acme.test/.well-known/openid-configuration/',
+    ]);
+  });
+
+  it('refuses an issuer URL carrying credentials before anything is fetched, and does not echo it', async () => {
+    const cookie = await signInAs(ADMIN);
+    const res = await addAcme(cookie, { issuer: 'https://user:hunter2@id.acme.test' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).not.toContain('hunter2');
+    expect(discoveryHits).toEqual([]);
+    expect(readProviders(sql)).toEqual([]);
+  });
+
+  it('takes a pasted discovery URL as its issuer, and reads the document that issuer serves', async () => {
+    const cookie = await signInAs(ADMIN);
+    expect((await addAcme(cookie, { issuer: 'https://id.acme.test/.well-known/openid-configuration' })).status).toBe(201);
+    expect(discoveryHits).toEqual(['https://id.acme.test/.well-known/openid-configuration']);
   });
 
   it('refuses the ids and issuers that would go wrong later, at save time', async () => {
@@ -643,14 +713,13 @@ describe('rows becoming Better Auth config', () => {
     }
   });
 
-  it('derives the discovery URL from an issuer without doubling a pasted one', () => {
-    expect(discoveryUrlOf('https://id.acme.test')).toBe('https://id.acme.test/.well-known/openid-configuration');
-    expect(discoveryUrlOf('https://id.acme.test/')).toBe('https://id.acme.test/.well-known/openid-configuration');
-    expect(discoveryUrlOf('https://kc.acme.test/realms/main')).toBe(
-      'https://kc.acme.test/realms/main/.well-known/openid-configuration',
-    );
-    expect(discoveryUrlOf('https://id.acme.test/.well-known/openid-configuration')).toBe(
-      'https://id.acme.test/.well-known/openid-configuration',
+  it('derives the issuer from a pasted discovery URL without doubling the well-known suffix', () => {
+    expect(issuerOf('https://id.acme.test')).toBe('https://id.acme.test');
+    expect(issuerOf('https://id.acme.test/')).toBe('https://id.acme.test');
+    expect(issuerOf('https://kc.acme.test/realms/main')).toBe('https://kc.acme.test/realms/main');
+    expect(issuerOf('https://id.acme.test/.well-known/openid-configuration')).toBe('https://id.acme.test');
+    expect(issuerOf('https://kc.acme.test/realms/main/.well-known/openid-configuration')).toBe(
+      'https://kc.acme.test/realms/main',
     );
   });
 

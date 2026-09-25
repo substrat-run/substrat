@@ -133,24 +133,16 @@ export function isReservedProviderId(providerId: string): boolean {
 export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 
 /**
- * The rule every URL an operator can point this issuer at must pass: HTTPS, or HTTP on a
- * loopback host so a local Keycloak works in dev. Applied to the issuer URL at save time AND
- * to every endpoint its discovery document declares — an HTTPS issuer must not be able to
- * route authorization codes or client credentials to a plain-HTTP endpoint.
+ * The issuer an operator's input names. Operators paste the ISSUER (what OIDC calls it, what a
+ * relying party is configured with, what this issuer's own dashboard displays about itself),
+ * but a pasted discovery URL is recognised and cut back to its issuer rather than doubled into
+ * `/.well-known/.well-known/…`. Trailing slashes go too. Discovery then derives the well-known
+ * URL from the issuer itself, so the document is always the one the issuer serves.
  */
-export function isHttpsOrLoopback(url: URL): boolean {
-  return url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
-}
-
-/**
- * The discovery document for an issuer URL. Operators paste the ISSUER (what OIDC calls it,
- * what a relying party is configured with, what this issuer's own dashboard displays about
- * itself) and the well-known suffix is derived — but a pasted discovery URL is recognised
- * rather than doubled into `/.well-known/.well-known/…`.
- */
-export function discoveryUrlOf(issuer: string): string {
-  const trimmed = issuer.replace(/\/+$/, '');
-  return trimmed.includes('/.well-known/') ? trimmed : `${trimmed}/.well-known/openid-configuration`;
+export function issuerOf(input: string): string {
+  const trimmed = input.trim().replace(/\/+$/, '');
+  const wellKnown = trimmed.indexOf('/.well-known/');
+  return wellKnown === -1 ? trimmed : trimmed.slice(0, wellKnown);
 }
 
 /**
