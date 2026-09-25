@@ -215,6 +215,8 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
     importDump(tables: ScopeDumpTable[]): Promise<void>;
   };
   const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`version-backfill-${ulid()}`));
+  const inDirectory = <R>(fn: (d: Directory, state: DurableObjectState) => R | Promise<R>) =>
+    runInDurableObject(stub, (instance, state) => fn(instance as unknown as Directory, state));
   const sqlOf = (n: number) => `-- ${n}\n` + 'CREATE TABLE "t" ("id" TEXT);\n'.repeat(1000); // ~30 KB, escape-heavy
   const migrationsOf = (i: number) =>
     [0, 1, 2].map((m) => ({ moduleId: 'helpdesk', version: `000${m}`, sql: sqlOf(i * 10 + m) }));
@@ -238,7 +240,7 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
   let before: ScopeDumpTable[] = [];
 
   beforeAll(async () => {
-    await runInDurableObject(stub, (instance: Directory, state) => {
+    await inDirectory((instance, state) => {
       ids.forEach((id, i) =>
         state.storage.sql.exec(
           `INSERT INTO vertical_versions (id, vertical_slug, version, manifest_digest, permission_digest,
@@ -252,7 +254,7 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
   });
 
   it('constructs over them without moving a single version, and arms the alarm', async () => {
-    await runInDurableObject(stub, async (_instance, state) => {
+    await inDirectory(async (_instance, state) => {
       await state.storage.deleteAlarm();
       expect(unsplit(state)).toBe(ids.length);
       const deployed = new ControlPlaneDO(state, env) as Directory;
@@ -265,7 +267,7 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
   });
 
   it('one alarm moves one batch, and every read is right while the rest wait', async () => {
-    await runInDurableObject(stub, async (instance: Directory, state) => {
+    await inDirectory(async (instance, state) => {
       await instance.alarm();
       expect(unsplit(state)).toBe(ids.length - 25);
       expect(await state.storage.getAlarm()).not.toBeNull(); // more to do, so it re-armed
@@ -275,7 +277,7 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
 
   it('the alarms run it to the end, and then stop arming', async () => {
     for (let i = 0; i < 10 && (await runDurableObjectAlarm(stub)); i++);
-    await runInDurableObject(stub, async (instance: Directory, state) => {
+    await inDirectory(async (instance, state) => {
       expect(unsplit(state)).toBe(0);
       expect(await state.storage.getAlarm()).toBeNull();
       expect(reads(instance)).toEqual(want);
@@ -292,14 +294,14 @@ describe('the #1764 backfill: bounded, resumable, and right before, during and a
   });
 
   it('a restore of a dump taken before the backfill comes back unsplit, and is moved again', async () => {
-    await runInDurableObject(stub, async (instance: Directory, state) => {
+    await inDirectory(async (instance, state) => {
       await instance.importDump(before);
       expect(unsplit(state)).toBe(ids.length);
       expect(await state.storage.getAlarm()).not.toBeNull();
       expect(reads(instance)).toEqual(want);
     });
     for (let i = 0; i < 10 && (await runDurableObjectAlarm(stub)); i++);
-    await runInDurableObject(stub, async (instance: Directory, state) => {
+    await inDirectory(async (instance, state) => {
       expect(unsplit(state)).toBe(0);
       expect(reads(instance)).toEqual(want);
       // A dump taken AFTER carries the rows, and restores to the same answers with nothing to move.
