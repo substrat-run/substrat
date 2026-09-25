@@ -1,3 +1,5 @@
+import { readObsQuery, type ObsQuery } from './observability-query';
+
 /**
  * The Observability menu's children (#1767), and which of the page's sub-views each one
  * owns. The redesign (#1752) splits the one page into Pulse · Processes · Logs (Findings
@@ -36,4 +38,22 @@ export function defaultView(section: ObsSection): string {
 
 export function sectionLabel(section: ObsSection): string {
   return OBS_SECTIONS.find((s) => s.key === section)!.label;
+}
+
+/**
+ * Where a menu child (or the breadcrumb's bare Observability, `section` absent) leads
+ * from the page currently open. The app filter and the time range carry over, because
+ * "what was happening then, in this app" is one question asked of several pages. The
+ * range carries in both of its spellings: the explicit `from`/`to` window, or a
+ * relative `hours` preset. Dropping the preset would silently reset a 1h or 3d view to
+ * the default 24h. Filters that belong to one sub-view (level, search, event type, …)
+ * are left behind.
+ */
+export function sectionQuery(currentSearch: string, section?: ObsSection): ObsQuery {
+  const q = readObsQuery(currentSearch);
+  return {
+    ...(q.app ? { app: q.app } : {}),
+    ...(section ? { view: defaultView(section) } : {}),
+    ...(q.from && q.to ? { from: q.from, to: q.to } : q.hours ? { hours: q.hours } : {}),
+  };
 }
