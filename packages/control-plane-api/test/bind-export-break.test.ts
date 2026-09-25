@@ -436,13 +436,13 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const manifest = (version: string, exported: boolean) => ({
+  const manifest = (version: string, exported: boolean, migration = 'g1') => ({
     version,
     entry: 'worker.js',
     compatibilityDate: '2025-01-01',
     doClasses: ['ScopeDO'],
     bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
-    digests: { manifest: `m-${version}`, permission: `p-${version}`, migration: 'g1' },
+    digests: { manifest: `m-${version}`, permission: `p-${version}`, migration },
     registry: {
       permissions: [{ key: 'customer:read', description: 'read customers', declaredBy: ['@test/crm'] }],
       roles: [],
@@ -515,5 +515,52 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     const moved = await host.admin.getScopeRecord(staff, t, sc);
     expect(moved).toMatchObject({ servingRef: stable, verticalVersionId: v2.id });
     expect(scripts.get(stable)?.get(sc)?.[0]?.rows).toEqual([['Acme AB']]);
+  });
+
+  it("a promote acknowledging a digest change moves its owned installs: that acknowledgement is not the adopt's to carry", async () => {
+    // The digest acknowledgements are the promote's own. A bind's acknowledgement is strict, so
+    // forwarding the promote's whole acknowledgement refused every such promote after its serve.
+    const pin = `digest-${ulid().slice(-6).toLowerCase()}`;
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: pin, name: pin });
+    const v1 = await push(pin, manifest('0.1.0', false));
+    const slug = v1.verticalSlug;
+    expect((await promote(slug, v1.id)).status).toBe(200);
+    const stable = stableDeploymentRefFor(slug);
+    // One install born on the serving script, one legacy install still on its own version's.
+    const install = async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: slug });
+      await host.admin.activateScope(staff, t, s);
+      await host.admin.bindScopeVersion(staff, t, s, v1.id);
+      return s;
+    };
+    const onServing = await install();
+    const legacy = await install();
+    await host.admin.setScopeServingRef(staff, t, legacy, null);
+    ensure(deploymentRefFor(slug, v1.id)).set(legacy, [
+      { name: 'customers', ddl: 'CREATE TABLE customers(name TEXT)', columns: ['name'], rows: [['Acme AB']] },
+    ]);
+    const listScopes = vi.spyOn(host.admin, 'listScopes');
+    const backfillRan = () =>
+      listScopes.mock.calls.some(([, f]) => f?.vertical === slug && Array.isArray(f.status) && f.status.includes('provisioning'));
+    try {
+      for (const [version, migration, acknowledge] of [
+        ['0.2.0', 'g1', { permissionChange: true }],
+        ['0.3.0', 'g3', { permissionChange: true, migrationChange: true }],
+      ] as const) {
+        const next = await push(pin, manifest(version, false, migration));
+        listScopes.mockClear();
+        const res = await promote(slug, next.id, acknowledge);
+        expect(res.status).toBe(200);
+        expect(backfillRan()).toBe(true);
+        for (const s of [onServing, legacy]) {
+          expect(await host.admin.getScopeRecord(staff, t, s)).toMatchObject({ servingRef: stable, verticalVersionId: next.id });
+        }
+      }
+    } finally {
+      listScopes.mockRestore();
+    }
+    expect(scripts.get(stable)?.get(legacy)?.[0]?.rows).toEqual([['Acme AB']]);
   });
 });

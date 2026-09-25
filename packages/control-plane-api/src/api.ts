@@ -5198,7 +5198,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // dispatch-backed vertical (#321), in the correct order (serve → adopt → rebind),
         // so a legacy scope's data survives the promote instead of being stranded on a
         // fresh per-version script. Retry-safe: nothing rebound these scopes yet.
-        await adoptAndRebindOwnedScopes(c, slug, versionId, acknowledge);
+        // Only the export-break acknowledgement is the adopt's to carry: the digest ones are the
+        // promote's own, and a bind's strict acknowledgement refuses them (#1756).
+        await adoptAndRebindOwnedScopes(c, slug, versionId, acknowledge?.exportBreak ? { exportBreak: true } : undefined);
         // #825: and mint whatever THIS version newly declares for the tenants already
         // installed — after the serve, so the declaration being read is the one now live.
         backfill = await backfillFleetStores(c, slug);
