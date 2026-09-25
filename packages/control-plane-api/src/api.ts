@@ -2200,6 +2200,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Data landed — only now flip routing and move the version pointer.
     await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
     await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
+    // #1674: the scope now routes to a different store, so put the directory's recorded
+    // OFF positions back there — cheap and idempotent when the dump carried them.
+    await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
     return { servingRef: serving.ref, tables: restored.tables };
   };
 
@@ -2334,6 +2337,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // pre-migration state, and it is never deleted — that copy is the backout.
     await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
     await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
+    // #1674: re-assert the recorded OFF positions in the store the scope now routes to.
+    await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
     return { servingRef: serving.ref, versionId: serving.versionId, tables: restored.tables };
   };
 
@@ -4059,6 +4064,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const carry = async (): Promise<void> => {
       if (scope) await carryOntoVersion(c, scope, versionId);
     };
+    // #1674: after the bind, the scope may route to a different store (the carry's
+    // destination); put the directory's recorded OFF positions back there.
+    const reassert = async (): Promise<void> => {
+      if (scope) await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
+    };
     if (snapshot) {
       if (!scope) {
         return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
@@ -4084,10 +4094,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         await carry();
         await admin.bindScopeVersion(actor, tenantId, scopeId, versionId, { snapshot: true });
       }
+      await reassert();
       return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
     }
     await carry();
     await admin.bindScopeVersion(actor, tenantId, scopeId, versionId);
+    await reassert();
     return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
   });
 
@@ -6210,6 +6222,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // follows the bound version (its per-version script), not the prod serving script.
       if (existing.servingRef) await admin.setScopeServingRef(actor, tenantId, existing.id, null);
       await admin.bindScopeVersion(actor, tenantId, existing.id, opts.versionId);
+      // #1674: re-assert any recorded OFF in the script the preview now routes to.
+      await admin.reassertSystemSwitches(actor, { tenantId, scopeId: existing.id });
       // Renew (or clear) the preview's GC deadline so a reused preview does not silently die.
       await admin.setScopeExpiresAt(actor, tenantId, existing.id, expiresAt);
       const hostname = await bindPreviewHostname(actor, baseHostname, tenantId, existing.id, opts.tag, surface);

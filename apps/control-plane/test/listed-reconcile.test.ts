@@ -521,6 +521,70 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     });
   });
 
+  describe('adopt-serving (the scope starts routing to another store)', () => {
+    const ADOPT = `adopt-${suffix}`;
+    const REF = `${ADOPT}-serving`;
+    const legacy: ScopeId[] = [];
+    /** The serving script's copy of the data: the marker did not survive into it. */
+    const serving = {
+      exportScope: async (s: string) => ({ tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] }),
+      restoreScope: async (_t: string, s: string) => {
+        store.set(s, 'on');
+        return { tables: 0 };
+      },
+    } as unknown as VerticalClient;
+    const app = () =>
+      createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { [ADOPT]: serving },
+        resolveVerticalRef: async (ref) => (ref === REF ? serving : undefined),
+      });
+    beforeAll(async () => {
+      await host.admin.registerVertical(staff, { slug: ADOPT, name: 'Adopt', source: 'cli', ownerTenant: t });
+      // Two scopes born BEFORE the vertical serves in place: legacy, on per-version dispatch.
+      for (const switchedOff of [true, false]) {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: ADOPT });
+        await host.admin.activateScope(staff, t, s);
+        seat(s);
+        if (switchedOff) {
+          await host.admin.revokeFromSystem(staff, { moduleId: MODULE as never, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+        }
+        legacy.push(s);
+      }
+      const v = ulid();
+      await host.admin.publishVersion(staff, {
+        id: v,
+        verticalSlug: ADOPT,
+        version: '1.0.0',
+        manifestDigest: 'm',
+        permissionDigest: 'p',
+        migrationDigest: 'g',
+        deploymentRef: `${ADOPT}-1-0-0`,
+      });
+      await host.admin.admitVersion(staff, v).catch(() => undefined);
+      await host.admin.setVerticalServing(staff, ADOPT, { ref: REF, versionId: v, doClasses: ['ScopeDO'], migrationTag: 'v1' });
+    });
+    const adopt = async (s: ScopeId) => {
+      const res = await app().request(`/tenants/${t}/scopes/${s}/adopt-serving`, {
+        method: 'POST',
+        headers: { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(200);
+    };
+
+    it('a switched-off scope adopted onto a store that lost the marker comes back OFF', async () => {
+      await adopt(legacy[0]!);
+      expect(store.get(legacy[0]!)).toBe('off');
+    });
+
+    it('twin: with no record, the adopted scope stays on', async () => {
+      await adopt(legacy[1]!);
+      expect(store.get(legacy[1]!)).toBe('on');
+    });
+  });
+
   describe('the provision-tenant drain, re-drained with the same proposed ids', () => {
     const drain = (tenant: TenantId, s: ScopeId) =>
       provisionTenantHandler(deps(host))(
