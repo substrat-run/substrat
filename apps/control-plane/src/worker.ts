@@ -32,7 +32,7 @@ import {
   SWEEP_RUNS_KIND,
   connectorDispatchKind,
 } from '@substrat-run/contracts';
-import type { PlatformActorId, TenantId, ScopeId } from '@substrat-run/contracts';
+import type { ManifestImports, PlatformActorId, TenantId, ScopeId } from '@substrat-run/contracts';
 import {
   runPlatformSweep,
   runCrossVerticalFrom,
@@ -893,6 +893,13 @@ function eventDrainDelegationFor(env: Env): EventDrainDelegation | undefined {
 }
 
 /**
+ * What each pushed version imports (#1705 PR 2), kept for the life of this isolate. It is safe
+ * across requests because the answers are immutable facts about pushed code. It holds no I/O
+ * object (the reason this worker otherwise caches nothing, see `hostFor`), only parsed rows.
+ */
+const VERSION_IMPORTS = new Map<string, ManifestImports>();
+
+/**
  * The cross-vertical phase's platform half (#1705 PR 2), for both the scheduled sweep and the
  * router kick (`/internal/drain-scope` with `exports`). Every edge's two scopes live in vertical
  * deployments, so the reach goes over their `/internal` surface, resolved by the same ladder
@@ -911,6 +918,10 @@ function crossVerticalFor(env: Env, host: CloudflareScopeHost): CrossVerticalOpt
       admin: host.admin,
       actor: SWEEP_ACTOR,
       clientForScope: resolveVerticalForScopeFor(env),
+      // The unaudited registry read, cached per isolate: a pushed version's manifest never
+      // changes, so a pass over known versions reads nothing and writes no access row.
+      readImports: (slug, versionId) => host.versionImports(slug, versionId),
+      importsCache: VERSION_IMPORTS,
     }),
     ...(maxConsumers !== undefined ? { maxConsumers } : {}),
   };

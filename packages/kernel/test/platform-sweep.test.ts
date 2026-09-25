@@ -12,7 +12,7 @@ import {
   startPlatformSweeper,
 } from '../src/platform-sweep.js';
 import type { ConnectorSweeper, CrossVerticalReach, PlatformSweepOptions } from '../src/platform-sweep.js';
-import type { FetchLike, MigrateScopeOutcome, ScopeHost } from '../src/scope-host.js';
+import type { FetchLike, MigrateScopeOutcome, ScopeHost, SweepRunInput } from '../src/scope-host.js';
 
 /**
  * The orchestration, with fakes — that the pass enumerates, drains, dispatches by
@@ -1779,11 +1779,13 @@ describe('runPlatformSweep · cross-vertical cost (#1705)', () => {
 /**
  * #1705 PR 2 — the control plane's narrowing. On the hosted path every scope call is a Durable
  * Object wake plus an `/internal` hop, so which scopes the phase calls is decided from the
- * version registry, one read per distinct running version, and never by asking a scope.
+ * version registry, one read per distinct running version, and never by asking a scope. Only a
+ * version that says it imports nothing is dropped; one the registry cannot answer for is kept.
  */
 describe('registryImportCandidates (#1705 PR 2)', () => {
   const V1 = '01JZ0000000000000000000V01';
   const V2 = '01JZ0000000000000000000V02';
+  const BAD = '01JZ0000000000000000000BAD';
   const manifestImporting = (from: string[]) =>
     JSON.stringify({
       registry: {
@@ -1792,7 +1794,8 @@ describe('registryImportCandidates (#1705 PR 2)', () => {
         imports: from.map((f) => ({ from: f, type: 'crm.a', schemaVersion: 1, declaredBy: ['@x/board'] })),
       },
     });
-  const scopesOn = (n: number, versionId: string, extra: object = {}) =>
+  const manifestWithoutImports = JSON.stringify({ registry: { permissions: [], roles: [] } });
+  const scopesOn = (n: number, versionId: string | null, extra: object = {}) =>
     Array.from({ length: n }, () => ({
       id: sid(),
       tenantId: T,
@@ -1803,105 +1806,134 @@ describe('registryImportCandidates (#1705 PR 2)', () => {
       forkedFrom: null,
       ...extra,
     })) as unknown as Scope[];
-  /** A directory whose versions carry the given manifests, counting its reads. */
+  /**
+   * A registry whose versions carry the given manifests (`BAD` throws, as an unknown version
+   * does), counting its reads and the most reads ever in flight at once.
+   */
   const registry = (manifests: Record<string, string | null>, verticals: object[] = []) => {
     const reads: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
     const admin = {
       listVerticals: async () => {
         reads.push('listVerticals');
         return verticals;
       },
-      versionManifest: async (_a: unknown, _slug: string, versionId: string) => {
-        reads.push(`versionManifest:${versionId}`);
-        return manifests[versionId] ?? null;
-      },
     };
-    return { admin: admin as never, reads };
+    const readImports = async (_slug: string, versionId: string) => {
+      reads.push(`read:${versionId}`);
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight -= 1;
+      if (versionId === BAD) throw new Error(`unknown version ${versionId} for vertical 'acme/board'`);
+      return importsOfManifestJson(manifests[versionId] ?? null);
+    };
+    return { admin: admin as never, readImports, reads, peak: () => peak };
   };
-  const importsOf = importsOfManifestJson;
-  const hostWith = (scopes: Scope[]) => {
+  const hostWith = (scopes: Scope[], consumes: (scopeId: string) => { from: string; type: string; schemaVersion: number }[] = () => []) => {
     const called: string[] = [];
     const host = { admin: { listScopes: async () => scopes, listConnections: async () => [] } } as unknown as ScopeHost;
     const reachOver = (candidates: CrossVerticalReach['candidates']): CrossVerticalReach => ({
       candidates,
       importState: async (_t, s) => {
         called.push(s);
-        return { consumes: [], cursors: [] };
+        return { consumes: consumes(s) as never, cursors: [] };
       },
-      readExports: async () => {
-        throw new Error('no edge here');
-      },
+      readExports: async () => ({ events: [], withheld: [], unexported: [], paused: null, next: null, more: false }),
       deliver: async () => {
-        throw new Error('no edge here');
+        throw new Error('nothing is new, so nothing is delivered');
       },
     });
     return { host, called, reachOver };
   };
+  const sweep = async (host: ScopeHost, reach: CrossVerticalReach) => {
+    const runs: SweepRunInput[] = [];
+    const report = await runPlatformSweep(host, { ...quiet, recordSweepRun: (e) => runs.push(e), crossVertical: { reach } });
+    return { report, runs };
+  };
 
   it('a fleet whose running versions import nothing makes zero scope calls, and one registry read per version', async () => {
     const scopes = [...scopesOn(250, V1), ...scopesOn(250, V2)];
-    const { admin, reads } = registry({ [V1]: manifestImporting([]), [V2]: null });
+    const { admin, readImports, reads } = registry({ [V1]: manifestWithoutImports, [V2]: null });
     const { host, called, reachOver } = hostWith(scopes);
-    const report = await runPlatformSweep(host, {
-      ...quiet,
-      crossVertical: { reach: reachOver(registryImportCandidates({ admin, actor: ACTOR, importsOf })) },
-    });
+    const { report, runs } = await sweep(host, reachOver(registryImportCandidates({ admin, actor: ACTOR, readImports })));
     expect(called).toEqual([]);
+    expect(runs).toEqual([]);
     expect(report.crossVertical).toMatchObject({ candidates: 0, edges: [] });
-    // Cached for the pass: 500 scopes, two versions, two reads. No serving script, no listVerticals.
-    expect(reads.sort()).toEqual([`versionManifest:${V1}`, `versionManifest:${V2}`]);
+    // 500 scopes, two versions, two reads. No serving script, so no listVerticals.
+    expect(reads.sort()).toEqual([`read:${V1}`, `read:${V2}`]);
   });
 
   it('only the scopes whose running version imports are called', async () => {
     const importing = scopesOn(3, V1);
-    const scopes = [...importing, ...scopesOn(40, V2)];
-    const { admin } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: manifestImporting([]) });
-    const { host, called, reachOver } = hostWith(scopes);
-    await runPlatformSweep(host, {
-      ...quiet,
-      crossVertical: { reach: reachOver(registryImportCandidates({ admin, actor: ACTOR, importsOf })) },
-    });
+    const { admin, readImports } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: manifestWithoutImports });
+    const { host, called, reachOver } = hostWith([...importing, ...scopesOn(40, V2)]);
+    await sweep(host, reachOver(registryImportCandidates({ admin, actor: ACTOR, readImports })));
     expect(new Set(called)).toEqual(new Set(importing.map((s) => s.id)));
   });
 
   it('follows the version a scope RUNS: a serving script that serves an importing version counts', async () => {
     // Bound to V2 (imports nothing), but on the serving script, which now serves V1 (imports).
     const scopes = scopesOn(2, V2, { servingRef: 'serving-board' });
-    const { admin, reads } = registry(
-      { [V1]: manifestImporting(['acme/crm']), [V2]: manifestImporting([]) },
+    const { admin, readImports, reads } = registry(
+      { [V1]: manifestImporting(['acme/crm']), [V2]: manifestWithoutImports },
       [{ slug: 'acme/board', servingRef: 'serving-board', servingVersionId: V1 }],
     );
-    const narrow = registryImportCandidates({ admin, actor: ACTOR, importsOf });
+    const narrow = registryImportCandidates({ admin, actor: ACTOR, readImports });
     expect(await narrow(scopes)).toHaveLength(2);
-    expect(reads).toEqual(['listVerticals', `versionManifest:${V1}`]);
-  });
-
-  it('a registry read that fails costs this phase one pass, and never the phases after it', async () => {
-    const scopes = scopesOn(3, V1);
-    const admin = {
-      listVerticals: async () => [],
-      versionManifest: async () => {
-        throw new Error('directory unavailable');
-      },
-    };
-    const { host, called, reachOver } = hostWith(scopes);
-    const report = await runPlatformSweep(host, {
-      ...quiet,
-      crossVertical: { reach: reachOver(registryImportCandidates({ admin: admin as never, actor: ACTOR, importsOf })) },
-    });
-    expect(called).toEqual([]);
-    expect(report.errors).toEqual([{ kind: 'vertical-events', id: 'candidates', error: 'directory unavailable' }]);
-    expect(report.crossVertical).toMatchObject({ edges: [], candidates: 0 });
+    expect(reads).toEqual(['listVerticals', `read:${V1}`]);
   });
 
   it('with a `from` hint, a scope that imports only from someone else is dropped', async () => {
     const fromCrm = scopesOn(1, V1);
     const fromOther = scopesOn(1, V2);
-    const { admin } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: manifestImporting(['acme/other']) });
-    const narrow = registryImportCandidates({ admin, actor: ACTOR, importsOf });
+    const { admin, readImports } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: manifestImporting(['acme/other']) });
+    const narrow = registryImportCandidates({ admin, actor: ACTOR, readImports });
     expect((await narrow([...fromCrm, ...fromOther], { from: 'acme/crm' })).map((s) => s.id)).toEqual([fromCrm[0]!.id]);
     expect(await narrow([...fromCrm, ...fromOther])).toHaveLength(2);
   });
+
+  it('a version the registry cannot read keeps its scopes, is reported once, and never stops a good one', async () => {
+    const good = scopesOn(1, V1);
+    const bad = scopesOn(2, BAD);
+    const garbled = scopesOn(1, V2);
+    const { admin, readImports } = registry({ [V1]: manifestImporting(['acme/crm']), [V2]: '{not json' });
+    const { host, called, reachOver } = hostWith([...good, ...bad, ...garbled], () => [
+      { from: 'acme/crm', type: 'crm.a', schemaVersion: 1 },
+    ]);
+    const { report, runs } = await sweep(host, reachOver(registryImportCandidates({ admin, actor: ACTOR, readImports })));
+    // Every scope is asked: the good one because it imports, the others because nobody could say.
+    expect(new Set(called)).toEqual(new Set([...good, ...bad, ...garbled].map((s) => s.id)));
+    // The good edge ran; the phase did not stop on the bad version.
+    expect(report.crossVertical?.edges.map((e) => e.consumer.scopeId)).toContain(good[0]!.id);
+    expect(report.errors.filter((e) => e.id === 'candidates')).toEqual([]);
+    // One row per unreadable version (not per scope), naming it and why.
+    const doubts = runs.filter((r) => r.unit.startsWith('version:'));
+    expect(doubts.map((r) => [r.unit, r.outcome])).toEqual([
+      [`version:acme/board@${BAD}`, 'failed'],
+      [`version:acme/board@${V2}`, 'failed'],
+    ]);
+    expect(doubts[0]!.error).toMatch(/unknown version/);
+    expect(doubts[1]!.error).toMatch(/not JSON/);
+  });
+
+  it('a malformed imports row is doubt, not "imports nothing"', async () => {
+    const scopes = scopesOn(1, V1);
+    const { admin, readImports } = registry({
+      [V1]: JSON.stringify({ registry: { imports: [{ from: 'acme/crm' }] } }),
+    });
+    expect(await registryImportCandidates({ admin, actor: ACTOR, readImports })(scopes)).toHaveLength(1);
+  });
+
+  it('bounds the registry reads in flight', async () => {
+    const versions = Array.from({ length: 20 }, (_, i) => `01JZ00000000000000000V${String(i).padStart(4, '0')}`);
+    const scopes = versions.flatMap((v) => scopesOn(1, v));
+    const { admin, readImports, peak } = registry(Object.fromEntries(versions.map((v) => [v, manifestWithoutImports])));
+    await registryImportCandidates({ admin, actor: ACTOR, readImports, concurrency: 3 })(scopes);
+    expect(peak()).toBe(3);
+  });
+
 });
 
 /**

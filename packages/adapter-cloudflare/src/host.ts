@@ -11,6 +11,8 @@ import {
   type ImportBatch,
   type ImportResult,
   type ImportState,
+  importsOfManifestJson,
+  type ManifestImports,
   accessLogEntry,
   adminLogEntry,
   opsFailureEntry,
@@ -7342,6 +7344,24 @@ export class CloudflareScopeHost implements ScopeHost {
           `${tenantId} under that id — the platform resolved the scope to a deployment that does not serve it`,
       );
     }
+  }
+  /**
+   * What one pushed version imports from other verticals (#1705 PR 2), from its stored manifest:
+   * the control plane's cross-vertical narrowing reads this to decide which scopes it calls.
+   *
+   * Deliberately NOT through `admin.versionManifest`, which writes an access-log row per read.
+   * The narrowing asks once per distinct running version on every pass and every kick. Audited,
+   * the log would grow with fleet × tick rate + request rate, for a read of the platform's own
+   * code metadata (a version's declared edges, which a push put there), not of a tenant's data.
+   * Throws `not_found` for a version the registry does not know under that vertical, which the
+   * narrowing reports and treats as "cannot say" rather than "imports nothing".
+   */
+  async versionImports(verticalSlug: string, versionId: string): Promise<ManifestImports> {
+    const v = await this.cp.readVersion(versionId);
+    if (!v || v.vertical_slug !== verticalSlug) {
+      throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+    }
+    return importsOfManifestJson(v.manifest_json);
   }
 }
 

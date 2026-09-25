@@ -16,6 +16,7 @@ import type {
   ImportBatch,
   ImportResult,
   ImportState,
+  ManifestImports,
   WantedEvent,
 } from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput } from './scope-host.js';
@@ -668,6 +669,17 @@ export interface EventDrainSkipped {
   eventIds: string[];
 }
 
+/** What the phase tells `CrossVerticalReach.candidates` (#1705 PR 2). */
+export interface CandidatesHint {
+  /** Only this producer's edges run on this pass (the router kick). */
+  from?: string;
+  /**
+   * Report a unit the narrowing could not judge, and the scopes it kept as candidates for it.
+   * Such a scope answering that it imports nothing is an answer, not a disagreement.
+   */
+  doubt?(unit: string, reason: string, scopeIds: readonly ScopeId[]): void;
+}
+
 /** How the cross-vertical phase reaches the two scopes of an edge (#1705). */
 export interface CrossVerticalReach {
   /**
@@ -688,9 +700,11 @@ export interface CrossVerticalReach {
    * `hint.from` is set when only one producer's edges are being run (the router kick,
    * `runCrossVerticalFrom`): a scope whose code imports nothing from that vertical may then be
    * dropped too. Ignoring the hint is correct, only dearer: an edge from another producer is
-   * never run on such a pass anyway.
+   * never run on such a pass anyway. `hint.doubt` is how a narrowing reports a unit it could not
+   * judge and so kept (a version whose manifest the registry cannot read). The phase records a
+   * failed `vertical-events` sweep-run row for it.
    */
-  candidates?(scopes: readonly Scope[], hint?: { from: string }): Promise<readonly Scope[]> | readonly Scope[];
+  candidates?(scopes: readonly Scope[], hint?: CandidatesHint): Promise<readonly Scope[]> | readonly Scope[];
   /** The consumer's running imports and its watermark per producer. */
   importState(tenantId: TenantId, scopeId: ScopeId): Promise<ImportState>;
   /** The producer's release after a watermark, decided by the producer's own code. */
@@ -1484,9 +1498,25 @@ async function sweepCrossVertical(
   // Contained: the narrowing may read the version registry (the control plane's reach), and a
   // failed read must cost this phase one pass, not sink the phases after it. No scope is called,
   // every watermark holds, and the next pass asks again.
+  // Scopes kept only because the narrowing could not judge them: their "imports nothing" is an answer.
+  const doubtful = new Set<string>();
   let candidates: readonly Scope[];
   try {
-    candidates = await candidatesOf(scopes, from !== null ? { from } : undefined);
+    candidates = await candidatesOf(scopes, {
+      ...(from !== null ? { from } : {}),
+      doubt: (unit, reason, scopeIds) => {
+        for (const id of scopeIds) doubtful.add(id);
+        options.recordSweepRun?.({
+          kind: 'vertical-events',
+          unit: `version:${unit}`,
+          outcome: 'failed',
+          operation: 'sweep.vertical-events:narrowing',
+          error:
+            `the version registry cannot say whether ${unit} imports anything (${reason}); ` +
+            `its scopes are asked directly this pass`,
+        });
+      },
+    });
   } catch (err) {
     report.errors.push({ kind: 'vertical-events', id: 'candidates', error: message(err) });
     return out;
@@ -1547,52 +1577,68 @@ export async function runCrossVerticalFrom(
 
 /**
  * The control plane's `CrossVerticalReach.candidates` (#1705 PR 2): narrow the listed scopes to
- * those whose RUNNING version declares an import, read from the version registry and never from
- * a scope.
+ * those whose RUNNING version may import, read from the version registry and never from a scope.
  *
- * Per pass that is one `listVerticals` (the serving pointers, only when some scope is on a
- * serving script) and one `versionManifest` per DISTINCT running version, cached for the pass,
- * both directory reads. With no importing version anywhere, no scope is called at all. A
- * version whose manifest was not retained, or predates the `imports` rows, imports nothing it
- * could name, and is treated as importing nothing. The same fallback the host's own
- * `registeredImports` default gives an old host.
+ * Per pass: one `listVerticals` (the serving pointers, only when some scope is on a serving
+ * script), and one `readImports` per DISTINCT running version, at most `concurrency` in flight.
+ * The control plane's reader is an unaudited directory read behind a cache keyed (slug,
+ * version), since a pushed version's manifest never changes. So after the first pass it costs
+ * no read at all.
  *
- * `importsOf` parses a stored manifest (`importsOfManifestJson` in contracts), injected so this
- * module does not decide how a manifest is stored.
+ * Only a version that says it imports nothing is dropped (`none`: no manifest, no registry, no
+ * `imports` key). A version the registry cannot answer for (`unreadable`: a manifest that does
+ * not parse, a malformed row, a version the registry does not know, a failed read) keeps its
+ * scopes as candidates, and the scope's own `importState` decides. Excluding a consumer wrongly
+ * loses its edge with no trace. Including one wrongly costs one call. Each such version is
+ * reported once per pass through `hint.doubt`, and a failure on one version never stops the
+ * others.
  */
 export function registryImportCandidates(input: {
-  admin: Pick<HostAdmin, 'listVerticals' | 'versionManifest'>;
+  admin: Pick<HostAdmin, 'listVerticals'>;
   actor: PlatformActorId;
-  importsOf: (manifestJson: string | null) => readonly { from: string }[];
+  readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>;
+  /** Registry reads in flight at once. Default 8, the phase's own concurrency. */
+  concurrency?: number;
 }): NonNullable<CrossVerticalReach['candidates']> {
   return async (scopes, hint) => {
     const serving = await servingPointersFor(input.admin, input.actor, scopes);
-    // One read per distinct running version, all in flight together, then the filter.
-    const sourcesOf = new Map<string, Promise<Set<string>>>();
     const keyed: { scope: Scope; key: string }[] = [];
+    const versions = new Map<string, { slug: string; versionId: string }>();
     for (const s of scopes) {
       if (!s.vertical) continue;
       const running = runningVersionOf(s, serving.get(s.vertical));
-      if (!running) continue;
-      const key = `${s.vertical}\u0000${running}`;
-      if (!sourcesOf.has(key)) {
-        sourcesOf.set(
-          key,
-          input.admin
-            .versionManifest(input.actor, s.vertical, running)
-            .then((json) => new Set(input.importsOf(json).map((i) => i.from))),
-        );
-      }
+      const key = `${s.vertical}@${running ?? '(no version)'}`;
+      if (running && !versions.has(key)) versions.set(key, { slug: s.vertical, versionId: running });
       keyed.push({ scope: s, key });
     }
-    const resolved = new Map<string, Set<string>>();
-    await Promise.all([...sourcesOf].map(async ([key, sources]) => resolved.set(key, await sources)));
-    return keyed
-      .filter(({ key }) => {
-        const from = resolved.get(key)!;
-        return hint ? from.has(hint.from) : from.size > 0;
-      })
-      .map(({ scope }) => scope);
+    const facts = new Map<string, ManifestImports>();
+    await mapBounded([...versions], input.concurrency ?? 8, async ([key, v]) => {
+      try {
+        facts.set(key, await input.readImports(v.slug, v.versionId));
+      } catch (err) {
+        facts.set(key, { kind: 'unreadable', reason: message(err) });
+      }
+    });
+    const doubted = new Map<string, { reason: string; scopeIds: ScopeId[] }>();
+    const out: Scope[] = [];
+    for (const { scope, key } of keyed) {
+      const fact: ManifestImports = facts.get(key) ?? {
+        kind: 'unreadable',
+        reason: 'the scope names no version the registry could be asked about',
+      };
+      if (fact.kind === 'none') continue;
+      if (fact.kind === 'imports') {
+        const from = hint?.from;
+        if (from !== undefined ? fact.rows.some((r) => r.from === from) : fact.rows.length > 0) out.push(scope);
+        continue;
+      }
+      out.push(scope);
+      const d = doubted.get(key) ?? { reason: fact.reason, scopeIds: [] };
+      d.scopeIds.push(scope.id);
+      doubted.set(key, d);
+    }
+    for (const [key, d] of doubted) hint?.doubt?.(key, d.reason, d.scopeIds);
+    return out;
   };
 }
 

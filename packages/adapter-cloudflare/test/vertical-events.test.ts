@@ -11,6 +11,7 @@ import {
   tenantId,
   type PrincipalId,
   type RoleDefinition,
+  type Scope,
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
@@ -21,7 +22,7 @@ import {
   crmExportMod,
   verticalEventsContractSuite,
 } from '@substrat-run/contract-tests';
-import { runPlatformSweep, ulid, webCryptoSecretBox, type FetchLike, type ModuleRegistration } from '@substrat-run/kernel';
+import { runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vertical-host';
 import { ControlPlaneError, VerticalClient, hostedCrossVerticalReach } from '@substrat-run/control-plane-api';
 import { CloudflareScopeHost, type EventDrainDelegation } from '../src/host.js';
@@ -217,6 +218,7 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
     admin: consumer.admin,
     actor: platformActorId.parse(ulid()),
     clientForScope: routeTo(crm, board),
+    readImports: (slug, versionId) => consumer.versionImports(slug, versionId),
   });
   return {
     producer,
@@ -320,6 +322,7 @@ describe('a producer deployment that predates the cross-vertical routes (#1705 P
       admin: dir.admin,
       actor: staff,
       clientForScope: routeTo(crm, board),
+      readImports: (slug, versionId) => dir.versionImports(slug, versionId),
     });
     const report = await runPlatformSweep(dir, {
       actor: staff,
@@ -392,5 +395,113 @@ describe('a producer deployment that predates the cross-vertical routes (#1705 P
   it('the same edge, once the producer is redeployed, delivers the backlog', async () => {
     const edge = await sweepWith(current);
     expect(edge).toMatchObject({ state: 'delivered', delivered: 1 });
+  });
+});
+
+/**
+ * #1705 PR 2 — the control plane's narrowing against a REAL directory and stored manifests,
+ * not a fake admin. Which scopes the phase calls is read from each running version's pushed
+ * manifest, through the unaudited `versionImports`: a fleet whose versions import nothing makes
+ * zero `/internal` calls, and passes over known versions write no access row.
+ */
+describe('the hosted narrowing over a real directory (#1705 PR 2)', () => {
+  const staff = platformActorId.parse(ulid());
+  const sweeper = platformActorId.parse(ulid());
+  const noFetch: FetchLike = async () => new Response('unused');
+  const t = tenantId.parse(ulid());
+  const NONE = ulid();
+  const IMPORTS = ulid();
+  const quiet = [ulid(), ulid(), ulid(), ulid()].map((id) => scopeId.parse(id));
+  const importer = scopeId.parse(ulid());
+  let dir: CloudflareScopeHost;
+  const board = deployment(env.BOARD_SCOPE, boardImportMod, BOARD_OWNER);
+
+  const manifest = (registry: object) =>
+    JSON.stringify({
+      version: '1.0.0',
+      entry: 'worker.js',
+      compatibilityDate: '2025-01-01',
+      doClasses: ['ScopeDO'],
+      bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
+      digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      registry,
+    });
+
+  const pass = async () => {
+    const reach = hostedCrossVerticalReach({
+      admin: dir.admin,
+      actor: sweeper,
+      clientForScope: async (rec) => (rec.vertical === BOARD_VERTICAL ? board.client : undefined),
+      readImports: (slug, versionId) => dir.versionImports(slug, versionId),
+    });
+    const real = reach.candidates!;
+    // The real narrowing, over this tenant's rows. The directory is shared with the other
+    // describes here, whose scopes carry no version and would (rightly) be kept as doubt.
+    const scoped = { ...reach, candidates: (all: readonly Scope[], hint?: CandidatesHint) => real(all.filter((x) => x.tenantId === t), hint) };
+    return runPlatformSweep(dir, {
+      actor: sweeper,
+      fetch: noFetch,
+      sweepers: {},
+      drainRetries: false,
+      gcSnapshots: false,
+      reconcileMigrations: false,
+      runSchedules: false,
+      crossVertical: { reach: scoped },
+    });
+  };
+
+  beforeAll(async () => {
+    await warmControlPlane(env.VE_CONTROL_PLANE);
+    const secretBox = webCryptoSecretBox('test-key', new Uint8Array(32).fill(7));
+    dir = new CloudflareScopeHost({ scope: env.BOARD_SCOPE, controlPlane: env.VE_CONTROL_PLANE, secretBox });
+    dir.registerModule(boardImportMod);
+    await dir.admin.createTenant(staff, { id: t, slug: `ve-narrow-${t.toLowerCase()}`, name: 'Narrow' });
+    await dir.admin.registerVertical(staff, { slug: BOARD_VERTICAL, name: 'Board', source: 'cli', ownerTenant: t });
+    const publish = (id: string, registry: object) =>
+      dir.admin.publishVersion(staff, {
+        id,
+        verticalSlug: BOARD_VERTICAL,
+        version: id,
+        manifestDigest: `m-${id}`,
+        permissionDigest: 'p',
+        migrationDigest: 'g',
+        deploymentRef: `board-${id.toLowerCase()}`,
+        manifestJson: manifest(registry),
+      });
+    await publish(NONE, { permissions: [], roles: [], entityGrants: [] });
+    await publish(IMPORTS, {
+      permissions: [],
+      roles: [],
+      entityGrants: [],
+      imports: [{ from: CRM_VERTICAL, type: 'crm.customer-created', schemaVersion: 1, declaredBy: ['@test/board-import'] }],
+    });
+    for (const [s, v] of [...quiet.map((q) => [q, NONE] as const), [importer, IMPORTS] as const]) {
+      await dir.provisionScope(staff, { tenantId: t, scopeId: s, vertical: BOARD_VERTICAL });
+      await dir.admin.activateScope(staff, t, s);
+      await dir.admin.bindScopeVersion(staff, t, s, v);
+    }
+  });
+
+  it('a version whose manifest imports nothing costs its scopes zero /internal calls; the importing one is asked', async () => {
+    board.paths.length = 0;
+    await pass();
+    // Four scopes on a version that imports nothing: never called. One on a version that does: asked once.
+    expect(board.paths).toEqual(['/internal/import-state']);
+  });
+
+  it('passes over known versions write no access row, where the audited read would write one per call', async () => {
+    // Every actor, not only the sweeper's: a registry read audited under ANY actor is the cost.
+    const registryRows = async () =>
+      [
+        ...(await dir.admin.accessLog(staff, { method: 'versionManifest' })),
+        ...(await dir.admin.accessLog(staff, { method: 'versionImports' })),
+      ].length;
+    await pass();
+    await pass();
+    await pass();
+    expect(await registryRows()).toBe(0);
+    // The twin: the audited verb does write one, which is why the narrowing does not use it.
+    await dir.admin.versionManifest(sweeper, BOARD_VERTICAL, NONE);
+    expect((await dir.admin.accessLog(staff, { actor: sweeper, method: 'versionManifest' })).length).toBe(1);
   });
 });

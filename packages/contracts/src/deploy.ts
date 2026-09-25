@@ -287,28 +287,43 @@ export function outboundOfManifestJson(manifestJson: string | null | undefined):
 }
 
 /**
- * The cross-vertical imports a STORED manifest declares (#1705): its permission registry's
- * `imports` rows. The hosted sweep reads them to decide which scopes it calls at all, so a
- * version that imports nothing costs no scope call. `[]` for no manifest, an unparseable one,
- * a manifest with no registry, or one pushed before `imports` existed. Each of those imports
- * nothing the platform could name, and reading one as "imports something" would put every
- * legacy install back on every pass. Rows of the wrong shape are dropped rather than trusted.
+ * What a STORED manifest says about cross-vertical imports (#1705), in three answers:
+ *
+ * - `none`: no manifest, no registry, or a registry with no `imports` key. A version pushed
+ *   before manifests were retained, or by a `substrat` CLI older than 0.34.0 (which writes no
+ *   `imports` rows), or that simply
+ *   imports nothing. Nothing is being hidden, and the hosted sweep calls no scope for it.
+ * - `imports`: the rows, every one well formed.
+ * - `unreadable`: JSON that does not parse, an `imports` that is not a list, or ANY row of the
+ *   wrong shape. The hosted sweep keeps such a scope as a candidate and lets the scope's own
+ *   answer decide, because excluding a consumer wrongly loses its edge with no trace, where
+ *   including one wrongly costs one call.
  */
-export function importsOfManifestJson(
-  manifestJson: string | null | undefined,
-): { from: string; type: string; schemaVersion: number }[] {
-  if (!manifestJson) return [];
+export type ManifestImports =
+  | { kind: 'none' }
+  | { kind: 'imports'; rows: { from: string; type: string; schemaVersion: number }[] }
+  | { kind: 'unreadable'; reason: string };
+
+export function importsOfManifestJson(manifestJson: string | null | undefined): ManifestImports {
+  if (!manifestJson) return { kind: 'none' };
+  let m: unknown;
   try {
-    const m = JSON.parse(manifestJson) as { registry?: { imports?: unknown } };
-    const rows = m.registry?.imports;
-    if (!Array.isArray(rows)) return [];
-    return rows.flatMap((r) => {
-      const p = permissionRegistryImport.safeParse(r);
-      return p.success ? [{ from: p.data.from, type: p.data.type, schemaVersion: p.data.schemaVersion }] : [];
-    });
+    m = JSON.parse(manifestJson);
   } catch {
-    return [];
+    return { kind: 'unreadable', reason: 'the stored manifest is not JSON' };
   }
+  const registry = (m as { registry?: unknown } | null)?.registry;
+  if (registry === undefined || registry === null) return { kind: 'none' };
+  if (typeof registry !== 'object' || !('imports' in registry)) return { kind: 'none' };
+  const rows = (registry as { imports: unknown }).imports;
+  if (!Array.isArray(rows)) return { kind: 'unreadable', reason: "the manifest's registry.imports is not a list" };
+  const out: { from: string; type: string; schemaVersion: number }[] = [];
+  for (const r of rows) {
+    const p = permissionRegistryImport.safeParse(r);
+    if (!p.success) return { kind: 'unreadable', reason: "a row of the manifest's registry.imports is malformed" };
+    out.push({ from: p.data.from, type: p.data.type, schemaVersion: p.data.schemaVersion });
+  }
+  return { kind: 'imports', rows: out };
 }
 
 /**

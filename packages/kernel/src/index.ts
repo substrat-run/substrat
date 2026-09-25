@@ -436,6 +436,7 @@ export {
   registryImportCandidates,
 } from './platform-sweep.js';
 export type {
+  CandidatesHint,
   CrossVerticalEdge,
   CrossVerticalOptions,
   CrossVerticalReach,

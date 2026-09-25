@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { eventId, platformActorId, scopeId, tenantId, type Scope } from '@substrat-run/contracts';
+import { eventId, importsOfManifestJson, platformActorId, scopeId, tenantId, type ManifestImports, type Scope } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid, type FetchLike, type ScopeHost } from '@substrat-run/kernel';
 import { ControlPlaneError, VerticalClient, hostedCrossVerticalReach } from '../src/index.js';
 
@@ -150,6 +150,8 @@ describe('hostedCrossVerticalReach — the hosted cost bound (#1705 PR 2)', () =
   const run = async (
     scopes: Scope[],
     clientForScope?: Parameters<typeof hostedCrossVerticalReach>[0]['clientForScope'],
+    importsCache?: Map<string, ManifestImports>,
+    reads: string[] = [],
   ) => {
     const calls: string[] = [];
     const client = new VerticalClient({
@@ -163,8 +165,11 @@ describe('hostedCrossVerticalReach — the hosted cost bound (#1705 PR 2)', () =
       listScopes: async () => scopes,
       listConnections: async () => [],
       listVerticals: async () => [],
-      versionManifest: async (_a: unknown, _slug: string, v: string) => manifests[v] ?? null,
       getScopeRecord: async (_a: unknown, _t: unknown, id: string) => scopes.find((x) => x.id === id),
+    };
+    const readImports = async (_slug: string, v: string) => {
+      reads.push(v);
+      return importsOfManifestJson(manifests[v] ?? null);
     };
     const report = await runPlatformSweep({ admin } as unknown as ScopeHost, {
       actor: ACTOR,
@@ -179,6 +184,8 @@ describe('hostedCrossVerticalReach — the hosted cost bound (#1705 PR 2)', () =
           admin: admin as never,
           actor: ACTOR,
           clientForScope: clientForScope ?? (async () => client),
+          readImports,
+          ...(importsCache ? { importsCache } : {}),
         }),
       },
     });
@@ -197,6 +204,25 @@ describe('hostedCrossVerticalReach — the hosted cost bound (#1705 PR 2)', () =
     expect(calls.sort()).toEqual(importing.map((x) => `/internal/import-state?tenantId=${t}&scopeId=${x.id}`).sort());
   });
 
+  it('a cache that outlives the pass reads each version once, and never keeps an unreadable one', async () => {
+    const GARBLED = '01JZ0000000000000000000V03';
+    manifests[GARBLED] = '{not json';
+    try {
+      const scopes = [...scopesOn(50, NONE), ...scopesOn(2, IMPORTS), ...scopesOn(1, GARBLED)];
+      const cache = new Map<string, ManifestImports>();
+      const reads: string[] = [];
+      await run(scopes, undefined, cache, reads);
+      await run(scopes, undefined, cache, reads);
+      await run(scopes, undefined, cache, reads);
+      // NONE and IMPORTS once each, for three passes; the unreadable one is asked every pass.
+      expect(reads.filter((v) => v === NONE)).toHaveLength(1);
+      expect(reads.filter((v) => v === IMPORTS)).toHaveLength(1);
+      expect(reads.filter((v) => v === GARBLED)).toHaveLength(3);
+    } finally {
+      delete manifests[GARBLED];
+    }
+  });
+
   it('one resolution per scope per reach, and a failed one is asked again', async () => {
     const [only] = scopesOn(1, IMPORTS);
     const client = new VerticalClient({
@@ -208,6 +234,7 @@ describe('hostedCrossVerticalReach — the hosted cost bound (#1705 PR 2)', () =
       admin: { getScopeRecord: async () => only } as never,
       actor: ACTOR,
       clientForScope: async () => (++resolutions === 1 ? undefined : client),
+      readImports: async () => ({ kind: 'none' }),
     });
     await expect(reach.importState(t, only!.id)).rejects.toThrow(/no deployment serving scope/);
     await reach.importState(t, only!.id);

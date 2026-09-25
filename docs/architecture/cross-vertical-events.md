@@ -161,10 +161,21 @@ phase never asks every scope whether it imports anything:
   never from the scope. The default is the host's own `registeredImports()`: a deployment that
   imports nothing makes **zero** scope calls per pass, however large the fleet. The control
   plane narrows per scope from the registry (`registryImportCandidates`). It reads the version
-  each scope RUNS (`runningVersionOf`), then that version's stored manifest's `registry.imports`,
-  once per distinct running version per pass, plus one `listVerticals` when a scope is on a
-  serving script. Those are directory reads, not scope wakes. A version whose manifest was not
-  retained, or predates `imports`, is read as importing nothing.
+  each scope RUNS (`runningVersionOf`), then that version's declared `registry.imports`
+  (`versionImports`), plus one `listVerticals` when a scope is on a serving script. The read is
+  a directory read, never a scope wake, and deliberately unaudited: it is the platform reading
+  its own code metadata, and an audited read per version per pass would grow the access log with
+  fleet × tick rate. Answers are cached per isolate by (slug, version), since a pushed manifest
+  never changes, so a fleet of known versions costs no read at all. Reads run at most 8 at a
+  time, and a failure on one version never stops the others.
+- **Dropped only when the registry says so.** A version with no manifest, no registry or no
+  `imports` key imports nothing, and its scopes are not called. A consumer's `imports` reach the
+  registry only from `substrat` CLI 0.34.0 on, so a version pushed by an older CLI reads this way
+  until it is pushed again. A version the registry cannot answer for (a manifest that does not
+  parse, a malformed row, a version it does not know) keeps its scopes as candidates, and their
+  own `importState` decides. It is reported as a failed `version:<slug>@<version>` sweep-run row.
+  Excluding a consumer wrongly would lose its edge with no trace. Including one wrongly costs a
+  call.
 - **Capped.** At most `maxConsumers` candidates per pass (default 100), in a window with a random
   start (the provision reconcile's rule), so a consumer that fails every pass holds no slot
   forever. The rest are `deferred`, not dropped, because watermarks hold.
