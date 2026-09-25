@@ -15,7 +15,7 @@ const reg = (extra: { key: string; description: string }[] = [], roleExtra: stri
   permissions: [{ key: 'desk:read', description: 'Read tickets', declaredBy: ['desk'] }, ...extra.map((p) => ({ ...p, declaredBy: ['desk'] }))],
   roles: [{ key: 'agent', permissions: ['desk:read', ...roleExtra], source: 'vertical' }],
   entityGrants: [],
-}) as PermissionRegistry;
+}) as unknown as PermissionRegistry;
 
 const ADD = { moduleId: 'desk', version: '0002-priority', sql: 'ALTER TABLE ticket\nADD COLUMN priority TEXT;' };
 const diff = (over: Partial<MigrationDiff> = {}): MigrationDiff => ({
@@ -99,7 +99,7 @@ describe('substrat promote — a refusal prints both diffs (#1677)', () => {
 
 describe('the diff formatters', () => {
   it('formatRegistryDiff: added, removed, re-worded, role and grant shapes; "none" when equal', () => {
-    const from = { ...reg([{ key: 'desk:old', description: 'Old' }]), entityGrants: [{ entityType: 'ticket', permissions: ['desk:read'] }] } as PermissionRegistry;
+    const from = { ...reg([{ key: 'desk:old', description: 'Old' }]), entityGrants: [{ entityType: 'ticket', permissions: ['desk:read'] }] } as unknown as PermissionRegistry;
     const to = {
       ...reg([{ key: 'desk:new', description: 'New' }]),
       permissions: [
@@ -107,7 +107,7 @@ describe('the diff formatters', () => {
         { key: 'desk:new', description: 'New', declaredBy: ['desk'] },
       ],
       entityGrants: [],
-    } as PermissionRegistry;
+    } as unknown as PermissionRegistry;
     expect(formatRegistryDiff(from, to)).toEqual([
       '~ desk:read  “Read tickets” → “Read every ticket”',
       '+ desk:new  New',
