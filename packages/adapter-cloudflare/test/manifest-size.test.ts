@@ -82,3 +82,67 @@ describe('the stored manifest size bound (#1677)', () => {
     expect(deployManifest.safeParse(JSON.parse(manifestWithSql(sql))).success).toBe(false);
   });
 });
+
+/**
+ * The version LIST does not carry manifests (#1677). A manifest holds the version's whole SQL
+ * migration set, so listing `SELECT *` moved every version's SQL across the DO RPC for a page
+ * that shows none of it. The list lifts `outbound` and `calls`, the two manifest fields a
+ * version record carries, and nothing else.
+ */
+describe('the version list reads no manifest (#1677)', () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    checker: UNSAFE_allowAllChecker,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  const staff = platformActorId.parse(ulid());
+  const vertical = `version-list-${ulid().toLowerCase()}`;
+  const stub = () =>
+    env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+      listVersions(slug: string): Promise<Record<string, unknown>[]>;
+    };
+  afterAll(() => host.close());
+
+  const big = 'x'.repeat(1024 * 1024);
+  const ids = { big: ulid(), legacy: ulid(), junk: ulid() };
+
+  beforeAll(async () => {
+    await host.admin.registerVertical(staff, { slug: vertical, name: 'Version list', source: 'builtin' });
+    const publish = (id: string, version: string, manifestJson?: string) =>
+      host.admin.publishVersion(staff, {
+        id, verticalSlug: vertical, version, manifestDigest: 'm', permissionDigest: 'p',
+        migrationDigest: 'g', deploymentRef: null, ...(manifestJson ? { manifestJson } : {}),
+      });
+    await publish(
+      ids.big,
+      '1.0.0',
+      JSON.stringify({
+        version: '1.0.0',
+        outbound: ['api.example.com', 7],
+        calls: ['acme/crm'],
+        migrations: [{ moduleId: 'helpdesk', version: '0001', sql: big }],
+      }),
+    );
+    await publish(ids.legacy, '0.9.0'); // no manifest retained
+    await publish(ids.junk, '0.8.0', 'not json'); // a stored manifest that never parsed
+  });
+
+  it('hands back a page a few hundred bytes a row, though one version carries a megabyte of SQL', async () => {
+    const rows = await stub().listVersions(vertical);
+    expect(rows).toHaveLength(3);
+    expect(JSON.stringify(rows).length).toBeLessThan(4096);
+    for (const row of rows) expect(row).not.toHaveProperty('manifest_json');
+  });
+
+  it('and the records still carry outbound and calls, on the manifest reader’s own terms', async () => {
+    const byId = new Map((await host.admin.listVersions(staff, vertical)).map((v) => [v.id, v]));
+    // A non-string entry is dropped, exactly as `outboundOfManifestJson` drops it.
+    expect(byId.get(ids.big)).toMatchObject({ outbound: ['api.example.com'], calls: ['acme/crm'] });
+    // No manifest, or one that is not JSON: null, never a failed page.
+    expect(byId.get(ids.legacy)).toMatchObject({ outbound: null, calls: null });
+    expect(byId.get(ids.junk)).toMatchObject({ outbound: null, calls: null });
+    // The single-version read still agrees with the list.
+    expect(await host.admin.getVersion(staff, ids.big)).toMatchObject({ outbound: ['api.example.com'], calls: ['acme/crm'] });
+  });
+});
