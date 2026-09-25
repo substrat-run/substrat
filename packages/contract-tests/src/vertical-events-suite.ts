@@ -1004,6 +1004,27 @@ export function verticalEventsContractSuite(
       expect(moved.cursor! < ulid()).toBe(true);
     });
 
+    it('the replay history is part of the scope: a dump carries it, and a restore puts it back or takes it away', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Dumped');
+      await sweep();
+      const beforeReplay = await fx.consumer.admin.exportScope(staff, t, c);
+      const moved = await lever(t, c, replay(null));
+      const afterReplay = await fx.consumer.admin.exportScope(staff, t, c);
+      const table = afterReplay.tables.find((x) => x.name === '_substrat_import_replays');
+      expect(table?.rows.length).toBe(2);
+      // Restoring the dump from before the replay takes the history away, as it rewinds the data.
+      await fx.consumer.restoreScope(staff, t, c, beforeReplay);
+      expect((await board(t, c)).replays).toEqual([]);
+      // Restoring the dump from after it puts the history back, under the same act.
+      await fx.consumer.restoreScope(staff, t, c, afterReplay);
+      const back = (await board(t, c)).replays;
+      expect(back).toHaveLength(2);
+      expect(new Set(back.map((r) => r.replay_id))).toEqual(new Set([moved.replayId]));
+    });
+
     it('a replay without its acknowledgement never reaches the store', async () => {
       const t = await newTenant();
       const p = await install(t, CRM_VERTICAL);
