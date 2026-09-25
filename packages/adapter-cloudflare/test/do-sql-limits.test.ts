@@ -52,7 +52,11 @@ const limitOf = (sql: SqlStorage, t: Trial, hi: number): { max: number; refusal:
 const terms = (n: number, op: string): string => Array.from({ length: n }, (_, i) => `SELECT ${i}`).join(` ${op} `);
 const marks = (n: number): string => Array.from({ length: n }, () => '?').join(',');
 
-describe('the SQL limits of a Durable Object, measured (#1741)', () => {
+// TODO(#1758): skipped in CI as a controlled bisect of a workerd `HashIndex detected hash table
+// inconsistency` / SIGSEGV that hit adapter-cloudflare twice on this branch's Linux CI runs and
+// reproduces on no other branch and not on macOS. Un-skip (or move behind an opt-in flag) once the
+// cause is known. The contract.test.ts sqlLimits cases stay active.
+describe.skipIf(process.env.CI)('the SQL limits of a Durable Object, measured (#1741)', () => {
   for (const op of ['UNION ALL', 'UNION', 'INTERSECT', 'EXCEPT']) {
     it(`compound SELECT terms: ${op}`, async () => {
       const found = await run((sql) => limitOf(sql, (n) => ({ sql: terms(n, op) }), 60));
