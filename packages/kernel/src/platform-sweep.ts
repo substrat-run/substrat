@@ -2018,6 +2018,15 @@ export async function crossVerticalHealth(
     history: { available: true, reason: null },
   };
   const cv = options.crossVertical ?? {};
+  // No reach, on a host whose apps live in their own deployments (the shared control plane without
+  // DISPATCH): this host's own verbs cannot see a single hosted scope, and its registered modules
+  // import nothing, so the default would report "no edges". That is an answer it cannot give.
+  if (!cv.reach && host.servesScopesElsewhere?.()) {
+    report.unavailable =
+      "edge health cannot reach the deployments that serve this tenant's apps: no cross-vertical reach is " +
+      'configured on this control plane (DISPATCH / PLATFORM_SECRET)';
+    return report;
+  }
   const reach: CrossVerticalReach = cv.reach ?? {
     importState: (t, s) => host.admin.importState(actor, t, s),
     readExports: (t, s, input) => host.admin.readExportedEvents(actor, t, s, input),

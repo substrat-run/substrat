@@ -23,7 +23,7 @@ import {
   testMod,
   verticalEventsContractSuite,
 } from '@substrat-run/contract-tests';
-import { runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration, type SweepRunInput } from '@substrat-run/kernel';
+import { crossVerticalHealth, runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration, type SweepRunInput } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vertical-host';
 import { ControlPlaneError, VerticalClient, hostedCrossVerticalReach } from '@substrat-run/control-plane-api';
 import { CloudflareScopeHost, type EventDrainDelegation } from '../src/host.js';
@@ -111,6 +111,30 @@ describe('cross-vertical verbs on the shared control plane (#1705)', () => {
     ).rejects.toThrow(served);
     await expect(shared.admin.importState(staff, t, hosted)).rejects.toThrow(served);
     await expect(shared.deliverToPeer(t, hosted, batch(hosted))).rejects.toThrow(served);
+  });
+
+  it('edge health with no reach says it cannot answer, rather than reporting no edges (#1705 PR 3)', async () => {
+    const view = await crossVerticalHealth(shared, { actor: staff, tenantId: t });
+    expect(view.unavailable).toMatch(/cannot reach the deployments/);
+    expect(view.edges).toEqual([]);
+    // The twin: the same host handed a reach answers (here: nothing imports into this tenant yet).
+    const reached = await crossVerticalHealth(shared, {
+      actor: staff,
+      tenantId: t,
+      crossVertical: {
+        reach: {
+          candidates: () => [],
+          importState: async () => ({ consumes: [], cursors: [] }),
+          readExports: async () => {
+            throw new Error('not reached');
+          },
+          deliver: async () => {
+            throw new Error('not reached');
+          },
+        },
+      },
+    });
+    expect(reached.unavailable).toBeNull();
   });
 
   it('answers for a scope it does serve — the refusal is about WHERE the storage is, not the verb', async () => {

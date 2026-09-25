@@ -222,8 +222,9 @@ export interface ControlPlaneApiOptions {
   /**
    * How edge health reaches the two ends of a cross-vertical edge (#1705 PR 3): the phase's own
    * reach (`hostedCrossVerticalReach` on the control plane). Absent, the host's own verbs, which
-   * is right where one host serves every scope. On the shared control plane without it, a hosted
-   * edge reads `unavailable`, never healthy.
+   * is right where one host serves every scope. On a host that serves its apps elsewhere (the
+   * shared control plane without DISPATCH), the whole read answers `unavailable` instead of
+   * reporting no edges.
    */
   crossVertical?: CrossVerticalOptions | undefined;
   /**

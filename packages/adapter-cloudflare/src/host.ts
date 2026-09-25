@@ -3347,7 +3347,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * and by the verbs that read a record of their own, so a caller never meets two of them.
    */
   private assertServedHere(record: { vertical: string | null }, scopeId: ScopeId, verb: string): void {
-    if (this.servesScopesElsewhere && record.vertical !== null) {
+    if (this.servesScopesElsewhereNow && record.vertical !== null) {
       throw substratError(
         'unavailable',
         `${verb} cannot reach scope ${scopeId}: it is served by the '${record.vertical}' deployment, ` +
@@ -3356,7 +3356,12 @@ export class CloudflareScopeHost implements ScopeHost {
     }
   }
 
-  private get servesScopesElsewhere(): boolean {
+  /** `ScopeHost.servesScopesElsewhere` (#1705 PR 3): any delegation set means the shared control plane. */
+  servesScopesElsewhere(): boolean {
+    return this.servesScopesElsewhereNow;
+  }
+
+  private get servesScopesElsewhereNow(): boolean {
     return Boolean(
       this.connectorDelegation ||
         this.systemSwitchDelegation ||
@@ -3377,7 +3382,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private async capabilityScopeStub(tenantId: TenantId, scopeId: ScopeId, verb: string) {
     const rec = await this.cp.getScopeRecord(tenantId, scopeId);
     if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
-    if (this.servesScopesElsewhere && rec.vertical !== null) {
+    if (this.servesScopesElsewhereNow && rec.vertical !== null) {
       throw substratError(
         'unavailable',
         `${verb} cannot reach scope ${scopeId}: it is served by the '${rec.vertical}' ` +

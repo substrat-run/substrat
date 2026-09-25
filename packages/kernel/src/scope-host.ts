@@ -4326,6 +4326,14 @@ export interface ScopeHost {
   registeredImports?(): { from: string; type: string; schemaVersion: number }[];
 
   /**
+   * Whether scopes bound to a vertical are served by that vertical's OWN deployment rather than
+   * by this host (#1705 PR 3): true on the shared control plane. Such a host's own verbs cannot
+   * see those scopes, so a cross-vertical read with no reach of its own must say it cannot answer
+   * rather than report "no edges". Optional: absent reads as false.
+   */
+  servesScopesElsewhere?(): boolean;
+
+  /**
    * Run every schedule that is DUE for this scope (#383) — the recurring-work
    * driver, the fleet-maintenance sibling of `drainDue`.
    *
