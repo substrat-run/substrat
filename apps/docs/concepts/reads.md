@@ -154,8 +154,9 @@ const searchCustomers = async (ctx, { q, limit = 20 }) => {
   const hits = ctx.search('customer', q, { limit });
   if (hits.length === 0) return { results: [], limit, capped: false };
   const rows = ctx.sql.query<CustomerRow>(
-    `SELECT * FROM callout_customers WHERE id IN (${hits.map(() => '?').join(', ')})`,
-    hits.map((h) => h.id),
+    // ONE bound JSON array, never a `?` per hit: a Durable Object refuses the 101st parameter.
+    'SELECT * FROM callout_customers WHERE id IN (SELECT value FROM json_each(?))',
+    [JSON.stringify(hits.map((h) => h.id))],
   );
   const byId = new Map(rows.map((r) => [r.id, r]));
   // `IN (…)` loses the rank order — put it back, or the best match lands third.
