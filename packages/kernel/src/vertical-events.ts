@@ -254,9 +254,12 @@ export function exportsOf(
  * The outbox's insertion mark (#1705 PR 2): the kick's "before", taken ahead of an invoke.
  *
  * `rowid`, not the event id. A ULID minted in the same millisecond as the newest row can sort
- * BELOW it, so "ids above the newest id" can miss an event this invoke wrote. `rowid` is
- * assigned max + 1 on insert, and nothing an invoke does deletes the outbox's newest row, so
- * every row the invoke and its consumers add sits above the mark.
+ * BELOW it, so "ids above the newest id" can miss an event this invoke wrote. SQLite assigns a
+ * new row `max(rowid) + 1` while the newest row is still there. No code path deletes outbox rows
+ * inside an invoke: the only removals are a restore and a wipe, and they replace the whole table
+ * outside any invocation. So every row the invoke and its consumers add sits above the mark. If
+ * that ever stopped being true, the effect is bounded: an exported event would miss its kick and
+ * wait for the sweep, and no event would be lost or sent twice.
  */
 export const OUTBOX_MARK_SQL = 'SELECT COALESCE(MAX(rowid), 0) AS mark FROM _substrat_outbox';
 
