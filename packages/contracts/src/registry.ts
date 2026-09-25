@@ -362,3 +362,12 @@ export const promotionAcknowledgement = z.object({
   exportBreak: z.boolean().optional(),
 });
 export type PromotionAcknowledgement = z.infer<typeof promotionAcknowledgement>;
+
+/**
+ * #1756: what a scope bind may acknowledge. Only `exportBreak` — a bind has no digest
+ * checkpoint of its own (those are promotion's), but pointing one install at a version that
+ * drops an export its tenant's apps import breaks their edges the same way a promote does.
+ * Strict, so a caller that sends `permissionChange` here learns it means nothing on a bind.
+ */
+export const bindAcknowledgement = promotionAcknowledgement.pick({ exportBreak: true }).strict();
+export type BindAcknowledgement = z.infer<typeof bindAcknowledgement>;

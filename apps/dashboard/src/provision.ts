@@ -734,6 +734,8 @@ export async function updateApp(
     verticalSlug: string;
     /** Fork-before-promote (§4): snapshot pre-migration data before the rebind. */
     snapshot?: boolean;
+    /** #1756: update even though prod drops an export another app in this tenant imports. */
+    ackExportBreak?: boolean;
     controlPlane?: TenantNarrowedControlPlane;
   },
 ): Promise<UpdateAppResult> {
@@ -773,14 +775,17 @@ export async function updateApp(
     appScopeId: input.appScopeId,
     detail: `${fromLabel ?? '—'} → ${toLabel ?? prodVersionId}${input.snapshot ? ' (snapshot first)' : ''}`,
   });
+  const acknowledge = input.ackExportBreak ? { exportBreak: true } : undefined;
   if (input.controlPlane) {
     await input.controlPlane.bindScopeVersion(input.appScopeId, prodVersionId, {
       snapshot: input.snapshot,
+      acknowledge,
     });
   } else {
     const staff = platformActorId.parse(ulid());
     await host.admin.bindScopeVersion(staff, input.node.tenantId, input.appScopeId, prodVersionId, {
       snapshot: input.snapshot,
+      acknowledge,
     });
   }
 

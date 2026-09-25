@@ -1547,11 +1547,14 @@ export const api = {
       body: JSON.stringify({ sql }),
     }),
   /** Move the app to its vertical's current prod version (rebind the scope). No-op if already current. */
-  updateApp: (scopeId: string, opts?: { snapshot?: boolean }) =>
+  updateApp: (scopeId: string, opts?: { snapshot?: boolean; ackExportBreak?: boolean }) =>
     call<UpdateResult>(`/apps/${encodeURIComponent(scopeId)}/update`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ snapshot: opts?.snapshot ?? false }),
+      body: JSON.stringify({
+        snapshot: opts?.snapshot ?? false,
+        ...(opts?.ackExportBreak ? { acknowledge: { exportBreak: true } } : {}),
+      }),
     }),
   /** The app's pre-migration rewind points (#286), newest first. */
   appBookmarks: (scopeId: string) =>
@@ -1933,10 +1936,14 @@ export const api = {
   // -- per-scope rollout + builder previews (#509) --------------------------
   /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),
    *  vs `updateApp` which always rebinds to wherever prod points. `snapshot` forks first. */
-  bindAppVersion: (scopeId: string, versionId: string, opts?: { snapshot?: boolean }) =>
+  bindAppVersion: (scopeId: string, versionId: string, opts?: { snapshot?: boolean; ackExportBreak?: boolean }) =>
     call<void>(`/apps/${encodeURIComponent(scopeId)}/bind`, {
       method: 'POST',
-      body: JSON.stringify({ versionId, ...(opts?.snapshot ? { snapshot: true } : {}) }),
+      body: JSON.stringify({
+        versionId,
+        ...(opts?.snapshot ? { snapshot: true } : {}),
+        ...(opts?.ackExportBreak ? { acknowledge: { exportBreak: true } } : {}),
+      }),
     }),
   /** A vertical's live builder previews (each a fork/clean-room scope + `--<tag>` URL). */
   listPreviews: (slug: string) => call<VerticalPreview[]>(`/deployments/${encodeURIComponent(slug)}/previews`),

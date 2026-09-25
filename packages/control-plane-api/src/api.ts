@@ -41,6 +41,7 @@ import {
   platformRequestFilter,
   principalId as principalIdSchema,
   promotionAcknowledgement,
+  bindAcknowledgement,
   provisionableJurisdiction,
   publishVersionInput,
   queryScopeInput,
@@ -103,7 +104,14 @@ import type {
 } from '@substrat-run/contracts';
 import type { CrossVerticalOptions, OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
-import { crossVerticalHealth, isExportBreakRefusal, migrationProgress, ulid } from '@substrat-run/kernel';
+import {
+  bindExportBreakRefusal,
+  crossVerticalHealth,
+  isBindExportBreakRefusal,
+  isExportBreakRefusal,
+  migrationProgress,
+  ulid,
+} from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
@@ -641,6 +649,9 @@ const bindScopeVersionBody = z.object({
   // data first when this bind crosses a migration-digest boundary. Optional and
   // ignored on a code-only rebind — the digest compare is the gate, not the flag.
   snapshot: z.boolean().optional(),
+  // #1756: a bind that drops or re-versions an export an app in this tenant imports is
+  // refused unless acknowledged — the promote gate's `exportBreak`, for one install.
+  acknowledge: bindAcknowledgement.optional(),
 });
 
 const rebindScopeVerticalBody = z.object({
@@ -4095,9 +4106,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/tenants/:tenantId/scopes/:scopeId/version', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
-    const { versionId, snapshot } = bindScopeVersionBody.parse(await c.req.json());
+    const { versionId, snapshot, acknowledge } = bindScopeVersionBody.parse(await c.req.json());
     const actor = c.get('actor');
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    // #1756: the apps in this tenant the bind would break. Every break is in the tenant the
+    // path pins, so the caller may read the listing whole. Asked BEFORE the carry and the
+    // snapshot below, which move data: the host refuses too, whoever calls, but by then a
+    // refusal would land after the bytes had moved. An unknown scope has no impact to read,
+    // and the bind below refuses it as it always has.
+    if (scope && !acknowledge?.exportBreak) {
+      const breaks = await admin.bindingImpact(actor, tenantId, scopeId, versionId);
+      if (breaks.length > 0) {
+        return c.json({ error: bindExportBreakRefusal(breaks), exportBreaks: { affected: breaks } }, 409);
+      }
+    }
+    // What the three binds below pass on: the acknowledgement, when there is one.
+    const bindOpts = acknowledge?.exportBreak ? { acknowledge } : {};
     // A refusal throws a ControlPlaneError, which the app's error boundary relays with its
     // status and records as an ops failure. An unknown scope carries nothing, and the bind
     // below refuses it as it always has.
@@ -4108,6 +4132,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // destination); put the directory's recorded OFF positions back there.
     const reassert = async (): Promise<void> => {
       if (scope) await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
+    };
+    // The host's own refusal, should the impact have changed since it was read above (a
+    // promote landing in between): relayed as the same 409, never as a 500.
+    const bind = async (opts: Parameters<typeof admin.bindScopeVersion>[4]): Promise<void> => {
+      try {
+        await admin.bindScopeVersion(actor, tenantId, scopeId, versionId, opts);
+      } catch (err) {
+        if (!isBindExportBreakRefusal(err)) throw err;
+        throw new ControlPlaneError(409, err.message);
+      }
     };
     if (snapshot) {
       if (!scope) {
@@ -4129,16 +4163,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }
         await carry();
         if (migrationCrossing) await orchestratedSnapshot(c, tenantId, scope, {});
-        await admin.bindScopeVersion(actor, tenantId, scopeId, versionId);
+        await bind(bindOpts);
       } else {
         await carry();
-        await admin.bindScopeVersion(actor, tenantId, scopeId, versionId, { snapshot: true });
+        await bind({ ...bindOpts, snapshot: true });
       }
       await reassert();
       return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
     }
     await carry();
-    await admin.bindScopeVersion(actor, tenantId, scopeId, versionId);
+    await bind(bindOpts);
     await reassert();
     return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
   });

@@ -470,6 +470,10 @@ export {
   exportBreakRefusal,
   EXPORT_BREAK_REFUSAL,
   isExportBreakRefusal,
+  bindExportBreaksOf,
+  bindExportBreakRefusal,
+  BIND_EXPORT_BREAK_REFUSAL,
+  isBindExportBreakRefusal,
 } from './platform-sweep.js';
 export type {
   CandidatesHint,

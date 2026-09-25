@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { fetchWhoami } from './whoami.js';
 import { readJson } from './http.js';
 import { orderTablesByForeignKeys } from './dump-order.js';
+import { exportBreakLines, type ExportBreaks } from './promote.js';
 
 interface DumpTable {
   name: string;
@@ -395,6 +396,8 @@ export async function bindScopeVersion(opts: {
   scopeId: string;
   versionId: string;
   snapshot?: boolean;
+  /** #1756: bind a version that drops or re-versions an export another app in the tenant imports. */
+  ackExportBreak?: boolean;
 }): Promise<void> {
   const res = await fetch(
     `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
@@ -402,12 +405,21 @@ export async function bindScopeVersion(opts: {
     {
       method: 'POST',
       headers: { ...opts.header, 'content-type': 'application/json' },
-      body: JSON.stringify({ versionId: opts.versionId, snapshot: opts.snapshot || undefined }),
+      body: JSON.stringify({
+        versionId: opts.versionId,
+        snapshot: opts.snapshot || undefined,
+        ...(opts.ackExportBreak ? { acknowledge: { exportBreak: true } } : {}),
+      }),
     },
   );
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(problemDetail(body) ?? `bind refused: ${res.status} ${res.statusText}`);
+    const body = (await res.json().catch(() => null)) as { exportBreaks?: ExportBreaks } | null;
+    // An export-break refusal (#1756) carries the apps it would break: named here, so the
+    // acknowledgement is an informed answer rather than a flag tried to see what happens.
+    const listing = body?.exportBreaks
+      ? `\n${exportBreakLines(body.exportBreaks).join('\n')}\n(re-run with --ack-export-break once read)`
+      : '';
+    throw new Error((problemDetail(body) ?? `bind refused: ${res.status} ${res.statusText}`) + listing);
   }
   const record = await readJson<{ verticalVersionId: string | null; vertical: string | null; servingRef?: string | null }>(
     res,

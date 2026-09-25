@@ -2490,14 +2490,17 @@ app.post('/api/apps/:scopeId/update', async (c) => {
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   // `snapshot` = fork-before-promote (§4): snapshot the data first when the update
   // crosses a migration boundary. Body is optional — a bare POST updates as before.
+  // `acknowledge.exportBreak` (#1756): update even though prod drops an export another app in
+  // this tenant imports — the plane refuses it otherwise, and the refusal says so.
   const body = z
-    .object({ snapshot: z.boolean().optional() })
+    .object({ snapshot: z.boolean().optional(), acknowledge: z.object({ exportBreak: z.boolean().optional() }).optional() })
     .parse(await c.req.json().catch(() => ({})));
   const result = await updateApp(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
     verticalSlug: appRow.vertical_slug,
     snapshot: body.snapshot,
+    ackExportBreak: body.acknowledge?.exportBreak,
     controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   return c.json(result);
@@ -2520,11 +2523,20 @@ app.post('/api/apps/:scopeId/bind', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const body = z.object({ versionId: z.string().min(1), snapshot: z.boolean().optional() }).parse(await c.req.json());
+  const body = z
+    .object({
+      versionId: z.string().min(1),
+      snapshot: z.boolean().optional(),
+      acknowledge: z.object({ exportBreak: z.boolean().optional() }).optional(),
+    })
+    .parse(await c.req.json());
   const target = scopeId.parse(appRow.app_scope_id);
   try {
     const cp = controlPlaneFor(c.env, node.tenantId);
-    await cp.bindScopeVersion(target, body.versionId, body.snapshot ? { snapshot: true } : undefined);
+    await cp.bindScopeVersion(target, body.versionId, {
+      ...(body.snapshot ? { snapshot: true } : {}),
+      ...(body.acknowledge?.exportBreak ? { acknowledge: { exportBreak: true } } : {}),
+    });
     return c.body(null, 204);
   } catch (e) {
     if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });

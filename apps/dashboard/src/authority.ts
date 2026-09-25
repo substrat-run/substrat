@@ -1533,10 +1533,16 @@ export class TenantNarrowedControlPlane {
    * calling this only when a `prod` version exists keeps the dashboard identical
    * for both. Not tenant-narrowed in the wire shape beyond the pinned tenant path.
    */
-  bindScopeVersion(scopeId: ScopeId, versionId: string, opts?: { snapshot?: boolean }): Promise<void> {
+  bindScopeVersion(
+    scopeId: ScopeId,
+    versionId: string,
+    opts?: { snapshot?: boolean; acknowledge?: { exportBreak?: boolean } },
+  ): Promise<void> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/version`, {
       versionId,
       ...(opts?.snapshot ? { snapshot: true } : {}),
+      // #1756: a version that drops an export another app in this tenant imports.
+      ...(opts?.acknowledge?.exportBreak ? { acknowledge: { exportBreak: true } } : {}),
     });
   }
 

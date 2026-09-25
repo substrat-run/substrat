@@ -26,6 +26,7 @@ import { StatusBand } from './StatusBand';
 import { EntityTimeline } from './EventHistory';
 import { useTenantMetrics } from '../lib/use-tenant-metrics';
 import { useAppSchedules } from '../lib/use-app-schedules';
+import { sendWithExportBreakAck } from '../lib/bind-ack';
 import { AppTraffic } from './AppTraffic';
 
 /**
@@ -801,11 +802,25 @@ export function Deployments({ app }: { app: AppRow }) {
     document.getElementById(`version-${versionId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
+  // #1756: the plane refused because the version drops an event another app here imports.
+  // Its own sentence, and one explicit yes, before the same request goes again acknowledged.
+  const confirmExportBreak = (refusal: string) =>
+    window.confirm(
+      `${refusal}.\n\nThose apps stop receiving the event until they move to a version that no longer imports it. Continue anyway?`,
+    );
+
   const doUpdate = async () => {
     setUpdating(true);
     setNote(null);
     try {
-      const r = await api.updateApp(app.app_scope_id, { snapshot: snapFirst });
+      const r = await sendWithExportBreakAck(
+        (ackExportBreak) => api.updateApp(app.app_scope_id, { snapshot: snapFirst, ackExportBreak }),
+        confirmExportBreak,
+      );
+      if (r === 'cancelled') {
+        setNote('Not updated.');
+        return;
+      }
       setNote(r.updated ? `Updated ${r.previousVersion ?? '—'} → ${r.version ?? ''}` : 'Already on the latest version.');
       setNonce((n) => n + 1); // refetch so Running + the table reflect the rebind
     } catch (e) {
@@ -831,7 +846,14 @@ export function Deployments({ app }: { app: AppRow }) {
     setUpdating(true);
     setNote(null);
     try {
-      await api.bindAppVersion(app.app_scope_id, v.id, snap ? { snapshot: true } : undefined);
+      const r = await sendWithExportBreakAck(
+        (ackExportBreak) => api.bindAppVersion(app.app_scope_id, v.id, { snapshot: snap, ackExportBreak }),
+        confirmExportBreak,
+      );
+      if (r === 'cancelled') {
+        setNote('Not bound.');
+        return;
+      }
       setNote(`Bound this app to ${v.version}.`);
       setNonce((n) => n + 1);
     } catch (e) {

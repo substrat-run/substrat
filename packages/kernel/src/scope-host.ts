@@ -81,6 +81,7 @@ import type {
   HostnameBinding,
   HostnameStatus,
   PromotionAcknowledgement,
+  BindAcknowledgement,
   PublishVersionInput,
   RegisterVerticalInput,
   VerticalServingState,
@@ -1994,14 +1995,31 @@ export interface HostAdmin {
    * version's, an `archive` snapshot of the pre-migration data is captured first, so a
    * bad upgrade has a rollback point. Gated on the digest change (a code-only rebind
    * snapshots nothing) and opt-in until retention/GC ships.
+   *
+   * **#1756: refuses a bind that breaks an app in the scope's own tenant** unless
+   * `opts.acknowledge.exportBreak` is set — the promote gate's question
+   * (`bindExportBreaksOf`), asked of one install. Judged on what the scope RUNS before and
+   * after, so re-pointing a scope that runs its vertical's serving script, a fork, a preview,
+   * or a first bind is never refused. `bindingImpact` is the listing.
    */
   bindScopeVersion(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     versionId: string,
-    opts?: { snapshot?: boolean },
+    opts?: { snapshot?: boolean; acknowledge?: BindAcknowledgement },
   ): Promise<void>;
+  /**
+   * Which apps in the scope's tenant binding `versionId` would break (#1756): the answer
+   * `bindScopeVersion` refuses on, as a read, so a route can ask it BEFORE it moves any data
+   * and show the caller what an acknowledgement would break. Access-logged.
+   */
+  bindingImpact(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    versionId: string,
+  ): Promise<ExportBreak[]>;
 
   /**
    * Record that this scope's PROVISION has run against `versionId` (#1172).
