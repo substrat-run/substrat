@@ -61,7 +61,9 @@ beforeEach(() => {
     const url = String(input instanceof Request ? input.url : input);
     requests.push({ url, redirect: init?.redirect, method: init?.method });
     if (url === `${issuer}/.well-known/openid-configuration`) {
-      if (discoveryRedirect) return new Response(null, { status: 302, headers: { location: discoveryRedirect } });
+      if (discoveryRedirect !== null) {
+        return new Response(null, { status: 302, headers: discoveryRedirect ? { location: discoveryRedirect } : {} });
+      }
       return Response.json({
         issuer,
         authorization_endpoint: `${issuer}/authorize`,
@@ -237,6 +239,23 @@ describe('the discovery fetch', () => {
     discoveryRedirect = 'https://evil.test/.well-known/openid-configuration';
     await expect(beginLogin(env, APP)).rejects.toThrow(/redirected away/);
     expect(requests.some((r) => r.url.startsWith('https://evil.test'))).toBe(false);
+  });
+
+  it('refuses https -> http on the same host', async () => {
+    discoveryRedirect = `http://${new URL(issuer).host}/.well-known/openid-configuration`;
+    await expect(beginLogin(env, APP)).rejects.toThrow(/redirected away/);
+    expect(requests.some((r) => r.url.startsWith('http://'))).toBe(false);
+  });
+
+  it('refuses a redirect with no Location', async () => {
+    discoveryRedirect = '';
+    await expect(beginLogin(env, APP)).rejects.toThrow(/no Location/);
+  });
+
+  it('gives up on a redirect loop after the hop cap, not never', async () => {
+    discoveryRedirect = `${issuer}/.well-known/openid-configuration`;
+    await expect(beginLogin(env, APP)).rejects.toThrow(/redirected more than 3 times/);
+    expect(requests.filter((r) => r.url.includes('openid-configuration'))).toHaveLength(4);
   });
 
   it('follows one that stays on the issuer origin (positive twin)', async () => {

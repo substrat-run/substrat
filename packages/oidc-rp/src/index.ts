@@ -117,10 +117,11 @@ async function fetchDiscovery(url: string): Promise<Response> {
     const res = await fetch(target, { redirect: 'manual' });
     if (res.status < 300 || res.status >= 400) return res;
     const location = res.headers.get('location');
-    const next = location ? new URL(location, target) : null;
-    if (!next || next.origin !== origin || hop >= DISCOVERY_MAX_REDIRECTS) {
-      throw new Error(`OIDC discovery at ${url} redirected away from its origin`);
-    }
+    if (!location) throw new Error(`OIDC discovery at ${url} answered ${res.status} with no Location`);
+    const next = new URL(location, target);
+    // The origin includes the scheme, so https -> http on the same host is off-origin too.
+    if (next.origin !== origin) throw new Error(`OIDC discovery at ${url} redirected away from its origin`);
+    if (hop >= DISCOVERY_MAX_REDIRECTS) throw new Error(`OIDC discovery at ${url} redirected more than ${DISCOVERY_MAX_REDIRECTS} times`);
     target = next.toString();
   }
 }
