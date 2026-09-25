@@ -94,6 +94,11 @@ export const VERTICAL_EVENTS_DDL = `
   -- are moved here rather than dropped, because they are the record that a handler ran on an
   -- event, when, and what it reported: evidence the spine keeps. One row per moved row, the
   -- whole row as JSON under the replay that moved it. Nothing reads this to deliver.
+  -- ERASURE: today no erasure path touches imported copies, because only piiClass 'none' crosses
+  -- and the delivery-error rewrite (#1632) reaches only this scope's OWN outbox events. If a
+  -- consumer-side erasure of imported copies is ever added, it must reach \`row\` here too (a
+  -- moved delivery row's \`error\` is a handler's own sentence), or the history keeps what the
+  -- live tables gave up. Follow-up: #1757.
   CREATE TABLE IF NOT EXISTS _substrat_import_replays (
     -- The act (a ULID). The admin log's row for the replay carries the same id.
     replay_id TEXT NOT NULL,

@@ -150,7 +150,9 @@ attributable.
   import (`exportBreaksOf`). That over-approximates a listed vertical's tenants still pinned to an
   older producer version, on purpose. The host's refusal counts and names no tenant, because it
   does not know who is asking. The promote route lists the affected apps: a confined caller sees
-  its own tenant's apps and the rest as a count, as the store backfill does.
+  its own tenant's apps and the rest as a count, as the store backfill does. `bindScopeVersion`
+  does not run this check yet: moving one scope to a version that drops an export is not refused
+  (#1756).
 - **CI.** Each exported type's payload JSON Schema is in the checked-in `model.json`
   (`exportedEventSchemasOf` → `emitModel`'s `exports`, held to the code by `lint:model --check`).
   That it is there at all is enforced: `lint:permissions` refuses (exit 2) a vertical whose
@@ -346,8 +348,10 @@ moves.
   lands in the tenant's own scope. Builders may not. Hosted, the move is made in the consumer's
   deployment over `/internal/import-cursor`, which proves it serves the scope before it answers.
 - **The history table follows no new path.** The lake drains only the outbox. Dumps, forks,
-  restores and wipes enumerate tables from `sqlite_master`. Erasure's delivery-error rewrite
-  reaches only deliveries of events in the scope's OWN outbox, and an imported event never is.
+  restores and wipes enumerate tables from `sqlite_master`, so a restore rewinds the history with
+  the data. Erasure's delivery-error rewrite reaches only deliveries of events in the scope's OWN
+  outbox, and an imported event never is. A future consumer-side erasure of imported copies must
+  reach this table's `row` too (#1757).
 
 ## Edge health
 
