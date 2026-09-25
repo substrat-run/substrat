@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
 import type { AppRow, InstallStep } from '../lib/api';
 import { verticalMeta } from '../lib/demo';
@@ -77,6 +77,18 @@ export function Apps({
     [cards, q, status],
   );
 
+  // The table claims one row per app, worst first — true only of the WHOLE fleet, and the
+  // list arrives a page (20) at a time, newest first. So while it is shown the pages are
+  // walked to exhaustion, the way App.tsx walks them for the team views; the grid keeps
+  // its "Load more". Keyed on the row count, not on `loadingMore`: a page that lands
+  // re-runs this, and a page that fails changes no count, so it stops rather than retries
+  // in a loop — leaving the button below as the way to try again.
+  const walking = mode === 'health' && !!hasMore && !!onLoadMore;
+  useEffect(() => {
+    if (walking && !loadingMore) onLoadMore!();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
+  }, [walking, apps.length]);
+
   if (loading) return <AppsSkeleton />;
   if (apps.length === 0) return <Onboarding onCreate={onCreate} />;
 
@@ -113,7 +125,14 @@ export function Apps({
         </div>
       ) : (
         // The search box and status filter narrow the table as they narrow the cards.
-        <FleetHealth apps={apps.filter((a) => filtered.some((c) => c.scopeId === a.app_scope_id))} onOpen={onOpen} onRetry={onRetry} />
+        <>
+          <FleetHealth apps={apps.filter((a) => filtered.some((c) => c.scopeId === a.app_scope_id))} onOpen={onOpen} onRetry={onRetry} />
+          {walking && (
+            <span role="status" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Loading the rest of the fleet — {apps.length} apps so far, ordered among themselves.
+            </span>
+          )}
+        </>
       )}
 
       {hasMore && onLoadMore && (

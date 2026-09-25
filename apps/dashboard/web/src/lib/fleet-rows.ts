@@ -31,6 +31,8 @@ export interface FleetRow {
   requests: number | null;
   errors: number | null;
   p95: number | null;
+  /** Why this row's traffic reads "—" when the rest of the table's does not; else null. */
+  unread: string | null;
 }
 
 export function fleetRows(input: { apps: AppRow[]; health: AppHealthRow[] | null; metrics: AppMetricsView | null }): FleetRow[] {
@@ -53,13 +55,19 @@ export function fleetRows(input: { apps: AppRow[]; health: AppHealthRow[] | null
       vertical: a.vertical_slug,
       verdict,
       why,
-      requests: traffic ? (t?.requests ?? 0) : null,
-      errors: traffic ? (t?.errors ?? 0) : null,
+      requests: traffic ? (t ? t.requests : 0) : null,
+      errors: traffic ? (t ? t.errors : 0) : null,
       p95: t?.p95 ?? null,
+      // The read stops at the busiest `cap` apps; one past it was not read, and may be busy.
+      unread: traffic && t && t.requests === null ? unreadWhy(input.metrics!.cap) : null,
     };
   });
   // Worst first; within a verdict, the busier app first — it is the one more people feel.
   return rows.sort((x, y) => VERDICTS[x.verdict].rank - VERDICTS[y.verdict].rank || (y.requests ?? 0) - (x.requests ?? 0));
+}
+
+export function unreadWhy(cap: number | null): string {
+  return cap === null ? 'Traffic was not read for this app.' : `Not in the top ${cap} apps by traffic — this app's traffic was not read.`;
 }
 
 /** 412 → "412", 3344 → "3.3k", 1_100_000 → "1.1M". */

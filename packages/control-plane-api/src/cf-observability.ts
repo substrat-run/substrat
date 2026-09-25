@@ -7,6 +7,7 @@ import type {
   ConnectorCallsBucket,
   TenantMetricsRow,
 } from './observability.js';
+import { TENANT_METRICS_LIMIT } from './observability.js';
 
 /**
  * Caps on the tenant-log correlation walk (`queryTenantLogs`).
@@ -507,6 +508,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
   ): Promise<TenantMetricsRow[]> {
     // One row per scope is grouped HERE, not folded by the caller: the quantiles are
     // computed over the rows a group holds, and a p95 of per-surface p95s is not a p95.
+    // The scope grain groups by scope ALONE — not by vertical too — because a scope can
+    // be rebound to another vertical (`moveBoundScopes`), and a window spanning that
+    // would answer two rows whose p95s no caller can combine. Vertical reads null there.
     const byScope = input.grain === 'scope';
     const window = resolveObservabilityWindow(input);
     const where = [
@@ -526,7 +530,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const sql = `
       SELECT
         blob2 AS scopeId,
-        blob1 AS vertical,
+        ${byScope ? "'' AS vertical" : 'blob1 AS vertical'},
         ${byScope ? "'' AS surface" : 'blob3 AS surface'},
         sum(_sample_interval) AS requests,
         sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors,
@@ -537,9 +541,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
       FROM ${aeDataset(dataset)}
       WHERE ${where.join(' AND ')}
-      GROUP BY ${byScope ? 'scopeId, vertical' : 'scopeId, vertical, surface'}
+      GROUP BY ${byScope ? 'scopeId' : 'scopeId, vertical, surface'}
       ORDER BY requests DESC
-      LIMIT 200
+      LIMIT ${TENANT_METRICS_LIMIT}
       FORMAT JSON`;
 
     const rows = await analyticsEngineSql(sql);

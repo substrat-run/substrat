@@ -438,13 +438,16 @@ export type { HistoryEntry, CauseChain, CauseTerminal, EffectsTree, EventEffects
 /** One traffic row per app for the Apps table (#1767) — mirrors `src/app-metrics.ts`. */
 export interface AppMetricsRow {
   scopeId: string;
-  requests: number;
-  errors: number;
+  /** Null when this app's traffic was not read — beyond the view's `cap`. */
+  requests: number | null;
+  errors: number | null;
   /** Milliseconds; null when not measured (no traffic, or a plane that cannot group by app). */
   p95: number | null;
 }
 export interface AppMetricsView {
   available: boolean;
+  /** Set when the read came back full: a null `requests` is an app not in the top `cap`. */
+  cap: number | null;
   rows: AppMetricsRow[];
 }
 

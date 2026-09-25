@@ -1,4 +1,4 @@
-import { resolveObservabilityWindow } from '@substrat-run/control-plane-api';
+import { resolveObservabilityWindow, TENANT_METRICS_LIMIT } from '@substrat-run/control-plane-api';
 /**
  * The Dashboard — the tenant-facing self-service surface, as a Cloudflare Worker.
  * See docs/architecture/dashboard.md. Sign up → your own tenant is bootstrapped →
@@ -4477,7 +4477,7 @@ app.get('/api/observability/app-metrics', async (c) => {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const scopeIds = apps.map((a) => a.app_scope_id);
-  if (scopeIds.length === 0) return c.json(deriveAppMetrics({ rows: [], scopeIds }));
+  if (scopeIds.length === 0) return c.json(deriveAppMetrics({ rows: [], scopeIds, cap: TENANT_METRICS_LIMIT }));
   const hours = chartHours(c.req.query('hours'));
   const cp = controlPlaneFor(c.env, node.tenantId);
   const rows = await telemetry(c, node.tenantId, 'tenant-metrics', { grain: 'scope', hours }, () =>
@@ -4486,7 +4486,7 @@ app.get('/api/observability/app-metrics', async (c) => {
       throw e;
     }),
   );
-  return c.json(deriveAppMetrics({ rows, scopeIds }));
+  return c.json(deriveAppMetrics({ rows, scopeIds, cap: TENANT_METRICS_LIMIT }));
 });
 
 app.get('/api/apps/:scopeId/observability/logs', async (c) => {

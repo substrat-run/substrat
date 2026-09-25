@@ -679,6 +679,7 @@ export const MOCK_FLEET_HEALTH: AppHealthRow[] = [
 
 export const MOCK_APP_METRICS: AppMetricsView = {
   available: true,
+  cap: null,
   rows: [
     { scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', requests: 3344, errors: 33, p95: 310 },
     { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7LEGA', requests: 1164, errors: 3, p95: 140 },

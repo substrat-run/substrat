@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { createCfObservabilityReader } from '../src/cf-observability.js';
+import { TENANT_METRICS_LIMIT } from '../src/observability.js';
 
 /**
  * The tenant-grain reader against a faked Cloudflare, pinning the three behaviours that
@@ -458,23 +459,29 @@ describe('cf tenant metrics', () => {
   /**
    * #1767: the Apps table shows one p95 per app. Quantiles do not recombine — a p95 of
    * per-surface p95s is not the app's p95 — so the scope grain groups at the source.
+   * And by the scope ALONE: a scope rebound to another vertical inside the window would
+   * otherwise answer one row per vertical, two p95s for one app that nobody can combine.
    */
-  it('groups by scope alone on the scope grain, and by surface otherwise', async () => {
+  it('groups by scope alone on the scope grain — not by vertical — and by surface otherwise', async () => {
     const seen: string[] = [];
     vi.stubGlobal(
       'fetch',
       vi.fn(async (_url: string, init: { body: string }) => {
         seen.push(init.body);
-        return new Response(JSON.stringify({ data: [{ scopeId: '01SCOPE', vertical: 'callout', surface: '', requests: '10', errors: '0', durationP50: 5, durationP95: 9 }] }), { status: 200 });
+        return new Response(JSON.stringify({ data: [{ scopeId: '01SCOPE', vertical: '', surface: '', requests: '10', errors: '0', durationP50: 5, durationP95: 9 }] }), { status: 200 });
       }),
     );
     const reader = createCfObservabilityReader({ accountId: 'acct', apiToken: 't', routerDataset: 'substrat_router_test' });
     const rows = await reader.tenantMetrics!({ tenantId: '01TENANT', hours: 24, grain: 'scope' });
     await reader.tenantMetrics!({ tenantId: '01TENANT', hours: 24 });
-    expect(seen[0]).toMatch(/GROUP BY scopeId, vertical\s/);
+    expect(seen[0]).toMatch(/GROUP BY scopeId\s+ORDER BY/);
+    expect(seen[0]).not.toContain('blob1 AS vertical');
     expect(seen[0]).not.toContain('blob3 AS surface');
-    expect(rows[0]).toMatchObject({ scopeId: '01SCOPE', surface: null, durationP95: 9 });
+    expect(rows[0]).toMatchObject({ scopeId: '01SCOPE', vertical: null, surface: null, durationP95: 9 });
     expect(seen[1]).toContain('GROUP BY scopeId, vertical, surface');
+    // Both grains stop at the one cap a caller can read, so "the answer was full" is knowable.
+    expect(seen[0]).toContain(`LIMIT ${TENANT_METRICS_LIMIT}`);
+    expect(seen[1]).toContain(`LIMIT ${TENANT_METRICS_LIMIT}`);
   });
 
   it('sums every status class, weighted the same way `errors` already is', async () => {

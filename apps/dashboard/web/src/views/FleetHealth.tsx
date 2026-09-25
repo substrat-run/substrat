@@ -51,11 +51,14 @@ export function FleetHealth({
   const counts = useMemo(() => {
     const c = new Map<FleetVerdict, number>();
     for (const r of rows) c.set(r.verdict, (c.get(r.verdict) ?? 0) + 1);
-    return (Object.keys(VERDICTS) as FleetVerdict[]).filter((k) => c.has(k)).map((k) => ({ k, n: c.get(k)! }));
-  }, [rows]);
+    // The selected chip stays even at 0: a search can empty the verdict it filters to,
+    // and a filter with no chip left to click is a filter nobody can clear.
+    return (Object.keys(VERDICTS) as FleetVerdict[]).filter((k) => c.has(k) || k === filter).map((k) => ({ k, n: c.get(k) ?? 0 }));
+  }, [rows, filter]);
   const shown = filter ? rows.filter((r) => r.verdict === filter) : rows;
   const loading = health === undefined || metrics === undefined;
   const trafficNote = metrics === null ? 'Traffic could not be read.' : metrics && !metrics.available ? 'Traffic is not measured on this platform.' : null;
+  const unread = rows.filter((r) => r.unread !== null);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -82,6 +85,11 @@ export function FleetHealth({
         ))}
       </div>
       {trafficNote && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{trafficNote}</span>}
+      {unread.length > 0 && (
+        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          “—” on {unread.length} {unread.length === 1 ? 'app' : 'apps'}: not in the top {metrics?.cap} apps by traffic, so not read. Not zero.
+        </span>
+      )}
     </div>
   );
 }
@@ -116,13 +124,21 @@ function FleetTableRow({ row, last, loading, onOpen, onRetry }: { row: FleetRow;
   const rate = row.requests !== null && row.errors !== null ? errorRate(row.errors, row.requests) : null;
   const hot = row.requests !== null && row.errors !== null && row.requests > 0 && row.errors / row.requests >= 0.01;
   const num = { textAlign: 'right' as const, fontFamily: 'var(--font-mono)', fontSize: 12.5 };
-  const dash = <span style={{ color: 'var(--text-placeholder)' }}>{loading ? '…' : '—'}</span>;
+  const dash = <span title={row.unread ?? undefined} style={{ color: 'var(--text-placeholder)' }}>{loading ? '…' : '—'}</span>;
   return (
     <div
       role="row"
       tabIndex={0}
       onClick={onOpen}
-      onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}
+      onKeyDown={(e) => {
+        // Only the row's own keys: Enter on the Retry button inside it bubbles here, and
+        // must retry — not open the app first.
+        if (e.target !== e.currentTarget) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
