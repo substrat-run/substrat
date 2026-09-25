@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertPlatformCall,
+  EXPORTED_EVENTS_HEADER,
+  kickFlags,
+  PLATFORM_REQUEST_HEADER,
   PLATFORM_SECRET_HEADER,
   PlatformCallError,
 } from '../src/platform-call.js';
@@ -60,5 +63,29 @@ describe('assertPlatformCall', () => {
     expect(() =>
       assertPlatformCall(headers({ 'x-substrat-router': 'shhh' }), { expectedSecret: 'shhh' }),
     ).toThrow(PlatformCallError);
+  });
+});
+
+/**
+ * #1705 PR 2 — the kick's two response flags, as one call a worker spreads into `getScope`'s
+ * options. Each callback raises its own header and nothing else; the router reads exactly these
+ * names (it hardcodes them, since it does not depend on the kernel).
+ */
+describe('kickFlags (#1705 PR 2)', () => {
+  it('raises each flag under its own header, only when its callback fires', () => {
+    const set: [string, string][] = [];
+    const flags = kickFlags((name, value) => set.push([name, value]));
+    expect(set).toEqual([]);
+    flags.onPlatformRequests?.(2);
+    expect(set).toEqual([[PLATFORM_REQUEST_HEADER, '1']]);
+    flags.onExportedEvents?.(1);
+    expect(set).toEqual([
+      [PLATFORM_REQUEST_HEADER, '1'],
+      [EXPORTED_EVENTS_HEADER, '1'],
+    ]);
+    expect([PLATFORM_REQUEST_HEADER, EXPORTED_EVENTS_HEADER]).toEqual([
+      'x-substrat-platform-request',
+      'x-substrat-exported-events',
+    ]);
   });
 });

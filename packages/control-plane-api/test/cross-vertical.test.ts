@@ -197,6 +197,24 @@ describe('hostedCrossVerticalReach — the hosted cost bound (#1705 PR 2)', () =
     expect(calls.sort()).toEqual(importing.map((x) => `/internal/import-state?tenantId=${t}&scopeId=${x.id}`).sort());
   });
 
+  it('one resolution per scope per reach, and a failed one is asked again', async () => {
+    const [only] = scopesOn(1, IMPORTS);
+    const client = new VerticalClient({
+      fetch: (async () => new Response(JSON.stringify({ consumes: [], cursors: [] }))) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    let resolutions = 0;
+    const reach = hostedCrossVerticalReach({
+      admin: { getScopeRecord: async () => only } as never,
+      actor: ACTOR,
+      clientForScope: async () => (++resolutions === 1 ? undefined : client),
+    });
+    await expect(reach.importState(t, only!.id)).rejects.toThrow(/no deployment serving scope/);
+    await reach.importState(t, only!.id);
+    await reach.importState(t, only!.id);
+    expect(resolutions).toBe(2);
+  });
+
   it('a scope with no serving deployment fails its edge loudly, never answers "imports nothing"', async () => {
     const [only] = scopesOn(1, IMPORTS);
     const { report } = await run([only!], async () => undefined);
