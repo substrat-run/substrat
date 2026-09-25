@@ -957,6 +957,22 @@ restore → keep serving), which is what turns this from a claim into a procedur
 4. **Then re-check what the directory does not hold.** A restored directory brings back the map;
    it does not bring back what was never in it, and a recovery that stops at step 3 is only
    partly done:
+   - **The schedule kill switch's record rolls back with it** (#1674). `_substrat_system_switches`
+     is a directory table, so it comes back as it stood when the copy was taken, while each
+     scope's own OFF marker is untouched. The admin log rolled back with it too, so it cannot
+     say what moved after the copy; the scopes can. For each scope (`GET /scopes`), read
+     `GET /tenants/:t/scopes/:s/system-grants`, which reports the scope's own position
+     (`schedules`) beside the record's (`recorded`):
+     - `schedules: off`, `recorded` not `off` — switched off after the copy. Repeat the OFF
+       (`DELETE .../system-grants`), with the incident's reason: it is idempotent on the scope
+       and records it again. Left alone, the next wipe of that scope would lose the switch.
+     - `schedules: on`, `recorded: off` — ambiguous after a restore: switched back on after
+       the copy, or a scope that lost its marker (the drift the record exists to repair).
+       Left alone, the next reconcile switches it OFF — the fail-closed answer. If it was
+       restored on purpose, repeat the restore (`POST .../system-grants`), which records `on`.
+     - Everything else agrees and needs nothing. Never replay OFFs from memory or from a log:
+       an OFF followed by a restore after the copy would switch a healthy module back off.
+     A dump taken before the table existed is backfilled from its own admin log instead.
    - **The staff roster is in D1** (`AUTH_DB`, `staff_actor` — §4.4/#42), deliberately outside
      the directory DO. A directory restore does not restore who may sign in; that database has
      its own backup story (Time Travel), and recovering into a *new* deployment means pointing

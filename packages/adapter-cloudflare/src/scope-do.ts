@@ -749,6 +749,20 @@ function cellToJson(v: unknown): unknown {
 const IS_CREATE_TRIGGER = /^\s*CREATE\s+(TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i;
 const ENDS_WITH_END = /\bEND\s*$/i;
 
+/**
+ * The kernel's two-method SQL handle (`SwitchSql`) over a Durable Object's storage — what the
+ * shared switch rules (#1666) and the directory's switch record (#1674) run through. One
+ * wrapper for both DOs, as the pure adapter has one `switchSqlOf`.
+ */
+export function switchSqlOver(sql: SqlStorage): SwitchSql {
+  return {
+    all: (q, ...params) => sql.exec(q, ...params).toArray() as Record<string, unknown>[],
+    run: (q, ...params) => {
+      sql.exec(q, ...params);
+    },
+  };
+}
+
 export function splitSqlStatements(sql: string): string[] {
   const out: string[] = [];
   let cur = '';
@@ -2976,12 +2990,7 @@ export function defineScopeDO(
 
     /** The kernel's schedule-switch SQL (#1666), over this DO's storage. */
     private switchSql(): SwitchSql {
-      return {
-        all: (sql, ...params) => this.sql.exec(sql, ...params).toArray() as Record<string, unknown>[],
-        run: (sql, ...params) => {
-          this.sql.exec(sql, ...params);
-        },
-      };
+      return switchSqlOver(this.sql);
     }
 
     /**

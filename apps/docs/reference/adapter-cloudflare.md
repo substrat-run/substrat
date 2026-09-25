@@ -130,6 +130,13 @@ listed them as deferred:
 - **The outbound seams** — connector dispatch riding platform intents, the declared egress
   allowlist, and the platform email relay, so a CP-less vertical reaches the outside world
   without ever holding a credential.
+- **The schedule kill switch, and a record that outlives the scope's storage** —
+  `revokeFromSystem` / `restoreToSystem` move a hosted scope's switch in the deployment serving
+  it (over `systemSwitchDelegation`), and the `ControlPlaneDO` records each switch beside it.
+  `reassertSystemSwitches` puts a recorded OFF back after a wipe, a stale restore or a rewind
+  (always after provisioning's seat), and `listSystemSwitches` is the fleet read of what is
+  off. With no delegation configured, a hosted scope's status read and re-assert refuse
+  `unavailable` rather than answer from this host's placeholder namespace.
 
 Still deferred, honestly:
 
