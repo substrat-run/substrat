@@ -186,4 +186,16 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
     expect(asked).toBe(0);
     expect(await boundTo()).toBe(other);
   });
+
+  it('an acknowledgement of something a bind has no gate for is refused as a malformed body, and binds nothing', async () => {
+    const refused = (await post(`/apps/${appScope}/bind`, { versionId: v.dropping, acknowledge: { permissionChange: true } }).then(
+      () => null,
+      (e: unknown) => e,
+    )) as { status: number };
+    expect(refused.status).toBe(400);
+    expect(await boundTo()).toBe(v.exporting);
+    // The twin: the acknowledgement a bind does have is accepted.
+    await post(`/apps/${appScope}/bind`, { versionId: v.dropping, acknowledge: { exportBreak: true } });
+    expect(await boundTo()).toBe(v.dropping);
+  });
 });
