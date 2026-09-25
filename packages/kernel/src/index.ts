@@ -294,6 +294,7 @@ export {
   withRecorded,
 } from './system-switch-record.js';
 export type {
+  SystemSwitchReassert,
   SystemSwitchRecordFilter,
   SystemSwitchRecordPrior,
   SystemSwitchRecordRow,

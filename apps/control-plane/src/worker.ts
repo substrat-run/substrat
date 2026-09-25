@@ -77,6 +77,7 @@ import {
   pruneScopeBackups,
   createCustomHostnameProvisioner,
   reconcilePayloadFor,
+  reconcileThenReassert,
   reconcilePendingHostnames,
   isCustomHostname,
   firstBuilderAuth,
@@ -1191,21 +1192,19 @@ async function reconcileOneScope(
     SWEEP_ACTOR,
     { tenantId: t, id: s, vertical: rec.vertical },
   );
-  const reconciled = await reconcileOrUnsupported(() =>
-    client.reconcileInstance({
-      tenantId: t,
-      scopeId: s,
-      entitlements: payload.entitlements as never,
-      identityLinks: payload.identityLinks as never,
-      connectionGrants: payload.connectionGrants as never,
-      connectionKeys: payload.connectionKeys as never,
-    }),
+  // #1674: a re-assert failure fails the scope for this pass, so no receipt is written.
+  return reconcileThenReassert(host.admin, SWEEP_ACTOR, { tenantId: t, scopeId: s }, () =>
+    reconcileOrUnsupported(() =>
+      client.reconcileInstance({
+        tenantId: t,
+        scopeId: s,
+        entitlements: payload.entitlements as never,
+        identityLinks: payload.identityLinks as never,
+        connectionGrants: payload.connectionGrants as never,
+        connectionKeys: payload.connectionKeys as never,
+      }),
+    ),
   );
-  // #1674: after the reconcile's seat, what the directory records as switched OFF goes
-  // back off. A throw here fails the scope for this pass, so the sweep writes no receipt
-  // for a scope it left on and asks again next pass.
-  await host.admin.reassertSystemSwitches(SWEEP_ACTOR, { tenantId: t, scopeId: s });
-  return reconciled;
 }
 
 /**

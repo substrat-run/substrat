@@ -108,6 +108,7 @@ import { connectionGrantsForScope, type VerticalClient } from './vertical-client
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
+import { reconcileThenReassert } from './reconcile.js';
 import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
 import { ControlPlaneError } from './client.js';
 import { provisionSiblingScope } from './platform-drain.js';
@@ -2681,22 +2682,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         : null;
     const ranAs = versionReachedAt(reached.via, scope, serving);
     try {
-      const result = await vertical.reconcileInstance({
-        tenantId,
-        scopeId,
-        entitlements,
-        identityLinks,
-        connectionGrants,
-        connectionKeys,
-        // Handed over exactly as at provision: a store minted HERE has never been migrated
-        // by the vertical, so the reconcile must carry it into the same ready-gate — a bound
-        // but unmigrated database fails as loudly as an absent one.
-        ...(tenantStores.length ? { tenantStores } : {}),
-      });
-      // #1674: a reconcile seats a wiped scope's system grants live again, so what the
-      // directory records as switched OFF goes back off now, after that seat. Before the
-      // receipt: a scope left on must not be marked provisioned.
-      await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
+      // #1674: the recorded OFF positions go back after the reconcile, before the receipt.
+      const result = await reconcileThenReassert(admin, actor, { tenantId, scopeId }, () =>
+        vertical.reconcileInstance({
+          tenantId,
+          scopeId,
+          entitlements,
+          identityLinks,
+          connectionGrants,
+          connectionKeys,
+          // Handed over exactly as at provision: a store minted HERE has never been migrated
+          // by the vertical, so the reconcile must carry it into the same ready-gate — a bound
+          // but unmigrated database fails as loudly as an absent one.
+          ...(tenantStores.length ? { tenantStores } : {}),
+        }),
+      );
       // #1172: the reconcile succeeded, so record WHICH version it ran against. Without
       // this the sweep would come back and do it again on the next pass — the console
       // button and the automatic phase have to write the same receipt, or pressing the
@@ -3862,9 +3862,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await host.restoreScope(actor, tenantId, scopeId, landing);
       const vertical = await verticalForScope(c, scope);
       if (vertical) await retryTransient(() => vertical.restoreScope(tenantId, scopeId, tables));
-      // #1674: a backup taken before a module was switched off carries its grants live and
-      // no marker, so the restore just switched it back on. The directory's record puts it
-      // back off, now, rather than at the next reconcile.
+      // #1674: a backup from before a module was switched off brings it back on; the
+      // directory's record puts it back off now, not at the next reconcile.
       await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
       return c.json({ restored: scopeId, tables: tables.length });
     } catch (e) {

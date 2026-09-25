@@ -13,6 +13,7 @@
  * intent, the sweep records a receipt.
  */
 import type { PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { HostAdmin } from '@substrat-run/kernel';
 import { connectionGrantsForScope } from './vertical-client.js';
 
 /** The slice of `HostAdmin` a gather needs. Narrow on purpose: this reads, never writes. */
@@ -66,4 +67,26 @@ export async function reconcilePayloadFor(
     connectionGrants: connectionGrants as unknown[],
     connectionKeys,
   };
+}
+
+/**
+ * Run a hosted reconcile, then put the directory's recorded OFF positions back (#1674).
+ *
+ * A reconcile runs in the vertical's own deployment, and its seat recreates the `system:`
+ * grants a wiped scope lost (#1659), so the kill switch has to be re-asserted AFTER it —
+ * from here, where the record is. Every caller of `reconcileInstance` goes through this, so
+ * no reconcile path can forget it. A re-assert failure throws, so a caller that records a
+ * receipt does not record one for a scope it left switched on.
+ *
+ * Its own narrow admin slice: unlike the gather above, this one writes.
+ */
+export async function reconcileThenReassert<T>(
+  admin: Pick<HostAdmin, 'reassertSystemSwitches'>,
+  actor: PlatformActorId,
+  node: { tenantId: TenantId; scopeId: ScopeId },
+  reconcile: () => Promise<T>,
+): Promise<T> {
+  const result = await reconcile();
+  await admin.reassertSystemSwitches(actor, node);
+  return result;
 }

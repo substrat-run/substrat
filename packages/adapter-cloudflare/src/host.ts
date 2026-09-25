@@ -293,6 +293,7 @@ import {
   type UndrainedEvents,
   type UndrainedRead,
   type SwitchOutcome,
+  type SystemSwitchReassert,
   type SystemSwitchRecordFilter,
   type SystemSwitchRecordPrior,
   type SystemSwitchRecordRow,
@@ -696,7 +697,7 @@ interface ControlPlaneStub {
     key: { tenantId: string; scopeId: string; moduleId: string },
     prior: SystemSwitchRecordPrior,
   ): Promise<void>;
-  listSystemSwitches(filter: SystemSwitchRecordFilter): Promise<SystemSwitchRecordRow[]>;
+  listSystemSwitches(filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecordRow[]>;
   systemSwitchRecordsOf(tenantId: string, scopeId: string): Promise<[string, 'on' | 'off'][]>;
   switchedOffModulesOf(tenantId: string, scopeId: string): Promise<string[]>;
   recordConnectionUse(
@@ -2514,11 +2515,9 @@ export class CloudflareScopeHost implements ScopeHost {
     for (const seat of peerSeats(collectPeers(this.peerSources), input.scopeId)) {
       await this.scopeStub(input.scopeId).seatTuple(seat.subject, seat.relation, seat.object, null);
     }
-    // #1674: what the directory records as switched OFF goes back off, AFTER the seat, so
-    // the grants a wiped scope just had seated are the ones OFF tombstones. Only where the
-    // seat above landed in the scope's real store: a scope a vertical's own deployment
-    // serves is seated by that deployment's provision, later, and re-asserted after it by
-    // the reconcile that runs it — doing it here would run before its seat.
+    // #1674: re-assert the recorded OFF positions after the seat (`system-switch-record.ts`).
+    // Only where this seat landed in the scope's real store: a delegated scope is seated by
+    // its deployment, later, and re-asserted after that deployment's reconcile instead.
     if (!(this.systemSwitchDelegation && record.vertical !== null)) {
       await this.admin.reassertSystemSwitches(actor, { tenantId: input.tenantId, scopeId: input.scopeId });
     }
@@ -3974,6 +3973,29 @@ export class CloudflareScopeHost implements ScopeHost {
       };
     };
 
+    /**
+     * Where one scope's schedule switch lands — the ONE rule `switchSystem` and the #1674
+     * re-assert share, so a re-assert moves exactly the switch an operator's OFF would have.
+     * A scope bound to no vertical (#1666 review) has no deployment to delegate to: its store
+     * is the DO here, so the switch moves (or answers `held: false`) here too. Delegating it
+     * would throw "no deployment serving scope" instead. A scope WITH a vertical still
+     * delegates, and still fails loudly when none serves it.
+     */
+    const systemSwitchTarget = async (tenantId: TenantId, scopeId: ScopeId) => {
+      let vertical: string | null = null;
+      if (!this.cpLess) {
+        const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        vertical = rec.vertical;
+      }
+      const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
+      const move = (moduleId: ModuleId, to: 'on' | 'off', at: string): Promise<SwitchOutcome> =>
+        delegation
+          ? delegation.switch({ tenantId, scopeId, moduleId, to })
+          : this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, at);
+      return { vertical, move };
+    };
+
     const switchSystem = async (
       actor: PlatformActorId,
       raw: SystemSwitch,
@@ -3981,12 +4003,7 @@ export class CloudflareScopeHost implements ScopeHost {
     ): Promise<SystemSwitchResult> => {
       const input = systemSwitch.parse(raw);
       const { tenantId, scopeId } = input.node;
-      let vertical: string | null = null;
-      if (!this.cpLess) {
-        const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
-        vertical = rec.vertical;
-      }
+      const { vertical, move } = await systemSwitchTarget(tenantId, scopeId);
       // AUDIT FIRST (#1666 review): the intent row lands before anything moves, and the
       // outcome row after — every attempt, a repeat included. The scope's store and the
       // admin log are separate, so no order makes the pair atomic; this one fails toward
@@ -3997,24 +4014,16 @@ export class CloudflareScopeHost implements ScopeHost {
       const target = { tenantId, scopeId, vertical };
       const base = { operationId, moduleId: input.moduleId, schedules: to };
       await this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
-      // A scope bound to no vertical (#1666 review) has no deployment to delegate to: its
-      // store is the DO here, so the switch moves (or answers `held: false`) here too.
-      // Delegating it would throw "no deployment serving scope" instead. A scope WITH a
-      // vertical still delegates, and still fails loudly when none serves it.
-      const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
-      // The directory's record (#1674), which a reconcile re-asserts OFF from. ON writes it
-      // BEFORE the scope moves and OFF only AFTER the scope held: either failure then leaves
-      // a record that is no more `off` than the scope, and the scope's marker wins.
+      // The directory's record (#1674): ON before the scope moves, OFF after it held — see
+      // `recordSystemSwitchedOn` for why that order is the safe one.
       const at = new Date().toISOString();
       const record = { tenantId, scopeId, moduleId: input.moduleId, actor, reason: input.reason, operationId, at };
       const prior = to === 'on' ? await this.cp.recordSystemSwitchedOn(record) : null;
       let outcome: SwitchOutcome;
       try {
-        outcome = delegation
-          ? await delegation.switch({ tenantId, scopeId, moduleId: input.moduleId, to })
-          : await this.scopeStub(scopeId).switchSystemSchedules(input.moduleId, scopeId, to, at);
+        outcome = await move(input.moduleId, to, at);
       } catch (err) {
-        await this.cp.restoreSystemSwitchRecord(record, prior).catch(() => undefined);
+        if (prior) await this.cp.restoreSystemSwitchRecord(record, prior).catch(() => undefined);
         // Best effort: the original error is what the caller must see, and the intent row
         // already says an attempt was made.
         await this.recordAdmin(actor, action, target, null, {
@@ -4126,16 +4135,19 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       }
       const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
-      const states = delegation
-        ? await delegation.status({ tenantId, scopeId })
-        : systemScheduleEntry.array().parse(await this.scopeStub(scopeId).systemGrantsStatus());
+      // The scope's own position and the directory's record are independent reads.
+      const [states, recordedRows] = await Promise.all([
+        delegation
+          ? delegation.status({ tenantId, scopeId })
+          : this.scopeStub(scopeId).systemGrantsStatus().then((rows) => systemScheduleEntry.array().parse(rows)),
+        this.cp.systemSwitchRecordsOf(tenantId, scopeId),
+      ]);
       const offModules = new Set(states.filter((s) => s.schedules === 'off').map((s) => s.moduleId as string));
       const explanations =
         offModules.size > 0
           ? await lastSwitchedOff(tenantId, scopeId, offModules)
           : new Map<string, { actor: PlatformActorId; reason: string; at: Instant }>();
-      const recorded = new Map(await this.cp.systemSwitchRecordsOf(tenantId, scopeId));
-      const result = withRecorded(states, recorded).map((s) => ({
+      const result = withRecorded(states, new Map(recordedRows)).map((s) => ({
         moduleId: s.moduleId as ModuleId,
         schedules: s.schedules,
         switchedOff: explanations.get(s.moduleId) ?? null,
@@ -4149,32 +4161,21 @@ export class CloudflareScopeHost implements ScopeHost {
 
     /**
      * #1674: put the directory's OFF positions back into one scope — see
-     * `HostAdmin.reassertSystemSwitches`. The switch it moves is `switchSystem`'s, reached
-     * by the SAME branch, so the re-assert lands wherever an operator's OFF would have: a
-     * hosted scope over the delegation to the deployment serving it (the
-     * `/internal/system-switch` route every deployment since #1666 answers, so no newer
-     * vertical protocol is needed), anything else in the DO here.
+     * `HostAdmin.reassertSystemSwitches`. It moves the switch through `systemSwitchTarget`,
+     * so it lands wherever an operator's OFF would have — for a hosted scope, over the
+     * `/internal/system-switch` route every deployment since #1666 answers.
      */
     const reassertSystemSwitchesOf = async (
       actor: PlatformActorId,
       node: { tenantId: TenantId; scopeId: ScopeId },
-    ): Promise<{ moduleId: string; held: boolean; changed: boolean }[]> => {
+    ): Promise<SystemSwitchReassert[]> => {
       const { tenantId, scopeId } = node;
-      let vertical: string | null = null;
-      if (!this.cpLess) {
-        const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!rec) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
-        vertical = rec.vertical;
-      }
+      const { vertical, move } = await systemSwitchTarget(tenantId, scopeId);
       const modules = await this.cp.switchedOffModulesOf(tenantId, scopeId);
-      if (modules.length === 0) return [];
-      const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
       const at = new Date().toISOString();
-      const results: { moduleId: string; held: boolean; changed: boolean }[] = [];
+      const results: SystemSwitchReassert[] = [];
       for (const moduleId of modules) {
-        const outcome = delegation
-          ? await delegation.switch({ tenantId, scopeId, moduleId: moduleId as ModuleId, to: 'off' })
-          : await this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, 'off', at);
+        const outcome = await move(moduleId as ModuleId, 'off', at);
         if (outcome.changed) {
           await this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId, vertical }, null, {
             operationId: ulid(),
@@ -4466,7 +4467,7 @@ export class CloudflareScopeHost implements ScopeHost {
       // #1674: the directory's record of the switch — the fleet read, and the re-assert a
       // scope that lost its marker gets after a wipe or a restore.
       listSystemSwitches: async (actor: PlatformActorId, filter?: SystemSwitchRecordFilter) => {
-        const rows = await this.cp.listSystemSwitches(filter ?? {});
+        const rows = await this.cp.listSystemSwitches(filter);
         await this.recordAccess(
           actor,
           'listSystemSwitches',

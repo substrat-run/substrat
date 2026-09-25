@@ -144,7 +144,7 @@ import type { CapabilityVerbs } from './capability.js';
 import { substratError } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { SealedSecret } from './secret-box.js';
-import type { SystemSwitchRecordFilter } from './system-switch-record.js';
+import type { SystemSwitchReassert, SystemSwitchRecordFilter } from './system-switch-record.js';
 import type { SearchHit, SearchOptions } from './search-index.js';
 import type { EntityVersion } from './entity-version.js';
 import type { UndrainedEvents } from './outbox-event.js';
@@ -1637,7 +1637,7 @@ export interface HostAdmin {
   reassertSystemSwitches(
     actor: PlatformActorId,
     node: { tenantId: TenantId; scopeId: ScopeId },
-  ): Promise<{ moduleId: string; held: boolean; changed: boolean }[]>;
+  ): Promise<SystemSwitchReassert[]>;
 
   /**
    * The PEER kill switch (#1706): turn one calling vertical off on one scope — the tenant's lever

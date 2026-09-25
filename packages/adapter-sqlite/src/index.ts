@@ -282,6 +282,7 @@ import {
   systemSwitchRecordsOf,
   systemSwitchesTableExists,
   withRecorded,
+  type SystemSwitchReassert,
   type SystemSwitchRecordFilter,
   type SwitchOutcome,
   type SwitchSql,
@@ -2464,9 +2465,8 @@ export class SqliteScopeHost implements ScopeHost {
         const seat = seatScopeTuple(peer.subject, peer.relation, peer.object, null);
         rt.db.prepare(seat.sql).run(...seat.params);
       }
-      // #1674: what the directory records as switched OFF goes back off, AFTER the seat and
-      // in the same turn. A scope whose storage was wiped has just had its grants seated
-      // live, and this tombstones exactly those, so a later restore gives them back.
+      // #1674: re-assert the recorded OFF positions after the seat, in the same turn
+      // (`system-switch-record.ts`).
       this.reassertSwitchesInTurn(rt, actor, input.tenantId, input.scopeId);
     });
     // Audit a real provision only; an idempotent re-provision changed nothing.
@@ -2492,7 +2492,7 @@ export class SqliteScopeHost implements ScopeHost {
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): { moduleId: string; held: boolean; changed: boolean }[] {
+  ): SystemSwitchReassert[] {
     const at = new Date().toISOString();
     return switchedOffModulesOf(switchSqlOf(this.directory), tenantId, scopeId).map((moduleId) => {
       const outcome = rt.db.transaction(() =>
@@ -5728,9 +5728,8 @@ export class SqliteScopeHost implements ScopeHost {
       const target = { tenantId, scopeId };
       const base = { operationId, moduleId: input.moduleId, schedules: to };
       this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
-      // The directory's record (#1674), which a reconcile re-asserts OFF from. ON writes it
-      // BEFORE the scope moves and OFF only AFTER the scope held: either failure then leaves
-      // a record that is no more `off` than the scope, and the scope's marker wins.
+      // The directory's record (#1674): ON before the scope moves, OFF after it held — see
+      // `recordSystemSwitchedOn` for why that order is the safe one.
       const at = new Date().toISOString();
       const directorySql = switchSqlOf(this.directory);
       const record = { tenantId, scopeId, moduleId: input.moduleId, actor, reason: input.reason, operationId, at };
@@ -6264,9 +6263,8 @@ export class SqliteScopeHost implements ScopeHost {
       // #1674: the switch's status read — same gate, the admin log to explain an `off`
       // entry. Nothing to delegate here: the pure adapter's scope storage IS the store.
       systemGrantsStatus: systemGrantsStatusOf,
-      // #1674: the directory's record of the switch — the fleet read, and the re-assert a
-      // scope that lost its marker gets. `reassertSwitchesInTurn` is the one body; this is
-      // the directory check and the turn around it.
+      // #1674: the switch's directory record — the fleet read, and the re-assert (whose body
+      // is `reassertSwitchesInTurn`; this is the scope check and the turn around it).
       listSystemSwitches: async (actor: PlatformActorId, filter?: SystemSwitchRecordFilter) => {
         const rows = listSystemSwitchRecords(switchSqlOf(this.directory), filter);
         this.recordAccess(
@@ -6279,12 +6277,7 @@ export class SqliteScopeHost implements ScopeHost {
         return rows.map((r) => systemSwitchRecord.parse(r));
       },
       reassertSystemSwitches: async (actor: PlatformActorId, node: { tenantId: TenantId; scopeId: ScopeId }) => {
-        const scope = this.directory
-          .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
-          .get(node.scopeId) as { tenant_id: string } | undefined;
-        if (!scope || scope.tenant_id !== node.tenantId) {
-          throw substratError('not_found', `unknown scope for tenant: (${node.tenantId}, ${node.scopeId})`);
-        }
+        this.assertScope(node.tenantId, node.scopeId);
         const rt = this.runtime(node.tenantId, node.scopeId);
         return rt.actor.turn(() => this.reassertSwitchesInTurn(rt, actor, node.tenantId, node.scopeId));
       },

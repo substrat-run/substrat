@@ -24,6 +24,7 @@
  *
  * The admin log is still the history. This is only the current position.
  */
+import type { ListPage } from '@substrat-run/contracts';
 import type { SwitchSql, SystemScheduleState } from './system-switch.js';
 
 /**
@@ -66,6 +67,12 @@ export const SYSTEM_SWITCHES_DDL = `
  * The adapters run it only on the construction that creates the table, so it runs once.
  */
 export const SYSTEM_SWITCHES_BACKFILL_SQL = `
+  WITH applied AS (
+    SELECT DISTINCT action, json_extract(after, '$.operationId') AS operation_id
+      FROM _substrat_admin_log
+     WHERE action IN ('revokeFromSystem', 'restoreToSystem')
+       AND json_extract(after, '$.phase') = 'applied'
+  )
   INSERT OR IGNORE INTO _substrat_system_switches
     (tenant_id, scope_id, module_id, position, actor, reason, operation_id, switched_at)
   SELECT tenant_id, scope_id, module_id, position, actor, reason, operation_id, at FROM (
@@ -81,18 +88,13 @@ export const SYSTEM_SWITCHES_BACKFILL_SQL = `
              ORDER BY i.id DESC
            ) AS latest
       FROM _substrat_admin_log i
+      JOIN applied a
+        ON a.action = i.action AND a.operation_id = json_extract(i.after, '$.operationId')
      WHERE i.action IN ('revokeFromSystem', 'restoreToSystem')
        AND i.tenant_id IS NOT NULL AND i.scope_id IS NOT NULL
        AND json_extract(i.after, '$.phase') = 'intent'
        AND json_extract(i.after, '$.moduleId') IS NOT NULL
        AND json_extract(i.after, '$.reason') IS NOT NULL
-       AND json_extract(i.after, '$.operationId') IS NOT NULL
-       AND EXISTS (
-         SELECT 1 FROM _substrat_admin_log a
-          WHERE a.action = i.action
-            AND json_extract(a.after, '$.operationId') = json_extract(i.after, '$.operationId')
-            AND json_extract(a.after, '$.phase') = 'applied'
-       )
   ) WHERE latest = 1
 `;
 
@@ -117,20 +119,19 @@ export interface SystemSwitchRecordRow {
   at: string;
 }
 
-/** Filter for the fleet read. Unset `position` means both; the HTTP route defaults it to `off`. */
-export interface SystemSwitchRecordFilter {
+/**
+ * Filter for the fleet read. Unset `position` means both; the HTTP route defaults it to
+ * `off`. Paged by `operationId` (the exclusive cursor), oldest first unless `order: 'desc'`.
+ */
+export interface SystemSwitchRecordFilter extends ListPage {
   position?: 'on' | 'off';
   tenantId?: string;
   scopeId?: string;
   moduleId?: string;
   vertical?: string;
-  /** Unset means unbounded, as every kernel-side list read (`ListPage`). */
-  limit?: number;
-  /** Exclusive keyset cursor: an `operationId`. */
-  cursor?: string;
-  /** Default 'asc': oldest switch first, as the admin log reads. */
-  order?: 'asc' | 'desc';
 }
+
+const positionOf = (v: unknown): 'on' | 'off' => (v === 'on' ? 'on' : 'off');
 
 const COLUMNS = `r.tenant_id, r.scope_id, r.module_id, s.vertical, r.position, r.actor, r.reason,
   r.operation_id, r.switched_at`;
@@ -140,7 +141,7 @@ const rowOf = (r: Record<string, unknown>): SystemSwitchRecordRow => ({
   scopeId: String(r.scope_id),
   moduleId: String(r.module_id),
   vertical: r.vertical == null ? null : String(r.vertical),
-  position: r.position === 'on' ? 'on' : 'off',
+  position: positionOf(r.position),
   actor: String(r.actor),
   reason: String(r.reason),
   operationId: String(r.operation_id),
@@ -190,7 +191,7 @@ export function systemSwitchRecordsOf(
     tenantId,
     scopeId,
   );
-  return new Map(rows.map((r) => [String(r.module_id), r.position === 'on' ? 'on' : 'off']));
+  return new Map(rows.map((r) => [String(r.module_id), positionOf(r.position)]));
 }
 
 /**
@@ -235,13 +236,38 @@ export interface SystemSwitchRecordWrite {
 }
 
 /** The row as it stood before a write, so a failed switch can put it back. */
-export type SystemSwitchRecordPrior = {
-  position: 'on' | 'off';
-  actor: string;
-  reason: string;
-  operationId: string;
-  at: string;
-} | null;
+export type SystemSwitchRecordPrior = Pick<
+  SystemSwitchRecordRow,
+  'position' | 'actor' | 'reason' | 'operationId' | 'at'
+> | null;
+
+/** What a re-assert did for one recorded-off module — `HostAdmin.reassertSystemSwitches`' answer. */
+export interface SystemSwitchReassert {
+  moduleId: string;
+  held: boolean;
+  changed: boolean;
+}
+
+/** Overwrite one existing row's position and provenance — ON's write, and its undo. */
+function setRecordRow(
+  db: SwitchSql,
+  key: { tenantId: string; scopeId: string; moduleId: string },
+  row: NonNullable<SystemSwitchRecordPrior>,
+): void {
+  db.run(
+    `UPDATE _substrat_system_switches
+        SET position = ?, actor = ?, reason = ?, operation_id = ?, switched_at = ?
+      WHERE tenant_id = ? AND scope_id = ? AND module_id = ?`,
+    row.position,
+    row.actor,
+    row.reason,
+    row.operationId,
+    row.at,
+    key.tenantId,
+    key.scopeId,
+    key.moduleId,
+  );
+}
 
 /**
  * OFF's write, made AFTER the scope's switch held. An upsert: a repeat OFF refreshes the
@@ -284,20 +310,9 @@ export function recordSystemSwitchedOn(db: SwitchSql, row: SystemSwitchRecordWri
     row.moduleId,
   )[0];
   if (!prior) return null;
-  db.run(
-    `UPDATE _substrat_system_switches
-        SET position = 'on', actor = ?, reason = ?, operation_id = ?, switched_at = ?
-      WHERE tenant_id = ? AND scope_id = ? AND module_id = ?`,
-    row.actor,
-    row.reason,
-    row.operationId,
-    row.at,
-    row.tenantId,
-    row.scopeId,
-    row.moduleId,
-  );
+  setRecordRow(db, row, { position: 'on', actor: row.actor, reason: row.reason, operationId: row.operationId, at: row.at });
   return {
-    position: prior.position === 'on' ? 'on' : 'off',
+    position: positionOf(prior.position),
     actor: String(prior.actor),
     reason: String(prior.reason),
     operationId: String(prior.operation_id),
@@ -311,18 +326,5 @@ export function restoreSystemSwitchRecord(
   key: { tenantId: string; scopeId: string; moduleId: string },
   prior: SystemSwitchRecordPrior,
 ): void {
-  if (!prior) return;
-  db.run(
-    `UPDATE _substrat_system_switches
-        SET position = ?, actor = ?, reason = ?, operation_id = ?, switched_at = ?
-      WHERE tenant_id = ? AND scope_id = ? AND module_id = ?`,
-    prior.position,
-    prior.actor,
-    prior.reason,
-    prior.operationId,
-    prior.at,
-    key.tenantId,
-    key.scopeId,
-    key.moduleId,
-  );
+  if (prior) setRecordRow(db, key, prior);
 }

@@ -19,7 +19,6 @@ import {
   switchedOffModulesOf,
   systemSwitchRecordsOf,
   systemSwitchesTableExists,
-  type SwitchSql,
   type SystemSwitchRecordFilter,
   type SystemSwitchRecordPrior,
   type SystemSwitchRecordRow,
@@ -29,7 +28,7 @@ import {
   resolveVerticalInstanceFrom,
   type ImpersonationRow,
 } from '@substrat-run/kernel';
-import { splitSqlStatements } from './scope-do.js';
+import { splitSqlStatements, switchSqlOver } from './scope-do.js';
 import type {
   AdminLogEntry,
   ListPage,
@@ -1053,21 +1052,14 @@ const SCOPE_COLUMNS_ADDED = [
 
 export class ControlPlaneDO extends DurableObject {
   private readonly sql: SqlStorage;
+  /** The directory's store as the kernel's SQL handle — the switch record's helpers (#1674). */
+  private readonly kernelSql: ReturnType<typeof switchSqlOver>;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
     this.sql = ctx.storage.sql;
+    this.kernelSql = switchSqlOver(this.sql);
     this.applyDirectorySchema();
-  }
-
-  /** The directory's store as the kernel's two-method SQL handle (#1674's record helpers). */
-  private get kernelSql(): SwitchSql {
-    return {
-      all: (sql, ...params) => this.sql.exec(sql, ...params).toArray() as Record<string, unknown>[],
-      run: (sql, ...params) => {
-        this.sql.exec(sql, ...params);
-      },
-    };
   }
 
   /**
@@ -3291,7 +3283,7 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** The fleet read. */
-  listSystemSwitches(filter: SystemSwitchRecordFilter): SystemSwitchRecordRow[] {
+  listSystemSwitches(filter?: SystemSwitchRecordFilter): SystemSwitchRecordRow[] {
     return listSystemSwitchRecords(this.kernelSql, filter);
   }
 

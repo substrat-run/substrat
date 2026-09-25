@@ -31,6 +31,7 @@ import {
 import { ControlPlaneError } from './client.js';
 import { attributeFailure, terminalFailureNote } from './failure-attribution.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
+import { reconcileThenReassert } from './reconcile.js';
 import { collectBlobStoreHandles, collectTenantStoreHandles } from './tenant-stores.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
 
@@ -848,17 +849,16 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
       ? await admin.connectionSealingKeys(tenantId, scope.vertical)
       : [];
     try {
-      await vertical.reconcileInstance({
-        tenantId,
-        scopeId,
-        entitlements,
-        identityLinks,
-        connectionGrants,
-        connectionKeys,
-      });
-      // #1674: after the reconcile's seat, what the directory records as switched OFF goes
-      // back off — every reconcile, whoever triggered it, as the grants above ride every one.
-      await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
+      await reconcileThenReassert(admin, actor, { tenantId, scopeId }, () =>
+        vertical.reconcileInstance({
+          tenantId,
+          scopeId,
+          entitlements,
+          identityLinks,
+          connectionGrants,
+          connectionKeys,
+        }),
+      );
     } catch (e) {
       if (e instanceof ControlPlaneError) return { status: 'pending', error: e.message };
       throw e;
