@@ -30,6 +30,9 @@ import type {
   PreviewAuth,
   PrincipalId,
   PeerGrantsStatusEntry,
+  EdgeHealthReport,
+  ImportCursorMove,
+  ImportCursorMoved,
   PeerSwitchResult,
   Scope,
   ScopeDump,
@@ -1848,6 +1851,26 @@ export class TenantNarrowedControlPlane {
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/peer-grants`, {
       method: to === 'off' ? 'DELETE' : 'POST',
       body: JSON.stringify({ vertical, reason }),
+    });
+  }
+
+  /**
+   * Where each cross-vertical edge of this tenant stands (#1705 PR 3), read live by the control
+   * plane through the sweep's own reach. A failure surfaces as the `ApiError` it is: "no edge"
+   * and "could not be read" are different answers.
+   */
+  crossVerticalEdges(): Promise<EdgeHealthReport> {
+    return this.call(`/tenants/${this.tenantId}/cross-vertical/edges`);
+  }
+
+  /**
+   * The replay lever on a consumer scope of this tenant (#1705 PR 3). The move carries its
+   * acknowledgement literal, and the control plane refuses one without it in the words it stands for.
+   */
+  moveImportCursor(scopeId: ScopeId, move: ImportCursorMove): Promise<ImportCursorMoved> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/import-cursor`, {
+      method: 'POST',
+      body: JSON.stringify(move),
     });
   }
 

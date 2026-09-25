@@ -263,3 +263,99 @@ describe('the replay lever route (#1705 PR 3)', () => {
     expect(await cursorOf(t, consumerScope)).toEqual(before);
   });
 });
+
+describe('the edge health route (#1705 PR 3)', () => {
+  const TENANT_SECRET = 'test-tenant-token-secret';
+  const t = tenantId.parse(ulid());
+  const other = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const writer = principalId.parse(ulid());
+  const serviceActor = platformActorId.parse('01JZ00000000000000000000SV');
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  let dir: string;
+  let host: SqliteScopeHost;
+  let app: ReturnType<typeof createControlPlaneApi>;
+  let consumer: ScopeId;
+  let producer: ScopeId;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-edge-health-'));
+    host = new SqliteScopeHost({ dir });
+    host.registerModule(ledger);
+    host.registerModule(desk);
+    app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      authenticateTenantService: tenantTokenAuth(TENANT_SECRET, serviceActor),
+      tenantTokenSecret: TENANT_SECRET,
+    });
+    for (const [tenant, slug] of [
+      [t, 'acme'],
+      [other, 'other'],
+    ] as const) {
+      await host.admin.createTenant(staff, { id: tenant, slug, name: slug });
+      await host.admin.grantEntitlement(staff, tenant, 'ledger');
+      await host.admin.grantEntitlement(staff, tenant, 'desk');
+    }
+    const install = async (tenant: TenantId, vertical: string) => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: tenant, scopeId: s, vertical });
+      await host.admin.activateScope(staff, tenant, s);
+      return s;
+    };
+    producer = await install(t, PRODUCER);
+    consumer = await install(t, CONSUMER);
+    await install(other, CONSUMER);
+    await host.admin.grant(staff, {
+      principalId: writer,
+      permission: key('ledger:write'),
+      node: { tenantId: t, scopeId: producer },
+      grantedBy: writer,
+    });
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const edges = async (tenant: string, headers: Record<string, string>) => {
+    const res = await app.request(`/tenants/${tenant}/cross-vertical/edges`, { headers });
+    return { status: res.status, body: (await res.json()) as { edges: { consumer: { scopeId: string }; state: string; lastDelivered: unknown }[] } };
+  };
+
+  it('reads the durable sweep history beside the live state: the pass that delivered', async () => {
+    await (await host.getScope(writer, t, producer)).invoke('ledger/make', {});
+    const before = await edges(t, asStaff);
+    expect(before.status).toBe(200);
+    expect(before.body.edges.find((e) => e.consumer.scopeId === consumer)).toMatchObject({ state: 'behind', lastDelivered: null });
+
+    await runPlatformSweep(host, {
+      actor: staff,
+      fetch: async () => new Response('unused'),
+      sweepers: {},
+      drainRetries: false,
+      gcSnapshots: false,
+      reconcileMigrations: false,
+      runSchedules: false,
+      recordSweepRun: (e) => host.admin.recordSweepRun(e),
+      crossVertical: {},
+    });
+    const after = await edges(t, asStaff);
+    expect(after.body.edges.find((e) => e.consumer.scopeId === consumer)).toMatchObject({
+      state: 'caught-up',
+      lastDelivered: { at: expect.any(String) },
+    });
+  });
+
+  it("another tenant's credential is refused; the tenant's own reads its own edges only", async () => {
+    const asOther = await app.request('/tenant-tokens', { method: 'POST', headers: asStaff, body: JSON.stringify({ tenantId: other }) });
+    const otherToken = { [SERVICE_TOKEN_HEADER]: ((await asOther.json()) as { token: string }).token };
+    expect((await edges(t, otherToken)).status).toBe(403);
+    const own = await edges(other, otherToken);
+    expect(own.status).toBe(200);
+    // other's consumer has no producer in its tenant: unresolved, never t's producer.
+    expect(own.body.edges.every((e) => e.consumer.scopeId !== consumer)).toBe(true);
+    expect(own.body.edges.map((e) => e.state)).toEqual(['unresolved']);
+  });
+});

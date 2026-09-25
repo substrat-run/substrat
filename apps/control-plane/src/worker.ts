@@ -2004,6 +2004,9 @@ export default {
       createControlPlaneApi({
         host: hostFor(env),
         authenticate: authFor(env),
+        // #1705 PR 3: edge health reaches both ends the way the sweep does. Absent, a hosted
+        // edge reads `unavailable`.
+        crossVertical: crossVerticalFor(env, hostFor(env)),
         // #1054: the platform's margin over list for model usage it provides. Whole percent.
         ...(env.MODEL_MARGIN_PERCENT ? { modelMarginPercent: Number(env.MODEL_MARGIN_PERCENT) } : {}),
         // #971: the CLI freshness nudge. Deployment vars, passed through only when set so

@@ -100,9 +100,9 @@ import type {
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
-import type { OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
+import type { CrossVerticalOptions, OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
-import { migrationProgress, ulid } from '@substrat-run/kernel';
+import { crossVerticalHealth, migrationProgress, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
@@ -219,6 +219,13 @@ export interface ControlPlaneApiOptions {
    */
   modelMarginPercent?: number;
   host: ScopeHost;
+  /**
+   * How edge health reaches the two ends of a cross-vertical edge (#1705 PR 3): the phase's own
+   * reach (`hostedCrossVerticalReach` on the control plane). Absent, the host's own verbs, which
+   * is right where one host serves every scope. On the shared control plane without it, a hosted
+   * edge reads `unavailable`, never healthy.
+   */
+  crossVertical?: CrossVerticalOptions | undefined;
   /**
    * How to reach each vertical, by slug (K-31). Absent slugs simply cannot be
    * provisioned — the route 501s rather than pretending, because a control plane that
@@ -6705,6 +6712,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     }
     return c.json(await admin.moveImportCursor(actor, tenantId, scopeId, move));
+  });
+
+  // -- edge health (#1705 PR 3): where each cross-vertical edge of one tenant stands -
+  // Read live, through the phase's own reach, so it cannot disagree with the next pass about
+  // which edges exist. Staff and the tenant's own credential, tenant-pinned (the dashboard shows
+  // a tenant its own apps' edges). Builders may not: absent from BUILDER_ROUTES.
+  app.get('/tenants/:tenantId/cross-vertical/edges', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    return c.json(
+      await crossVerticalHealth(host, {
+        actor: c.get('actor'),
+        tenantId,
+        ...(options.crossVertical ? { crossVertical: options.crossVertical } : {}),
+      }),
+    );
   });
 
   // -- issues (#1233): failures grouped by fingerprint, with a lifecycle --------

@@ -1,7 +1,7 @@
 import { problemDetail } from '@substrat-run/contracts';
 import { tenantLogsQuery } from './logs-query';
 import type { PromoteReviewWire } from './promote-review';
-import type { CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PreviewAuth, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { EdgeHealthReport, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PreviewAuth, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -1500,6 +1500,14 @@ export const api = {
     call<{ changed: boolean }>(`/apps/${encodeURIComponent(scopeId)}/peers/switch`, {
       method: 'POST',
       body: JSON.stringify({ vertical, to, reason }),
+    }),
+  /** Cross-app event edges into and out of this app (#1705 PR 3), read live. */
+  appEdges: (scopeId: string) => call<EdgeHealthReport>(`/apps/${encodeURIComponent(scopeId)}/edges`),
+  /** The replay lever on the edge into this app (#1705 PR 3). */
+  moveAppEdge: (scopeId: string, move: ImportCursorMove) =>
+    call<ImportCursorMoved>(`/apps/${encodeURIComponent(scopeId)}/edges/move`, {
+      method: 'POST',
+      body: JSON.stringify(move),
     }),
   /** The scopes an app spans (Data tab switcher) — several for a multi-scope vertical, one otherwise. */
   appScopes: (scopeId: string) => call<AppScope[]>(`/apps/${encodeURIComponent(scopeId)}/scopes`),

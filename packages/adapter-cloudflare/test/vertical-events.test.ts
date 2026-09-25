@@ -40,7 +40,10 @@ verticalEventsContractSuite('adapter-cloudflare (workerd)', async () => {
   producer.registerModule(crmExportMod);
   const consumer = new CloudflareScopeHost({ scope: env.BOARD_SCOPE, controlPlane: env.VE_CONTROL_PLANE, secretBox });
   consumer.registerModule(boardImportMod);
-  return { producer, consumer, cleanup: async () => {} };
+  // Edge health's door read. This directory host serves the scopes itself and has no peer-switch
+  // delegation, so its `peerGrantsStatus` refuses a scope bound to a vertical. The far end is the
+  // same read the shared control plane's delegation makes.
+  return { producer, consumer, door: async (_t, s) => consumer.peerGrantsStatusLocal(s), cleanup: async () => {} };
 });
 
 /**
@@ -231,6 +234,19 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
     scope: env.BOARD_SCOPE,
     controlPlane: env.VE_CONTROL_PLANE,
     secretBox,
+    // Edge health's door read, as the shared control plane makes it: over the consumer
+    // deployment's `/internal/peer-grants`, with the admin log's reason joined here.
+    peerSwitchDelegation: {
+      switch: async () => {
+        throw new Error('the suite switches peers on the deployments directly');
+      },
+      status: async (a) => {
+        const rec = await consumer.admin.getScopeRecord(leverActor, a.tenantId, a.scopeId);
+        const client = rec ? await routeTo(crm, board)(rec) : undefined;
+        if (!client) throw new Error(`no deployment serving scope ${a.scopeId}`);
+        return client.peerGrantsStatus({ scopeId: a.scopeId });
+      },
+    },
     importCursorDelegation: {
       move: async (a) => {
         const rec = await consumer.admin.getScopeRecord(leverActor, a.tenantId, a.scopeId);
@@ -245,6 +261,7 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
     consumer,
     transport,
     lever: (t, s, move) => leverHost.admin.moveImportCursor(leverActor, t, s, move),
+    door: (t, s) => leverHost.admin.peerGrantsStatus(leverActor, { tenantId: t, scopeId: s }),
     afterInstall: async (t, s, vertical) => {
       await (vertical === CRM_VERTICAL ? crm : board).provision(t, s);
     },

@@ -19,6 +19,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
+  crossVerticalHealth,
   runPlatformSweep,
   ulid,
   type CrossVerticalReach,
@@ -345,6 +346,14 @@ export interface VerticalEventsFixture {
    * delegation crosses the consumer deployment's `/internal/import-cursor`.
    */
   lever?: (tenantId: TenantId, scopeId: ScopeId, move: ImportCursorMove) => Promise<ImportCursorMoved>;
+  /**
+   * How edge health reads the consumer's door (#1705 PR 3). Absent, the health read's default
+   * (`admin.peerGrantsStatus` on the consumer host).
+   */
+  door?: (
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ) => Promise<readonly { vertical: string; calls: string; switchedOff?: { reason: string } | null }[]>;
 }
 
 const noFetch: FetchLike = async () => new Response('unused', { status: 200 });
@@ -997,6 +1006,115 @@ export function verticalEventsContractSuite(
       const v = await newTenant();
       const cv = await install(v, BOARD_VERTICAL);
       expect(String(await refusal(lever(v, cv, skip('now'))))).toMatch(/not installed in this tenant/);
+    });
+
+    // -- edge health (#1705 PR 3) --------------------------------------------------------------
+
+    const health = (t: TenantId, override: Partial<CrossVerticalReach> = {}) =>
+      crossVerticalHealth(fx.consumer, {
+        actor: staff,
+        tenantId: t,
+        crossVertical: { reach: { ...reach, ...override } },
+        ...(fx.door ? { door: fx.door } : {}),
+      });
+    const healthOf = async (t: TenantId, c: ScopeId, override: Partial<CrossVerticalReach> = {}) =>
+      (await health(t, override)).edges.find((e) => e.consumer.scopeId === c);
+
+    it('edge health: behind before a pass (with its lag), caught up after, and the pass that delivered', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Waiting');
+
+      const before = await healthOf(t, c);
+      expect(before).toMatchObject({
+        state: 'behind',
+        producer: { vertical: CRM_VERTICAL, scopeId: p },
+        watermark: null,
+        lastDelivered: null,
+      });
+      expect(before?.oldestPending).not.toBeNull();
+      expect(before?.lagMs).toBeGreaterThanOrEqual(0);
+      // The probe delivered nothing: the view is a read.
+      expect((await board(t, c)).associations).toEqual([]);
+
+      await sweep();
+      const after = await healthOf(t, c);
+      expect(after).toMatchObject({ state: 'caught-up', oldestPending: null, lagMs: null, reason: null });
+      expect(after?.watermark).not.toBeNull();
+      // What the consumer asks for and the producer does not export, reported beside the state.
+      // (The sweep-run history is covered where the rows are durable: the control plane's route.)
+      expect(after?.unexported).toEqual([{ type: 'crm.customer-noted', schemaVersion: 1 }]);
+    });
+
+    it('edge health: paused by the producer, and paused at the consumer\'s door, each saying why', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Held');
+      await fx.producer.admin.revokeFromPeer(staff, { vertical: BOARD_VERTICAL, node: { tenantId: t, scopeId: p }, reason: 'stop exports' });
+      expect(await healthOf(t, c)).toMatchObject({
+        state: 'paused',
+        reason: expect.stringContaining(`does not grant vertical:${BOARD_VERTICAL} customer:read`),
+      });
+      await fx.producer.admin.restoreToPeer(staff, { vertical: BOARD_VERTICAL, node: { tenantId: t, scopeId: p }, reason: 'ok' });
+      // The twin: granted again, the edge is merely behind.
+      expect(await healthOf(t, c)).toMatchObject({ state: 'behind' });
+
+      await fx.consumer.admin.revokeFromPeer(staff, {
+        vertical: CRM_VERTICAL,
+        node: { tenantId: t, scopeId: c },
+        reason: 'board stops taking CRM changes',
+      });
+      expect(await healthOf(t, c)).toMatchObject({
+        state: 'paused',
+        reason: expect.stringContaining(`has '${CRM_VERTICAL}' switched off`),
+      });
+      // Paused at the door, the backlog is still dated.
+      expect((await healthOf(t, c))?.oldestPending).not.toBeNull();
+    });
+
+    it('edge health: a producer missing from the tenant is unresolved, and a side that cannot be asked is unavailable, never healthy', async () => {
+      const t = await newTenant();
+      const c = await install(t, BOARD_VERTICAL);
+      expect(await healthOf(t, c)).toMatchObject({
+        state: 'unresolved',
+        reason: `'${CRM_VERTICAL}' is not installed in this tenant`,
+      });
+
+      const u = await newTenant();
+      const pu = await install(u, CRM_VERTICAL);
+      const cu = await install(u, BOARD_VERTICAL);
+      await create(u, pu, 'Unknown');
+      // The consumer cannot be asked.
+      const noConsumer = await healthOf(u, cu, {
+        importState: async () => {
+          throw new Error('the deployment serving this scope predates cross-vertical events — redeploy it');
+        },
+      });
+      expect(noConsumer).toMatchObject({ state: 'unavailable', producer: { vertical: '*' }, reason: expect.stringMatching(/redeploy/) });
+      // The producer cannot be asked.
+      const noProducer = await healthOf(u, cu, {
+        readExports: async () => {
+          throw new Error('vertical unreachable');
+        },
+      });
+      expect(noProducer).toMatchObject({ state: 'unavailable', producer: { vertical: CRM_VERTICAL }, reason: expect.stringMatching(/unreachable/) });
+      // The twin: asked, it answers.
+      expect(await healthOf(u, cu)).toMatchObject({ state: 'behind' });
+    });
+
+    it('edge health never crosses a tenant: one tenant\'s view names only its own edges', async () => {
+      const t = await newTenant();
+      const u = await newTenant();
+      await install(t, CRM_VERTICAL);
+      const ct = await install(t, BOARD_VERTICAL);
+      await install(u, CRM_VERTICAL);
+      const cu = await install(u, BOARD_VERTICAL);
+      const view = await health(t);
+      expect(view.edges.some((e) => e.consumer.scopeId === ct)).toBe(true);
+      expect(view.edges.every((e) => e.tenantId === t)).toBe(true);
+      expect(view.edges.some((e) => e.consumer.scopeId === cu)).toBe(false);
     });
 
     it('a fork is neither read nor fed, and two primary installs are refused rather than guessed between', async () => {

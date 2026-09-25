@@ -434,6 +434,7 @@ export {
   CROSS_VERTICAL_CONSUMERS_PER_PASS,
   runCrossVerticalFrom,
   registryImportCandidates,
+  crossVerticalHealth,
 } from './platform-sweep.js';
 export type {
   CandidatesHint,

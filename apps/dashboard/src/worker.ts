@@ -21,8 +21,8 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import type { SweepRunEntry } from '@substrat-run/contracts';
-import { parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
+import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, importCursorMove, parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
@@ -2064,6 +2064,49 @@ app.post('/api/apps/:scopeId/peers/switch', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   const result = await cp.switchPeer(scopeId.parse(appRow.app_scope_id), body.vertical, body.to, body.reason);
   return c.json(result);
+});
+
+/**
+ * Where this app's cross-vertical edges stand (#1705 PR 3): the edges INTO it (it imports) and OUT
+ * of it (another app imports what it exports), read live by the control plane. A failed read is
+ * the panel's error to show, never an empty list: "no edges" and "could not be read" differ, and
+ * only one of them is safe to show a tenant as fine.
+ */
+app.get('/api/apps/:scopeId/edges', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const report = await controlPlaneFor(c.env, node.tenantId).crossVerticalEdges();
+  const mine = (e: EdgeHealth): boolean =>
+    e.consumer.scopeId === appRow.app_scope_id || e.producer.scopeId === appRow.app_scope_id;
+  return c.json({ ...report, edges: report.edges.filter(mine) });
+});
+
+/**
+ * The replay lever on this app (#1705 PR 3): replay or skip the edge INTO it from another of the
+ * tenant's apps. Held to who may manage apps, like the peer switch. The control plane confines
+ * the tenant credential and refuses a move without its acknowledgement. The dashboard adds only
+ * the app resolution, so a foreign scope id 404s here as on every other app route.
+ */
+app.post('/api/apps/:scopeId/edges/move', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayManageApps(host, node);
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const raw: unknown = await c.req.json().catch(() => ({}));
+  const refused = importCursorAcknowledgementMissing(raw);
+  if (refused) throw new HTTPException(400, { message: refused });
+  const move = importCursorMove.parse(raw);
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(await cp.moveImportCursor(scopeId.parse(appRow.app_scope_id), move));
 });
 
 app.get('/api/apps/:scopeId/scopes', async (c) => {

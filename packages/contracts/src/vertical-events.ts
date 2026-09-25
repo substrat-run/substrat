@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { eventId, instant, permissionKey, scopeId, verticalSlug } from './ids.js';
+import { eventId, instant, permissionKey, scopeId, tenantId, verticalSlug } from './ids.js';
 import { entityRef, eventType } from './events.js';
 
 // Cross-vertical event delivery (#1705): the three messages the platform carries between a
@@ -299,3 +299,64 @@ export const importCursorMoved = z.object({
   }),
 });
 export type ImportCursorMoved = z.infer<typeof importCursorMoved>;
+
+// -- edge health (#1705 PR 3) ----------------------------------------------------------------
+
+/**
+ * Where one edge stands, read live (#1705 PR 3). What a person needs is whether events are
+ * getting through, and if not, why.
+ *
+ * - `caught-up`: the consumer has everything the producer releases to it.
+ * - `behind`: events are waiting past the watermark. `lagMs` says how long the oldest has waited.
+ *   A sweep takes them on its next pass unless something below is also true.
+ * - `paused`: one side refuses the other. Either the producer does not grant the consumer's
+ *   key, or the consumer's door has the producer switched off. Nothing is lost, and the backlog
+ *   waits in the producer's outbox.
+ * - `unresolved`: the platform cannot name both ends. The producer is not installed, or a
+ *   vertical has two primary installs.
+ * - `unavailable`: a side could not be ASKED (a transport error, or a deployment that predates
+ *   the routes). This is not a healthy state and must never render as one. It says nothing about
+ *   whether events are moving.
+ */
+export const edgeHealthState = z.enum(['caught-up', 'behind', 'paused', 'unresolved', 'unavailable']);
+export type EdgeHealthState = z.infer<typeof edgeHealthState>;
+
+export const edgeHealth = z.object({
+  tenantId,
+  consumer: z.object({ scopeId, vertical: z.string() }),
+  /** `'*'`, with no scope: the consumer could not be asked, so no producer was named. */
+  producer: z.object({ vertical: z.string(), scopeId: scopeId.nullable() }),
+  state: edgeHealthState,
+  /** The sentence a person reads. Set on every state but `caught-up`. */
+  reason: z.string().nullable(),
+  /** The consumer's watermark on this edge. `null`: it has taken nothing yet. */
+  watermark: z.object({ cursor: eventId, updatedAt: instant.nullable() }).nullable(),
+  /** The oldest event waiting past the watermark (released or withheld). */
+  oldestPending: z.object({ id: eventId, occurredAt: z.string() }).nullable(),
+  /** How long the oldest pending event has waited, in ms. `null` when nothing waits, or it is unknown. */
+  lagMs: z.number().int().nonnegative().nullable(),
+  /** Types the consumer imports that the producer does not export. Reported, not paused. */
+  unexported: z.array(wantedEvent),
+  /** The latest sweep pass that moved this edge. */
+  lastDelivered: z.object({ at: instant }).nullable(),
+  /** The latest sweep pass on this edge that did NOT deliver, if it is newer than the last one that did. */
+  lastProblem: z
+    .object({ at: instant, outcome: z.enum(['failed', 'skipped']), error: z.string().nullable() })
+    .nullable(),
+});
+export type EdgeHealth = z.infer<typeof edgeHealth>;
+
+/**
+ * Every edge in one tenant (#1705 PR 3), read live. `history` is the sweep-run read that
+ * supplies `lastDelivered` / `lastProblem`. If it fails, the live states still stand, and the
+ * view says the history is missing rather than showing edges with no past.
+ */
+export const edgeHealthReport = z.object({
+  tenantId,
+  checkedAt: instant,
+  edges: z.array(edgeHealth),
+  /** Set when the tenant's importing apps could not be listed at all: no edge can be shown. */
+  unavailable: z.string().nullable(),
+  history: z.object({ available: z.boolean(), reason: z.string().nullable() }),
+});
+export type EdgeHealthReport = z.infer<typeof edgeHealthReport>;

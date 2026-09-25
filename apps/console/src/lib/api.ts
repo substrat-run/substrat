@@ -31,6 +31,9 @@ import type {
   StorageMeterReading,
   PeerGrantsStatusEntry,
   PeerSwitchResult,
+  EdgeHealthReport,
+  ImportCursorMove,
+  ImportCursorMoved,
   SystemGrantsStatusEntry,
   SystemSwitchResult,
   Tenant,
@@ -438,6 +441,16 @@ export function createApi(actor: string | null, baseUrl = '/api') {
       call<PeerSwitchResult>(`/tenants/${t}/scopes/${s}/peer-grants`, {
         method: 'POST',
         body: JSON.stringify({ vertical, reason }),
+      }),
+
+    // #1705 PR 3: where each cross-vertical edge of a tenant stands, read live through the
+    // sweep's own reach, and the replay lever on a consumer scope. The lever's body carries its
+    // acknowledgement literal. Without it the plane refuses in the words it stands for.
+    crossVerticalEdges: (t: TenantId) => call<EdgeHealthReport>(`/tenants/${t}/cross-vertical/edges`),
+    moveImportCursor: (t: TenantId, s: ScopeId, move: ImportCursorMove) =>
+      call<ImportCursorMoved>(`/tenants/${t}/scopes/${s}/import-cursor`, {
+        method: 'POST',
+        body: JSON.stringify(move),
       }),
 
     provisionScope: (input: {
