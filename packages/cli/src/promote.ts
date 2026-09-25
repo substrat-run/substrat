@@ -12,7 +12,7 @@
 import type { MigrationDiff, MigrationEntry, PermissionRegistry } from '@substrat-run/contracts';
 import { warnIfStale } from './version.js';
 import { parseJsonBody, readAllEntries } from './http.js';
-import { failureMessage } from './problem.js';
+import { failureMessage, getJson } from './problem.js';
 
 export interface PromoteOptions {
   controlPlaneUrl: string;
@@ -80,12 +80,7 @@ const NEEDS_ACK = 'acknowledge it explicitly';
  */
 export async function explainRefusal(opts: PromoteOptions, migrationRefused: boolean): Promise<string[]> {
   const base = `${opts.controlPlaneUrl.replace(/\/$/, '')}/verticals/${encodeURIComponent(opts.slug)}`;
-  const get = async <T>(url: string): Promise<T> => {
-    const res = await fetch(url, { headers: opts.header });
-    const body = await res.text();
-    if (!res.ok) throw new Error(failureMessage('read failed', res.status, body));
-    return parseJsonBody<T>(body, url);
-  };
+  const get = <T>(url: string): Promise<T> => getJson<T>(url, opts.header);
   try {
     const channels = await readAllEntries(`${base}/channels`, (u) =>
       get<{ entries: { channel: string; versionId: string }[]; nextCursor: string | null }>(u),

@@ -165,28 +165,23 @@ export function flattenDeclaredFreshness(
 /**
  * Every module's SQL migrations, flattened with the owning module (#1677) — what the
  * manifest carries so a promote can show the migrations it would run. Read off the same
- * `modules` the permission entry exports: a `ModuleRegistration` carries `migrations`
- * beside its manifest, and `PermissionsInput` only asks for the manifest, hence the read
- * through `unknown`.
+ * `modules` the permission entry exports, which are `ModuleRegistration`s carrying their
+ * `migrations` beside the manifest.
  *
- * `undefined` (with the reason) when the set is over the manifest's caps. The field is
- * then left off, which the promote dialog reads as "SQL not available" and still asks for
- * the acknowledgement: metadata must never be what fails a push.
+ * `migrations` is undefined (and `omitted` says why) when the set is over the manifest's caps.
+ * The field is then left off, which the promote dialog reads as "SQL not available" and still
+ * asks for the acknowledgement: metadata must never be what fails a push.
  */
-export function flattenDeclaredMigrations(
-  permissions: PermissionsInput,
-): { migrations: DeclaredMigration[]; omitted?: undefined } | { migrations: undefined; omitted: string } {
+export function flattenDeclaredMigrations(permissions: PermissionsInput): { migrations?: DeclaredMigration[]; omitted?: string } {
   const migrations = permissions.modules.flatMap((m) =>
-    ((m as { migrations?: unknown }).migrations as { version: string; sql: string }[] | undefined ?? []).map(
-      (s) => ({ moduleId: m.manifest.id, version: s.version, sql: s.sql }),
-    ),
+    (m.migrations ?? []).map((s) => ({ moduleId: m.manifest.id, version: s.version, sql: s.sql })),
   );
   if (migrations.length > DECLARED_MIGRATIONS_MAX) {
-    return { migrations: undefined, omitted: `${migrations.length} migrations, over the ${DECLARED_MIGRATIONS_MAX} a manifest carries` };
+    return { omitted: `${migrations.length} migrations, over the ${DECLARED_MIGRATIONS_MAX} a manifest carries` };
   }
   const bytes = sqlBytes(migrations);
   if (bytes > DECLARED_MIGRATIONS_SQL_BYTES_MAX) {
-    return { migrations: undefined, omitted: `${bytes} bytes of SQL, over the ${DECLARED_MIGRATIONS_SQL_BYTES_MAX} a manifest carries` };
+    return { omitted: `${bytes} bytes of SQL, over the ${DECLARED_MIGRATIONS_SQL_BYTES_MAX} a manifest carries` };
   }
   return { migrations };
 }
@@ -1319,7 +1314,7 @@ export async function push(
     // The SQL migrations (#1677), sent as `[]` when there are none for the same reason:
     // absence is what a pre-#1677 push looks like, and the promote dialog reads it as
     // "SQL not available".
-    ...(migrations.migrations ? { migrations: migrations.migrations } : {}),
+    migrations: migrations.migrations,
     // The declared outbound surface (#303, D-46) — ALWAYS sent, `[]` when undeclared,
     // because absence means "pre-#303 push" to the egress worker (unenforced, metered
     // only) and a new-CLI push must not read as that. Unlike the metadata above it is

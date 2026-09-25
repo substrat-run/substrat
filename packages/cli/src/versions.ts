@@ -6,8 +6,8 @@
  * this works for staff now and for builders once builder-scoped authz lands.
  */
 import { listVerticalHostnames } from './hostnames.js';
-import { readAllEntries, readJson } from './http.js';
-import { failureMessage } from './problem.js';
+import { readAllEntries } from './http.js';
+import { getJson } from './problem.js';
 
 interface Version {
   id: string;
@@ -21,17 +21,6 @@ interface Channel {
   // What prod's stable serving script actually runs (#286/#321). Differs from versionId
   // when an in-place serve failed: the channel was promoted but the scopes run old code.
   servingVersionId?: string | null;
-}
-
-/** GET one control-plane page, reading a refusal as the problem document it is. */
-async function getJson<T>(url: string, header: Record<string, string>): Promise<T> {
-  const res = await fetch(url, { headers: header });
-  if (!res.ok) {
-    // The control plane answers a refused read with a problem document; print what it
-    // says — the code and the detail — instead of a slice of the raw body (#971).
-    throw new Error(failureMessage('control-plane read failed', res.status, await res.text().catch(() => res.statusText)));
-  }
-  return readJson<T>(res, url);
 }
 
 /** Walk a paged list route to the end (the CLI wants the whole list, not a screenful). */

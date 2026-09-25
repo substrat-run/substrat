@@ -20,7 +20,7 @@
  * 3. anything else — a slice of the raw body, which is at least the truth.
  */
 import { problem as problemSchema, problemDetail } from '@substrat-run/contracts';
-import { explainPlatformFault } from './http.js';
+import { explainPlatformFault, readJson } from './http.js';
 
 /** How much of an unrecognised body is worth printing before it stops being a message. */
 const RAW_BODY_LIMIT = 300;
@@ -134,4 +134,15 @@ export function failureMessage(action: string, status: number, body: string): st
   const lines = [p.detail ? `${head}: ${p.detail}` : head];
   for (const e of p.errors ?? []) lines.push(`  ${e.path || '(root)'}: ${e.message}`);
   return lines.join('\n') + explainPlatformFault(status, p.detail);
+}
+
+/** GET one control-plane page, reading a refusal as the problem document it is. */
+export async function getJson<T>(url: string, header: Record<string, string>): Promise<T> {
+  const res = await fetch(url, { headers: header });
+  if (!res.ok) {
+    // The control plane answers a refused read with a problem document; print what it
+    // says — the code and the detail — instead of a slice of the raw body (#971).
+    throw new Error(failureMessage('control-plane read failed', res.status, await res.text().catch(() => res.statusText)));
+  }
+  return readJson<T>(res, url);
 }

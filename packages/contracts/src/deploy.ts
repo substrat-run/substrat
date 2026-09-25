@@ -482,8 +482,9 @@ export type PermissionRegistry = z.infer<typeof permissionRegistry>;
  * `contracts` may not depend on the kernel, so it asks only for the `manifest` it reads.
  */
 export interface PermissionsInput {
-  /** The modules the host registers — the source of every permission key + description. */
-  modules: readonly { manifest: ModuleManifest }[];
+  /** The modules the host registers — the source of every permission key + description, and
+   *  (a kernel `SqlMigration[]`, read by `substrat push`, #1677) of the SQL migrations. */
+  modules: readonly { manifest: ModuleManifest; migrations?: readonly { version: string; sql: string }[] }[];
   /** The role templates provisioning stamps into each tenant. */
   roles: readonly RoleDefinition[];
   /** Entity-narrowed grant shapes — keys reachable outside the role table (default none). */
@@ -802,10 +803,16 @@ export const declaredMigration = z.object({
 });
 export type DeclaredMigration = z.infer<typeof declaredMigration>;
 
+const utf8 = new TextEncoder();
+
+/** The UTF-8 size of one string. */
+export function utf8Length(text: string): number {
+  return utf8.encode(text).length;
+}
+
 /** The UTF-8 size of every migration's SQL, summed — what the byte cap is measured in. */
 export function sqlBytes(migrations: readonly { sql: string }[]): number {
-  const enc = new TextEncoder();
-  return migrations.reduce((n, m) => n + enc.encode(m.sql).length, 0);
+  return migrations.reduce((n, m) => n + utf8Length(m.sql), 0);
 }
 
 export const deployManifest = z.object({

@@ -41,14 +41,14 @@ export function PromoteMigrations({ section }: { section: MigrationSection }) {
             </div>
           )}
           {sql.changed.length > 0 && (
-            <Group
+            <MigrationGroup
               label="Edited after shipping"
               kind="danger"
               note="Same id as a migration the serving version already has, different SQL. A scope that already ran it will not run it again."
               entries={sql.changed}
             />
           )}
-          {sql.added.length > 0 && <Group label="New migrations, in the order they run" kind="info" entries={sql.added} />}
+          {sql.added.length > 0 && <MigrationGroup label="New migrations, in the order they run" kind="info" entries={sql.added} />}
           {sql.truncated && (
             <div style={muted}>
               This list is cut to a readable size ({sql.added.length + sql.changed.length} of {sql.total} shown, and an entry past the size
@@ -69,7 +69,7 @@ export function PromoteMigrations({ section }: { section: MigrationSection }) {
 const muted: CSSProperties = { fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5 };
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 12 };
 
-function Group({
+function MigrationGroup({
   label,
   kind,
   note,

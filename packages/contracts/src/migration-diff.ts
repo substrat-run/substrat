@@ -1,4 +1,4 @@
-import { sqlBytes } from './deploy.js';
+import { utf8Length } from './deploy.js';
 
 /** A migration as the diff reads it: a `DeclaredMigration`, or anything shaped like one. */
 type MigrationLike = { moduleId: string; version: string; sql: string };
@@ -65,31 +65,22 @@ export function migrationsOnTop(
     else if (before !== m.sql) changed.push(m);
   }
 
+  // One pass, `changed` first: an edited shipped migration is the case a person most needs
+  // to see, so it is the first to be kept and the first to spend the SQL budget.
   let budget = MIGRATION_READ_SQL_BYTES_MAX;
-  let truncated = added.length + changed.length > MIGRATION_READ_MAX;
-  let room = MIGRATION_READ_MAX;
-  const bound = (ms: MigrationLike[]): MigrationEntry[] => {
-    const kept = ms.slice(0, room);
-    room -= kept.length;
-    return kept.map((m) => {
-      const size = sqlBytes([m]);
-      if (size > budget) {
-        truncated = true;
-        return { moduleId: m.moduleId, version: m.version, sql: null };
-      }
-      budget -= size;
-      return { moduleId: m.moduleId, version: m.version, sql: m.sql };
-    });
-  };
-  // `changed` first: an edited shipped migration is the case a person most needs to see.
-  const changedOut = bound(changed);
-  const addedOut = bound(added);
+  const kept = [...changed, ...added].slice(0, MIGRATION_READ_MAX).map((m): MigrationEntry => {
+    const size = utf8Length(m.sql);
+    if (size > budget) return { moduleId: m.moduleId, version: m.version, sql: null };
+    budget -= size;
+    return { moduleId: m.moduleId, version: m.version, sql: m.sql };
+  });
+  const total = added.length + changed.length;
 
   return {
     baseline: base === undefined ? 'none' : base === null ? 'unavailable' : 'version',
-    added: addedOut,
-    changed: changedOut,
-    total: added.length + changed.length,
-    truncated,
+    added: kept.slice(changed.length),
+    changed: kept.slice(0, changed.length),
+    total,
+    truncated: kept.length < total || kept.some((e) => e.sql === null),
   };
 }

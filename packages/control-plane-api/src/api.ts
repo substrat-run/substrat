@@ -4499,9 +4499,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const json = await admin.versionManifest(c.get('actor'), slug, id);
       return json ? (storedDeployManifest.parse(JSON.parse(json)).migrations ?? null) : null;
     };
-    const incoming = await migrationsOf(c.req.param('id'));
     const base = c.req.query('base');
-    const baseline = base === undefined ? undefined : await migrationsOf(base);
+    const [incoming, baseline] = await Promise.all([
+      migrationsOf(c.req.param('id')),
+      base === undefined ? undefined : migrationsOf(base),
+    ]);
     return c.json({ migrations: incoming === null ? null : migrationsOnTop(incoming, baseline) });
   });
 
