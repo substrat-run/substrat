@@ -1,4 +1,7 @@
-import { sqlBytes, type DeclaredMigration } from './deploy.js';
+import { sqlBytes } from './deploy.js';
+
+/** A migration as the diff reads it: a `DeclaredMigration`, or anything shaped like one. */
+type MigrationLike = { moduleId: string; version: string; sql: string };
 
 /**
  * The migrations a version adds on top of another (#1677): what the promote dialog and
@@ -50,12 +53,12 @@ const keyOf = (m: { moduleId: string; version: string }): string => `${m.moduleI
  * `undefined` when there is none to compare with, `null` when it carries none.
  */
 export function migrationsOnTop(
-  incoming: readonly DeclaredMigration[],
-  base: readonly DeclaredMigration[] | null | undefined,
+  incoming: readonly MigrationLike[],
+  base: readonly MigrationLike[] | null | undefined,
 ): MigrationDiff {
   const baseSql = new Map((base ?? []).map((m) => [keyOf(m), m.sql]));
-  const added: DeclaredMigration[] = [];
-  const changed: DeclaredMigration[] = [];
+  const added: MigrationLike[] = [];
+  const changed: MigrationLike[] = [];
   for (const m of incoming) {
     const before = baseSql.get(keyOf(m));
     if (before === undefined) added.push(m);
@@ -65,7 +68,7 @@ export function migrationsOnTop(
   let budget = MIGRATION_READ_SQL_BYTES_MAX;
   let truncated = added.length + changed.length > MIGRATION_READ_MAX;
   let room = MIGRATION_READ_MAX;
-  const bound = (ms: DeclaredMigration[]): MigrationEntry[] => {
+  const bound = (ms: MigrationLike[]): MigrationEntry[] => {
     const kept = ms.slice(0, room);
     room -= kept.length;
     return kept.map((m) => {
