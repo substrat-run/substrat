@@ -116,6 +116,27 @@ describe('prepareProject', () => {
 		expect(stdout).toContain('freeze concept');
 	});
 
+	it('surfaces a wipe that never succeeds instead of exiting 0', async () => {
+		const ws = await scratchRoot();
+		const dir = `${EVAL_PROJECT_PREFIX}stuck`;
+		await ws.mkdir(dir, { recursive: true });
+		// rm cannot remove what is immutable: shadow it with a function that always fails.
+		const stuck = await ws.exec(
+			`rm() { return 1; }; for i in 1 2; do rm -rf "${dir}" && break; done; [ ! -e "${dir}" ]`,
+		);
+		expect(stuck.exitCode).not.toBe(0);
+		const failing = new Proxy(ws, {
+			get(t, k, r) {
+				if (k !== 'exec') return Reflect.get(t, k, r);
+				return async (cmd: string, o?: never) =>
+					cmd.includes('rm -rf')
+						? { exitCode: 1, stdout: '', stderr: 'Directory not empty' }
+						: t.exec(cmd, o);
+			},
+		});
+		await expect(prepareProject(failing, dir, FIXTURE)).rejects.toThrow(/could not remove/);
+	});
+
 	it('refuses to wipe outside the eval namespace', async () => {
 		const ws = await scratchRoot();
 		await expect(prepareProject(ws, '.builder/projects/real-app', FIXTURE)).rejects.toThrow(
