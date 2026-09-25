@@ -74,6 +74,11 @@ describe('the bind gate route (#1756)', () => {
         storeOf(ref).set(sid, tables);
         return { tables: tables.length };
       },
+      snapshotScope: async (input: { sourceScopeId: string; newScopeId: string }) => {
+        calls.push(`snapshot ${ref}`);
+        storeOf(ref).set(input.newScopeId, storeOf(ref).get(input.sourceScopeId) ?? []);
+        return { tables: 1 };
+      },
     }) as unknown as VerticalClient;
   const table = (...ids: string[]): ScopeDumpTable[] => [
     { name: 't', ddl: 'CREATE TABLE t(id TEXT)', columns: ['id'], rows: ids.map((id) => [id]) },
@@ -81,12 +86,12 @@ describe('the bind gate route (#1756)', () => {
   const rows = (versionId: string) => storeOf(refOf.get(versionId)!).get(producerScope)?.[0]?.rows;
 
   const registry = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
-  const publish = async (slug: string, manifestJson: string): Promise<string> => {
+  const publish = async (slug: string, manifestJson: string, migrationDigest = 'g'): Promise<string> => {
     const id = ulid();
     const ref = `${slug.replace('/', '-')}-${id.toLowerCase()}`;
     await host.admin.publishVersion(staff, {
       id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
-      permissionDigest: 'p', migrationDigest: 'g', deploymentRef: ref, manifestJson,
+      permissionDigest: 'p', migrationDigest, deploymentRef: ref, manifestJson,
     });
     await host.admin.admitVersion(staff, id);
     refOf.set(id, ref);
@@ -299,6 +304,38 @@ describe('the bind gate route (#1756)', () => {
       expect(adopt.status).toBe(200);
       expect(await recordOf(s)).toMatchObject({ servingRef: SERVING, verticalVersionId: kept });
     });
+  });
+
+  it('a snapshot is not taken for a bind that the break reaches after the carry, and is when acknowledged', async () => {
+    // The delegated `--snapshot` path carries, then snapshots, then binds. A promote landing
+    // after the first question would otherwise leave an archive behind for a refused bind, so
+    // the question is asked again right before the snapshot.
+    const s = await install(t, PRODUCER, v1);
+    await host.admin.setScopeServingRef(staff, t, s, null);
+    storeOf(refOf.get(v1)!).set(s, table('snap-row'));
+    const crossing = await publish(PRODUCER, exporting(null), 'g2');
+    const scopesNow = async () => (await host.admin.listScopes(staff, { tenantId: t })).length;
+    const before = await scopesNow();
+    const impact = vi.spyOn(host.admin, 'bindingImpact').mockResolvedValueOnce([]);
+    calls.length = 0;
+    try {
+      const res = await bind(asStaff, { versionId: crossing, snapshot: true }, t, s);
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { exportBreaks?: unknown }).exportBreaks).toBeDefined();
+    } finally {
+      impact.mockRestore();
+    }
+    expect(calls).toEqual([`export ${refOf.get(v1)}`, `restore ${refOf.get(crossing)}`]);
+    expect(await scopesNow()).toBe(before);
+    expect((await host.admin.getScopeRecord(staff, t, s))?.verticalVersionId).toBe(v1);
+
+    // The twin: acknowledged, the same bind snapshots first and binds.
+    calls.length = 0;
+    const acked = await bind(asStaff, { versionId: crossing, snapshot: true, acknowledge: { exportBreak: true } }, t, s);
+    expect(acked.status).toBe(200);
+    expect(calls.filter((c) => c.startsWith('snapshot '))).toEqual([`snapshot ${refOf.get(v1)}`]);
+    expect(await scopesNow()).toBe(before + 1);
+    expect((await host.admin.getScopeRecord(staff, t, s))?.verticalVersionId).toBe(crossing);
   });
 
   it('a version not admitted is refused as that, before any acknowledgement is asked for', async () => {

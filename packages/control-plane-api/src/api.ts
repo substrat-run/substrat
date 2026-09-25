@@ -4225,7 +4225,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           );
         }
         await carry();
-        if (migrationCrossing) await orchestratedSnapshot(c, tenantId, scope, {});
+        if (migrationCrossing) {
+          // Asked again after the carry: a promote landing since the first question would
+          // otherwise leave an archive behind for a bind the host then refuses.
+          await refuseOnBreaks(actor, tenantId, scopeId, versionId, { acknowledge });
+          await orchestratedSnapshot(c, tenantId, scope, {});
+        }
         await bind({ acknowledge });
       } else {
         await carry();
