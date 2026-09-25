@@ -1,4 +1,5 @@
 import { jwtVerify, createRemoteJWKSet, type JWTPayload, type JWTVerifyGetKey } from 'jose';
+import { discoverIssuer, isAllowedEndpoint, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import type { AuthProvider, AuthSubject } from './provider.js';
 
 /**
@@ -8,10 +9,14 @@ import type { AuthProvider, AuthSubject } from './provider.js';
  * VERIFIES the presented JWT against the issuer's JWKS and reads the subject. There are no
  * server-side auth endpoints to run, so `handle` is informational.
  *
- * workerd-safe: `jose` + Web Crypto only (the same stack `@substrat-run/oidc-rp` uses).
+ * workerd-safe: `jose`, Web Crypto and `@substrat-run/oidc-rp/discovery` (the bound discovery
+ * the login path uses; no login flow and no `hono`).
  */
 export interface OidcConfig {
-  /** The issuer URL (`iss`) — its `/.well-known/openid-configuration` gives the JWKS. */
+  /**
+   * The issuer URL (`iss`). Must be `https` (loopback `http` for a dev issuer); its
+   * `/.well-known/openid-configuration` gives the JWKS, and must name this issuer.
+   */
   issuer: string;
   /** Expected audience (`aud`), if the issuer sets one for this app. */
   audience?: string;
@@ -26,31 +31,14 @@ export interface OidcConfig {
   /**
    * With `clientId`: this app's MCP resource identifier on an origin — `mcpResourceOf` from
    * `@substrat-run/contracts`, handed in rather than imported so this subpath keeps its
-   * jose-only dependency. An access token whose `aud` names it is this app's own too.
+   * small dependency set (jose + oidc-rp's discovery). An access token whose `aud` names it is
+   * this app's own too.
    */
   resourceOf?: (origin: string) => string;
   /** Override the JWKS URI (skip discovery) — e.g. a self-hosted issuer. */
   jwksUri?: string;
   /** Inject the key resolver directly — tests / a static JWKS. Defaults to the issuer's remote JWKS. */
   keys?: JWTVerifyGetKey;
-}
-
-/** Discover the JWKS URI from the issuer's OIDC metadata, cached per issuer for the isolate. */
-const discoveryCache = new Map<string, Promise<string>>();
-function discoverJwksUri(issuer: string): Promise<string> {
-  let p = discoveryCache.get(issuer);
-  if (!p) {
-    p = (async () => {
-      const url = `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`OIDC discovery failed for ${issuer}: ${res.status}`);
-      const meta = (await res.json()) as { jwks_uri?: string };
-      if (!meta.jwks_uri) throw new Error(`OIDC discovery for ${issuer} has no jwks_uri`);
-      return meta.jwks_uri;
-    })();
-    discoveryCache.set(issuer, p);
-  }
-  return p;
 }
 
 function bearerFrom(headers: Headers): string | null {
@@ -122,10 +110,24 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
   const getKeys = async (): Promise<JWTVerifyGetKey> => {
     if (cfg.keys) return cfg.keys;
     if (!keysPromise) {
-      keysPromise = (async () => {
-        const jwksUri = cfg.jwksUri ?? (await discoverJwksUri(cfg.issuer));
+      // The login path's discovery, not a second one: bound to this issuer, https, no redirect
+      // off its origin (`discoverIssuer`). A failure is evicted here too, so an issuer that was
+      // down or answered wrongly once is asked again rather than refused for the isolate's life.
+      const pending: Promise<JWTVerifyGetKey> = (async () => {
+        const jwksUri = cfg.jwksUri ?? (await discoverIssuer(cfg.issuer)).jwks_uri;
+        // An override skips discovery, not the transport rule: the keys are fetched from it.
+        // Nor the issuer rule: with no discovery, nothing else has looked at `cfg.issuer`.
+        if (cfg.jwksUri) {
+          const refused = issuerRefusal(cfg.issuer);
+          if (refused) throw new Error(refused);
+          if (!isAllowedEndpoint(cfg.issuer, cfg.jwksUri)) throw new Error('jwksUri is not https');
+        }
         return createRemoteJWKSet(new URL(jwksUri));
       })();
+      pending.catch(() => {
+        if (keysPromise === pending) keysPromise = undefined;
+      });
+      keysPromise = pending;
     }
     return keysPromise;
   };
@@ -146,8 +148,8 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
       // browser-login path: a boolean when the issuer asserts one, and the `"true"` /
       // `"false"` strings some issuers in the Auth0 lineage emit instead — anything else,
       // the claim's absence included, stays `undefined` rather than becoming a guess.
-      // Written out here rather than imported so this subpath keeps its two-module
-      // dependency (jose + this file) and a bearer-only consumer needs no hono.
+      // Written out here rather than imported so this subpath keeps a small dependency
+      // set (jose + oidc-rp's discovery, no login flow) and a bearer-only consumer needs no hono.
       const verified = meta['email_verified'];
       return {
         sub: String(payload.sub),

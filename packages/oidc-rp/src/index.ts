@@ -25,6 +25,9 @@
 import { SignJWT, jwtVerify, createRemoteJWKSet } from 'jose';
 import type { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
+import { discoverIssuer as discover, isAllowedEndpoint, type Discovery } from './discovery.js';
+
+export { discoverIssuer, type Discovery as OidcDiscovery } from './discovery.js';
 
 export interface OidcEnv {
   /** The AuthHero issuer, e.g. https://auth.substrat.run — the only wired-in value. */
@@ -57,14 +60,6 @@ export interface SessionUser {
   emailVerified?: boolean;
 }
 
-interface Discovery {
-  issuer: string;
-  authorization_endpoint: string;
-  token_endpoint: string;
-  jwks_uri: string;
-  userinfo_endpoint?: string;
-  end_session_endpoint?: string;
-}
 
 export const SESSION_COOKIE = 'sb_session';
 export const FLOW_COOKIE = 'sb_oidc_flow';
@@ -99,32 +94,6 @@ const randomB64url = (n = 32): string => b64url(crypto.getRandomValues(new Uint8
 
 async function pkceChallenge(verifier: string): Promise<string> {
   return b64url(await crypto.subtle.digest('SHA-256', enc.encode(verifier)));
-}
-
-// Discovery + JWKS, cached per issuer for the life of the isolate.
-const discoveryCache = new Map<string, Promise<Discovery>>();
-function discover(issuer: string): Promise<Discovery> {
-  const key = issuer.replace(/\/$/, '');
-  const cached = discoveryCache.get(key);
-  if (cached) return cached;
-  const url = `${key}/.well-known/openid-configuration`;
-  // A FAILURE IS NOT CACHED. Concurrent callers still share the one in-flight fetch, but
-  // the entry is evicted the moment it rejects — otherwise one lookup against an issuer
-  // that happened to be down poisons the isolate for its whole life, and every later
-  // login replays that rejection after the issuer has recovered. Federated logout makes
-  // that reachable in a way it was not before: it degrades to a local sign-out, so the
-  // request that poisoned the cache is the one that looked like it worked.
-  const pending: Promise<Discovery> = fetch(url)
-    .then(async (r) => {
-      if (!r.ok) throw new Error(`OIDC discovery failed (${r.status}) at ${url}`);
-      return (await r.json()) as Discovery;
-    })
-    .catch((err: unknown) => {
-      if (discoveryCache.get(key) === pending) discoveryCache.delete(key);
-      throw err;
-    });
-  discoveryCache.set(key, pending);
-  return pending;
 }
 
 const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
@@ -212,7 +181,13 @@ export async function completeLogin(
   if (flow.s !== state) throw new Error('state mismatch');
 
   const d = await discover(env.OIDC_ISSUER);
+  // The code, the PKCE verifier and the client secret go to this URL: https (or plaintext
+  // loopback, only for a loopback dev issuer), and never through a redirect. It is NOT
+  // required to share the issuer's origin: real providers serve the token endpoint from
+  // another host than their issuer.
+  if (!isAllowedEndpoint(env.OIDC_ISSUER, d.token_endpoint)) throw new Error('token endpoint is not https');
   const res = await fetch(d.token_endpoint, {
+    redirect: 'manual',
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -305,10 +280,14 @@ async function withUserInfo(
 ): Promise<SessionUser> {
   if (user.email !== undefined && user.name !== undefined) return user;
   if (!d.userinfo_endpoint || !accessToken) return user;
+  // Best effort, and never over plaintext: the bearer would cross the wire in the clear.
+  // `d.issuer` is the configured issuer: discovery refuses a document that states another.
+  if (!isAllowedEndpoint(d.issuer, d.userinfo_endpoint)) return user;
 
   let claims: { sub?: unknown; email?: unknown; name?: unknown; email_verified?: unknown };
   try {
     const res = await fetch(d.userinfo_endpoint, {
+      redirect: 'manual',
       headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
       signal: AbortSignal.timeout(USERINFO_TIMEOUT_MS),
     });
@@ -508,17 +487,6 @@ const cookieOpts = (
   maxAge,
 });
 
-/**
- * Loopback hosts, where OAuth 2.1 still permits plain HTTP for local development —
- * `packages/dev-issuer` is exactly that, and every demo's dev login runs through it.
- */
-const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-
-/** HTTPS, or HTTP on a loopback host. The same rule the issuer applies to its own upstreams. */
-function isHttpsOrLoopback(url: URL): boolean {
-  return url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
-}
-
 export interface MountOptions {
   /** Where to send the browser after a successful login (default '/'). */
   onSuccess?: string;
@@ -660,7 +628,7 @@ export async function federatedLogoutUrl(
     u.searchParams.set('client_id', env.OIDC_CLIENT_ID);
     u.searchParams.set('post_logout_redirect_uri', `${origin}${postLogoutPath}`);
     if (idTokenHint) {
-      if (isHttpsOrLoopback(u)) u.searchParams.set('id_token_hint', idTokenHint);
+      if (isAllowedEndpoint(env.OIDC_ISSUER, d.end_session_endpoint)) u.searchParams.set('id_token_hint', idTokenHint);
       else console.warn('oidc.logout.hint_withheld', { reason: 'end_session_endpoint is not https' });
     }
     return u.toString();

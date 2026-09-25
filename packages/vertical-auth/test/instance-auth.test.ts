@@ -54,6 +54,17 @@ describe('instanceAuthFor', () => {
     expect(typeof provider.handle).toBe('function');
   });
 
+  it('answers 503 for a delivered plaintext issuer, and never falls through to the default provider', async () => {
+    const delivered = (issuer: string) =>
+      call({ [AUTH_CONFIG_KEY]: JSON.stringify({ mode: 'oidc', issuer, clientId: 'c', clientSecret: 's' }) }, { OIDC_ISSUER: 'https://default.example' });
+    const plain = await delivered('http://auth.example.com');
+    expect(() => plain.provider()).toThrow(AuthConfigError);
+    expect(() => plain.provider()).toThrow(/https/);
+    // Its twins build a provider: https, and a loopback dev issuer.
+    expect(typeof (await delivered('https://auth.example.com')).provider().resolve).toBe('function');
+    expect(typeof (await delivered('http://localhost:8879')).provider().resolve).toBe('function');
+  });
+
   it('refuses a half-delivered choice with a 503, not a crash', async () => {
     const instance = await call({
       [AUTH_CONFIG_KEY]: JSON.stringify({ mode: 'oidc', issuer: 'https://issuer.example' }),
@@ -103,6 +114,13 @@ describe('parseAuthChoice', () => {
     expect(parseAuthChoice(JSON.stringify({ mode: 'builtin' }))).toBeNull();
     expect(parseAuthChoice(JSON.stringify({ mode: 'oidc', issuer: 'not-a-url' }))).toBeNull();
   });
+
+  it('keeps a plaintext issuer as the delivered choice — refusing it is the provider\'s job, not a fall-through', () => {
+    // Read as "nothing delivered" it would quietly become the deployment's default identity
+    // provider; kept, it reaches `selectAuthProvider`, which fails it loudly (below).
+    const raw = JSON.stringify({ mode: 'oidc', issuer: 'http://auth.example.com', clientId: 'c', clientSecret: 's' });
+    expect(parseAuthChoice(raw)).toMatchObject({ issuer: 'http://auth.example.com' });
+  });
 });
 
 /**
@@ -137,6 +155,23 @@ describe('authorizationServersOf', () => {
    * cannot proceed without a provider; metadata is a description, and an instance with
    * no login truthfully has no authorization server to name.
    */
+  it('names no issuer that provider selection refuses (plaintext, or not an identifier), on either path', () => {
+    for (const bad of ['http://auth.example.com', 'https://auth.example.com?x=1', 'https://u:p@auth.example.com']) {
+      const delivered = { identity: { mode: 'oidc' as const, issuer: bad, clientId: 'c' }, settings: settingsOf() };
+      expect(authorizationServersOf(delivered), bad).toEqual([]);
+      expect(() => selectAuthProvider({ ...delivered, sessionSecret: 's' }), bad).toThrow(AuthConfigError);
+      const fallback = { identity: null, settings: settingsOf({ AUTH_PROVIDER: 'oidc', OIDC_ISSUER: bad }) };
+      expect(authorizationServersOf(fallback), bad).toEqual([]);
+      expect(() => selectAuthProvider({ ...fallback, sessionSecret: 's' }), bad).toThrow(AuthConfigError);
+    }
+    // Twins, agreeing: https and a loopback dev issuer are named AND build a provider.
+    for (const ok of ['https://auth.example.com', 'http://localhost:8879']) {
+      const delivered = { identity: { mode: 'oidc' as const, issuer: ok, clientId: 'c' }, settings: settingsOf() };
+      expect(authorizationServersOf(delivered)).toEqual([ok]);
+      expect(() => selectAuthProvider({ ...delivered, sessionSecret: 's' })).not.toThrow();
+    }
+  });
+
   it('answers empty — never throws — where provider selection refuses', () => {
     const unconfigured = { identity: null, settings: settingsOf() };
     expect(authorizationServersOf(unconfigured)).toEqual([]);

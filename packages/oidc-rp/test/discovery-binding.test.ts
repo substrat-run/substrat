@@ -1,0 +1,387 @@
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { SignJWT, exportJWK, generateKeyPair } from 'jose';
+import { beginLogin, completeLogin, type OidcEnv } from '../src/index.js';
+import { DISCOVERY_FAILURE_TTL_MS } from '../src/discovery.js';
+
+/**
+ * What a discovery document is trusted with. It names the token endpoint the client secret
+ * goes to and the keys an ID token is verified against, so:
+ *   - it must state the issuer it was fetched for (OIDC Discovery §4.3), else the ID token's
+ *     `iss` check compares the document with itself;
+ *   - the token endpoint is https (loopback http for a dev issuer) but NOT held to the
+ *     issuer's origin, because real providers serve it from another host;
+ *   - the credentialed requests (token POST, userinfo) never follow a redirect;
+ *   - the discovery GET itself does not follow a redirect off its own origin.
+ *
+ * Every case gets its own issuer, since discovery is cached per issuer for the isolate.
+ */
+
+const APP = 'https://app.test';
+let n = 0;
+let issuer: string;
+let env: OidcEnv;
+let goodKey: CryptoKey;
+let goodJwks: { keys: object[] };
+let evilKey: CryptoKey;
+let evilJwks: { keys: object[] };
+
+/** What the stub does this round; every field has a well-behaved default in `beforeEach`. */
+let doc: Record<string, unknown>;
+let discoveryRedirect: string | null;
+let discovery: 'up' | 'down';
+let tokenBehaviour: 'ok' | 'redirect';
+let sparse: boolean;
+let signAs: { key: 'good' | 'evil'; iss: string };
+let nonce = '';
+let requests: { url: string; redirect?: string; method?: string }[];
+
+beforeAll(async () => {
+  const good = await generateKeyPair('RS256');
+  goodKey = good.privateKey as CryptoKey;
+  goodJwks = { keys: [{ ...(await exportJWK(good.publicKey)), alg: 'RS256', kid: 'k1' }] };
+  const evil = await generateKeyPair('RS256');
+  evilKey = evil.privateKey as CryptoKey;
+  evilJwks = { keys: [{ ...(await exportJWK(evil.publicKey)), alg: 'RS256', kid: 'k1' }] };
+});
+
+beforeEach(() => {
+  // Only the clock: a failed discovery is remembered for a window judged against `Date`.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  issuer = `https://issuer-${++n}.test`;
+  env = {
+    OIDC_ISSUER: issuer,
+    OIDC_CLIENT_ID: 'client-1',
+    OIDC_CLIENT_SECRET: 'client-secret-1',
+    SESSION_SECRET: 'session-secret-000000000000000000000001',
+  };
+  doc = {};
+  discoveryRedirect = null;
+  discovery = 'up';
+  tokenBehaviour = 'ok';
+  sparse = false;
+  signAs = { key: 'good', iss: issuer };
+  requests = [];
+
+  vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    requests.push({ url, redirect: init?.redirect, method: init?.method });
+    // A runaway guard: a loop that lost its cap must FAIL here, not spin the event loop.
+    if (requests.length > 50) throw new Error('runaway: more than 50 requests');
+    if (url === `${issuer}/.well-known/openid-configuration`) {
+      if (discovery === 'down') return new Response('down', { status: 503 });
+      if (discoveryRedirect !== null) {
+        // A timer tick per hop: a microtask-only loop starves the runner's own timeout.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return new Response(null, { status: 302, headers: discoveryRedirect ? { location: discoveryRedirect } : {} });
+      }
+      return Response.json({
+        issuer,
+        authorization_endpoint: `${issuer}/authorize`,
+        token_endpoint: `${issuer}/token`,
+        jwks_uri: `${issuer}/jwks`,
+        ...doc,
+      });
+    }
+    if (url.endsWith('/userinfo')) return Response.json({ sub: 'u-1', email: 'a@example.test' });
+    if (url.endsWith('/.well-known/openid-configuration')) {
+      // A discovery document served from somewhere else (a redirect target).
+      return Response.json({ issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`, jwks_uri: `${issuer}/jwks` });
+    }
+    if (url.endsWith('/jwks')) return Response.json(url.startsWith('https://evil.test') ? evilJwks : goodJwks);
+    if (url.endsWith('/token')) {
+      if (tokenBehaviour === 'redirect') {
+        return new Response(null, { status: 307, headers: { location: 'https://evil.test/collect' } });
+      }
+      const idToken = await new SignJWT(sparse ? { sub: 'u-1', nonce } : { sub: 'u-1', email: 'a@example.test', name: 'A', nonce })
+        .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+        .setIssuer(signAs.iss)
+        .setAudience('client-1')
+        .setIssuedAt()
+        .setExpirationTime('5m')
+        .sign(signAs.key === 'good' ? goodKey : evilKey);
+      return Response.json({ id_token: idToken, access_token: 'at-1', token_type: 'Bearer' });
+    }
+    throw new Error(`unexpected fetch in test: ${url}`);
+  }) as typeof fetch);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+const pastTheFailureWindow = () => vi.setSystemTime(Date.now() + DISCOVERY_FAILURE_TTL_MS + 1);
+
+async function login() {
+  const { location, flow } = await beginLogin(env, APP);
+  const authorize = new URL(location);
+  nonce = authorize.searchParams.get('nonce')!;
+  const callback = new URL(`${APP}/api/auth/callback?code=c-1&state=${authorize.searchParams.get('state')}`);
+  return completeLogin(env, APP, callback, flow);
+}
+
+const tokenPosts = () => requests.filter((r) => r.method === 'POST');
+
+describe('discovery is bound to the configured issuer', () => {
+  it('refuses a document that names a different issuer, before anything is sent to it', async () => {
+    doc = { issuer: 'https://other.test' };
+    await expect(login()).rejects.toThrow(/different issuer/);
+    expect(tokenPosts()).toEqual([]);
+  });
+
+  it('does not accept an ID token minted against keys a foreign document names', async () => {
+    doc = { issuer: 'https://evil.test', jwks_uri: 'https://evil.test/jwks' };
+    signAs = { key: 'evil', iss: 'https://evil.test' };
+    await expect(login()).rejects.toThrow(/different issuer/);
+  });
+
+  it('accepts the document when only a trailing slash differs, either way round', async () => {
+    doc = { issuer: `${issuer}/` };
+    signAs = { key: 'good', iss: `${issuer}/` };
+    expect((await login()).user.id).toBe('u-1');
+    const slashed = `https://issuer-slash-${n}.test/`;
+    env = { ...env, OIDC_ISSUER: slashed };
+    issuer = slashed.replace(/\/$/, '');
+    doc = {};
+    signAs = { key: 'good', iss: issuer };
+    expect((await login()).user.id).toBe('u-1');
+  });
+
+  it('takes the issuer as a URL: host case and a default port do not make it a different one', async () => {
+    const host = new URL(issuer).host;
+    env = { ...env, OIDC_ISSUER: `https://${host.toUpperCase()}:443` };
+    expect((await login()).user.id).toBe('u-1');
+  });
+
+  it('keeps the path case-sensitive', async () => {
+    issuer = `https://issuer-path-${n}.test/Tenant`;
+    env = { ...env, OIDC_ISSUER: issuer };
+    // The stub answers the discovery URL under /Tenant; the document names /tenant.
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push({ url });
+      if (url.endsWith('/openid-configuration')) return Response.json({ issuer: issuer.replace('Tenant', 'tenant'), authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`, jwks_uri: `${issuer}/jwks` });
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch);
+    await expect(beginLogin(env, APP)).rejects.toThrow(/different issuer/);
+  });
+
+  it('is not an issuer identifier when the configured one carries a query, fragment or userinfo', async () => {
+    for (const bad of [`${issuer}?tenant=1`, `${issuer}#frag`, `https://user:pw@${new URL(issuer).host}`]) {
+      env = { ...env, OIDC_ISSUER: bad };
+      await expect(beginLogin(env, APP), bad).rejects.toThrow(/not a valid issuer/);
+    }
+    expect(requests).toEqual([]);
+  });
+
+  it('refuses a document whose issuer differs only by a query, fragment or userinfo', async () => {
+    for (const bad of [`${issuer}?x=1`, `${issuer}#f`, `https://user@${new URL(issuer).host}`]) {
+      doc = { issuer: bad };
+      await expect(beginLogin(env, APP), bad).rejects.toThrow(/different issuer/);
+    }
+  });
+
+  it('does not remember the refusal for long: a corrected issuer is usable once the window passes', async () => {
+    doc = { issuer: 'https://other.test' };
+    await expect(login()).rejects.toThrow(/different issuer/);
+    doc = {};
+    pastTheFailureWindow();
+    expect((await login()).user.id).toBe('u-1');
+  });
+});
+
+describe('a failing issuer is asked once per window, not once per request', () => {
+  it('answers N failing requests from one discovery, and asks again after the window', async () => {
+    discovery = 'down';
+    for (let i = 0; i < 5; i++) await expect(beginLogin(env, APP)).rejects.toThrow(/discovery failed \(503\)/);
+    expect(requests.filter((r) => r.url.includes('openid-configuration'))).toHaveLength(1);
+    discovery = 'up';
+    await expect(beginLogin(env, APP)).rejects.toThrow(/discovery failed \(503\)/);
+    pastTheFailureWindow();
+    expect((await beginLogin(env, APP)).location).toContain('/authorize');
+  });
+});
+
+describe('the configured issuer', () => {
+  it('must be https: a plaintext issuer is refused before any request is made', async () => {
+    env = { ...env, OIDC_ISSUER: 'http://issuer.example.test' };
+    await expect(beginLogin(env, APP)).rejects.toThrow(/not https/);
+    expect(requests).toEqual([]);
+  });
+
+  it('is not written off by the refusal: the same isolate serves an https one (positive twin)', async () => {
+    env = { ...env, OIDC_ISSUER: 'http://issuer.example.test' };
+    await expect(beginLogin(env, APP)).rejects.toThrow(/not https/);
+    env = { ...env, OIDC_ISSUER: issuer };
+    expect((await login()).user.id).toBe('u-1');
+  });
+});
+
+describe('the token endpoint', () => {
+  it('must be https: a plaintext endpoint is refused and receives nothing', async () => {
+    doc = { token_endpoint: 'http://token.example.test/token' };
+    await expect(login()).rejects.toThrow(/not https/);
+    expect(requests.some((r) => r.url.startsWith('http://token.example.test'))).toBe(false);
+  });
+
+  it('may live on another origin than the issuer (positive twin)', async () => {
+    doc = { token_endpoint: 'https://token.example.test/token' };
+    expect((await login()).user.id).toBe('u-1');
+    expect(requests.some((r) => r.url === 'https://token.example.test/token' && r.method === 'POST')).toBe(true);
+  });
+
+  it('allows plaintext on a loopback issuer, the dev case', async () => {
+    issuer = `http://localhost:${8000 + n}`;
+    env = { ...env, OIDC_ISSUER: issuer };
+    signAs = { key: 'good', iss: issuer };
+    expect((await login()).user.id).toBe('u-1');
+  });
+
+  it('is asked not to follow a redirect, and a 30x fails the login without a second request', async () => {
+    tokenBehaviour = 'redirect';
+    await expect(login()).rejects.toThrow(/token exchange failed \(307\)/);
+    expect(tokenPosts().every((r) => r.redirect === 'manual')).toBe(true);
+    expect(requests.some((r) => r.url.startsWith('https://evil.test'))).toBe(false);
+  });
+});
+
+describe('userinfo', () => {
+  it('carries the bearer without following a redirect', async () => {
+    sparse = true;
+    doc = { userinfo_endpoint: `${issuer}/userinfo` };
+    expect((await login()).user.email).toBe('a@example.test');
+    expect(requests.find((r) => r.url.endsWith('/userinfo'))?.redirect).toBe('manual');
+  });
+});
+
+describe('a plaintext loopback endpoint needs a loopback issuer', () => {
+  /** A fresh https issuer per case: a discovery that succeeded is cached for the isolate. */
+  const fresh = () => {
+    issuer = `https://issuer-lb-${++n}.test`;
+    env = { ...env, OIDC_ISSUER: issuer };
+    signAs = { key: 'good', iss: issuer };
+  };
+
+  it('an https issuer cannot name a plaintext loopback jwks_uri', async () => {
+    fresh();
+    doc = { jwks_uri: 'http://localhost:9/jwks' };
+    await expect(login()).rejects.toThrow(/jwks_uri that is not https/);
+    expect(requests.some((r) => r.url.startsWith('http://localhost:9'))).toBe(false);
+  });
+
+  it('nor a plaintext loopback token endpoint, which then receives nothing', async () => {
+    fresh();
+    doc = { token_endpoint: 'http://127.0.0.1:9/token' };
+    await expect(login()).rejects.toThrow(/not https/);
+    expect(requests.some((r) => r.url.startsWith('http://127.0.0.1'))).toBe(false);
+  });
+
+  it('nor a plaintext loopback userinfo endpoint: the login stands without it', async () => {
+    fresh();
+    sparse = true;
+    doc = { userinfo_endpoint: 'http://localhost:9/me' };
+    expect((await login()).user.email).toBeUndefined();
+    expect(requests.some((r) => r.url.startsWith('http://localhost:9'))).toBe(false);
+  });
+
+  it('a loopback http issuer may name plaintext loopback endpoints (positive twin)', async () => {
+    issuer = `http://localhost:${9000 + ++n}`;
+    env = { ...env, OIDC_ISSUER: issuer };
+    signAs = { key: 'good', iss: issuer };
+    sparse = true;
+    doc = { userinfo_endpoint: `${issuer}/userinfo`, jwks_uri: `${issuer}/jwks` };
+    expect((await login()).user.email).toBe('a@example.test');
+  });
+});
+
+describe('the authorization endpoint', () => {
+  it('must be https: a plaintext one, loopback included, is refused before any login starts', async () => {
+    for (const bad of ['http://auth.example.test/authorize', 'http://localhost:9/authorize']) {
+      issuer = `https://issuer-authz-${++n}.test`;
+      env = { ...env, OIDC_ISSUER: issuer };
+      doc = { authorization_endpoint: bad };
+      await expect(beginLogin(env, APP), bad).rejects.toThrow(/authorization_endpoint that is not https/);
+    }
+  });
+
+  it('may live on another https origin (positive twin)', async () => {
+    doc = { authorization_endpoint: 'https://login.example.test/authorize' };
+    expect((await beginLogin(env, APP)).location).toContain('https://login.example.test/authorize');
+  });
+});
+
+describe('a document with a refusable token endpoint', () => {
+  it('is refused at discovery, and is not cached as a success', async () => {
+    doc = { token_endpoint: 'http://token.example.test/token' };
+    for (let i = 0; i < 3; i++) await expect(beginLogin(env, APP)).rejects.toThrow(/token_endpoint that is not https/);
+    // Answered from the failure window: one discovery, and nothing sent to the endpoint.
+    expect(requests.filter((r) => r.url.includes('openid-configuration'))).toHaveLength(1);
+    expect(requests.some((r) => r.url.startsWith('http://token.example.test'))).toBe(false);
+    // A success would be served from the success cache with no new fetch; instead, once the
+    // window passes and the document is corrected, the next login sees the corrected one.
+    doc = {};
+    pastTheFailureWindow();
+    expect((await login()).user.id).toBe('u-1');
+  });
+
+  it('is accepted when the token endpoint is https on another origin (positive twin)', async () => {
+    doc = { token_endpoint: 'https://token.example.test/token' };
+    expect((await beginLogin(env, APP)).location).toContain('/authorize');
+  });
+});
+
+describe('what else the document names', () => {
+  it('refuses a plaintext jwks_uri, and does not cache the refusal', async () => {
+    doc = { jwks_uri: 'http://keys.example.test/jwks' };
+    await expect(login()).rejects.toThrow(/jwks_uri that is not https/);
+    expect(requests.some((r) => r.url.startsWith('http://keys.example.test'))).toBe(false);
+    doc = {};
+    pastTheFailureWindow();
+    expect((await login()).user.id).toBe('u-1');
+  });
+
+  it('accepts a jwks_uri on another https origin (positive twin)', async () => {
+    doc = { jwks_uri: 'https://keys.example.test/jwks' };
+    expect((await login()).user.id).toBe('u-1');
+  });
+
+  it('never sends the bearer to a plaintext userinfo endpoint; the login stands without it', async () => {
+    sparse = true;
+    doc = { userinfo_endpoint: 'http://userinfo.example.test/me' };
+    const { user } = await login();
+    expect(user.email).toBeUndefined();
+    expect(requests.some((r) => r.url.startsWith('http://userinfo.example.test'))).toBe(false);
+  });
+});
+
+describe('the discovery fetch', () => {
+  it('does not follow a redirect off the issuer origin', async () => {
+    discoveryRedirect = 'https://evil.test/.well-known/openid-configuration';
+    await expect(beginLogin(env, APP)).rejects.toThrow(/redirected away/);
+    expect(requests.some((r) => r.url.startsWith('https://evil.test'))).toBe(false);
+  });
+
+  it('refuses https -> http on the same host', async () => {
+    discoveryRedirect = `http://${new URL(issuer).host}/.well-known/openid-configuration`;
+    await expect(beginLogin(env, APP)).rejects.toThrow(/redirected away/);
+    expect(requests.some((r) => r.url.startsWith('http://'))).toBe(false);
+  });
+
+  it('refuses a redirect with no Location', async () => {
+    discoveryRedirect = '';
+    await expect(beginLogin(env, APP)).rejects.toThrow(/no Location/);
+  });
+
+  it('gives up on a redirect loop after the hop cap, not never', async () => {
+    discoveryRedirect = `${issuer}/.well-known/openid-configuration`;
+    await expect(beginLogin(env, APP)).rejects.toThrow(/redirected more than 3 times/);
+    expect(requests.filter((r) => r.url.includes('openid-configuration'))).toHaveLength(4);
+  }, 2_000);
+
+  it('follows one that stays on the issuer origin (positive twin)', async () => {
+    discoveryRedirect = `${issuer}/moved/.well-known/openid-configuration`;
+    expect((await beginLogin(env, APP)).location).toContain('/authorize');
+    // Asked not to follow, so it is this code that judges each hop, never the runtime.
+    expect(requests.filter((r) => r.url.includes('openid-configuration')).every((r) => r.redirect === 'manual')).toBe(true);
+  });
+});
