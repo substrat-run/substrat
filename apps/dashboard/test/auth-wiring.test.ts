@@ -38,8 +38,18 @@ function issuerFetch(
   const registrations: Array<Record<string, unknown>> = [];
   const posts: Array<{ url: string; redirect?: string }> = [];
   const discoveries: Array<{ url: string; redirect?: string }> = [];
-  const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+  const fetchImpl = (async (input: unknown, init?: RequestInit): Promise<Response> => {
     const url = String(input);
+    const res = await answer(url, init);
+    // Follow a redirect the way the runtime does unless the caller said `manual` — so a POST
+    // that loses its `redirect: 'manual'` really does land somewhere else in this test.
+    const location = res.headers.get('location');
+    if (res.status >= 300 && res.status < 400 && location && init?.redirect !== 'manual') {
+      return fetchImpl(new URL(location, url).toString(), init);
+    }
+    return res;
+  }) as unknown as typeof fetch;
+  const answer = async (url: string, init?: RequestInit): Promise<Response> => {
     if (url.endsWith('/.well-known/openid-configuration')) {
       discoveries.push({ url, redirect: init?.redirect });
       if (overrides.discovery) return overrides.discovery();
@@ -47,9 +57,9 @@ function issuerFetch(
     }
     posts.push({ url, redirect: init?.redirect });
     registrations.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-    if (overrides.registration) return overrides.registration() as Response;
+    if (overrides.registration && posts.length === 1) return overrides.registration() as Response;
     return Response.json({ client_id: 'generated-id', client_secret: 'generated-secret' });
-  }) as unknown as typeof fetch;
+  };
   return { fetchImpl, registrations, posts, discoveries };
 }
 
