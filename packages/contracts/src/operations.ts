@@ -26,7 +26,7 @@
  */
 import { LIST_PAGE_MAX, type CountedPage, type Page } from './pagination.js';
 import { z } from 'zod';
-import { primaryKeyOf, type EntityDef, type EntityFields } from './model.js';
+import { primaryKeyOf, type EmittedExport, type EntityDef, type EntityFields } from './model.js';
 
 // ---------------------------------------------------------------------------
 // Reading an operation's own declarations back off itself.
@@ -1133,6 +1133,67 @@ export function eventsExportedBy(
       }
       return { type, schemaVersion: [...seen.versions][0]!, readPermission };
     });
+}
+
+/**
+ * Each exported event's payload as JSON Schema (#1705 PR 3, D-22), for `emitModel`'s `exports`:
+ *
+ * ```ts
+ * const exported = eventsExportedBy(ops, { 'crm.customer-created': 'customer:read' });
+ * export const crmModel = emitModel(crmEntities, { exports: exportedEventSchemasOf(ops, exported) });
+ * ```
+ *
+ * The payload is what `emits.payload` declares: those fields of the operation's `output`. That
+ * is the promise another vertical parses against, so it goes into the checked-in model, where
+ * `lint:export-schemas` compares it with the base branch's. An operation that declares no
+ * `payload` promises an empty object.
+ *
+ * Refused, at module load:
+ * - an export no operation emits (`eventsExportedBy` refuses it too, and this is its backstop);
+ * - a payload drawn from an output that is not an object, which has no fields to pick;
+ * - two operations emitting one exported type with DIFFERENT payload schemas. A consumer
+ *   receives both under one (type, version), so the version would promise two shapes.
+ */
+export function exportedEventSchemasOf(
+  operations: Readonly<Record<string, object>>,
+  exports: readonly { type: string; schemaVersion: number; readPermission: string }[],
+): ({ type: string } & EmittedExport)[] {
+  return exports.map((e) => {
+    let payload: Record<string, unknown> | null = null;
+    let first = '';
+    for (const [name, op] of Object.entries(operations)) {
+      const emits = (op as { emits?: { type?: unknown; payload?: readonly string[] } }).emits;
+      if (emits?.type !== e.type) continue;
+      const output = (op as { output?: unknown }).output;
+      const keys = [...(emits.payload ?? [])];
+      let picked: z.ZodType;
+      if (keys.length === 0) picked = z.object({});
+      else if (output instanceof z.ZodObject) {
+        picked = output.pick(Object.fromEntries(keys.map((k) => [k, true])) as Record<string, true>);
+      } else {
+        throw new Error(
+          `exportedEventSchemasOf: ${name} emits '${e.type}' with a payload drawn from an output that is not an object`,
+        );
+      }
+      const { $schema: _drop, ...schema } = z.toJSONSchema(picked, { io: 'output', target: 'draft-2020-12' }) as Record<
+        string,
+        unknown
+      >;
+      if (payload === null) {
+        payload = schema;
+        first = name;
+      } else if (JSON.stringify(payload) !== JSON.stringify(schema)) {
+        throw new Error(
+          `exportedEventSchemasOf: '${e.type}' is emitted by ${first} and ${name} with different payloads — ` +
+            `one exported (type, schemaVersion) promises one shape`,
+        );
+      }
+    }
+    if (payload === null) {
+      throw new Error(`exportedEventSchemasOf: '${e.type}' is exported but no operation emits it`);
+    }
+    return { type: e.type, schemaVersion: e.schemaVersion, readPermission: e.readPermission, payload };
+  });
 }
 
 /**

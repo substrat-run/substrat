@@ -419,3 +419,53 @@ describe('promoteWithCheckpoint', () => {
     });
   });
 });
+
+describe('the export-break acknowledgement (#1705 PR 3)', () => {
+  const listing = { affected: [{ scopeId: 's1', vertical: 'acme/board', type: 'crm.a', schemaVersion: 1, incoming: null }], otherTenants: 2 };
+  const BREAK_REFUSAL =
+    'promotion drops or re-versions 1 exported event type(s) that 3 installed app(s) in 3 tenant(s) import — their edges would stop delivering it. Acknowledge it explicitly (exportBreak) to promote';
+  /** The registry's gate with the export-break refusal, which fires after the digests do. */
+  const breakGate = (breaks: boolean) => {
+    const sent: Array<Acks | undefined> = [];
+    return {
+      sent,
+      promote: async (ack: Acks | undefined) => {
+        sent.push(ack);
+        if (breaks && !ack?.exportBreak) throw new Error(BREAK_REFUSAL);
+      },
+    };
+  };
+
+  it('a review that names broken apps asks up front, and sends exportBreak only once ticked', async () => {
+    const g = breakGate(true);
+    const d = dialog({ exportBreak: true });
+    const outcome = await promoteWithCheckpoint({ review: async () => review({ exportBreaks: listing }), promote: g.promote, ask: d.ask });
+    expect(outcome).toBe('promoted');
+    expect(d.shown[0]?.exportBreak).toEqual({ kind: 'listing', listing });
+    expect(g.sent).toEqual([{ exportBreak: true }]);
+  });
+
+  it('an unticked box is no acknowledgement: nothing is sent', async () => {
+    const g = breakGate(true);
+    const d = dialog({});
+    // The dialog answered, but without the box; the flow stops rather than promoting.
+    expect(await promoteWithCheckpoint({ review: async () => review({ exportBreaks: listing }), promote: g.promote, ask: d.ask })).toBe(
+      'cancelled',
+    );
+    expect(g.sent).toEqual([]);
+  });
+
+  it('a refusal the review did not foresee is shown in the gate\'s own counted words, then asked', async () => {
+    const g = breakGate(true);
+    const d = dialog({ exportBreak: true });
+    expect(await promoteWithCheckpoint({ review: async () => review(), promote: g.promote, ask: d.ask })).toBe('promoted');
+    expect(d.shown[0]?.exportBreak).toEqual({ kind: 'server-reported', summary: BREAK_REFUSAL });
+    expect(g.sent).toEqual([undefined, { exportBreak: true }]);
+  });
+
+  it('classifies the export-break refusal, and a flag for a section never shown counts for nothing', () => {
+    expect(classifyRefusal(`HTTP 409: ${BREAK_REFUSAL}`)).toEqual({ kind: 'export-break', summary: BREAK_REFUSAL });
+    const shownNothing: Checkpoint = { permission: null, migration: null, exportBreak: null, acknowledged: {} };
+    expect(honour(shownNothing, { exportBreak: true })).toEqual({});
+  });
+});

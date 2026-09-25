@@ -214,7 +214,7 @@ export type {
 } from './list-index.js';
 export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
-export { createUlid, ulid, ulidTime, type UlidMint } from './ulid.js';
+export { createUlid, ulid, ulidCeiling, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { assertNoSpineWrite, guardSpine } from './spine-guard.js';
 export { assertPermissionKey } from './check-key.js';
@@ -454,6 +454,11 @@ export {
   CROSS_VERTICAL_CONSUMERS_PER_PASS,
   runCrossVerticalFrom,
   registryImportCandidates,
+  crossVerticalHealth,
+  exportBreaksOf,
+  exportBreakRefusal,
+  EXPORT_BREAK_REFUSAL,
+  isExportBreakRefusal,
 } from './platform-sweep.js';
 export type {
   CandidatesHint,
@@ -498,6 +503,8 @@ export {
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
   OUTBOX_MARK_SQL,
+  moveImportCursor,
+  importCursorSourceOf,
   exportedSinceQuery,
   exportReadQuery,
   exportReadPlan,

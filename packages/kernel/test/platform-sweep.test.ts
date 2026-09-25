@@ -6,6 +6,7 @@ import {
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,
   registryImportCandidates,
+  exportBreaksOf,
   runCrossVerticalFrom,
   runningVersionOf,
   runPlatformSweep,
@@ -2127,5 +2128,87 @@ describe('a kick pass leaves doubt and standing failures to the sweep (#1705 PR 
         [`${broken.id}:*`, 'failed'],
       ]),
     );
+  });
+});
+
+describe('exportBreaksOf: the promote gate fails closed (#1705 PR 3)', () => {
+  const PRODUCER = 'acme/crm';
+  const CONSUMER_V = '01JZ0000000000000000000C01';
+  const scope = (vertical: string, versionId: string | null) =>
+    ({ id: sid(), tenantId: T, status: 'active', vertical, verticalVersionId: versionId, kind: 'app', forkedFrom: null }) as unknown as Scope;
+  const outgoing = { kind: 'exports' as const, rows: [{ type: 'crm.a', schemaVersion: 1 }] };
+  const incoming = { kind: 'exports' as const, rows: [] };
+  const imports = { kind: 'imports' as const, rows: [{ from: PRODUCER, type: 'crm.a', schemaVersion: 1 }] };
+  const admin = (scopes: Scope[] | Error) =>
+    ({
+      listScopes: async () => {
+        if (scopes instanceof Error) throw scopes;
+        return scopes;
+      },
+      listVerticals: async () => [],
+    }) as unknown as Parameters<typeof exportBreaksOf>[0]['admin'];
+  const fleet = () => [scope(PRODUCER, null), scope('acme/board', CONSUMER_V)];
+
+  it('names the consumer whose running version imports the dropped export', async () => {
+    const breaks = await exportBreaksOf({
+      admin: admin(fleet()),
+      actor: ACTOR,
+      producer: PRODUCER,
+      outgoing,
+      incoming,
+      readImports: async () => imports,
+    });
+    expect(breaks).toEqual([expect.objectContaining({ type: 'crm.a', schemaVersion: 1, incoming: null })]);
+  });
+
+  it('a registry read that throws refuses, rather than judging the consumer unbroken', async () => {
+    await expect(
+      exportBreaksOf({
+        admin: admin(fleet()),
+        actor: ACTOR,
+        producer: PRODUCER,
+        outgoing,
+        incoming,
+        readImports: async () => {
+          throw new Error('registry down');
+        },
+      }),
+    ).rejects.toThrow(/cannot say whom this promotion breaks.*registry down/);
+  });
+
+  it('a manifest that does not parse is not judged (the twin: no refusal, no break)', async () => {
+    await expect(
+      exportBreaksOf({
+        admin: admin(fleet()),
+        actor: ACTOR,
+        producer: PRODUCER,
+        outgoing,
+        incoming,
+        readImports: async () => ({ kind: 'unreadable', reason: 'the stored manifest is not JSON' }),
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it('an outgoing manifest that does not parse refuses; one with no exports promised nothing', async () => {
+    const ask = (out: Parameters<typeof exportBreaksOf>[0]['outgoing']) =>
+      exportBreaksOf({ admin: admin(fleet()), actor: ACTOR, producer: PRODUCER, outgoing: out, incoming, readImports: async () => imports });
+    await expect(ask({ kind: 'unreadable', reason: 'the stored manifest is not JSON' })).rejects.toThrow(
+      /outgoing version's exports could not be read/,
+    );
+    // The twin: a version that states no exports promised nothing, so nothing breaks.
+    await expect(ask({ kind: 'none' })).resolves.toEqual([]);
+  });
+
+  it('a directory read that throws refuses too', async () => {
+    await expect(
+      exportBreaksOf({
+        admin: admin(new Error('directory down')),
+        actor: ACTOR,
+        producer: PRODUCER,
+        outgoing,
+        incoming,
+        readImports: async () => imports,
+      }),
+    ).rejects.toThrow(/directory down/);
   });
 });

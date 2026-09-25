@@ -126,6 +126,10 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
             effects.push(`${method} ${path}`);
             return Response.json({ changed: true });
           }
+          if (method === 'POST' && path.endsWith('/import-cursor')) {
+            effects.push(`${method} ${path}`);
+            return Response.json({ replayId: 'r', mode: 'replay', archived: { journal: 0, deliveries: 0 } });
+          }
           const acts =
             (method === 'POST' && /^\/verticals\/[^/]+\/channels\/[^/]+\/promote$/.test(u.pathname.replace(/^\/api/, ''))) ||
             (method === 'POST' && /^\/verticals\/[^/]+\/previews$/.test(u.pathname.replace(/^\/api/, ''))) ||
@@ -206,6 +210,33 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
   it('peer switch: a manager cannot address an app outside the team', async () => {
     expect((await asRole('owner', 'POST', `/api/apps/${ulid()}/peers/switch`, { vertical: 'acme/board-room', to: 'off', reason: 'review' })).status).toBe(404);
     expect(planeCalls).toEqual([]);
+  });
+
+  // -- the replay lever (#1705 PR 3) -------------------------------------------
+
+  const REPLAY = {
+    mode: 'replay',
+    from: 'acme/crm',
+    after: null,
+    acknowledge: 'rerun-handlers',
+    reason: 'the app lost a day',
+  };
+  it('replay lever: a viewer cannot move an edge', async () => {
+    await refused(['POST', `/api/apps/${peerScope}/edges/move`, REPLAY]);
+  });
+  it('replay lever: an owner and member can replay into their app', async () => {
+    await allowed(['POST', `/api/apps/${peerScope}/edges/move`, REPLAY], [200]);
+  });
+  it('replay lever: a manager cannot address an app outside the team', async () => {
+    expect((await asRole('owner', 'POST', `/api/apps/${ulid()}/edges/move`, REPLAY)).status).toBe(404);
+    expect(effects).toEqual([]);
+  });
+  it('replay lever: without its acknowledgement it is refused in words, and the plane is never asked to move', async () => {
+    const { acknowledge: _, ...bare } = REPLAY;
+    const res = await asRole('owner', 'POST', `/api/apps/${peerScope}/edges/move`, bare);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('anything they send or call outside this app happens again');
+    expect(effects).toEqual([]);
   });
 
   // -- promote ---------------------------------------------------------------

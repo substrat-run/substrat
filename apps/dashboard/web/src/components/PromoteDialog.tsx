@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { Checkbox, Dialog } from '@substrat-run/ui';
 import { registryDirection, type RegistryDirection, type RegistryLike } from '../lib/registry-diff';
 import { outstanding, type Acks, type Checkpoint, type MigrationSection, type PermissionSection, type Unverifiable } from '../lib/promote-review';
+import { ExportBreakAck } from './ExportBreakAck';
 import { MonoTag, Pill } from './ui';
 
 /**
@@ -36,12 +37,15 @@ export function PromoteDialog({
 }) {
   const [permissionTicked, setPermissionTicked] = useState(false);
   const [migrationTicked, setMigrationTicked] = useState(false);
+  const [exportBreakTicked, setExportBreakTicked] = useState(false);
   const left = outstanding(checkpoint);
-  const ready = (!left.permission || permissionTicked) && (!left.migration || migrationTicked);
+  const ready =
+    (!left.permission || permissionTicked) && (!left.migration || migrationTicked) && (!left.exportBreak || exportBreakTicked);
 
   const answer = (): Acks => ({
     ...(left.permission && permissionTicked ? { permissionChange: true as const } : {}),
     ...(left.migration && migrationTicked ? { migrationChange: true as const } : {}),
+    ...(left.exportBreak && exportBreakTicked ? { exportBreak: true as const } : {}),
   });
 
   return (
@@ -84,6 +88,14 @@ export function PromoteDialog({
               <Acknowledged />
             )}
           </Section>
+        )}
+        {checkpoint.exportBreak && (
+          <ExportBreakAck
+            section={checkpoint.exportBreak}
+            outstanding={left.exportBreak}
+            ticked={exportBreakTicked}
+            onTick={setExportBreakTicked}
+          />
         )}
       </div>
     </Dialog>

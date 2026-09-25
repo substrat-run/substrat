@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { moduleId, permissionKey, verticalSlug } from './ids.js';
+import { moduleId, permissionKey, scopeId, tenantId, verticalSlug } from './ids.js';
 import { envVarSpec, capability, freshnessSpec, scheduleSpec, type ModuleManifest } from './manifest.js';
 import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
@@ -304,27 +304,79 @@ export type ManifestImports =
   | { kind: 'imports'; rows: { from: string; type: string; schemaVersion: number }[] }
   | { kind: 'unreadable'; reason: string };
 
-export function importsOfManifestJson(manifestJson: string | null | undefined): ManifestImports {
-  if (!manifestJson) return { kind: 'none' };
+/**
+ * One registry list of a STORED manifest, in the three answers both readers below give: absent
+ * (`null`), its rows, or why it cannot be read. Written once so the two cannot come to disagree
+ * about a null registry, a list that is not a list, or one bad row.
+ */
+function registryRowsOfManifestJson<T>(
+  manifestJson: string | null | undefined,
+  key: 'imports' | 'exports',
+  row: z.ZodType<T>,
+): { rows: T[] } | { unreadable: string } | null {
+  if (!manifestJson) return null;
   let m: unknown;
   try {
     m = JSON.parse(manifestJson);
   } catch {
-    return { kind: 'unreadable', reason: 'the stored manifest is not JSON' };
+    return { unreadable: 'the stored manifest is not JSON' };
   }
   const registry = (m as { registry?: unknown } | null)?.registry;
-  if (registry === undefined || registry === null) return { kind: 'none' };
-  if (typeof registry !== 'object' || !('imports' in registry)) return { kind: 'none' };
-  const rows = (registry as { imports: unknown }).imports;
-  if (!Array.isArray(rows)) return { kind: 'unreadable', reason: "the manifest's registry.imports is not a list" };
-  const out: { from: string; type: string; schemaVersion: number }[] = [];
+  if (registry === undefined || registry === null) return null;
+  if (typeof registry !== 'object' || !(key in registry)) return null;
+  const rows = (registry as Record<string, unknown>)[key];
+  if (!Array.isArray(rows)) return { unreadable: `the manifest's registry.${key} is not a list` };
+  const out: T[] = [];
   for (const r of rows) {
-    const p = permissionRegistryImport.safeParse(r);
-    if (!p.success) return { kind: 'unreadable', reason: "a row of the manifest's registry.imports is malformed" };
-    out.push({ from: p.data.from, type: p.data.type, schemaVersion: p.data.schemaVersion });
+    const p = row.safeParse(r);
+    if (!p.success) return { unreadable: `a row of the manifest's registry.${key} is malformed` };
+    out.push(p.data);
   }
-  return { kind: 'imports', rows: out };
+  return { rows: out };
 }
+
+export function importsOfManifestJson(manifestJson: string | null | undefined): ManifestImports {
+  const read = registryRowsOfManifestJson(manifestJson, 'imports', permissionRegistryImport);
+  if (read === null) return { kind: 'none' };
+  if ('unreadable' in read) return { kind: 'unreadable', reason: read.unreadable };
+  return { kind: 'imports', rows: read.rows.map((r) => ({ from: r.from, type: r.type, schemaVersion: r.schemaVersion })) };
+}
+
+/**
+ * What a STORED manifest says a vertical EXPORTS (#1705 PR 3), in `importsOfManifestJson`'s three
+ * answers. The promote gate reads it for the outgoing and the incoming version: an exported
+ * (type, schemaVersion) the outgoing version promised and the incoming one drops or re-versions
+ * breaks every consumer that imports it.
+ */
+export type ManifestExports =
+  | { kind: 'none' }
+  | { kind: 'exports'; rows: { type: string; schemaVersion: number }[] }
+  | { kind: 'unreadable'; reason: string };
+
+export function exportsOfManifestJson(manifestJson: string | null | undefined): ManifestExports {
+  const read = registryRowsOfManifestJson(manifestJson, 'exports', permissionRegistryExport);
+  if (read === null) return { kind: 'none' };
+  if ('unreadable' in read) return { kind: 'unreadable', reason: read.unreadable };
+  return { kind: 'exports', rows: read.rows.map((r) => ({ type: r.type, schemaVersion: r.schemaVersion })) };
+}
+
+/**
+ * One installed consumer a promote would break (#1705 PR 3): a scope whose running code imports
+ * (type, schemaVersion) from the promoted vertical, which the incoming version drops (`incoming:
+ * null`) or exports at another version. The consumer's edge then withholds every such event as
+ * `version`, or finds the type `unexported`. Nothing is lost, and nothing arrives either.
+ */
+export const exportBreak = z.object({
+  tenantId,
+  scopeId,
+  vertical: verticalSlug,
+  /** The consumer's running version, or null when it is bound to none. */
+  version: z.string().nullable(),
+  type: eventType,
+  schemaVersion: z.number().int().positive(),
+  incoming: z.number().int().positive().nullable(),
+});
+export type ExportBreak = z.infer<typeof exportBreak>;
 
 /**
  * The declared outgoing peer calls of a STORED manifest (#1706) — `outboundOfManifestJson`'s

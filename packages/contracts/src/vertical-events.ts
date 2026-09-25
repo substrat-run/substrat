@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { eventId, instant, permissionKey, scopeId, verticalSlug } from './ids.js';
+import { eventId, instant, permissionKey, scopeId, tenantId, verticalSlug } from './ids.js';
 import { entityRef, eventType } from './events.js';
 
 // Cross-vertical event delivery (#1705): the three messages the platform carries between a
@@ -197,3 +197,238 @@ export type ImportedEvent = Omit<ExportedEvent, 'hops'> & {
 
 /** How many vertical boundaries a cause chain may cross before its next export is withheld. */
 export const EXPORT_HOP_CAP = 8;
+
+// -- the replay lever (#1705 PR 3) -----------------------------------------------------------
+
+/**
+ * What a replay costs, in the words a person is shown before they pull the lever. The literal
+ * the request must carry (`acknowledge: 'rerun-handlers'`) stands for exactly this sentence.
+ */
+export const REPLAY_EFFECT =
+  'handlers run again; anything they send or call outside this app happens again';
+
+/** What a skip costs, in the words a person is shown before they pull the lever. */
+export const SKIP_EFFECT =
+  "the skipped events are never handed to this app's handlers, unless a later replay reaches back to them";
+
+/**
+ * Move a consumer's watermark on one edge (#1705 PR 3): the lever behind "replay from N" and
+ * "skip to now".
+ *
+ * The edge is named by the PRODUCER's vertical slug. Which scope that is, is the platform's to
+ * resolve from its directory, in the consumer's tenant, exactly as the sweep does. A caller
+ * never names the producer's scope.
+ *
+ * - `replay`: re-deliver every event after `after` (`null`: the whole exported history). Each
+ *   importing module's handler runs AGAIN for every replayed event, and what it emits is a new
+ *   event that fans out again. "Once per (event, module)" becomes "once per (event, module) per
+ *   replay". Hence the acknowledgement, whose literal stands for `REPLAY_EFFECT`.
+ * - `skip`: move the watermark forward to `through` (`'now'`: every event of an earlier millisecond
+ *   than the skip's; one in the skip's own millisecond is delivered, never dropped), so
+ *   what lies between is never delivered. Recoverable, since the producer's outbox keeps the
+ *   events and a later replay reaches back to them. Still acknowledged, because nothing else
+ *   tells the person that the app will simply not see those events.
+ *
+ * The mode is held to its direction: a replay refuses a target ahead of the watermark and a
+ * skip refuses one behind it, so the acknowledgement a person gave always matches what moved.
+ */
+export const importCursorMove = z.discriminatedUnion('mode', [
+  z.object({
+    mode: z.literal('replay'),
+    from: verticalSlug,
+    after: eventId.nullable(),
+    acknowledge: z.literal('rerun-handlers'),
+    reason: z.string().trim().min(1).max(500),
+  }),
+  z.object({
+    mode: z.literal('skip'),
+    from: verticalSlug,
+    through: z.union([eventId, z.literal('now')]),
+    acknowledge: z.literal('skip-events'),
+    reason: z.string().trim().min(1).max(500),
+  }),
+]);
+export type ImportCursorMove = z.infer<typeof importCursorMove>;
+
+/**
+ * The refusal a lever request without its acknowledgement gets (#1705 PR 3), or `null` when the
+ * acknowledgement matches the mode. Said in the words the literal stands for, so a caller that
+ * left it out is told what it would have agreed to, not that a string did not match.
+ */
+export function importCursorAcknowledgementMissing(raw: unknown): string | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const r = raw as { mode?: unknown; acknowledge?: unknown };
+  if (r.mode === 'replay' && r.acknowledge !== 'rerun-handlers') {
+    return `a replay needs acknowledge: 'rerun-handlers' — ${REPLAY_EFFECT}`;
+  }
+  if (r.mode === 'skip' && r.acknowledge !== 'skip-events') {
+    return `a skip needs acknowledge: 'skip-events' — ${SKIP_EFFECT}`;
+  }
+  return null;
+}
+
+/**
+ * The far end's half of the lever (#1705 PR 3): the move, plus the producer the platform
+ * resolved. A CP-less deployment has no directory to resolve it from, so the control plane
+ * asserts it, as it asserts `ImportBatch.source`. `replayId` is the act the platform's admin
+ * rows already name, so the rows the far end moves aside carry the same id.
+ */
+export const importCursorMoveAt = z.object({
+  move: importCursorMove,
+  source: z.object({ vertical: verticalSlug, scopeId }),
+  replayId: z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/),
+});
+export type ImportCursorMoveAt = z.infer<typeof importCursorMoveAt>;
+
+/**
+ * What a move did (#1705 PR 3).
+ *
+ * `replayId` names the act: the admin-log row carries it, and so does every journal row the
+ * replay moved into `_substrat_import_replays`. A replay does not delete the record that a
+ * delivery happened. It moves it aside, so the live journal can take the event again and the
+ * evidence of the first delivery stays. `archived` counts what moved (0 on a skip).
+ */
+export const importCursorMoved = z.object({
+  replayId: z.string().min(1),
+  mode: z.enum(['replay', 'skip']),
+  source: z.object({ vertical: verticalSlug, scopeId }),
+  previous: eventId.nullable(),
+  cursor: eventId.nullable(),
+  archived: z.object({
+    journal: z.number().int().nonnegative(),
+    deliveries: z.number().int().nonnegative(),
+  }),
+});
+export type ImportCursorMoved = z.infer<typeof importCursorMoved>;
+
+// -- edge health (#1705 PR 3) ----------------------------------------------------------------
+
+/**
+ * Where one edge stands, read live (#1705 PR 3). What a person needs is whether events are
+ * getting through, and if not, why.
+ *
+ * - `caught-up`: the consumer has everything the producer releases to it.
+ * - `behind`: events are waiting past the watermark. `lagMs` says how long the oldest has waited.
+ *   A sweep takes them on its next pass unless something below is also true.
+ * - `paused`: one side refuses the other. Either the producer does not grant the consumer's
+ *   key, or the consumer's door has the producer switched off. Nothing is lost, and the backlog
+ *   waits in the producer's outbox.
+ * - `unresolved`: the platform cannot name both ends. The producer is not installed, or a
+ *   vertical has two primary installs.
+ * - `unavailable`: a side could not be ASKED (a transport error, or a deployment that predates
+ *   the routes). This is not a healthy state and must never render as one. It says nothing about
+ *   whether events are moving.
+ */
+export const edgeHealthState = z.enum(['caught-up', 'behind', 'paused', 'unresolved', 'unavailable']);
+export type EdgeHealthState = z.infer<typeof edgeHealthState>;
+
+export const edgeHealth = z.object({
+  tenantId,
+  consumer: z.object({ scopeId, vertical: z.string() }),
+  /** `'*'`, with no scope: the consumer could not be asked, so no producer was named. */
+  producer: z.object({ vertical: z.string(), scopeId: scopeId.nullable() }),
+  state: edgeHealthState,
+  /** The sentence a person reads. Set on every state but `caught-up`. */
+  reason: z.string().nullable(),
+  /** The consumer's watermark on this edge. `null`: it has taken nothing yet. */
+  watermark: z.object({ cursor: eventId, updatedAt: instant.nullable() }).nullable(),
+  /** The oldest event waiting past the watermark (released or withheld). */
+  oldestPending: z.object({ id: eventId, occurredAt: z.string() }).nullable(),
+  /** How long the oldest pending event has waited, in ms. `null` when nothing waits, or it is unknown. */
+  lagMs: z.number().int().nonnegative().nullable(),
+  /** Types the consumer imports that the producer does not export. Reported, not paused. */
+  unexported: z.array(wantedEvent),
+  /** The latest sweep pass that moved this edge. */
+  lastDelivered: z.object({ at: instant }).nullable(),
+  /** The latest sweep pass on this edge that did NOT deliver, if it is newer than the last one that did. */
+  lastProblem: z
+    .object({ at: instant, outcome: z.enum(['failed', 'skipped']), error: z.string().nullable() })
+    .nullable(),
+});
+export type EdgeHealth = z.infer<typeof edgeHealth>;
+
+/**
+ * Every edge in one tenant (#1705 PR 3), read live. `history` is the sweep-run read that
+ * supplies `lastDelivered` / `lastProblem`. If it fails, the live states still stand, and the
+ * view says the history is missing rather than showing edges with no past.
+ */
+export const edgeHealthReport = z.object({
+  tenantId,
+  checkedAt: instant,
+  edges: z.array(edgeHealth),
+  /** Set when the tenant's importing apps could not be listed at all: no edge can be shown. */
+  unavailable: z.string().nullable(),
+  history: z.object({ available: z.boolean(), reason: z.string().nullable() }),
+});
+export type EdgeHealthReport = z.infer<typeof edgeHealthReport>;
+
+// -- what the console and the dashboard say about an edge (#1705 PR 3) ------------------------
+// One copy, because a tenant and an operator looking at the same edge must be told the same
+// thing: the same label, the same tone, the same lag, and the same request behind the lever.
+
+/**
+ * How each state reads on a badge. `unavailable` is a side nobody could ask. It says nothing
+ * about whether events move, so it is never `success`, and only a caught-up edge is green.
+ */
+export const EDGE_STATE: Record<EdgeHealthState, { tone: 'success' | 'warning' | 'danger'; label: string }> = {
+  'caught-up': { tone: 'success', label: 'Caught up' },
+  behind: { tone: 'warning', label: 'Behind' },
+  paused: { tone: 'danger', label: 'Paused' },
+  unresolved: { tone: 'warning', label: 'Unresolved' },
+  unavailable: { tone: 'danger', label: 'Unavailable' },
+};
+
+/**
+ * The badge one edge wears, which is its state's unless the consumer imports types its producer
+ * does not export (`edge.unexported`). Those never arrive, so a caught-up edge carrying them is
+ * not green: it is caught up on what is exported, and waiting forever on the rest.
+ */
+export function edgeBadge(edge: Pick<EdgeHealth, 'state' | 'unexported'>): { tone: 'success' | 'warning' | 'danger'; label: string } {
+  const base = EDGE_STATE[edge.state];
+  if (edge.unexported.length === 0 || base.tone !== 'success') return base;
+  return { tone: 'warning', label: `${base.label} · ${edge.unexported.length} type(s) never arrive` };
+}
+
+/** The sentence naming what an edge's producer does not export, or null when it exports all of it. */
+export function unexportedNote(edge: Pick<EdgeHealth, 'unexported' | 'producer'>): string | null {
+  if (edge.unexported.length === 0) return null;
+  const types = edge.unexported.map((w) => `${w.type} v${w.schemaVersion}`).join(', ');
+  return `'${edge.producer.vertical}' does not export ${types} — this app imports it, and it never arrives until the producer exports it`;
+}
+
+/** How long the oldest waiting event has waited, in a person's words. */
+export function lagText(ms: number | null): string | null {
+  if (ms === null) return null;
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h} h`;
+  return `${Math.floor(h / 24)} days`;
+}
+
+/**
+ * Whether a view of `scopeId` offers the lever on an edge: only on an edge INTO it (the watermark
+ * is the consumer's), and only where both ends resolved and could be asked.
+ */
+export function leverOffered(edge: EdgeHealth, scopeId: string): boolean {
+  return (
+    edge.consumer.scopeId === scopeId &&
+    edge.producer.scopeId !== null &&
+    edge.state !== 'unresolved' &&
+    edge.state !== 'unavailable'
+  );
+}
+
+export type LeverMode = ImportCursorMove['mode'];
+
+/** What a lever does, in the words the platform refuses a missing acknowledgement in. */
+export const LEVER_EFFECT: Record<LeverMode, string> = { replay: REPLAY_EFFECT, skip: SKIP_EFFECT };
+
+/** The request a dialog sends once the person has agreed: the whole history, or up to now. */
+export function leverRequest(mode: LeverMode, from: string, reason: string): ImportCursorMove {
+  return mode === 'replay'
+    ? { mode: 'replay', from, after: null, acknowledge: 'rerun-handlers', reason: reason.trim() }
+    : { mode: 'skip', from, through: 'now', acknowledge: 'skip-events', reason: reason.trim() };
+}

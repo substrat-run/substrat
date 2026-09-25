@@ -123,6 +123,32 @@ jobs:
       # if no vertical declares entities, so the checkpoint can never pass by
       # scanning nothing.
       - run: pnpm lint:model --check
+      # D-22 for exported events (#1705 PR 3): each exported type's payload schema in model.json,
+      # compared with the base branch's. At an unchanged schemaVersion a removed, retyped, newly
+      # required or no-longer-required field is red: another vertical's deployed code parses it.
+      # The schema is there because lint:permissions refuses a vertical whose manifest exports a
+      # type its model.json does not carry, and lint:model --check holds model.json to the code.
+      # No vertical exports yet, so this passes over nothing until the first one does. The
+      # tool's own tests run first, so a rule that stopped refusing is red too.
+      #
+      # The base must be IN the checkout (fetch-depth 0 above fetches it, and the fetch below
+      # makes that explicit rather than incidental). A base the tool cannot read is exit 2, never
+      # "every model.json is new", which would pass any break silently. On a push to main the
+      # base is the first parent: the main this change landed on.
+      - name: exported payload schemas vs the base branch
+        env:
+          # Through the environment, not interpolated into the script (the scope step's reason).
+          BASE_REF: ${{ github.base_ref }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          pnpm test:export-schemas
+          if [ "$EVENT" = "pull_request" ]; then
+            git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+            base="origin/$BASE_REF"
+          else
+            base="HEAD^1"
+          fi
+          pnpm lint:export-schemas --base "$base"
       # The conformance receipt (#866, kernel-design §11.2): re-emit each package's
       # CONFORMANCE.md from its declared `substrat.conformance` module and fail on
       # drift. Also the only gate on §1's kernel citations — it verifies each named

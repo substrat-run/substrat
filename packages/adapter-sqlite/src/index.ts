@@ -21,6 +21,11 @@ import {
   domainEventInput,
   exportReadInput,
   importBatch,
+  importCursorMove,
+  type ImportCursorMoved,
+  exportsOfManifestJson,
+  importsOfManifestJson,
+  type ExportBreak,
   type ExportedBatch,
   type ExportReadInput,
   type ImportBatch,
@@ -384,6 +389,10 @@ import {
   exportedSinceQuery,
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
+  moveImportCursor,
+  importCursorSourceOf,
+  exportBreaksOf,
+  exportBreakRefusal,
   CrossVerticalRegistry,
   exportReadPlan,
   exportReadQuery,
@@ -3622,6 +3631,42 @@ export class SqliteScopeHost implements ScopeHost {
       await this.dispatch(rt, null);
       await this.dispatchExecutors(rt, null);
       return result;
+    });
+  }
+
+  /**
+   * A stored version's manifest, unaudited: the platform reading its own code metadata (#1705).
+   * `undefined` when the registry has no such version (under `slug`, when one is named).
+   */
+  private manifestJsonOf(versionId: string, slug?: string): string | null | undefined {
+    const row = (
+      slug === undefined
+        ? this.directory.prepare('SELECT manifest_json FROM vertical_versions WHERE id = ?').get(versionId)
+        : this.directory
+            .prepare('SELECT manifest_json FROM vertical_versions WHERE id = ? AND vertical_slug = ?')
+            .get(versionId, slug)
+    ) as { manifest_json: string | null } | undefined;
+    return row ? row.manifest_json : undefined;
+  }
+
+  /** #1705 PR 3: the promote gate's question, over two stored versions (`exportBreaksOf`). */
+  private exportBreaksBetween(
+    actor: PlatformActorId,
+    producer: string,
+    outgoingId: string,
+    incomingId: string,
+  ): Promise<ExportBreak[]> {
+    return exportBreaksOf({
+      admin: this.admin,
+      actor,
+      producer,
+      outgoing: exportsOfManifestJson(this.manifestJsonOf(outgoingId)),
+      incoming: exportsOfManifestJson(this.manifestJsonOf(incomingId)),
+      readImports: async (slug, versionId) => {
+        const manifest = this.manifestJsonOf(versionId, slug);
+        if (manifest === undefined) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
+        return importsOfManifestJson(manifest);
+      },
     });
   }
 
@@ -6938,6 +6983,18 @@ export class SqliteScopeHost implements ScopeHost {
           note,
         });
       },
+      promotionImpact: async (actor, verticalSlug: string, channel, versionId: string): Promise<ExportBreak[]> => {
+        const incoming = readVersion(versionId);
+        if (!incoming || incoming.verticalSlug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        const current = this.directory
+          .prepare('SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = ?')
+          .get(verticalSlug, channel) as { version_id: string } | undefined;
+        const breaks = current ? await this.exportBreaksBetween(actor, verticalSlug, current.version_id, versionId) : [];
+        this.recordAccess(actor, 'promotionImpact', { tenantId: null }, { verticalSlug, channel, versionId }, breaks.length);
+        return breaks;
+      },
       promoteVersion: async (
         actor,
         verticalSlug: string,
@@ -6976,6 +7033,11 @@ export class SqliteScopeHost implements ScopeHost {
               `promotion changes migrations (${outgoing.migrationDigest} → ` +
                 `${incoming.migrationDigest}) — acknowledge it explicitly to promote`,
             );
+          }
+          // #1705 PR 3: an export an installed consumer imports, dropped or re-versioned.
+          if (!ack.exportBreak) {
+            const breaks = await this.exportBreaksBetween(actor, verticalSlug, outgoing.id, incoming.id);
+            if (breaks.length > 0) throw substratError('precondition_failed', exportBreakRefusal(breaks));
           }
         }
 
@@ -7337,6 +7399,55 @@ export class SqliteScopeHost implements ScopeHost {
         const cursors = this.importCursors(this.scopeReadDbFor(tenantId, scopeId));
         this.recordAccess(actor, 'importState', { tenantId, scopeId }, null, cursors.length);
         return { consumes, cursors } as ImportState;
+      },
+      moveImportCursor: async (actor, tenantId, scopeId, raw): Promise<ImportCursorMoved> => {
+        // #1705 PR 3: the replay lever. Parsed at the door: the acknowledgement literal is part
+        // of the input, and a move without it never reaches the store.
+        const move = importCursorMove.parse(raw);
+        this.assertScopeReachable(tenantId, scopeId);
+        const rec = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as {
+          vertical: string | null;
+        };
+        const source = await importCursorSourceOf(
+          (t, v) => this.admin.resolveVerticalInstance(t, v),
+          { tenantId, scopeId, vertical: rec.vertical },
+          move.from,
+        );
+        const replayId = ulid();
+        const target = { tenantId, scopeId };
+        const base = { replayId, mode: move.mode, from: move.from, source: source.scopeId };
+        this.recordAdmin(actor, 'moveImportCursor', target, null, { ...base, phase: 'intent', reason: move.reason });
+        let moved: ImportCursorMoved;
+        try {
+          const rt = this.runtime(tenantId, scopeId);
+          const now = Date.parse(this.clock());
+          // One turn on the scope actor, which is where `deliverToPeer` runs: a delivery on this
+          // edge is either wholly before the move or refused by its compare-and-set after it.
+          moved = await rt.actor.turn(() =>
+            rt.db.transaction(() =>
+              moveImportCursor(switchSqlOf(rt.db), { move, source, replayId, now, imports: this.crossVertical.consumes() }),
+            )(),
+          );
+        } catch (err) {
+          try {
+            this.recordAdmin(actor, 'moveImportCursor', target, null, {
+              ...base,
+              phase: 'failed',
+              error: err instanceof Error ? err.message : String(err),
+            });
+          } catch {
+            // Best effort: the original error is what the caller must see.
+          }
+          throw err;
+        }
+        this.recordAdmin(actor, 'moveImportCursor', target, null, {
+          ...base,
+          phase: 'applied',
+          previous: moved.previous,
+          cursor: moved.cursor,
+          archived: moved.archived,
+        });
+        return moved;
       },
       redrainEvents: async (actor, tenantId, scopeId, input) => {
         // Directory check first, on mark's reasoning: "nothing to reopen" and "you may not

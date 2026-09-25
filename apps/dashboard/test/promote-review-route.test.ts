@@ -171,7 +171,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
 
     it('a first promotion has nothing serving, and nothing to diff', async () => {
       const body = (await (await get(subs.owner, reviewPath(v.v1))).json()) as PromoteReviewWire;
-      expect(body).toEqual({ serving: null, incoming: { versionId: v.v1 }, servingRegistry: null, incomingRegistry: null });
+      expect(body).toEqual({ serving: null, incoming: { versionId: v.v1 }, servingRegistry: null, incomingRegistry: null, exportBreaks: null });
     });
 
     it('a version pushed before registries were kept reads as null — the answer, not a failure', async () => {

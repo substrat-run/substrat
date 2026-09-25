@@ -59,6 +59,7 @@ import {
   type ConnectorDelegation,
   type EventDrainDelegation,
   type PeerSwitchDelegation,
+  type ImportCursorDelegation,
   type SystemSwitchDelegation,
 } from '@substrat-run/adapter-cloudflare';
 import {
@@ -931,6 +932,30 @@ function peerSwitchDelegationFor(env: Env): PeerSwitchDelegation | undefined {
 }
 
 /**
+ * The replay lever's reach (#1705 PR 3): a hosted consumer's watermark lives in its vertical's
+ * dispatch deployment, so the move is made there, over `/internal/import-cursor` and the same
+ * ladder the switches use. Undefined without DISPATCH/PLATFORM_SECRET, and then the host refuses
+ * a scope served elsewhere outright, never a replay reported while the watermark stood still.
+ */
+function importCursorDelegationFor(env: Env): ImportCursorDelegation | undefined {
+  if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
+  return {
+    move: async (a) => {
+      const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+      const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId);
+      const client = rec?.vertical ? await resolveVerticalForScopeFor(env)(rec) : undefined;
+      if (!client) {
+        throw new Error(
+          `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — ` +
+            `the watermark was not moved`,
+        );
+      }
+      return client.importCursorMove({ tenantId: a.tenantId, scopeId: a.scopeId, at: a.at });
+    },
+  };
+}
+
+/**
  * The Tier-2 drain's platform half (#1334): the sweep's `readUndrainedEvents` and
  * `markEventsDrained` land on the host below, whose own `SCOPE` namespace is the
  * module-less placeholder — a hosted scope's outbox lives in its vertical's dispatch
@@ -1058,6 +1083,8 @@ function hostFor(env: Env): CloudflareScopeHost {
     // The peer kill switch (#1706): the same seam once more, for the grants that decide
     // what another of the tenant's apps may do in this scope.
     peerSwitchDelegation: peerSwitchDelegationFor(env),
+    // The replay lever (#1705 PR 3): a hosted consumer's watermark moves where it lives.
+    importCursorDelegation: importCursorDelegationFor(env),
     // #1691: one data point per connector call, beside the health line. Absent binding ⇒
     // the host's no-op default.
     ...(env.CONNECTOR_ANALYTICS
@@ -1988,12 +2015,17 @@ export default {
       });
     }
 
-    // The audited control-plane API under /api (the console's baseUrl).
+    // The audited control-plane API under /api (the console's baseUrl). One host for the API and
+    // the reach its edge-health read uses (#1705 PR 3), not one each.
+    const apiHost = hostFor(env);
     app.route(
       '/api',
       createControlPlaneApi({
-        host: hostFor(env),
+        host: apiHost,
         authenticate: authFor(env),
+        // #1705 PR 3: edge health reaches both ends the way the sweep does. Absent, a hosted
+        // edge reads `unavailable`.
+        crossVertical: crossVerticalFor(env, apiHost),
         // #1054: the platform's margin over list for model usage it provides. Whole percent.
         ...(env.MODEL_MARGIN_PERCENT ? { modelMarginPercent: Number(env.MODEL_MARGIN_PERCENT) } : {}),
         // #971: the CLI freshness nudge. Deployment vars, passed through only when set so

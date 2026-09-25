@@ -31,6 +31,10 @@ import type {
   StorageMeterReading,
   PeerGrantsStatusEntry,
   PeerSwitchResult,
+  ExportBreak,
+  EdgeHealthReport,
+  ImportCursorMove,
+  ImportCursorMoved,
   SystemGrantsStatusEntry,
   SystemSwitchResult,
   Tenant,
@@ -440,6 +444,18 @@ export function createApi(actor: string | null, baseUrl = '/api') {
         body: JSON.stringify({ vertical, reason }),
       }),
 
+    // #1705 PR 3: where each cross-vertical edge of a tenant stands, read live through the
+    // sweep's own reach, and the replay lever on a consumer scope. The lever's body carries its
+    // acknowledgement literal. Without it the plane refuses in the words it stands for.
+    // `focus` narrows the read to one scope's edges, into it and out of it.
+    crossVerticalEdges: (t: TenantId, focus?: ScopeId) =>
+      call<EdgeHealthReport>(`/tenants/${t}/cross-vertical/edges${focus ? `?scopeId=${encodeURIComponent(focus)}` : ''}`),
+    moveImportCursor: (t: TenantId, s: ScopeId, move: ImportCursorMove) =>
+      call<ImportCursorMoved>(`/tenants/${t}/scopes/${s}/import-cursor`, {
+        method: 'POST',
+        body: JSON.stringify(move),
+      }),
+
     provisionScope: (input: {
       tenantId: TenantId;
       scopeId: ScopeId;
@@ -657,6 +673,12 @@ export function createApi(actor: string | null, baseUrl = '/api') {
         versionId,
         acknowledge,
       }),
+    // #1705 PR 3: which installed apps promoting `versionId` would break, read before promoting
+    // so the dialog can ask for the export-break acknowledgement up front. Staff see every app.
+    promotionImpact: (slug: string, channel: ChannelName, versionId: string) =>
+      call<{ affected: ExportBreak[]; otherTenants?: number }>(
+        `/verticals/${encodeURIComponent(slug)}/channels/${channel}/promote-impact?versionId=${encodeURIComponent(versionId)}`,
+      ),
     // Pin a scope to a version — what the router dispatches on (orchestration.md §5.4).
     // Refuses a non-admitted version below the seam.
     bindScopeVersion: (tenantId: TenantId, scopeId: ScopeId, versionId: string) =>

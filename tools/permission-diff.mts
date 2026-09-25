@@ -555,6 +555,36 @@ for (const { rel, dir, entry, pkg } of verticals) {
     ENTITY_GRANTS: surface.entityGrants ?? [],
   };
 
+  // D-22 for exported events (#1705 PR 3): an export's payload is a contract with another
+  // vertical's deployed code, and `lint:export-schemas` can only compare the payload schemas
+  // `model.json` carries. So every exported (type, schemaVersion) must be IN it. Without this, a
+  // vertical that exports and never emits the schema would pass the classifier by carrying
+  // nothing to classify. Refused in emit mode too: rendering over it would not fix it. The
+  // artifact is read as checked in, and `lint:model --check` holds it to the declaration.
+  const exported = src.MODULES.flatMap((m) => m.manifest.events?.exports ?? []);
+  if (exported.length > 0) {
+    const modelPath = join(dir, 'model.json');
+    let modelExports: Record<string, { schemaVersion?: number }> = {};
+    if (existsSync(modelPath)) {
+      try {
+        modelExports = (JSON.parse(readFileSync(modelPath, 'utf8')) as { exports?: typeof modelExports }).exports ?? {};
+      } catch (e) {
+        cannot(`${rel}/model.json is not valid JSON: ${(e as Error).message}`);
+      }
+    }
+    const missing = exported.filter((e) => modelExports[e.type]?.schemaVersion !== e.schemaVersion);
+    if (missing.length > 0) {
+      cannot(
+        `${rel} exports event type(s) whose payload schema its model.json does not carry:\n` +
+          missing.map((e) => `  ${e.type} v${e.schemaVersion}`).join('\n') +
+          `\n  Another vertical parses these payloads, and the breaking-change rule (lint:export-schemas)\n` +
+          `  can only judge a schema the model carries. Remedy: pass the exports to the model,\n` +
+          `  \`emitModel(entities, { exports: exportedEventSchemasOf(ops, eventsExportedBy(ops, {...})) })\`,\n` +
+          `  then run \`pnpm lint:model\`.`,
+      );
+    }
+  }
+
   // The human snapshot (PERMISSIONS.md) is the one checked-in artifact — the review surface for
   // the permission checkpoint. The machine-readable registry is no longer committed (D-41):
   // `substrat push` derives it from the same `permissions` entry via `buildPermissionRegistry`,

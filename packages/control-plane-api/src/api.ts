@@ -78,6 +78,8 @@ import {
   PROBLEM_CONTENT_TYPE,
   toProblem,
   redrainEventsInput,
+  importCursorMove,
+  importCursorAcknowledgementMissing,
   REDRAIN_BATCH,
 } from '@substrat-run/contracts';
 import type {
@@ -98,9 +100,9 @@ import type {
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
-import type { OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
+import type { CrossVerticalOptions, OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
-import { migrationProgress, ulid } from '@substrat-run/kernel';
+import { crossVerticalHealth, isExportBreakRefusal, migrationProgress, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
@@ -218,6 +220,14 @@ export interface ControlPlaneApiOptions {
    */
   modelMarginPercent?: number;
   host: ScopeHost;
+  /**
+   * How edge health reaches the two ends of a cross-vertical edge (#1705 PR 3): the phase's own
+   * reach (`hostedCrossVerticalReach` on the control plane). Absent, the host's own verbs, which
+   * is right where one host serves every scope. On a host that serves its apps elsewhere (the
+   * shared control plane without DISPATCH), the whole read answers `unavailable` instead of
+   * reporting no edges.
+   */
+  crossVertical?: CrossVerticalOptions | undefined;
   /**
    * How to reach each vertical, by slug (K-31). Absent slugs simply cannot be
    * provisioned — the route 501s rather than pretending, because a control plane that
@@ -486,6 +496,22 @@ type Vars = { actor: PlatformActorId; principal: Principal };
 function outsideTenant(p: Principal, tenantId: TenantId): boolean {
   const pin = confinedTenant(p);
   return pin !== null && pin !== tenantId;
+}
+
+/**
+ * A fleet-wide report, narrowed to what a caller may see: a confined caller gets its own
+ * tenant's rows and a COUNT of the other tenants, never their ids (K-3's forced filter, held on
+ * reports that have to be computed fleet-wide). Staff (`pin === null`) get every row.
+ */
+function narrowToCaller<T extends { tenantId: string }>(
+  rows: readonly T[],
+  pin: string | null,
+): { visible: T[]; otherTenants: number } {
+  if (pin === null) return { visible: [...rows], otherTenants: 0 };
+  return {
+    visible: rows.filter((r) => r.tenantId === pin),
+    otherTenants: new Set(rows.filter((r) => r.tenantId !== pin).map((r) => r.tenantId)).size,
+  };
 }
 
 // -- request schemas ---------------------------------------------------------
@@ -982,6 +1008,7 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/verticals\/[^/]+\/channels$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/, pin: 'owner' },
   { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote-impact$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/previews$/, pin: 'owner' },
   { method: 'POST', re: /\/verticals\/[^/]+\/previews$/, pin: 'owner' },
   { method: 'DELETE', re: /\/verticals\/[^/]+\/previews\/[^/]+$/, pin: 'owner' },
@@ -4903,6 +4930,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
+  // #1705 PR 3: which installed apps promoting `?versionId=` would break (an export they import,
+  // dropped or re-versioned), BEFORE promoting, so a dialog can show it and ask for the
+  // acknowledgement up front, as it does for the digests. The promote's own 409 carries the same
+  // listing. Narrowed to the caller exactly as that 409 is. Owner-checked like the promote.
+  app.get('/verticals/:slug/channels/:channel/promote-impact', async (c) => {
+    const p = c.get('principal');
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
+    const channel = channelName.parse(c.req.param('channel'));
+    const versionId = z.string().min(1).parse(c.req.query('versionId'));
+    const pin = confinedTenant(p);
+    if (pin) {
+      const v = await verticalOf(p.actor, slug);
+      if (!v || v.ownerTenant !== pin) return c.json({ error: 'forbidden' }, 403);
+    }
+    const breaks = await admin.promotionImpact(c.get('actor'), slug, channel, versionId);
+    const { visible, otherTenants } = narrowToCaller(breaks, pin);
+    return c.json({ affected: visible, ...(otherTenants ? { otherTenants } : {}) });
+  });
+
   app.post('/verticals/:slug/channels/:channel/promote', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
@@ -4942,10 +4988,37 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
     }
     const { versionId, acknowledge } = promoteVersionBody.parse(await c.req.json());
+    // #1705 PR 3: the installed consumers a promotion breaks (an export they import, dropped or
+    // re-versioned). The host refuses it without `exportBreak` whoever calls, in counts only,
+    // because it does not know who is asking. This door knows, so it adds the listing, narrowed
+    // the way the store backfill below is: a confined caller sees its own tenant's apps and the
+    // rest as a count, never another tenant's id. Read only when there is something to say: on
+    // the refusal, and before an acknowledged promotion moves the channel it is measured from.
+    const breaksOf = async () => {
+      const breaks = await admin.promotionImpact(c.get('actor'), slug, channel, versionId);
+      if (breaks.length === 0) return null;
+      const { visible, otherTenants } = narrowToCaller(breaks, confinedTenant(p));
+      return { affected: visible, ...(otherTenants ? { otherTenants } : {}) };
+    };
+    const exportBreaks = acknowledge?.exportBreak ? await breaksOf() : null;
     // The blast-radius moment: refuses a changed digest without the acknowledgement,
     // and refuses a non-admitted version. Both are enforced below the seam and
     // surface as a 4xx through mapError, not a 500.
-    await admin.promoteVersion(c.get('actor'), slug, channel, versionId, acknowledge);
+    try {
+      await admin.promoteVersion(c.get('actor'), slug, channel, versionId, acknowledge);
+    } catch (err) {
+      if (!isExportBreakRefusal(err)) throw err;
+      // The refusal stands whether or not the listing can be read. A listing that fails turns
+      // into a note, never into a 500 that would hide that the promote was refused.
+      const listing = await breaksOf().then(
+        (exportBreaks) => ({ exportBreaks }),
+        (e: unknown) => ({
+          exportBreaks: null,
+          exportBreaksUnavailable: `which apps it breaks could not be read: ${e instanceof Error ? e.message : String(e)}`,
+        }),
+      );
+      return c.json({ error: err.message, ...listing }, 409);
+    }
     // The in-place serve (#286), prod only, AFTER every promote gate has passed —
     // uploading first would deploy to live scopes before the acknowledgement check.
     // A failed serve is NOT a failed promote: the channel moved (audited), old code
@@ -4989,14 +5062,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // report must not be the one place that hands them the tenant ids of everyone who
     // installed their vertical. The rest is a count, which tells them the fleet was covered
     // without naming who is in it.
-    const p2 = c.get('principal');
-    const reportPin = confinedTenant(p2);
-    const visible = reportPin ? backfill.minted.filter((m) => m.tenantId === reportPin) : backfill.minted;
-    const otherTenants = new Set(
-      backfill.minted.filter((m) => !visible.includes(m)).map((m) => m.tenantId),
-    ).size;
+    const { visible, otherTenants } = narrowToCaller(backfill.minted, confinedTenant(c.get('principal')));
     return c.json({
       ...promoted,
+      // What the acknowledged break reached, so a promoter who passed `exportBreak` reads it.
+      ...(exportBreaks ? { exportBreaks } : {}),
       ...(backfill.minted.length || backfill.error
         ? {
             storeBackfill: {
@@ -6764,6 +6834,52 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       filter as Parameters<typeof admin.listSweepRuns>[1],
     );
     return c.json(pageOf(entries, filter.limit, (e) => e.id));
+  });
+
+  // -- the replay lever (#1705 PR 3): move a consumer's watermark on one edge ----
+  // Staff (the console) and a tenant credential (the dashboard, for someone who may manage the
+  // tenant's apps) may pull it: the edge is between two of the tenant's own apps, and what a
+  // replay runs lands in the tenant's own scope. The peer switch's posture, for that reason.
+  // Builders may not: this route is absent from BUILDER_ROUTES, which is default-deny.
+  //
+  // The acknowledgement is refused HERE with the sentence it stands for, rather than left to a
+  // Zod message about a literal. The person pulling the lever has to be told, in words, that a
+  // replay runs handlers again and repeats what they send or call outside the app.
+  app.post('/tenants/:tenantId/scopes/:scopeId/import-cursor', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const raw: unknown = await c.req.json().catch(() => ({}));
+    const refused = importCursorAcknowledgementMissing(raw);
+    if (refused) return c.json({ error: refused }, 400);
+    const move = importCursorMove.parse(raw);
+    const actor = c.get('actor');
+    // K-3 first, so a scope of another tenant reads as absent before anything is reached.
+    if (!(await admin.getScopeRecord(actor, tenantId, scopeId))) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    return c.json(await admin.moveImportCursor(actor, tenantId, scopeId, move));
+  });
+
+  // -- edge health (#1705 PR 3): where each cross-vertical edge of one tenant stands -
+  // Read live, through the phase's own reach, so it cannot disagree with the next pass about
+  // which edges exist. Staff and the tenant's own credential, tenant-pinned (the dashboard shows
+  // a tenant its own apps' edges). Builders may not: absent from BUILDER_ROUTES. `?scopeId=`
+  // narrows it to one scope's edges, so a per-app view asks nothing about the rest.
+  app.get('/tenants/:tenantId/cross-vertical/edges', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const focus = c.req.query('scopeId');
+    return c.json(
+      await crossVerticalHealth(host, {
+        actor: c.get('actor'),
+        tenantId,
+        ...(focus ? { focus: scopeIdSchema.parse(focus) } : {}),
+        ...(options.crossVertical ? { crossVertical: options.crossVertical } : {}),
+      }),
+    );
   });
 
   // -- issues (#1233): failures grouped by fingerprint, with a lifecycle --------

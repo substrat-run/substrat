@@ -1,4 +1,4 @@
-import { drainedEvent, instant } from '@substrat-run/contracts';
+import { drainedEvent, errorCodeOf, instant, substratError } from '@substrat-run/contracts';
 import type {
   AccessLogEntry,
   ConnectionId,
@@ -11,6 +11,10 @@ import type {
   DrainedEvent,
 } from '@substrat-run/contracts';
 import type {
+  ExportBreak,
+  ManifestExports,
+  EdgeHealth,
+  EdgeHealthReport,
   ExportReadInput,
   ExportedBatch,
   ImportBatch,
@@ -1585,13 +1589,7 @@ async function sweepCrossVertical(
       );
       return;
     }
-    const bySource = new Map<string, WantedEvent[]>();
-    for (const c of state.consumes) {
-      if (from !== null && c.from !== from) continue;
-      const list = bySource.get(c.from) ?? [];
-      list.push({ type: c.type, schemaVersion: c.schemaVersion });
-      bySource.set(c.from, list);
-    }
+    const bySource = wantsBySource(state.consumes, (f) => from === null || f === from);
     // Sequential per consumer: its edges share the consumer's serialization queue anyway,
     // and one consumer with many sources must not hold more than one slot of the pass.
     for (const [from, wants] of [...bySource.entries()].sort(([a], [b]) => a.localeCompare(b))) {
@@ -1642,6 +1640,44 @@ export async function runCrossVerticalFrom(
  * reported once per pass through `hint.doubt`, and a failure on one version never stops the
  * others.
  */
+/**
+ * What each scope's RUNNING version imports, from the registry (#1705): one `listVerticals` when
+ * a scope is on a serving script, then one `readImports` per distinct running version, at most
+ * `concurrency` in flight. A failure on one version never stops the others: a read that throws is
+ * reported as `threw` beside the fact, since a caller may treat "the registry could not be asked"
+ * differently from "the manifest does not parse". A scope bound to no version gets no fact. The narrowing and the promote gate
+ * both ask it, so the two cannot come to disagree about which code a scope runs.
+ */
+async function runningImportsOf(
+  admin: Pick<HostAdmin, 'listVerticals'>,
+  actor: PlatformActorId,
+  scopes: readonly Scope[],
+  readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>,
+  concurrency: number,
+): Promise<{ scope: Scope; key: string; versionId: string | null; fact: ManifestImports | undefined; threw?: string }[]> {
+  const serving = await servingPointersFor(admin, actor, scopes);
+  const versions = new Map<string, { slug: string; versionId: string }>();
+  const keyed: { scope: Scope; key: string; versionId: string | null }[] = [];
+  for (const s of scopes) {
+    if (!s.vertical) continue;
+    const versionId = runningVersionOf(s, serving.get(s.vertical));
+    const key = `${s.vertical}@${versionId ?? '(no version)'}`;
+    if (versionId && !versions.has(key)) versions.set(key, { slug: s.vertical, versionId });
+    keyed.push({ scope: s, key, versionId });
+  }
+  const facts = new Map<string, ManifestImports>();
+  const threw = new Map<string, string>();
+  await mapBounded([...versions], concurrency, async ([key, v]) => {
+    try {
+      facts.set(key, await readImports(v.slug, v.versionId));
+    } catch (err) {
+      facts.set(key, { kind: 'unreadable', reason: message(err) });
+      threw.set(key, message(err));
+    }
+  });
+  return keyed.map((k) => ({ ...k, fact: facts.get(k.key), ...(threw.has(k.key) ? { threw: threw.get(k.key)! } : {}) }));
+}
+
 export function registryImportCandidates(input: {
   admin: Pick<HostAdmin, 'listVerticals'>;
   actor: PlatformActorId;
@@ -1650,29 +1686,12 @@ export function registryImportCandidates(input: {
   concurrency?: number;
 }): NonNullable<CrossVerticalReach['candidates']> {
   return async (scopes, hint) => {
-    const serving = await servingPointersFor(input.admin, input.actor, scopes);
-    const keyed: { scope: Scope; key: string }[] = [];
-    const versions = new Map<string, { slug: string; versionId: string }>();
-    for (const s of scopes) {
-      if (!s.vertical) continue;
-      const running = runningVersionOf(s, serving.get(s.vertical));
-      const key = `${s.vertical}@${running ?? '(no version)'}`;
-      if (running && !versions.has(key)) versions.set(key, { slug: s.vertical, versionId: running });
-      keyed.push({ scope: s, key });
-    }
-    const facts = new Map<string, ManifestImports>();
-    await mapBounded([...versions], input.concurrency ?? 8, async ([key, v]) => {
-      try {
-        facts.set(key, await input.readImports(v.slug, v.versionId));
-      } catch (err) {
-        facts.set(key, { kind: 'unreadable', reason: message(err) });
-      }
-    });
+    const running = await runningImportsOf(input.admin, input.actor, scopes, input.readImports, input.concurrency ?? 8);
     const doubted = new Map<string, { reason: string; scopeIds: ScopeId[] }>();
     const known: ScopeId[] = [];
     const out: Scope[] = [];
-    for (const { scope, key } of keyed) {
-      const fact: ManifestImports = facts.get(key) ?? {
+    for (const { scope, key, fact: read } of running) {
+      const fact: ManifestImports = read ?? {
         kind: 'unreadable',
         reason: 'the scope names no version the registry could be asked about',
       };
@@ -1694,6 +1713,168 @@ export function registryImportCandidates(input: {
     if (known.length > 0) hint?.known?.(known);
     return out;
   };
+}
+
+/**
+ * Who a promote breaks (#1705 PR 3): the installed consumers whose RUNNING code imports an
+ * exported (type, schemaVersion) that the outgoing version promised and the incoming one drops
+ * or exports at another version. The promote gate refuses on a non-empty answer unless it is
+ * acknowledged (`exportBreak`), and the refusal lists them.
+ *
+ * - **What changed** is outgoing versus incoming, from the two versions' registries. An outgoing
+ *   version whose registry states no exports (a first promote, or a push by a CLI older than
+ *   0.34.0) promised nothing the registry can name, so nothing is judged broken. Nothing it
+ *   exported at run time could be listed either, which is what the permission-digest gate
+ *   beside this one is for.
+ * - **Who is a consumer** is the edge's own rule: a primary, active scope of ANOTHER vertical, in
+ *   a tenant where the producer is installed (any primary, active install, so two installs still
+ *   count), whose running version (`runningVersionOf`) declares the import. That over-approximates
+ *   on purpose, for a listed vertical's tenants still pinned to an older producer version: a
+ *   refusal that names one tenant too many costs an acknowledgement, and one that names too few
+ *   costs a silent stall.
+ * - **A consumer version whose manifest does not parse** is not judged. It cannot be said to
+ *   break, and refusing every promote over a manifest nobody can parse would make the gate one
+ *   nobody can pass. A read that THREW is different: the registry could not be asked, so whom the
+ *   promote breaks is unknown, and this throws. The gate then refuses rather than failing open.
+ *   A failed directory read throws the same way.
+ *
+ * Cost: nothing at all unless an export changed. Then one fleet `listScopes`, one
+ * `listVerticals` when a scope is on a serving script, and one `readImports` per distinct
+ * running consumer version, at most `concurrency` in flight.
+ */
+export async function exportBreaksOf(input: {
+  admin: Pick<HostAdmin, 'listScopes' | 'listVerticals'>;
+  actor: PlatformActorId;
+  producer: string;
+  outgoing: ManifestExports;
+  incoming: ManifestExports;
+  readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>;
+  concurrency?: number;
+}): Promise<ExportBreak[]> {
+  // An outgoing manifest that does not parse promised SOMETHING nobody can read. Judging it as
+  // "promised nothing" would pass every break unacknowledged, so it refuses, as a thrown read does.
+  if (input.outgoing.kind === 'unreadable') {
+    throw substratError(
+      'unavailable',
+      `cannot say whom this promotion breaks: the outgoing version's exports could not be read (${input.outgoing.reason})`,
+    );
+  }
+  if (input.outgoing.kind !== 'exports') return [];
+  const incoming = new Map(input.incoming.kind === 'exports' ? input.incoming.rows.map((r) => [r.type, r.schemaVersion]) : []);
+  const changed = new Map<string, { schemaVersion: number; incoming: number | null }>();
+  for (const r of input.outgoing.rows) {
+    const now = incoming.get(r.type) ?? null;
+    if (now !== r.schemaVersion) changed.set(r.type, { schemaVersion: r.schemaVersion, incoming: now });
+  }
+  if (changed.size === 0) return [];
+
+  const scopes = (await input.admin.listScopes(input.actor, { status: 'active' })).filter(
+    (s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null,
+  );
+  const installedIn = new Set(scopes.filter((s) => s.vertical === input.producer).map((s) => s.tenantId as string));
+  const consumers = scopes.filter((s) => s.vertical !== input.producer && installedIn.has(s.tenantId));
+  if (consumers.length === 0) return [];
+  const out: ExportBreak[] = [];
+  for (const { scope, key, versionId, fact, threw } of await runningImportsOf(
+    input.admin,
+    input.actor,
+    consumers,
+    input.readImports,
+    input.concurrency ?? 8,
+  )) {
+    if (threw !== undefined) {
+      throw substratError(
+        'unavailable',
+        `cannot say whom this promotion breaks: the registry could not be asked what ${key} imports (${threw}) — retry`,
+      );
+    }
+    if (fact?.kind !== 'imports') continue;
+    for (const row of fact.rows) {
+      const hit = row.from === input.producer ? changed.get(row.type) : undefined;
+      if (!hit || hit.schemaVersion !== row.schemaVersion) continue;
+      out.push({
+        tenantId: scope.tenantId,
+        scopeId: scope.id,
+        vertical: scope.vertical as ExportBreak['vertical'],
+        version: versionId,
+        type: row.type,
+        schemaVersion: row.schemaVersion,
+        incoming: hit.incoming,
+      });
+    }
+  }
+  return out.sort(
+    (a, b) => a.tenantId.localeCompare(b.tenantId) || a.scopeId.localeCompare(b.scopeId) || a.type.localeCompare(b.type),
+  );
+}
+
+/** How `exportBreakRefusal` begins: what lets the promote route recognise it and add the listing. */
+export const EXPORT_BREAK_REFUSAL = 'promotion drops or re-versions';
+
+/** Whether a throw is the promote gate's export-break refusal (`exportBreakRefusal`). */
+export function isExportBreakRefusal(err: unknown): err is Error {
+  return errorCodeOf(err) === 'precondition_failed' && err instanceof Error && err.message.startsWith(EXPORT_BREAK_REFUSAL);
+}
+
+/**
+ * The refusal a promote gets for a non-empty `exportBreaksOf` (#1705 PR 3). Counts only: the
+ * adapters do not know who is promoting, and a builder must not learn from an error which other
+ * tenants import its events. The route that knows the caller lists what they may see.
+ */
+export function exportBreakRefusal(breaks: readonly ExportBreak[]): string {
+  const types = new Set(breaks.map((b) => b.type)).size;
+  const apps = new Set(breaks.map((b) => b.scopeId)).size;
+  const tenants = new Set(breaks.map((b) => b.tenantId)).size;
+  return (
+    `${EXPORT_BREAK_REFUSAL} ${types} exported event type(s) that ${apps} installed app(s) in ` +
+    `${tenants} tenant(s) import — their edges would stop delivering it. Acknowledge it explicitly ` +
+    `(exportBreak) to promote, or keep the export and bump its consumers first`
+  );
+}
+
+/**
+ * The two ends of the edge from `from` into `consumer`, by #1706's one rule
+ * (`resolveVerticalInstanceFrom`: same tenant, active, primary; two are `ambiguous`, refused rather
+ * than guessed). The producer is who is read. The consumer is who the producer's grant names, and a
+ * grant naming a slug cannot tell two installs of it apart. Shared by the sweep and the health read,
+ * so the view cannot disagree with the next pass about where an edge points, or why it points
+ * nowhere.
+ */
+function edgeEnds(
+  scopes: readonly Scope[],
+  consumer: Scope,
+  from: string,
+): { source: { vertical: string; scopeId: ScopeId } } | { reason: string } {
+  const vertical = consumer.vertical!;
+  if (from === vertical) return { reason: `'${vertical}' imports from itself — an import names ANOTHER vertical` };
+  const self = resolveVerticalInstanceFrom(scopes, consumer.tenantId, vertical);
+  if (self.outcome !== 'resolved' || self.instance.scopeId !== consumer.id) {
+    return {
+      reason: `this tenant has more than one primary instance of '${vertical}', so the producer cannot tell which one its grant names`,
+    };
+  }
+  const producer = resolveVerticalInstanceFrom(scopes, consumer.tenantId, from);
+  if (producer.outcome !== 'resolved') {
+    return {
+      reason:
+        producer.outcome === 'not-installed'
+          ? `'${from}' is not installed in this tenant`
+          : `this tenant has more than one primary instance of '${from}' — delivery waits until one is chosen`,
+    };
+  }
+  return { source: { vertical: from, scopeId: producer.instance.scopeId } };
+}
+
+/** A consumer's declared imports, grouped by the vertical they come from. */
+function wantsBySource(consumes: ImportState['consumes'], only: (from: string) => boolean = () => true): Map<string, WantedEvent[]> {
+  const bySource = new Map<string, WantedEvent[]>();
+  for (const c of consumes) {
+    if (!only(c.from)) continue;
+    const list = bySource.get(c.from) ?? [];
+    list.push({ type: c.type, schemaVersion: c.schemaVersion });
+    bySource.set(c.from, list);
+  }
+  return bySource;
 }
 
 async function sweepEdge(
@@ -1718,35 +1899,13 @@ async function sweepEdge(
     duplicates: 0,
     ...rest,
   });
-  if (from === vertical) {
-    return edge({ state: 'unresolved', reason: `'${vertical}' imports from itself — an import names ANOTHER vertical` });
-  }
-  // Both ends must be the tenant's one primary instance of their vertical, by #1706's one rule
-  // (`resolveVerticalInstanceFrom`: same tenant, active, primary; two are `ambiguous`, refused
-  // rather than guessed). The producer is who is read. The consumer is who the producer's grant
-  // names, and a grant naming a slug cannot tell two installs of it apart.
-  const self = resolveVerticalInstanceFrom(scopes, consumer.tenantId, vertical);
-  if (self.outcome !== 'resolved' || self.instance.scopeId !== consumer.id) {
-    return edge({
-      state: 'unresolved',
-      reason: `this tenant has more than one primary instance of '${vertical}', so the producer cannot tell which one its grant names`,
-    });
-  }
-  const producer = resolveVerticalInstanceFrom(scopes, consumer.tenantId, from);
-  if (producer.outcome !== 'resolved') {
-    return edge({
-      state: 'unresolved',
-      reason:
-        producer.outcome === 'not-installed'
-          ? `'${from}' is not installed in this tenant`
-          : `this tenant has more than one primary instance of '${from}' — delivery waits until one is chosen`,
-    });
-  }
-  const source = { vertical: from, scopeId: producer.instance.scopeId };
+  const ends = edgeEnds(scopes, consumer, from);
+  if ('reason' in ends) return edge({ state: 'unresolved', reason: ends.reason });
+  const { source } = ends;
   const at = { producer: source };
   const after = state.cursors.find((c) => c.source === source.scopeId)?.cursor ?? null;
   try {
-    const batch = await reach.readExports(producer.instance.tenantId, source.scopeId, {
+    const batch = await reach.readExports(consumer.tenantId, source.scopeId, {
       consumer: vertical as ExportReadInput['consumer'],
       after,
       wants,
@@ -1797,6 +1956,286 @@ async function sweepEdge(
   } catch (err) {
     return edge({ ...at, state: 'failed', reason: message(err) });
   }
+}
+
+// -- edge health (#1705 PR 3) ---------------------------------------------------------------
+
+
+/** Where a consumer's door stands for each peer, as `admin.peerGrantsStatus` answers it. */
+type DoorRead = (
+  tenantId: TenantId,
+  scopeId: ScopeId,
+) => Promise<readonly { vertical: string; calls: string; switchedOff?: { reason: string } | null }[]>;
+
+/**
+ * Where every cross-vertical edge of one tenant stands, read LIVE (#1705 PR 3): the view behind
+ * the console's and the dashboard's edge health.
+ *
+ * It is the sweep's own walk with the delivery taken out. It uses the same reach, the same
+ * narrowing (`candidates`, which keeps it off scopes that import nothing), and the same resolution
+ * of both ends (`edgeEnds`). So it cannot disagree with the next pass about which edges exist or
+ * where they point. Per edge it makes one probe read of the producer after the watermark,
+ * `limit: 1`, which tells behind from caught up and dates the oldest waiting event. That read is the
+ * producer's own `readExportedEvents`, gated and audited as on a pass, and nothing it returns is
+ * delivered or kept. The consumer's door is read from its peer switch (`peerGrantsStatus`), because
+ * a consumer refusing the producer is visible only at delivery otherwise. The tenant's recent
+ * `vertical-events` sweep-run rows add the last pass that delivered and the last that did not.
+ *
+ * `focus` narrows it to one scope's edges, the ones into it and out of it: a per-app view asks
+ * nothing about the rest of the tenant. Out of it means consumers the narrowing names for the
+ * focus's vertical (`hint.from`), so the registry, not a scope, decides who is asked.
+ *
+ * Cost per view: one directory read, the narrowing, then per importing scope one `importState`
+ * and one door read, per edge one probe read and one or two sweep-run reads. It is bounded by the
+ * tenant, never the fleet.
+ *
+ * Who the reads are audited as: the directory, door and history reads as `actor`, the viewer the
+ * caller names. The reach's reads (`importState`, the probe) are audited as whatever actor the
+ * reach was built with. On the control plane that is the sweep's own actor, since it is the
+ * sweep's reach, so those rows read as the platform's, not the viewer's.
+ *
+ * `unavailable` is its own state: a side that could not be asked gets no health, and no
+ * surface may show it as healthy.
+ */
+export async function crossVerticalHealth(
+  host: ScopeHost,
+  options: {
+    actor: PlatformActorId;
+    tenantId: TenantId;
+    crossVertical?: CrossVerticalOptions;
+    /** Only this scope's edges: into it, and out of it. */
+    focus?: ScopeId;
+    /**
+     * Where the consumer's door stands for each peer. Default: `admin.peerGrantsStatus`, which on
+     * the shared control plane reaches the consumer's deployment through its peer-switch
+     * delegation and adds who switched a peer off, and why. A host that serves the scope itself
+     * without that delegation may pass its own far end (`peerGrantsStatusLocal`) instead.
+     */
+    door?: DoorRead;
+    /** Epoch ms. Injectable so a test pins the lag. */
+    now?: () => number;
+    concurrency?: number;
+  },
+): Promise<EdgeHealthReport> {
+  const { actor, tenantId } = options;
+  const now = options.now ?? Date.now;
+  const concurrency = options.concurrency ?? 8;
+  const report: EdgeHealthReport = {
+    tenantId,
+    checkedAt: new Date(now()).toISOString() as EdgeHealthReport['checkedAt'],
+    edges: [],
+    unavailable: null,
+    history: { available: true, reason: null },
+  };
+  const cv = options.crossVertical ?? {};
+  // No reach, on a host whose apps live in their own deployments (the shared control plane without
+  // DISPATCH): this host's own verbs cannot see a single hosted scope, and its registered modules
+  // import nothing, so the default would report "no edges". That is an answer it cannot give.
+  if (!cv.reach && host.servesScopesElsewhere?.()) {
+    report.unavailable =
+      "edge health cannot reach the deployments that serve this tenant's apps: no cross-vertical reach is " +
+      'configured on this control plane (DISPATCH / PLATFORM_SECRET)';
+    return report;
+  }
+  const reach: CrossVerticalReach = cv.reach ?? {
+    importState: (t, s) => host.admin.importState(actor, t, s),
+    readExports: (t, s, input) => host.admin.readExportedEvents(actor, t, s, input),
+    deliver: () => Promise.reject(new Error('edge health never delivers')),
+  };
+  const candidatesOf: NonNullable<CrossVerticalReach['candidates']> =
+    reach.candidates?.bind(reach) ??
+    ((scopes) => ((host.registeredImports?.() ?? []).length > 0 ? scopes : []));
+  const doorOf: DoorRead =
+    options.door ?? ((t, s) => host.admin.peerGrantsStatus(actor, { tenantId: t, scopeId: s }));
+  const knownImporters = new Set<string>();
+  const known = (ids: readonly ScopeId[]) => {
+    for (const id of ids) knownImporters.add(id);
+  };
+
+  const listed = await (async () => {
+      const scopes = (await host.admin.listScopes(actor, { status: 'active', tenantId })).filter(
+        (s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null,
+      );
+      if (options.focus === undefined) return { scopes, candidates: await candidatesOf(scopes, { known }) };
+      const focus = scopes.find((s) => s.id === options.focus);
+      if (!focus) return { scopes, candidates: [] as readonly Scope[] };
+      const [into, outOf] = await Promise.all([
+        candidatesOf([focus], { known }),
+        candidatesOf(scopes, { from: focus.vertical, known }),
+      ]);
+      return { scopes, focus, candidates: [...into, ...outOf.filter((c) => c.id !== focus.id)] };
+    })().then(
+      (v) => ({ ok: true as const, ...v }),
+      (err: unknown) => ({ ok: false as const, error: message(err) }),
+    );
+  if (!listed.ok) {
+    report.unavailable = `could not list this tenant's apps that import events: ${listed.error}`;
+    return report;
+  }
+  const { scopes, candidates } = listed;
+  const focusScope = 'focus' in listed ? listed.focus : undefined;
+  const focusVertical = focusScope?.vertical;
+
+  // Which sweep-run unit each edge's history is filed under: `<consumer>:<producer vertical>`,
+  // or `<consumer>:*` for a consumer that could not be asked (whatever the view tags it with).
+  const unitOf = new Map<EdgeHealth, string>();
+
+  await mapBounded(candidates, concurrency, async (consumer) => {
+    const vertical = consumer.vertical ?? '';
+    const edge = (from: string, rest: Partial<EdgeHealth> & Pick<EdgeHealth, 'state'>): EdgeHealth => ({
+      tenantId,
+      consumer: { scopeId: consumer.id, vertical },
+      producer: { vertical: from, scopeId: null },
+      reason: null,
+      watermark: null,
+      oldestPending: null,
+      lagMs: null,
+      unexported: [],
+      lastDelivered: null,
+      lastProblem: null,
+      ...rest,
+    });
+    const filed = (e: EdgeHealth, unitFrom: string): EdgeHealth => {
+      unitOf.set(e, `${consumer.id}:${unitFrom}`);
+      return e;
+    };
+    // Into the focus, every source. Into anyone else, only the focus's own vertical.
+    const wanted = (from: string) => focusVertical === undefined || consumer.id === options.focus || from === focusVertical;
+    // The consumer's imports and its door, together: the door read is wasted only on a consumer
+    // that turns out to import nothing, which the narrowing has already made rare.
+    const [stateRead, doorRead] = await Promise.all([
+      reach.importState(tenantId, consumer.id).then(
+        (state) => ({ ok: true as const, state }),
+        (err: unknown) => ({ ok: false as const, error: message(err) }),
+      ),
+      doorOf(tenantId, consumer.id).then(
+        (entries) => ({ ok: true as const, entries }),
+        (err: unknown) => ({ ok: false as const, error: message(err) }),
+      ),
+    ]);
+    // A consumer that could not be asked names no producer ('*'). Seen from a focused PRODUCER,
+    // though, it is one of that producer's consumers (the narrowing named it for the focus's
+    // vertical), so it is tagged with the focus: a view of the producer must show the failure
+    // rather than filter out an edge whose other end is unknown.
+    const unasked = (reason: string): EdgeHealth =>
+      filed(
+        focusScope && consumer.id !== focusScope.id
+          ? edge(focusScope.vertical, { state: 'unavailable', reason, producer: { vertical: focusScope.vertical, scopeId: focusScope.id } })
+          : edge('*', { state: 'unavailable', reason }),
+        '*',
+      );
+    if (!stateRead.ok) {
+      report.edges.push(unasked(`could not ask this app what it imports: ${stateRead.error}`));
+      return;
+    }
+    const state = stateRead.state;
+    if (state.consumes.length === 0) {
+      if (knownImporters.has(consumer.id)) {
+        report.edges.push(
+          unasked(
+            "the version registry says this app's code imports events, but its deployment answers that it " +
+              'imports nothing — it is not running the version the registry names; redeploy or reconcile it',
+          ),
+        );
+      }
+      return;
+    }
+    // Unreadable is not "open": the edge keeps its probe's state, and the reason says so.
+    const door = doorRead.ok
+      ? new Map(doorRead.entries.map((e) => [e.vertical, { calls: e.calls, reason: e.switchedOff?.reason ?? null }]))
+      : null;
+    const sources = [...wantsBySource(state.consumes, wanted)];
+    await mapBounded(sources, concurrency, async ([from, wants]) => {
+      report.edges.push(filed(await edgeHealthOf(from, wants), from));
+    });
+
+    async function edgeHealthOf(from: string, wants: WantedEvent[]): Promise<EdgeHealth> {
+      const ends = edgeEnds(scopes, consumer, from);
+      if ('reason' in ends) return edge(from, { state: 'unresolved', reason: ends.reason });
+      const { source } = ends;
+      const cursor = state.cursors.find((c) => c.source === source.scopeId) ?? null;
+      const at = {
+        producer: source,
+        watermark: cursor?.cursor ? { cursor: cursor.cursor, updatedAt: cursor.updatedAt } : null,
+      };
+      let probe: ExportedBatch;
+      try {
+        probe = await reach.readExports(tenantId, source.scopeId, {
+          consumer: vertical as ExportReadInput['consumer'],
+          after: cursor?.cursor ?? null,
+          wants,
+          limit: 1,
+        });
+      } catch (err) {
+        return edge(from, { ...at, state: 'unavailable', reason: `could not ask '${from}' what is waiting: ${message(err)}` });
+      }
+      const unexported = probe.unexported;
+      if (probe.paused) {
+        return edge(from, {
+          ...at,
+          unexported,
+          state: 'paused',
+          reason: `'${from}' does not grant vertical:${vertical} ${probe.paused.missing.join(', ')} — nothing moves; the backlog waits in its outbox`,
+        });
+      }
+      const first = [...probe.events, ...probe.withheld].sort((a, b) => (a.id < b.id ? -1 : 1))[0];
+      const oldestPending = first ? { id: first.id, occurredAt: first.occurredAt } : null;
+      const occurred = first ? Date.parse(first.occurredAt) : NaN;
+      const lagMs = first && Number.isFinite(occurred) ? Math.max(0, Math.floor(now() - occurred)) : null;
+      const pending = { ...at, unexported, oldestPending, lagMs };
+      const gate = door?.get(from);
+      if (gate && gate.calls !== 'on') {
+        return edge(from, {
+          ...pending,
+          state: 'paused',
+          reason:
+            gate.calls === 'off'
+              ? `this app has '${from}' switched off${gate.reason ? ` (${gate.reason})` : ''} — nothing is delivered; the backlog waits in the producer's outbox`
+              : `this app holds no grant for '${from}' — its door refuses the delivery; the backlog waits in the producer's outbox`,
+        });
+      }
+      // Caught up means nothing is waiting, which an unread door cannot change, so its reason is
+      // null as the contract says. Behind with an unread door says so: whether the next pass
+      // delivers depends on it.
+      if (!first) return edge(from, { ...pending, state: 'caught-up', reason: null });
+      const doorNote = doorRead.ok ? '' : ` (whether this app admits '${from}' could not be read: ${doorRead.error})`;
+      return edge(from, {
+        ...pending,
+        state: 'behind',
+        reason: `events are waiting past the watermark; the next pass takes them${doorNote}`,
+      });
+    }
+  });
+  // The history, read per edge: the last pass that delivered, and the last that did not when it is
+  // newer. Per edge rather than one window over the tenant, so a noisy edge's rows cannot push a
+  // quiet edge's last delivery out of the read. One read when the newest row is a delivery, two
+  // otherwise. A failed read costs the history, never the live state.
+  await mapBounded(report.edges, concurrency, async (e) => {
+    const unit = unitOf.get(e);
+    if (unit === undefined) return;
+    try {
+      const runs = (filter: { outcome?: 'ok' }) =>
+        host.admin.listSweepRuns(actor, { kind: 'vertical-events', tenantId, unit, limit: 1, ...filter });
+      const [latest] = await runs({});
+      if (!latest) return;
+      if (latest.outcome === 'ok') {
+        e.lastDelivered = { at: latest.at };
+        return;
+      }
+      const [ok] = await runs({ outcome: 'ok' });
+      e.lastDelivered = ok ? { at: ok.at } : null;
+      e.lastProblem = { at: latest.at, outcome: latest.outcome as 'failed' | 'skipped', error: latest.error ?? null };
+    } catch (err) {
+      report.history = { available: false, reason: `the sweep history could not be read: ${message(err)}` };
+    }
+  });
+  report.edges.sort(
+    (a, b) =>
+      a.consumer.vertical.localeCompare(b.consumer.vertical) ||
+      a.consumer.scopeId.localeCompare(b.consumer.scopeId) ||
+      a.producer.vertical.localeCompare(b.producer.vertical),
+  );
+  return report;
 }
 
 /**
