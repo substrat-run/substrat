@@ -115,6 +115,16 @@ describe('a bearer verifier looks its keys up through the bound discovery', () =
     expect(await resolve(oidcAuthProvider({ issuer: lb, jwksUri: `${lb}/jwks` }), await token(goodKey, lb))).toBe('user-1');
   });
 
+  it('holds the issuer to its rule when a jwksUri override skips discovery', async () => {
+    const plain = 'http://plain-override.example.test';
+    // http issuer + https override: refused, and nothing is fetched.
+    expect(await resolve(oidcAuthProvider({ issuer: plain, jwksUri: 'https://keys.example.test/jwks' }), await token(goodKey, plain))).toBeNull();
+    // An issuer that is not a plain identifier, likewise.
+    const query = `${issuer}?x=1`;
+    expect(await resolve(oidcAuthProvider({ issuer: query, jwksUri: `${issuer}/jwks` }), await token(goodKey, query))).toBeNull();
+    expect(requests).toEqual([]);
+  });
+
   it('retries after a failure instead of refusing for the isolate’s life', async () => {
     const provider = oidcAuthProvider({ issuer });
     discovery = 'down';

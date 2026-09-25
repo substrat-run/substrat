@@ -1,5 +1,5 @@
 import { jwtVerify, createRemoteJWKSet, type JWTPayload, type JWTVerifyGetKey } from 'jose';
-import { discoverIssuer, isAllowedEndpoint } from '@substrat-run/oidc-rp/discovery';
+import { discoverIssuer, isAllowedEndpoint, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import type { AuthProvider, AuthSubject } from './provider.js';
 
 /**
@@ -116,8 +116,11 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
       const pending: Promise<JWTVerifyGetKey> = (async () => {
         const jwksUri = cfg.jwksUri ?? (await discoverIssuer(cfg.issuer)).jwks_uri;
         // An override skips discovery, not the transport rule: the keys are fetched from it.
-        if (cfg.jwksUri && !isAllowedEndpoint(cfg.issuer, cfg.jwksUri)) {
-          throw new Error('jwksUri is not https');
+        // Nor the issuer rule: with no discovery, nothing else has looked at `cfg.issuer`.
+        if (cfg.jwksUri) {
+          const refused = issuerRefusal(cfg.issuer);
+          if (refused) throw new Error(refused);
+          if (!isAllowedEndpoint(cfg.issuer, cfg.jwksUri)) throw new Error('jwksUri is not https');
         }
         return createRemoteJWKSet(new URL(jwksUri));
       })();
