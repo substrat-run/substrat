@@ -138,13 +138,16 @@ describe('search-kb with a source filter over a hundred hits', () => {
 });
 
 describe('the blocklist probe with an address the sender wrote', () => {
-  // 120 one-character labels, and a domain of at most 253 characters (DNS's limit), so an
-  // address a real relay would deliver: far past 100 parameters, one per label.
+  // 120 one-character labels, a domain of at most 253 characters (DNS's limit) and a whole
+  // address of at most 254 octets (SMTP's mailbox limit), so an address a real relay would
+  // deliver: far past 100 parameters, one per label.
   const LABELS = Array.from({ length: 120 }, () => 'a');
   const domain = `${LABELS.join('.')}.example`;
+  const LOCAL = 'u';
 
   it('is a domain a relay could deliver', () => {
     expect(domain.length).toBeLessThanOrEqual(253);
+    expect(`${LOCAL}@${domain}`.length).toBeLessThanOrEqual(254);
     expect(domain.split('.').length).toBeGreaterThan(100);
   });
 
@@ -152,7 +155,7 @@ describe('the blocklist probe with an address the sender wrote', () => {
     const relay = await at('relay');
     const m = (await relay.invoke('ticket0/ingest-message', {
       conversationId: null,
-      contactEmail: `someone@${domain}`,
+      contactEmail: `${LOCAL}@${domain}`,
       contactName: null,
       subject: 'Hello',
       bodyText: 'Is anybody there?',
