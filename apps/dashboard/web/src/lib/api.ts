@@ -1464,9 +1464,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ invitationId }),
     }),
-  /** A pending invite's accept link, to copy and share. Sends no email. */
+  /** A pending invite's accept link and deadline, to copy and share. A pure read: sends no email, and a lapsed invite is refused (409) rather than renewed. */
   inviteLink: (invitationId: string) =>
-    call<{ invitationId: string; acceptUrl: string }>('/members/invite-link', {
+    call<{ invitationId: string; acceptUrl: string; expiresAt: string }>('/members/invite-link', {
       method: 'POST',
       body: JSON.stringify({ invitationId }),
     }),

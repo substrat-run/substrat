@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Button, Dialog, Input, Select } from '@substrat-run/ui';
 import { ROLE_MATRIX } from '../lib/demo';
 import type { InviteRole, Member } from '../lib/api';
@@ -24,6 +24,17 @@ const AVATAR_TONE: Record<string, 'brand' | 'cyan' | 'amber' | 'muted'> = {
   member: 'amber',
   viewer: 'muted',
 };
+
+/** Copy to the clipboard; true only when the write actually succeeded. */
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    if (!navigator.clipboard) return false;
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function fmtDate(iso: string): string {
   try {
@@ -58,7 +69,7 @@ export function Team({
   canManage: boolean;
   onInvite: (email: string, roleKey: InviteRole) => Promise<{ acceptUrl: string; emailDelivered?: boolean } | void>;
   /** A pending invite's accept link (sends no email); rejects when it cannot be read. */
-  onCopyLink?: (invitationId: string) => Promise<string>;
+  onCopyLink?: (invitationId: string) => Promise<{ acceptUrl: string; expiresAt: string }>;
   onResend: (invitationId: string) => void;
   onRevoke: (invitationId: string) => void;
   onRemove: (memberId: string) => void;
@@ -75,7 +86,15 @@ export function Team({
   const [emailed, setEmailed] = useState<boolean | undefined>(undefined);
   const [copied, setCopied] = useState(false);
   /** The roster's "Copy link": whose invite, and its link once read. */
-  const [shared, setShared] = useState<{ email: string; link: string | null; error: string | null; copied: boolean } | null>(null);
+  const [shared, setShared] = useState<{
+    email: string;
+    link: string | null;
+    expiresAt: string | null;
+    error: string | null;
+    copied: boolean;
+  } | null>(null);
+  /** Which "Copy link" request the dialog is waiting on; closing it or asking again supersedes it. */
+  const linkRequest = useRef(0);
   const [matrixOpen, setMatrixOpen] = useState(false);
 
   const rows = members.filter((m) => m.status !== 'revoked');
@@ -90,20 +109,22 @@ export function Team({
   };
   const copyLink = async (m: Member) => {
     if (!onCopyLink || !m.invitation_id) return;
-    setShared({ email: m.email, link: null, error: null, copied: false });
+    const request = ++linkRequest.current;
+    const current = () => linkRequest.current === request;
+    setShared({ email: m.email, link: null, expiresAt: null, error: null, copied: false });
     try {
-      const url = await onCopyLink(m.invitation_id);
-      let copied = false;
-      try {
-        await navigator.clipboard?.writeText(url);
-        copied = !!navigator.clipboard;
-      } catch {
-        // The link is shown to copy by hand; a denied clipboard is not a failure.
-      }
-      setShared({ email: m.email, link: url, error: null, copied });
+      const { acceptUrl, expiresAt } = await onCopyLink(m.invitation_id);
+      if (!current()) return;
+      // The link is shown to copy by hand; a refused clipboard is not a failure.
+      const copied = await writeClipboard(acceptUrl);
+      if (current()) setShared({ email: m.email, link: acceptUrl, expiresAt, error: null, copied });
     } catch (e) {
-      setShared({ email: m.email, link: null, error: e instanceof Error ? e.message : String(e), copied: false });
+      if (current()) setShared({ email: m.email, link: null, expiresAt: null, error: e instanceof Error ? e.message : String(e), copied: false });
     }
+  };
+  const closeShared = () => {
+    linkRequest.current++;
+    setShared(null);
   };
   const send = async () => {
     if (!email.trim() || sending) return;
@@ -273,8 +294,8 @@ export function Team({
         open={shared !== null}
         title="Invite link"
         confirmLabel="Done"
-        onConfirm={() => setShared(null)}
-        onCancel={() => setShared(null)}
+        onConfirm={closeShared}
+        onCancel={closeShared}
         width={480}
       >
         {shared && (
@@ -292,13 +313,17 @@ export function Team({
                   <Input value={shared.link} mono style={{ flex: 1 }} onChange={() => {}} />
                   <Button
                     variant="secondary"
-                    onClick={() => { void navigator.clipboard?.writeText(shared.link!); setShared({ ...shared, copied: true }); }}
+                    onClick={async () => {
+                      const url = shared.link!;
+                      const ok = await writeClipboard(url);
+                      if (ok) setShared((s) => (s && s.link === url ? { ...s, copied: true } : s));
+                    }}
                   >
                     {shared.copied ? 'Copied' : 'Copy'}
                   </Button>
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                  The link works only for the invited email, and expires in 14 days.
+                  The link works only for the invited email{shared.expiresAt ? `, and expires ${fmtDate(shared.expiresAt)}` : ''}.
                 </div>
               </>
             )}

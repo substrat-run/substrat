@@ -21,6 +21,9 @@ const ROSTER = [
   member({ id: 'b', email: 'rae@acme.test', invitation_id: 'inv-1' }),
 ];
 
+type Link = { acceptUrl: string; expiresAt: string };
+const link = (acceptUrl: string): Link => ({ acceptUrl, expiresAt: '2026-10-10T12:00:00.000Z' });
+
 describe('Team: Copy link on a pending invite', () => {
   let container: HTMLElement;
   let root: Root;
@@ -40,7 +43,7 @@ describe('Team: Copy link on a pending invite', () => {
     document.body.innerHTML = '';
   });
 
-  const render = (props: { canManage: boolean; members?: Member[]; onCopyLink?: (id: string) => Promise<string> }) =>
+  const render = (props: { canManage: boolean; members?: Member[]; onCopyLink?: (id: string) => Promise<Link> }) =>
     act(() => {
       root.render(
         <Team
@@ -58,7 +61,7 @@ describe('Team: Copy link on a pending invite', () => {
   const copyButtons = () => [...document.querySelectorAll('button')].filter((b) => b.textContent === 'Copy link');
 
   it('shows once, on the invited row only, and clicking it shows and copies the link', async () => {
-    const onCopyLink = vi.fn(async () => 'https://x.test/invite/tok');
+    const onCopyLink = vi.fn(async () => link('https://x.test/invite/tok'));
     render({ canManage: true, onCopyLink });
     expect(copyButtons()).toHaveLength(1);
     await act(async () => copyButtons()[0]!.click());
@@ -67,17 +70,20 @@ describe('Team: Copy link on a pending invite', () => {
     const input = document.querySelector('input[value="https://x.test/invite/tok"]');
     expect(input).not.toBeNull();
     expect(document.body.textContent).toContain('No email was sent');
+    expect(document.body.textContent).toContain('Copied.');
+    expect(document.body.textContent).toMatch(/expires .*2026/);
+    expect(document.body.textContent).not.toContain('14 days');
   });
 
   it('is absent without manage rights', () => {
-    render({ canManage: false, onCopyLink: async () => 'u' });
+    render({ canManage: false, onCopyLink: async () => link('u') });
     expect(copyButtons()).toHaveLength(0);
   });
 
   it('is absent on an accepted or revoked row', () => {
     render({
       canManage: true,
-      onCopyLink: async () => 'u',
+      onCopyLink: async () => link('u'),
       members: [member({ status: 'active', principal: 'p' }), member({ id: 'c', status: 'revoked' })],
     });
     expect(copyButtons()).toHaveLength(0);
@@ -88,5 +94,48 @@ describe('Team: Copy link on a pending invite', () => {
     await act(async () => copyButtons()[0]!.click());
     expect(document.body.textContent).toContain('Could not read the invite link: boom');
     expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('says Copied only when the clipboard write succeeded', async () => {
+    writeText.mockRejectedValueOnce(new Error('denied'));
+    render({ canManage: true, onCopyLink: async () => link('https://x.test/invite/tok') });
+    await act(async () => copyButtons()[0]!.click());
+    expect(document.querySelector('input[value="https://x.test/invite/tok"]')).not.toBeNull();
+    expect(document.body.textContent).not.toContain('Copied');
+    // The dialog's own Copy button: a refused write is not "Copied" either …
+    writeText.mockRejectedValueOnce(new Error('denied'));
+    const copy = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Copy')!;
+    await act(async () => copy.click());
+    expect(document.body.textContent).not.toContain('Copied');
+    // … and its twin: a working one is.
+    await act(async () => copy.click());
+    expect(document.body.textContent).toContain('Copied');
+  });
+
+  it('ignores a late result once the dialog was closed', async () => {
+    let resolve!: (l: Link) => void;
+    const onCopyLink = vi.fn(() => new Promise<Link>((r) => (resolve = r)));
+    render({ canManage: true, onCopyLink });
+    await act(async () => copyButtons()[0]!.click());
+    const done = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Done')!;
+    await act(async () => done.click());
+    await act(async () => resolve(link('https://x.test/invite/late')));
+    expect(document.querySelector('input[value="https://x.test/invite/late"]')).toBeNull();
+    expect(document.body.textContent).not.toContain('Invite link');
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('ignores a slow earlier request when another row was clicked', async () => {
+    const two = [...ROSTER, member({ id: 'c', email: 'lee@acme.test', invitation_id: 'inv-2' })];
+    const pending: Record<string, (l: Link) => void> = {};
+    const onCopyLink = vi.fn((id: string) => new Promise<Link>((r) => (pending[id] = r)));
+    render({ canManage: true, members: two, onCopyLink });
+    await act(async () => copyButtons()[0]!.click());
+    await act(async () => copyButtons()[1]!.click());
+    await act(async () => pending['inv-2']!(link('https://x.test/invite/lee')));
+    await act(async () => pending['inv-1']!(link('https://x.test/invite/rae')));
+    expect(document.querySelector('input[value="https://x.test/invite/lee"]')).not.toBeNull();
+    expect(document.querySelector('input[value="https://x.test/invite/rae"]')).toBeNull();
+    expect(writeText).toHaveBeenCalledTimes(1);
   });
 });
