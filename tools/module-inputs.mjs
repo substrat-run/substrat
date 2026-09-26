@@ -35,7 +35,7 @@
  * exist. A registration that genuinely has no surface opts out with a
  * `module-inputs-allow: <reason>` comment, and has to give the reason.
  *
- * ## The output half (#959), engines only
+ * ## The output half (#959): engines, and the demos named in `BOUND_ELSEWHERE`
  *
  * Parsing the input is half of "the handler agrees with its declaration". The other half is a
  * type, `OperationImpl<typeof ops, OperationContext>` from `@substrat-run/contracts`, applied
@@ -43,10 +43,17 @@
  * removed. So an `engines/` registration is also held to a map bound that way, with no cast on
  * an entry, and bound to the same declaration it parses with (see `unbound`).
  *
- * Engines only, because their surfaces are published and composed by verticals that cannot
- * read the handler. The demos and the scaffold bind in more than one shape (a bound `const`
- * spread into the map beside hand-bound entries), which this rule does not read; judging them
- * is a follow-up, not something to half-do here.
+ * Every engine, because their surfaces are published and composed by verticals that cannot
+ * read the handler; and, by name, the demos bound in the two shapes this rule reads (an inline
+ * map, or a named `const` in the same file). The other demos and the scaffold bind in shapes it
+ * does not — a bound `const` spread through a cast beside hand-bound entries, a hand-written
+ * mapped type — or not at all (manyfold, #1833). Making the join a type rather than a clause a
+ * text rule looks for is #1835.
+ *
+ * **Out of reach, and known:** a handler whose own TYPE is `any` — `const h: any = …`, or one
+ * returned from a function that erases it — satisfies the clause silently, and nothing about
+ * the map's text says so. Telling that apart needs the type checker this rule deliberately
+ * does not carry. What it does refuse is every way of erasing the type AT the map.
  *
  * Text, not an AST — a loud false positive beats a silent pass.
  */
@@ -57,6 +64,13 @@ import { join } from 'node:path';
 const ROOTS = ['demos', 'engines'];
 const TEMPLATE = 'packages/create-substrat/template';
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.wrangler']);
+/**
+ * Outside `engines/`, the module files whose handler map is bound in a shape the #959 rule
+ * reads, and is held to it. Named rather than inferred from the file, so deleting the clause
+ * cannot quietly take a file out of scope — and each one must still exist and be judged, so a
+ * rename cannot either.
+ */
+const BOUND_ELSEWHERE = ['demos/meridian/src/module.ts', 'demos/shop/src/module.ts'];
 /**
  * A whole-file opt-out, and it has to give a reason.
  *
@@ -689,6 +703,8 @@ const offenders = [];
 let registrations = 0;
 let files = 0;
 let skipped = 0;
+/** The bound files this run actually judged — what `BOUND_ELSEWHERE` is checked against. */
+const boundJudged = new Set();
 /** Does this file name the type at all? Judged on the raw text, before anything is stripped. */
 const NAMES_TYPE = /\bModuleRegistration\b/;
 for (const file of sources) {
@@ -699,7 +715,10 @@ for (const file of sources) {
     continue;
   }
   // An engine's handler map is also bound to its declaration (#959) — see `unbound`.
-  const verdict = judge(source, { bound: file.split(/[\\/]/)[0] === 'engines' });
+  const posix = file.split(/[\\/]/).join('/');
+  const bound = posix.startsWith('engines/') || BOUND_ELSEWHERE.includes(posix);
+  const verdict = judge(source, { bound });
+  if (bound && verdict.judged > 0) boundJudged.add(posix);
   if (verdict.judged === 0) {
     // The raw file names the type and the scan then found nothing to judge. Either the mention
     // is only a `type` import or an indexed access — harmless, and the common case — or the
@@ -718,6 +737,12 @@ for (const file of sources) {
   registrations += verdict.judged;
   files++;
   for (const why of verdict.offences) offenders.push(`${file}: ${why}`);
+}
+
+for (const file of BOUND_ELSEWHERE) {
+  if (!boundJudged.has(file)) {
+    offenders.push(`${file}: named in BOUND_ELSEWHERE and not judged — renamed, moved, or no longer a registration. Update the list`);
+  }
 }
 
 if (registrations === 0) {
