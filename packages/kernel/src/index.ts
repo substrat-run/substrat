@@ -296,6 +296,8 @@ export {
   forgetSystemSwitchesOf,
   inUnitMovesToAudit,
   listSystemSwitchRecords,
+  staleCarryRevertRow,
+  staleCarryReverts,
   recordSystemSwitchedOff,
   recordSystemSwitchedOn,
   restoreSystemSwitchRecord,

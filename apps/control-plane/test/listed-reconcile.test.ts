@@ -321,6 +321,8 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
   const atReturn = new Map<string, Position>();
   /** False models a deployment built before #1742, which ignores the carried list. */
   let honoursList = true;
+  /** #1742 review: what lands between the platform reading the record and the deployment's unit. */
+  let beforeUnit: ((scope: string) => Promise<void>) | null = null;
   /** The seat and, in the same unit, the carried list switched off — as the real host does. */
   const seatInUnit = (s: string, switchedOff?: string[]) => {
     seat(s);
@@ -339,6 +341,7 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
       return { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner, ...report };
     },
     reconcileInstance: async (input: { tenantId: string; scopeId: string; switchedOff?: string[] }) => {
+      await beforeUnit?.(input.scopeId);
       const report = seatInUnit(input.scopeId, input.switchedOff);
       return { tenantId: input.tenantId, scopeId: input.scopeId, owner: ulid(), ...report };
     },
@@ -433,6 +436,41 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
       await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
       expect(atReturn.get(s)).toBe('on');
       expect(store.get(s)).toBe('on');
+    });
+
+    /** A scope switched off whose marker survived: the operator can restore it mid-call. */
+    const switchedOffScope = async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: VERT });
+      await host.admin.activateScope(staff, t, s);
+      seat(s);
+      await host.admin.revokeFromSystem(staff, { moduleId: MODULE as never, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+      return s;
+    };
+    const staleRows = async (s: ScopeId) =>
+      (await host.admin.auditLog(staff, { scopeId: s, action: ['reassertSystemSwitch'] })).map((e) => e.after);
+
+    it("an ON landing between the record read and the unit stands: the stale move is reverted and audited (#1742 review)", async () => {
+      const s = await switchedOffScope();
+      beforeUnit = async (id) => {
+        if (id !== s) return;
+        await host.admin.restoreToSystem(staff, { moduleId: MODULE as never, node: { tenantId: t, scopeId: s }, reason: 'resolved mid-call' });
+      };
+      try {
+        await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
+      } finally {
+        beforeUnit = null;
+      }
+      expect(atReturn.get(s)).toBe('off'); // the deployment applied the stale list
+      expect(store.get(s)).toBe('on'); // …and the re-assert put the operator's ON back
+      expect(await staleRows(s)).toEqual([expect.objectContaining({ moduleId: MODULE, schedules: 'on', changed: true, staleCarry: true })]);
+    });
+
+    it('twin: with no ON mid-call, the same scope stays off and nothing is reverted', async () => {
+      const s = await switchedOffScope();
+      await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
+      expect(store.get(s)).toBe('off');
+      expect(JSON.stringify(await staleRows(s))).not.toContain('staleCarry');
     });
   });
 

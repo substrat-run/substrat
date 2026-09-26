@@ -1672,6 +1672,12 @@ export interface HostAdmin {
    * `inUnit` re-assert, since the switch below then answers `changed: false` for it. The
    * switch still runs for every recorded module: this is the fallback for a deployment built
    * before the field, and it is idempotent.
+   *
+   * A reported move on a module the record now holds `on` came from a stale list: an
+   * operator's `restoreToSystem` landed between the platform reading the record and the
+   * deployment applying it. That move is undone (switched back on) and audited as
+   * `staleCarry`, BEFORE the record is read again for the OFF pass. Only a module recorded
+   * `on` is ever switched on here.
    */
   reassertSystemSwitches(
     actor: PlatformActorId,

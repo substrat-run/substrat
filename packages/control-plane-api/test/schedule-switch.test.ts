@@ -790,3 +790,84 @@ describe('the record is carried into the deployment and its in-unit move audited
     expect(await reasserts(off)).toEqual(expect.arrayContaining([inUnitRow]));
   });
 });
+
+/**
+ * #1742 review — the interleaving itself, through the repair route. The platform reads the
+ * record, and an operator's ON lands before the deployment applies the list it was handed.
+ * The fake deployment plays that call: the operator's `restoreToSystem` runs first, then
+ * the stale list is applied. The in-unit OFF is played by a restore of a dump taken while
+ * the module was off, which re-creates the marker without touching the record. The re-assert
+ * after the call must leave the operator's ON standing, and say so on the admin log.
+ */
+describe('an ON between the record read and the deployment unit is not undone (#1742 review)', () => {
+  const t = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  let dir: string;
+  let host: SqliteScopeHost;
+  /** Per scope: the dump taken while off, and whether the operator's ON lands mid-call. */
+  const plan = new Map<string, { whileOff: Awaited<ReturnType<SqliteScopeHost['admin']['exportScope']>>; onMidCall: boolean }>();
+
+  const deployment = {
+    reconcileInstance: async (input: { tenantId: string; scopeId: string; switchedOff?: string[] }) => {
+      const s = scopeId.parse(input.scopeId);
+      const p = plan.get(s)!;
+      if (p.onMidCall) {
+        await host.admin.restoreToSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'resolved mid-call' });
+      }
+      // The deployment's unit, applying the list it was handed: back off, a move it reports.
+      const moved = (input.switchedOff ?? []).includes(TICK);
+      if (moved) await host.restoreScope(staff, t, s, p.whileOff);
+      return {
+        tenantId: input.tenantId,
+        scopeId: input.scopeId,
+        owner: ulid(),
+        ...(input.switchedOff
+          ? { switchedOff: input.switchedOff.map((m) => ({ moduleId: m, held: true, changed: moved, permissions: ['tick:run'] })) }
+          : {}),
+      };
+    },
+  } as unknown as VerticalClient;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-schedule-switch-stale-'));
+    host = new SqliteScopeHost({ dir });
+    host.registerModule(tickModule);
+    await host.admin.createTenant(staff, { id: t, slug: 'acme-stale', name: 'Acme' });
+    await host.admin.grantEntitlement(staff, t, 'tick');
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const switchedOffScope = async (onMidCall: boolean) => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'tick-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.revokeFromSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+    plan.set(s, { whileOff: await host.admin.exportScope(staff, t, s), onMidCall });
+    return s;
+  };
+  const repair = (s: string) =>
+    createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { 'tick-vertical': deployment } }).request(
+      `/tenants/${t}/scopes/${s}/provision`,
+      { method: 'POST', headers: asStaff },
+    );
+  const rows = async (s: string) =>
+    (await host.admin.auditLog(staff, { scopeId: scopeId.parse(s), action: ['reassertSystemSwitch'] })).map((e) => e.after);
+
+  it("the operator's ON stands, and the revert of the stale move is audited", async () => {
+    const s = await switchedOffScope(true);
+    expect((await repair(s)).status).toBe(200);
+    expect(await host.runDueSchedules(TICK, t, s)).toMatchObject({ fired: 1 });
+    expect(await rows(s)).toEqual([expect.objectContaining({ moduleId: TICK, schedules: 'on', changed: true, staleCarry: true })]);
+  });
+
+  it('twin: with no ON mid-call, the carried list keeps the module off', async () => {
+    const s = await switchedOffScope(false);
+    expect((await repair(s)).status).toBe(200);
+    expect(await host.runDueSchedules(TICK, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(JSON.stringify(await rows(s))).not.toContain('staleCarry');
+  });
+});

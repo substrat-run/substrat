@@ -309,6 +309,41 @@ export function inUnitMovesToAudit(
 }
 
 /**
+ * The in-unit moves a STALE carry made, which the re-assert must undo (#1742 review): the
+ * deployment switched a module off because the list it was handed said so, but by the time
+ * the re-assert reads the record, an operator's `restoreToSystem` has moved it to `on`. The
+ * list was read before the call and the ON landed in between. Left alone, the scope would
+ * stay off while the record says on, and no later pass would put it back.
+ *
+ * Only a module the record now holds `on`, so a revert only ever re-applies an operator's
+ * own ON. It never turns on a module whose record is `off` or missing, and so a report from
+ * the deployment can never switch on anything the platform has not already restored.
+ */
+export function staleCarryReverts(
+  recorded: ReadonlyMap<string, 'on' | 'off'>,
+  applied: SystemSwitchReassertOptions['appliedInUnit'],
+): string[] {
+  return [
+    ...new Set((applied ?? []).filter((a) => a.changed && recorded.get(a.moduleId) === 'on').map((a) => a.moduleId)),
+  ];
+}
+
+/** The audit row (less its `operationId`) for one stale-carry revert — both adapters write this shape. */
+export function staleCarryRevertRow(
+  moduleId: string,
+  outcome: { changed: boolean; permissions: readonly string[] },
+): { moduleId: string; schedules: 'on'; phase: 'applied'; changed: boolean; permissions: string[]; staleCarry: true } {
+  return {
+    moduleId,
+    schedules: 'on',
+    phase: 'applied',
+    changed: outcome.changed,
+    permissions: [...outcome.permissions],
+    staleCarry: true,
+  };
+}
+
+/**
  * Overwrite one existing row's position and provenance — ON's write, and its undo. With
  * `ifOperationId`, only while the row is still the one that operation wrote (a CAS).
  */

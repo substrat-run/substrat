@@ -289,6 +289,8 @@ import {
   restoreSystemSwitchRecord,
   switchedOffModulesOf,
   inUnitMovesToAudit,
+  staleCarryRevertRow,
+  staleCarryReverts,
   systemSwitchRecordsOf,
   systemSwitchesTableExists,
   withRecorded,
@@ -2563,6 +2565,20 @@ export class SqliteScopeHost implements ScopeHost {
     opts?: SystemSwitchReassertOptions,
   ): SystemSwitchReassert[] {
     const at = new Date().toISOString();
+    // #1742 review: a move the deployment made from a stale list — the module was restored
+    // ON after the list was read — is undone first, so the operator's ON stands.
+    const recorded = systemSwitchRecordsOf(switchSqlOf(this.directory), tenantId, scopeId);
+    for (const moduleId of staleCarryReverts(recorded, opts?.appliedInUnit)) {
+      const outcome = rt.db.transaction(() =>
+        switchSystemSchedules(switchSqlOf(rt.db), { moduleId, scopeId, to: 'on', at }),
+      )();
+      if (outcome.changed) {
+        this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, {
+          operationId: ulid(),
+          ...staleCarryRevertRow(moduleId, outcome),
+        });
+      }
+    }
     const recordedOff = switchedOffModulesOf(switchSqlOf(this.directory), tenantId, scopeId);
     // #1742: what a deployment already switched off inside its own unit, audited here — the
     // switch below answers `changed: false` for it and would write no row.

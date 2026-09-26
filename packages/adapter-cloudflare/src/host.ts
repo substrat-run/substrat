@@ -307,6 +307,8 @@ import {
   type SystemSwitchReassert,
   type SystemSwitchReassertOptions,
   inUnitMovesToAudit,
+  staleCarryRevertRow,
+  staleCarryReverts,
   type SystemSwitchRecordFilter,
   type SystemSwitchRecordPrior,
   type SystemSwitchRecordRow,
@@ -4364,19 +4366,35 @@ export class CloudflareScopeHost implements ScopeHost {
     ): Promise<SystemSwitchReassert[]> => {
       const { tenantId, scopeId } = node;
       const { vertical, move } = await systemSwitchTarget(tenantId, scopeId);
-      const modules = await this.cp.switchedOffModulesOf(tenantId, scopeId);
+      const recorded = new Map(await this.cp.systemSwitchRecordsOf(tenantId, scopeId));
+      // #1742 review: moves the deployment made from a stale list (restored ON after the list
+      // was read), to undo before the OFF pass below.
+      const reverts = staleCarryReverts(recorded, opts?.appliedInUnit);
       // A hosted scope with no delegation configured (Copilot review): this host's own
       // namespace is the module-less placeholder, where the switch would answer `held: false`
       // quietly — a re-assert reported done, and a receipt written, while the deployment
       // serving the scope keeps its schedules running. Refused loudly instead, as the status
       // read is, and only when a re-assert is owed: nothing recorded, nothing to refuse.
-      if (modules.length > 0 && !this.cpLess && vertical !== null && !this.systemSwitchDelegation) {
+      const owed = reverts.length > 0 || [...recorded.values()].includes('off');
+      if (owed && !this.cpLess && vertical !== null && !this.systemSwitchDelegation) {
         throw substratError(
           'unavailable',
           `no delegation configured for hosted scope ${scopeId} (vertical '${vertical}') — cannot re-assert ` +
             `its switched-off schedules in the deployment serving it`,
         );
       }
+      const at = new Date().toISOString();
+      for (const moduleId of reverts) {
+        const outcome = await move(moduleId as ModuleId, 'on', at);
+        if (outcome.changed) {
+          await this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId, vertical }, null, {
+            operationId: ulid(),
+            ...staleCarryRevertRow(moduleId, outcome),
+          });
+        }
+      }
+      // Read AFTER the reverts: an OFF that landed meanwhile is switched off below.
+      const modules = await this.cp.switchedOffModulesOf(tenantId, scopeId);
       // #1742: what the deployment already switched off inside its own unit, audited here —
       // the move below answers `changed: false` for it and would write no row.
       for (const row of inUnitMovesToAudit(modules, opts?.appliedInUnit)) {
@@ -4385,7 +4403,6 @@ export class CloudflareScopeHost implements ScopeHost {
           ...row,
         });
       }
-      const at = new Date().toISOString();
       const results: SystemSwitchReassert[] = [];
       for (const moduleId of modules) {
         const outcome = await move(moduleId as ModuleId, 'off', at);

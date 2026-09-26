@@ -468,6 +468,54 @@ export function systemSwitchContractSuite(
       expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: SCHEDULES, failed: 0 });
     });
 
+    /**
+     * #1742 review: the list a deployment applies is read BEFORE the call, so an operator's
+     * `restoreToSystem` can land in between. The deployment then switches the module off from
+     * a stale list, and the re-assert after it finds the record `on`. Here the deployment's
+     * stale move is played by a restore of a dump taken while the module was off (the marker
+     * rides it), and its report is handed to the re-assert as the deployment would.
+     */
+    const staleScope = async () => {
+      const s = await newScope();
+      await off(s);
+      const whileOff = await host.admin.exportScope(staff, t, s);
+      await on(s); // the operator's ON: record `on`, scope on
+      await host.restoreScope(staff, t, s, whileOff); // the stale list, applied: off again
+      expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
+      return s;
+    };
+    const staleRows = async (s: ScopeId) =>
+      (await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: ['reassertSystemSwitch'] })).map((e) => e.after);
+
+    it("a stale list's move is undone: the operator's ON stands, and the revert is audited (#1742 review)", async () => {
+      const s = await staleScope();
+      const reported = [{ moduleId: SCHED, changed: true, permissions: ['sched:tick'] }];
+      expect(await host.admin.reassertSystemSwitches(staff, { tenantId: t, scopeId: s }, { appliedInUnit: reported })).toEqual([]);
+      expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: SCHEDULES, failed: 0 });
+      expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['on', 'on']]);
+      expect(await staleRows(s)).toEqual([
+        expect.objectContaining({ moduleId: SCHED, schedules: 'on', changed: true, staleCarry: true, permissions: ['sched:tick'] }),
+      ]);
+    });
+
+    it('twin: with no in-unit move reported, a record of `on` still never turns a module on', async () => {
+      const s = await staleScope();
+      expect(await host.admin.reassertSystemSwitches(staff, { tenantId: t, scopeId: s })).toEqual([]);
+      expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
+      expect(await staleRows(s)).toEqual([]);
+    });
+
+    it('twin: a reported move on a module still recorded OFF is kept off, never reverted', async () => {
+      const s = await newScope();
+      await off(s);
+      const reported = [{ moduleId: SCHED, changed: true, permissions: ['sched:tick'] }];
+      expect(await host.admin.reassertSystemSwitches(staff, { tenantId: t, scopeId: s }, { appliedInUnit: reported })).toEqual([
+        { moduleId: SCHED, held: true, changed: false },
+      ]);
+      expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
+      expect(await staleRows(s)).toEqual([expect.objectContaining({ moduleId: SCHED, schedules: 'off', inUnit: true })]);
+    });
+
     it("the re-assert in a provision or a restore reaches only that scope's own switch (#1742)", async () => {
       const a = await newScope();
       const b = await newScope();
