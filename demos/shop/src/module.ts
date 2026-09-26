@@ -22,6 +22,7 @@ import {
   type Page,
   operationInputsOf,
   substratError,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -1083,28 +1084,28 @@ const closeOrderOp: OperationHandler<{ orderId: string }, OrderRow> = async (ctx
  * would close a cycle.
  */
 const OPERATIONS = {
-    'shop/create-product': createProductOp as never,
-    'shop/add-variant': addVariantOp as never,
-    'shop/publish-product': publishProductOp as never,
-    'shop/set-stock': setStockOp as never,
-    'shop/stock-overview': stockOverviewOp as never,
-    'shop/catalog': catalogOp as never,
-    'shop/create-customer': createCustomerOp as never,
-    'shop/create-discount': createDiscountOp as never,
-    'shop/create-cart': createCartOp as never,
-    'shop/add-to-cart': addToCartOp as never,
-    'shop/set-line-qty': setLineQtyOp as never,
-    'shop/remove-line': removeLineOp as never,
-    'shop/cart': cartOp as never,
-    'shop/quote': quoteOp as never,
-    'shop/checkout': checkoutOp as never,
-    'shop/orders': ordersOp as never,
-    'shop/order': orderOp as never,
-    'shop/portal-orders': portalOrdersOp as never,
-    'shop/my-customer': myCustomerOp as never,
-  'shop/fulfil-order': fulfilOrderOp as never,
-  'shop/close-order': closeOrderOp as never,
-};
+  'shop/create-product': createProductOp,
+  'shop/add-variant': addVariantOp,
+  'shop/publish-product': publishProductOp,
+  'shop/set-stock': setStockOp,
+  'shop/stock-overview': stockOverviewOp,
+  'shop/catalog': catalogOp,
+  'shop/create-customer': createCustomerOp,
+  'shop/create-discount': createDiscountOp,
+  'shop/create-cart': createCartOp,
+  'shop/add-to-cart': addToCartOp,
+  'shop/set-line-qty': setLineQtyOp,
+  'shop/remove-line': removeLineOp,
+  'shop/cart': cartOp,
+  'shop/quote': quoteOp,
+  'shop/checkout': checkoutOp,
+  'shop/orders': ordersOp,
+  'shop/order': orderOp,
+  'shop/portal-orders': portalOrdersOp,
+  'shop/my-customer': myCustomerOp,
+  'shop/fulfil-order': fulfilOrderOp,
+  'shop/close-order': closeOrderOp,
+} satisfies OperationImpl<typeof shopOperations, OperationContext>;
 
 export const shopModule: ModuleRegistration = {
   manifest: shopManifest,

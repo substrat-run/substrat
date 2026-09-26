@@ -37,6 +37,7 @@ import {
   type EntityRow,
   type Money,
   substratError,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 import type { PageParams } from '@substrat-run/kernel';
 
@@ -690,13 +691,13 @@ export const workorderModule: ModuleRegistration = {
   // rather than in the handlers that remembered (#953).
   operationInputs: operationInputsOf(workorderOperations),
   operations: {
-    'workorder/get': getOp as OperationHandler<never, unknown>,
-    'workorder/list': listOp as OperationHandler<never, unknown>,
-    'workorder/assign': assignOp as OperationHandler<never, unknown>,
-    'workorder/start': startOp as OperationHandler<never, unknown>,
-    'workorder/report-time': reportTimeOp as OperationHandler<never, unknown>,
-    'workorder/report-material': reportMaterialOp as OperationHandler<never, unknown>,
-    'workorder/complete': completeOp as OperationHandler<never, unknown>,
-    'workorder/close': closeOp as OperationHandler<never, unknown>,
-  },
+    'workorder/get': getOp,
+    'workorder/list': listOp,
+    'workorder/assign': assignOp,
+    'workorder/start': startOp,
+    'workorder/report-time': reportTimeOp,
+    'workorder/report-material': reportMaterialOp,
+    'workorder/complete': completeOp,
+    'workorder/close': closeOp,
+  } satisfies OperationImpl<typeof workorderOperations, OperationContext>,
 };

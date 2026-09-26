@@ -36,6 +36,7 @@ import {
   type Page,
   type SealedCell,
   substratError,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 import type { PageParams } from '@substrat-run/kernel';
 
@@ -2176,19 +2177,19 @@ export const protocolModule: ModuleRegistration = {
   // rather than in the handlers that remembered (#953).
   operationInputs: operationInputsOf(protocolOperations),
   operations: {
-    'protocol/define-template': defineTemplateOp as OperationHandler<never, unknown>,
-    'protocol/list-templates': listTemplatesOp as OperationHandler<never, unknown>,
-    'protocol/instantiate': instantiateOp as OperationHandler<never, unknown>,
-    'protocol/fill': fillOp as OperationHandler<never, unknown>,
-    'protocol/bind-document': bindOp as OperationHandler<never, unknown>,
-    'protocol/request-signatures': requestSignaturesOp as OperationHandler<never, unknown>,
-    'protocol/cancel-signatures': cancelSignaturesOp as OperationHandler<never, unknown>,
-    'protocol/record-signature': recordSignatureOp as OperationHandler<never, unknown>,
-    'protocol/decline-signature': declineSignatureOp as OperationHandler<never, unknown>,
-    'protocol/sign': signOp as OperationHandler<never, unknown>,
-    'protocol/countersign': countersignOp as OperationHandler<never, unknown>,
-    'protocol/void': voidOp as OperationHandler<never, unknown>,
-    'protocol/get': getOp as OperationHandler<never, unknown>,
-    'protocol/list-for-entity': listForEntityOp as OperationHandler<never, unknown>,
-  },
+    'protocol/define-template': defineTemplateOp,
+    'protocol/list-templates': listTemplatesOp,
+    'protocol/instantiate': instantiateOp,
+    'protocol/fill': fillOp,
+    'protocol/bind-document': bindOp,
+    'protocol/request-signatures': requestSignaturesOp,
+    'protocol/cancel-signatures': cancelSignaturesOp,
+    'protocol/record-signature': recordSignatureOp,
+    'protocol/decline-signature': declineSignatureOp,
+    'protocol/sign': signOp,
+    'protocol/countersign': countersignOp,
+    'protocol/void': voidOp,
+    'protocol/get': getOp,
+    'protocol/list-for-entity': listForEntityOp,
+  } satisfies OperationImpl<typeof protocolOperations, OperationContext>,
 };
