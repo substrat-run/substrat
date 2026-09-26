@@ -9352,8 +9352,6 @@ export class SqliteScopeHost implements ScopeHost {
       auditLog: async (actor, filter?: AuditLogFilter): Promise<AdminLogEntry[]> => {
         const where: string[] = [];
         const params: (string | number)[] = [];
-        let from = '_substrat_admin_log l';
-        const head: string[] = [];
         if (filter?.tenantId) {
           where.push('tenant_id = ?');
           params.push(filter.tenantId);
@@ -9369,11 +9367,9 @@ export class SqliteScopeHost implements ScopeHost {
         if (filter?.action) {
           const actions = Array.isArray(filter.action) ? filter.action : [filter.action];
           if (actions.length === 0) return []; // no action is acceptable — match nothing
-          // One JSON array, the shape the DO twin needs for its 100-parameter limit (#1776),
-          // and the driving side of a `CROSS JOIN` for its plan's sake (#1787).
-          from =
-            '(SELECT DISTINCT value AS action FROM json_each(?)) j CROSS JOIN _substrat_admin_log l ON l.action = j.action';
-          head.push(JSON.stringify(actions));
+          // One JSON array, the shape the DO twin needs for its 100-parameter limit (#1776).
+          where.push('action IN (SELECT value FROM json_each(?))');
+          params.push(JSON.stringify(actions));
         }
         if (filter?.since) {
           where.push('at >= ?');
@@ -9391,14 +9387,14 @@ export class SqliteScopeHost implements ScopeHost {
           params.push(filter.cursor);
         }
         let sql =
-          `SELECT l.* FROM ${from}` +
+          'SELECT * FROM _substrat_admin_log' +
           (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
           ` ORDER BY id ${order}`;
         if (filter?.limit !== undefined) {
           sql += ' LIMIT ?';
           params.push(filter.limit);
         }
-        const rows = this.directory.prepare(sql).all(...head, ...params) as AdminLogRow[];
+        const rows = this.directory.prepare(sql).all(...params) as AdminLogRow[];
         // Reading the audit trail is itself audited. Who examined the record of
         // who did what is exactly the question an incident asks second.
         this.recordAccess(

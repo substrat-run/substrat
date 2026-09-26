@@ -3943,8 +3943,6 @@ export class ControlPlaneDO extends DurableObject {
   auditLog(query: AuditLogQuery): AdminLogEntry[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
-    let from = '_substrat_admin_log l';
-    const head: string[] = [];
     if (query.tenantId) {
       where.push('tenant_id = ?');
       params.push(query.tenantId);
@@ -3960,13 +3958,9 @@ export class ControlPlaneDO extends DurableObject {
     if (query.action) {
       if (query.action.length === 0) return []; // no action is acceptable — match nothing
       // ONE bound JSON array, not a `?` per entry (#1776): a DO binds at most 100
-      // parameters, and nothing bounds this list's length (an action may repeat). It is the
-      // DRIVING side of a `CROSS JOIN` below (#1787): as a plain `action IN (SELECT …)`, the
-      // paged read (`id > ?`) walks the primary key instead of `_substrat_admin_log_action` once
-      // table statistics exist, and this log only grows.
-      from =
-        '(SELECT DISTINCT value AS action FROM json_each(?)) j CROSS JOIN _substrat_admin_log l ON l.action = j.action';
-      head.push(JSON.stringify(query.action));
+      // parameters, and nothing bounds this list's length (an action may repeat).
+      where.push('action IN (SELECT value FROM json_each(?))');
+      params.push(JSON.stringify(query.action));
     }
     if (query.since) {
       where.push('at >= ?');
@@ -3983,14 +3977,14 @@ export class ControlPlaneDO extends DurableObject {
       params.push(query.cursor);
     }
     let sql =
-      `SELECT l.* FROM ${from}` +
+      'SELECT * FROM _substrat_admin_log' +
       (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
       ` ORDER BY id ${order}`;
     if (query.limit !== undefined) {
       sql += ' LIMIT ?';
       params.push(query.limit);
     }
-    const rows = this.sql.exec(sql, ...head, ...params).toArray() as unknown as AdminLogRow[];
+    const rows = this.sql.exec(sql, ...params).toArray() as unknown as AdminLogRow[];
     return rows.map(
       (r) =>
         ({
