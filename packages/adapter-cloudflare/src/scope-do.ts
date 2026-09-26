@@ -1,3 +1,4 @@
+import { REWIND_REFUSED } from './rewind-refusal.js';
 import { DurableObject } from 'cloudflare:workers';
 import {
   ATTACHMENT_ADDED,
@@ -1633,7 +1634,7 @@ export function defineScopeDO(
         onNextSessionRestoreBookmark?: (b: string) => Promise<string>;
       };
       if (typeof storage.onNextSessionRestoreBookmark !== 'function') {
-        throw new Error('point-in-time rewind is not available on this host (PITR is production-plane only)');
+        throw new Error(`${REWIND_REFUSED}point-in-time rewind is not available on this host (PITR is production-plane only)`);
       }
       const row = this.sql
         .exec('SELECT taken_at FROM _substrat_migration_bookmarks WHERE bookmark = ?', bookmark)
@@ -1641,13 +1642,14 @@ export function defineScopeDO(
       if (!opts?.force) {
         if (!row) {
           throw new Error(
-            'unknown bookmark — not one this scope recorded before a migration (force admits any bookmark Cloudflare holds)',
+            `${REWIND_REFUSED}unknown bookmark — not one this scope recorded before a migration ` +
+              '(force admits any bookmark Cloudflare holds)',
           );
         }
         const ageMs = Date.now() - Date.parse(row.taken_at);
         if (ageMs > 24 * 60 * 60 * 1000) {
           throw new Error(
-            `bookmark is ${Math.round(ageMs / 3_600_000)}h old — rewinding discards EVERY write since; ` +
+            `${REWIND_REFUSED}bookmark is ${Math.round(ageMs / 3_600_000)}h old — rewinding discards EVERY write since; ` +
               `use the backup restore path (#278), or force if the loss is intended`,
           );
         }

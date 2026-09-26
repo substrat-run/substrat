@@ -2221,17 +2221,32 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await heldOn(s)).toEqual([]);
   });
 
-  it('a refused rewind releases what it held, and nothing else', async () => {
+  it('a definite refusal releases what it held, and nothing else', async () => {
     const s = await newScope();
     await off(s);
-    // Not armed, and no such bookmark: the DO refuses before anything is restored.
-    await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/unknown bookmark/);
+    // Not armed, and no such bookmark: the DO refuses before anything is restored, and says so.
+    await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/^rewind refused: unknown bookmark/);
     expect(await heldOn(s)).toEqual([]);
     // Twin: a hold that was already there before the refused rewind stays.
     await holdsStub().switchHoldAdd(s, [SCHED], new Date().toISOString());
-    await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/unknown bookmark/);
+    await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/^rewind refused: /);
     expect(await heldOn(s)).toEqual([SCHED]);
     await holdsStub().switchHoldRelease(s, null);
+  });
+
+  it('an ambiguous throw keeps the hold: the DO may have armed the bookmark', async () => {
+    const s = await newScope();
+    await off(s);
+    // A raw failure with no refusal prefix, after the DO got as far as arming. The host cannot
+    // tell whether the scope will come back rewound, so it keeps the hold.
+    await armRewind(env.SCOPE, s, { throwing: 'Network connection lost.' });
+    await expect(host.rewindScopeLocal(s, 'bm', { force: true })).rejects.toThrow(/Network connection lost/);
+    expect(await heldOn(s)).toEqual([SCHED]);
+    // Inert on a scope that is still off, and the next move of the switch releases it.
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    await host.systemSwitchLocal(s, SCHED, 'on');
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
   });
 
   /**

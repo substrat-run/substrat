@@ -1,3 +1,4 @@
+import { isRewindRefusal } from './rewind-refusal.js';
 import {
   delegatedReadParams,
   fromWireFailure,
@@ -7188,7 +7189,9 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * Rewind one scope, holding what it has switched off. The OFF modules are read and held
    * BEFORE the rewind, while this storage still holds them. The rewind then waits
-   * `SWITCH_HOLD_SETTLE_MS`. A refused rewind releases what it added.
+   * `SWITCH_HOLD_SETTLE_MS`. Only a DEFINITE refusal releases what it added: any other throw
+   * may come after the DO armed the bookmark, and then the scope is rewound after all. A hold
+   * kept on a module the scope still has off costs nothing, and its next switch move releases it.
    */
   private async rewindHolding(
     scopeId: ScopeId,
@@ -7204,7 +7207,7 @@ export class CloudflareScopeHost implements ScopeHost {
       await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS));
       return await rewind();
     } catch (err) {
-      await this.releaseSwitchHold(scopeId, added).catch(() => undefined);
+      if (isRewindRefusal(err)) await this.releaseSwitchHold(scopeId, added).catch(() => undefined);
       throw err;
     }
   }

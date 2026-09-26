@@ -24,11 +24,22 @@ const RESTART_MARK = '__substratPitrEmulationArmed';
 
 type Instance = Record<string, unknown>;
 
-/** Arm the next `rewindToBookmark` on this scope's live instance to accept any bookmark. */
-export async function armRewind(ns: DurableObjectNamespace, scopeId: string): Promise<void> {
+/**
+ * Arm the next `rewindToBookmark` on this scope's live instance to accept any bookmark. With
+ * `throwing`, the restore call throws that message instead: a raw transport-style failure with
+ * no refusal prefix, after the DO got as far as arming, which the host cannot read as a refusal.
+ */
+export async function armRewind(
+  ns: DurableObjectNamespace,
+  scopeId: string,
+  opts?: { throwing?: string },
+): Promise<void> {
   await runInDurableObject(ns.get(ns.idFromName(scopeId)), (instance, state) => {
     (state.storage as unknown as { onNextSessionRestoreBookmark: (b: string) => Promise<string> })
-      .onNextSessionRestoreBookmark = async (bookmark) => bookmark;
+      .onNextSessionRestoreBookmark = async (bookmark) => {
+      if (opts?.throwing) throw new Error(opts.throwing);
+      return bookmark;
+    };
     // Set on THIS instance only, so a restarted one is told apart from it.
     (instance as unknown as Instance)[RESTART_MARK] = true;
   });
