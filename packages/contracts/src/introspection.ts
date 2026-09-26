@@ -514,7 +514,30 @@ export function assertSingleCreateTable(ddl: string, name: string): void {
  * one `CREATE TABLE` per table. The single entry point a replay site calls, so a new
  * one cannot pick up half the rules.
  */
-export function assertReplayableDump(tables: { name: string; ddl: string; columns?: string[] }[]): void {
+export function assertReplayableDump(
+  tables: { name: string; ddl: string; columns?: string[] }[],
+  opts: { maxColumns?: number } = {},
+): void {
   assertDumpIdentifiers(tables);
   for (const t of tables) assertSingleCreateTable(t.ddl, t.name);
+  // #1811: a Durable Object cannot hold a table past its column cap, and no change to the replay
+  // can help — the `CREATE TABLE` itself is refused. Said here, before any of it runs, so a
+  // restore or fork onto one fails with a sentence instead of a bare SQLITE_ERROR partway
+  // through. Only the replay onto a DO passes a limit: a node scope CAN hold such a table, and
+  // a node restore of it stays accepted.
+  const { maxColumns } = opts;
+  if (maxColumns !== undefined) {
+    for (const t of tables) {
+      // `columns` is `SELECT *`, which lists a generated column; the only columns it leaves out
+      // are a virtual table's hidden ones, and a virtual table is refused above (#1811 review).
+      const width = t.columns?.length ?? 0;
+      if (width > maxColumns) {
+        throw new Error(
+          `refusing this dump: table ${JSON.stringify(t.name)} has ${width} columns, and a Durable Object's ` +
+            `SQLite holds at most ${maxColumns} per table, so it cannot be restored or forked onto the hosted ` +
+            'adapter. Narrow the table (split it, or drop columns) at the source first. Nothing was changed.',
+        );
+      }
+    }
+  }
 }

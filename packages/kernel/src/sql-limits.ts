@@ -25,6 +25,16 @@
  * | bound parameters              | 100            | `too many SQL variables at offset N`                |
  * | statement length              | 100 000 bytes  | `statement too long` (`SQLITE_TOOBIG`)              |
  * | `LIKE`/`GLOB` pattern length  | 50 bytes       | `LIKE or GLOB pattern too complex` (not judged here: preload only) |
+ * | columns in a table            | 100            | `too many columns on <table>`                       |
+ * | columns in a result set       | 100            | `too many columns in result set`                    |
+ *
+ * A TABLE's width cannot be judged from the text — a `SELECT *` is as wide as the tables under it,
+ * and a table is as wide as its migrations left it — so the node adapter reads it from the
+ * schema AFTER a migration or runtime DDL ran (#1811). A result set is judged twice: the
+ * outermost width from the driver's prepared statement (which sees a `*`), and every select
+ * core's WRITTEN columns from the text, because the limit is on every core and the driver
+ * reports only the outermost (`SELECT c0 FROM (SELECT 0, …, 100)` is refused hosted). What
+ * neither sees is a `*` inside an inner SELECT: that gap is documented, not judged.
  *
  * What is NOT a limit, measured: a multi-row `VALUES` list — SQLite does not count its rows
  * as compound terms; 5 000 rows ran on the DO. So `INSERT … VALUES (…),(…),…` is bounded by
@@ -56,6 +66,8 @@ export const DO_SQL_LIMITS = {
   statementBytes: 100_000,
   /** `LIKE`/`GLOB` pattern length, in UTF-8 bytes. Enforced by `tools/vitest/like-pattern-limit.cjs`. */
   likePatternBytes: 50,
+  /** Columns in one table, and in one result set. Measured by a 1–2001 binary search on workerd (#1811). */
+  columns: 100,
 } as const;
 
 // Declared locally, as `secret-box.ts` does: the kernel builds without DOM or node typings.
@@ -67,6 +79,8 @@ const byteLength = (s: string): number => utf8.encode(s).length;
 const byteOffset = (sql: string, index: number): number => byteLength(sql.slice(0, index));
 
 const COMPOUND_OPERATORS = new Set(['union', 'intersect', 'except']);
+/** The words that end a `SELECT`'s result-column list at its own parenthesis level. */
+const END_OF_RESULT_LIST = new Set(['from', 'where', 'group', 'having', 'window', 'order', 'limit', ...COMPOUND_OPERATORS]);
 const isWord = (c: string): boolean => /[A-Za-z0-9_$\u0080-￿]/.test(c);
 
 /**
@@ -114,6 +128,20 @@ export function assertWithinSqlLimits(sql: string): void {
   const n = sql.length;
   // Operators seen at each open parenthesis level of the statement being scanned.
   let operators: number[] = [0];
+  // The result columns written so far in the SELECT list open at each level, or 0 when none is.
+  // SQLite's column limit is checked on EVERY select core, so `SELECT c0 FROM (SELECT 0, …, 100)`
+  // is refused although the outermost projection is one column wide (#1811 review). Only columns
+  // written out are counted: a `*` is as wide as the tables under it, which the text cannot say,
+  // and the adapter reads the OUTERMOST width from the driver instead.
+  let lists: number[] = [0];
+  const endList = (level: number): void => {
+    const width = lists[level]!;
+    lists[level] = 0;
+    if (width > DO_SQL_LIMITS.columns) throw new Error(tooManyResultColumns(width));
+  };
+  const endAllLists = (): void => {
+    for (let level = lists.length - 1; level >= 0; level -= 1) endList(level);
+  };
   let nVar = 0;
   const named = new Map<string, number>();
   const tooManyVariables = (at: number): Error =>
@@ -159,17 +187,30 @@ export function assertWithinSqlLimits(sql: string): void {
     }
     if (c === '(') {
       operators.push(0);
+      lists.push(0);
       i += 1;
       continue;
     }
     if (c === ')') {
-      if (operators.length > 1) operators.pop();
+      if (operators.length > 1) {
+        endList(lists.length - 1);
+        operators.pop();
+        lists.pop();
+      }
+      i += 1;
+      continue;
+    }
+    if (c === ',') {
+      const level = lists.length - 1;
+      if (lists[level]! > 0) lists[level] = lists[level]! + 1;
       i += 1;
       continue;
     }
     if (c === ';') {
+      endAllLists();
       // A new statement: its own compound chain and its own parameter numbering.
       operators = [0];
+      lists = [0];
       nVar = 0;
       named.clear();
       i += 1;
@@ -211,6 +252,11 @@ export function assertWithinSqlLimits(sql: string): void {
       while (i < n && isWord(sql[i]!)) i += 1;
       // `t.union` is a column, not an operator; a reserved word cannot be a bare name otherwise.
       const word = sql.slice(start, i).toLowerCase();
+      const level = lists.length - 1;
+      if (sql[start - 1] !== '.') {
+        if (END_OF_RESULT_LIST.has(word)) endList(level);
+        else if (word === 'select') lists[level] = 1;
+      }
       if (COMPOUND_OPERATORS.has(word) && sql[start - 1] !== '.') {
         const level = operators.length - 1;
         operators[level] = operators[level]! + 1;
@@ -222,7 +268,20 @@ export function assertWithinSqlLimits(sql: string): void {
     }
     i += 1;
   }
+  endAllLists();
 }
+
+/**
+ * The refusal of a result set wider than `DO_SQL_LIMITS.columns`: the DO's own words, then what
+ * the DO does not say. (A DO names a table it refuses `sqlite_altertab_<t>` for an `ADD COLUMN`,
+ * so the two adapters do not share the table message exactly; a suite matches its prefix.)
+ */
+export const tooManyResultColumns = (width: number): string =>
+  `too many columns in result set: SQLITE_ERROR (${width} columns; limit ${DO_SQL_LIMITS.columns})`;
+
+/** The refusal of a table wider than `DO_SQL_LIMITS.columns`, counted as the DO counts. */
+export const tooManyTableColumns = (table: string, width: number): string =>
+  `too many columns on ${table}: SQLITE_ERROR (${width} columns; limit ${DO_SQL_LIMITS.columns})`;
 
 /**
  * Wrap a module-facing `ScopedSql` so every statement passes `assertWithinSqlLimits` first.
