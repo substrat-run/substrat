@@ -148,4 +148,36 @@ describe('Team: Copy link on a pending invite', () => {
     await act(async () => resolve(link('https://x.test/invite/tok')));
     expect(region()?.textContent).toContain('No email was sent');
   });
+
+  it('the link field has an accessible name, in the roster dialog and the create dialog', async () => {
+    render({ canManage: true, onCopyLink: async () => link('https://x.test/invite/tok') });
+    await act(async () => copyButtons()[0]!.click());
+    expect(document.querySelector('input[aria-label="Invite link"][value="https://x.test/invite/tok"]')).not.toBeNull();
+    await act(async () => [...document.querySelectorAll('button')].find((b) => b.textContent === 'Done')!.click());
+
+    // The create dialog: invite someone and read the link it hands back.
+    act(() => {
+      root.render(
+        <Team
+          members={ROSTER}
+          meEmail="owner@acme.test"
+          canManage
+          onInvite={async () => ({ acceptUrl: 'https://x.test/invite/new', emailDelivered: true })}
+          onResend={() => undefined}
+          onRevoke={() => undefined}
+          onRemove={() => undefined}
+        />,
+      );
+    });
+    await act(async () => [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Invite')!.click());
+    const email = document.querySelector('input[placeholder="colleague@company.com"]') as HTMLInputElement;
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      set.call(email, 'new@acme.test');
+      email.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const send = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Create invite')!;
+    await act(async () => send.click());
+    expect(document.querySelector('input[aria-label="Invite link"][value="https://x.test/invite/new"]')).not.toBeNull();
+  });
 });

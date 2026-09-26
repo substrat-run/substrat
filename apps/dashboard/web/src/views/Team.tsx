@@ -265,7 +265,7 @@ export function Team({
                   : 'Invite created. Share this link with them:'}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <Input value={link} mono style={{ flex: 1 }} onChange={() => {}} />
+              <Input ariaLabel="Invite link" value={link} mono style={{ flex: 1 }} onChange={() => {}} />
               <Button
                 variant="secondary"
                 onClick={() => { void navigator.clipboard?.writeText(link); setCopied(true); }}
@@ -310,7 +310,7 @@ export function Team({
                   {shared.copied ? 'Copied. ' : ''}Share this link with {shared.email}. No email was sent.
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <Input value={shared.link} mono style={{ flex: 1 }} onChange={() => {}} />
+                  <Input ariaLabel="Invite link" value={shared.link} mono style={{ flex: 1 }} onChange={() => {}} />
                   <Button
                     variant="secondary"
                     onClick={async () => {
