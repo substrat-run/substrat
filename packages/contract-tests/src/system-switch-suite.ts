@@ -708,19 +708,19 @@ export function systemSwitchContractSuite(
       await tn.grant('sched:admin');
     });
 
-    // #1823, #1743's adjacent case, pinned rather than silent: a tenant-level system grant that
-    // ALREADY exists when a scope is switched off is not touched by OFF (which tombstones only
-    // the scope's own `granted:` tuples), so the module keeps its system authority there.
-    // `it.fails` passes while the gap is open and goes red the day it closes — update it then.
-    it.fails('GAP: scope-level OFF does not take back an existing tenant-level grant (#1823)', async () => {
+    // Documents #1823; flip when fixed. A tenant-level system grant that ALREADY exists when a
+    // scope is switched off is not touched by OFF (which tombstones only the scope's own
+    // `granted:` tuples). The schedules stop, because the marker wins, but the module keeps its
+    // system authority there. This asserts today's behaviour, so ANY fix turns it red: OFF
+    // taking the authority back, or the tenant-level grant being refused at setup.
+    it('GAP (#1823): scope-level OFF stops the schedules but leaves an existing tenant-level grant usable', async () => {
       const tn = await newTenant();
       const s = await tn.scope();
       await tn.grant('sched:tick');
       await tn.off(s);
       expect(await host.runDueSchedules(SCHED, tn.tenant, s)).toEqual(switchedOff);
-      await expect((await host.getSystemScope(SCHED, tn.tenant, s)).invoke('sched/tick')).rejects.toThrow(
-        /sched:tick/,
-      );
+      // The gap: this should be denied while the switch is off, and today it resolves.
+      await (await host.getSystemScope(SCHED, tn.tenant, s)).invoke('sched/tick');
     });
   });
 }
