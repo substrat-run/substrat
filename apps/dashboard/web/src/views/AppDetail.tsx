@@ -2315,7 +2315,7 @@ function DataBrowser({ app }: { app: AppRow }) {
   const banner = (
     <HonestyBanner>
       Read-only. {multi ? <>Browsing the <strong>{activeName}</strong> scope — this app spans {list.length} scopes. </> : null}
-      This is the app’s live database — one Durable Object per scope. Every read is audited. Rows can’t be edited here: writes go
+      This is the app’s live database — one Durable Object per scope, personal data included, as stored. Every read is audited. Rows can’t be edited here: writes go
       through the app’s operations so the event log and invariants stay intact.
     </HonestyBanner>
   );
@@ -2445,6 +2445,7 @@ function SqlConsole({ scopeId }: { scopeId: string }) {
           spellCheck={false}
           style={{ width: '100%', resize: 'vertical', border: '1px solid var(--border-default)', borderRadius: 6, background: 'var(--surface-card)', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: 12.5, padding: '8px 10px', boxSizing: 'border-box' }}
         />
+        <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>Reads this app’s data as stored, including personal data. Every query is recorded in the access log.</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <button type="button" onClick={run} disabled={!sql.trim() || running} style={{ ...pagerBtn(Boolean(sql.trim()) && !running), fontWeight: 600 }}>
             {running ? 'Running…' : 'Run'}
