@@ -8,6 +8,8 @@ import {
   orgId as orgIdSchema,
   platformActorId,
   scopeId as scopeIdSchema,
+  type BindAcknowledgement,
+  type ExportBreak,
   type PermissionKey,
   type PlatformActorId,
   type PrincipalId,
@@ -17,7 +19,7 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { ulid, type ScopeHost } from '@substrat-run/kernel';
+import { bindExportBreakRefusal, ulid, type ScopeHost } from '@substrat-run/kernel';
 import { invitesModule } from '@substrat-run/engine-invites';
 import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js';
 import { ControlPlaneError, TenantNarrowedControlPlane, type DnsRecordRow, type SnapshotRecord } from './authority.js';
@@ -704,6 +706,17 @@ export async function resumeApp(
   });
 }
 
+/**
+ * #1756: an Update or a Bind refused for what it would break in this team: other apps here
+ * import an event the version no longer exports. Carries the apps, which are all this team's.
+ */
+export class ExportBreakRefused extends Error {
+  constructor(readonly breaks: ExportBreak[]) {
+    super(bindExportBreakRefusal(breaks));
+    this.name = 'ExportBreakRefused';
+  }
+}
+
 /** The outcome of an update: whether it moved, and the version labels either side. */
 export interface UpdateAppResult {
   /** False when the app was already on the prod version (no rebind, no event). */
@@ -734,6 +747,8 @@ export async function updateApp(
     verticalSlug: string;
     /** Fork-before-promote (§4): snapshot pre-migration data before the rebind. */
     snapshot?: boolean;
+    /** #1756: update even though prod drops an export another app in this tenant imports. */
+    acknowledge?: BindAcknowledgement;
     controlPlane?: TenantNarrowedControlPlane;
   },
 ): Promise<UpdateAppResult> {
@@ -764,6 +779,16 @@ export async function updateApp(
   // Already current — nothing to rebind, and nothing worth an Activity entry.
   if (prodVersionId === boundVersionId) return { updated: false, version: toLabel, previousVersion: fromLabel };
 
+  // #1756: asked BEFORE the move is recorded, so a refused Update — answered No, or answered
+  // by sending it again acknowledged — writes no Activity line of its own. The bind below still
+  // refuses whoever calls; only a promote landing between the two can leave a line behind.
+  if (!input.acknowledge?.exportBreak) {
+    const breaks = input.controlPlane
+      ? await input.controlPlane.bindingImpact(input.appScopeId, prodVersionId)
+      : await host.admin.bindingImpact(platformActorId.parse(ulid()), input.node.tenantId, input.appScopeId, prodVersionId);
+    if (breaks.length > 0) throw new ExportBreakRefused(breaks);
+  }
+
   // Authorize in-scope + record the move (the assert gates the effect below), then
   // rebind the scope so the router dispatches on the new version's deploymentRef.
   // `snapshot` is fork-before-promote (preview-and-snapshots.md §4): the platform
@@ -771,16 +796,20 @@ export async function updateApp(
   // digest — and does nothing extra on a code-only update.
   await scope.invoke('dashboard/update-app', {
     appScopeId: input.appScopeId,
-    detail: `${fromLabel ?? '—'} → ${toLabel ?? prodVersionId}${input.snapshot ? ' (snapshot first)' : ''}`,
+    detail:
+      `${fromLabel ?? '—'} → ${toLabel ?? prodVersionId}${input.snapshot ? ' (snapshot first)' : ''}` +
+      (input.acknowledge?.exportBreak ? ' (export break acknowledged)' : ''),
   });
   if (input.controlPlane) {
     await input.controlPlane.bindScopeVersion(input.appScopeId, prodVersionId, {
       snapshot: input.snapshot,
+      acknowledge: input.acknowledge,
     });
   } else {
     const staff = platformActorId.parse(ulid());
     await host.admin.bindScopeVersion(staff, input.node.tenantId, input.appScopeId, prodVersionId, {
       snapshot: input.snapshot,
+      acknowledge: input.acknowledge,
     });
   }
 

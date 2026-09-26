@@ -22,13 +22,13 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, importCursorMove, parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
-import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
+import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { McpReconcileGate, clearAppMcpResources, isSharedIssuer, issuerFor, logUnsettled, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
@@ -758,6 +758,11 @@ const promoteBody = z.object({
     .object({ permissionChange: z.boolean().optional(), migrationChange: z.boolean().optional(), exportBreak: z.boolean().optional() })
     .optional(),
 });
+
+// #1756: what an Update or a Bind may acknowledge — the plane refuses a version that drops an
+// export another app in this tenant imports, unless this says it was read. Strict, as the plane's
+// own is: a digest acknowledgement means nothing on a bind, and is refused rather than dropped.
+const bindAckBody = bindAcknowledgement.optional();
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -2490,14 +2495,17 @@ app.post('/api/apps/:scopeId/update', async (c) => {
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   // `snapshot` = fork-before-promote (§4): snapshot the data first when the update
   // crosses a migration boundary. Body is optional — a bare POST updates as before.
+  // `acknowledge.exportBreak` (#1756): update even though prod drops an export another app in
+  // this tenant imports — the plane refuses it otherwise, and the refusal says so.
   const body = z
-    .object({ snapshot: z.boolean().optional() })
+    .object({ snapshot: z.boolean().optional(), acknowledge: bindAckBody })
     .parse(await c.req.json().catch(() => ({})));
   const result = await updateApp(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
     verticalSlug: appRow.vertical_slug,
     snapshot: body.snapshot,
+    acknowledge: body.acknowledge,
     controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   return c.json(result);
@@ -2520,11 +2528,18 @@ app.post('/api/apps/:scopeId/bind', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const body = z.object({ versionId: z.string().min(1), snapshot: z.boolean().optional() }).parse(await c.req.json());
+  const body = z
+    .object({ versionId: z.string().min(1), snapshot: z.boolean().optional(), acknowledge: bindAckBody })
+    .parse(await c.req.json());
   const target = scopeId.parse(appRow.app_scope_id);
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  // #1756: the apps this bind would break, asked first so the refusal names them.
+  if (!body.acknowledge?.exportBreak) {
+    const breaks = await cp.bindingImpact(target, body.versionId);
+    if (breaks.length > 0) throw new ExportBreakRefused(breaks);
+  }
   try {
-    const cp = controlPlaneFor(c.env, node.tenantId);
-    await cp.bindScopeVersion(target, body.versionId, body.snapshot ? { snapshot: true } : undefined);
+    await cp.bindScopeVersion(target, body.versionId, { snapshot: body.snapshot, acknowledge: body.acknowledge });
     return c.body(null, 204);
   } catch (e) {
     if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
@@ -5344,6 +5359,11 @@ app.onError((err, c) => {
   // is a deployment fact, not the caller's mistake, so it must not land in the `: 400`
   // default: 400 would tell the operator to look at what they typed.
   if (err instanceof SecretBoxUnconfiguredError) return problem(c, 503, m);
+  // #1756: an Update or a Bind refused for the apps it would break — which are the team's own,
+  // so the refusal carries them for the confirm to name.
+  if (err instanceof ExportBreakRefused) {
+    return c.json({ error: m, detail: m, exportBreaks: { affected: err.breaks } }, 409);
+  }
   // A ControlPlaneError carries the plane's OWN status. Honor it rather than letting the
   // `: 400` default below flatten an upstream 5xx to a 400 — that mislabels a server/upstream
   // fault (e.g. the CF observability token 403 that the plane surfaces as a 500 `internal error`)

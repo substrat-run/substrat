@@ -38,6 +38,7 @@ import {
   identityPool,
   createOrgInput,
   promotionAcknowledgement,
+  bindAcknowledgement,
   bindHostnameInput,
   channelHistoryEntry,
   hostnameBinding,
@@ -316,6 +317,8 @@ import {
   importCursorSourceOf,
   exportBreaksOf,
   exportBreakRefusal,
+  bindExportBreaksOf,
+  bindExportBreakRefusal,
   collectPeers,
   peerSeats,
   connectorCallRecord,
@@ -3890,6 +3893,26 @@ export class CloudflareScopeHost implements ScopeHost {
         archivedAt: r.archived_at ?? null,
         createdAt: r.created_at,
       });
+    // The (version, scope) pair a bind and its impact read both start from, and the refusals
+    // that come before any export-break question, in the order the bind makes them (#1756).
+    const bindTarget = async (tenantId: string, scopeId: string, versionId: string) => {
+      const v = await this.cp.readVersion(versionId);
+      if (!v) throw substratError('not_found', `unknown version ${versionId}`);
+      const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+      if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+      // The refusal the registry exists for — but scoped to a SERVING bind. Admission
+      // gates code reaching an install; a PREVIEW fork is the builder's own tenant's data
+      // at a non-canonical URL, serving no install, so it may run pending PR code — the
+      // same own-tenant blast radius that lets a private vertical self-admit. This is what
+      // lets a LISTED vertical's builder still preview their own new code (marketplace-publish.md
+      // §2; issue #509 ask (d)). Every other scope kind keeps the refusal.
+      if (v.admission !== 'admitted' && scope.kind !== 'preview') {
+        throw new Error(
+          `version ${versionId} is ${v.admission}, not admitted — it cannot be bound to a scope`,
+        );
+      }
+      return { v, scope };
+    };
 
     const transitionScope = async (
       actor: PlatformActorId,
@@ -5148,21 +5171,20 @@ export class CloudflareScopeHost implements ScopeHost {
           }),
         );
       },
+      bindingImpact: async (actor, tenantId, scopeId, versionId: string, opts): Promise<ExportBreak[]> => {
+        const { v, scope } = await bindTarget(tenantId, scopeId, versionId);
+        const breaks = await this.bindBreaks(actor, mapScope(scope), v, opts?.servingRef);
+        await this.recordAccess(actor, 'bindingImpact', { tenantId, scopeId }, { versionId, ...opts }, breaks.length);
+        return breaks;
+      },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
-        const v = await this.cp.readVersion(versionId);
-        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
-        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-        // The refusal the registry exists for — but scoped to a SERVING bind. Admission
-        // gates code reaching an install; a PREVIEW fork is the builder's own tenant's data
-        // at a non-canonical URL, serving no install, so it may run pending PR code — the
-        // same own-tenant blast radius that lets a private vertical self-admit. This is what
-        // lets a LISTED vertical's builder still preview their own new code (marketplace-publish.md
-        // §2; issue #509 ask (d)). Every other scope kind keeps the refusal.
-        if (v.admission !== 'admitted' && scope.kind !== 'preview') {
-          throw new Error(
-            `version ${versionId} is ${v.admission}, not admitted — it cannot be bound to a scope`,
-          );
+        const { v, scope } = await bindTarget(tenantId, scopeId, versionId);
+        const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
+        // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
+        // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
+        if (!ack.exportBreak) {
+          const breaks = await this.bindBreaks(actor, mapScope(scope), v);
+          if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
         // Fork-before-promote (§4): snapshot the pre-migration data if this rebind
         // crosses a migration boundary. Gated on a real digest change and on opt-in.
@@ -5175,6 +5197,7 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug);
         await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
           versionId, vertical: v.vertical_slug, version: v.version,
+          ...(ack.exportBreak ? { acknowledged: ack } : {}),
         });
       },
       /**
@@ -5241,16 +5264,24 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'versionMigrations', {}, { verticalSlug, versionId }, v.migrations?.length ?? 0);
         return v.migrations;
       },
-      setScopeServingRef: async (actor, tenantId, scopeId, servingRef) => {
+      setScopeServingRef: async (actor, tenantId, scopeId, servingRef, opts) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
+        // #1756: onto (or off) a serving script, the scope runs other code before its pointer
+        // moves. Judged here, so no caller that routes first and binds second passes unasked.
+        const bound = scope.vertical_version_id ? await this.cp.readVersion(scope.vertical_version_id) : undefined;
+        if (!ack.exportBreak && bound) {
+          const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
+          if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
+        }
         await this.cp.setScopeServingRef(scopeId, servingRef);
         await this.recordAdmin(
           actor,
           'setScopeServingRef',
           { tenantId, scopeId },
           { servingRef: scope.serving_ref ?? null },
-          { servingRef },
+          { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) },
         );
       },
       setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {
@@ -7712,6 +7743,37 @@ export class CloudflareScopeHost implements ScopeHost {
       producer,
       outgoing: exportsOfManifestJson(outgoingManifest),
       incoming: exportsOfManifestJson(incomingManifest),
+      readImports: (slug, versionId) => this.versionImports(slug, versionId),
+    });
+  }
+
+  /**
+   * #1756: the bind gate's question for one install (`bindExportBreaksOf`), from the directory.
+   * The serving pointer is read only when the scope is on a serving script before or after the
+   * move, the one case it decides anything, and the incoming version's manifest comes from the
+   * row the caller already holds.
+   */
+  private async bindBreaks(
+    actor: PlatformActorId,
+    scope: Scope,
+    incoming: VersionRow,
+    servingRef?: string | null,
+  ): Promise<ExportBreak[]> {
+    const vertical = scope.vertical && (scope.servingRef || servingRef) ? await this.cp.readVertical(scope.vertical) : undefined;
+    return bindExportBreaksOf({
+      admin: this.admin,
+      actor,
+      scope,
+      incoming: { id: incoming.id, verticalSlug: incoming.vertical_slug },
+      ...(servingRef !== undefined ? { servingRef } : {}),
+      serving:
+        vertical?.serving_ref && vertical.serving_version_id
+          ? { ref: vertical.serving_ref, versionId: vertical.serving_version_id }
+          : null,
+      readExports: async (versionId) =>
+        exportsOfManifestJson(
+          versionId === incoming.id ? incoming.manifest_json : ((await this.cp.readVersion(versionId))?.manifest_json ?? null),
+        ),
       readImports: (slug, versionId) => this.versionImports(slug, versionId),
     });
   }

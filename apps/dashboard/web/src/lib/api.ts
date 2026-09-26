@@ -1,6 +1,7 @@
 import { problemDetail } from '@substrat-run/contracts';
 import { tenantLogsQuery } from './logs-query';
 import type { PromoteReviewWire } from './promote-review';
+import { exportBreaksIn } from './bind-ack';
 import type { EdgeHealthReport, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PreviewAuth, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
@@ -1314,10 +1315,22 @@ export class ApiError extends Error {
      * including WHICH provider environment answered — rather than "couldn't save".
      */
     readonly probe?: ConnectionProbeView,
+    /** #1756: the apps an Update or a Bind would break, when that is why it was refused. */
+    readonly exportBreaks?: ExportBreakRow[],
   ) {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+/** One app a move would break (#1756): it imports `type` at `schemaVersion`, and the version stops exporting it. */
+export interface ExportBreakRow {
+  scopeId: string;
+  vertical: string;
+  type: string;
+  schemaVersion: number;
+  /** What the version exports it as instead, or null when it no longer does. */
+  incoming: number | null;
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1331,7 +1344,12 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     // sentence, then the deprecated duplicate every SPA read before it. The `probe`
     // beside it is the dashboard's own extension (#605) and stays read here.
     const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView } | null;
-    throw new ApiError(res.status, problemDetail(body) ?? `${res.status} ${res.statusText}`, body?.probe);
+    throw new ApiError(
+      res.status,
+      problemDetail(body) ?? `${res.status} ${res.statusText}`,
+      body?.probe,
+      exportBreaksIn<ExportBreakRow>(body),
+    );
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
@@ -1547,11 +1565,14 @@ export const api = {
       body: JSON.stringify({ sql }),
     }),
   /** Move the app to its vertical's current prod version (rebind the scope). No-op if already current. */
-  updateApp: (scopeId: string, opts?: { snapshot?: boolean }) =>
+  updateApp: (scopeId: string, opts?: { snapshot?: boolean; ackExportBreak?: boolean }) =>
     call<UpdateResult>(`/apps/${encodeURIComponent(scopeId)}/update`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ snapshot: opts?.snapshot ?? false }),
+      body: JSON.stringify({
+        snapshot: opts?.snapshot ?? false,
+        ...(opts?.ackExportBreak ? { acknowledge: { exportBreak: true } } : {}),
+      }),
     }),
   /** The app's pre-migration rewind points (#286), newest first. */
   appBookmarks: (scopeId: string) =>
@@ -1933,10 +1954,14 @@ export const api = {
   // -- per-scope rollout + builder previews (#509) --------------------------
   /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),
    *  vs `updateApp` which always rebinds to wherever prod points. `snapshot` forks first. */
-  bindAppVersion: (scopeId: string, versionId: string, opts?: { snapshot?: boolean }) =>
+  bindAppVersion: (scopeId: string, versionId: string, opts?: { snapshot?: boolean; ackExportBreak?: boolean }) =>
     call<void>(`/apps/${encodeURIComponent(scopeId)}/bind`, {
       method: 'POST',
-      body: JSON.stringify({ versionId, ...(opts?.snapshot ? { snapshot: true } : {}) }),
+      body: JSON.stringify({
+        versionId,
+        ...(opts?.snapshot ? { snapshot: true } : {}),
+        ...(opts?.ackExportBreak ? { acknowledge: { exportBreak: true } } : {}),
+      }),
     }),
   /** A vertical's live builder previews (each a fork/clean-room scope + `--<tag>` URL). */
   listPreviews: (slug: string) => call<VerticalPreview[]>(`/deployments/${encodeURIComponent(slug)}/previews`),

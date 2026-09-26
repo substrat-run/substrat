@@ -154,13 +154,17 @@ Usage:
                                               stable serving script so promotes stop
                                               stranding its data (idempotent). Use
                                               --vertical <slug> to backfill every scope.
-  substrat scope bind <scopeId> --version <id> [--snapshot]
+                                              --ack-export-break adopts even when what is
+                                              served drops an export another app imports
+  substrat scope bind <scopeId> --version <id> [--snapshot] [--ack-export-break]
                                               pin ONE scope to a version of the same
                                               vertical — the per-scope rollout primitive
                                               (canary a tenant, pin a tenant behind the
                                               fleet). --snapshot archives the pre-migration
                                               data first when the bind crosses a migration
-                                              boundary (the rollback point)
+                                              boundary (the rollback point).
+                                              --ack-export-break binds a version that drops
+                                              an export another app in the tenant imports
   substrat scope domain <scopeId> --domain <fqdn> [--surface app] [--canonical]
                                               bind a custom domain to ANY owned scope — a
                                               prod app, a preview, or a long-lived test
@@ -594,11 +598,11 @@ async function cmdScope(): Promise<void> {
     '       substrat scope restore <scopeId> --file <backup.sqlite|.dump.json> [--tenant <id-or-slug>]\n' +
     '       substrat scope status <scopeId> [--tenant <id-or-slug>]\n' +
     '       substrat scope provision <scopeId> [--tenant <id-or-slug>]\n' +
-    '       substrat scope adopt-serving <scopeId> [--tenant <id-or-slug>]\n' +
-    '       substrat scope adopt-serving --vertical <slug>\n' +
-    '       substrat scope bind <scopeId> --version <versionId> [--snapshot] [--tenant <id-or-slug>]\n' +
+    '       substrat scope adopt-serving <scopeId> [--ack-export-break] [--tenant <id-or-slug>]\n' +
+    '       substrat scope adopt-serving --vertical <slug> [--ack-export-break]\n' +
+    '       substrat scope bind <scopeId> --version <versionId> [--snapshot] [--ack-export-break] [--tenant <id-or-slug>]\n' +
     '       substrat scope domain <scopeId> --domain <fqdn> [--surface app] [--canonical] [--tenant <id-or-slug>]\n' +
-    '       substrat scope rebind <scopeId> --to <vertical> [--ack-migrations] [--abandon-data] [--tenant <id-or-slug>]';
+    '       substrat scope rebind <scopeId> --to <vertical> [--ack-migrations] [--abandon-data] [--ack-export-break] [--tenant <id-or-slug>]';
   const known =
     sub === 'pull' || sub === 'restore' || sub === 'status' || sub === 'provision' ||
     sub === 'adopt-serving' || sub === 'bind' || sub === 'domain' || sub === 'rebind';
@@ -611,7 +615,9 @@ async function cmdScope(): Promise<void> {
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   console.log(`authenticating with ${as}`);
   if (sub === 'adopt-serving' && flag('vertical')) {
-    await adoptVerticalServing({ controlPlaneUrl, header, slug: flag('vertical')! });
+    await adoptVerticalServing({
+      controlPlaneUrl, header, slug: flag('vertical')!, ackExportBreak: argv.includes('--ack-export-break'),
+    });
     return;
   }
   // Past the vertical-wide branch, every form needs a scopeId (the guard above enforced it).
@@ -629,7 +635,9 @@ async function cmdScope(): Promise<void> {
     return;
   }
   if (sub === 'adopt-serving') {
-    await adoptScopeServing({ controlPlaneUrl, header, tenantId, scopeId: scope });
+    await adoptScopeServing({
+      controlPlaneUrl, header, tenantId, scopeId: scope, ackExportBreak: argv.includes('--ack-export-break'),
+    });
     return;
   }
   if (sub === 'bind') {
@@ -641,6 +649,7 @@ async function cmdScope(): Promise<void> {
     await bindScopeVersion({
       controlPlaneUrl, header, tenantId, scopeId: scope,
       versionId: version, snapshot: argv.includes('--snapshot'),
+      ackExportBreak: argv.includes('--ack-export-break'),
     });
     return;
   }
@@ -675,6 +684,7 @@ async function cmdScope(): Promise<void> {
       controlPlaneUrl, header, tenantId, scopeId: scope,
       vertical: to, ackMigrations: argv.includes('--ack-migrations'),
       abandonData: argv.includes('--abandon-data'),
+      ackExportBreak: argv.includes('--ack-export-break'),
     });
     return;
   }

@@ -51,6 +51,11 @@ export function exportBreakLines(b: ExportBreaks): string[] {
   return lines;
 }
 
+/** The listing a refusal prints, and how to answer it once it has been read. */
+export function exportBreakListing(b: ExportBreaks): string {
+  return `\n${exportBreakLines(b).join('\n')}\n(re-run with --ack-export-break once read)`;
+}
+
 /**
  * One store the promote minted for an already-installed tenant (#825) — a store declared
  * by THIS version that the tenant, having been created before the declaration existed,
@@ -99,7 +104,7 @@ export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
       // Not JSON: the failure message below carries the body as it is.
     }
     const listing = parsed.exportBreaks
-      ? `\n${exportBreakLines(parsed.exportBreaks).join('\n')}\n(re-run with --ack-export-break once read)`
+      ? exportBreakListing(parsed.exportBreaks)
       : parsed.exportBreaksUnavailable
         ? `\n  (${parsed.exportBreaksUnavailable}; re-run with --ack-export-break to promote anyway)`
         : '';

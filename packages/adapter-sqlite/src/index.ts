@@ -26,6 +26,7 @@ import {
   exportsOfManifestJson,
   importsOfManifestJson,
   type ExportBreak,
+  type ManifestImports,
   type ExportedBatch,
   type ExportReadInput,
   type ImportBatch,
@@ -67,6 +68,7 @@ import {
   moduleManifest,
   createOrgInput,
   promotionAcknowledgement,
+  bindAcknowledgement,
   bindHostnameInput,
   channelHistoryEntry,
   hostnameBinding,
@@ -400,6 +402,8 @@ import {
   importCursorSourceOf,
   exportBreaksOf,
   exportBreakRefusal,
+  bindExportBreaksOf,
+  bindExportBreakRefusal,
   CrossVerticalRegistry,
   exportReadPlan,
   exportReadQuery,
@@ -3693,6 +3697,45 @@ export class SqliteScopeHost implements ScopeHost {
     return row ? row.manifest_json : undefined;
   }
 
+  /**
+   * #1756: the bind gate's question for one install (`bindExportBreaksOf`), from the directory.
+   * The serving pointer is read only when the scope is on a serving script before or after the
+   * move, the one case it decides anything.
+   */
+  private bindBreaks(
+    actor: PlatformActorId,
+    scope: Scope,
+    incoming: { id: string; verticalSlug: string },
+    servingRef?: string | null,
+  ): Promise<ExportBreak[]> {
+    const vertical =
+      scope.vertical && (scope.servingRef || servingRef)
+        ? (this.directory
+            .prepare('SELECT serving_ref, serving_version_id FROM verticals WHERE slug = ?')
+            .get(scope.vertical) as { serving_ref: string | null; serving_version_id: string | null } | undefined)
+        : undefined;
+    return bindExportBreaksOf({
+      admin: this.admin,
+      actor,
+      scope,
+      incoming: { id: incoming.id, verticalSlug: incoming.verticalSlug },
+      ...(servingRef !== undefined ? { servingRef } : {}),
+      serving:
+        vertical?.serving_ref && vertical.serving_version_id
+          ? { ref: vertical.serving_ref, versionId: vertical.serving_version_id }
+          : null,
+      readExports: async (versionId) => exportsOfManifestJson(this.manifestJsonOf(versionId) ?? null),
+      readImports: async (slug, versionId) => this.versionImports(slug, versionId),
+    });
+  }
+
+  /** What one version of `slug` imports, from the registry; `not_found` for a version it does not know. */
+  private versionImports(slug: string, versionId: string): ManifestImports {
+    const manifest = this.manifestJsonOf(versionId, slug);
+    if (manifest === undefined) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
+    return importsOfManifestJson(manifest);
+  }
+
   /** #1705 PR 3: the promote gate's question, over two stored versions (`exportBreaksOf`). */
   private exportBreaksBetween(
     actor: PlatformActorId,
@@ -3706,11 +3749,7 @@ export class SqliteScopeHost implements ScopeHost {
       producer,
       outgoing: exportsOfManifestJson(this.manifestJsonOf(outgoingId)),
       incoming: exportsOfManifestJson(this.manifestJsonOf(incomingId)),
-      readImports: async (slug, versionId) => {
-        const manifest = this.manifestJsonOf(versionId, slug);
-        if (manifest === undefined) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
-        return importsOfManifestJson(manifest);
-      },
+      readImports: async (slug, versionId) => this.versionImports(slug, versionId),
     });
   }
 
@@ -5673,6 +5712,29 @@ export class SqliteScopeHost implements ScopeHost {
         archivedAt: r.archived_at ?? null,
         createdAt: r.created_at,
       });
+    // The (version, scope) pair a bind and its impact read both start from, and the refusals
+    // that come before any export-break question, in the order the bind makes them (#1756).
+    const bindTarget = (tenantId: string, scopeId: string, versionId: string) => {
+      const v = readVersion(versionId);
+      if (!v) throw substratError('not_found', `unknown version ${versionId}`);
+      const scope = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as ScopeRow | undefined;
+      if (!scope || scope.tenant_id !== tenantId) {
+        throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+      }
+      // The refusal this registry exists for. Without it, "a push lands pending"
+      // is a convention, and D-30's argument is that we cannot afford conventions
+      // where lockstep upgrades are the failure mode. Scoped to a SERVING bind, though:
+      // a PREVIEW fork serves no install (the builder's own tenant's data, non-canonical
+      // URL), so it may run pending PR code — the own-tenant blast radius that lets a
+      // private vertical self-admit, and what lets a LISTED vertical's builder keep
+      // previewing their own new code (issue #509 ask (d)).
+      if (v.admission !== 'admitted' && scope.kind !== 'preview') {
+        throw new Error(
+          `version ${versionId} is ${v.admission}, not admitted — it cannot be bound to a scope`,
+        );
+      }
+      return { v, scope };
+    };
 
     // Scope lifecycle transition (control-plane.md §4.2): validate ownership,
     // enforce the legal transition graph (fail closed on an illegal one), flip
@@ -7231,26 +7293,20 @@ export class SqliteScopeHost implements ScopeHost {
           }),
         );
       },
+      bindingImpact: async (actor, tenantId, scopeId, versionId: string, opts): Promise<ExportBreak[]> => {
+        const { v, scope } = bindTarget(tenantId, scopeId, versionId);
+        const breaks = await this.bindBreaks(actor, mapScope(scope), v, opts?.servingRef);
+        this.recordAccess(actor, 'bindingImpact', { tenantId, scopeId }, { versionId, ...opts }, breaks.length);
+        return breaks;
+      },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
-        const v = readVersion(versionId);
-        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
-        const scope = this.directory
-          .prepare('SELECT tenant_id, kind, vertical_version_id FROM scopes WHERE scope_id = ?')
-          .get(scopeId) as { tenant_id: string; kind: string; vertical_version_id: string | null } | undefined;
-        if (!scope || scope.tenant_id !== tenantId) {
-          throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-        }
-        // The refusal this registry exists for. Without it, "a push lands pending"
-        // is a convention, and D-30's argument is that we cannot afford conventions
-        // where lockstep upgrades are the failure mode. Scoped to a SERVING bind, though:
-        // a PREVIEW fork serves no install (the builder's own tenant's data, non-canonical
-        // URL), so it may run pending PR code — the own-tenant blast radius that lets a
-        // private vertical self-admit, and what lets a LISTED vertical's builder keep
-        // previewing their own new code (issue #509 ask (d)).
-        if (v.admission !== 'admitted' && scope.kind !== 'preview') {
-          throw new Error(
-            `version ${versionId} is ${v.admission}, not admitted — it cannot be bound to a scope`,
-          );
+        const { v, scope } = bindTarget(tenantId, scopeId, versionId);
+        const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
+        // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
+        // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
+        if (!ack.exportBreak) {
+          const breaks = await this.bindBreaks(actor, mapScope(scope), v);
+          if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
         // Fork-before-promote (§4): snapshot the pre-migration data if this rebind
         // crosses a migration boundary. Gated on a real digest change — a code-only
@@ -7268,6 +7324,7 @@ export class SqliteScopeHost implements ScopeHost {
           versionId,
           vertical: v.verticalSlug,
           version: v.version,
+          ...(ack.exportBreak ? { acknowledged: ack } : {}),
         });
       },
       /**
@@ -7338,12 +7395,18 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'versionMigrations', {}, { verticalSlug, versionId }, v.migrations?.length ?? 0);
         return v.migrations;
       },
-      setScopeServingRef: async (actor, tenantId, scopeId, servingRef) => {
-        const scope = this.directory
-          .prepare('SELECT tenant_id, serving_ref FROM scopes WHERE scope_id = ?')
-          .get(scopeId) as { tenant_id: string; serving_ref: string | null } | undefined;
+      setScopeServingRef: async (actor, tenantId, scopeId, servingRef, opts) => {
+        const scope = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as ScopeRow | undefined;
         if (!scope || scope.tenant_id !== tenantId) {
           throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        }
+        const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
+        // #1756: onto (or off) a serving script, the scope runs other code before its pointer
+        // moves. Judged here, so no caller that routes first and binds second passes unasked.
+        const bound = scope.vertical_version_id ? readVersion(scope.vertical_version_id) : undefined;
+        if (!ack.exportBreak && bound) {
+          const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
+          if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
         this.directory
           .prepare('UPDATE scopes SET serving_ref = ? WHERE scope_id = ?')
@@ -7353,7 +7416,7 @@ export class SqliteScopeHost implements ScopeHost {
           'setScopeServingRef',
           { tenantId, scopeId },
           { servingRef: scope.serving_ref },
-          { servingRef },
+          { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) },
         );
       },
       setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {

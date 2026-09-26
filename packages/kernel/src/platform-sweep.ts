@@ -1750,13 +1750,22 @@ export async function exportBreaksOf(input: {
   incoming: ManifestExports;
   readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>;
   concurrency?: number;
+  /**
+   * #1756: judge ONE tenant's consumers only — a bind moves one install, and an edge never
+   * crosses a tenant, so no other tenant's app can be broken by it. The tenant is taken to run
+   * the producer (the scope being bound is that install), whatever its status.
+   */
+  tenantId?: TenantId;
+  /** What is being judged, for the wording of a refusal to judge it. Default `'promotion'`. */
+  act?: 'promotion' | 'bind';
 }): Promise<ExportBreak[]> {
+  const act = input.act ?? 'promotion';
   // An outgoing manifest that does not parse promised SOMETHING nobody can read. Judging it as
   // "promised nothing" would pass every break unacknowledged, so it refuses, as a thrown read does.
   if (input.outgoing.kind === 'unreadable') {
     throw substratError(
       'unavailable',
-      `cannot say whom this promotion breaks: the outgoing version's exports could not be read (${input.outgoing.reason})`,
+      `cannot say whom this ${act} breaks: the outgoing version's exports could not be read (${input.outgoing.reason})`,
     );
   }
   if (input.outgoing.kind !== 'exports') return [];
@@ -1768,11 +1777,15 @@ export async function exportBreaksOf(input: {
   }
   if (changed.size === 0) return [];
 
-  const scopes = (await input.admin.listScopes(input.actor, { status: 'active' })).filter(
+  const scopes = (await input.admin.listScopes(input.actor, { status: 'active', tenantId: input.tenantId })).filter(
     (s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null,
   );
-  const installedIn = new Set(scopes.filter((s) => s.vertical === input.producer).map((s) => s.tenantId as string));
-  const consumers = scopes.filter((s) => s.vertical !== input.producer && installedIn.has(s.tenantId));
+  // Narrowed to one tenant, every scope read is already in a tenant that runs the producer.
+  const installedIn =
+    input.tenantId === undefined
+      ? new Set(scopes.filter((s) => s.vertical === input.producer).map((s) => s.tenantId as string))
+      : null;
+  const consumers = scopes.filter((s) => s.vertical !== input.producer && (installedIn?.has(s.tenantId) ?? true));
   if (consumers.length === 0) return [];
   const out: ExportBreak[] = [];
   for (const { scope, key, versionId, fact, threw } of await runningImportsOf(
@@ -1785,7 +1798,7 @@ export async function exportBreaksOf(input: {
     if (threw !== undefined) {
       throw substratError(
         'unavailable',
-        `cannot say whom this promotion breaks: the registry could not be asked what ${key} imports (${threw}) — retry`,
+        `cannot say whom this ${act} breaks: the registry could not be asked what ${key} imports (${threw}) — retry`,
       );
     }
     if (fact?.kind !== 'imports') continue;
@@ -1830,6 +1843,93 @@ export function exportBreakRefusal(breaks: readonly ExportBreak[]): string {
     `${tenants} tenant(s) import — their edges would stop delivering it. Acknowledge it explicitly ` +
     `(exportBreak) to promote, or keep the export and bump its consumers first`
   );
+}
+
+/** How `bindExportBreakRefusal` begins: what lets the bind route recognise it (#1756). */
+export const BIND_EXPORT_BREAK_REFUSAL = 'this bind drops or re-versions';
+
+/** Whether a throw is the bind gate's export-break refusal (`bindExportBreakRefusal`). */
+export function isBindExportBreakRefusal(err: unknown): err is Error {
+  return errorCodeOf(err) === 'precondition_failed' && err instanceof Error && err.message.startsWith(BIND_EXPORT_BREAK_REFUSAL);
+}
+
+/**
+ * The refusal a bind gets for a non-empty `bindExportBreaksOf` (#1756). Every break is in the
+ * bound scope's own tenant, which the caller addressed, so it names no one else — but it stays in
+ * counts, as the promote refusal does, and the route that knows the caller adds the listing.
+ */
+export function bindExportBreakRefusal(breaks: readonly ExportBreak[]): string {
+  const types = new Set(breaks.map((b) => b.type)).size;
+  const apps = new Set(breaks.map((b) => b.scopeId)).size;
+  return (
+    `${BIND_EXPORT_BREAK_REFUSAL} ${types} exported event type(s) that ${apps} installed app(s) in ` +
+    `this tenant import — their edges would stop delivering it. Acknowledge it explicitly ` +
+    `(exportBreak) to bind, or bind a version that keeps the export`
+  );
+}
+
+/**
+ * Whom moving `scope` breaks (#1756): the promote gate's question (`exportBreaksOf`), asked of
+ * ONE install in its own tenant, since an edge never crosses one.
+ *
+ * A scope's exports leave from the code it RUNS, and `runningVersionOf` names that code from two
+ * inputs: the version pointer and the serving ref. So a move is either or both of them changing —
+ * a bind (`next.versionId`), or a route onto or off a serving script (`next.servingRef`, which is
+ * how an adopt moves a scope before its pointer ever does). Both are judged by the same rule, on
+ * the running version before against the running version after, the rule the consumers are judged
+ * on too:
+ *
+ * - **Re-pointing a scope that stays on its vertical's serving script** changes nothing it runs,
+ *   so it is never refused. The change reached it when the serving script was replaced — at a
+ *   promote, which judged every tenant then. A route ONTO the serving script is not that case:
+ *   the scope goes from its own version to whatever is served, and that is judged.
+ * - **A fork or a preview** is never an edge's producer (`resolveVerticalInstanceFrom` takes the
+ *   primary install only), so nothing it runs can break an edge.
+ * - **A scope still provisioning** has never been active, so no edge has ever delivered from it.
+ * - **A first bind** runs nothing before it, so it promised nothing.
+ * - **A lineage crossing** (the version belongs to another vertical than the scope's, or the route
+ *   goes onto a script that is not this vertical's serving script) is not judged here, and nothing
+ *   else judges it either: every consumer importing `from` the old slug
+ *   loses its producer, and `rebind-vertical`'s acknowledgements are about migrations, not about
+ *   that. A known gap, older than this gate.
+ */
+export async function bindExportBreaksOf(input: {
+  admin: Pick<HostAdmin, 'listScopes' | 'listVerticals'>;
+  actor: PlatformActorId;
+  scope: Pick<Scope, 'tenantId' | 'forkedFrom' | 'kind' | 'status' | 'vertical' | 'verticalVersionId' | 'servingRef'>;
+  /** The version the scope is bound to after the move (its vertical's slug beside it). */
+  incoming: { id: string; verticalSlug: string };
+  /** The serving ref it routes by after the move. Omitted: unchanged. */
+  servingRef?: string | null;
+  /** The serving pointer of the scope's vertical, or null when nothing is served in place. */
+  serving: ServingPointer | null;
+  readExports: (versionId: string) => Promise<ManifestExports>;
+  readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>;
+}): Promise<ExportBreak[]> {
+  const { scope } = input;
+  if (!isPrimaryScope(scope) || scope.status === 'provisioning') return [];
+  if (scope.vertical === null || scope.vertical !== input.incoming.verticalSlug) return [];
+  // A route onto a script that is not this vertical's serving script is a lineage crossing (or a
+  // ref this host cannot name), and what the scope runs there is not this vertical's code at all:
+  // the same known gap as above, never a phantom move judged against the wrong vertical.
+  if (typeof input.servingRef === 'string' && input.servingRef !== input.serving?.ref) return [];
+  const before = runningVersionOf(scope, input.serving);
+  const after = runningVersionOf(
+    { verticalVersionId: input.incoming.id, servingRef: input.servingRef === undefined ? scope.servingRef : input.servingRef },
+    input.serving,
+  );
+  if (before === null || after === null || before === after) return [];
+  const [outgoing, incoming] = await Promise.all([input.readExports(before), input.readExports(after)]);
+  return exportBreaksOf({
+    admin: input.admin,
+    actor: input.actor,
+    producer: scope.vertical,
+    outgoing,
+    incoming,
+    readImports: input.readImports,
+    tenantId: scope.tenantId,
+    act: 'bind',
+  });
 }
 
 /**

@@ -370,6 +370,21 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     await cp.bindScopeVersion(S, '01JVERSION');
     expect(calls[0]!.url).toBe(`https://cp/api/tenants/${T}/scopes/${S}/version`);
     expect((calls[0]!.body as { versionId: string }).versionId).toBe('01JVERSION');
+    // #1756: no acknowledgement unless asked, and then exactly the one a bind has.
+    expect(calls[0]!.body).toEqual({ versionId: '01JVERSION' });
+    await cp.bindScopeVersion(S, '01JVERSION', { acknowledge: { exportBreak: true } });
+    expect(calls[1]!.body).toEqual({ versionId: '01JVERSION', acknowledge: { exportBreak: true } });
+  });
+
+  it('bindingImpact asks the pinned tenant\'s scope, and a plane without the route answers nothing broken (#1756)', async () => {
+    const row = { tenantId: T, scopeId: '01JDESK', vertical: 'acme/desk', version: 'v', type: 'x.y', schemaVersion: 1, incoming: null };
+    const { cp, calls } = harness(200, { affected: [row] });
+    expect(await cp.bindingImpact(S, '01JVERSION')).toEqual([row]);
+    expect(calls[0]).toMatchObject({ method: 'GET', url: `https://cp/api/tenants/${T}/scopes/${S}/binding-impact?versionId=01JVERSION` });
+    // Deploy skew: an older plane has no such route. The bind itself is still the gate there.
+    expect(await harness(404, { error: 'not found' }).cp.bindingImpact(S, '01JVERSION')).toEqual([]);
+    // …but a scope or version the plane does not know is its answer, not skew.
+    await expect(harness(404, { error: `unknown scope ${S} in tenant ${T}` }).cp.bindingImpact(S, '01JVERSION')).rejects.toThrow(/unknown scope/);
   });
 
   it('createPreview posts to the vertical previews route with the version + pin/empty flags (#509)', async () => {

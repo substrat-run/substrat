@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertDumpIdentifiers } from '@substrat-run/contracts';
-import { bindScopeVersion, pullScope, restoreScope } from '../src/scope.js';
+import { adoptScopeServing, bindScopeVersion, pullScope, restoreScope } from '../src/scope.js';
 
 describe('bindScopeVersion — the per-scope rollout primitive (#509 (c))', () => {
   const orig = globalThis.fetch;
@@ -61,6 +61,58 @@ describe('bindScopeVersion — the per-scope rollout primitive (#509 (c))', () =
     await expect(
       bindScopeVersion({ controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-1', versionId: 'v-9' }),
     ).rejects.toThrow(/pending, not admitted/);
+  });
+
+  it('names the apps an export-break refusal would break, and sends the acknowledgement only when asked (#1756)', async () => {
+    const sent: unknown[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { acknowledge?: { exportBreak?: boolean } };
+      sent.push(body);
+      if (body.acknowledge?.exportBreak) {
+        return new Response(JSON.stringify({ verticalVersionId: 'v-9', vertical: 'acme/ledger' }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          error: 'this bind drops or re-versions 1 exported event type(s) that 1 installed app(s) in this tenant import',
+          exportBreaks: { affected: [{ scopeId: 's-2', vertical: 'acme/desk', type: 'ledger.entry-made', schemaVersion: 1, incoming: null }] },
+        }),
+        { status: 409 },
+      );
+    }) as unknown as typeof fetch;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const opts = { controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-1', versionId: 'v-9' };
+
+    const refused = await bindScopeVersion(opts).then(() => null, (e: Error) => e.message);
+    expect(refused).toMatch(/^this bind drops or re-versions/);
+    expect(refused).toContain('acme/desk (scope s-2) imports ledger.entry-made v1 — this version no longer exports it');
+    expect(refused).toContain('--ack-export-break');
+    expect(sent[0]).toEqual({ versionId: 'v-9' });
+
+    await bindScopeVersion({ ...opts, ackExportBreak: true });
+    expect(sent[1]).toEqual({ versionId: 'v-9', acknowledge: { exportBreak: true } });
+  });
+
+  it('adopt-serving names what it would break too, and acknowledges only when asked (#1756)', async () => {
+    const sent: unknown[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { acknowledge?: { exportBreak?: boolean } };
+      sent.push(body);
+      if (body.acknowledge?.exportBreak) return new Response(JSON.stringify({ servingRef: 'stable', tables: 1 }), { status: 200 });
+      return new Response(
+        JSON.stringify({
+          error: 'this bind drops or re-versions 1 exported event type(s) that 1 installed app(s) in this tenant import',
+          exportBreaks: { affected: [{ scopeId: 's-2', vertical: 'acme/desk', type: 'ledger.entry-made', schemaVersion: 1, incoming: null }] },
+        }),
+        { status: 409 },
+      );
+    }) as unknown as typeof fetch;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const opts = { controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-1' };
+    const refused = await adoptScopeServing(opts).then(() => null, (e: Error) => e.message);
+    expect(refused).toContain('acme/desk (scope s-2) imports ledger.entry-made v1');
+    expect(sent[0]).toEqual({});
+    await adoptScopeServing({ ...opts, ackExportBreak: true });
+    expect(sent[1]).toEqual({ acknowledge: { exportBreak: true } });
   });
 });
 
