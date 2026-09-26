@@ -2,8 +2,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventExplorer } from '../src/views/ObservabilityPanels';
-import { api, type EventFacetResult } from '../src/lib/api';
-import { bucketNarrow, bucketRows, dimensionLabel } from '../src/lib/log-stream';
+import { api, type EventFacetAnswer, type EventFacetResult } from '../src/lib/api';
+import { bucketNarrow, bucketRows, dimensionLabel, emptyGroupingText, withheldOf } from '../src/lib/log-stream';
 
 const cursor = { from: '2026-09-01T10:00:00.000Z', to: '2026-09-01T11:00:00.000Z' };
 const result = (over: Partial<EventFacetResult> = {}): EventFacetResult => ({
@@ -14,6 +14,7 @@ const result = (over: Partial<EventFacetResult> = {}): EventFacetResult => ({
   ],
   total: 58,
   erased: 3,
+  withheldPersonal: 0,
   truncated: false,
   ...over,
 });
@@ -37,6 +38,23 @@ describe('log-stream derivations', () => {
     expect(dimensionLabel('field', 'currency')).toBe('payload.currency');
     expect(dimensionLabel('piiClass', '')).toBe('PII class');
     expect(dimensionLabel('invocation' as never, '')).toBe('invocation');
+  });
+
+  it('reads a missing withheld count as unknown, never 0 (#1762)', () => {
+    const { withheldPersonal: _, ...older } = result();
+    expect(withheldOf(older as EventFacetAnswer)).toBeNull();
+    expect(withheldOf(result({ withheldPersonal: 0 }))).toBe(0);
+  });
+
+  it('says plainly when every event was withheld as personal data (#1762)', () => {
+    expect(emptyGroupingText(result({ buckets: [], total: 12, erased: 2, withheldPersonal: 10 }))).toBe(
+      'Every matching event is classed as personal data, so none is grouped by a payload field.',
+    );
+    expect(emptyGroupingText(result({ buckets: [], total: 4, erased: 4, withheldPersonal: 0 }))).toMatch(/erased/);
+    expect(emptyGroupingText(result({ buckets: [], total: 0, erased: 0 }))).toBe('No events matched this filter.');
+    expect(
+      emptyGroupingText(result({ buckets: [], total: 9, erased: 0, withheldPersonal: 9, withheldReason: 'vertical-predates-rule' })),
+    ).toMatch(/^This app was pushed with Substrat packages from before personal-data events were withheld/);
   });
 });
 
@@ -102,5 +120,57 @@ describe('Events mode', () => {
     });
     await click(byText('Group'));
     expect(facets).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ field: 'currency', groupBy: undefined }));
+  });
+
+  it('a payload grouping says how many events it withheld as personal data, and why (#1762)', async () => {
+    vi.spyOn(api, 'appFacets').mockResolvedValue(
+      result({ buckets: [{ value: 'SEK', count: 50, lastSeen: null }], total: 4263, erased: 3, withheldPersonal: 4210 }),
+    );
+    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'currency' }} />));
+    expect(container.querySelector('[data-event-totals]')!.textContent).toBe(
+      '4,263 events · 3 erased · 4,210 withheld as personal data',
+    );
+    expect(container.textContent).toContain('Grouping by a payload field counts only events not classed as personal data.');
+    expect(container.textContent).toContain('SEK');
+  });
+
+  it('a payload grouping whose events were all withheld says so instead of drawing nothing (#1762)', async () => {
+    vi.spyOn(api, 'appFacets').mockResolvedValue(result({ buckets: [], total: 40, erased: 0, withheldPersonal: 40 }));
+    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'email' }} />));
+    expect(container.querySelector('[data-event-totals]')!.textContent).toBe('40 events · 0 erased · 40 withheld as personal data');
+    expect(container.textContent).toContain('Every matching event is classed as personal data, so none is grouped by a payload field.');
+  });
+
+  it('an answer with no withheld count says unknown, not 0 (#1762)', async () => {
+    const { withheldPersonal: _, ...older } = result();
+    vi.spyOn(api, 'appFacets').mockResolvedValue(older as EventFacetAnswer);
+    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'currency' }} />));
+    expect(container.querySelector('[data-event-totals]')!.textContent).toBe('58 events · 3 erased · withheld unknown');
+    // The rule is not claimed for an answer that cannot show it held: only the doubt is.
+    expect(container.textContent).not.toContain('counts only events not classed as personal data');
+    expect(container.textContent).toContain(
+      'This answer does not say whether personal-data events were withheld, so this grouping may include them.',
+    );
+  });
+
+  it('a payload grouping refused because the app predates the rule shows no buckets and says why (#1762)', async () => {
+    vi.spyOn(api, 'appFacets').mockResolvedValue(
+      result({ buckets: [], total: 58, erased: 3, withheldPersonal: 55, withheldReason: 'vertical-predates-rule' }),
+    );
+    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'email' }} />));
+    // The count covers every event not erased, so it does not claim to be personal data.
+    expect(container.querySelector('[data-event-totals]')!.textContent).toBe('58 events · 3 erased · 55 withheld');
+    expect(container.textContent).toContain(
+      'This app was pushed with Substrat packages from before personal-data events were withheld, so payload groupings are unavailable. Update its Substrat packages and push it again.',
+    );
+    expect(container.textContent).not.toContain('counts only events not classed as personal data');
+  });
+
+  it('an envelope grouping mentions no withholding at all', async () => {
+    const { withheldPersonal: _, ...older } = result();
+    vi.spyOn(api, 'appFacets').mockResolvedValue(older as EventFacetAnswer);
+    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} />));
+    expect(container.querySelector('[data-event-withheld]')).toBeNull();
+    expect(container.textContent).not.toContain('personal data');
   });
 });

@@ -434,6 +434,21 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
       payload: input.omit ? undefined : { code: input.code },
     });
   }) as OperationHandler<never, unknown>,
+  /**
+   * One event of a chosen PII class carrying an `email` (#1762), so the suite can put
+   * the same payload field under every class and assert a payload facet groups only
+   * the `'none'` ones. A classified event needs a data subject, so one is minted.
+   */
+  'test/emit-classified': ((ctx, input: { pii: 'none' | 'pseudonymous' | 'direct'; email: string; subject?: string }) => {
+    ctx.emit({
+      type: 'test.classified',
+      schemaVersion: 1,
+      entity: { entityType: 'test-thing', entityId: 'classified' },
+      piiClass: input.pii,
+      ...(input.pii === 'none' ? {} : { subjectId: dataSubjectId.parse(input.subject ?? ulid()) }),
+      payload: { email: input.email },
+    });
+  }) as OperationHandler<never, unknown>,
   'test/emit-unclassified-pii': ((ctx) => {
     // piiClass 'direct' without subjectId — must be rejected at emit (§6.1)
     ctx.emit({

@@ -31,6 +31,7 @@ import {
   type InvocationEventsInput,
   type DeadLettersInput,
   type EventFacetInput,
+  type EventFacetResult,
   type QueryScopeInput,
   type ReadScopeTableInput,
 } from './introspection.js';
@@ -504,6 +505,15 @@ export interface DelegatedReadInput {
 }
 
 /**
+ * The part of a read's ANSWER its row also carries — only a facet's (#1762): what it held
+ * back is what an auditor needs to see, since a refused or withheld grouping otherwise
+ * reads as a query that simply found little.
+ */
+export interface DelegatedReadAnswer {
+  facetEvents: Pick<EventFacetResult, 'withheldPersonal' | 'withheldReason'>;
+}
+
+/**
  * What the K-24 row for each read carries as `params` — ONE definition, so a delegated
  * row and a co-located row for the same request are the same row.
  *
@@ -516,7 +526,10 @@ export interface DelegatedReadInput {
  * delegated path and a test drives every method both ways and compares the rows.
  */
 export const delegatedReadParams: {
-  [M in DelegatedReadMethod]: (input: DelegatedReadInput[M]) => unknown;
+  [M in DelegatedReadMethod]: (
+    input: DelegatedReadInput[M],
+    answer?: M extends keyof DelegatedReadAnswer ? DelegatedReadAnswer[M] : unknown,
+  ) => unknown;
 } = {
   readScopeTable: (i) => ({ table: i.table, limit: i.limit, offset: i.offset }),
   listScopeTables: () => null,
@@ -524,7 +537,13 @@ export const delegatedReadParams: {
   listDenials: (f) => f ?? null,
   summarizeDenials: (f) => f ?? null,
   entityHistory: (i) => ({ entityType: i.entityType, entityId: i.entityId }),
-  facetEvents: (i) => i,
+  // What the answer withheld, then the request — on both branches, so the row stays one
+  // row. The withheld fields go FIRST: both adapters cut the stored params at 500 chars,
+  // and `type`/`since`/`until` are unbounded, so a long request would otherwise cut them off.
+  facetEvents: (i, a) =>
+    a === undefined
+      ? i
+      : { withheldPersonal: a.withheldPersonal, ...(a.withheldReason ? { withheldReason: a.withheldReason } : {}), ...i },
   eventCause: (i) => ({ eventId: i.eventId }),
   eventEffects: (i) => ({ eventId: i.eventId }),
   invocationEvents: (i) => ({ invocationId: i.invocationId }),
