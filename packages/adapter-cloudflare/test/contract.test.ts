@@ -1959,6 +1959,47 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
     expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
   });
 
+  /**
+   * #1742 review round 2: the spine re-assert now runs inside the replay's `storage.transaction`,
+   * and for a dump from before #1288 it rebuilds `_substrat_schedule_state` in a nested
+   * `transactionSync`. This proves workerd allows that nesting: an old dump restores, its
+   * schedule state gains `kind` with its row carried, and the switch in the same transaction
+   * holds.
+   */
+  const pre1288 = (dump: Awaited<ReturnType<CloudflareScopeHost['exportScopeLocal']>>) =>
+    dump.map((tbl) =>
+      tbl.name === '_substrat_schedule_state'
+        ? {
+            name: tbl.name,
+            ddl: 'CREATE TABLE _substrat_schedule_state (schedule_op TEXT PRIMARY KEY, last_run_at TEXT, last_status TEXT)',
+            columns: ['schedule_op', 'last_run_at', 'last_status'],
+            // Ran two hours ago, so with a 60-minute cadence it is due again.
+            rows: [['sched/tick', new Date(Date.now() - 2 * 3_600_000).toISOString(), 'ok']],
+          }
+        : tbl,
+    );
+  const scheduleState = async (s: ScopeId) =>
+    (await (await host.getScope(owner, t, s)).invoke('sched/schedule-state')) as { kind: string; schedule_op: string }[];
+
+  it('a pre-#1288 dump restores inside the transaction: the nested rebuild runs, and the switch holds', async () => {
+    const s = await newScope();
+    const old = pre1288(await host.exportScopeLocal(s));
+    expect(old.some((tbl) => tbl.name === '_substrat_schedule_state')).toBe(true);
+    await off(s);
+    expect(await host.restoreScopeLocal(s, old, { switchedOff: [SCHED] })).toMatchObject({ switchedOff: [tookBack] });
+    expect(await scheduleState(s)).toEqual([expect.objectContaining({ kind: 'schedule', schedule_op: 'sched/tick' })]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('twin: the same pre-#1288 dump with no list restores, and fires', async () => {
+    const s = await newScope();
+    const old = pre1288(await host.exportScopeLocal(s));
+    await off(s);
+    await host.restoreScopeLocal(s, old);
+    expect(await scheduleState(s)).toEqual([expect.objectContaining({ kind: 'schedule', schedule_op: 'sched/tick' })]);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
   it('a restore of a dump from before the switch lands off when the off list rides it; without it, it fires', async () => {
     const s = await newScope();
     const before = await host.exportScopeLocal(s);
