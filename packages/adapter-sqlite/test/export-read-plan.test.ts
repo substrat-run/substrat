@@ -1,24 +1,51 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
-import { exportReadQuery } from '@substrat-run/kernel';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
+import { exportReadQuery, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { permMod } from '@substrat-run/contract-tests';
+import { SqliteScopeHost } from '../src/index.js';
 
 /**
  * #1787, the node half: the export read's plan holds with and without table statistics. The
  * workerd half, on a real Durable Object's spine (`adapter-cloudflare/test/do-sql-limits.test.ts`),
- * is the one that matters. This one keeps the node adapter honest, since self-host and CI run it.
- * The table is the outbox's key and the two indexes the read can choose between, not the whole spine.
+ * is the one that matters. This one keeps the node adapter honest, since self-host and CI run it,
+ * and it reads the REAL spine: a scope the host provisioned, so an index that drifts out of
+ * `KERNEL_DDL` shows up here. Harness code: the scope's file is opened directly to seed it
+ * and to run ANALYZE, both of which `ctx.sql` would refuse or not reach, as `invocation-index.test.ts` does.
  */
 describe('exportReadQuery keeps the (type, id) index once statistics exist (#1787)', () => {
-  const db = new Database(':memory:');
-  db.exec(`
-    CREATE TABLE _substrat_outbox (id TEXT PRIMARY KEY, type TEXT NOT NULL, occurred_at TEXT NOT NULL, payload TEXT);
-    CREATE INDEX _substrat_outbox_type_at ON _substrat_outbox (type, occurred_at);
-    CREATE INDEX _substrat_outbox_type_id ON _substrat_outbox (type, id);
-  `);
-  const insert = db.prepare('INSERT INTO _substrat_outbox (id, type, occurred_at) VALUES (?, ?, ?)');
-  db.transaction(() => {
-    for (let i = 0; i < 20_000; i++) insert.run(`01J${String(i).padStart(23, '0')}`, `probe.t${i % 50}`, '2026-09-25T00:00:00.000Z');
-  })();
+  let dir: string;
+  let host: SqliteScopeHost;
+  let db: Database.Database;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-export-read-plan-'));
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const staff = platformActorId.parse(ulid());
+    host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+    host.registerModule(permMod);
+    await host.admin.createTenant(staff, { id: t, slug: `export-plan-${ulid().toLowerCase()}`, name: 'Export read plan' });
+    await host.admin.grantEntitlement(staff, t, 'perm');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'perm-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    db = new Database(join(dir, `${t}__${s}.sqlite`));
+    db.prepare(
+      `INSERT INTO _substrat_outbox (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
+         entity_type, entity_id, pii_class)
+       WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 19999)
+       SELECT printf('01J%023d', i), 'probe.t' || (i % 50), 1, '2026-09-25T00:00:00.000Z', 't', 's', 'a', 'e',
+              CAST(i AS TEXT), 'none' FROM n`,
+    ).run();
+  });
+  afterAll(async () => {
+    db.close();
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
 
   const wanted = ['probe.t1', 'probe.t2', 'probe.t3'];
   const cursor = `01J${String(5_000).padStart(23, '0')}`;
