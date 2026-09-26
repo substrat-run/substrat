@@ -2243,9 +2243,16 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
   });
 
-  it('a reconcile carrying the off list switches it off in its unit and clears the hold', async () => {
+  it('a reconcile carrying the off list leaves no gap, and the re-assert after it clears the hold', async () => {
     const s = await rewoundPastTheSwitch();
     await reconcile(s, { switchedOff: [SCHED] });
+    // #1742 still holds: switched off in the reconcile's own unit, so the very next pass is off.
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    // The in-unit move does not release (its answer names no instance); the platform's
+    // re-assert right after the call does.
+    expect(await heldOn(s)).toEqual([SCHED]);
+    await off(s);
     expect(await heldOn(s)).toEqual([]);
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
   });
@@ -2257,9 +2264,12 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
   });
 
-  it('a restore carrying the off list clears the hold too', async () => {
+  it('a restore carrying the off list leaves no gap, and the re-assert after it clears the hold', async () => {
     const s = await rewoundPastTheSwitch();
     await host.restoreScopeLocal(s, await host.exportScopeLocal(s), { switchedOff: [SCHED] });
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(await heldOn(s)).toEqual([SCHED]);
+    await off(s);
     expect(await heldOn(s)).toEqual([]);
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
   });
@@ -2276,11 +2286,34 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     // Not armed, and no such bookmark: the DO refuses before anything is restored, and says so.
     await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/^rewind refused: unknown bookmark/);
     expect(await heldOn(s)).toEqual([]);
-    // Twin: a hold that was already there before the refused rewind stays.
-    await holdsStub().switchHoldAdd(s, [SCHED], new Date().toISOString());
+    // Twin: an earlier rewind's claim that was already there stays.
+    await holdsStub().switchHoldClaim(s, [SCHED], 'earlier-rewind', new Date().toISOString());
+    await holdsStub().switchHoldArm(s, 'earlier-rewind', null);
     await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/^rewind refused: /);
+    expect((await holdsStub().switchHoldClaims(s, SCHED)).map((c) => c.claimId)).toEqual(['earlier-rewind']);
+    await holdsStub().switchHoldRelease(s, null, null);
+  });
+
+  /**
+   * Copilot review on #1838: two rewinds of one scope at once. A is refused, B succeeds. With one
+   * shared row, A's refusal released the row B relied on, and B's rewind landed with no hold. Each
+   * rewind now owns its claim, and a refusal drops only its own.
+   */
+  it("concurrent rewinds: A's refusal leaves B's claim, and the rewound scope stays held", async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    const [a, b] = await Promise.allSettled([
+      host.rewindScopeLocal(s, 'no-such-bookmark'), // A: definitely refused
+      host.rewindScopeLocal(s, 'bm', { force: true }), // B: armed
+    ]);
+    expect(a.status).toBe('rejected');
+    expect(String((a as PromiseRejectedResult).reason)).toMatch(/rewind refused: unknown bookmark/);
+    expect(b).toMatchObject({ status: 'fulfilled', value: { rewindingTo: 'bm' } });
+    await landRewind(env.SCOPE, s, atBookmark);
     expect(await heldOn(s)).toEqual([SCHED]);
-    await holdsStub().switchHoldRelease(s, null);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
   });
 
   it('an ambiguous throw keeps the hold: the DO may have armed the bookmark', async () => {
@@ -2384,7 +2417,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(r.errors).toEqual([
       { operation: 'switch-hold', error: expect.stringMatching(/unreadable \(holds down\); no earlier read in this pass, so no hold applied/) },
     ]);
-    await holdsStub().switchHoldRelease(s, null);
+    await holdsStub().switchHoldRelease(s, null, null);
   });
 
   it('twin: a hold this pass already read stays held when a later read fails', async () => {
@@ -2489,15 +2522,22 @@ function countingScopes(ns: DurableObjectNamespace) {
               },
       },
     );
-  const holds = (real: Rpc) => ({
-    switchHoldsAll: async () => {
-      counts.holdReads += 1;
-      if (counts.failReads) throw new Error('holds down');
-      return real.switchHoldsAll!();
-    },
-    switchHoldAdd: (...args: unknown[]) => real.switchHoldAdd!(...args),
-    switchHoldRelease: (...args: unknown[]) => real.switchHoldRelease!(...args),
-  });
+  const holds = (real: Rpc) =>
+    new Proxy(
+      {},
+      {
+        get: (_t, prop: string) =>
+          prop === 'then'
+            ? undefined
+            : prop === 'switchHoldsAll'
+              ? async () => {
+                  counts.holdReads += 1;
+                  if (counts.failReads) throw new Error('holds down');
+                  return real.switchHoldsAll!();
+                }
+              : (...args: unknown[]) => real[prop]!(...args),
+      },
+    );
   const counting = {
     idFromName: (name: string) => ns.idFromName(name),
     get: (id: DurableObjectId) => {

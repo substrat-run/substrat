@@ -21,6 +21,7 @@ import { SWITCH_HOLDS_NAME } from '../src/host.js';
  */
 
 const RESTART_MARK = '__substratPitrEmulationArmed';
+const REAL_ABORT = '__substratPitrEmulationRealAbort';
 
 type Instance = Record<string, unknown>;
 
@@ -28,13 +29,20 @@ type Instance = Record<string, unknown>;
  * Arm the next `rewindToBookmark` on this scope's live instance to accept any bookmark. With
  * `throwing`, the restore call throws that message instead: a raw transport-style failure with
  * no refusal prefix, after the DO got as far as arming, which the host cannot read as a refusal.
+ * With `holdAbort`, the DO's own restart is held back, so the armed (doomed) instance keeps
+ * serving until `restartNow` stands in for it — the abort, or an idle eviction.
  */
 export async function armRewind(
   ns: DurableObjectNamespace,
   scopeId: string,
-  opts?: { throwing?: string },
+  opts?: { throwing?: string; holdAbort?: boolean },
 ): Promise<void> {
   await runInDurableObject(ns.get(ns.idFromName(scopeId)), (instance, state) => {
+    if (opts?.holdAbort) {
+      const real = state.abort.bind(state);
+      (instance as unknown as Instance)[REAL_ABORT] = real;
+      (state as unknown as { abort: () => void }).abort = () => undefined;
+    }
     (state.storage as unknown as { onNextSessionRestoreBookmark: (b: string) => Promise<string> })
       .onNextSessionRestoreBookmark = async (bookmark) => {
       if (opts?.throwing) throw new Error(opts.throwing);
@@ -58,6 +66,14 @@ export async function awaitRestart(ns: DurableObjectNamespace, scopeId: string):
   throw new Error(`scope ${scopeId} never restarted after the rewind`);
 }
 
+/** Restart the scope's instance now: the held abort, or an eviction of the armed instance. */
+export async function restartNow(ns: DurableObjectNamespace, scopeId: string): Promise<void> {
+  await runInDurableObject(ns.get(ns.idFromName(scopeId)), (instance, state) => {
+    const real = (instance as unknown as Instance)[REAL_ABORT] as ((reason?: string) => void) | undefined;
+    (real ?? state.abort.bind(state))('restart');
+  }).catch(() => undefined);
+}
+
 /** The restore half: the restarted object's storage becomes the bookmark's bytes. */
 export async function landRewind(
   ns: DurableObjectNamespace,
@@ -74,8 +90,13 @@ export async function landRewind(
 /** The deployment's hold object (`SWITCH_HOLDS_NAME`) in this namespace, typed for the tests. */
 export function holdsStub(ns: DurableObjectNamespace): {
   switchHoldsAll(): Promise<{ scopeId: string; moduleId: string }[]>;
-  switchHoldAdd(scopeId: string, moduleIds: string[], at: string): Promise<string[]>;
-  switchHoldRelease(scopeId: string, moduleIds: string[] | null): Promise<void>;
+  switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string, at: string): Promise<void>;
+  switchHoldArm(scopeId: string, claimId: string, doomed: string | null): Promise<void>;
+  switchHoldClaims(
+    scopeId: string,
+    moduleId: string,
+  ): Promise<{ claimId: string; state: 'pending' | 'armed'; doomed: string | null; heldAt: string }[]>;
+  switchHoldRelease(scopeId: string, moduleId: string | null, claimIds: string[] | null): Promise<void>;
 } {
   return ns.get(ns.idFromName(SWITCH_HOLDS_NAME)) as unknown as ReturnType<typeof holdsStub>;
 }
