@@ -22,6 +22,7 @@ import {
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
   UNSAFE_devPlatformActorAuth,
+  ControlPlaneError,
   type VerticalClient,
 } from '../src/index.js';
 
@@ -788,6 +789,78 @@ describe('the record is carried into the deployment and its in-unit move audited
     expect(res.status).toBe(200);
     expect(bodies).toEqual([{ verb: 'restore', scopeId: off, switchedOff: [TICK] }]);
     expect(await reasserts(off)).toEqual(expect.arrayContaining([inUnitRow]));
+  });
+});
+
+/**
+ * #1742 review: a retried restore reads the record again on each attempt, as the staff restore
+ * route always did, so the retry carries the record as it stands after the failed attempt.
+ */
+describe('a retried restore carries the record as it stands on that attempt (#1742 review)', () => {
+  const t = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  let dir: string;
+  let host: SqliteScopeHost;
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-schedule-switch-retry-'));
+    host = new SqliteScopeHost({ dir });
+    host.registerModule(tickModule);
+    await host.admin.createTenant(staff, { id: t, slug: 'acme-retry', name: 'Acme' });
+    await host.admin.grantEntitlement(staff, t, 'tick');
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A deployment whose first restore attempt fails transiently; `between` runs before the retry. */
+  const flaky = (between: () => Promise<void>) => {
+    const carried: unknown[] = [];
+    const client = {
+      restoreScope: async (_t: string, _s: string, _tables: unknown, opts?: { switchedOff?: string[] }) => {
+        carried.push(opts?.switchedOff);
+        if (carried.length === 1) {
+          await between();
+          throw new ControlPlaneError(503, 'restore: a transient storage blip');
+        }
+        return { tables: 0 };
+      },
+    } as unknown as VerticalClient;
+    return { client, carried };
+  };
+  const restoreThrough = async (between: (s: string) => Promise<void>) => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'tick-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    // A backup from before the switch: the co-located copy it restores holds the grants, so
+    // an operator can still restore the switch in the middle of the call.
+    const dump = await host.admin.exportScope(staff, t, s);
+    await host.admin.revokeFromSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+    const { client, carried } = flaky(() => between(s));
+    const app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'tick-vertical': client },
+      provisionRetryDelaysMs: [0],
+    });
+    const res = await app.request(`/tenants/${t}/scopes/${s}/restore`, { method: 'POST', headers: asStaff, body: JSON.stringify(dump) });
+    expect(res.status).toBe(200);
+    return carried;
+  };
+
+  it('an ON between attempts: the retry carries no list', async () => {
+    const carried = await restoreThrough((s) =>
+      host.admin
+        .restoreToSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: scopeId.parse(s) }, reason: 'resolved' })
+        .then(() => undefined),
+    );
+    expect(carried).toEqual([[TICK], undefined]);
+  });
+
+  it('twin: nothing between attempts, and the retry carries the list again', async () => {
+    const carried = await restoreThrough(async () => undefined);
+    expect(carried).toEqual([[TICK], [TICK]]);
   });
 });
 

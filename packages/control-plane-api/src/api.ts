@@ -2266,8 +2266,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   /**
    * #1742: restore a dump into a deployment carrying the scope's recorded-off modules, so the
-   * deployment switches them off in the replay's own event. The record is read once, outside
-   * the retry. Every caller still re-asserts after it (the fallback), passing what this reports.
+   * deployment switches them off in the replay's own event. The record is read on EVERY
+   * attempt, inside the retry, so a retried restore carries the record as it stands then, not
+   * as it stood before the failed attempt. Every caller still re-asserts after it (the
+   * fallback), passing what this reports.
    */
   const restoreCarryingSwitches = async (
     actor: PlatformActorId,
@@ -2276,8 +2278,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     scopeId: ScopeId,
     tables: Parameters<VerticalClient['restoreScope']>[2],
   ): ReturnType<VerticalClient['restoreScope']> => {
-    const switches = await switchCarryFor(admin, actor, { tenantId, scopeId });
-    return retryTransient(() => dest.restoreScope(tenantId, scopeId, tables, switches));
+    return retryTransient(async () =>
+      dest.restoreScope(tenantId, scopeId, tables, await switchCarryFor(admin, actor, { tenantId, scopeId })),
+    );
   };
 
   const adoptScopeOntoServing = async (
