@@ -140,6 +140,21 @@ describe('the SQL limits of a Durable Object: the boundary (#1741)', () => {
   });
 });
 
+/** The plan SQLite reads a statement by, its lines joined. */
+const plan = (sql: SqlStorage, q: { sql: string; params: unknown[] }): string =>
+  (sql.exec(`EXPLAIN QUERY PLAN ${q.sql}`, ...(q.params as never[])).toArray() as { detail: string }[])
+    .map((r) => r.detail)
+    .join(' | ');
+
+/** `exportReadQuery` as it was before #1776: one `?` per type, no join. */
+const oldExportRead = (types: readonly string[], after: string | null, limit: number) => ({
+  sql:
+    `SELECT * FROM _substrat_outbox WHERE type IN (${types.map(() => '?').join(', ')})` +
+    (after === null ? '' : ' AND id > ?') +
+    ' ORDER BY id LIMIT ?',
+  params: [...types, ...(after === null ? [] : [after]), limit],
+});
+
 /** The slice of the ScopeDO's RPC surface the #1776 block below calls directly. */
 interface ScopeInstance {
   freshnessProbe(types: string[]): Promise<Record<string, { observedAt: string | null; stateOutcome: string | null }>>;
@@ -159,10 +174,6 @@ describe('platform list statements past the parameter limit (#1776)', () => {
     const stub = env.SCOPE.get(env.SCOPE.idFromName('do-sql-lists-1776'));
     return runInDurableObject(stub, (instance, state) => fn(instance as unknown as ScopeInstance, state.storage.sql));
   };
-  const plan = (sql: SqlStorage, q: { sql: string; params: unknown[] }): string =>
-    (sql.exec(`EXPLAIN QUERY PLAN ${q.sql}`, ...(q.params as never[])).toArray() as { detail: string }[])
-      .map((r) => r.detail)
-      .join(' | ');
 
   // One event of every type, and a freshness verdict for every type: the lists below then
   // have a row to find for each entry, so a count that stopped at 100 would be visible.
@@ -201,15 +212,6 @@ describe('platform list statements past the parameter limit (#1776)', () => {
   const oldForm = (q: { sql: string; params: unknown[] }, few: readonly string[]) => ({
     sql: q.sql.replace('(SELECT value FROM json_each(?))', `(${few.map(() => '?').join(', ')})`),
     params: q.params.flatMap((p): unknown[] => (p === JSON.stringify(few) ? [...few] : [p])),
-  });
-
-  /** `exportReadQuery` as it was before #1776: one `?` per type, no join. */
-  const oldExportRead = (few: readonly string[], after: string | null, limit: number) => ({
-    sql:
-      `SELECT * FROM _substrat_outbox WHERE type IN (${few.map(() => '?').join(', ')})` +
-      (after === null ? '' : ' AND id > ?') +
-      ' ORDER BY id LIMIT ?',
-    params: [...few, ...(after === null ? [] : [after]), limit],
   });
 
   for (const after of [null, `01J${'0'.repeat(22)}9`]) {
@@ -278,10 +280,6 @@ describe('list statements keep their index once table statistics exist (#1787)',
   const cursor = id(5_000);
   const wanted = ['probe.t1', 'probe.t2', 'probe.t3'];
 
-  const plan = (sql: SqlStorage, q: { sql: string; params: unknown[] }): string =>
-    (sql.exec(`EXPLAIN QUERY PLAN ${q.sql}`, ...(q.params as never[])).toArray() as { detail: string }[])
-      .map((r) => r.detail)
-      .join(' | ');
   const idsOf = (sql: SqlStorage, q: { sql: string; params: unknown[] }): string[] =>
     (sql.exec(q.sql, ...(q.params as never[])).toArray() as { id: string }[]).map((r) => r.id);
   // `sqlite_stat1` does not exist until something has run ANALYZE.
@@ -298,15 +296,6 @@ describe('list statements keep their index once table statistics exist (#1787)',
       ' ORDER BY id LIMIT ?',
     params: [JSON.stringify(types), ...(after === null ? [] : [after]), limit],
   });
-  /** …and before it: one `?` per type. */
-  const listedExport = (types: readonly string[], after: string | null, limit: number) => ({
-    sql:
-      `SELECT * FROM _substrat_outbox WHERE type IN (${types.map(() => '?').join(', ')})` +
-      (after === null ? '' : ' AND id > ?') +
-      ' ORDER BY id LIMIT ?',
-    params: [...types, ...(after === null ? [] : [after]), limit],
-  });
-
   const inScope = async <T>(fn: (sql: SqlStorage) => T): Promise<T> => {
     const stub = env.SCOPE.get(env.SCOPE.idFromName('do-sql-stats-1787'));
     return runInDurableObject(stub, (_i, state) => fn(state.storage.sql));
@@ -365,7 +354,7 @@ describe('list statements keep their index once table statistics exist (#1787)',
           plan(sql, q),
           idsOf(sql, q),
           idsOf(sql, unpinnedExport(wanted, cursor, 1000)),
-          idsOf(sql, listedExport(wanted, cursor, 1000)),
+          idsOf(sql, oldExportRead(wanted, cursor, 1000)),
         ] as const;
       });
       expect(now).toMatch(exportSeek);
@@ -380,7 +369,7 @@ describe('list statements keep their index once table statistics exist (#1787)',
     it(`exportReadQuery without a cursor seeks by type as well, and pages by LIMIT (${phase})`, async () => {
       const [now, page, expected] = await inScope((sql) => {
         const q = exportReadQuery(wanted, null, 7);
-        return [plan(sql, q), idsOf(sql, q), idsOf(sql, listedExport(wanted, null, 7))] as const;
+        return [plan(sql, q), idsOf(sql, q), idsOf(sql, oldExportRead(wanted, null, 7))] as const;
       });
       expect(now).toMatch(/_substrat_outbox_type_(at|id) \(type=\?\)/);
       expect(page).toHaveLength(7);
@@ -389,7 +378,7 @@ describe('list statements keep their index once table statistics exist (#1787)',
 
     it(`the audit log's action filter reads (action, id) and returns what the unpinned form did (${phase})`, async () => {
       const actions = ['probe.a1', 'probe.a2', 'probe.a3'];
-      const unpinned = async (sql: SqlStorage, order: string) =>
+      const unpinned = (sql: SqlStorage, order: string) =>
         (
           sql
             .exec(
@@ -401,7 +390,7 @@ describe('list statements keep their index once table statistics exist (#1787)',
             .toArray() as { id: string }[]
         ).map((r) => r.id);
       for (const order of ['asc', 'desc'] as const) {
-        const [ran, got, want] = await inControlPlane(async (i, sql) => {
+        const [ran, got, want] = await inControlPlane((i, sql) => {
           // Capture the statement the producer itself sends, so the plan is read off the real one.
           const real = i.sql;
           const sent: { q: string; p: unknown[] }[] = [];
@@ -413,7 +402,7 @@ describe('list statements keep their index once table statistics exist (#1787)',
             i.sql = real;
           }
           const last = sent.at(-1)!;
-          return [plan(sql, { sql: last.q, params: last.p }), entries.map((e) => e.id), await unpinned(sql, order)] as const;
+          return [plan(sql, { sql: last.q, params: last.p }), entries.map((e) => e.id), unpinned(sql, order)] as const;
         });
         expect(ran).toContain('_substrat_admin_log_action (action=?');
         expect(ran).not.toContain('sqlite_autoindex__substrat_admin_log');
