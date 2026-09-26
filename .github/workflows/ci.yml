@@ -412,6 +412,13 @@ jobs:
       # `--no-sort`: everything a suite imports is built by the step above, so no suite
       # waits on another's. The topological order only held a long suite back until
       # every package beneath it had finished testing.
+      #
+      # `--workspace-concurrency=2`, not pnpm's default 4: each vitest run already fans
+      # out across every core the runner has, so four suites at once oversubscribed a
+      # 4-vCPU runner several times over. The first sharded runs showed it: adapter-sqlite
+      # took 57s instead of 19s, and a capability-expiry case that takes 1.3s alone went
+      # past vitest's 5s timeout and failed main. A test that fails because its neighbour
+      # is busy is a flake, and a flaky gate gets re-run until it is green.
       - name: test
         if: steps.scope.outputs.count != '0'
         env:
@@ -419,7 +426,7 @@ jobs:
           NODE_OPTIONS: --require=${{ github.workspace }}/tools/vitest/like-pattern-limit.cjs
         run: |
           read -ra filters <<< "$SCOPE_FILTERS"
-          pnpm -r --no-sort "${filters[@]}" test
+          pnpm -r --no-sort --workspace-concurrency=2 "${filters[@]}" test
 
   # The one verdict: green only when the checks and every shard succeeded. A skipped
   # or cancelled shard is not a pass. Named `test` because that is the job name
