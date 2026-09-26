@@ -247,6 +247,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
+      '@substrat-run/console':
+        specifier: workspace:*
+        version: link:../console
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

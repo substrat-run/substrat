@@ -26,6 +26,7 @@
     "hono": "^4.6.0"
   },
   "devDependencies": {
+    "@substrat-run/console": "workspace:*",
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "typescript": "catalog:",

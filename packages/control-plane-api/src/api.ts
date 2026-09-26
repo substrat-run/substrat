@@ -4467,6 +4467,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return pin !== null && (await ownerOf(p.actor, slug)) !== pin;
   };
 
+  /**
+   * The READ twin of `notOwned`, for the routes an installed app's own pages ask
+   * (versions, channels, and one version's registry, schedules, flow, model, assets). A
+   * LISTED vertical is installable by every tenant, so every tenant running it reads what
+   * it runs; ownership decides who may push or promote it, not who may see it. Without
+   * this, the dashboard's tenant-narrowed seam (#977) reads a listed vertical another
+   * tenant published as absent, and its app page shows no version at all. A PRIVATE
+   * vertical stays owner-only, and so do the reads narrowed on purpose (migration SQL,
+   * the prod history).
+   */
+  const notReadable = async (p: Principal, slug: string): Promise<boolean> => {
+    const pin = confinedTenant(p);
+    if (pin === null) return false;
+    const v = await verticalOf(p.actor, slug);
+    return !v || (v.ownerTenant !== pin && !v.listed);
+  };
+
   // The vertical id a request actually addresses. For a BUILDER it is `<tenantSlug>/<name>`
   // (builder-plane.md §5): they send a bare `--slug`, the control plane forms the prefix
   // from their authenticated tenant — so two builders can each own a `helpdesk` with no
@@ -4650,7 +4667,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     // A builder reading a vertical it does not own gets 404 — indistinguishable from
     // absent, the same fail-closed reflex K-3 uses for a cross-tenant scope.
-    if (await notOwned(p, slug)) {
+    if (await notReadable(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const page = pageParams(c);
@@ -4710,7 +4727,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/versions/:id/registry', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (await notOwned(p, slug)) {
+    if (await notReadable(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
@@ -4752,7 +4769,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/versions/:id/schedules', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (await notOwned(p, slug)) {
+    if (await notReadable(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
@@ -4776,7 +4793,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/versions/:id/flow', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (await notOwned(p, slug)) {
+    if (await notReadable(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
@@ -4805,7 +4822,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/versions/:id/model', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (await notOwned(p, slug)) {
+    if (await notReadable(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
@@ -4825,7 +4842,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/versions/:id/assets', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (await notOwned(p, slug)) {
+    if (await notReadable(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
@@ -4922,7 +4939,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/channels', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    if (await notOwned(p, slug)) {
+    if (await notReadable(p, slug)) {
       return c.json({ error: 'not found' }, 404);
     }
     const page = pageParams(c);
