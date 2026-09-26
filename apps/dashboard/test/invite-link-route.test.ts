@@ -117,7 +117,7 @@ describe('POST /api/members/invite-link', () => {
       expect(res.status, `${role}: ${await res.clone().text()}`).toBe(200);
       const body = (await res.json()) as { invitationId: string; acceptUrl: string };
       expect(body.invitationId).toBe(invitationId);
-      const claim = await verifyClaim<{ tenantId: string; scopeId: string; invitationId: string }>(
+      const claim = await verifyClaim<{ tenantId: string; scopeId: string; invitationId: string; exp: number }>(
         SECRET,
         INVITE_TOKEN_PURPOSE,
         tokenOf(body.acceptUrl),
