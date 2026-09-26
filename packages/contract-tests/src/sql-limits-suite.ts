@@ -20,6 +20,9 @@ import { testMod } from './modules.js';
 
 const { compoundTerms, boundParameters, statementBytes, columns } = DO_SQL_LIMITS;
 
+/** `0 AS c0, 1 AS c1, …`, for an inner SELECT. */
+const innerColumns = (n: number): string => Array.from({ length: n }, (_, i) => `${i} AS c${i}`).join(', ');
+
 /** `SELECT 0, 1, …` — a result set `n` columns wide. */
 const selectColumns = (n: number): string => `SELECT ${Array.from({ length: n }, (_, i) => i).join(', ')}`;
 
@@ -49,6 +52,22 @@ const cases: Case[] = [
     // The node adapter appends the width and the limit; the DO's message ends at SQLITE_ERROR.
     refusalTail: true,
   },
+  // The limit is on every select core: a wide inner SELECT projected down to one column is refused too.
+  ...(
+    [
+      ['a subquery', (n: number) => `SELECT c0 FROM (SELECT ${innerColumns(n)})`],
+      ['a CTE body', (n: number) => `WITH w AS (SELECT ${innerColumns(n)}) SELECT c0 FROM w`],
+      ['a compound arm', (n: number) => `SELECT 1 UNION ALL SELECT c0 FROM (SELECT ${innerColumns(n)})`],
+    ] as const
+  ).flatMap(([shape, build]): Case[] => [
+    { name: `${columns} columns in ${shape}`, sql: build(columns) },
+    {
+      name: `${columns + 1} columns in ${shape}, projected to one`,
+      sql: build(columns + 1),
+      refusal: 'too many columns in result set: SQLITE_ERROR',
+      refusalTail: true,
+    },
+  ]),
   // -- compound SELECT terms -------------------------------------------------
   { name: `${compoundTerms} UNION ALL terms`, sql: compound(compoundTerms) },
   {

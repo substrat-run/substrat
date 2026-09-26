@@ -163,6 +163,25 @@ describe('the SQL limits of a Durable Object: the boundary (#1741)', () => {
     expect(past).toBe('too many columns in result set: SQLITE_ERROR');
   });
 
+  // SQLITE_LIMIT_COLUMN is checked on every SELECT core, not only the outermost projection
+  // (#1811 review): a wide inner SELECT projected down to one column is refused too.
+  const inner = (n: number): string => Array.from({ length: n }, (_, i) => `${i} AS c${i}`).join(', ');
+  const innerShapes: Record<string, (n: number) => string> = {
+    subquery: (n) => `SELECT c0 FROM (SELECT ${inner(n)})`,
+    CTE: (n) => `WITH w AS (SELECT ${inner(n)}) SELECT c0 FROM w`,
+    'compound arm': (n) => `SELECT 1 UNION ALL SELECT c0 FROM (SELECT ${inner(n)})`,
+  };
+  for (const [shape, build] of Object.entries(innerShapes)) {
+    it(`columns in an inner SELECT (${shape}): ${columns} run, ${columns + 1} are refused`, async () => {
+      const [at, past] = await run((sql) => [
+        attempt(sql, (n) => ({ sql: build(n) }), columns),
+        attempt(sql, (n) => ({ sql: build(n) }), columns + 1),
+      ]);
+      expect(at).toBe('ok');
+      expect(past).toBe('too many columns in result set: SQLITE_ERROR');
+    });
+  }
+
   it('LIKE pattern length: 50 bytes run, one more is refused', async () => {
     const [at, past] = await run((sql) => [attempt(sql, likeTrial, likePatternBytes), attempt(sql, likeTrial, likePatternBytes + 1)]);
     expect(at).toBe('ok');
