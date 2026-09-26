@@ -698,12 +698,17 @@ export function systemSwitchContractSuite(
       expect(audit).toHaveLength(1);
     });
 
-    it('a reaped scope, switched off, no longer holds a tenant-level grant back (#1743)', async () => {
+    it('an ARCHIVED scope switched off still holds a tenant-level grant back; a reaped one no longer does (#1743)', async () => {
       const tn = await newTenant();
       const s = await tn.scope();
       await tn.off(s);
       expect(errorCodeOf(await refusal(tn.grant('sched:admin')))).toBe('conflict');
+      // Archived is reversible (unarchive brings the scope back, switch and all), and the
+      // record is forgotten only on reap, so an archived scope still blocks.
       await host.admin.archiveScope(staff, tn.tenant, s);
+      const archived = await refusal(tn.grant('sched:admin'));
+      expect(errorCodeOf(archived)).toBe('conflict');
+      expect(String(archived)).toContain(s);
       await host.admin.reapScope(staff, tn.tenant, s, { force: true });
       await tn.grant('sched:admin');
     });
