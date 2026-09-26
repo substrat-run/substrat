@@ -1,5 +1,15 @@
 # @substrat-run/builder
 
+## 0.5.65
+
+### Patch Changes
+
+- Updated dependencies [caaf3a3]
+  - @substrat-run/control-plane-api@0.122.1
+  - @substrat-run/contracts@0.122.1
+  - @substrat-run/kernel@0.122.1
+  - @substrat-run/adapter-cloudflare@0.122.1
+
 ## 0.5.64
 
 ### Patch Changes
