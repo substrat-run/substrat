@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { InstallStep } from '../lib/api';
 import { Ic } from '../lib/icons';
+import { isPlainClick, navigate, teamPath } from '../lib/router';
 import { InstallSteps } from './InstallSteps';
 import { Pill, RowActions } from './ui';
 
@@ -16,6 +17,14 @@ export interface AppCardData {
   stalled?: boolean;
 }
 
+/** The Overview's health line (#1815): the fleet verdict word, its colour, its reason, and where it leads. */
+export interface AppCardHealth {
+  label: string;
+  color: string;
+  text: string;
+  href: string;
+}
+
 /** The app tile — accent dot, name, kind·version, status pill, hostname, footer. */
 export function AppCard({
   app,
@@ -23,6 +32,8 @@ export function AppCard({
   onRetry,
   onResume,
   loadSteps,
+  health,
+  observeHref,
 }: {
   app: AppCardData;
   onOpen?: () => void;
@@ -30,6 +41,9 @@ export function AppCard({
   onResume?: () => void;
   /** Loader for the install's durable step record (#424) — rendered live while provisioning, and as the diagnosis when failed. */
   loadSteps?: () => Promise<InstallStep[]>;
+  health?: AppCardHealth;
+  /** Where "Observe →" leads; absent, the footer carries no link. */
+  observeHref?: string;
 }) {
   const [hover, setHover] = useState(false);
   const provisioning = app.status === 'provisioning';
@@ -86,6 +100,7 @@ export function AppCard({
           </a>
         ) : null}
       </div>
+      {health && <HealthLine health={health} />}
       {(provisioning || failed) && loadSteps && <InstallSteps status={app.status} load={loadSteps} />}
       {provisioning && app.stalled && (
         <div
@@ -141,9 +156,50 @@ export function AppCard({
           </span>
         </div>
       )}
-      <div style={{ borderTop: '1px solid var(--border-subtle)', marginTop: 10, paddingTop: 8, fontSize: 11, color: 'var(--text-tertiary)' }}>
-        Updated {app.updated}
+      <div style={{ display: 'flex', alignItems: 'center', borderTop: '1px solid var(--border-subtle)', marginTop: 10, paddingTop: 8, fontSize: 11, color: 'var(--text-tertiary)' }}>
+        <span style={{ flex: 1 }}>Updated {app.updated}</span>
+        {observeHref && <CardLink href={observeHref} style={{ fontSize: 12, color: 'var(--text-link)' }}>Observe →</CardLink>}
       </div>
     </div>
+  );
+}
+
+/** A real link inside the clickable card: its own navigation, never the card's. */
+function CardLink({ href, style, children, onHover }: { href: string; style: React.CSSProperties; children: React.ReactNode; onHover?: (on: boolean) => void }) {
+  return (
+    <a
+      href={teamPath(href)}
+      onMouseEnter={() => onHover?.(true)}
+      onMouseLeave={() => onHover?.(false)}
+      onClick={(e) => {
+        // Never the card's own open; and a modified click is the browser's (new tab).
+        e.stopPropagation();
+        if (!isPlainClick(e)) return;
+        e.preventDefault();
+        navigate(href);
+      }}
+      style={{ textDecoration: 'none', ...style }}
+    >
+      {children}
+    </a>
+  );
+}
+
+/** The 36px inset pill: dot, verdict word in its colour, and the plain reason. */
+function HealthLine({ health }: { health: AppCardHealth }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <CardLink
+      href={health.href}
+      onHover={setHover}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, height: 36, boxSizing: 'border-box', padding: '0 10px', marginTop: 8, borderRadius: 8, minWidth: 0,
+        background: hover ? 'var(--surface-active)' : 'var(--surface-inset)', color: 'var(--text-primary)',
+      }}
+    >
+      <span style={{ width: 7, height: 7, flexShrink: 0, borderRadius: '50%', background: health.color }} />
+      <span style={{ fontSize: 12.5, fontWeight: 500, color: health.color, whiteSpace: 'nowrap' }}>{health.label}</span>
+      <span title={health.text} style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{health.text}</span>
+    </CardLink>
   );
 }

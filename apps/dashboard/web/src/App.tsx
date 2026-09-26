@@ -14,6 +14,7 @@ import { PromoteDialog } from './components/PromoteDialog';
 import { SignIn, Interstitial, InviteBlocked } from './views/SignIn';
 import { Onboarding } from './views/Onboarding';
 import { Apps } from './views/Apps';
+import { Overview } from './views/Overview';
 import { Verticals, VerticalDetail } from './views/Verticals';
 import { CreateApp } from './views/CreateApp';
 import { AppDetail } from './views/AppDetail';
@@ -912,7 +913,9 @@ export function App() {
         ) : (
           <NotFound label="That app could not be found." onBack={() => go('/apps')} />
         )
-      ) : route.section === 'overview' || route.section === 'apps' ? (
+      ) : route.section === 'overview' ? (
+        <Overview apps={apps} loading={appsLoading} teamName={org} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={loadMoreApps} />
+      ) : route.section === 'apps' ? (
         <Apps apps={apps} loading={appsLoading} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
       ) : route.section === 'verticals' && openVertical ? (
         <VerticalDetail
