@@ -7,6 +7,7 @@ import {
   INVITES_PERM as PERM,
   acceptInvite,
   listInvites,
+  readInvitation,
   sendInvite,
   type Invitation,
 } from '../src/index.js';
@@ -73,10 +74,13 @@ describe('engine-invites — the seam is parsed, not asserted', () => {
     );
     const listed = await h.run((ctx) => listInvites(ctx, org), ALL);
     const paged = await staff.invoke<Page<Invitation>>('invites/list', { orgId: org });
+    const read = await h.run((ctx) => readInvitation(ctx, sent.id), ALL);
 
-    for (const row of [accepted, ...listed, ...paged.entries]) {
+    for (const row of [accepted, ...listed, ...paged.entries, read]) {
       expect(row).not.toHaveProperty('identifier_hash');
     }
+    // Nor does the address itself: only ever its hash is stored, and neither is returned.
+    expect(JSON.stringify(read)).not.toContain('ada@example.com');
   });
 
   it('a column that vanished fails AT THE READ, naming itself', async () => {
@@ -151,6 +155,36 @@ describe('engine-invites — the seam is parsed, not asserted', () => {
     // The caller's input was already parsed and is not what went wrong, so this
     // must not answer 400 `validation_failed` — that is a lie a client acts on.
     const err = await h.run((ctx) => listInvites(ctx, org), ALL).catch((e: unknown) => e);
+    expect(errorCodeOf(err)).toBe('internal');
+  });
+
+  it('readInvitation: a dropped column fails at the read, and an added one never crosses', async () => {
+    const sent = await send();
+    await drift('ALTER TABLE invites_invitation ADD COLUMN internal_note TEXT');
+    await drift(`UPDATE invites_invitation SET internal_note = 'do not publish'`);
+    const read = await h.run((ctx) => readInvitation(ctx, sent.id), ALL);
+    expect(read).not.toHaveProperty('internal_note');
+    expect(Object.keys(read!)).toEqual([
+      'id',
+      'org_id',
+      'role_key',
+      'state',
+      'invited_by',
+      'accepted_by',
+      'created_at',
+      'expires_at',
+      'settled_at',
+    ]);
+
+    await drift('ALTER TABLE invites_invitation DROP COLUMN settled_at');
+    await expect(h.run((ctx) => readInvitation(ctx, sent.id), ALL)).rejects.toThrow(/no such column: settled_at/);
+  });
+
+  it('readInvitation: a state this engine does not know throws at the seam, as `internal`', async () => {
+    const sent = await send();
+    await drift(`UPDATE invites_invitation SET state = 'pending'`);
+    const err = await h.run((ctx) => readInvitation(ctx, sent.id), ALL).catch((e: unknown) => e);
+    expect(String(err)).toMatch(/does not match the shape this engine publishes.*state/s);
     expect(errorCodeOf(err)).toBe('internal');
   });
 });
