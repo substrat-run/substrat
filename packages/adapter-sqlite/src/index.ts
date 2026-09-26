@@ -2568,7 +2568,9 @@ export class SqliteScopeHost implements ScopeHost {
     // #1742 review: a move the deployment made from a stale list — the module was restored
     // ON after the list was read — is undone first, so the operator's ON stands.
     const recorded = systemSwitchRecordsOf(switchSqlOf(this.directory), tenantId, scopeId);
-    for (const moduleId of staleCarryReverts(recorded, opts?.appliedInUnit)) {
+    // One synchronous turn: no switch can land between this read and the moves below.
+    const reverted = new Set(staleCarryReverts(recorded, opts?.appliedInUnit));
+    for (const moduleId of reverted) {
       const outcome = rt.db.transaction(() =>
         switchSystemSchedules(switchSqlOf(rt.db), { moduleId, scopeId, to: 'on', at }),
       )();
@@ -2582,7 +2584,9 @@ export class SqliteScopeHost implements ScopeHost {
     const recordedOff = switchedOffModulesOf(switchSqlOf(this.directory), tenantId, scopeId);
     // #1742: what a deployment already switched off inside its own unit, audited here — the
     // switch below answers `changed: false` for it and would write no row.
-    for (const row of inUnitMovesToAudit(recordedOff, opts?.appliedInUnit)) {
+    // A move the revert above undid is not credited as an in-unit OFF.
+    const applied = opts?.appliedInUnit?.filter((a) => !reverted.has(a.moduleId));
+    for (const row of inUnitMovesToAudit(recordedOff, applied)) {
       this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, { operationId: ulid(), ...row });
     }
     return recordedOff.map((moduleId) => {

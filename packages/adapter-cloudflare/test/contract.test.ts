@@ -788,7 +788,12 @@ describe('#1742 — a staff OFF racing the stale-carry revert still ends OFF', (
     await reassert();
     expect(deployment.calls).toEqual(['on', 'off', 'off']);
     expect(deployment.position).toBe('off');
-    expect((await rows()).at(-1)).toMatchObject({ schedules: 'off', changed: true });
+    // One row per move that stood: the revert, then the OFF pass. The deployment's in-unit
+    // move was undone by the revert, so it is not credited as an in-unit OFF too.
+    expect((await rows()).map((r) => [r.schedules, r.staleCarry ?? null, r.inUnit ?? null])).toEqual([
+      ['on', true, null],
+      ['off', null, null],
+    ]);
   });
 
   it('twin: with no OFF racing, the revert stands and the module ends ON', async () => {

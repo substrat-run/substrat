@@ -4384,12 +4384,14 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       }
       const at = new Date().toISOString();
+      const reverted = new Set<string>();
       for (const moduleId of reverts) {
         // Re-read immediately before the move: a staff OFF that completed since the read above
         // (record `off`) must not get a transient ON a due schedule could run in.
         const current = new Map(await this.cp.systemSwitchRecordsOf(tenantId, scopeId));
         if (current.get(moduleId) !== 'on') continue;
         const outcome = await move(moduleId as ModuleId, 'on', at);
+        reverted.add(moduleId);
         if (outcome.changed) {
           await this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId, vertical }, null, {
             operationId: ulid(),
@@ -4401,7 +4403,9 @@ export class CloudflareScopeHost implements ScopeHost {
       const modules = await this.cp.switchedOffModulesOf(tenantId, scopeId);
       // #1742: what the deployment already switched off inside its own unit, audited here —
       // the move below answers `changed: false` for it and would write no row.
-      for (const row of inUnitMovesToAudit(modules, opts?.appliedInUnit)) {
+      // A move the revert above undid is not credited as an in-unit OFF.
+      const applied = opts?.appliedInUnit?.filter((a) => !reverted.has(a.moduleId));
+      for (const row of inUnitMovesToAudit(modules, applied)) {
         await this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId, vertical }, null, {
           operationId: ulid(),
           ...row,
