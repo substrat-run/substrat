@@ -139,7 +139,14 @@ and time window, groups by type, actor, operation, version, entity type, PII cla
 or one payload field, and returns counts per bucket. Each bucket carries `lastSeen`, the time of
 its latest event. That tells a path that **stopped** (it has old events) from a path that
 **never ran** (it has none). Erased payloads are counted separately rather than folded into a
-"null" bucket. This is the **Events** explorer.
+"null" bucket. A payload grouping counts only events whose PII class is `none`; events classed as
+personal data are withheld and counted in `withheldPersonal`. The class is per event, not per
+field, so an event classed `none` that carries personal data anyway is still grouped. This is the
+**Events** explorer. It is not the only way to read the outbox: the SQL console and the table
+browse sit behind the same access and are deliberately not narrowed this way. They read the app's
+data as stored, personal event payloads included, for the team that owns it, and every query is
+recorded in the access log (chapter 11). Grouping by actor lists principals, which are
+pseudonymous ids (#1821).
 
 **Flow.** `substrat push` records what each module *declares* it emits and consumes. The dashboard
 compares that with what the outbox *shows* happening. Triggers lead to modules, modules to event

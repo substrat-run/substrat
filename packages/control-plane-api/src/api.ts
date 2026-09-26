@@ -94,6 +94,8 @@ import type {
   ConnectionCredential,
   ConnectionHealthPage,
   ConnectionProbe,
+  EventFacetInput,
+  EventFacetResult,
   ListPageQuery,
   Page,
   PlatformActorId,
@@ -527,6 +529,37 @@ class ExportBreakRefused extends ControlPlaneError {
 /** The body a route answers an `ExportBreakRefused` with: the sentence and the listing. */
 function exportBreakBody(e: ControlPlaneError): { error: string; exportBreaks?: { affected: ExportBreak[] } } {
   return { error: e.message, ...(e instanceof ExportBreakRefused ? { exportBreaks: { affected: e.breaks } } : {}) };
+}
+
+/**
+ * A delegated facet answer, normalized — and refused when the vertical that produced it
+ * predates #1762.
+ *
+ * The facet runs inside the vertical holding the scope, on the kernel that vertical was
+ * pushed with, and a kernel from before the rule groups a payload field over personal
+ * data too — one bucket per email address. It says so by omitting `withheldPersonal`.
+ * Such a PAYLOAD grouping is not relayed: no buckets, every event that was not erased
+ * counted as withheld, and `withheldReason` saying why. An envelope grouping is a
+ * kernel-stamped column, which the old kernel answered correctly, so it passes with the
+ * count it could not have withheld anything under — 0 — filled in, as the schema
+ * requires.
+ *
+ * A numeric `withheldPersonal` is trusted as it comes. This guard is for version skew,
+ * not a defence against a dishonest vertical: a vertical is tenant code that can already
+ * read its own scope, so one that lied here would be disclosing nothing it could not
+ * show its own users some other way.
+ */
+function withholdIfPredatesRule(input: EventFacetInput, answer: EventFacetResult): EventFacetResult {
+  if (input.groupBy.kind !== 'payload') return { ...answer, withheldPersonal: answer.withheldPersonal ?? 0 };
+  if (typeof answer.withheldPersonal === 'number') return answer;
+  return {
+    buckets: [],
+    erased: answer.erased,
+    withheldPersonal: Math.max(0, answer.total - answer.erased),
+    withheldReason: 'vertical-predates-rule',
+    total: answer.total,
+    truncated: false,
+  };
 }
 
 /**
@@ -2913,7 +2946,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await delegatedRead(
         c, tenantId, scopeId, scope, 'facetEvents', input,
         {
-          viaVertical: (v) => v.facetEvents(scopeId, input),
+          // #1762: only the vertical's answer needs the guard. The co-located read runs
+          // this platform's own kernel, which withholds by construction.
+          viaVertical: async (v) => withholdIfPredatesRule(input, await v.facetEvents(scopeId, input)),
           colocated: () => admin.facetEvents(c.get('actor'), tenantId, scopeId, input),
         },
         // The buckets RETURNED, not `total`: the row says how much this read handed
@@ -2970,7 +3005,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       method,
       tenantId,
       scopeId,
-      params: delegatedReadParams[method](input),
+      // The answer rides along for the one method whose row describes it (a facet's
+      // withheld counts, #1762); every other projection ignores it.
+      params: delegatedReadParams[method](input, answer as never),
       resultCount: count(answer),
     });
     return answer;

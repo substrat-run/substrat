@@ -704,6 +704,17 @@ export function readDeadLetters(ctx: TimelineReader, page?: Pick<ListPage, 'limi
  * persisted erasure state on the spine and a migration for existing scopes; the
  * reader cannot invent one.
  *
+ * **A payload grouping counts only events classed as carrying no personal data**
+ * (#1762). Grouping by `email` or `body` would otherwise hand anyone who can open
+ * the explorer one bucket per person or per message. The per-event `pii_class` is
+ * the declaration that a payload carries personal data — it is what an erasure
+ * keys on — so only rows whose class is exactly `'none'` are bucketed, and every
+ * other row is counted apart: `erased` if its payload was shredded,
+ * `withheldPersonal` if it still carries one. The predicate is `IS NOT 'none'`, not
+ * `!= 'none'`, so it fails closed: an unrecognised class is withheld, and a NULL
+ * one — which the column's NOT NULL refuses today on both adapters — is too,
+ * rather than dropping out of every count. The three counts partition `total`.
+ *
  * The group-by is a fixed shape, never interpolated SQL: an envelope grouping
  * selects a known column, and a payload grouping binds `'$.<field>'` as a
  * parameter, with the field's own pattern enforced by `eventFacetGroupBy`.
@@ -741,20 +752,27 @@ export function facetEvents(ctx: TimelineReader, input: EventFacetInput): EventF
     return {
       buckets: rows.slice(0, limit).map((r) => ({ value: r.value, count: r.n, lastSeen: r.last })),
       erased: 0,
+      withheldPersonal: 0,
       total,
       truncated: rows.length > limit,
     };
   }
 
-  // Erased rows are counted, then excluded — the whole point of this branch. See the
-  // docstring for why the predicate carries `pii_class` rather than testing the payload
-  // alone: an omitted payload is stored as the same NULL a shred writes.
-  const ERASED = `payload IS NULL AND pii_class != 'none'`;
-  const erasedFilter = filter === '' ? ` WHERE ${ERASED}` : `${filter} AND ${ERASED}`;
-  const erased =
-    ctx.sql.query<{ n: number }>(`SELECT COUNT(*) AS n FROM _substrat_outbox${erasedFilter}`, params)[0]?.n ?? 0;
+  // Every row classed as anything but `'none'` is counted, then excluded (#1762): the
+  // erased ones (a shred only ever nulls such a row — see the docstring for why an
+  // omitted payload is not one) and the withheld ones, which still carry personal data.
+  // `IS NOT` is null-safe, so a class that is missing or unrecognised lands here too.
+  const PERSONAL = `pii_class IS NOT 'none'`;
+  const personalFilter = filter === '' ? ` WHERE ${PERSONAL}` : `${filter} AND ${PERSONAL}`;
+  const counts = ctx.sql.query<{ erased: number | null; withheld: number | null }>(
+    `SELECT SUM(payload IS NULL) AS erased, SUM(payload IS NOT NULL) AS withheld
+       FROM _substrat_outbox${personalFilter}`,
+    params,
+  )[0];
+  const erased = counts?.erased ?? 0;
+  const withheldPersonal = counts?.withheld ?? 0;
 
-  const liveFilter = filter === '' ? ` WHERE NOT (${ERASED})` : `${filter} AND NOT (${ERASED})`;
+  const liveFilter = filter === '' ? ` WHERE pii_class = 'none'` : `${filter} AND pii_class = 'none'`;
   // CAST to TEXT so the grouping and the value the caller reads are the SAME
   // representation. SQLite keeps `json_extract`'s storage classes apart — a JSON `1`
   // comes back INTEGER, a JSON `"1"` TEXT, and they land in separate groups — while
@@ -768,12 +786,13 @@ export function facetEvents(ctx: TimelineReader, input: EventFacetInput): EventF
       GROUP BY value ORDER BY n DESC, value LIMIT ?`,
     [`$.${input.groupBy.field}`, ...params, limit + 1],
   );
-  // Over LIVE rows only, like the count beside it: an erased row is excluded from the
-  // bucket entirely, so this is "when this value was last seen in an event that still
-  // carries its payload" — the erased total above is where the rest is accounted for.
+  // Over GROUPED rows only, like the count beside it: an erased or withheld row is
+  // excluded from the bucket entirely, so this is "when this value was last seen in an
+  // event classed as carrying no personal data" — the two counts above hold the rest.
   return {
     buckets: rows.slice(0, limit).map((r) => ({ value: r.value, count: r.n, lastSeen: r.last })),
     erased,
+    withheldPersonal,
     total,
     truncated: rows.length > limit,
   };

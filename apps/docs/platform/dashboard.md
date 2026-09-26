@@ -112,7 +112,14 @@ import** — each keeping its own URL (`data/previews` …) the way Settings doe
 (with the `_substrat_*` spine grouped apart), a paged view of the selected table on the other, and a
 collapsible **SQL console** for the one read-only `SELECT` the table browser can't express. Read-only
 is enforced below the seam — raw writes would bypass the event log and forge invariants — and every
-read is audited. **Schema** is the emitted [entity model](/concepts/model) of the version this app
+read is audited. Both read the app's data **as stored, personal data included**: the vertical's own
+rows and the payloads of events classed as personal, which the Observability **Events** explorer
+withholds from its payload groupings. That is deliberate. They are the owning team's own query
+tools, and the same personal data sits in the domain tables anyway. Every table read and every
+console query is recorded in the platform's access log, statement included. The explorer has two
+known limits: the PII class is per event, so an event classed `none` that carries personal data is
+still grouped by payload field, and grouping by actor lists principals, which are pseudonymous
+ids. **Schema** is the emitted [entity model](/concepts/model) of the version this app
 *runs* — the ER diagram, entity cards and declared lifecycles, rendered by the same
 `@substrat-run/model-view` core `substrat model view` uses — with a **field coverage** card above it
 naming the declared fields no operation can return. It sits next to the tables because the reader

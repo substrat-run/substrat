@@ -423,7 +423,7 @@ jobs:
         if: steps.scope.outputs.count != '0'
         env:
           SCOPE_FILTERS: ${{ steps.scope.outputs.filters }}
-          NODE_OPTIONS: --require=${{ github.workspace }}/tools/vitest/like-pattern-limit.cjs
+          NODE_OPTIONS: --require=${{ github.workspace }}/tools/vitest/like-pattern-limit.cjs --require=${{ github.workspace }}/tools/vitest/sql-limits.cjs
         run: |
           read -ra filters <<< "$SCOPE_FILTERS"
           pnpm -r --no-sort --workspace-concurrency=2 "${filters[@]}" test

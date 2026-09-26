@@ -29,6 +29,26 @@ const TYPES: Row[] = [
   ['deal.closed', 96, 312],
 ];
 
+/**
+ * Each type's PII class (#1762) — the kernel's classes, per event type, so the PII-class
+ * dimension and the payload groupings are answers about the same events. A reply carries
+ * its body and a new ticket its sender, so narrowing to either is a population with no
+ * `none` event in it: the one honest way to reach the "every event withheld" state.
+ */
+const TYPE_PII: Record<string, 'none' | 'pseudonymous' | 'direct'> = {
+  'ticket.replied': 'direct',
+  'ticket.created': 'direct',
+  'ticket.assigned': 'none',
+  'email.sent': 'pseudonymous',
+  'invoice.sent': 'pseudonymous',
+  'work_order.completed': 'none',
+  'csat.recorded': 'pseudonymous',
+  'deal.closed': 'none',
+};
+
+/** The share of a personal-data type's events whose payload was erased. */
+const ERASED_SHARE = 0.001;
+
 /** [operation, the type it emits, count, minutes since last seen]. A consumer's emission
  *  has no operation, which is why two types land on the null one. */
 const OPERATIONS: Array<[string | null, string, number, number]> = [
@@ -61,11 +81,11 @@ const DIMENSIONS: Record<string, Row[]> = {
     ['deal', 96, 312],
     [null, 44, 60],
   ],
-  piiClass: [
-    ['none', 5210, 2],
-    ['personal', 6802, 3],
-    ['sensitive', 36, 140],
-  ],
+  // Derived from the types rather than stated, so it cannot disagree with a payload grouping.
+  piiClass: (['none', 'pseudonymous', 'direct'] as const).map((cls): Row => {
+    const of = TYPES.filter(([t]) => TYPE_PII[t!] === cls);
+    return [cls, of.reduce((n, [, c]) => n + c, 0), Math.min(...of.map(([, , ago]) => ago))];
+  }),
 };
 
 const FIELDS: Record<string, Row[]> = {
@@ -84,9 +104,16 @@ const FIELDS: Record<string, Row[]> = {
 
 const TYPE_TOTAL = TYPES.reduce((n, [, c]) => n + c, 0);
 
+/** Elsewhere the fixture has no per-type breakdown, so a narrowed type gets its share of
+ *  every bucket — and an unknown type none at all, as the real read would. */
+function typeShare(type: string | undefined): number {
+  if (!type) return 1;
+  return (TYPES.find(([t]) => t === type)?.[1] ?? 0) / TYPE_TOTAL;
+}
+
 /** The rows a grouping answers with, narrowed to one type where the fixture can say so. */
-function rowsFor(q: { groupBy?: string; field?: string; type?: string }): Row[] {
-  const groupBy = q.field ? 'field' : (q.groupBy ?? 'type');
+function rowsFor(q: { groupBy?: string; type?: string }): Row[] {
+  const groupBy = q.groupBy ?? 'type';
   if (groupBy === 'type') return q.type ? TYPES.filter(([t]) => t === q.type) : TYPES;
   if (groupBy === 'operation') {
     // Grouped by operation, the type filter is exact: keep the operations that emit it,
@@ -99,11 +126,9 @@ function rowsFor(q: { groupBy?: string; field?: string; type?: string }): Row[] 
     }
     return [...byOp.values()];
   }
-  const rows = groupBy === 'field' ? (FIELDS[q.field!] ?? [[null, 1840, 4]]) : (DIMENSIONS[groupBy] ?? TYPES);
+  const rows = DIMENSIONS[groupBy] ?? TYPES;
   if (!q.type) return rows;
-  // Elsewhere the fixture has no per-type breakdown, so a narrowed type gets its share of
-  // every bucket — and an unknown type none at all, as the real read would.
-  const share = (TYPES.find(([t]) => t === q.type)?.[1] ?? 0) / TYPE_TOTAL;
+  const share = typeShare(q.type);
   return rows.map(([v, c, ago]): Row => [v, Math.round(c * share), ago]).filter(([, c]) => c > 0);
 }
 
@@ -114,25 +139,81 @@ export function mockEventFacets(
   const start = now - FIXTURE_SPAN_MINUTES * 60_000;
   const since = q.since ? Math.max(Date.parse(q.since), start) : start;
   const until = q.until ? Math.min(Date.parse(q.until), now) : now;
+  // This bucket's events run from the fixture's start to its last-seen instant; the
+  // window counts the share it overlaps, and one it misses entirely is no bucket.
+  const inWindow = (count: number, ago: number): { n: number; to: number } => {
+    const last = now - ago * 60_000;
+    const to = Math.min(until, last);
+    return { n: to < since ? 0 : Math.round((count * (to - since)) / Math.max(1, last - start)), to };
+  };
+  if (q.field) return payloadFacet(q.field, q.type, inWindow);
   const buckets = rowsFor(q)
     .flatMap(([value, count, ago]) => {
-      // This bucket's events run from the fixture's start to its last-seen instant; the
-      // window counts the share it overlaps, and one it misses entirely is no bucket.
-      const last = now - ago * 60_000;
-      const to = Math.min(until, last);
-      if (to < since) return [];
-      const n = Math.round((count * (to - since)) / Math.max(1, last - start));
+      const { n, to } = inWindow(count, ago);
       return n > 0 ? [{ value, count: n, lastSeen: new Date(to).toISOString() }] : [];
     })
     .sort((a, b) => b.count - a.count);
-  const grouped = buckets.reduce((n, b) => n + b.count, 0);
-  // Erasure only shows under a payload grouping, where it can hide a value — and only
-  // when something in the window was grouped at all.
-  const erased = q.field && grouped > 0 ? Math.max(1, Math.round(grouped * 0.001)) : 0;
   return {
     buckets,
-    total: grouped + erased,
-    erased,
-    truncated: !q.field && (q.groupBy ?? 'type') === 'type' && !q.type && buckets.length > 0,
+    total: buckets.reduce((n, b) => n + b.count, 0),
+    erased: 0,
+    withheldPersonal: 0,
+    truncated: (q.groupBy ?? 'type') === 'type' && !q.type && buckets.length > 0,
   };
+}
+
+/**
+ * A payload grouping, the way the kernel counts it (#1762): the population is every event
+ * matching the type filter and window, whatever field is named. Events classed `none` are
+ * grouped — by the field's value where the fixture gives them one, and in the null bucket
+ * where they do not carry it — and every other event is erased or withheld, whether or not
+ * it carries the field. So `email` is not special: the `none` events lack it and land in
+ * the null bucket, and the ones that carry it were never eligible.
+ */
+function payloadFacet(
+  field: string,
+  type: string | undefined,
+  inWindow: (count: number, ago: number) => { n: number; to: number },
+): EventFacetResult {
+  const values = FIELDS[field];
+  const valueTotal = values ? values.reduce((n, [, c]) => n + c, 0) : 0;
+  const byValue = new Map<string | null, { count: number; to: number }>();
+  let erased = 0;
+  let withheldPersonal = 0;
+  for (const [t, count, ago] of TYPES) {
+    if (type && t !== type) continue;
+    const { n, to } = inWindow(count, ago);
+    if (n === 0) continue;
+    if (TYPE_PII[t!] !== 'none') {
+      const e = Math.round(n * ERASED_SHARE);
+      erased += e;
+      withheldPersonal += n - e;
+      continue;
+    }
+    // The field's values split this type's events in the fixture's proportions; the
+    // rounding remainder has no value, which is what the null bucket is.
+    let left = n;
+    for (const [v, c] of values ?? []) {
+      const k = Math.floor((n * c) / valueTotal);
+      left -= k;
+      add(byValue, v, k, to);
+    }
+    add(byValue, null, left, to);
+  }
+  const buckets = [...byValue]
+    .filter(([, b]) => b.count > 0)
+    .map(([value, b]) => ({ value, count: b.count, lastSeen: new Date(b.to).toISOString() }))
+    .sort((a, b) => b.count - a.count);
+  return {
+    buckets,
+    total: buckets.reduce((n, b) => n + b.count, 0) + erased + withheldPersonal,
+    erased,
+    withheldPersonal,
+    truncated: false,
+  };
+}
+
+function add(m: Map<string | null, { count: number; to: number }>, value: string | null, count: number, to: number) {
+  const had = m.get(value);
+  m.set(value, had ? { count: had.count + count, to: Math.max(had.to, to) } : { count, to });
 }
