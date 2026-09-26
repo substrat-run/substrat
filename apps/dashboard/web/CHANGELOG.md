@@ -1,5 +1,19 @@
 # @substrat-run/dashboard-web
 
+## 0.15.0
+
+### Minor Changes
+
+- 3a7c685: An app's page now opens with its health verdict beside its name — the same word the Apps table shows for it — with its vertical and hostname underneath, and Flow map and Logs buttons that open Observability narrowed to that app. The Overview tab reads top to bottom as traffic by status, traffic by surface, then schedules and freshness at full width; the row of four status tiles is gone, because each of its answers now lives on the card that explains it. When an app declares no schedules, or they cannot be read, a one-line card says so.
+- 34c5cac: Pulse, Processes and Logs each have their own layout now. Pulse shows every app on one clock — requests, error rate, p95, a sparkline and its health verdict per row — and, narrowed to one app, adds its releases and its schedules on the same axis. Logs opens on a filter bar where each filter is a removable chip, and its lines are a dense, colour-coded stream you can open to see every field, where clicking a value filters by it. Processes drops the time controls it never used.
+
+### Patch Changes
+
+- 8fa586d: Event history no longer shows a stale page of events, or re-enables "Read later events" too early, after you close a record and reopen it while an earlier read was still loading.
+- Updated dependencies [0803833]
+  - @substrat-run/contracts@0.122.0
+  - @substrat-run/model-view@0.2.23
+
 ## 0.14.0
 
 ### Minor Changes

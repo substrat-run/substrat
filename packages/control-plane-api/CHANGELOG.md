@@ -1,5 +1,40 @@
 # @substrat-run/control-plane-api
 
+## 0.122.0
+
+### Minor Changes
+
+- 0803833: Moving one app onto a version that stops exporting an event type another app in the same tenant imports is now refused, the same way a promote already is. Before, updating one app could stop another app's events arriving, and nobody would have agreed to that.
+
+  A move is either of the two things that decide what code an app runs: binding it to a version, or routing it onto (or off) its vertical's serving script, which is what adopting a legacy app does before its version ever changes. Both are judged by the code the app runs before and after. An app that stays on the serving script runs the served version whatever its pointer says, so re-pointing it is never refused; the promote that replaced that script already judged every tenant. A fork, a preview, an app still provisioning, and an app's first bind are never refused either. A move to another vertical (`rebind-vertical` across lineages) is not judged, which is a known gap.
+
+  The refusal counts what would break. Pass `acknowledge: { exportBreak: true }` to move anyway, and the admin log records it.
+
+  - The control plane's bind (`POST /tenants/:t/scopes/:s/version`), `adopt-serving` (per app and vertical-wide) and `rebind-vertical` take `acknowledge`, ask before moving any data, and refuse with the affected apps listed. `GET /tenants/:t/scopes/:s/binding-impact?versionId=` asks the same question without moving anything.
+  - A private vertical's promote passes its export-break acknowledgement on to the apps it adopts, and its impact (`promote-impact` and the promote's own refusal) names what adopting each app still on an older version would break. Without the acknowledgement such an app is left where it is, every other app still moves, and the promote says which were left.
+  - `substrat scope bind`, `scope adopt-serving` and `scope rebind` take `--ack-export-break` and print the affected apps.
+  - The dashboard's Update and Bind list the affected apps in a confirm and send again acknowledged. A refused Update leaves nothing on the Activity trail, and an acknowledged one says it was acknowledged.
+  - A version that is not admitted is refused as that before any acknowledgement is asked for.
+
+  `HostAdmin` gains `bindingImpact(actor, tenantId, scopeId, versionId, opts?)`, which lists the apps a move would break (`opts.servingRef` for a routing move). `bindScopeVersion` and `setScopeServingRef` gain `acknowledge` in their options. Anything that implements `HostAdmin` needs the new method. The kernel exports `bindExportBreaksOf` and the refusal helpers, and `exportBreaksOf` takes an optional `tenantId`.
+
+### Patch Changes
+
+- bcb538f: `POST /verticals/:slug/versions` now parses `manifestJson` before storing it, and answers 400 naming the problem when it is not JSON or not a deploy manifest. Before, a string nothing could read was stored, and every later read of that version (registry, schedules, flow, model, assets, and the manifest rebuild promote and backout run) failed with a 500.
+- 3a3338d: A version's SQL migrations are now stored apart from its deploy manifest. Reading a version no longer moves its SQL. Admitting, promoting, binding and serving a version read only the manifest, and the promote review reads the SQL on its own.
+
+  `substrat push` sends the same manifest as before. The control plane takes the `migrations` field out when the version is published, stores each migration as its own row, and keeps the manifest without it. As before, `substrat push` leaves off a set over the limits (2000 migrations, 512 KiB of SQL) with a warning, and the deploy endpoint refuses one before anything is uploaded. A version published any other way with such a set, or with one not shaped like migrations, still publishes without it, and the promote dialog says the SQL is not available and asks for the acknowledgement.
+
+  Versions pushed earlier are moved over in the background, a few at a time, and read correctly while they wait. A version pushed before manifests carried migrations still reads as "SQL not available", never as "no migrations". A directory restored from a backup taken before the move is moved again.
+
+  `HostAdmin` gains `versionMigrations(actor, verticalSlug, versionId)`, which returns one version's migrations in the order the host runs them. It returns `null` for a version with none to show. Like `versionManifest`, it refuses a version of another vertical. Anything that implements `HostAdmin` needs the new method.
+
+- Updated dependencies [0803833]
+- Updated dependencies [1e326dd]
+- Updated dependencies [3a3338d]
+  - @substrat-run/contracts@0.122.0
+  - @substrat-run/kernel@0.122.0
+
 ## 0.121.0
 
 ### Minor Changes

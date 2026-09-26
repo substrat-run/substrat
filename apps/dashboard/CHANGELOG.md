@@ -1,5 +1,43 @@
 # @substrat-run/dashboard
 
+## 0.37.1
+
+### Patch Changes
+
+- 0803833: Moving one app onto a version that stops exporting an event type another app in the same tenant imports is now refused, the same way a promote already is. Before, updating one app could stop another app's events arriving, and nobody would have agreed to that.
+
+  A move is either of the two things that decide what code an app runs: binding it to a version, or routing it onto (or off) its vertical's serving script, which is what adopting a legacy app does before its version ever changes. Both are judged by the code the app runs before and after. An app that stays on the serving script runs the served version whatever its pointer says, so re-pointing it is never refused; the promote that replaced that script already judged every tenant. A fork, a preview, an app still provisioning, and an app's first bind are never refused either. A move to another vertical (`rebind-vertical` across lineages) is not judged, which is a known gap.
+
+  The refusal counts what would break. Pass `acknowledge: { exportBreak: true }` to move anyway, and the admin log records it.
+
+  - The control plane's bind (`POST /tenants/:t/scopes/:s/version`), `adopt-serving` (per app and vertical-wide) and `rebind-vertical` take `acknowledge`, ask before moving any data, and refuse with the affected apps listed. `GET /tenants/:t/scopes/:s/binding-impact?versionId=` asks the same question without moving anything.
+  - A private vertical's promote passes its export-break acknowledgement on to the apps it adopts, and its impact (`promote-impact` and the promote's own refusal) names what adopting each app still on an older version would break. Without the acknowledgement such an app is left where it is, every other app still moves, and the promote says which were left.
+  - `substrat scope bind`, `scope adopt-serving` and `scope rebind` take `--ack-export-break` and print the affected apps.
+  - The dashboard's Update and Bind list the affected apps in a confirm and send again acknowledged. A refused Update leaves nothing on the Activity trail, and an acknowledged one says it was acknowledged.
+  - A version that is not admitted is refused as that before any acknowledgement is asked for.
+
+  `HostAdmin` gains `bindingImpact(actor, tenantId, scopeId, versionId, opts?)`, which lists the apps a move would break (`opts.servingRef` for a routing move). `bindScopeVersion` and `setScopeServingRef` gain `acknowledge` in their options. Anything that implements `HostAdmin` needs the new method. The kernel exports `bindExportBreaksOf` and the refusal helpers, and `exportBreaksOf` takes an optional `tenantId`.
+
+- c074320: Registering an app as a client of a team auth-server now reads the issuer's discovery document under `oidc-rp`'s rules: the document must come from the issuer's origin and name that issuer, and its `registration_endpoint` must be `https` (plaintext only for a loopback dev issuer). The registration request follows no redirect, so a 30x fails the install. A discovery document that cannot be read or is refused fails the registration; the default registration path on the issuer's own origin is used only when a valid document names no `registration_endpoint`. The whole registration, discovery included, is bounded at 10 seconds.
+- c8554a1: An external OIDC issuer in an app's Identity choice must be `https` (or a loopback `http` issuer for local development). A plaintext issuer, or one with a query, fragment or credentials, is refused when the choice is saved.
+- Updated dependencies [0803833]
+- Updated dependencies [c8554a1]
+- Updated dependencies [c074320]
+- Updated dependencies [1e326dd]
+- Updated dependencies [bcb538f]
+- Updated dependencies [3a3338d]
+  - @substrat-run/contracts@0.122.0
+  - @substrat-run/kernel@0.122.0
+  - @substrat-run/adapter-cloudflare@0.122.0
+  - @substrat-run/control-plane-api@0.122.0
+  - @substrat-run/oidc-rp@0.9.1
+  - @substrat-run/connector-fortnox@0.4.24
+  - @substrat-run/demo-callout@0.3.40
+  - @substrat-run/engine-invites@0.8.6
+  - @substrat-run/engine-invoicing@0.11.6
+  - @substrat-run/engine-protocol@0.13.6
+  - @substrat-run/engine-workorder@0.12.6
+
 ## 0.37.0
 
 ### Minor Changes
