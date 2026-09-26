@@ -1526,6 +1526,10 @@ export class ControlPlaneDO extends DurableObject {
    * start gets.
    */
   async importDump(tables: ScopeDumpTable[]): Promise<void> {
+    // Same untrusted dump, same two holes as the scope path (#1143): names reaching
+    // SQL as identifiers, and `exec` running everything a `ddl` contains. Pure input
+    // validation, so it runs before the first DROP: a refused dump touches nothing.
+    assertReplayableDump(tables, { maxColumns: DO_SQL_LIMITS.columns });
     await this.ctx.storage.transaction(async () => {
       this.sql.exec('PRAGMA defer_foreign_keys = ON');
       // `_cf_*` is workerd's, and dropping it is refused (SQLITE_AUTH), as `exportDump` says.
@@ -1536,10 +1540,6 @@ export class ControlPlaneDO extends DurableObject {
         )
         .toArray() as unknown as { name: string }[];
       for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
-      // Same untrusted dump, same two holes as the scope path (#1143): names reaching
-      // SQL as identifiers, and `exec` running everything a `ddl` contains. Judged
-      // before the first statement of it runs.
-      assertReplayableDump(tables, { maxColumns: DO_SQL_LIMITS.columns });
       for (const t of tables) this.sql.exec(t.ddl);
       for (const t of tables) {
         if (t.rows.length === 0) continue;

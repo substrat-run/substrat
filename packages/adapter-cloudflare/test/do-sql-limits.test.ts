@@ -548,24 +548,30 @@ describe('a dump with a table over the column cap (#1811)', () => {
     return runInDurableObject(stub, (i, state) => fn(i as unknown as Importer, state.storage.sql));
   };
 
+  const row = names(columns).map((_, i) => i);
+  const rowsOf = (sql: SqlStorage, t: string): number => sql.exec(`SELECT COUNT(*) AS n FROM ${t}`).one().n as number;
+  const tablesOf = (sql: SqlStorage): string[] =>
+    (sql.exec(`SELECT name FROM sqlite_master WHERE name LIKE 'wide_%'`).toArray() as { name: string }[]).map((r) => r.name);
+
   it(`a table of exactly ${columns} columns replays, rows and all`, async () => {
-    const row = names(columns).map((_, i) => i);
     await scopeImport(async (i, sql) => {
       await i.importDump([table('wide_ok', columns, [row])]);
-      expect(sql.exec('SELECT COUNT(*) AS n FROM wide_ok').one().n).toBe(1);
+      expect(rowsOf(sql, 'wide_ok')).toBe(1);
     });
   });
 
   it(`${columns + 1} columns is refused before anything is replayed, and the scope keeps what it had`, async () => {
     await scopeImport(async (i, sql) => {
-      const err = await i.importDump([table('wide_too_far', columns + 1)]).then(
+      // Its own starting state: a scope holding one row, whatever ran before.
+      await i.importDump([table('wide_ok', columns, [row])]);
+      const err = await i.importDump([table('wide_ok', columns, []), table('wide_too_far', columns + 1)]).then(
         () => 'accepted',
         (e: Error) => e.message,
       );
       expect(err).toMatch(/^refusing this dump: table "wide_too_far" has 101 columns, and a Durable Object's SQLite holds at most 100 per table/);
-      // The transaction rolled back: the drop of the previous tables did not stick.
-      expect(sql.exec(`SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'wide_ok'`).one().n).toBe(1);
-      expect(sql.exec(`SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'wide_too_far'`).one().n).toBe(0);
+      // Refused before the drop: the old table still has its row, and nothing new exists.
+      expect(rowsOf(sql, 'wide_ok')).toBe(1);
+      expect(tablesOf(sql)).toEqual(['wide_ok']);
     });
   });
 

@@ -4246,6 +4246,16 @@ export function defineScopeDO(
       // Deferral holds every check until commit, by which point the old rows are gone and
       // the new ones are all in. It also covers what a topological sort cannot express: FK
       // cycles, and self-referencing rows within a single table.
+      // A dump written before indexes were excluded may still carry them; skipped
+      // rather than failing a restore over data about to be recomputed.
+      const replayable = tables.filter((t) => !isSearchIndexTable(t.name));
+      // The dump is untrusted input (#1143). `SqlStorage.exec` runs every statement
+      // in the string it is given, so a `ddl` with anything appended to its CREATE
+      // TABLE executed that too — with entirely plain identifiers, which is why no
+      // amount of name checking reaches it. There is no prepare step here to compile
+      // only the first statement, so the text itself has to be the one statement.
+      // Pure input validation, so it runs before the first DROP: a refused dump touches nothing.
+      assertReplayableDump(replayable, { maxColumns: DO_SQL_LIMITS.columns });
       await this.ctx.storage.transaction(async () => {
         this.sql.exec('PRAGMA defer_foreign_keys = ON');
         // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
@@ -4259,15 +4269,6 @@ export function defineScopeDO(
           if (isSearchIndexTable(name)) continue;
           this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
         }
-        // A dump written before indexes were excluded may still carry them; skipped
-        // rather than failing a restore over data about to be recomputed.
-        const replayable = tables.filter((t) => !isSearchIndexTable(t.name));
-        // The dump is untrusted input (#1143). `SqlStorage.exec` runs every statement
-        // in the string it is given, so a `ddl` with anything appended to its CREATE
-        // TABLE executed that too — with entirely plain identifiers, which is why no
-        // amount of name checking reaches it. There is no prepare step here to compile
-        // only the first statement, so the text itself has to be the one statement.
-        assertReplayableDump(replayable, { maxColumns: DO_SQL_LIMITS.columns });
         for (const t of replayable) this.sql.exec(t.ddl);
         for (const t of replayable) {
           if (t.rows.length === 0) continue;
