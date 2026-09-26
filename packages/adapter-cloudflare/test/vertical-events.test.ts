@@ -953,6 +953,33 @@ describe('adapter-cloudflare (workerd): the served-here gate reads a provisioned
     expect(await receiptOf(s)).toBe(t);
   });
 
+  it('a projection that fails part-way writes no receipt and leaves the prior roles intact', async () => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await crm.provision(t, s);
+    // A scope with no receipt yet, so "not written" is observable.
+    await sql(s, `DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+    const rolesOf = () =>
+      runInDurableObject(stubOf(s), async (_i, state) =>
+        state.storage.sql.exec(`SELECT tenant_id, role_key, permissions FROM _substrat_roles ORDER BY role_key`).toArray(),
+      );
+    const before = await rolesOf();
+    expect(before.length).toBeGreaterThan(0);
+    const stub = stubOf(s) as unknown as {
+      applyProjection(t: string, roles: unknown[], tuples: unknown[]): Promise<unknown>;
+    };
+    const good = { role_key: 'ok', permissions: '[]', source: 'vertical' };
+    // `permissions` is NOT NULL: this insert throws AFTER the roles were deleted and `ok` inserted.
+    const bad = { role_key: 'bad', permissions: null, source: 'vertical' };
+    await expect(stub.applyProjection(t, [good, bad], [])).rejects.toThrow();
+    expect(await receiptOf(s)).toBeNull();
+    expect(await rolesOf()).toEqual(before);
+    // The twin: a valid projection commits the receipt and the new roles together.
+    await stub.applyProjection(t, [good], []);
+    expect(await receiptOf(s)).toBe(t);
+    expect((await rolesOf()).map((r) => (r as { role_key: string }).role_key)).toEqual(['ok']);
+  });
+
   it('the receipt survives a restore of the same tenant\'s own dump', async () => {
     const t = tenantId.parse(ulid());
     const s = scopeId.parse(ulid());
