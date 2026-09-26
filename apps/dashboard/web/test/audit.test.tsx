@@ -2,7 +2,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, type AppRow, type AuditEntry } from '../src/lib/api';
-import { actionWords, actorOf, entryDiff, filterEntries, groupByDay } from '../src/lib/audit-activity';
+import { adminAction } from '@substrat-run/contracts';
+import { actionKeyWords, actionWords, actorOf, entryDiff, filterEntries, groupByDay } from '../src/lib/audit-activity';
 import { actionWords as overviewActionWords, activityRows } from '../src/lib/overview-status';
 import { AuditLog, DEEP_LINK_PAGES } from '../src/views/Audit';
 
@@ -60,6 +61,31 @@ describe('audit activity derivations (#1825)', () => {
     expect(entryDiff({ ids: [1] }, { ids: [1, 2] })).toEqual([{ key: 'ids', before: '[1]', after: '[1,2]' }]);
     expect(entryDiff(null, null)).toEqual([]);
     expect(entryDiff('a', 'b')).toEqual([{ key: 'value', before: 'a', after: 'b' }]);
+  });
+
+  it('shows a change of type, quoting the string, and skips a value that did not change', () => {
+    expect(entryDiff({ n: '1' }, { n: 1 })).toEqual([{ key: 'n', before: '"1"', after: '1' }]);
+    expect(entryDiff({ on: 'true' }, { on: true })).toEqual([{ key: 'on', before: '"true"', after: 'true' }]);
+    expect(entryDiff({ n: 1, s: 'x' }, { n: 1, s: 'x' })).toEqual([]);
+    expect(entryDiff('1', 1)).toEqual([{ key: 'value', before: '"1"', after: '1' }]);
+  });
+
+  it('puts every admin action into the past tense', () => {
+    const same = new Set(['set', 'reset', 'put']);
+    for (const v of adminAction.options) {
+      const words = actionKeyWords(v);
+      const out = actionWords(v);
+      expect(out, v).not.toMatch(/^admin action:/);
+      // No suffix stacked on a past tense ("endeded", "createded").
+      expect(out, v).not.toMatch(/eded\b|eed\b/);
+      if (!same.has(words[0]!)) expect(out.split(' ')[0], v).not.toBe(words[0]);
+      expect(out.split(' ').slice(1), v).toEqual(words.slice(1));
+    }
+    expect([actionWords('admitVersion'), actionWords('shredSubject'), actionWords('beginImpersonation')]).toEqual(['admitted version', 'shredded subject', 'began impersonation']);
+  });
+
+  it('leaves an action it does not know untensed, and labelled', () => {
+    expect(actionWords('frobnicateScope')).toBe('admin action: frobnicate scope');
   });
 
   it('is the same wording the Overview uses, and the Overview links to the entry', () => {
@@ -132,5 +158,31 @@ describe('Audit page', () => {
     expect(read).toHaveBeenCalledTimes(DEEP_LINK_PAGES);
     expect(container.querySelector('[role="status"]')!.textContent).toContain(`not in the latest ${DEEP_LINK_PAGES} pages`);
     expect(expanded()).toEqual([]);
+  });
+
+  it('opens the entry when Load older brings it in after the walk, and says so when the log ends without it', async () => {
+    const pages = 2 * DEEP_LINK_PAGES;
+    vi.spyOn(api, 'auditLogAll').mockImplementation(async (o) => {
+      const i = Number(o?.cursor ?? 0);
+      return { entries: [entry(`e-${i}`)], nextCursor: i + 1 < pages ? `${i + 1}` : null };
+    });
+    const loadOlder = () => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Load older entries');
+    const notice = () => container.querySelector('[role="status"]')?.textContent ?? null;
+
+    await render(`e-${DEEP_LINK_PAGES + 1}`);
+    expect(notice()).toContain('Load older entries keeps reading');
+    await click(loadOlder()!);
+    expect(expanded()).toEqual([]);
+    expect(notice()).toContain(`latest ${DEEP_LINK_PAGES + 1} pages`);
+    await click(loadOlder()!);
+    expect(expanded()).toEqual([`e-${DEEP_LINK_PAGES + 1}`]);
+    expect(notice()).toBeNull();
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    await render('nope');
+    while (loadOlder()) await click(loadOlder()!);
+    expect(notice()).toContain('The linked entry is not in this log.');
+    expect(notice()).not.toContain('Load older');
   });
 });

@@ -57,6 +57,10 @@ export function AuditLog({
   // and whether the log went on past them.
   const [missing, setMissing] = useState<{ pages: number; more: boolean } | null>(null);
   const scrollTo = useRef<string | null>(null);
+  // The deep link's entry while it has not turned up, and the pages read so far. Every
+  // page that lands — walked or loaded by hand — is checked against it.
+  const pending = useRef<string | null>(null);
+  const pagesRead = useRef(0);
   // One generation per filter. Every request — the first page and each older one —
   // remembers the generation it was started under and is ignored if the filter has moved
   // on by the time it lands, so a "Load older" still in flight when the app filter
@@ -73,6 +77,7 @@ export function AuditLog({
     setCursor(null);
     setLoadingOlder(false);
     setMissing(null);
+    pending.current = entryId;
     const scope = scopeId ? { scopeId } : {};
     void (async () => {
       let first: ListPage<AuditEntry>;
@@ -103,14 +108,8 @@ export function AuditLog({
         }
       }
       if (gen !== generation.current) return;
-      setEntries(all);
-      setCursor(next);
-      if (entryId) {
-        if (all.some((e) => e.id === entryId)) {
-          setOpen(entryId);
-          scrollTo.current = entryId;
-        } else setMissing({ pages, more: next !== null });
-      }
+      pagesRead.current = pages;
+      landed(all, next);
     })();
     return () => {
       // Unmount, or a new filter about to start: either way this generation is over.
@@ -118,6 +117,20 @@ export function AuditLog({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `read` is fixed for the page's life (mock or live)
   }, [scopeId, entryId]);
+
+  /** A page landed: show it, and open the deep link's entry if it is now among them. */
+  const landed = (all: AuditEntry[], next: string | null) => {
+    setEntries(all);
+    setCursor(next);
+    const id = pending.current;
+    if (!id) return;
+    if (all.some((e) => e.id === id)) {
+      pending.current = null;
+      setOpen(id);
+      setMissing(null);
+      scrollTo.current = id;
+    } else setMissing({ pages: pagesRead.current, more: next !== null });
+  };
 
   useEffect(() => {
     if (!scrollTo.current || !entries) return;
@@ -134,8 +147,9 @@ export function AuditLog({
     try {
       const p = await read({ ...(scopeId ? { scopeId } : {}), cursor });
       if (gen !== generation.current) return;
-      setEntries((prev) => [...(prev ?? []), ...p.entries.filter((e) => !prev?.some((x) => x.id === e.id))]);
-      setCursor(p.nextCursor);
+      const prev = entries ?? [];
+      pagesRead.current += 1;
+      landed([...prev, ...p.entries.filter((e) => !prev.some((x) => x.id === e.id))], p.nextCursor);
     } finally {
       if (gen === generation.current) setLoadingOlder(false);
     }

@@ -12,22 +12,42 @@ import { shortId } from './format';
  * them yet (#1751), so nothing here guesses at them.
  */
 
-// Past tense for the verbs audit actions start with. The rest get "-ed"/"-d", which is
-// right for every regular verb the control plane logs today.
-const IRREGULAR: Record<string, string> = { set: 'set', bind: 'bound', unbind: 'unbound', rewind: 'rewound', reset: 'reset', put: 'put' };
+// The past tense of every verb an `adminAction` starts with. Spelled out rather than
+// derived: the enum is closed, and a suffix rule gets the irregular and doubled forms
+// wrong ("admited", "begined"). A test holds this map to the enum.
+const PAST: Record<string, string> = {
+  activate: 'activated', add: 'added', admit: 'admitted', archive: 'archived', assign: 'assigned',
+  begin: 'began', bind: 'bound', create: 'created', define: 'defined', delete: 'deleted',
+  drain: 'drained', end: 'ended', grant: 'granted', import: 'imported', link: 'linked',
+  mark: 'marked', mint: 'minted', move: 'moved', promote: 'promoted', provision: 'provisioned',
+  prune: 'pruned', publish: 'published', put: 'put', reap: 'reaped', reassert: 'reasserted',
+  redrain: 'redrained', register: 'registered', reject: 'rejected', remove: 'removed',
+  request: 'requested', reset: 'reset', restore: 'restored', revoke: 'revoked', rewind: 'rewound',
+  set: 'set', shred: 'shredded', suspend: 'suspended', unarchive: 'unarchived', unassign: 'unassigned',
+  unbind: 'unbound', unlink: 'unlinked', unsuspend: 'unsuspended', update: 'updated',
+};
 
-/** `bindScopeVersion` → "bound scope version". */
-export function actionWords(action: string): string {
-  const words = action
+/** An action key split into lower-case words: `bindScopeVersion` → `['bind', 'scope', 'version']`. */
+export function actionKeyWords(action: string): string[] {
+  return action
     .replace(/[_.-]+/g, ' ')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .trim()
-    .split(/\s+/);
-  const [verb, ...rest] = words;
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/**
+ * `bindScopeVersion` → "bound scope version". An action whose verb is not in the map —
+ * one a newer control plane logs before this page knows it — is left untensed and
+ * labelled, "admin action: frobnicate scope", rather than guessed at.
+ */
+export function actionWords(action: string): string {
+  const [verb, ...rest] = actionKeyWords(action);
   if (!verb) return action;
-  const past = IRREGULAR[verb] ?? (verb.endsWith('ed') ? verb : verb.endsWith('e') ? `${verb}d` : `${verb}ed`);
-  return [past, ...rest].join(' ');
+  const past = PAST[verb];
+  return past ? [past, ...rest].join(' ') : `admin action: ${[verb, ...rest].join(' ')}`;
 }
 
 /** `person` has a name, `job` is the platform or a service acting, `unknown` is an actor id nothing here can name. */
@@ -144,12 +164,20 @@ export interface DiffRow {
 }
 
 const show = (v: unknown): string => (typeof v === 'string' ? v : JSON.stringify(v));
+const same = (x: unknown, y: unknown): boolean => JSON.stringify(x) === JSON.stringify(y);
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
+/** One changed key. Where the plain forms would read alike ("1" and 1), both sides are shown as JSON, so the string is quoted. */
+function row(key: string, b: unknown, a: unknown, hasB: boolean, hasA: boolean): DiffRow {
+  const typed = hasB && hasA && show(b) === show(a);
+  const fmt = typed ? (v: unknown) => JSON.stringify(v) : show;
+  return { key, before: hasB ? fmt(b) : null, after: hasA ? fmt(a) : null };
+}
+
 /**
- * The keys an entry changed. `before` is only recorded where the prior state was cheap to
- * read, so a missing side is "not recorded" rather than "was empty". A non-object payload
- * is one row under `value`.
+ * The keys an entry changed, compared by JSON so a change of type counts. `before` is
+ * only recorded where the prior state was cheap to read, so a missing side is "not
+ * recorded" rather than "was empty". A non-object payload is one row under `value`.
  */
 export function entryDiff(before: unknown, after: unknown): DiffRow[] {
   if (before == null && after == null) return [];
@@ -157,10 +185,8 @@ export function entryDiff(before: unknown, after: unknown): DiffRow[] {
     const b = (before ?? {}) as Record<string, unknown>;
     const a = (after ?? {}) as Record<string, unknown>;
     const keys = [...new Set([...Object.keys(b), ...Object.keys(a)])];
-    return keys
-      .filter((k) => show(b[k]) !== show(a[k]))
-      .map((k) => ({ key: k, before: k in b ? show(b[k]) : null, after: k in a ? show(a[k]) : null }));
+    return keys.filter((k) => !same(b[k], a[k])).map((k) => row(k, b[k], a[k], k in b, k in a));
   }
-  if (show(before) === show(after)) return [];
-  return [{ key: 'value', before: before == null ? null : show(before), after: after == null ? null : show(after) }];
+  if (same(before, after)) return [];
+  return [row('value', before, after, before != null, after != null)];
 }
