@@ -8250,6 +8250,11 @@ export class SqliteScopeHost implements ScopeHost {
         const before = (
           this.directory.prepare('SELECT COUNT(*) AS n FROM tenants').get() as { n: number }
         ).n;
+        // The dump is untrusted input, as it is on the DO path (#1143). Its names reach SQL
+        // as identifiers, and `exec` runs every statement a `ddl` contains, so a CREATE
+        // TABLE with anything appended used to run that too. Judged as a whole before the
+        // first DROP, so a refused dump leaves the directory untouched.
+        assertReplayableDump(dump.tables);
         // One transaction, foreign keys deferred to commit: the dump is ordered by
         // table NAME (which says nothing about references — `scopes` points at
         // `tenants`), and the DROPs themselves delete rows a populated child would
@@ -8261,7 +8266,9 @@ export class SqliteScopeHost implements ScopeHost {
             .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
             .all() as { name: string }[];
           for (const { name } of existing) this.directory.exec(`DROP TABLE IF EXISTS "${name}"`);
-          for (const t of dump.tables) this.directory.exec(t.ddl);
+          // `prepare` compiles only the first statement, as in `loadDump`. The check above
+          // has pinned that one to this table's CREATE TABLE.
+          for (const t of dump.tables) this.directory.prepare(t.ddl).run();
           for (const t of dump.tables) {
             if (t.rows.length === 0) continue;
             const cols = t.columns.map((c) => `"${c}"`).join(', ');
