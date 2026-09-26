@@ -27,6 +27,7 @@ import {
   type ListPage,
   type Page,
   substratError,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -113,7 +114,6 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
-  type OperationHandlersFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -1015,5 +1015,5 @@ export const absenceModule: ModuleRegistration = {
     'absence/availability': availabilityOp,
     'absence/list-requests': listRequestsOp,
     'absence/list-entries': listEntriesOp,
-  } satisfies OperationHandlersFor<typeof absenceOperations>,
+  } satisfies OperationImpl<typeof absenceOperations, OperationContext>,
 };

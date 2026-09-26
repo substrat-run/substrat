@@ -37,6 +37,7 @@ import {
   type EntityRow,
   type Money,
   substratError,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 import type { PageParams } from '@substrat-run/kernel';
 
@@ -116,7 +117,6 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
-  type OperationHandlersFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -699,5 +699,5 @@ export const workorderModule: ModuleRegistration = {
     'workorder/report-material': reportMaterialOp,
     'workorder/complete': completeOp,
     'workorder/close': closeOp,
-  } satisfies OperationHandlersFor<typeof workorderOperations>,
+  } satisfies OperationImpl<typeof workorderOperations, OperationContext>,
 };

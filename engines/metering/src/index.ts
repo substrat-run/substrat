@@ -29,6 +29,7 @@ import {
   type ListPage,
   type Page,
   substratError,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -59,7 +60,6 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
-  type OperationHandlersFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -877,5 +877,5 @@ export const meteringModule: ModuleRegistration = {
     'metering/close-period': closePeriodOp,
     'metering/list-periods': listPeriodsOp,
     'metering/period-lines': periodLinesOp,
-  } satisfies OperationHandlersFor<typeof meteringOperations>,
+  } satisfies OperationImpl<typeof meteringOperations, OperationContext>,
 };

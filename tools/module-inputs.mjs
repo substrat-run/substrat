@@ -37,13 +37,16 @@
  *
  * ## The output half (#959), engines only
  *
- * Parsing the input is half of "the handler agrees with its declaration". The other half is
- * a type, `OperationHandlersFor<typeof ops>` from `@substrat-run/kernel`, applied to the map
- * with `satisfies` — and a `satisfies` is the one kind of check no test can see removed. So an
- * `engines/` registration is also held to a map bound that way, with no cast on an entry and
- * bound to the same declaration it parses with (see `unbound`). Engines, because their
- * surfaces are published and composed by verticals that cannot read the handler; the demos
- * and the scaffold are the next case along, and are named in #959 rather than silently judged.
+ * Parsing the input is half of "the handler agrees with its declaration". The other half is a
+ * type, `OperationImpl<typeof ops, OperationContext>` from `@substrat-run/contracts`, applied
+ * to the map with `satisfies` — and a `satisfies` is the one kind of check no test can see
+ * removed. So an `engines/` registration is also held to a map bound that way, with no cast on
+ * an entry, and bound to the same declaration it parses with (see `unbound`).
+ *
+ * Engines only, because their surfaces are published and composed by verticals that cannot
+ * read the handler. The demos and the scaffold bind in more than one shape (a bound `const`
+ * spread into the map beside hand-bound entries), which this rule does not read; judging them
+ * is a follow-up, not something to half-do here.
  *
  * Text, not an AST — a loud false positive beats a silent pass.
  */
@@ -211,15 +214,16 @@ const ownProperties = (body) => {
     if (c === '{' || c === '(' || c === '[') depth++;
     else if (c === '}' || c === ')' || c === ']') depth--;
     else if (c === ',' && depth === 0) {
-      parts.push(body.slice(start, i));
+      parts.push({ text: body.slice(start, i), at: start });
       start = i + 1;
     }
   }
-  parts.push(body.slice(start));
+  parts.push({ text: body.slice(start), at: start });
   const props = [];
-  for (const part of parts) {
+  for (const { text: part, at } of parts) {
     const m = /^\s*(['"`])?([A-Za-z_$][\w$]*)\1?\s*:/.exec(part);
-    if (m) props.push({ key: m[2], value: part.slice(m[0].length) });
+    // `at`: where the value starts in `body`, for a reader that must look past the split.
+    if (m) props.push({ key: m[2], value: part.slice(m[0].length), at: at + m[0].length });
     else if (/^\s*\.\.\./.test(part)) props.push({ key: '...', value: part });
   }
   return props;
@@ -291,12 +295,12 @@ const surface = (value) => {
  *
  * `ModuleRegistration.operations` is `OperationHandler<never, unknown>`, because the host does
  * not know a module's declaration, so nothing makes a handler agree with what its operation
- * declares unless the MAP says so: `{ … } satisfies OperationHandlersFor<typeof ops>`. That
+ * declares unless the MAP says so: `{ … } satisfies OperationImpl<typeof ops, OperationContext>`. That
  * clause is invisible to every test — deleting it, or casting one entry `as never`, compiles
  * and passes exactly like the bound map does — which is why it is held here rather than hoped
  * for. Three things are refused:
  *
- * - a map with no `satisfies OperationHandlersFor<typeof …>` behind it, inline or on the
+ * - a map with no `satisfies OperationImpl<typeof …, OperationContext>` behind it, inline or on the
  *   `const` the registration names;
  * - a cast on an entry. `as never` and `as any` are assignable to anything and pass the
  *   `satisfies` silently; the other casts fail it, and are refused anyway because the only
@@ -308,10 +312,10 @@ const surface = (value) => {
  */
 const unbound = (src, operationsValue, inputsValue) => {
   const fix =
-    'Bind the map to its declaration: `{ … } satisfies OperationHandlersFor<typeof ops>` ' +
-    '(`OperationHandlersFor` from `@substrat-run/kernel`), with no cast on any entry';
+    'Bind the map to its declaration: `{ … } satisfies OperationImpl<typeof ops, OperationContext>` ' +
+    '(`OperationImpl` from `@substrat-run/contracts`), with no cast on any entry';
   let value = operationsValue.trim();
-  const named = /^([A-Za-z_$][\w$]*)$/.exec(value);
+  const named = /^([A-Za-z_$][\w$]*)\s*(?:,|$)/.exec(value);
   if (named !== null) {
     // `operations: OPERATIONS` — the map is the initializer of that const, in this file.
     const decl = new RegExp(`\\b(?:const|let|var)\\s+${named[1].replace(/\$/g, '\\$')}\\s*=\\s*\\{`).exec(src);
@@ -326,7 +330,7 @@ const unbound = (src, operationsValue, inputsValue) => {
   if (!value.startsWith('{')) return `\`operations:\` is not an object literal, so it cannot be bound. ${fix}`;
   const map = braced(value, 0);
   if (map === null) return 'the handler map never closes — this check cannot read it';
-  const clause = /^\s*satisfies\s+OperationHandlersFor\s*<\s*typeof\s+([A-Za-z_$][\w$]*)\s*>/.exec(
+  const clause = /^\s*satisfies\s+OperationImpl\s*<\s*typeof\s+([A-Za-z_$][\w$]*)\s*,\s*OperationContext\s*>/.exec(
     value.slice(map.end + 1),
   );
   if (clause === null) {
@@ -387,7 +391,11 @@ const judge = (source, { bound = false } = {}) => {
     if (operations === undefined) return; // no invocation surface to parse
     const inputs = props.find((p) => p.key === 'operationInputs');
     if (bound) {
-      const why = unbound(src, operations.value, inputs?.value ?? '');
+      // From where the value starts to the end of the body, not the split property: the split
+      // tracks brackets, not type arguments, so the comma in `OperationImpl<typeof ops,
+      // OperationContext>` ends the property early. `unbound` reads only the map and the clause
+      // straight after it, so the rest of the body is never judged as part of the value.
+      const why = unbound(src, body.slice(operations.at), inputs?.value ?? '');
       if (why !== null) found.push(`${name}: ${why}`);
     }
     if (inputs === undefined) {
@@ -576,11 +584,16 @@ const OPT_OUT = [
 // telling them apart fails here rather than passing the tree.
 const REG = (ops, inputs = 'operationInputsOf(xOps)') =>
   `const m: ModuleRegistration = { manifest: x, operationInputs: ${inputs}, operations: ${ops} };`;
-const BOUND = 'satisfies OperationHandlersFor<typeof xOps>';
+const BOUND = 'satisfies OperationImpl<typeof xOps, OperationContext>';
 const BOUND_CHECK = [
   // The converted form, inline and on a named const — both accepted.
   [REG(`{ 'x/get': getOp, 'x/report-time': reportOp } ${BOUND}`), 0],
   [`const OPS = { 'x/get': getOp } ${BOUND};\n${REG('OPS')}`, 0],
+  // …and when another property follows it: the comma in `<typeof xOps, OperationContext>` is
+  // not a property boundary, and reading it as one lost the clause.
+  [`const m: ModuleRegistration = { manifest: x, operations: { 'x/get': getOp } ${BOUND}, operationInputs: operationInputsOf(xOps) };`, 0],
+  [`const OPS = { 'x/get': getOp } ${BOUND};\nconst m: ModuleRegistration = { manifest: x, operations: OPS, operationInputs: operationInputsOf(xOps) };`, 0],
+  [`const m: ModuleRegistration = { manifest: x, operations: { 'x/get': getOp }, operationInputs: operationInputsOf(xOps) };`, 1],
   // No join at all: the map every engine carried before #959.
   [REG("{ 'x/get': getOp }"), 1],
   [`const OPS = { 'x/get': getOp };\n${REG('OPS')}`, 1],
@@ -685,7 +698,7 @@ if (offenders.length > 0) {
   console.error('  The host parses only what a module hands it (#953), and an engine\'s handlers are bound to');
   console.error('  what they declare only by the map saying so (#959):');
   console.error('    operationInputs: operationInputsOf(ops),                          // `@substrat-run/contracts`');
-  console.error('    operations: { … } satisfies OperationHandlersFor<typeof ops>,     // `@substrat-run/kernel`, engines');
+  console.error('    operations: { … } satisfies OperationImpl<typeof ops, OperationContext>,  // `@substrat-run/contracts`, engines');
   for (const o of offenders) console.error(`  ${o}`);
   process.exit(1);
 }

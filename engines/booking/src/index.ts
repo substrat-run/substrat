@@ -37,6 +37,7 @@ import {
   substratError,
   operationConcurrencyOf,
   operationInputsOf,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -168,7 +169,6 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
-  type OperationHandlersFor,
   type PageParams,
 } from '@substrat-run/kernel';
 
@@ -1348,7 +1348,7 @@ const OPERATIONS = {
   'booking/get': getOp,
   'booking/list': listOp,
   'booking/availability': availabilityOp,
-} satisfies OperationHandlersFor<typeof bookingOperations>;
+} satisfies OperationImpl<typeof bookingOperations, OperationContext>;
 
 export const bookingModule: ModuleRegistration = {
   manifest: bookingManifest,

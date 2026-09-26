@@ -36,6 +36,7 @@ import {
   type Page,
   type SealedCell,
   substratError,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 import type { PageParams } from '@substrat-run/kernel';
 
@@ -228,7 +229,6 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
-  type OperationHandlersFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -2191,5 +2191,5 @@ export const protocolModule: ModuleRegistration = {
     'protocol/void': voidOp,
     'protocol/get': getOp,
     'protocol/list-for-entity': listForEntityOp,
-  } satisfies OperationHandlersFor<typeof protocolOperations>,
+  } satisfies OperationImpl<typeof protocolOperations, OperationContext>,
 };

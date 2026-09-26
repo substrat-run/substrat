@@ -20,6 +20,7 @@ import {
   type ListPage,
   type OrgId,
   type Page,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -72,7 +73,6 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
-  type OperationHandlersFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -517,5 +517,5 @@ export const invitesModule: ModuleRegistration = {
     'invites/accept': acceptOp,
     'invites/list': listOp,
     'invites/revoke': revokeOp,
-  } satisfies OperationHandlersFor<typeof invitesOperations>,
+  } satisfies OperationImpl<typeof invitesOperations, OperationContext>,
 };

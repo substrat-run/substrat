@@ -2,11 +2,12 @@
  * #959 — engine-invoicing's handlers are bound to its declared operations, as a
  * compile-time suite.
  *
- * `src/index.ts` writes its handler map `satisfies OperationHandlersFor<typeof
- * invoicingOperations>`, so each handler's input and output are DERIVED from the declaration
- * instead of cast away. A type-level check fails permissively — one that has stopped
- * biting compiles exactly like one that still does — so every `@ts-expect-error`
- * below is load-bearing in the inverted direction: if the binding stops rejecting a
+ * `src/index.ts` writes its handler map
+ * `satisfies OperationImpl<typeof invoicingOperations, OperationContext>`, so
+ * each handler's input and output are DERIVED from the declaration instead of
+ * cast away. A type-level check fails permissively — one that has stopped biting
+ * compiles exactly like one that still does — so every `@ts-expect-error` below
+ * is load-bearing in the inverted direction: if the binding stops rejecting a
  * wrong handler, `tsc` reports the directive unused and
  * `pnpm --filter @substrat-run/engine-invoicing typecheck` goes red. Each negative has a
  * positive twin through the same type, because a negative alone passes just as well
@@ -17,13 +18,13 @@
  * is not bound, or has an entry cast.
  */
 import { describe, expect, it } from 'vitest';
-import type { HandlerInput, HandlerOutput } from '@substrat-run/contracts';
-import type { OperationHandlersFor } from '@substrat-run/kernel';
+import type { HandlerInput, HandlerOutput, OperationImpl } from '@substrat-run/contracts';
+import type { OperationContext } from '@substrat-run/kernel';
 
 import { invoicingModule, invoicingOperations } from '../src/index.js';
 
 type Ops = typeof invoicingOperations;
-type Handlers = OperationHandlersFor<Ops>;
+type Handlers = OperationImpl<Ops, OperationContext>;
 type In<K extends keyof Ops> = HandlerInput<Ops[K]>;
 type Out<K extends keyof Ops> = HandlerOutput<Ops[K]>;
 
