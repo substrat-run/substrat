@@ -1,5 +1,33 @@
 # @substrat-run/kernel
 
+## 0.123.0
+
+### Minor Changes
+
+- ae19d01: The event explorer now groups by a payload field only over events whose PII class is `none`. Before, grouping by a field such as `email` or `body` gave one row per person or per message. Events classed as pseudonymous or direct personal data are now left out of the rows and counted separately, in a new `withheldPersonal` number beside `erased`, so you can see how many were left out. An event with an unrecognised class is left out too. For a payload grouping, the event total is now the grouped events plus `erased` plus `withheldPersonal`. Grouping by event type, operation, actor, version, entity type, PII class or invocation still counts every event.
+
+  The class belongs to the whole event, not to one field, so an event classed `none` that carries personal data anyway is still grouped. The explorer is also not the only way to read the outbox: the SQL console and the table browse read the same events and are not narrowed by this change.
+
+  An app pushed with Substrat packages from before this release cannot withhold anything itself, so the control plane no longer passes on its payload groupings. It answers with no rows, counts every event that was not erased as withheld, and sets `withheldReason` to `vertical-predates-rule`. Grouping that app's events by type or any other built-in dimension still works. Pushing the app again is not enough on its own, because its version ranges do not reach this release: update the app's Substrat packages to this release, then push it.
+
+  The access log entry for an event-explorer read now records `withheldPersonal`, and `withheldReason` when it is set, so an audit shows what a read held back.
+
+  In the dashboard's Logs › Events view, a payload grouping shows how many events were withheld as personal data, and says so plainly when all of them were. For an app on older Substrat packages, it says that payload groupings are unavailable until its packages are updated and it is pushed again.
+
+- 30b09c6: A module switched off with the schedule kill switch now stays off, without a gap, when its scope's storage is wiped or restored from an older backup dump. Before, the scope was re-provisioned first and the switch was put back in a second call, and a scheduled run could land in between. Now the reconcile, provision or dump restore that brings the scope back also switches the recorded modules off, in the same step. This applies only to the scope being provisioned or restored. It does not cover a point-in-time rewind of a scope (#1819): the module can still run until the platform's next sweep. A vertical gets this once it is redeployed on this release. Until then the platform still switches those modules off after the call, as it did before.
+
+### Patch Changes
+
+- 6b3cb45: A Durable Object's SQLite holds at most 100 columns in a table and in a result set, and the SQLite adapter now refuses the same, so a vertical's own suite sees what a hosted scope sees. A module query returning more than 100 columns, and a migration that leaves a table wider than 100 (from `CREATE TABLE` or `ADD COLUMN`), fail with the Durable Object's own messages; the migration is rolled back and the scope fails closed. Restoring or forking a dump that holds a table over the limit onto a Durable Object is refused up front, with a sentence, instead of failing partway through with a bare `SQLITE_ERROR`. Restoring the same dump on the SQLite adapter still works. `DO_SQL_LIMITS.columns` is the new limit.
+
+  A SQLite-adapter scope that already holds a table over 100 columns (a generated column and an fts5 table's hidden columns count, as they do on a Durable Object) will fail its next migration, with a message naming the table, because the check judges every table after each migration.
+
+- bd8f408: The cross-vertical export read keeps its `(type, id)` index once a scope has table statistics. After an `ANALYZE` (which a vertical's own SQL can run) the planner had stopped seeking that index and walked the whole outbox tail for a rare event type; the read now drives from the type list, so its plan is the same with or without statistics. The rows returned, and their order, are unchanged.
+- Updated dependencies [6b3cb45]
+- Updated dependencies [ae19d01]
+- Updated dependencies [30b09c6]
+  - @substrat-run/contracts@0.123.0
+
 ## 0.122.1
 
 ### Patch Changes
@@ -5125,7 +5153,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

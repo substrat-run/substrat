@@ -1,5 +1,21 @@
 # @substrat-run/engine-invites
 
+## 0.9.0
+
+### Minor Changes
+
+- 51f0af7: `readInvitation(ctx, invitationId)`: one invitation by id as a pure read. Like `listInvites`, an overdue invitation reports `expired` without the row being touched, and nothing is sent, counted against the rate limit or emitted. Additive; it returns the same published shape and never the identifier hash.
+
+### Patch Changes
+
+- e46057e: Each event's `schemaVersion` now has one home per engine: a `…EventVersions` map that the emit helper stamps and the manifest's `emits` is read from. Emitted versions and manifests are unchanged; an emit site can no longer name a version.
+- Updated dependencies [6b3cb45]
+- Updated dependencies [ae19d01]
+- Updated dependencies [30b09c6]
+- Updated dependencies [bd8f408]
+  - @substrat-run/kernel@0.123.0
+  - @substrat-run/contracts@0.123.0
+
 ## 0.8.6
 
 ### Patch Changes

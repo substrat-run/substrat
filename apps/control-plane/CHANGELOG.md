@@ -1,5 +1,23 @@
 # @substrat-run/control-plane
 
+## 0.13.41
+
+### Patch Changes
+
+- 30b09c6: A module switched off with the schedule kill switch now stays off, without a gap, when its scope's storage is wiped or restored from an older backup dump. Before, the scope was re-provisioned first and the switch was put back in a second call, and a scheduled run could land in between. Now the reconcile, provision or dump restore that brings the scope back also switches the recorded modules off, in the same step. This applies only to the scope being provisioned or restored. It does not cover a point-in-time rewind of a scope (#1819): the module can still run until the platform's next sweep. A vertical gets this once it is redeployed on this release. Until then the platform still switches those modules off after the call, as it did before.
+- Updated dependencies [6b3cb45]
+- Updated dependencies [ae19d01]
+- Updated dependencies [30b09c6]
+- Updated dependencies [bd8f408]
+- Updated dependencies [3b28c46]
+  - @substrat-run/kernel@0.123.0
+  - @substrat-run/contracts@0.123.0
+  - @substrat-run/adapter-cloudflare@0.123.0
+  - @substrat-run/control-plane-api@0.123.0
+  - @substrat-run/connector-fortnox@0.4.25
+  - @substrat-run/connector-planima@0.2.20
+  - @substrat-run/connector-scrive@0.14.28
+
 ## 0.13.40
 
 ### Patch Changes

@@ -1,5 +1,22 @@
 # @substrat-run/vertical-host
 
+## 0.123.0
+
+### Minor Changes
+
+- 30b09c6: A module switched off with the schedule kill switch now stays off, without a gap, when its scope's storage is wiped or restored from an older backup dump. Before, the scope was re-provisioned first and the switch was put back in a second call, and a scheduled run could land in between. Now the reconcile, provision or dump restore that brings the scope back also switches the recorded modules off, in the same step. This applies only to the scope being provisioned or restored. It does not cover a point-in-time rewind of a scope (#1819): the module can still run until the platform's next sweep. A vertical gets this once it is redeployed on this release. Until then the platform still switches those modules off after the call, as it did before.
+
+### Patch Changes
+
+- 3b28c46: A CP-less deployment now answers "do I serve this scope for this tenant" from an explicit `provisioned_for` receipt that provisioning, reconcile and a restore's repair write, instead of inferring it from role rows. A scope holding a receipt for another tenant is refused whatever role rows it carries. A scope provisioned before the receipt existed keeps the role-row inference until its next projection writes one, and a restore drops the receipt its dump carried. A projection for a tenant other than the receipt's is refused (409 over the wire), the fan-out reports the scopes that refused after the others have converged, and an unarchive through a tenant the scope does not belong to is refused before it writes anything.
+- Updated dependencies [6b3cb45]
+- Updated dependencies [ae19d01]
+- Updated dependencies [30b09c6]
+- Updated dependencies [bd8f408]
+  - @substrat-run/kernel@0.123.0
+  - @substrat-run/contracts@0.123.0
+  - @substrat-run/model-providers@0.5.13
+
 ## 0.122.1
 
 ### Patch Changes

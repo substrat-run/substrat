@@ -1,5 +1,31 @@
 # @substrat-run/control-plane-api
 
+## 0.123.0
+
+### Minor Changes
+
+- ae19d01: The event explorer now groups by a payload field only over events whose PII class is `none`. Before, grouping by a field such as `email` or `body` gave one row per person or per message. Events classed as pseudonymous or direct personal data are now left out of the rows and counted separately, in a new `withheldPersonal` number beside `erased`, so you can see how many were left out. An event with an unrecognised class is left out too. For a payload grouping, the event total is now the grouped events plus `erased` plus `withheldPersonal`. Grouping by event type, operation, actor, version, entity type, PII class or invocation still counts every event.
+
+  The class belongs to the whole event, not to one field, so an event classed `none` that carries personal data anyway is still grouped. The explorer is also not the only way to read the outbox: the SQL console and the table browse read the same events and are not narrowed by this change.
+
+  An app pushed with Substrat packages from before this release cannot withhold anything itself, so the control plane no longer passes on its payload groupings. It answers with no rows, counts every event that was not erased as withheld, and sets `withheldReason` to `vertical-predates-rule`. Grouping that app's events by type or any other built-in dimension still works. Pushing the app again is not enough on its own, because its version ranges do not reach this release: update the app's Substrat packages to this release, then push it.
+
+  The access log entry for an event-explorer read now records `withheldPersonal`, and `withheldReason` when it is set, so an audit shows what a read held back.
+
+  In the dashboard's Logs › Events view, a payload grouping shows how many events were withheld as personal data, and says so plainly when all of them were. For an app on older Substrat packages, it says that payload groupings are unavailable until its packages are updated and it is pushed again.
+
+- 30b09c6: A module switched off with the schedule kill switch now stays off, without a gap, when its scope's storage is wiped or restored from an older backup dump. Before, the scope was re-provisioned first and the switch was put back in a second call, and a scheduled run could land in between. Now the reconcile, provision or dump restore that brings the scope back also switches the recorded modules off, in the same step. This applies only to the scope being provisioned or restored. It does not cover a point-in-time rewind of a scope (#1819): the module can still run until the platform's next sweep. A vertical gets this once it is redeployed on this release. Until then the platform still switches those modules off after the call, as it did before.
+
+### Patch Changes
+
+- 3b28c46: A CP-less deployment now answers "do I serve this scope for this tenant" from an explicit `provisioned_for` receipt that provisioning, reconcile and a restore's repair write, instead of inferring it from role rows. A scope holding a receipt for another tenant is refused whatever role rows it carries. A scope provisioned before the receipt existed keeps the role-row inference until its next projection writes one, and a restore drops the receipt its dump carried. A projection for a tenant other than the receipt's is refused (409 over the wire), the fan-out reports the scopes that refused after the others have converged, and an unarchive through a tenant the scope does not belong to is refused before it writes anything.
+- Updated dependencies [6b3cb45]
+- Updated dependencies [ae19d01]
+- Updated dependencies [30b09c6]
+- Updated dependencies [bd8f408]
+  - @substrat-run/kernel@0.123.0
+  - @substrat-run/contracts@0.123.0
+
 ## 0.122.1
 
 ### Patch Changes
