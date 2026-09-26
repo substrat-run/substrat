@@ -2266,6 +2266,32 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(counting.holdReads).toBe(2);
   });
 
+  /**
+   * The ORDER, pinned (review 6a): the consult comes after the scope's state read. This pass
+   * takes its snapshot before the hold exists, then its state read is held until the rewind has
+   * landed, so that read meets rewound storage. Consulting after it finds the snapshot too old
+   * and re-reads. A consult moved before the state read would use the pre-hold snapshot while it
+   * was still fresh, and fire.
+   */
+  it('a state read that lands after the rewind is judged against a hold read after it', async () => {
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await pass(await newScope(), h); // the snapshot, taken before any hold for `s`
+    expect(counting.holdReads).toBe(1);
+    let open!: () => void;
+    counting.gateStateRead = { scopeId: s, until: new Promise<void>((resolve) => (open = resolve)) };
+    const racing = pass(s, h); // starts now; its state read waits at the gate
+    await armRewind(env.SCOPE, s);
+    await host.rewindScopeLocal(s, 'bm', { force: true });
+    await landRewind(env.SCOPE, s, atBookmark);
+    open();
+    expect(await racing).toMatchObject({ fired: 0, switchedOff: true });
+    expect(counting.holdReads).toBe(2);
+  });
+
   it('twin, pinning the constants that argument rests on: the rewind outwaits a snapshot', () => {
     expect(SWITCH_HOLD_SETTLE_MS).toBeGreaterThan(SWITCH_HOLD_SNAPSHOT_MS);
   });
@@ -2381,9 +2407,15 @@ describe('#1819 — the co-located rewind holds, and the CP-full switch releases
  */
 function countingScopes(ns: DurableObjectNamespace) {
   const holdsId = ns.idFromName(SWITCH_HOLDS_NAME);
-  const counts = { holdReads: 0, scopeCalls: 0, failReads: false };
+  const counts = {
+    holdReads: 0,
+    scopeCalls: 0,
+    failReads: false,
+    /** Hold one scope's `systemScheduleState` until `until` settles: to place a pass's state read. */
+    gateStateRead: null as { scopeId: string; until: Promise<void> } | null,
+  };
   type Rpc = Record<string, (...a: unknown[]) => unknown>;
-  const counted = (real: Rpc) =>
+  const counted = (real: Rpc, id: DurableObjectId) =>
     new Proxy(
       {},
       {
@@ -2391,8 +2423,12 @@ function countingScopes(ns: DurableObjectNamespace) {
         get: (_t, prop: string) =>
           prop === 'then'
             ? undefined
-            : (...args: unknown[]) => {
+            : async (...args: unknown[]) => {
                 counts.scopeCalls += 1;
+                const gate = counts.gateStateRead;
+                if (prop === 'systemScheduleState' && gate && id.equals(ns.idFromName(gate.scopeId))) {
+                  await gate.until;
+                }
                 return real[prop]!(...args);
               },
       },
@@ -2410,7 +2446,7 @@ function countingScopes(ns: DurableObjectNamespace) {
     idFromName: (name: string) => ns.idFromName(name),
     get: (id: DurableObjectId) => {
       const real = ns.get(id) as unknown as Rpc;
-      return id.equals(holdsId) ? holds(real) : counted(real);
+      return id.equals(holdsId) ? holds(real) : counted(real, id);
     },
   } as unknown as DurableObjectNamespace;
   return Object.assign(counts, { ns: counting });
