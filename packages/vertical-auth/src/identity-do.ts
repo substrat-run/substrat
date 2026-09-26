@@ -398,6 +398,10 @@ export type IdentityStub = {
   setScopeConfig(scopeId: string, entries: Array<{ key: string; value: string }>): Promise<void>;
   getScopeConfig(scopeId: string): Promise<Record<string, string>>;
   authWiring(scopeId: string): Promise<{ config: Record<string, string>; sessionSecret: string }>;
+  recordSite(scopeId: string, slug: string, name: string): Promise<void>;
+  forgetSite(scopeId: string): Promise<void>;
+  listSites(): Promise<SiteRow[]>;
+  resolveSiteScope(slug: string): Promise<string | null>;
   setPendingOwner(scopeId: string, principal: string): Promise<void>;
   getOwnerOfRecord(scopeId: string): Promise<string | null>;
   needsSetup(scopeId: string): Promise<boolean>;
@@ -413,6 +417,13 @@ export type IdentityStub = {
   unbind(scopeId: string, sub: string): Promise<boolean>;
   subjectsOf(scopeId: string, limit: number): Promise<string[]>;
 };
+
+// Drift pin (#1802): every public IdentityDO method must be on IdentityStub, with the class's
+// own signature. Fails typecheck when the stub lacks or mistypes one, or when the class gains a
+// public method the stub omits. Type-only — erased at build.
+type _StubCarriesClass = IdentityDO extends IdentityStub ? true : never;
+type _ClassMethodsMissingFromStub = Exclude<keyof IdentityDO, keyof DurableObject | keyof IdentityStub>;
+export const _identityStubPin: [_StubCarriesClass, _ClassMethodsMissingFromStub] extends [true, never] ? true : never = true;
 
 /**
  * The `AuthProvider` backed by a tenant's identity-DO stub (the `better-auth-do` config).
