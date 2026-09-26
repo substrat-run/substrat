@@ -543,6 +543,16 @@ interface ControlPlaneStub {
     object: string,
     expiresAt: string | null,
   ): Promise<void>;
+  /**
+   * #1743: a tenant-level `system:` grant, refused while the switch record holds the module
+   * off on any of the tenant's scopes. Answers those scopes; empty means it was written.
+   */
+  writeTenantSystemGrant(
+    tenantId: string,
+    moduleId: string,
+    relation: string,
+    expiresAt: string | null,
+  ): Promise<string[]>;
   /** All of a tenant's identity links — for identity-link projection (#406). */
   dumpTenantIdentities(
     tenantId: string,
@@ -4673,13 +4683,18 @@ export class CloudflareScopeHost implements ScopeHost {
             throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, grant.node.scopeId));
           }
         } else {
-          await writeGrant(
-            subjectRef({ kind: 'system', id: grant.moduleId }),
-            grant.permission,
-            grant.node,
-            undefined,
-            grant.expiresAt,
+          // #1743: a tenant tuple reaches every scope of the tenant, so it is refused while
+          // the directory records the module off on any of them — checked and written in one
+          // call on the control plane, which holds both the record and the tenant tuple.
+          const off = await this.cp.writeTenantSystemGrant(
+            grant.node.tenantId,
+            grant.moduleId,
+            `granted:${grant.permission}`,
+            grant.expiresAt ?? null,
           );
+          if (off.length > 0) {
+            throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, off));
+          }
         }
         await this.recordAdmin(
           actor,

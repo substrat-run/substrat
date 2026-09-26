@@ -7,9 +7,11 @@ import {
   principalId,
   scopeId,
   tenantId,
+  type ModuleId,
   type PrincipalId,
   type ScopeDump,
   type ScopeId,
+  type TenantId,
 } from '@substrat-run/contracts';
 import { ulid, type JobPassContext, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
@@ -611,6 +613,130 @@ export function systemSwitchContractSuite(
       expect(await reassert(s)).toEqual([]);
       await provision(s);
       expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
+    });
+
+    // #1743: a TENANT-level grant reaches every scope of the tenant, so it is refused while
+    // the directory records the module off on any of them. Each case gets its own tenant: a
+    // tenant tuple would otherwise reach every other case's scopes in `t`.
+    const newTenant = async (): Promise<{
+      tenant: TenantId;
+      scope: () => Promise<ScopeId>;
+      off: (s: ScopeId, module?: ModuleId) => Promise<unknown>;
+      on: (s: ScopeId, module?: ModuleId) => Promise<unknown>;
+      grant: (key: string, module?: ModuleId) => Promise<void>;
+    }> => {
+      const tenant = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, {
+        id: tenant,
+        slug: `kill-${tenant.slice(-10).toLowerCase()}`,
+        name: 'Kill switch, tenant-level',
+      });
+      await host.admin.grantEntitlement(staff, tenant, 'sched');
+      await host.admin.grantEntitlement(staff, tenant, 'jobs');
+      const node = (s: ScopeId) => ({ tenantId: tenant, scopeId: s });
+      return {
+        tenant,
+        scope: async () => {
+          const s = scopeId.parse(ulid());
+          await host.provisionScope(staff, node(s));
+          await host.admin.activateScope(staff, tenant, s);
+          return s;
+        },
+        off: (s, module = SCHED) => host.admin.revokeFromSystem(staff, { moduleId: module, node: node(s), reason }),
+        on: (s, module = SCHED) =>
+          host.admin.restoreToSystem(staff, { moduleId: module, node: node(s), reason: 'resolved' }),
+        grant: (key, module = SCHED) =>
+          host.admin.grantToSystem(staff, {
+            moduleId: module,
+            permission: permissionKey.parse(key),
+            node: { tenantId: tenant, scopeId: null },
+            grantedBy: staff,
+          }),
+      };
+    };
+    const refusal = (p: Promise<unknown>) => p.then(() => null, (err: unknown) => err);
+
+    it('a tenant-level grant is refused while ANY scope holds the module off, naming each one (#1743)', async () => {
+      const tn = await newTenant();
+      const a = await tn.scope();
+      const b = await tn.scope();
+      await tn.scope(); // a third scope, left on: one scope off is enough to refuse
+      await tn.off(a);
+      await tn.off(b);
+
+      const e = await refusal(tn.grant('sched:admin'));
+      expect(errorCodeOf(e)).toBe('conflict');
+      // The scope-level refusal's wording, naming every scope that holds it off.
+      expect(String(e)).toMatch(/switched off on scopes .* restore it first/);
+      expect(String(e)).toContain(a);
+      expect(String(e)).toContain(b);
+      expect(String(e)).toMatch(/tenant-level grant reaches every scope/);
+
+      // Restoring one is not enough; the refusal now names only the other.
+      await tn.on(a);
+      const still = await refusal(tn.grant('sched:admin'));
+      expect(errorCodeOf(still)).toBe('conflict');
+      expect(String(still)).toMatch(new RegExp(`switched off on scope ${b} `));
+      expect(String(still)).not.toContain(a);
+
+      // The twin: every scope restored, the same grant is accepted, and audited.
+      await tn.on(b);
+      await tn.grant('sched:admin');
+      const audit = await host.admin.auditLog(staff, { tenantId: tn.tenant, action: ['grantToSystem'] });
+      expect(audit.map((r) => (r.after as { permission: string }).permission)).toEqual(['sched:admin']);
+    });
+
+    it('twin: the refusal is keyed on the module and the tenant, never wider (#1743)', async () => {
+      const tn = await newTenant();
+      const s = await tn.scope();
+      await tn.grant('jobs:write', JOBS); // a scope-less grant of another module is untouched…
+      await tn.off(s);
+      // …and so is one made while SCHED is off: the switch names one module.
+      await tn.grant('jobs:admin', JOBS);
+      // Another tenant's switch reaches nothing here, and this tenant's reaches nothing there.
+      const other = await newTenant();
+      await other.grant('sched:admin');
+      expect(errorCodeOf(await refusal(tn.grant('sched:admin')))).toBe('conflict');
+    });
+
+    it('the race, sequentially: whichever answers first, no tenant-level grant lands after OFF answered (#1743)', async () => {
+      // OFF writes the directory record once the scope held it, and the tenant grant reads
+      // that record in the unit that writes the tuple. So a grant issued after OFF answered
+      // is refused, and a switch that lands after a grant answered makes the NEXT one refused.
+      const tn = await newTenant();
+      const s = await tn.scope();
+      await tn.grant('sched:admin'); // before the switch: accepted
+      await tn.off(s);
+      expect(errorCodeOf(await refusal(tn.grant('sched:admin')))).toBe('conflict'); // the re-grant
+      expect(errorCodeOf(await refusal(tn.grant('sched:tick')))).toBe('conflict'); // a new one
+      // Only the one grant made before the switch was written.
+      const audit = await host.admin.auditLog(staff, { tenantId: tn.tenant, action: ['grantToSystem'] });
+      expect(audit).toHaveLength(1);
+    });
+
+    it('a reaped scope, switched off, no longer holds a tenant-level grant back (#1743)', async () => {
+      const tn = await newTenant();
+      const s = await tn.scope();
+      await tn.off(s);
+      expect(errorCodeOf(await refusal(tn.grant('sched:admin')))).toBe('conflict');
+      await host.admin.archiveScope(staff, tn.tenant, s);
+      await host.admin.reapScope(staff, tn.tenant, s, { force: true });
+      await tn.grant('sched:admin');
+    });
+
+    // #1743's adjacent case, pinned rather than silent: a tenant-level system grant that
+    // ALREADY exists when a scope is switched off is not touched by OFF (which tombstones only
+    // the scope's own `granted:` tuples), so the module keeps its system authority there.
+    // `it.fails` passes while the gap is open and goes red the day it closes — update it then.
+    it.fails('GAP: scope-level OFF does not take back an existing tenant-level grant (#1743 follow-up)', async () => {
+      const tn = await newTenant();
+      const s = await tn.scope();
+      await tn.grant('sched:tick');
+      await tn.off(s);
+      expect(await host.runDueSchedules(SCHED, tn.tenant, s)).toEqual(switchedOff);
+      await expect((await host.getSystemScope(SCHED, tn.tenant, s)).invoke('sched/tick')).rejects.toThrow(
+        /sched:tick/,
+      );
     });
   });
 }

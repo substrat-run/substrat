@@ -307,6 +307,7 @@ export {
   recordSystemSwitchedOff,
   recordSystemSwitchedOn,
   restoreSystemSwitchRecord,
+  scopesSwitchedOffFor,
   switchedOffModulesOf,
   systemSwitchRecordsOf,
   systemSwitchesTableExists,
