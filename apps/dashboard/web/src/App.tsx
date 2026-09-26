@@ -47,6 +47,8 @@ interface Route {
    *  the trailing hours happen to hold by the time somebody follows it. */
   from?: string;
   to?: string;
+  /** For `audit`, the entry id a deep link opens (#1825). */
+  entry?: string;
   /** The team slug the URL is scoped to (its first segment); absent on legacy slug-less paths. */
   team?: string;
 }
@@ -74,7 +76,11 @@ function parsePath(): Route {
   if (parts[0] === 'verticals' && parts[1]) return { section: 'verticals', vertical: decodeURIComponent(parts[1]), team };
   // The audit page is team-level; an app narrows it, so the scope rides as a query
   // param rather than a path segment — `/audit` and `/audit?app=x` are one page.
-  if (parts[0] === 'audit') return { section: 'audit', team, app: new URLSearchParams(window.location.search).get('app') ?? undefined };
+  // `entry` opens one entry in place — the Overview's Recent activity rows link to it.
+  if (parts[0] === 'audit') {
+    const q = new URLSearchParams(window.location.search);
+    return { section: 'audit', team, app: q.get('app') ?? undefined, entry: q.get('entry') ?? undefined };
+  }
   // Observability is team-level for the same reason, and carries three more filters:
   // which sub-view is open, the event type the Events explorer opens grouped on, and the
   // time cursor's window. Each is a filter on one page rather than an address of its own,
@@ -957,7 +963,7 @@ export function App() {
       ) : route.section === 'billing' ? (
         <Billing />
       ) : route.section === 'audit' ? (
-        <AuditLog apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} />
+        <AuditLog apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} entryId={route.entry ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} />
       ) : route.section === 'observability' ? (
         <Observability
           query={window.location.search}
