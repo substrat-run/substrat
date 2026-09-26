@@ -7297,7 +7297,10 @@ export class CloudflareScopeHost implements ScopeHost {
       string,
       Promise<{ connection_id: string; provider: string; key_id: string; public_key: string }[]>
     >();
-    await Promise.all(
+    // allSettled, not all (#1738): a scope that refuses (its `provisioned_for` receipt names
+    // another tenant) must not stop its siblings converging, or one bad scope would freeze every
+    // revoke for the tenant's healthy ones. The failure is still loud, after the rest have landed.
+    const settled = await Promise.allSettled(
       scopes.map(async (s) => {
         const vertical = s.vertical ?? '';
         if (!keysByVertical.has(vertical)) {
@@ -7313,6 +7316,15 @@ export class CloudflareScopeHost implements ScopeHost {
           await keysByVertical.get(vertical),
         );
       }),
+    );
+    const failed = settled.flatMap((r, i) => (r.status === 'rejected' ? [{ scope: scopes[i]!.scope_id, reason: r.reason as unknown }] : []));
+    if (failed.length === 0) return;
+    // One aggregated error, so the caller learns which scopes did not converge and that the
+    // rest did.
+    const named = failed.map((f) => `${f.scope}: ${f.reason instanceof Error ? f.reason.message : String(f.reason)}`).join('; ');
+    throw substratError(
+      'conflict',
+      `projection reached ${scopes.length - failed.length} of ${scopes.length} scopes of tenant ${tenantId}; not converged — ${named}`,
     );
   }
 

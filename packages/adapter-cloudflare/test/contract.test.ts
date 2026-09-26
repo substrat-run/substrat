@@ -1458,6 +1458,30 @@ describe('scope-local permissions — automatic fan-out on write (Phase 2)', () 
     await expect(host.reconcileTenantProjection(t)).resolves.toBeUndefined();
   });
 
+  it('one scope that refuses a projection does not stop its siblings, and the error names it (#1738)', async () => {
+    const bad = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: bad, vertical: 'perm-vertical' });
+    await host.admin.activateScope(staff, t, bad);
+    const setReceipt = (value: string) =>
+      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(bad)), async (_i, state) => {
+        state.storage.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('provisioned_for', ?)`, value);
+      });
+    await setReceipt(tenantId.parse(ulid()));
+    try {
+      const frank = principalId.parse(ulid());
+      const e = await host.admin
+        .assignRole(staff, { principalId: frank, roleKey: 'admin', node: { tenantId: t, scopeId: null } })
+        .then(() => undefined, (x: unknown) => x);
+      expect(String((e as Error)?.message)).toContain(bad);
+      expect(String((e as Error)?.message)).toContain('not converged');
+      // The healthy siblings converged all the same.
+      expect(await probe(frank, s1, ADMIN)).toBe(true);
+      expect(await probe(frank, s2, ADMIN)).toBe(true);
+    } finally {
+      await setReceipt(t); // leave the shared fixture as it was found
+    }
+  });
+
   it('unarchive holds a revoke that lands BETWEEN its snapshot and the flip (#1473)', async () => {
     // The interleaving a single push-then-flip cannot cover. `projectScope` reads the
     // tenant's state, then writes it; a revoke that commits in between fans out to the
