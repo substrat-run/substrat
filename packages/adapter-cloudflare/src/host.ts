@@ -7234,6 +7234,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * armed yet, which would discard this move too: keep it, unless it is older than
    * `SWITCH_HOLD_PENDING_MAX_MS`. A claim created after S0 is never touched.
    *
+   * An ON releases every claim in S0, surviving or not. A claim exists to keep off a module the
+   * operator had off, and ON is their newer word: the directory records it before the move. If
+   * the ON itself is discarded by a rewind, the scope comes back as the bookmark had it, and a
+   * claim would then keep the module off while the directory and the status read both say ON.
+   *
    * A failed claims read does not stop the move. It is thrown after it, and the caller treats
    * that as a failed move, with the claims kept, which errs toward OFF.
    */
@@ -7254,10 +7259,14 @@ export class CloudflareScopeHost implements ScopeHost {
     if (readError !== undefined) throw readError;
     if (outcome.held && before && before.length > 0) {
       const now = Date.now();
-      const survived = before.filter(
-        (c) =>
-          (c.state === 'armed' || now - Date.parse(c.heldAt) > SWITCH_HOLD_PENDING_MAX_MS) && c.doomed !== instance,
-      );
+      const survived =
+        to === 'on'
+          ? before
+          : before.filter(
+              (c) =>
+                (c.state === 'armed' || now - Date.parse(c.heldAt) > SWITCH_HOLD_PENDING_MAX_MS) &&
+                c.doomed !== instance,
+            );
       if (survived.length > 0) {
         this.holdSnapshot = null;
         await this.switchHoldsStub().switchHoldRelease(scopeId, moduleId, survived.map((c) => c.claimId));

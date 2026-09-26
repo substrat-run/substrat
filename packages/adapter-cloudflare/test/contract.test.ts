@@ -2362,6 +2362,40 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await heldOn(s)).toEqual([]);
   });
 
+  /**
+   * Re-review on #1838: an operator's ON during the settle, or on the doomed instance, is
+   * discarded by the rewind, and it used to leave the claim in place. Nothing then cleared it:
+   * the module stayed off while the directory and the status read said ON. ON now releases
+   * every claim it read, surviving or not.
+   */
+  it("an operator's ON on the doomed instance releases the hold: the module runs once the rewind lands", async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s, { holdAbort: true });
+    await host.rewindScopeLocal(s, 'bm', { force: true });
+    expect(await host.systemSwitchLocal(s, SCHED, 'on')).toMatchObject({ held: true });
+    expect(await heldOn(s)).toEqual([]);
+    await restartNow(env.SCOPE, s);
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it("an operator's ON during the settle releases the hold too; twin: an OFF there does not (above)", async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    const rewinding = host.rewindScopeLocal(s, 'bm', { force: true });
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS / 3));
+    await host.systemSwitchLocal(s, SCHED, 'on');
+    expect(await heldOn(s)).toEqual([]);
+    await rewinding;
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await heldOn(s)).toEqual([]); // arming a released claim does not bring it back
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
   it('a claim still pending past the bound is released by a move; a fresh pending one is not', async () => {
     const s = await newScope();
     await off(s);
