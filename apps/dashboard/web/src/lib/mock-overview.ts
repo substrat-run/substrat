@@ -1,23 +1,12 @@
-import type { AccountIntegrationsView, AppHealthRow, AppRow, AuditEntry } from './api';
-import { MOCK_FLEET_HEALTH } from './mock';
+import type { AccountIntegrationsView, AuditEntry } from './api';
 
 /**
- * Dev-preview fixtures for the Overview home (#1815). `MOCK_APPS` has no app that is
- * running AND fine — its two running apps are failing and stale — so this adds one, and
- * the preview shows every state the page composes a sentence from: failing, stale, OK,
- * installing and a failed install. Anchored to the clock: the activity card prints
- * "today" times, and a fixed date would render every row as months old.
+ * Dev-preview fixtures for the Overview home (#1815): the team's integrations — one
+ * connection in error on the supplier's side — and a page of audit entries. Anchored to
+ * the clock: the activity card prints "today" times, and a fixed date would render every
+ * row as months old. The apps and their verdicts are `MOCK_APPS` / `MOCK_FLEET_HEALTH`.
  */
 const back = (ms: number) => new Date(Date.now() - ms).toISOString();
-
-export const MOCK_OVERVIEW_EXTRA_APPS: AppRow[] = [
-  { id: '5', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P7SUPP', vertical_slug: 'ticket0', name: 'Acme Support', status: 'active', hostname: 'acme-support.substrat.run', created_by: 'dana@acme.com', created_at: back(9 * 86400e3) },
-];
-
-export const MOCK_OVERVIEW_HEALTH: AppHealthRow[] = [
-  ...MOCK_FLEET_HEALTH,
-  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7SUPP', name: 'Acme Support', vertical: 'ticket0', state: 'ok', reason: 'Swept, with nothing failing or overdue.', failures: 0, sweepFailures: 0, stale: 0, lastSweepAt: back(3 * 60e3) },
-];
 
 const conn = (over: Partial<AccountIntegrationsView['providers'][number]['connections'][number]>) => ({
   id: '01MOCKOVCONN00000000000000',

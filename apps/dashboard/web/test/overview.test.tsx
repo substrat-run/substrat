@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, type AccountIntegration, type AppHealthRow, type AppRow, type AuditEntry } from '../src/lib/api';
 import { fleetRows } from '../src/lib/fleet-rows';
-import { actionWords, attentionRows, filterApps, integrationRows, statusSentence } from '../src/lib/overview-status';
+import { actionWords, attentionRows, errorWords, filterApps, integrationRows, statusSentence } from '../src/lib/overview-status';
 import { Overview } from '../src/views/Overview';
 
 const app = (id: string, status: AppRow['status'] = 'active') =>
@@ -38,27 +38,48 @@ const provider = (name: string, status: 'active' | 'error' | 'expired' | 'revoke
 const rows = (apps: AppRow[], h: AppHealthRow[] | null) => fleetRows({ apps, health: h, metrics: null });
 
 describe('statusSentence (#1815)', () => {
+  const words = (s: string) => s.split(/\s+/).filter(Boolean).length;
+  const sentences = (s: string) => s.split(/(?<=[.!?])\s+/).filter(Boolean).length;
+  const ands = (s: string) => (s.match(/\band\b/g) ?? []).length;
+
   it('says every app is working only when every verdict is OK', () => {
     const s = statusSentence({ apps: rows([app('a'), app('b')], [health('a', 'ok'), health('b', 'ok')]), healthRead: 'ok', integrations: [provider('Scrive', 'active')] });
     expect(s.headline).toBe('All 2 apps are working.');
-    expect(s.detail).toContain('connected');
+    expect(s.detail).toBe('Nothing is failing, overdue or unchecked. The one integration is connected.');
   });
 
-  it('names a failing app, on the app’s side', () => {
+  it('names the one app that needs attention, on the app’s side', () => {
     const s = statusSentence({ apps: rows([app('a'), app('b')], [health('a', 'failing', '3 operation failures recorded.'), health('b', 'ok')]), healthRead: 'ok', integrations: [] });
-    expect(s.headline).toBe('Mostly working. App a is failing.');
+    expect(s.headline).toBe('Mostly working. App a is failing on the app’s side.');
     expect(s.detail).toBe('App a is failing on the app’s side: 3 operation failures recorded.');
   });
 
-  it('puts an integration in error on the supplier’s side', () => {
-    const s = statusSentence({ apps: rows([app('a')], [health('a', 'ok')]), healthRead: 'ok', integrations: [provider('Fortnox', 'error', 'HTTP 503')] });
-    expect(s.headline).toBe('Your apps are working, but Fortnox is erroring on the supplier’s side.');
-    expect(s.detail).toContain('supplier’s side: HTTP 503.');
+  it('puts an integration in error on its own side, naming it once', () => {
+    const s = statusSentence({ apps: rows([app('a')], [health('a', 'ok')]), healthRead: 'ok', integrations: [provider('Fortnox', 'error', 'HTTP 503 from Fortnox: service temporarily unavailable')] });
+    expect(s.headline).toBe('Your apps are working, but Fortnox is erroring on its side.');
+    expect(s.detail).toBe('HTTP 503, service temporarily unavailable, on Fortnox’s side.');
   });
 
-  it('joins an app problem and a supplier problem in one sentence', () => {
-    const s = statusSentence({ apps: rows([app('a'), app('b')], [health('a', 'failing'), health('b', 'ok')]), healthRead: 'ok', integrations: [provider('Fortnox', 'error')] });
-    expect(s.headline).toBe('Mostly working. App a is failing, and Fortnox is erroring on the supplier’s side.');
+  it('counts apps when more than one needs attention, keeps one "and", and points at the list', () => {
+    const s = statusSentence({
+      apps: rows([app('a'), app('b'), app('c'), app('ok'), app('new', 'provisioning')], [health('a', 'failing'), health('b', 'stale'), health('c', 'silent'), health('ok', 'ok')]),
+      healthRead: 'ok',
+      integrations: [provider('Fortnox', 'error', 'HTTP 503')],
+    });
+    expect(s.headline).toBe('Mostly working. 3 apps need attention, and Fortnox is erroring on its side.');
+    expect(words(s.headline)).toBeLessThanOrEqual(14);
+    expect(ands(s.headline)).toBeLessThanOrEqual(1);
+    expect(sentences(s.detail)).toBeLessThanOrEqual(2);
+    expect(s.detail).toBe('App a is failing on the app’s side: failing reason. 3 more below.');
+  });
+
+  it('leaves an installing app out of the sentence', () => {
+    const s = statusSentence({ apps: rows([app('a'), app('b'), app('new', 'provisioning')], [health('a', 'failing'), health('b', 'ok')]), healthRead: 'ok', integrations: [] });
+    expect(s.headline).toBe('Mostly working. App a is failing on the app’s side.');
+    expect(`${s.headline} ${s.detail}`).not.toMatch(/App new|install/);
+    const allOk = statusSentence({ apps: rows([app('b'), app('new', 'provisioning')], [health('b', 'ok')]), healthRead: 'ok', integrations: [] });
+    expect(allOk.headline).toBe('All 1 app is working.');
+    expect(allOk.detail).not.toMatch(/App new|install/);
   });
 
   it('never claims all-clear when a read failed', () => {
@@ -66,8 +87,8 @@ describe('statusSentence (#1815)', () => {
     expect(noHealth.headline).toBe('App health could not be read.');
     expect(noHealth.headline).not.toMatch(/working/);
     const noIntegrations = statusSentence({ apps: rows([app('a')], [health('a', 'ok')]), healthRead: 'ok', integrations: 'failed' });
-    expect(noIntegrations.headline).toBe('All 1 running app is working; integrations could not be read.');
-    expect(noIntegrations.detail).toContain('Integrations could not be read');
+    expect(noIntegrations.headline).toBe('All 1 app is working; integrations could not be read.');
+    expect(sentences(noIntegrations.detail)).toBeLessThanOrEqual(2);
   });
 });
 
@@ -92,6 +113,7 @@ describe('attentionRows (#1815)', () => {
     expect(href('App stale')).toBe('/observability?app=stale&view=schedules');
     expect(href('App silent')).toBe('/observability?app=silent&view=schedules');
     expect(href('Fortnox')).toBe('/integrations');
+    expect(r.find((x) => x.what === 'Fortnox')!.text).toBe('HTTP 503, on Fortnox’s side.');
   });
 
   it('is empty when nothing needs anyone', () => {
@@ -110,9 +132,15 @@ describe('the smaller derivations', () => {
   it('reads integration state from the connection record only, worst first', () => {
     const r = integrationRows([provider('Scrive', 'active'), provider('Fortnox', 'error', 'HTTP 503')]);
     expect(r.map((x) => [x.name, x.state, x.text])).toEqual([
-      ['Fortnox', 'Error', 'on Fortnox’s side: HTTP 503'],
+      ['Fortnox', 'Error', 'HTTP 503, on Fortnox’s side'],
       ['Scrive', 'Connected', 'not used yet'],
     ]);
+  });
+
+  it('takes the provider’s own name out of its error', () => {
+    expect(errorWords('Fortnox', 'HTTP 503 from Fortnox: service temporarily unavailable')).toBe('HTTP 503, service temporarily unavailable');
+    expect(errorWords('Scrive', 'Scrive: invalid credentials.')).toBe('invalid credentials');
+    expect(errorWords('Fortnox', 'timeout')).toBe('timeout');
   });
 
   it('turns an audit action into words', () => {
@@ -154,7 +182,7 @@ describe('Overview page', () => {
     expect(section('Recent activity')).toContain('dana@acme.com assigned role on App a');
     expect(section('Needs attention')).toContain('App a');
     expect(section('Needs attention')).toContain('connection problems are not listed here');
-    expect(container.querySelector('[role="status"]')!.textContent).toContain('Integrations could not be read');
+    expect(container.querySelector('[role="status"]')!.textContent).toContain('Integrations could not be read.');
     expect(cards()).toHaveLength(2);
   });
 

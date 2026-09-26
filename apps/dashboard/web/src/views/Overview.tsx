@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { Badge, Button, Input, Select } from '@substrat-run/ui';
 import { api, ApiError, type AccountIntegration, type AppHealthRow, type AppRow, type AuditEntry, type InstallStep } from '../lib/api';
-import { DEV_MOCK } from '../lib/mock';
-import { MOCK_OVERVIEW_AUDIT, MOCK_OVERVIEW_EXTRA_APPS, MOCK_OVERVIEW_HEALTH, MOCK_OVERVIEW_INTEGRATIONS } from '../lib/mock-overview';
+import { DEV_MOCK, MOCK_FLEET_HEALTH } from '../lib/mock';
+import { MOCK_OVERVIEW_AUDIT, MOCK_OVERVIEW_INTEGRATIONS } from '../lib/mock-overview';
 import { VERDICTS, fleetRows, type FleetRow } from '../lib/fleet-rows';
 import { activityRows, appHref, attentionRows, clock, filterApps, integrationRows, statusSentence, type AppsFilter, type Read } from '../lib/overview-status';
 import { navigate, obsPath, teamPath } from '../lib/router';
@@ -32,7 +32,7 @@ const TONE: Record<string, string> = {
  * fleet, so the pages are walked to exhaustion the way the Apps table walks them.
  */
 export function Overview({
-  apps: loaded,
+  apps,
   loading,
   teamName,
   onCreate,
@@ -64,12 +64,9 @@ export function Overview({
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState<AppsFilter>('all');
 
-  // The preview's app list has no running app that is fine; the Overview's fixtures add one.
-  const apps = useMemo(() => (DEV_MOCK ? [...loaded, ...MOCK_OVERVIEW_EXTRA_APPS.filter((x) => !loaded.some((a) => a.app_scope_id === x.app_scope_id))] : loaded), [loaded]);
-
   useEffect(() => {
     if (DEV_MOCK) {
-      setHealth(MOCK_OVERVIEW_HEALTH);
+      setHealth(MOCK_FLEET_HEALTH);
       setIntegrations(MOCK_OVERVIEW_INTEGRATIONS.providers);
       setAudit(MOCK_OVERVIEW_AUDIT);
       return;

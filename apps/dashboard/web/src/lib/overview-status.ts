@@ -50,41 +50,32 @@ function usedBy(c: OverviewConnection['connection']): string {
   return c.apps.length > 0 ? c.apps.map((a) => a.name).join(', ') : c.vertical;
 }
 
-/** "Acme HR", "Acme HR and Acme Legal", "Acme HR, Acme Legal and Acme Ops". */
-function list(items: string[]): string {
-  if (items.length <= 1) return items[0] ?? '';
-  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-}
-
-const APP_PHRASE: Record<FleetVerdict, { one: string; many: string; detail: string }> = {
-  'install-failed': { one: 'failed to install', many: 'failed to install', detail: 'failed to install' },
-  failing: { one: 'is failing', many: 'are failing', detail: 'is failing on the app’s side' },
-  stale: { one: 'is stale', many: 'are stale', detail: 'is stale on the app’s side' },
-  silent: { one: 'is not being checked', many: 'are not being checked', detail: 'is not being checked' },
-  unknown: { one: 'could not be judged', many: 'could not be judged', detail: 'could not be judged' },
-  installing: { one: 'is installing', many: 'are installing', detail: 'is still installing' },
-  ok: { one: 'is working', many: 'are working', detail: 'is working' },
+/** How one app's problem reads, naming whose side it is on where the verdict says so. */
+const APP_PHRASE: Partial<Record<FleetVerdict, string>> = {
+  'install-failed': 'failed to install',
+  failing: 'is failing on the app’s side',
+  stale: 'is stale on the app’s side',
+  silent: 'is not being checked',
+  unknown: 'could not be judged',
 };
 
-function appClause(verdict: FleetVerdict, rows: FleetRow[]): string {
-  const p = APP_PHRASE[verdict];
-  return rows.length === 1 ? `${rows[0]!.name} ${p.one}` : `${rows.length} apps ${p.many}`;
+/** "Fortnox is erroring on its side", or a count when more than one supplier is in trouble. */
+function supplierClause(bad: OverviewConnection[]): string | null {
+  const names = [...new Set(bad.map((c) => c.providerName))];
+  if (names.length === 0) return null;
+  if (names.length > 1) return `${names.length} integrations need attention`;
+  return bad.some((c) => c.connection.status === 'error') ? `${names[0]} is erroring on its side` : `${names[0]} needs reconnecting`;
 }
 
-function integrationClause(c: OverviewConnection[]): string[] {
-  const erroring = [...new Set(c.filter((x) => x.connection.status === 'error').map((x) => x.providerName))];
-  const expired = [...new Set(c.filter((x) => x.connection.status === 'expired').map((x) => x.providerName))];
-  return [
-    ...(erroring.length ? [`${list(erroring)} ${erroring.length === 1 ? 'is' : 'are'} erroring on the supplier’s side`] : []),
-    ...(expired.length ? [`${list(expired)} ${expired.length === 1 ? 'needs' : 'need'} reconnecting`] : []),
-  ];
+function sentence(s: string): string {
+  return /[.!?]$/.test(s) ? s : `${s}.`;
 }
-
-/** How many problems the detail line spells out before pointing at the list below. */
-const DETAIL_CAP = 3;
 
 /**
- * The status card's headline and detail.
+ * The status card's headline and detail — deliberately short: one headline of at most
+ * one "and", and a detail of at most two sentences that names the worst one or two
+ * items and points at the list below for the rest. An app still installing is on its
+ * way, not a problem, and appears in neither.
  *
  * `apps` is the fleet as `fleetRows` judges it; `healthRead` says whether the verdict
  * read landed, because without it every running app reads `unknown` and "nothing is
@@ -96,88 +87,55 @@ export function statusSentence(input: {
   integrations: AccountIntegration[] | 'failed';
 }): { headline: string; detail: string } {
   const { apps } = input;
-  const by = (v: FleetVerdict) => apps.filter((a) => a.verdict === v);
-  const ok = by('ok');
-  const installing = by('installing');
+  const running = apps.filter((a) => a.verdict !== 'installing').length;
+  const ok = apps.filter((a) => a.verdict === 'ok');
   const conns = input.integrations === 'failed' ? [] : connectionsOf(input.integrations);
   const badConns = conns.filter(troubled);
-  const integrationsUnread = input.integrations === 'failed';
+  const note = input.integrations === 'failed' ? 'Integrations could not be read.' : null;
+  const supplier = supplierClause(badConns);
 
-  const unreadNote = integrationsUnread ? 'Integrations could not be read, so their state is unknown.' : null;
-  const installingNote = installing.length ? `${list(installing.map((a) => a.name))} ${installing.length === 1 ? 'is' : 'are'} still installing.` : null;
+  if (apps.length === 0) return { headline: 'No apps yet.', detail: note ?? '' };
 
-  if (apps.length === 0) {
-    return { headline: 'No apps yet.', detail: unreadNote ?? '' };
-  }
-
-  // Health unread: the running apps are unknown, and saying so IS the headline.
+  // Health unread: no running app can be called working, and saying so IS the headline.
   if (input.healthRead === 'failed') {
-    const failedInstalls = by('install-failed');
-    const clauses = [
-      ...(failedInstalls.length ? [appClause('install-failed', failedInstalls)] : []),
-      ...integrationClause(badConns),
-    ];
+    const known = apps.filter((a) => a.verdict === 'install-failed').length + badConns.length;
     return {
-      headline: `App health could not be read${clauses.length ? `, and ${list(clauses)}` : ''}.`,
-      detail: [
-        'No app is reported as working until its health can be read — reload to try again.',
-        installingNote,
-        ...badConns.slice(0, DETAIL_CAP).map(connectionDetail),
-        unreadNote,
-      ]
-        .filter(Boolean)
-        .join(' '),
+      headline: `App health could not be read${supplier ? `, and ${supplier}` : ''}.`,
+      detail: ['No app is reported as working until its health can be read.', known ? `${known} more below.` : note].filter(Boolean).join(' '),
     };
   }
 
   const problems = apps.filter((a) => needsAttention(a.verdict));
   if (problems.length === 0 && badConns.length === 0) {
-    const running = apps.length - installing.length;
-    const headline = integrationsUnread
-      ? `All ${running} running ${running === 1 ? 'app is' : 'apps are'} working; integrations could not be read.`
-      : installing.length
-        ? `All ${running} running ${running === 1 ? 'app is' : 'apps are'} working.`
-        : `All ${running} ${running === 1 ? 'app is' : 'apps are'} working.`;
+    const n = `${running} ${running === 1 ? 'app is' : 'apps are'}`;
     const connected = conns.filter((c) => c.connection.status === 'active').length;
     return {
-      headline,
+      headline: note ? `All ${n} working; integrations could not be read.` : `All ${n} working.`,
       detail: [
         'Nothing is failing, overdue or unchecked.',
-        installingNote,
-        integrationsUnread ? unreadNote : connected ? `${connected === 1 ? 'The one integration connection is' : `All ${connected} integration connections are`} connected.` : null,
+        !note && connected ? `${connected === 1 ? 'The one integration is' : `All ${connected} integrations are`} connected.` : null,
       ]
         .filter(Boolean)
         .join(' '),
     };
   }
 
-  // The headline names the worst verdict's apps and counts the rest; the detail line
-  // and the Needs attention list carry every one of them.
-  const worst = (Object.keys(VERDICTS) as FleetVerdict[])
-    .filter((v) => needsAttention(v))
-    .sort((a, b) => VERDICTS[a].rank - VERDICTS[b].rank)
-    .map((v) => ({ v, rows: problems.filter((p) => p.verdict === v) }))
-    .find((g) => g.rows.length > 0);
-  const rest = problems.length - (worst?.rows.length ?? 0);
-  const appPart = worst ? `${appClause(worst.v, worst.rows)}${rest ? ` and ${rest} more ${rest === 1 ? 'app needs' : 'apps need'} attention` : ''}` : '';
-  const connPart = list(integrationClause(badConns));
+  const appPart = problems.length === 1 ? `${problems[0]!.name} ${APP_PHRASE[problems[0]!.verdict]}` : problems.length > 1 ? `${problems.length} apps need attention` : null;
   const headline = !appPart
-    ? `Your apps are working, but ${connPart}.`
-    : `${ok.length > 0 ? 'Mostly working. ' : ''}${appPart}${connPart ? `, and ${connPart}` : ''}.`;
+    ? `Your apps are working, but ${supplier}.`
+    : `${ok.length > 0 ? 'Mostly working. ' : ''}${ok.length > 0 ? appPart : appPart.charAt(0).toUpperCase() + appPart.slice(1)}${supplier ? `, and ${supplier}` : ''}.`;
 
-  // In the order the Needs attention list gives them, so the first reasons here are its first rows.
-  const reasons = [
-    ...problems.map((a) => ({ rank: VERDICTS[a.verdict].rank, text: `${a.name} ${APP_PHRASE[a.verdict].detail}: ${lowerFirst(a.why)}` })),
+  // In the Needs attention list's order, so the items named here are its first rows.
+  const items = [
+    ...problems.map((a) => ({ rank: VERDICTS[a.verdict].rank, text: sentence(`${a.name} ${APP_PHRASE[a.verdict]}: ${lowerFirst(a.why)}`) })),
     ...badConns.map((c) => ({ rank: connRank(c), text: connectionDetail(c) })),
   ]
     .sort((a, b) => a.rank - b.rank)
     .map((r) => r.text);
-  const shown = reasons.slice(0, DETAIL_CAP).map((r) => (/[.!?]$/.test(r) ? r : `${r}.`));
-  const more = reasons.length - shown.length;
-  return {
-    headline,
-    detail: [...shown, more > 0 ? `${more} more below.` : null, installingNote, unreadNote].filter(Boolean).join(' '),
-  };
+  const room = note ? 1 : 2;
+  const named = items.length <= room ? items : items.slice(0, room - 1);
+  const more = items.length - named.length;
+  return { headline, detail: [...named, more ? `${more} more below.` : null, note].filter(Boolean).join(' ') };
 }
 
 function lowerFirst(s: string): string {
@@ -189,12 +147,32 @@ function connRank(c: OverviewConnection): number {
   return c.connection.status === 'error' ? VERDICTS.failing.rank : VERDICTS.stale.rank;
 }
 
+/**
+ * A provider's error in its own words, with the provider's name taken out — the
+ * sentence around it names the provider once, with its side. "HTTP 503 from Fortnox:
+ * service temporarily unavailable" becomes "HTTP 503, service temporarily unavailable".
+ */
+export function errorWords(provider: string, error: string): string {
+  const name = provider.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return error
+    .replace(new RegExp(`\\s*\\b(?:from|at|by)\\s+${name}\\b`, 'gi'), '')
+    .replace(new RegExp(`^${name}\\s*:\\s*`, 'i'), '')
+    .replace(/\s*:\s*/g, ', ')
+    .replace(/[\s.,;]+$/, '')
+    .trim();
+}
+
+/** "HTTP 503, service temporarily unavailable, on Fortnox’s side" — the side stated once. */
+function supplierError(provider: string, c: ConnectionView): string {
+  const words = c.lastError ? errorWords(provider, c.lastError) : '';
+  return words ? `${words}, on ${provider}’s side` : `an error with no message, on ${provider}’s side`;
+}
+
 function connectionDetail(c: OverviewConnection): string {
   const conn = c.connection;
   if (conn.status === 'expired') return `${c.providerName}’s credential has expired, so ${usedBy(conn)} cannot reach it until it is reconnected.`;
-  return conn.lastError
-    ? `${c.providerName} answered with an error on the supplier’s side: ${conn.lastError}${/[.!?]$/.test(conn.lastError) ? '' : '.'}`
-    : `${c.providerName} is in error on the supplier’s side; it gave no message.`;
+  const e = supplierError(c.providerName, conn);
+  return `${e.charAt(0).toUpperCase()}${e.slice(1)}.`;
 }
 
 /** One Needs attention row — an app or a connection, with where its action goes. */
@@ -299,7 +277,7 @@ export function integrationRows(providers: AccountIntegration[], now = Date.now(
 function connectionText(name: string, c: ConnectionView, now: number): string {
   switch (c.status) {
     case 'error':
-      return `on ${name}’s side${c.lastErrorAt ? ` ${relativeTime(c.lastErrorAt, now)}` : ''}${c.lastError ? `: ${c.lastError}` : ''}`;
+      return `${supplierError(name, c)}${c.lastErrorAt ? `, ${relativeTime(c.lastErrorAt, now)}` : ''}`;
     case 'expired':
       return c.expiresAt ? `credential expired ${relativeTime(c.expiresAt, now)}; reconnect it` : 'credential expired; reconnect it';
     case 'revoked':
