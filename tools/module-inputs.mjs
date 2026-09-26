@@ -287,6 +287,27 @@ const surface = (value) => {
 };
 
 /**
+ * The value with every pair of parentheses that wraps ALL of it removed: `(h as never)` is
+ * `h as never`. `surface` blanks what is inside brackets, so without this a wrapped cast would
+ * read as an empty surface and pass. A value that only STARTS with a paren — the parameter list
+ * of `(input) => …` — closes before its end and is left alone.
+ */
+const unwrapped = (value) => {
+  let v = value.trim();
+  while (v.startsWith('(')) {
+    let depth = 0;
+    let close = -1;
+    for (let i = 0; i < v.length && close === -1; i++) {
+      if (v[i] === '(') depth++;
+      else if (v[i] === ')' && --depth === 0) close = i;
+    }
+    if (close !== v.length - 1) break;
+    v = v.slice(1, -1).trim();
+  }
+  return v;
+};
+
+/**
  * Is an engine's `operations:` map bound to its declaration (#959)?
  *
  * `ModuleRegistration.operations` is `OperationHandler<never, unknown>`, because the host does
@@ -336,7 +357,11 @@ const unbound = (src, operationsValue, inputsValue) => {
     if (entry.spread) {
       return `the handler map spreads another object — this check cannot see whether what it contributes was cast. ${fix}`;
     }
-    if (/\bas\b/.test(surface(entry.value))) {
+    // `as` at the entry's own level, or the older angle-bracket spelling `<never>h`. A generic
+    // arrow written inline (`<T>(x: T) => …`) reads as the second and is refused too — loudly,
+    // and a named `const` handler is the fix for both.
+    const bare = unwrapped(entry.value);
+    if (/\bas\b/.test(surface(bare)) || bare.startsWith('<')) {
       // Named by its value: string contents are neutralised by `flatten`, so the key would print
       // as `'workorderXget'` rather than the operation a reader searches for.
       return `a handler map entry is cast (\`${entry.value.trim().replace(/\s+/g, ' ')}\`) — \`as never\` and \`as any\` pass the \`satisfies\` silently, and any other cast exists to erase the handler's type. ${fix}`;
@@ -600,6 +625,13 @@ const BOUND_CHECK = [
   [REG(`{ 'x/get': getOp as OperationHandler<never, unknown> } ${BOUND}`), 1],
   [REG(`{ 'x/get': getOp as unknown as OperationHandler<never, unknown> } ${BOUND}`), 1],
   [`const OPS = { 'x/get': getOp, 'x/list': listOp as never } ${BOUND};\n${REG('OPS')}`, 1],
+  // Parentheses around the whole value hide nothing: `surface` would blank a wrapped cast.
+  [REG(`{ 'x/get': (getOp as never) } ${BOUND}`), 1],
+  [REG(`{ 'x/get': ((getOp) as any) } ${BOUND}`), 1],
+  [REG(`{ 'x/get': (input) => handle(input), 'x/list': ((input) => list(input)) } ${BOUND}`), 0],
+  // The angle-bracket spelling of the same cast.
+  [REG(`{ 'x/get': <never>getOp } ${BOUND}`), 1],
+  [REG(`{ 'x/get': (<never>getOp) } ${BOUND}`), 1],
   // An entry this reader has no key pattern for is still judged — a computed key hid a cast.
   [REG(`{ [GET]: getOp as never } ${BOUND}`), 1],
   [REG(`{ [GET]: getOp, getOp, 'x/list'(ctx, input) { return input as Thing; } } ${BOUND}`), 0],
