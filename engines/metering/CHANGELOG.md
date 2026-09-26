@@ -1,5 +1,17 @@
 # @substrat-run/engine-metering
 
+## 0.6.7
+
+### Patch Changes
+
+- e46057e: Each event's `schemaVersion` now has one home per engine: a `…EventVersions` map that the emit helper stamps and the manifest's `emits` is read from. Emitted versions and manifests are unchanged; an emit site can no longer name a version.
+- Updated dependencies [6b3cb45]
+- Updated dependencies [ae19d01]
+- Updated dependencies [30b09c6]
+- Updated dependencies [bd8f408]
+  - @substrat-run/kernel@0.123.0
+  - @substrat-run/contracts@0.123.0
+
 ## 0.6.6
 
 ### Patch Changes

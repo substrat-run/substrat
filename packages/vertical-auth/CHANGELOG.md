@@ -1,5 +1,17 @@
 # @substrat-run/vertical-auth
 
+## 0.15.5
+
+### Patch Changes
+
+- df0b2d0: `IdentityStub` now carries the site-registry methods (`recordSite`, `forgetSite`, `listSites`, `resolveSiteScope`) the `IdentityDO` class already had, so a worker calling them through the stub type-checks. A type-level pin fails the build if the class and the stub drift apart again.
+- Updated dependencies [6b3cb45]
+- Updated dependencies [ae19d01]
+- Updated dependencies [30b09c6]
+- Updated dependencies [bd8f408]
+  - @substrat-run/kernel@0.123.0
+  - @substrat-run/contracts@0.123.0
+
 ## 0.15.4
 
 ### Patch Changes

@@ -1,5 +1,31 @@
 # @substrat-run/dashboard
 
+## 0.38.0
+
+### Minor Changes
+
+- 51f0af7: A pending team invite can be copied from the Team page. Every invited row now has a **Copy link** action that shows and copies that invite's accept link without emailing the invitee again. It is a pure read: a lapsed invitation is refused with a pointer to Resend, and the dialog shows the invite's real expiry. The invite dialog also no longer says email delivery is coming: it says whether the email was sent.
+
+### Patch Changes
+
+- Updated dependencies [6b3cb45]
+- Updated dependencies [e46057e]
+- Updated dependencies [ae19d01]
+- Updated dependencies [51f0af7]
+- Updated dependencies [30b09c6]
+- Updated dependencies [bd8f408]
+- Updated dependencies [3b28c46]
+  - @substrat-run/kernel@0.123.0
+  - @substrat-run/contracts@0.123.0
+  - @substrat-run/adapter-cloudflare@0.123.0
+  - @substrat-run/engine-invites@0.9.0
+  - @substrat-run/engine-invoicing@0.11.7
+  - @substrat-run/engine-protocol@0.13.7
+  - @substrat-run/engine-workorder@0.12.7
+  - @substrat-run/control-plane-api@0.123.0
+  - @substrat-run/connector-fortnox@0.4.25
+  - @substrat-run/demo-callout@0.3.41
+
 ## 0.37.1
 
 ### Patch Changes
