@@ -594,6 +594,9 @@ importers:
       hono:
         specifier: 4.13.8
         version: 4.13.8
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.12
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -619,9 +622,6 @@ importers:
       concurrently:
         specifier: ^9.0.0
         version: 9.2.4
-      jose:
-        specifier: ^6.2.3
-        version: 6.2.12
       tsx:
         specifier: ^4.19.0
         version: 4.23.15

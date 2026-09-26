@@ -7,6 +7,7 @@ import { jwt } from 'better-auth/plugins/jwt';
 import { admin } from 'better-auth/plugins/admin';
 import { genericOAuth, type GenericOAuthConfig } from 'better-auth/plugins/generic-oauth';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
+import { TOKEN_EXCHANGE_GRANT_TYPE } from '@substrat-run/contracts';
 import { resetPasswordEmail, verifyEmail } from './email.js';
 import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
 import { supabasePlugin, type SupabaseBridgeOptions } from './supabase-plugin.js';
@@ -231,7 +232,8 @@ export async function seedDemoClient(
 const DISCOVERY_PATH = /\/\.well-known\/(?:openid-configuration|oauth-authorization-server)(?:\/|$)/;
 
 /**
- * Say in discovery that this issuer takes an RFC 8707 `resource` parameter (#1619).
+ * Say in discovery what this issuer does beyond the plugin: it takes an RFC 8707 `resource`
+ * parameter (#1619), and it answers RFC 8693 token exchange at the token endpoint (#1824).
  *
  * `resource_parameter_supported` is NOT an IANA-registered authorization-server metadata
  * name. RFC 8707 defines none, and no registry entry exists for one. RFC 8414 §2 allows
@@ -244,7 +246,7 @@ const DISCOVERY_PATH = /\/\.well-known\/(?:openid-configuration|oauth-authorizat
  * `onRequest` response without running any `onResponse`. This wrapper is the one place
  * both runtimes' requests pass through.
  */
-async function advertiseResourceParameter(request: Request, response: Response): Promise<Response> {
+async function advertiseExtensions(request: Request, response: Response): Promise<Response> {
   if (request.method !== 'GET' || response.status !== 200) return response;
   if (!DISCOVERY_PATH.test(new URL(request.url).pathname)) return response;
   if (!response.headers.get('content-type')?.includes('json')) return response;
@@ -258,7 +260,11 @@ async function advertiseResourceParameter(request: Request, response: Response):
   // A copy: the handler's own headers may be immutable, as a fetched response's are.
   const headers = new Headers(response.headers);
   headers.delete('content-length');
-  return new Rebuilt(JSON.stringify({ ...document, resource_parameter_supported: true }), {
+  // Token exchange is served beside the plugin (`token-exchange.ts`, dispatched by `routes.ts`),
+  // so the plugin's own list cannot know about it.
+  const grants = Array.isArray(document['grant_types_supported']) ? (document['grant_types_supported'] as unknown[]) : [];
+  const grant_types_supported = grants.includes(TOKEN_EXCHANGE_GRANT_TYPE) ? grants : [...grants, TOKEN_EXCHANGE_GRANT_TYPE];
+  return new Rebuilt(JSON.stringify({ ...document, grant_types_supported, resource_parameter_supported: true }), {
     status: response.status,
     headers,
   });
@@ -269,7 +275,7 @@ export function buildAuth(deps: AuthDeps) {
   const handle = auth.handler;
   // `fetch` is Better Auth's alias for the same function; both are replaced so neither
   // spelling serves a document without the flag.
-  auth.handler = auth.fetch = async (request: Request) => advertiseResourceParameter(request, await handle(request));
+  auth.handler = auth.fetch = async (request: Request) => advertiseExtensions(request, await handle(request));
   return auth;
 }
 
