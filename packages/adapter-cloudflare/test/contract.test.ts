@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
-import { armRewind, holdsStub as holdsOf, landRewind } from './pitr-emulation.js';
+import { armRewind, holdsStub as holdsOf, landRewind, restartNow } from './pitr-emulation.js';
 import {
   connectionId,
   errorCodeOf,
@@ -50,6 +50,7 @@ import {
 } from '@substrat-run/contract-tests';
 import {
   CloudflareScopeHost,
+  SWITCH_HOLD_PENDING_MAX_MS,
   SWITCH_HOLD_SETTLE_MS,
   SWITCH_HOLD_SNAPSHOT_MS,
   SWITCH_HOLDS_NAME,
@@ -2272,6 +2273,65 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await off(s);
     expect(await heldOn(s)).toEqual([]);
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  /**
+   * Copilot review on #1838: a release has to be ordered against the rewind. A switch move that
+   * lands in storage the rewind will discard must not release the hold, or the rewind restores
+   * live grants with nothing holding them.
+   */
+  it('an OFF during the settle releases nothing: after the rewind lands, the next pass still fires nothing', async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    const rewinding = host.rewindScopeLocal(s, 'bm', { force: true });
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS / 3));
+    // A repeated OFF inside the settle: the scope holds its grants, but the write is in the
+    // pre-rewind storage, and the claim is still pending.
+    expect(await off(s)).toMatchObject({ held: true });
+    expect(await heldOn(s)).toEqual([SCHED]);
+    await rewinding;
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    // The first re-assert AFTER the rewind landed is what clears it.
+    await off(s);
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('a move the doomed instance applies releases nothing; after an eviction, the next instance releases', async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s, { holdAbort: true });
+    // The wire answer names no instance.
+    expect(await host.rewindScopeLocal(s, 'bm', { force: true })).toStrictEqual({ rewindingTo: 'bm' });
+    // The armed instance is still serving: its write is discarded at the restart.
+    expect(await off(s)).toStrictEqual({ held: true, changed: false, permissions: [] });
+    expect(await heldOn(s)).toEqual([SCHED]);
+    expect((await holdsStub().switchHoldClaims(s, SCHED))[0]).toMatchObject({ state: 'armed', doomed: expect.any(String) });
+    // It is evicted before its own abort: the next instance is a new id, on restored storage.
+    await restartNow(env.SCOPE, s);
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(await off(s)).toStrictEqual({ held: true, changed: true, permissions: ['sched:tick'] });
+    expect(await heldOn(s)).toEqual([]);
+  });
+
+  it('a claim still pending past the bound is released by a move; a fresh pending one is not', async () => {
+    const s = await newScope();
+    await off(s);
+    const stale = new Date(Date.now() - SWITCH_HOLD_PENDING_MAX_MS - 60_000).toISOString();
+    // A rewinding request that died between capture and arm left this one.
+    await holdsStub().switchHoldClaim(s, [SCHED], 'died-mid-rewind', stale);
+    await off(s);
+    expect(await heldOn(s)).toEqual([]);
+    // Twin: a pending claim inside the bound may belong to a rewind about to arm.
+    await holdsStub().switchHoldClaim(s, [SCHED], 'still-rewinding', new Date().toISOString());
+    await off(s);
+    expect(await heldOn(s)).toEqual([SCHED]);
+    await holdsStub().switchHoldRelease(s, null, null);
   });
 
   it('deleting the scope releases its holds', async () => {

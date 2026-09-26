@@ -7222,7 +7222,10 @@ export class CloudflareScopeHost implements ScopeHost {
     if (readError !== undefined) throw readError;
     if (outcome.held && before && before.length > 0) {
       const now = Date.now();
-      const survived = before.filter(() => now >= 0 && instance !== undefined);
+      const survived = before.filter(
+        (c) =>
+          (c.state === 'armed' || now - Date.parse(c.heldAt) > SWITCH_HOLD_PENDING_MAX_MS) && c.doomed !== instance,
+      );
       if (survived.length > 0) {
         this.holdSnapshot = null;
         await this.switchHoldsStub().switchHoldRelease(scopeId, moduleId, survived.map((c) => c.claimId));
