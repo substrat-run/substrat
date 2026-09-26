@@ -2851,6 +2851,47 @@ export function scopeHostContractSuite(
         const log = await host.admin.auditLog(staff, { limit: 500 });
         expect(log.some((e) => e.action === 'restoreDirectory')).toBe(true);
       });
+
+      // A directory dump is untrusted input exactly as a scope dump is (#1143), and
+      // both adapters refuse it with the same words. The DO path always judged it;
+      // the node path ran the DDL through `exec`, appended statements included.
+      it('refuses a dump whose DDL carries a second statement, and leaves the directory as it was (#1143)', async () => {
+        const backup = await host.admin.exportDirectory(staff);
+        const smuggling = {
+          name: 'directory_probe',
+          ddl: 'CREATE TABLE directory_probe (id TEXT); CREATE TABLE smuggled (id TEXT);',
+          columns: ['id'],
+          rows: [['1']],
+        };
+        await expect(
+          host.admin.restoreDirectory(staff, { ...backup, tables: [...backup.tables, smuggling] }),
+        ).rejects.toThrow(/more than one statement/);
+        const after = (await host.admin.exportDirectory(staff)).tables.map((t) => t.name);
+        expect(after).not.toContain('smuggled');
+        expect(after).not.toContain('directory_probe');
+        // Refused before anything was dropped: the platform still resolves and serves.
+        expect(await host.admin.getTenant(staff, t1)).toBeDefined();
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/write-marker', { v: 'after-refused-directory-restore' });
+      });
+
+      // The positive twin: the check does not refuse every extra table, and a `;` inside
+      // a string literal is not read as a statement boundary.
+      it('still restores an honest extra table whose DDL contains a quoted semicolon', async () => {
+        const backup = await host.admin.exportDirectory(staff);
+        const honest = {
+          name: 'directory_probe',
+          ddl: "CREATE TABLE directory_probe (id TEXT, note TEXT DEFAULT 'a;b')",
+          columns: ['id', 'note'],
+          rows: [['1', 'ok']],
+        };
+        await host.admin.restoreDirectory(staff, { ...backup, tables: [...backup.tables, honest] });
+        const restored = (await host.admin.exportDirectory(staff)).tables.find((t) => t.name === 'directory_probe');
+        expect(restored?.rows).toEqual([['1', 'ok']]);
+        // Back to the copy, which does not carry the probe.
+        await host.admin.restoreDirectory(staff, backup);
+        expect((await host.admin.exportDirectory(staff)).tables.some((t) => t.name === 'directory_probe')).toBe(false);
+      });
     });
 
     // -- restore (§8's write half): load a dump into an EXISTING scope in place ---
