@@ -324,7 +324,7 @@ export async function provisionSiblingScope(
     patchBindings: deps.patchScriptBindings,
   });
   // #1674: a re-drain reuses the sibling's id, so this can re-seat a wiped, switched-off scope.
-  await reconcileThenReassert(admin, actor, { tenantId: input.tenantId, scopeId: input.scopeId }, () =>
+  await reconcileThenReassert(admin, actor, { tenantId: input.tenantId, scopeId: input.scopeId }, (carry) =>
     vertical.provisionInstance({
       tenantId: input.tenantId,
       scopeId: input.scopeId,
@@ -333,6 +333,7 @@ export async function provisionSiblingScope(
       name: input.name,
       entitlements,
       ...(tenantStores.length ? { tenantStores } : {}),
+      ...carry,
     }),
   );
   await admin.activateScope(actor, input.tenantId, input.scopeId);
@@ -690,7 +691,7 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
     });
     try {
       // #1674: a re-drain reuses the proposed ids, so this can re-seat a wiped, switched-off scope.
-      await reconcileThenReassert(admin, actor, { tenantId, scopeId }, () =>
+      await reconcileThenReassert(admin, actor, { tenantId, scopeId }, (carry) =>
         vertical.provisionInstance({
           tenantId,
           scopeId,
@@ -699,6 +700,7 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
           name: payload.instance.name,
           entitlements,
           ...(tenantStores.length ? { tenantStores } : {}),
+          ...carry,
         }),
       );
       if (payload.config && Object.keys(payload.config).length) {
@@ -855,7 +857,7 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
       ? await admin.connectionSealingKeys(tenantId, scope.vertical)
       : [];
     try {
-      await reconcileThenReassert(admin, actor, { tenantId, scopeId }, () =>
+      await reconcileThenReassert(admin, actor, { tenantId, scopeId }, (carry) =>
         vertical.reconcileInstance({
           tenantId,
           scopeId,
@@ -863,6 +865,7 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
           identityLinks,
           connectionGrants,
           connectionKeys,
+          ...carry,
         }),
       );
     } catch (e) {

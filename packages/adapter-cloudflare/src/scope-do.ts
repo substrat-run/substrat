@@ -76,6 +76,7 @@ import {
   type SubjectRedactionCounts,
   seatScopeTuple,
   effectiveRoleGrantQuery,
+  switchRecordedOff,
   switchSystemSchedules,
   peerGrantsStatus,
   systemGrantsStatus,
@@ -83,6 +84,7 @@ import {
   systemSwitchedOff,
   type SwitchOutcome,
   type SwitchSql,
+  type SwitchedOff,
   type PeerGrantsRow,
   type SystemGrantsEntry,
   type SystemScheduleState,
@@ -1736,6 +1738,27 @@ export function defineScopeDO(
         const seat = seatScopeTuple(subject, relation, object, expiresAt);
         this.sql.exec(seat.sql, ...seat.params);
       });
+    }
+
+    /**
+     * Provisioning's seat of many tuples as ONE unit, then the directory's recorded-off
+     * modules switched off in it (#1742) — the CP-full mirror of what `applyProjection` does
+     * for a CP-less provision. One tuple per `seatTuple` call left a window between the seat
+     * and the re-assert in which a sweep could run the grants just seated.
+     */
+    async seatTuples(
+      tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
+      switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+    ): Promise<SwitchedOff[]> {
+      return this.queue.enqueue(() =>
+        this.ctx.storage.transactionSync(() => {
+          for (const t of tuples) {
+            const seat = seatScopeTuple(t.subject, t.relation, t.object, t.expires_at);
+            this.sql.exec(seat.sql, ...seat.params);
+          }
+          return switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
+        }),
+      );
     }
 
     /**
@@ -4227,7 +4250,14 @@ export function defineScopeDO(
       });
     }
 
-    async importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void> {
+    async importDump(
+      tables: ScopeDumpTable[],
+      destScopeId?: ScopeId,
+      /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
+       *  the replay re-points the grants, in the same event: a dump from before the switch was
+       *  pulled carries the grants live and no marker. Needs `destScopeId`, the scope restored. */
+      switchOff?: { moduleIds: readonly string[]; at: string },
+    ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
       //
       // Two distinct FK hazards, and both need the deferral — the second is why it cannot
@@ -4256,7 +4286,7 @@ export function defineScopeDO(
       // only the first statement, so the text itself has to be the one statement.
       // Pure input validation, so it runs before the first DROP: a refused dump touches nothing.
       assertReplayableDump(replayable, { maxColumns: DO_SQL_LIMITS.columns });
-      await this.ctx.storage.transaction(async () => {
+      const switched = await this.ctx.storage.transaction(async () => {
         this.sql.exec('PRAGMA defer_foreign_keys = ON');
         // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
         const existing = this.sql
@@ -4277,24 +4307,33 @@ export function defineScopeDO(
           const insert = `INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`;
           for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
         }
+        // Re-assert the kernel spine (#321). A dump captured from a WORLD that stores some
+        // `_substrat_*` tables ELSEWHERE carries only a subset — an `@substrat-run/adapter-
+        // sqlite` scope file, for instance, keeps `_substrat_roles`/`_substrat_tenant_tuples`
+        // in its DIRECTORY database, so its per-scope dump omits them. Replaying such a dump
+        // verbatim would leave this DO missing those spine tables, and the very next
+        // permission check would raise a bare `no such table: _substrat_roles`. KERNEL_DDL is
+        // all IF NOT EXISTS, so this recreates only what the dump did not carry (empty), and
+        // never disturbs a table the dump DID bring. Roles land empty here and are re-projected
+        // by the restore's repair leg (host.projectRolesLocal) — the spine's job is only to
+        // exist so the checker can read it.
+        for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
+        // …and the additive columns, for the same reason KERNEL_DDL is re-asserted: a
+        // dump captured before a column existed replays DDL WITHOUT it, and IF NOT
+        // EXISTS cannot widen a table the dump did bring. Without this, the next emit
+        // in this instance fails with `no such column` until a cold start re-runs the
+        // constructor's pass.
+        this.applySpineColumnAdditions();
+        // Re-point the restored grants at THIS scope (after the spine exists, so a dump
+        // that carried no tuples table still finds one here).
+        if (destScopeId) this.rewriteScopeTuples(destScopeId);
+        // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
+        // the spine and the re-point. A switch that throws rolls the whole restore back, so
+        // the dump's grants never commit live without the switch that should cover them.
+        return destScopeId && switchOff
+          ? switchRecordedOff(this.switchSql(), { scopeId: destScopeId, ...switchOff })
+          : [];
       });
-      // Re-assert the kernel spine (#321). A dump captured from a WORLD that stores some
-      // `_substrat_*` tables ELSEWHERE carries only a subset — an `@substrat-run/adapter-
-      // sqlite` scope file, for instance, keeps `_substrat_roles`/`_substrat_tenant_tuples`
-      // in its DIRECTORY database, so its per-scope dump omits them. Replaying such a dump
-      // verbatim would leave this DO missing those spine tables, and the very next
-      // permission check would raise a bare `no such table: _substrat_roles`. KERNEL_DDL is
-      // all IF NOT EXISTS, so this recreates only what the dump did not carry (empty), and
-      // never disturbs a table the dump DID bring. Roles land empty here and are re-projected
-      // by the restore's repair leg (host.projectRolesLocal) — the spine's job is only to
-      // exist so the checker can read it.
-      for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
-      // …and the additive columns, for the same reason KERNEL_DDL is re-asserted: a
-      // dump captured before a column existed replays DDL WITHOUT it, and IF NOT
-      // EXISTS cannot widen a table the dump did bring. Without this, the next emit
-      // in this instance fails with `no such column` until a cold start re-runs the
-      // constructor's pass.
-      this.applySpineColumnAdditions();
       // Rebuild the derived search indexes over the rows just loaded (#827). Drop-then-
       // create, so it also repairs an index a dump left stale, and the triggers it
       // recreates are what keep the restored scope in step from here. Skipped for a plan
@@ -4311,9 +4350,6 @@ export function defineScopeDO(
         if (!present.has(plan.table)) continue;
         for (const stmt of splitSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
       }
-      // Re-point the restored grants at THIS scope (after the spine exists, so a dump
-      // that carried no tuples table still finds one here).
-      if (destScopeId) this.rewriteScopeTuples(destScopeId);
       // The frontier arrived with the dump — refresh the in-memory applied set so a
       // later migrate() builds on the imported state, not the provisioning state.
       this.applied.clear();
@@ -4345,6 +4381,7 @@ export function defineScopeDO(
       // is complete applies nothing, so there is nothing to report either way.
       this.migrationPromise = undefined;
       this.lastFailure = null;
+      return switched;
     }
 
     /**
@@ -5267,14 +5304,18 @@ export function defineScopeDO(
        *  untouched; passing a list — even `[]` — full-replaces them, which is how a
        *  revoked connection stops being sealable to. */
       connectionKeys?: { connection_id: string; provider: string; key_id: string; public_key: string }[],
-    ): Promise<void> {
-      if (await this.isReaped()) return;
+      /** The directory's recorded-off modules (#1742), switched off in THIS unit right after the
+       *  seat, so no sweep can run the grants the seat just re-created. `scopeId` is the scope
+       *  this projection provisions (the object of `scopeTuples`), never another. */
+      switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+    ): Promise<SwitchedOff[]> {
+      if (await this.isReaped()) return [];
       // A projection that arrives after this scope was reaped is dropped, not
       // applied: writing it would recreate storage the platform deliberately
       // destroyed. Silent rather than throwing — the fan-out is a best-effort
       // convergence over many scopes and one dead sibling must not fail the others,
       // and a reaped scope converging to "nothing" IS convergence.
-      await this.queue.enqueue(() => {
+      return this.queue.enqueue(() => {
         this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
         for (const r of roles) {
           this.sql.exec(
@@ -5394,6 +5435,11 @@ export function defineScopeDO(
             );
           }
         }
+        // #1742: the directory's recorded-off modules go back off HERE, after the seat and in
+        // its unit. A wiped scope's seat has just re-created their `system:` grants (#1659), and
+        // a re-assert arriving later from the control plane left a window in which this
+        // deployment's own sweeper could fire them. Nothing runs between these two lines.
+        const switched = switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
         // #332: only switch on strict local enforcement when SOMEONE actually holds a role.
         // A projection that leaves role definitions but no effective principal→role grant would
         // make every check fail closed — a scope serving nothing but denials, unfixable from
@@ -5401,10 +5447,11 @@ export function defineScopeDO(
         // grant re-runs this and flips safely. (A CP-less vertical uses the local reader
         // regardless of this flag, so the owner grant is written above in the same unit — this
         // guard is the belt to that suspenders, and it protects the CP-backed flip outright.)
-        if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId)) return;
+        if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId)) return switched;
         this.sql.exec(
           `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('permission_source', 'local')`,
         );
+        return switched;
       });
     }
 

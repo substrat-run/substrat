@@ -14,8 +14,10 @@ import {
   scopeId,
   tenantId,
   type EntitlementGrant,
+  type ModuleId,
   type ProjectedConnectionGrant,
   type RoleDefinition,
+  type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
 import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
@@ -676,6 +678,130 @@ describe('#1674 — a hosted scope is re-asserted through the delegation, after 
       expect.objectContaining({ position: 'on', reason: 'fixed' }),
     ]);
     expect(await host.admin.reassertSystemSwitches(staff, node)).toEqual([]);
+  });
+});
+
+/**
+ * #1742 review round 2 — the stale-carry revert's ordering on the delegated path, where every
+ * read and move is its own call and a staff OFF can land between any two of them. The control
+ * plane's stub is wrapped so a hook runs right after the re-assert's first record read; the
+ * fake deployment can run one inside the revert's own move.
+ */
+describe('#1742 — a staff OFF racing the stale-carry revert still ends OFF', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+
+  const setup = async () => {
+    let afterRecordsRead: (() => Promise<void>) | null = null;
+    const hooked = {
+      idFromName: (name: string) => env.CONTROL_PLANE.idFromName(name),
+      get: (id: DurableObjectId) => {
+        const real = env.CONTROL_PLANE.get(id) as unknown as Record<string, (...a: unknown[]) => unknown>;
+        return new Proxy(real, {
+          get: (target, prop) => {
+            const value = target[prop as string];
+            if (typeof value !== 'function') return value;
+            return async (...a: unknown[]) => {
+              const result = await target[prop as string]!(...a);
+              if (prop === 'systemSwitchRecordsOf' && afterRecordsRead) {
+                const hook = afterRecordsRead;
+                afterRecordsRead = null; // one-shot
+                await hook();
+              }
+              return result;
+            };
+          },
+        });
+      },
+    } as unknown as DurableObjectNamespace;
+    const deployment = {
+      position: 'on' as 'on' | 'off',
+      calls: [] as ('on' | 'off')[],
+      /** Runs inside the next ON move, before it applies. */
+      duringOn: null as (() => Promise<void>) | null,
+      /** An OFF whose move is reported but does not touch the position: it "landed before" the ON. */
+      offMovedEarlier: false,
+    };
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: hooked,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      systemSwitchDelegation: {
+        switch: async (a) => {
+          deployment.calls.push(a.to);
+          if (a.to === 'off' && deployment.offMovedEarlier) return { held: true, changed: true, permissions: [] };
+          if (a.to === 'on' && deployment.duringOn) {
+            const hook = deployment.duringOn;
+            deployment.duringOn = null;
+            await hook();
+          }
+          const changed = deployment.position !== a.to;
+          deployment.position = a.to;
+          return { held: true, changed, permissions: [] };
+        },
+        status: async () => [{ moduleId: SCHED, schedules: deployment.position }],
+      },
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `race-${t.slice(-10).toLowerCase()}`, name: 'Race' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    const node = { tenantId: t, scopeId: s };
+    // Off, then restored by an operator: record `on`. Then the deployment applies a stale list.
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'incident' });
+    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'resolved' });
+    deployment.position = 'off';
+    deployment.calls.length = 0;
+    const staffOff = () => host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'again' }).then(() => undefined);
+    const reassert = () =>
+      host.admin.reassertSystemSwitches(staff, node, {
+        appliedInUnit: [{ moduleId: SCHED, changed: true, permissions: [] }],
+      });
+    const rows = async () =>
+      (await host.admin.auditLog(staff, { scopeId: s, action: ['reassertSystemSwitch'] })).map((e) => e.after as Record<string, unknown>);
+    const arm = (hook: () => Promise<void>) => {
+      afterRecordsRead = hook;
+    };
+    return { host, deployment, staffOff, reassert, rows, arm };
+  };
+
+  it('an OFF completed after the first record read gets no transient ON: the revert re-reads first', async () => {
+    const { deployment, staffOff, reassert, rows, arm } = await setup();
+    arm(staffOff); // record `off` (and the deployment already off) before the revert's move
+    await reassert();
+    expect(deployment.calls).not.toContain('on');
+    expect(deployment.position).toBe('off');
+    expect(JSON.stringify(await rows())).not.toContain('staleCarry');
+  });
+
+  it('an OFF whose record lands during the revert is switched off by the pass after it: the OFF pass re-reads the record', async () => {
+    const { deployment, staffOff, reassert, rows } = await setup();
+    // The OFF's move lands before the revert's ON (so the ON overrides it) and its record
+    // lands before the OFF pass reads the record again.
+    deployment.duringOn = async () => {
+      deployment.offMovedEarlier = true;
+      await staffOff();
+      deployment.offMovedEarlier = false;
+    };
+    await reassert();
+    expect(deployment.calls).toEqual(['on', 'off', 'off']);
+    expect(deployment.position).toBe('off');
+    // One row per move that stood: the revert, then the OFF pass. The deployment's in-unit
+    // move was undone by the revert, so it is not credited as an in-unit OFF too.
+    expect((await rows()).map((r) => [r.schedules, r.staleCarry ?? null, r.inUnit ?? null])).toEqual([
+      ['on', true, null],
+      ['off', null, null],
+    ]);
+  });
+
+  it('twin: with no OFF racing, the revert stands and the module ends ON', async () => {
+    const { deployment, reassert, rows } = await setup();
+    await reassert();
+    expect(deployment.calls).toEqual(['on']);
+    expect(deployment.position).toBe('on');
+    expect((await rows()).map((r) => r.staleCarry ?? null)).toEqual([true]);
   });
 });
 
@@ -1681,6 +1807,280 @@ describe('CP-less schedules — declared schedules run without a control plane (
 });
 
 /**
+ * #1742 — the hosted half of the kill switch's re-assert, on the host a vertical's own
+ * deployment runs: no control plane, the switch in this DO. A wiped scope's reconcile
+ * re-seats the module's `system:` grants (#1659), and the platform's re-assert used to
+ * follow as a second call, so this deployment's own sweeper could fire the module in
+ * between. The platform now carries the record's off list into the call, and the seat's
+ * unit switches those modules off before anything can run.
+ *
+ * Every assertion that matters is the pass run IMMEDIATELY after the call, with no
+ * re-assert in between: that pass is the sweep that used to land in the window.
+ */
+describe('#1742 — a wiped scope is switched off inside the unit that re-seats it (CP-less)', () => {
+  const SCHED = moduleId.parse('@test/sched');
+  const NOT_HELD = moduleId.parse('@test/not-held');
+  const t = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const READ = permissionKey.parse('perm:read');
+  const roles: RoleDefinition[] = [{ key: 'office-admin', permissions: [READ], source: 'vertical' }];
+
+  /** A deployment's host; `withSchedules: false` is a version that does not ship the module. */
+  const deployment = (withSchedules = true) => {
+    const h = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    if (withSchedules) h.registerModule(scheduleMod);
+    return h;
+  };
+  const host = deployment();
+  afterAll(async () => host.close());
+
+  /** The reconcile's kernel half, as `/internal/reconcile` calls it. */
+  const reconcile = (s: ScopeId, extra: { switchedOff?: ModuleId[] } = {}, on = host) =>
+    on.provisionScopeLocal({ tenantId: t, scopeId: s, owner, roles, ownerRoleKey: 'office-admin', ...extra });
+  const newScope = async (): Promise<ScopeId> => {
+    const s = scopeId.parse(ulid());
+    await reconcile(s);
+    return s;
+  };
+  const off = (s: ScopeId) => host.systemSwitchLocal(s, SCHED, 'off');
+  /** The scope's storage, gone: an empty restore re-asserts the bare spine (#321). */
+  const wipe = (s: ScopeId) => host.restoreScopeLocal(s, []);
+  const pass = (s: ScopeId) => host.runDueSchedules(SCHED, t, s);
+  const tookBack = { moduleId: SCHED, held: true, changed: true, permissions: ['sched:tick'] };
+
+  it('a wiped scope reconciled WITH its off list runs nothing on the very next pass, and ON gives back what the unit took', async () => {
+    const s = await newScope();
+    await off(s);
+    await wipe(s);
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([]); // the marker is gone with the storage
+
+    expect(await reconcile(s, { switchedOff: [SCHED] })).toEqual({ switchedOff: [tookBack] });
+    expect(await pass(s)).toMatchObject({ fired: 0, skipped: 2, failed: 0, switchedOff: true });
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
+
+    // The grants the seat re-created are exactly what OFF recorded, so ON returns them.
+    expect(await host.systemSwitchLocal(s, SCHED, 'on')).toEqual({
+      held: true,
+      changed: true,
+      permissions: ['sched:tick'],
+    });
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it('the same reconcile WITHOUT the field fires on that pass — the window the post-call re-assert is the fallback for', async () => {
+    const s = await newScope();
+    await off(s);
+    await wipe(s);
+    expect(await reconcile(s)).toEqual({});
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it("the list reaches only the scope being reconciled: another scope's module still fires", async () => {
+    const a = await newScope();
+    const b = await newScope();
+    await off(a);
+    await wipe(a);
+    await reconcile(a, { switchedOff: [SCHED] });
+    await reconcile(b); // b was never switched off, and reconciles with no list
+    expect(await pass(a)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(await host.systemGrantsStatusLocal(b)).toEqual([{ moduleId: SCHED, schedules: 'on' }]);
+    expect(await pass(b)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it('a live marker is left alone: the list re-asserts, it never double-moves', async () => {
+    const s = await newScope();
+    await off(s);
+    // Not wiped: the marker survived, so the seat seated nothing and the unit moves nothing.
+    expect(await reconcile(s, { switchedOff: [SCHED, SCHED] })).toEqual({
+      switchedOff: [{ moduleId: SCHED, held: true, changed: false, permissions: [] }],
+    });
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('a module the deployment does not ship is held: false and plants no marker — and is switched off in the reconcile that first seats it', async () => {
+    const s = scopeId.parse(ulid());
+    const older = deployment(false);
+    // A version without the module: its seat holds nothing for it, so OFF writes nothing.
+    expect(await reconcile(s, { switchedOff: [SCHED, NOT_HELD] }, older)).toEqual({
+      switchedOff: [
+        { moduleId: SCHED, held: false, changed: false, permissions: [] },
+        { moduleId: NOT_HELD, held: false, changed: false, permissions: [] },
+      ],
+    });
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([]);
+    // The version that ships it arrives. Its first seat creates the grants, and the same
+    // unit switches them off, so the module never runs on this scope, not even once.
+    expect(await reconcile(s, { switchedOff: [SCHED] })).toEqual({ switchedOff: [tookBack] });
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    await older.close();
+  });
+
+  it('a module added later with nothing recorded off still fires — the twin: no marker was planted', async () => {
+    const s = scopeId.parse(ulid());
+    const older = deployment(false);
+    await reconcile(s, { switchedOff: [NOT_HELD] }, older);
+    await reconcile(s);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+    await older.close();
+  });
+
+  /**
+   * #1742 review: the switch runs inside the replay's own transaction. A dump whose
+   * `_substrat_tuples` refuses the OFF marker (a CHECK) makes the switch throw part-way
+   * through a restore. That must roll the whole restore back rather than commit the dump's
+   * live grants with no switch over them. Outside the transaction, the replay committed
+   * first and the throw came after it.
+   */
+  const refusingMarker = (dump: Awaited<ReturnType<CloudflareScopeHost['exportScopeLocal']>>) =>
+    dump.map((tbl) =>
+      tbl.name === '_substrat_tuples'
+        ? { ...tbl, ddl: tbl.ddl.replace(/\)\s*$/, ", CHECK (relation <> 'switch:off'))") }
+        : tbl,
+    );
+
+  it('a switch that fails inside a restore rolls the whole restore back: the scope stays off', async () => {
+    const s = await newScope();
+    const before = refusingMarker(await host.exportScopeLocal(s));
+    await off(s);
+    await expect(host.restoreScopeLocal(s, before, { switchedOff: [SCHED] })).rejects.toThrow(/CHECK constraint failed/);
+    // Nothing of the dump landed: the marker the scope had is still live.
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('twin: the same dump with nothing to switch restores, and fires', async () => {
+    const s = await newScope();
+    const before = refusingMarker(await host.exportScopeLocal(s));
+    await off(s);
+    expect(await host.restoreScopeLocal(s, before)).toEqual({ tables: before.length });
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  /**
+   * #1742 review round 2: the spine re-assert now runs inside the replay's `storage.transaction`,
+   * and for a dump from before #1288 it rebuilds `_substrat_schedule_state` in a nested
+   * `transactionSync`. This proves workerd allows that nesting: an old dump restores, its
+   * schedule state gains `kind` with its row carried, and the switch in the same transaction
+   * holds.
+   */
+  const pre1288 = (dump: Awaited<ReturnType<CloudflareScopeHost['exportScopeLocal']>>) =>
+    dump.map((tbl) =>
+      tbl.name === '_substrat_schedule_state'
+        ? {
+            name: tbl.name,
+            ddl: 'CREATE TABLE _substrat_schedule_state (schedule_op TEXT PRIMARY KEY, last_run_at TEXT, last_status TEXT)',
+            columns: ['schedule_op', 'last_run_at', 'last_status'],
+            // Ran two hours ago, so with a 60-minute cadence it is due again.
+            rows: [['sched/tick', new Date(Date.now() - 2 * 3_600_000).toISOString(), 'ok']],
+          }
+        : tbl,
+    );
+  const scheduleState = async (s: ScopeId) =>
+    (await (await host.getScope(owner, t, s)).invoke('sched/schedule-state')) as { kind: string; schedule_op: string }[];
+
+  it('a pre-#1288 dump restores inside the transaction: the nested rebuild runs, and the switch holds', async () => {
+    const s = await newScope();
+    const old = pre1288(await host.exportScopeLocal(s));
+    expect(old.some((tbl) => tbl.name === '_substrat_schedule_state')).toBe(true);
+    await off(s);
+    expect(await host.restoreScopeLocal(s, old, { switchedOff: [SCHED] })).toMatchObject({ switchedOff: [tookBack] });
+    expect(await scheduleState(s)).toEqual([expect.objectContaining({ kind: 'schedule', schedule_op: 'sched/tick' })]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('twin: the same pre-#1288 dump with no list restores, and fires', async () => {
+    const s = await newScope();
+    const old = pre1288(await host.exportScopeLocal(s));
+    await off(s);
+    await host.restoreScopeLocal(s, old);
+    expect(await scheduleState(s)).toEqual([expect.objectContaining({ kind: 'schedule', schedule_op: 'sched/tick' })]);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it('a restore of a dump from before the switch lands off when the off list rides it; without it, it fires', async () => {
+    const s = await newScope();
+    const before = await host.exportScopeLocal(s);
+    await off(s);
+    const restored = await host.restoreScopeLocal(s, before, { switchedOff: [SCHED] });
+    expect(restored).toEqual({ tables: before.length, switchedOff: [tookBack] });
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+
+    const twin = await newScope();
+    const beforeTwin = await host.exportScopeLocal(twin);
+    await host.systemSwitchLocal(twin, SCHED, 'off');
+    expect(await host.restoreScopeLocal(twin, beforeTwin)).toEqual({ tables: beforeTwin.length });
+    expect(await pass(twin)).toMatchObject({ fired: 2, failed: 0 });
+  });
+});
+
+/**
+ * #1742 on the CP-full host, for a scope whose store is this host's own (bound to no
+ * vertical). The provision's seat and the restore's replay now switch the recorded-off
+ * modules off in their own DO unit; the re-assert after them finds nothing to move. What
+ * tells the two apart from outside is the audit row: only an in-unit move is marked
+ * `inUnit`, so a seat or replay that stopped switching (leaving the window to the re-assert
+ * after it) turns these red even though the end state is the same.
+ */
+describe('#1742 — the CP-full seat and restore switch off in their own unit', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  host.registerModule(scheduleMod);
+  const t = tenantId.parse(ulid());
+  beforeAll(async () => {
+    await host.admin.createTenant(staff, { id: t, slug: `unit-${t.slice(-10).toLowerCase()}`, name: 'Unit' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+  });
+  afterAll(async () => host.close());
+
+  const newScope = async () => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s });
+    await host.admin.activateScope(staff, t, s);
+    return s;
+  };
+  const off = (s: ScopeId) =>
+    host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+  const reasserts = async (s: ScopeId) =>
+    (await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: ['reassertSystemSwitch'] })).map((e) => e.after);
+  const inUnit = expect.objectContaining({ moduleId: SCHED, changed: true, inUnit: true, permissions: ['sched:tick'] });
+
+  it("a wiped scope's re-provision switches the module off in the seat's unit", async () => {
+    const s = await newScope();
+    await off(s);
+    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s });
+    expect(await reasserts(s)).toEqual([inUnit]);
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it("a restore from before the switch switches the module off in the replay's event", async () => {
+    const s = await newScope();
+    const before = await host.admin.exportScope(staff, t, s);
+    await off(s);
+    await host.restoreScope(staff, t, s, before);
+    expect(await reasserts(s)).toEqual([inUnit]);
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('twin: a scope never switched off provisions and restores with no re-assert at all, and fires', async () => {
+    const s = await newScope();
+    const before = await host.admin.exportScope(staff, t, s);
+    await host.restoreScope(staff, t, s, before);
+    await host.provisionScope(staff, { tenantId: t, scopeId: s });
+    expect(await reasserts(s)).toEqual([]);
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+});
+
+/**
  * #355 regression: `provisionScopeLocal` must apply the bundled modules' migrations
  * AS PART OF provisioning — not lazily on the first `getScope`. The field symptom was
  * a hosted vertical whose scope had roles projected but `_substrat_migrations = 0` and
@@ -1929,7 +2329,7 @@ describe('#332 — recovery from a scope bricked to zero tuples (CP-less)', () =
   const owner = principalId.parse(ulid());
   const ADMIN = permissionKey.parse('perm:admin');
 
-  const provision = (scope: typeof s): Promise<void> =>
+  const provision = (scope: typeof s): Promise<unknown> =>
     host.provisionScopeLocal({
       tenantId: t,
       scopeId: scope,
@@ -2034,7 +2434,7 @@ describe('#1659 — a reconcile keeps an operator’s revoke (CP-less)', () => {
     scope: string,
     connectionGrants?: ProjectedConnectionGrant[],
     roles: RoleDefinition[] = [OFFICE_ADMIN],
-  ): Promise<void> =>
+  ): Promise<unknown> =>
     host.provisionScopeLocal({
       tenantId: t,
       scopeId: scopeId.parse(scope),

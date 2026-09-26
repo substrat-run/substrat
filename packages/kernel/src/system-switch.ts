@@ -192,6 +192,34 @@ export function switchSystemSchedules(
   });
 }
 
+/** One module `switchRecordedOff` switched off — `SwitchedOffInUnit`'s shape. */
+export interface SwitchedOff extends SwitchOutcome {
+  moduleId: string;
+}
+
+/**
+ * Switch the directory's recorded-off modules off again, inside the unit that re-created the
+ * scope's grants (#1742): a provision's or reconcile's seat, or a restore's replay. The caller
+ * runs it in that same unit, AFTER the seat, so the grants the seat created are the ones OFF
+ * tombstones and records, and a later restore gives back exactly those (#1674's order). No
+ * schedule can run between the seat and this, because nothing can run between them.
+ *
+ * `scopeId` is the scope `db` is, and the caller passes the one the request provisions or
+ * restores, never a second id: the list names modules, never scopes, so it can only reach
+ * the scope that unit is already writing. A module the scope holds nothing for answers
+ * `held: false` and writes nothing, as the switch always does. Off only: nothing here turns
+ * a module on.
+ */
+export function switchRecordedOff(
+  db: SwitchSql,
+  input: { scopeId: string; moduleIds: readonly string[]; at: string },
+): SwitchedOff[] {
+  return [...new Set(input.moduleIds)].map((moduleId) => ({
+    moduleId,
+    ...switchSystemSchedules(db, { moduleId, scopeId: input.scopeId, to: 'off', at: input.at }),
+  }));
+}
+
 /**
  * The switch itself, for ANY non-person subject's scope-level grants — `switchSystemSchedules`
  * for a schedule (`system:<module>`), and the peer kill switch for another vertical

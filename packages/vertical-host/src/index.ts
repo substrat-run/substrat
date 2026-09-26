@@ -31,6 +31,7 @@ import {
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   PlatformCallError,
   type InvokeOptions,
+  type SwitchedOff,
   type UndrainedEvents,
 } from '@substrat-run/kernel';
 import {
@@ -42,6 +43,7 @@ import {
   connectionId as connectionIdOf,
   permissionKey as permissionKeyOf,
   moduleId as moduleIdOf,
+  switchedOffInUnit,
   entityRef,
   visibility,
   instant,
@@ -138,8 +140,19 @@ export interface VerticalScopeHost {
     identityLinks?: ProjectedIdentityLink[];
     connectionGrants?: ProjectedConnectionGrant[];
     connectionKeys?: ProjectedConnectionKey[];
-  }): Promise<void>;
-  restoreScopeLocal(scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<{ tables: number }>;
+    /**
+     * #1742: the modules the platform's record holds switched OFF on this scope, switched off
+     * again inside the provision's own unit, after the seat. A host built before it ignores the
+     * field and answers `void`, and the platform's re-assert after the call covers it.
+     */
+    switchedOff?: ModuleId[];
+  }): Promise<void | { switchedOff?: SwitchedOff[] }>;
+  /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event. */
+  restoreScopeLocal(
+    scopeId: ScopeId,
+    tables: ScopeDumpTable[],
+    opts?: { switchedOff?: ModuleId[] },
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
@@ -335,6 +348,7 @@ const provisionBody = z.object({
   identityLinks: z.array(projectedIdentityLink).optional(),
   connectionGrants: z.array(projectedConnectionGrant).optional(),
   connectionKeys: z.array(projectedConnectionKey).optional(),
+  switchedOff: z.array(moduleIdOf).optional(),
 });
 /** The parsed provision body handed to `onProvision`. */
 export type ProvisionBody = z.infer<typeof provisionBody>;
@@ -347,11 +361,30 @@ const reconcileBody = z.object({
   identityLinks: z.array(projectedIdentityLink).optional(),
   connectionGrants: z.array(projectedConnectionGrant).optional(),
   connectionKeys: z.array(projectedConnectionKey).optional(),
+  /**
+   * #1742: the modules the platform's record holds switched OFF on this scope. Module ids
+   * only: the scope they apply to is `scopeId`, the one this request provisions, and no
+   * field can name another. The host switches them off in the seat's own unit.
+   */
+  switchedOff: z.array(moduleIdOf).optional(),
 });
+
+/**
+ * The in-unit outcomes, parsed on the way OUT. By the time this runs, the provision, reconcile
+ * or restore has already committed, so a report that does not parse is left out instead of
+ * failing an operation that succeeded. The platform reads it only to audit, and its own
+ * re-assert after the call still switches the modules, exactly as for a host that sends none.
+ */
+const switchedOffAnswer = (switched: SwitchedOff[] | undefined) => {
+  const parsed = switched ? z.array(switchedOffInUnit).safeParse(switched) : undefined;
+  return parsed?.success ? { switchedOff: parsed.data } : {};
+};
 
 const restoreBody = z.object({
   tenantId: tenantIdOf.optional(),
   scopeId: scopeIdOf,
+  /** #1742: as on the reconcile — applied to `scopeId`, in the restore's own event. */
+  switchedOff: z.array(moduleIdOf).optional(),
   tables: z.array(
     z.object({
       name: z.string(),
@@ -588,9 +621,9 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/restore', async (c) => {
     const body = restoreBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
-    const result = await host.restoreScopeLocal(body.scopeId, body.tables);
+    const result = await host.restoreScopeLocal(body.scopeId, body.tables, { switchedOff: body.switchedOff });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
-    return c.json(result);
+    return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
   });
 
   // #1239: facets over this scope's own outbox — narrow, group, count. Counts and
@@ -1104,7 +1137,7 @@ export function mountPlatformSurface<Env extends object>(
   // control plane already owns the directory row + entitlements. Idempotent.
   app.post('/internal/provision', async (c) => {
     const body = provisionBody.parse(await c.req.json());
-    await deps.hostFor(c.env).provisionScopeLocal({
+    const provisioned = await deps.hostFor(c.env).provisionScopeLocal({
       tenantId: body.tenantId,
       scopeId: body.scopeId,
       owner: body.owner,
@@ -1114,9 +1147,18 @@ export function mountPlatformSurface<Env extends object>(
       identityLinks: body.identityLinks,
       connectionGrants: body.connectionGrants,
       connectionKeys: body.connectionKeys,
+      switchedOff: body.switchedOff,
     });
     await deps.onProvision?.(c.env, body);
-    return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
+    return c.json(
+      {
+        tenantId: body.tenantId,
+        scopeId: body.scopeId,
+        owner: body.owner,
+        ...switchedOffAnswer(provisioned?.switchedOff),
+      },
+      201,
+    );
   });
 
   // Repair a scope stuck at the #332 lockout (roles projected, no principal holding one —
@@ -1137,7 +1179,7 @@ export function mountPlatformSurface<Env extends object>(
         message: `no owner of record for scope ${body.scopeId} — cannot reconcile; re-run the full install`,
       });
     }
-    await deps.hostFor(c.env).provisionScopeLocal({
+    const reconciled = await deps.hostFor(c.env).provisionScopeLocal({
       tenantId: body.tenantId,
       scopeId: body.scopeId,
       owner,
@@ -1147,6 +1189,8 @@ export function mountPlatformSurface<Env extends object>(
       identityLinks: body.identityLinks,
       connectionGrants: body.connectionGrants,
       connectionKeys: body.connectionKeys,
+      // #1742: back off inside the seat's unit — see `provisionScopeLocal`.
+      switchedOff: body.switchedOff,
     });
     /**
      * The VERTICAL's half of a provision runs here too — and it did not, which made this
@@ -1174,7 +1218,12 @@ export function mountPlatformSurface<Env extends object>(
       ...(body.connectionGrants ? { connectionGrants: body.connectionGrants } : {}),
       ...(body.connectionKeys ? { connectionKeys: body.connectionKeys } : {}),
     });
-    return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner });
+    return c.json({
+      tenantId: body.tenantId,
+      scopeId: body.scopeId,
+      owner,
+      ...switchedOffAnswer(reconciled?.switchedOff),
+    });
   });
 
   // Upsert per-instance config on the platform's instruction (vertical-auth-detach.md

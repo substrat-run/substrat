@@ -1223,18 +1223,19 @@ async function reconcileOneScope(
 }
 
 /**
- * The sweep's reconcile once a deployment is reached (#1172): the reconcile call, then the
- * directory's recorded OFF positions put back after its seat (#1674). A re-assert failure
+ * The sweep's reconcile once a deployment is reached (#1172): the reconcile call, carrying
+ * the directory's recorded OFF positions into the seat's own unit (#1742), then the re-assert
+ * after it as the fallback for a deployment built before that (#1674). A re-assert failure
  * fails the scope for this pass, so the sweep writes no receipt for a scope it left on.
  * Exported so the sweep's own path is tested, not only the helper it goes through.
  */
-export function reconcileReachedScope(
+export async function reconcileReachedScope(
   admin: Parameters<typeof reconcileThenReassert>[0],
   node: { tenantId: TenantId; scopeId: ScopeId },
   client: Pick<VerticalClient, 'reconcileInstance'>,
   payload: Awaited<ReturnType<typeof reconcilePayloadFor>>,
 ): Promise<void | 'unsupported'> {
-  return reconcileThenReassert(admin, SWEEP_ACTOR, node, () =>
+  const outcome = await reconcileThenReassert(admin, SWEEP_ACTOR, node, (carry) =>
     reconcileOrUnsupported(() =>
       client.reconcileInstance({
         ...node,
@@ -1242,9 +1243,12 @@ export function reconcileReachedScope(
         identityLinks: payload.identityLinks as never,
         connectionGrants: payload.connectionGrants as never,
         connectionKeys: payload.connectionKeys as never,
+        // #1742: the recorded-off modules, switched off in the deployment's own unit.
+        ...carry,
       }),
     ),
   );
+  return outcome === 'unsupported' ? 'unsupported' : undefined;
 }
 
 /**
@@ -1285,9 +1289,10 @@ export function drainKickOf(body: { platformRequests?: unknown; exports?: unknow
  * refusal for every such install, and bury the ones somebody has to act on. Every other
  * refusal still throws, so it is still a failure.
  */
-export async function reconcileOrUnsupported(call: () => Promise<unknown>): Promise<void | 'unsupported'> {
+export async function reconcileOrUnsupported<T>(call: () => Promise<T>): Promise<T | 'unsupported'> {
   try {
-    await call();
+    // The answer passes through: what it reports switching off is what the re-assert audits (#1742).
+    return await call();
   } catch (e) {
     if (e instanceof ControlPlaneError && e.status === 501) return 'unsupported';
     throw e;

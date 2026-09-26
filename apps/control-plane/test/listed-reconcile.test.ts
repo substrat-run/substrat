@@ -233,7 +233,8 @@ describe('reconcileOrUnsupported (#1653)', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
-    await expect(reconcileOrUnsupported(call(clientAnswering(ok)))).resolves.toBeUndefined();
+    // A success passes the deployment's answer through (#1742: its report is what gets audited).
+    await expect(reconcileOrUnsupported(call(clientAnswering(ok)))).resolves.toMatchObject({ tenantId: T, scopeId: S });
     for (const [status, error] of [
       [409, 'no owner of record for scope — cannot reconcile; re-run the full install'],
       [500, 'the vertical broke'],
@@ -313,14 +314,36 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     const at = store.get(s);
     if (at === undefined || at === 'wiped') store.set(s, 'on');
   };
+  /**
+   * #1742: where each scope stood the moment the deployment's call RETURNED — before the
+   * platform's re-assert, which is exactly when the deployment's own sweeper could run it.
+   */
+  const atReturn = new Map<string, Position>();
+  /** False models a deployment built before #1742, which ignores the carried list. */
+  let honoursList = true;
+  /** #1742 review: what lands between the platform reading the record and the deployment's unit. */
+  let beforeUnit: ((scope: string) => Promise<void>) | null = null;
+  /** The seat and, in the same unit, the carried list switched off — as the real host does. */
+  const seatInUnit = (s: string, switchedOff?: string[]) => {
+    seat(s);
+    let report = {};
+    if (honoursList && switchedOff) {
+      const moved = switchedOff.includes(MODULE) && store.get(s) === 'on';
+      if (moved) store.set(s, 'off');
+      report = { switchedOff: switchedOff.map((m) => ({ moduleId: m, held: true, changed: m === MODULE && moved, permissions: [] })) };
+    }
+    atReturn.set(s, store.get(s)!);
+    return report;
+  };
   const deployment = {
-    provisionInstance: async (input: { tenantId: string; scopeId: string; owner: string }) => {
-      seat(input.scopeId);
-      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner };
+    provisionInstance: async (input: { tenantId: string; scopeId: string; owner: string; switchedOff?: string[] }) => {
+      const report = seatInUnit(input.scopeId, input.switchedOff);
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner, ...report };
     },
-    reconcileInstance: async (input: { tenantId: string; scopeId: string }) => {
-      seat(input.scopeId);
-      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: ulid() };
+    reconcileInstance: async (input: { tenantId: string; scopeId: string; switchedOff?: string[] }) => {
+      await beforeUnit?.(input.scopeId);
+      const report = seatInUnit(input.scopeId, input.switchedOff);
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: ulid(), ...report };
     },
     configureInstance: async () => undefined,
     // A rewind to a bookmark taken before the switch was pulled: the grants come back live
@@ -389,12 +412,65 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     it('a switched-off scope whose storage was wiped comes back OFF', async () => {
       const s = await wipedScope(t, true);
       await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
+      expect(atReturn.get(s)).toBe('off'); // #1742: off before the re-assert, not only after it
       expect(store.get(s)).toBe('off');
+      // The deployment's in-unit move is on the admin log, once; the re-assert moved nothing.
+      const log = await host.admin.auditLog(staff, { scopeId: s, action: ['reassertSystemSwitch'] });
+      expect(log.map((e) => e.after)).toEqual([expect.objectContaining({ moduleId: MODULE, changed: true, inUnit: true })]);
+    });
+    it('a deployment built before #1742 is still switched off, by the re-assert after the call', async () => {
+      honoursList = false;
+      try {
+        const s = await wipedScope(t, true);
+        await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
+        expect(atReturn.get(s)).toBe('on'); // the window this issue closes, still open here
+        expect(store.get(s)).toBe('off');
+        const log = await host.admin.auditLog(staff, { scopeId: s, action: ['reassertSystemSwitch'] });
+        expect(log.map((e) => e.after)).toEqual([expect.not.objectContaining({ inUnit: true })]);
+      } finally {
+        honoursList = true;
+      }
     });
     it('twin: with no record, the scope comes back on', async () => {
       const s = await wipedScope(t, false);
       await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
+      expect(atReturn.get(s)).toBe('on');
       expect(store.get(s)).toBe('on');
+    });
+
+    /** A scope switched off whose marker survived: the operator can restore it mid-call. */
+    const switchedOffScope = async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: VERT });
+      await host.admin.activateScope(staff, t, s);
+      seat(s);
+      await host.admin.revokeFromSystem(staff, { moduleId: MODULE as never, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+      return s;
+    };
+    const staleRows = async (s: ScopeId) =>
+      (await host.admin.auditLog(staff, { scopeId: s, action: ['reassertSystemSwitch'] })).map((e) => e.after);
+
+    it("an ON landing between the record read and the unit stands: the stale move is reverted and audited (#1742 review)", async () => {
+      const s = await switchedOffScope();
+      beforeUnit = async (id) => {
+        if (id !== s) return;
+        await host.admin.restoreToSystem(staff, { moduleId: MODULE as never, node: { tenantId: t, scopeId: s }, reason: 'resolved mid-call' });
+      };
+      try {
+        await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
+      } finally {
+        beforeUnit = null;
+      }
+      expect(atReturn.get(s)).toBe('off'); // the deployment applied the stale list
+      expect(store.get(s)).toBe('on'); // …and the re-assert put the operator's ON back
+      expect(await staleRows(s)).toEqual([expect.objectContaining({ moduleId: MODULE, schedules: 'on', changed: true, staleCarry: true })]);
+    });
+
+    it('twin: with no ON mid-call, the same scope stays off and nothing is reverted', async () => {
+      const s = await switchedOffScope();
+      await reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, deployment, payload);
+      expect(store.get(s)).toBe('off');
+      expect(JSON.stringify(await staleRows(s))).not.toContain('staleCarry');
     });
   });
 
@@ -407,6 +483,7 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     it('a switched-off scope whose storage was wiped comes back OFF', async () => {
       const s = await wipedScope(t, true);
       expect((await drain(s)).status).toBe('done');
+      expect(atReturn.get(s)).toBe('off'); // #1742
       expect(store.get(s)).toBe('off');
     });
     it('twin: with no record, the scope comes back on', async () => {
@@ -430,6 +507,7 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     it('a switched-off sibling whose storage was wiped comes back OFF', async () => {
       const s = await wipedScope(t, true);
       expect((await drain(s)).status).toBe('done');
+      expect(atReturn.get(s)).toBe('off'); // #1742
       expect(store.get(s)).toBe('off');
     });
     it('twin: with no record, the sibling comes back on', async () => {
@@ -528,9 +606,11 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     /** The serving script's copy of the data: the marker did not survive into it. */
     const serving = {
       exportScope: async (s: string) => ({ tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] }),
-      restoreScope: async (_t: string, s: string) => {
-        store.set(s, 'on');
-        return { tables: 0 };
+      // The copy lands with the grants live and no marker; the carried list (#1742) goes back
+      // off in the same event, as the real `/internal/restore` does.
+      restoreScope: async (_t: string, s: string, _tables: unknown, opts?: { switchedOff?: string[] }) => {
+        store.set(s, 'wiped');
+        return { tables: 0, ...seatInUnit(s, opts?.switchedOff) };
       },
     } as unknown as VerticalClient;
     const app = () =>
@@ -576,6 +656,7 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
 
     it('a switched-off scope adopted onto a store that lost the marker comes back OFF', async () => {
       await adopt(legacy[0]!);
+      expect(atReturn.get(legacy[0]!)).toBe('off'); // #1742: off in the restore's own event
       expect(store.get(legacy[0]!)).toBe('off');
     });
 
@@ -594,7 +675,14 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     it('a retried adopt whose first re-assert failed re-asserts, though the scope is already adopted (Copilot review)', async () => {
       const s = legacy[2]!;
       unreachable.add(s);
-      expect((await post(s, 'adopt-serving')).status).not.toBe(200);
+      // A deployment built before #1742: the restore does not switch the copy off itself,
+      // so only the re-assert can, and it is the one that failed.
+      honoursList = false;
+      try {
+        expect((await post(s, 'adopt-serving')).status).not.toBe(200);
+      } finally {
+        honoursList = true;
+      }
       expect(store.get(s)).toBe('on'); // routing flipped, the re-assert did not land
       unreachable.delete(s);
       const retry = await post(s, 'adopt-serving');
@@ -633,6 +721,7 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     it('a switched-off customer scope whose storage was wiped comes back OFF', async () => {
       const { tenant, s } = await customer(true);
       expect((await drain(tenant, s)).status).toBe('done');
+      expect(atReturn.get(s)).toBe('off'); // #1742
       expect(store.get(s)).toBe('off');
     });
     it('twin: with no record, the customer scope comes back on', async () => {

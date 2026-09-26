@@ -303,7 +303,12 @@ import {
   type UndrainedEvents,
   type UndrainedRead,
   type SwitchOutcome,
+  type SwitchedOff,
   type SystemSwitchReassert,
+  type SystemSwitchReassertOptions,
+  inUnitMovesToAudit,
+  staleCarryRevertRow,
+  staleCarryReverts,
   type SystemSwitchRecordFilter,
   type SystemSwitchRecordPrior,
   type SystemSwitchRecordRow,
@@ -1121,6 +1126,11 @@ interface ScopeStubRpc {
     object: string,
     expiresAt: string | null,
   ): Promise<void>;
+  /** Provisioning's seat as one unit, then the recorded-off modules switched off in it (#1742). */
+  seatTuples(
+    tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
+    switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+  ): Promise<SwitchedOff[]>;
   /** Tombstone a scope tuple by exact (subject, relation, object). Idempotent. */
   revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
   /** Attachment surface, metadata half (#473) — see the ScopeDO methods of the same names.
@@ -1202,7 +1212,9 @@ interface ScopeStubRpc {
     identities?: { provider: string; external_id: string; principal_id: string; scope_id: string | null }[],
     /** Live connections' PUBLIC sealing keys (#687) — same preserve-on-undefined convention. */
     connectionKeys?: { connection_id: string; provider: string; key_id: string; public_key: string }[],
-  ): Promise<void>;
+    /** The recorded-off modules switched off after the seat, in the same unit (#1742). */
+    switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+  ): Promise<SwitchedOff[]>;
   /** Resolve an external identity from this scope's projected links (#406) — the CP-less auth read. */
   resolveProjectedIdentity(
     tenantId: string,
@@ -1223,7 +1235,12 @@ interface ScopeStubRpc {
    * Load a dump into this (freshly-provisioned) scope — the fork write side.
    * `destScopeId` re-points the dump's scope-level grants at the destination.
    */
-  importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void>;
+  importDump(
+    tables: ScopeDumpTable[],
+    destScopeId?: ScopeId,
+    /** The recorded-off modules switched off on `destScopeId` after the replay, in its event (#1742). */
+    switchOff?: { moduleIds: readonly string[]; at: string },
+  ): Promise<SwitchedOff[]>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
   /**
@@ -2277,9 +2294,19 @@ export class CloudflareScopeHost implements ScopeHost {
    * `/internal/restore`. The control plane is the gate and the auditor; this end
    * just replaces its own bytes with the dump's, migration frontier included.
    */
-  async restoreScopeLocal(scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<{ tables: number }> {
-    await this.scopeStub(scopeId).importDump(tables, scopeId);
-    return { tables: tables.length };
+  async restoreScopeLocal(
+    scopeId: ScopeId,
+    tables: ScopeDumpTable[],
+    /** #1742: the directory's recorded-off modules, switched off on THIS scope in the replay's
+     *  own event — a dump from before a switch was pulled brings its grants back live. */
+    opts?: { switchedOff?: readonly ModuleId[] },
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
+    const switchedOff = await this.scopeStub(scopeId).importDump(
+      tables,
+      scopeId,
+      opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
+    );
+    return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}) };
   }
 
   /**
@@ -2539,16 +2566,12 @@ export class CloudflareScopeHost implements ScopeHost {
     // per-scope schedule kill switch is `revokeFromSystem` (#1666), and its OFF marker is
     // not a grant, so no reconcile can seat it away; `restoreToSystem` is the only way back.
     // (`grantToSystem` still clears a tuple's tombstone, but it does not move the switch.)
+    const seats: { subject: string; relation: string; object: string; expires_at: string | null }[] = [];
     for (const [moduleId, schedules] of this.moduleSchedules) {
       const perms = new Set<string>();
       for (const s of schedules) for (const p of s.permissions) perms.add(p);
       for (const perm of perms) {
-        await this.scopeStub(input.scopeId).seatTuple(
-          `system:${moduleId}`,
-          `granted:${perm}`,
-          `scope:${input.scopeId}`,
-          null,
-        );
+        seats.push({ subject: `system:${moduleId}`, relation: `granted:${perm}`, object: `scope:${input.scopeId}`, expires_at: null });
       }
     }
     // #1706: every declared PEER holds its keys on the scope from provisioning on — the one
@@ -2556,14 +2579,29 @@ export class CloudflareScopeHost implements ScopeHost {
     // schedule grants above, so a grant a switch tombstoned stays tombstoned and a
     // switched-off peer gets nothing seated.
     for (const seat of peerSeats(collectPeers(this.peerSources), input.scopeId)) {
-      await this.scopeStub(input.scopeId).seatTuple(seat.subject, seat.relation, seat.object, null);
+      seats.push({ subject: seat.subject, relation: seat.relation, object: seat.object, expires_at: null });
     }
     // #1674: re-assert the recorded OFF positions after the seat (`system-switch-record.ts`).
     // Only where this seat landed in the scope's real store — a CP-less host, or a scope
     // bound to no vertical. A scope a vertical's deployment serves is seated there, later,
     // and re-asserted after that deployment's reconcile instead.
-    if (this.cpLess || record.vertical === null) {
-      await this.admin.reassertSystemSwitches(actor, { tenantId: input.tenantId, scopeId: input.scopeId });
+    //
+    // #1742: in the SAME unit as the seat, so no sweep can land between them; the re-assert
+    // after it then finds them off, and audits what the unit moved.
+    const ownStore = this.cpLess || record.vertical === null;
+    const recordedOff = ownStore ? await this.cp.switchedOffModulesOf(input.tenantId, input.scopeId) : [];
+    const switchedOff = await this.scopeStub(input.scopeId).seatTuples(
+      seats,
+      recordedOff.length
+        ? { scopeId: input.scopeId, moduleIds: recordedOff, at: new Date().toISOString() }
+        : undefined,
+    );
+    if (ownStore) {
+      await this.admin.reassertSystemSwitches(
+        actor,
+        { tenantId: input.tenantId, scopeId: input.scopeId },
+        { appliedInUnit: switchedOff },
+      );
     }
     // Audit a real provision only; an idempotent re-provision changed nothing.
     if (created) {
@@ -3002,7 +3040,17 @@ export class CloudflareScopeHost implements ScopeHost {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-    await this.scopeStub(scopeId).importDump(dump.tables, scopeId);
+    // #1742: a dump from before a switch was pulled brings the module's grants back live, so
+    // the directory's recorded-off modules go back off in the replay's own event. Only where
+    // this is the scope's real store, as for the provision's seat above; a hosted scope is
+    // restored in its deployment, which the platform carries the same list to.
+    const ownStore = this.cpLess || existing.vertical === null;
+    const recordedOff = ownStore ? await this.cp.switchedOffModulesOf(tenantId, scopeId) : [];
+    const switchedOff = await this.scopeStub(scopeId).importDump(
+      dump.tables,
+      scopeId,
+      recordedOff.length ? { moduleIds: recordedOff, at: new Date().toISOString() } : undefined,
+    );
     await this.recordAdmin(
       actor,
       'restoreScope',
@@ -3010,6 +3058,9 @@ export class CloudflareScopeHost implements ScopeHost {
       null,
       { sourceScopeId: dump.scopeId, tables: dump.tables.length, capturedAt: dump.capturedAt },
     );
+    if (recordedOff.length) {
+      await this.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: switchedOff });
+    }
   }
 
   async snapshotScope(
@@ -4311,16 +4362,21 @@ export class CloudflareScopeHost implements ScopeHost {
     const reassertSystemSwitchesOf = async (
       actor: PlatformActorId,
       node: { tenantId: TenantId; scopeId: ScopeId },
+      opts?: SystemSwitchReassertOptions,
     ): Promise<SystemSwitchReassert[]> => {
       const { tenantId, scopeId } = node;
       const { vertical, move } = await systemSwitchTarget(tenantId, scopeId);
-      const modules = await this.cp.switchedOffModulesOf(tenantId, scopeId);
+      const recorded = new Map(await this.cp.systemSwitchRecordsOf(tenantId, scopeId));
+      // #1742 review: moves the deployment made from a stale list (restored ON after the list
+      // was read), to undo before the OFF pass below.
+      const reverts = staleCarryReverts(recorded, opts?.appliedInUnit);
       // A hosted scope with no delegation configured (Copilot review): this host's own
       // namespace is the module-less placeholder, where the switch would answer `held: false`
       // quietly — a re-assert reported done, and a receipt written, while the deployment
       // serving the scope keeps its schedules running. Refused loudly instead, as the status
       // read is, and only when a re-assert is owed: nothing recorded, nothing to refuse.
-      if (modules.length > 0 && !this.cpLess && vertical !== null && !this.systemSwitchDelegation) {
+      const owed = reverts.length > 0 || [...recorded.values()].includes('off');
+      if (owed && !this.cpLess && vertical !== null && !this.systemSwitchDelegation) {
         throw substratError(
           'unavailable',
           `no delegation configured for hosted scope ${scopeId} (vertical '${vertical}') — cannot re-assert ` +
@@ -4328,6 +4384,33 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       }
       const at = new Date().toISOString();
+      const reverted = new Set<string>();
+      for (const moduleId of reverts) {
+        // Re-read immediately before the move: a staff OFF that completed since the read above
+        // (record `off`) must not get a transient ON a due schedule could run in.
+        const current = new Map(await this.cp.systemSwitchRecordsOf(tenantId, scopeId));
+        if (current.get(moduleId) !== 'on') continue;
+        const outcome = await move(moduleId as ModuleId, 'on', at);
+        reverted.add(moduleId);
+        if (outcome.changed) {
+          await this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId, vertical }, null, {
+            operationId: ulid(),
+            ...staleCarryRevertRow(moduleId, outcome),
+          });
+        }
+      }
+      // Read AFTER the reverts: an OFF that landed meanwhile is switched off below.
+      const modules = await this.cp.switchedOffModulesOf(tenantId, scopeId);
+      // #1742: what the deployment already switched off inside its own unit, audited here —
+      // the move below answers `changed: false` for it and would write no row.
+      // A move the revert above undid is not credited as an in-unit OFF.
+      const applied = opts?.appliedInUnit?.filter((a) => !reverted.has(a.moduleId));
+      for (const row of inUnitMovesToAudit(modules, applied)) {
+        await this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId, vertical }, null, {
+          operationId: ulid(),
+          ...row,
+        });
+      }
       const results: SystemSwitchReassert[] = [];
       for (const moduleId of modules) {
         const outcome = await move(moduleId as ModuleId, 'off', at);
@@ -7273,10 +7356,16 @@ export class CloudflareScopeHost implements ScopeHost {
      *  clear. Only ever public halves. Absent ⇒ untouched, so a provision path predating
      *  #687 never wipes keys a reconcile already delivered. */
     connectionKeys?: ProjectedConnectionKey[];
-  }): Promise<void> {
+    /** The modules the directory records switched OFF on this scope (#1742), gathered by the
+     *  platform from its record. Switched off again right after the seat, in the same DO unit,
+     *  so a wiped scope's re-seated `system:` grants never run — not even once, before the
+     *  platform's own re-assert arrives. Applies to THIS scope only, and only turns off. Absent
+     *  ⇒ nothing is switched here, and the platform's re-assert after the call does it. */
+    switchedOff?: readonly ModuleId[];
+  }): Promise<{ switchedOff?: SwitchedOff[] }> {
     const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
-    await stub.applyProjection(
+    const switchedOff = await stub.applyProjection(
       input.tenantId,
       input.roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source })),
       [], // no tenant-level tuples — a CP-less vertical grants at scope level only
@@ -7367,7 +7456,13 @@ export class CloudflareScopeHost implements ScopeHost {
             public_key: k.publicKey,
           }))
         : undefined,
+      // #1742: the recorded-off modules, switched off after the seat in the same unit, on the
+      // scope this call provisions — the one the seat's tuples name.
+      input.switchedOff
+        ? { scopeId: input.scopeId, moduleIds: input.switchedOff, at: new Date().toISOString() }
+        : undefined,
     );
+    return input.switchedOff ? { switchedOff } : {};
   }
 
   /**

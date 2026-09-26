@@ -291,6 +291,9 @@ import {
   recordSystemSwitchedOn,
   restoreSystemSwitchRecord,
   switchedOffModulesOf,
+  inUnitMovesToAudit,
+  staleCarryRevertRow,
+  staleCarryReverts,
   systemSwitchRecordsOf,
   systemSwitchesTableExists,
   withRecorded,
@@ -300,6 +303,7 @@ import {
   versionMigrationsOf,
   writeVersionMigrations,
   type SystemSwitchReassert,
+  type SystemSwitchReassertOptions,
   type SystemSwitchRecordFilter,
   type SystemSwitchRecordPrior,
   type SwitchOutcome,
@@ -2555,20 +2559,45 @@ export class SqliteScopeHost implements ScopeHost {
    * holds on the scope's actor: every module the directory records OFF on the scope is
    * switched off again. Already off answers `changed: false` and writes nothing, and a
    * module the scope does not hold is left alone. Audited only when something moved.
+   *
+   * `audit` receives each row. By default it writes to the admin log at once. A caller running
+   * this inside a scope transaction that may still roll back (a restore's replay) collects
+   * the rows and writes them once the transaction commits. The admin log is another
+   * database, and a row must not outlive a move that was rolled back.
    */
   private reassertSwitchesInTurn(
     rt: ScopeRuntime,
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    opts?: SystemSwitchReassertOptions,
+    audit: (after: Record<string, unknown>) => void = (after) =>
+      this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, after),
   ): SystemSwitchReassert[] {
     const at = new Date().toISOString();
-    return switchedOffModulesOf(switchSqlOf(this.directory), tenantId, scopeId).map((moduleId) => {
+    // #1742 review: a move the deployment made from a stale list — the module was restored
+    // ON after the list was read — is undone first, so the operator's ON stands.
+    const recorded = systemSwitchRecordsOf(switchSqlOf(this.directory), tenantId, scopeId);
+    // One synchronous turn: no switch can land between this read and the moves below.
+    const reverted = new Set(staleCarryReverts(recorded, opts?.appliedInUnit));
+    for (const moduleId of reverted) {
+      const outcome = rt.db.transaction(() =>
+        switchSystemSchedules(switchSqlOf(rt.db), { moduleId, scopeId, to: 'on', at }),
+      )();
+      if (outcome.changed) audit({ operationId: ulid(), ...staleCarryRevertRow(moduleId, outcome) });
+    }
+    const recordedOff = switchedOffModulesOf(switchSqlOf(this.directory), tenantId, scopeId);
+    // #1742: what a deployment already switched off inside its own unit, audited here — the
+    // switch below answers `changed: false` for it and would write no row.
+    // A move the revert above undid is not credited as an in-unit OFF.
+    const applied = opts?.appliedInUnit?.filter((a) => !reverted.has(a.moduleId));
+    for (const row of inUnitMovesToAudit(recordedOff, applied)) audit({ operationId: ulid(), ...row });
+    return recordedOff.map((moduleId) => {
       const outcome = rt.db.transaction(() =>
         switchSystemSchedules(switchSqlOf(rt.db), { moduleId, scopeId, to: 'off', at }),
       )();
       if (outcome.changed) {
-        this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, {
+        audit({
           operationId: ulid(),
           moduleId,
           schedules: 'off',
@@ -3121,7 +3150,14 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /** Drop-then-replay a dump into a scope's db, refreshing the migration frontier. */
-  private async loadDump(tenantId: TenantId, scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<void> {
+  private async loadDump(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    tables: ScopeDumpTable[],
+    /** Run inside the load's own transaction, after the replay (#1742) — the restore's re-assert
+     *  of the switch. It throws to roll the load back. */
+    afterLoad?: (rt: ScopeRuntime) => void,
+  ): Promise<void> {
     const rt = this.runtime(tenantId, scopeId);
     const db = rt.db;
     const load = db.transaction((dumped: ScopeDumpTable[]) => {
@@ -3207,6 +3243,9 @@ export class SqliteScopeHost implements ScopeHost {
         `UPDATE OR REPLACE _substrat_tuples SET object = ?
           WHERE object LIKE 'scope:%' AND object <> ?`,
       ).run(`scope:${scopeId}`, `scope:${scopeId}`);
+      // #1742: inside the replay's transaction, so a failure here rolls the whole load back and
+      // the dump's grants never commit without the switch that should cover them.
+      afterLoad?.(rt);
     });
     // On the scope actor (#1678): issued while an invoke held its transaction open, the
     // load was a SAVEPOINT inside it, and that invoke's rollback undid the restore after
@@ -3234,7 +3273,15 @@ export class SqliteScopeHost implements ScopeHost {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-    await this.loadDump(tenantId, scopeId, dump.tables);
+    // #1742: a dump from before a switch was pulled brings the module's grants back live, so
+    // the directory's recorded-off modules go back off in the load's own turn, as a
+    // provision's seat does — no schedule pass can run in between.
+    // The re-assert's audit rows are written only once the load has committed.
+    const rows: Record<string, unknown>[] = [];
+    await this.loadDump(tenantId, scopeId, dump.tables, (rt) =>
+      this.reassertSwitchesInTurn(rt, actor, tenantId, scopeId, undefined, (after) => rows.push(after)),
+    );
+    for (const after of rows) this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, after);
     this.recordAdmin(
       actor,
       'restoreScope',
@@ -6494,10 +6541,14 @@ export class SqliteScopeHost implements ScopeHost {
         );
         return rows.map((r) => systemSwitchRecord.parse(r));
       },
-      reassertSystemSwitches: async (actor: PlatformActorId, node: { tenantId: TenantId; scopeId: ScopeId }) => {
+      reassertSystemSwitches: async (
+        actor: PlatformActorId,
+        node: { tenantId: TenantId; scopeId: ScopeId },
+        opts?: SystemSwitchReassertOptions,
+      ) => {
         this.assertScope(node.tenantId, node.scopeId);
         const rt = this.runtime(node.tenantId, node.scopeId);
-        return rt.actor.turn(() => this.reassertSwitchesInTurn(rt, actor, node.tenantId, node.scopeId));
+        return rt.actor.turn(() => this.reassertSwitchesInTurn(rt, actor, node.tenantId, node.scopeId, opts));
       },
       peerGrantsStatus: peerGrantsStatusOf,
       // #1672 — the platform's two capability verbs, both a turn on the scope actor

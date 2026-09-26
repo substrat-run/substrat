@@ -149,7 +149,11 @@ import type { CapabilityVerbs } from './capability.js';
 import { substratError } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { SealedSecret } from './secret-box.js';
-import type { SystemSwitchReassert, SystemSwitchRecordFilter } from './system-switch-record.js';
+import type {
+  SystemSwitchReassert,
+  SystemSwitchReassertOptions,
+  SystemSwitchRecordFilter,
+} from './system-switch-record.js';
 import type { SearchHit, SearchOptions } from './search-index.js';
 import type { EntityVersion } from './entity-version.js';
 import type { UndrainedEvents } from './outbox-event.js';
@@ -1662,10 +1666,23 @@ export interface HostAdmin {
    * Audited as `reassertSystemSwitch`, only when something changed. Throws when a switch
    * could not be reached, so a caller that records a receipt (the sweep's reconcile) does
    * not record one for a scope left on.
+   *
+   * `appliedInUnit` (#1742): what the deployment already switched off inside the reconcile's
+   * own unit. Each one that moved, on a module this record holds `off`, is audited here as an
+   * `inUnit` re-assert, since the switch below then answers `changed: false` for it. The
+   * switch still runs for every recorded module: this is the fallback for a deployment built
+   * before the field, and it is idempotent.
+   *
+   * A reported move on a module the record now holds `on` came from a stale list: an
+   * operator's `restoreToSystem` landed between the platform reading the record and the
+   * deployment applying it. That move is undone (switched back on) and audited as
+   * `staleCarry`, BEFORE the record is read again for the OFF pass. Only a module recorded
+   * `on` is ever switched on here.
    */
   reassertSystemSwitches(
     actor: PlatformActorId,
     node: { tenantId: TenantId; scopeId: ScopeId },
+    opts?: SystemSwitchReassertOptions,
   ): Promise<SystemSwitchReassert[]>;
 
   /**

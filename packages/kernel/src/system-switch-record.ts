@@ -25,7 +25,7 @@
  * The admin log is still the history. This is only the current position.
  */
 import type { ListPage } from '@substrat-run/contracts';
-import type { SwitchSql, SystemScheduleState } from './system-switch.js';
+import type { SwitchSql, SwitchedOff, SystemScheduleState } from './system-switch.js';
 
 /**
  * The table. Interpolated into both adapters' directory DDL, so `lint:spine-ddl` sees the
@@ -263,6 +263,84 @@ export interface SystemSwitchReassert {
   moduleId: string;
   held: boolean;
   changed: boolean;
+}
+
+/**
+ * What the deployment reports it switched off inside the reconcile's own unit (#1742), passed
+ * to `HostAdmin.reassertSystemSwitches` so the move is audited here. The re-assert that
+ * follows finds those modules already off (`changed: false`), and without this the admin log
+ * would stop showing that a wiped scope was put back off.
+ */
+export interface SystemSwitchReassertOptions {
+  appliedInUnit?: readonly Pick<SwitchedOff, 'moduleId' | 'changed' | 'permissions'>[];
+}
+
+/**
+ * The `reassertSystemSwitch` audit rows (less their `operationId`) for the in-unit moves:
+ * those that changed something, on a module the directory records `off` for this scope.
+ * That filter is the point. The report comes from the deployment, and an audit row naming
+ * a module the record never switched off would be the deployment writing the platform's
+ * log. One row per module, first report wins. Built here so both adapters write one shape.
+ */
+export function inUnitMovesToAudit(
+  recordedOff: readonly string[],
+  applied: SystemSwitchReassertOptions['appliedInUnit'],
+): {
+  moduleId: string;
+  schedules: 'off';
+  phase: 'applied';
+  changed: true;
+  permissions: string[];
+  inUnit: true;
+}[] {
+  const off = new Set(recordedOff);
+  const moves = new Map<string, string[]>();
+  for (const a of applied ?? []) {
+    if (a.changed && off.has(a.moduleId) && !moves.has(a.moduleId)) moves.set(a.moduleId, [...a.permissions]);
+  }
+  return [...moves].map(([moduleId, permissions]) => ({
+    moduleId,
+    schedules: 'off',
+    phase: 'applied',
+    changed: true,
+    permissions,
+    inUnit: true,
+  }));
+}
+
+/**
+ * The in-unit moves a STALE carry made, which the re-assert must undo (#1742 review): the
+ * deployment switched a module off because the list it was handed said so, but by the time
+ * the re-assert reads the record, an operator's `restoreToSystem` has moved it to `on`. The
+ * list was read before the call and the ON landed in between. Left alone, the scope would
+ * stay off while the record says on, and no later pass would put it back.
+ *
+ * Only a module the record now holds `on`, so a revert only ever re-applies an operator's
+ * own ON. It never turns on a module whose record is `off` or missing, and so a report from
+ * the deployment can never switch on anything the platform has not already restored.
+ */
+export function staleCarryReverts(
+  recorded: ReadonlyMap<string, 'on' | 'off'>,
+  applied: SystemSwitchReassertOptions['appliedInUnit'],
+): string[] {
+  return [
+    ...new Set((applied ?? []).filter((a) => a.changed && recorded.get(a.moduleId) === 'on').map((a) => a.moduleId)),
+  ];
+}
+
+/** The audit row (less its `operationId`) for one stale-carry revert — both adapters write this shape. */
+export function staleCarryRevertRow(
+  moduleId: string,
+  outcome: { changed: boolean; permissions: readonly string[] },
+): { moduleId: string; schedules: 'on'; phase: 'applied'; changed: boolean; permissions: string[]; staleCarry: true } {
+  return {
+    moduleId,
+    schedules: 'on',
+    phase: 'applied',
+    changed: outcome.changed,
+    permissions: [...outcome.permissions],
+    staleCarry: true,
+  };
 }
 
 /**

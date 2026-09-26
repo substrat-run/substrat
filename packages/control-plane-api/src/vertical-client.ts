@@ -68,6 +68,8 @@ import {
   peerSwitchOutcome,
   systemSwitchOutcome,
   systemScheduleEntry,
+  switchedOffInUnit,
+  type SwitchedOffInUnit,
   exportedBatch,
   importResult,
   importCursorMoved,
@@ -204,6 +206,13 @@ export interface ProvisionInstanceInput {
    * keys). One handle per declared `tenantStoreNeed.binding`.
    */
   tenantStores?: TenantStoreHandle[];
+  /**
+   * The modules the platform's record holds switched OFF on this scope (#1742), gathered by
+   * `reconcileThenReassert` from the directory, never the caller's body. The deployment
+   * switches them off again in the provision's own unit, after the seat, on THIS scope only.
+   * A vertical that predates the field ignores it, and the re-assert after the call covers it.
+   */
+  switchedOff?: ModuleId[];
 }
 
 export interface ConfigureInstanceInput {
@@ -230,10 +239,23 @@ export interface ProvisionedInstance {
    * one HTTP exchange. Keys that look like secrets are dropped as a backstop.
    */
   result?: Record<string, string>;
+  /** What the deployment switched off inside the provision's unit (#1742), when asked to. */
+  switchedOff?: SwitchedOffInUnit[];
 }
 
 /** The ack fields every provision response carries — everything else is `result` material. */
-const PROVISION_ACK_FIELDS = new Set(['tenantId', 'scopeId', 'owner', 'result']);
+const PROVISION_ACK_FIELDS = new Set(['tenantId', 'scopeId', 'owner', 'result', 'switchedOff']);
+
+/**
+ * A deployment's report of what it switched off in the unit (#1742). Read only to audit
+ * what the platform's own re-assert will then find already done, so a report that does not
+ * parse is dropped rather than failing a provision that succeeded. The re-assert still runs.
+ */
+function switchedOffFrom(raw: unknown): { switchedOff?: SwitchedOffInUnit[] } {
+  if (raw === undefined) return {};
+  const parsed = switchedOffInUnit.array().safeParse(raw);
+  return parsed.success ? { switchedOff: parsed.data } : {};
+}
 
 /** The backstop: a vertical that still returns credential-shaped keys has them dropped, not persisted. */
 const SECRETLIKE_KEY = /password|secret|token|private/i;
@@ -291,6 +313,8 @@ export interface ReconcileInstanceInput {
    *  must ride the reconcile into the same fail-closed K-31 ready-gate. A vertical that
    *  predates the field ignores it (its body parse strips unknown keys). */
   tenantStores?: TenantStoreHandle[];
+  /** The recorded-off modules, switched off in the reconcile's own unit (#1742) — as at provision. */
+  switchedOff?: ModuleId[];
 }
 
 /**
@@ -322,6 +346,8 @@ export interface ReconciledInstance {
   scopeId: ScopeId;
   /** The owner the vertical re-granted, echoed back so the caller can report who was restored. */
   owner: PrincipalId;
+  /** What the deployment switched off inside the reconcile's unit (#1742), when asked to. */
+  switchedOff?: SwitchedOffInUnit[];
 }
 
 export class VerticalClient {
@@ -357,7 +383,7 @@ export class VerticalClient {
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     const ack = { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner };
     const result = provisionResultFrom(body);
-    return { ...ack, ...(result ? { result } : {}) };
+    return { ...ack, ...(result ? { result } : {}), ...switchedOffFrom(body['switchedOff']) };
   }
 
   /**
@@ -382,7 +408,10 @@ export class VerticalClient {
    * idempotent provision. Entitlements are re-gathered and re-delivered exactly as at provision.
    */
   async reconcileInstance(input: ReconcileInstanceInput): Promise<ReconciledInstance> {
-    return this.postInternal<ReconciledInstance>('/internal/reconcile', input, 'reconcile');
+    const { switchedOff, ...ack } = await this.postInternal<
+      Omit<ReconciledInstance, 'switchedOff'> & { switchedOff?: unknown }
+    >('/internal/reconcile', input, 'reconcile');
+    return { ...ack, ...switchedOffFrom(switchedOff) };
   }
 
   /**
@@ -933,8 +962,15 @@ export class VerticalClient {
     tenantId: TenantId,
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
-  ): Promise<{ tables: number }> {
-    return this.postInternal<{ tables: number }>('/internal/restore', { tenantId, scopeId, tables }, 'restore');
+    /** #1742: the recorded-off modules, switched off on THIS scope in the restore's own event. */
+    opts?: { switchedOff?: ModuleId[] },
+  ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[] }> {
+    const { tables: count, switchedOff } = await this.postInternal<{ tables: number; switchedOff?: unknown }>(
+      '/internal/restore',
+      { tenantId, scopeId, tables, ...(opts?.switchedOff ? { switchedOff: opts.switchedOff } : {}) },
+      'restore',
+    );
+    return { tables: count, ...switchedOffFrom(switchedOff) };
   }
 
   /** Facets over one scope's outbox (#1239) — through the vertical that holds the data. */

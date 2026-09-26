@@ -280,6 +280,7 @@ export {
   SYSTEM_SWITCH_OFF_PREDICATE,
   SYSTEM_SWITCH_OFF_RELATION,
   subjectSwitchedOff,
+  switchRecordedOff,
   switchSubjectGrants,
   switchSystemSchedules,
   subjectGrantState,
@@ -288,12 +289,21 @@ export {
   systemSwitchedOff,
   systemSwitchedOffMessage,
 } from './system-switch.js';
-export type { SwitchOutcome, SwitchSql, SystemGrantsEntry, SystemScheduleState } from './system-switch.js';
+export type {
+  SwitchOutcome,
+  SwitchSql,
+  SwitchedOff,
+  SystemGrantsEntry,
+  SystemScheduleState,
+} from './system-switch.js';
 export {
   SYSTEM_SWITCHES_BACKFILL_SQL,
   SYSTEM_SWITCHES_DDL,
   forgetSystemSwitchesOf,
+  inUnitMovesToAudit,
   listSystemSwitchRecords,
+  staleCarryRevertRow,
+  staleCarryReverts,
   recordSystemSwitchedOff,
   recordSystemSwitchedOn,
   restoreSystemSwitchRecord,
@@ -304,6 +314,7 @@ export {
 } from './system-switch-record.js';
 export type {
   SystemSwitchReassert,
+  SystemSwitchReassertOptions,
   SystemSwitchRecordFilter,
   SystemSwitchRecordPrior,
   SystemSwitchRecordRow,

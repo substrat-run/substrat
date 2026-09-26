@@ -22,6 +22,7 @@ import {
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
   UNSAFE_devPlatformActorAuth,
+  ControlPlaneError,
   type VerticalClient,
 } from '../src/index.js';
 
@@ -671,5 +672,275 @@ describe('the install route re-asserts the switch after the deployment provision
     const s = scopeId.parse(ulid());
     expect((await install(s)).status).toBe(201);
     expect(await host.admin.auditLog(staff, { scopeId: s, action: ['reassertSystemSwitch'] })).toEqual([]);
+  });
+});
+
+/**
+ * #1742: the record rides INTO the deployment's call, so the deployment switches the module
+ * off inside the unit that re-seats it and its own sweeper cannot land in between. What is
+ * proven here is the platform's half: what each call carries, for which scope, and what the
+ * re-assert after it audits. The deployment's half (the switch in the seat's unit) is proven
+ * on workerd in adapter-cloudflare's `#1742` describe.
+ *
+ * The fake deployments model a deployment that honours the list: a wiped scope's seat plus
+ * the in-unit OFF leaves nothing live for the module, so they seat nothing and report the
+ * move, which is the one case the platform's own re-assert cannot see to audit.
+ */
+describe('the record is carried into the deployment and its in-unit move audited (#1742)', () => {
+  const t = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  const FORGED = moduleId.parse('@test/never-switched');
+  let dir: string;
+  let host: SqliteScopeHost;
+  const bodies: { verb: string; scopeId: string; switchedOff?: unknown }[] = [];
+  /** A move per module the platform sent, plus one the record never switched off. */
+  const report = (switchedOff: string[] | undefined) =>
+    switchedOff
+      ? {
+          switchedOff: [...switchedOff, FORGED].map((m) => ({ moduleId: m, held: true, changed: true, permissions: ['tick:run'] })),
+        }
+      : {};
+
+  const deployment = {
+    reconcileInstance: async (input: { tenantId: string; scopeId: string; switchedOff?: string[] }) => {
+      bodies.push({ verb: 'reconcile', scopeId: input.scopeId, switchedOff: input.switchedOff });
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: ulid(), ...report(input.switchedOff) };
+    },
+    provisionInstance: async (input: { tenantId: string; scopeId: string; owner: string; switchedOff?: string[] }) => {
+      bodies.push({ verb: 'provision', scopeId: input.scopeId, switchedOff: input.switchedOff });
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner, ...report(input.switchedOff) };
+    },
+    restoreScope: async (_t: string, s: string, _tables: unknown, opts?: { switchedOff?: string[] }) => {
+      bodies.push({ verb: 'restore', scopeId: s, switchedOff: opts?.switchedOff });
+      return { tables: 0, ...report(opts?.switchedOff) };
+    },
+  } as unknown as VerticalClient;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-schedule-switch-carry-'));
+    host = new SqliteScopeHost({ dir });
+    host.registerModule(tickModule);
+    await host.admin.createTenant(staff, { id: t, slug: 'acme-carry', name: 'Acme' });
+    await host.admin.grantEntitlement(staff, t, 'tick');
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const app = () =>
+    createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { 'tick-vertical': deployment } });
+  /** A bound scope, switched off or not, then wiped: the marker gone, the record kept. */
+  const wipedScope = async (switchedOff: boolean) => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'tick-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    if (switchedOff) {
+      await host.admin.revokeFromSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+    }
+    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+    bodies.length = 0;
+    return s;
+  };
+  const reasserts = async (s: string) =>
+    (await host.admin.auditLog(staff, { scopeId: scopeId.parse(s), action: ['reassertSystemSwitch'] })).map((e) => e.after);
+  const inUnitRow = expect.objectContaining({ moduleId: TICK, changed: true, inUnit: true, permissions: ['tick:run'] });
+
+  it('the repair route carries the scope its own list, and audits the move, never one the record does not hold', async () => {
+    const off = await wipedScope(true);
+    const on = await wipedScope(false);
+    expect((await app().request(`/tenants/${t}/scopes/${off}/provision`, { method: 'POST', headers: asStaff })).status).toBe(200);
+    expect((await app().request(`/tenants/${t}/scopes/${on}/provision`, { method: 'POST', headers: asStaff })).status).toBe(200);
+    // Each call carries its own scope's record: the list for `off`, nothing for `on`.
+    expect(bodies).toEqual([
+      { verb: 'reconcile', scopeId: off, switchedOff: [TICK] },
+      { verb: 'reconcile', scopeId: on, switchedOff: undefined },
+    ]);
+    // The move the deployment reported is audited once, as in-unit; the forged one is not.
+    expect(await reasserts(off)).toEqual([inUnitRow]);
+    expect(JSON.stringify(await reasserts(off))).not.toContain(FORGED);
+    expect(await reasserts(on)).toEqual([]);
+  });
+
+  it('the install route carries the record, never the caller: a switchedOff in its body is dropped', async () => {
+    const install = (s: string, extra: Record<string, unknown> = {}) =>
+      app().request('/verticals/tick-vertical/instances', {
+        method: 'POST',
+        headers: asStaff,
+        body: JSON.stringify({ tenantId: t, scopeId: s, owner: ulid(), slug: `c-${s.slice(-8).toLowerCase()}`, name: 'I', ...extra }),
+      });
+    const off = await wipedScope(true);
+    expect((await install(off, { switchedOff: [FORGED] })).status).toBe(201);
+    const fresh = scopeId.parse(ulid());
+    expect((await install(fresh, { switchedOff: [TICK] })).status).toBe(201);
+    expect(bodies).toEqual([
+      { verb: 'provision', scopeId: off, switchedOff: [TICK] },
+      { verb: 'provision', scopeId: fresh, switchedOff: undefined },
+    ]);
+    expect(await reasserts(off)).toEqual([inUnitRow]);
+  });
+
+  it('the staff restore route carries the record into the deployment restore, and audits its move', async () => {
+    const off = await wipedScope(true);
+    const dump = { tenantId: t, scopeId: off, capturedAt: new Date().toISOString(), tables: [{ name: 't', ddl: 'CREATE TABLE t (x)', columns: ['x'], rows: [] }] };
+    const res = await app().request(`/tenants/${t}/scopes/${off}/restore`, { method: 'POST', headers: asStaff, body: JSON.stringify(dump) });
+    expect(res.status).toBe(200);
+    expect(bodies).toEqual([{ verb: 'restore', scopeId: off, switchedOff: [TICK] }]);
+    expect(await reasserts(off)).toEqual(expect.arrayContaining([inUnitRow]));
+  });
+});
+
+/**
+ * #1742 review: a retried restore reads the record again on each attempt, as the staff restore
+ * route always did, so the retry carries the record as it stands after the failed attempt.
+ */
+describe('a retried restore carries the record as it stands on that attempt (#1742 review)', () => {
+  const t = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  let dir: string;
+  let host: SqliteScopeHost;
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-schedule-switch-retry-'));
+    host = new SqliteScopeHost({ dir });
+    host.registerModule(tickModule);
+    await host.admin.createTenant(staff, { id: t, slug: 'acme-retry', name: 'Acme' });
+    await host.admin.grantEntitlement(staff, t, 'tick');
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A deployment whose first restore attempt fails transiently; `between` runs before the retry. */
+  const flaky = (between: () => Promise<void>) => {
+    const carried: unknown[] = [];
+    const client = {
+      restoreScope: async (_t: string, _s: string, _tables: unknown, opts?: { switchedOff?: string[] }) => {
+        carried.push(opts?.switchedOff);
+        if (carried.length === 1) {
+          await between();
+          throw new ControlPlaneError(503, 'restore: a transient storage blip');
+        }
+        return { tables: 0 };
+      },
+    } as unknown as VerticalClient;
+    return { client, carried };
+  };
+  const restoreThrough = async (between: (s: string) => Promise<void>) => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'tick-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    // A backup from before the switch: the co-located copy it restores holds the grants, so
+    // an operator can still restore the switch in the middle of the call.
+    const dump = await host.admin.exportScope(staff, t, s);
+    await host.admin.revokeFromSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+    const { client, carried } = flaky(() => between(s));
+    const app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'tick-vertical': client },
+      provisionRetryDelaysMs: [0],
+    });
+    const res = await app.request(`/tenants/${t}/scopes/${s}/restore`, { method: 'POST', headers: asStaff, body: JSON.stringify(dump) });
+    expect(res.status).toBe(200);
+    return carried;
+  };
+
+  it('an ON between attempts: the retry carries no list', async () => {
+    const carried = await restoreThrough((s) =>
+      host.admin
+        .restoreToSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: scopeId.parse(s) }, reason: 'resolved' })
+        .then(() => undefined),
+    );
+    expect(carried).toEqual([[TICK], undefined]);
+  });
+
+  it('twin: nothing between attempts, and the retry carries the list again', async () => {
+    const carried = await restoreThrough(async () => undefined);
+    expect(carried).toEqual([[TICK], [TICK]]);
+  });
+});
+
+/**
+ * #1742 review — the interleaving itself, through the repair route. The platform reads the
+ * record, and an operator's ON lands before the deployment applies the list it was handed.
+ * The fake deployment plays that call: the operator's `restoreToSystem` runs first, then
+ * the stale list is applied. The in-unit OFF is played by a restore of a dump taken while
+ * the module was off, which re-creates the marker without touching the record. The re-assert
+ * after the call must leave the operator's ON standing, and say so on the admin log.
+ */
+describe('an ON between the record read and the deployment unit is not undone (#1742 review)', () => {
+  const t = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  let dir: string;
+  let host: SqliteScopeHost;
+  /** Per scope: the dump taken while off, and whether the operator's ON lands mid-call. */
+  const plan = new Map<string, { whileOff: Awaited<ReturnType<SqliteScopeHost['admin']['exportScope']>>; onMidCall: boolean }>();
+
+  const deployment = {
+    reconcileInstance: async (input: { tenantId: string; scopeId: string; switchedOff?: string[] }) => {
+      const s = scopeId.parse(input.scopeId);
+      const p = plan.get(s)!;
+      if (p.onMidCall) {
+        await host.admin.restoreToSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'resolved mid-call' });
+      }
+      // The deployment's unit, applying the list it was handed: back off, a move it reports.
+      const moved = (input.switchedOff ?? []).includes(TICK);
+      if (moved) await host.restoreScope(staff, t, s, p.whileOff);
+      return {
+        tenantId: input.tenantId,
+        scopeId: input.scopeId,
+        owner: ulid(),
+        ...(input.switchedOff
+          ? { switchedOff: input.switchedOff.map((m) => ({ moduleId: m, held: true, changed: moved, permissions: ['tick:run'] })) }
+          : {}),
+      };
+    },
+  } as unknown as VerticalClient;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-schedule-switch-stale-'));
+    host = new SqliteScopeHost({ dir });
+    host.registerModule(tickModule);
+    await host.admin.createTenant(staff, { id: t, slug: 'acme-stale', name: 'Acme' });
+    await host.admin.grantEntitlement(staff, t, 'tick');
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const switchedOffScope = async (onMidCall: boolean) => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'tick-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.revokeFromSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+    plan.set(s, { whileOff: await host.admin.exportScope(staff, t, s), onMidCall });
+    return s;
+  };
+  const repair = (s: string) =>
+    createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { 'tick-vertical': deployment } }).request(
+      `/tenants/${t}/scopes/${s}/provision`,
+      { method: 'POST', headers: asStaff },
+    );
+  const rows = async (s: string) =>
+    (await host.admin.auditLog(staff, { scopeId: scopeId.parse(s), action: ['reassertSystemSwitch'] })).map((e) => e.after);
+
+  it("the operator's ON stands, and the revert of the stale move is audited", async () => {
+    const s = await switchedOffScope(true);
+    expect((await repair(s)).status).toBe(200);
+    expect(await host.runDueSchedules(TICK, t, s)).toMatchObject({ fired: 1 });
+    expect(await rows(s)).toEqual([expect.objectContaining({ moduleId: TICK, schedules: 'on', changed: true, staleCarry: true })]);
+  });
+
+  it('twin: with no ON mid-call, the carried list keeps the module off', async () => {
+    const s = await switchedOffScope(false);
+    expect((await repair(s)).status).toBe(200);
+    expect(await host.runDueSchedules(TICK, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(JSON.stringify(await rows(s))).not.toContain('staleCarry');
   });
 });
