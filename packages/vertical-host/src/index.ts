@@ -369,9 +369,16 @@ const reconcileBody = z.object({
   switchedOff: z.array(moduleIdOf).optional(),
 });
 
-/** The in-unit outcomes, parsed on the way OUT — a host answering another shape is refused here. */
-const switchedOffAnswer = (switched: SwitchedOff[] | undefined) =>
-  switched ? { switchedOff: z.array(switchedOffInUnit).parse(switched) } : {};
+/**
+ * The in-unit outcomes, parsed on the way OUT. By the time this runs, the provision, reconcile
+ * or restore has already committed, so a report that does not parse is left out instead of
+ * failing an operation that succeeded. The platform reads it only to audit, and its own
+ * re-assert after the call still switches the modules, exactly as for a host that sends none.
+ */
+const switchedOffAnswer = (switched: SwitchedOff[] | undefined) => {
+  const parsed = switched ? z.array(switchedOffInUnit).safeParse(switched) : undefined;
+  return parsed?.success ? { switchedOff: parsed.data } : {};
+};
 
 const restoreBody = z.object({
   tenantId: tenantIdOf.optional(),

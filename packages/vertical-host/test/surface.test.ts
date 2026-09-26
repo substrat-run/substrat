@@ -1469,12 +1469,23 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
     expect(await restore.json()).toEqual({ tables: 3 });
   });
 
-  // Parsed on the way out, as the owner seat is: a wrong shape is refused (the envelope's
-  // 400 for a parse failure), never relayed to the platform as if it were the wire shape.
-  it('a host reporting a malformed move is refused here, never relayed', async () => {
-    const host = fakeHost({ provisionScopeLocal: async () => ({ switchedOff: [{ moduleId: SCHED, held: 'yes' }] as never }) });
-    const res = await post(host, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE, switchedOff: [SCHED] });
-    expect(res.status).toBe(400);
-    expect(JSON.stringify(await res.json())).not.toContain('"held":"yes"');
+  // Parsed on the way out, but the operation has already committed by then: a report that
+  // does not parse is left out of a successful answer, never relayed, and never turned into
+  // a failure of the provision, reconcile or restore that succeeded.
+  it('a host reporting a malformed move still answers success, without the field', async () => {
+    const malformed = [{ moduleId: SCHED, held: 'yes' }] as never;
+    const host = fakeHost({
+      provisionScopeLocal: async () => ({ switchedOff: malformed }),
+      restoreScopeLocal: async () => ({ tables: 2, switchedOff: malformed }),
+    });
+    const reconcile = await post(host, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE, switchedOff: [SCHED] });
+    expect(reconcile.status).toBe(200);
+    expect(await reconcile.json()).toEqual({ tenantId: TENANT, scopeId: SCOPE, owner: OWNER });
+    const provision = await post(host, '/internal/provision', { tenantId: TENANT, scopeId: SCOPE, owner: OWNER, switchedOff: [SCHED] });
+    expect(provision.status).toBe(201);
+    expect(await provision.json()).toEqual({ tenantId: TENANT, scopeId: SCOPE, owner: OWNER });
+    const restore = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], switchedOff: [SCHED] });
+    expect(restore.status).toBe(200);
+    expect(await restore.json()).toEqual({ tables: 2 });
   });
 });
