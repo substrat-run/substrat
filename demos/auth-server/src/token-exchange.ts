@@ -1,4 +1,4 @@
-import { TOKEN_EXCHANGE_GRANT_TYPE, TOKEN_TYPE } from '@substrat-run/contracts';
+import { DELEGATION_ASSERTION_AUDIENCE, TOKEN_EXCHANGE_GRANT_TYPE, TOKEN_TYPE } from '@substrat-run/contracts';
 import type { SqlExec } from './introspect.js';
 import { grantFor } from './delegations.js';
 import { authMethodOf, registrationOfClient } from './places.js';
@@ -18,8 +18,9 @@ import { platformOwnerOf } from './resources.js';
  *   A. **The host asks for an assertion addressed to the actor.** Authenticated as the host's
  *      client, it presents a token this issuer signed FOR it (the user's id_token, or an
  *      access token issued to it) and names the actor's client as `audience`. It gets a
- *      short-lived JWT for the actor: the user as `sub`, the host as `azp`, the actor as
- *      `aud`, and a `substrat_delegation` claim saying which apps it is between.
+ *      short-lived JWT for the actor: the user as `sub`, the actor's client (and a marker) as
+ *      `aud`, and a `substrat_delegation` claim saying which apps, and which host client, it is
+ *      between. It names no authorized party, so it is a bearer at no vertical.
  *   B. **The actor trades that assertion for an access token for the host's MCP endpoint.**
  *      Authenticated as the actor's client, it presents the assertion and names one of the
  *      host's MCP resources as `resource` (RFC 8707). It gets an access token for that
@@ -47,7 +48,9 @@ import { platformOwnerOf } from './resources.js';
  * The client authenticates before any registry is read, so an unauthenticated caller cannot
  * use the difference between refusals to learn which client ids are places, which apps have
  * grants, or which resources exist (the same reasoning as `places-http.ts`). A refusal is an
- * RFC 6749 §5.2 error whose description names nothing the caller did not send.
+ * RFC 6749 §5.2 error whose description names nothing the caller did not send. Each refusal
+ * also writes one log line — the stage it was reached in, the error code and the authenticated
+ * client, and nothing else: no token, no subject, no description.
  *
  * Pure apart from its dependencies — the SQL, the issuer's own signing and verification, the
  * client authentication and the clock — so every refusal is a node test, and the Durable
@@ -193,19 +196,27 @@ async function verifiedSubject(deps: TokenExchangeDeps, token: string): Promise<
   return payload;
 }
 
-/** The substrat_delegation claim of an assertion, when it is well-formed. */
+/** The substrat_delegation claim of an exchanged token, when it is well-formed. */
 interface DelegationClaim {
   stage: string;
   host: string;
   actor: string;
+  /** The host's client, on an assertion only: the token has no authorized party to carry it. */
+  hostClient: string | null;
 }
 
 function delegationClaimOf(payload: Record<string, unknown>): DelegationClaim | null {
   const d = payload['substrat_delegation'];
   if (!d || typeof d !== 'object') return null;
-  const { stage, host, actor } = d as Record<string, unknown>;
+  const { stage, host, actor, host_client } = d as Record<string, unknown>;
   if (typeof stage !== 'string' || typeof host !== 'string' || typeof actor !== 'string') return null;
-  return { stage, host, actor };
+  return { stage, host, actor, hostClient: typeof host_client === 'string' ? host_client : null };
+}
+
+/** How far a request got, for the refusal line: which exchange, and which client proved itself. */
+interface Progress {
+  stage: 'assertion' | 'access' | null;
+  client: string | null;
 }
 
 /**
@@ -216,6 +227,22 @@ export async function exchangeToken(
   deps: TokenExchangeDeps,
   form: URLSearchParams,
   authorization: string | null,
+): Promise<TokenExchangeAnswer> {
+  const progress: Progress = { stage: null, client: null };
+  const answer = await decide(deps, form, authorization, progress);
+  if (answer.status !== 200) {
+    deps.log?.(
+      `auth-server: token exchange refused ${JSON.stringify({ stage: progress.stage, error: answer.body['error'], client: progress.client })}`,
+    );
+  }
+  return answer;
+}
+
+async function decide(
+  deps: TokenExchangeDeps,
+  form: URLSearchParams,
+  authorization: string | null,
+  progress: Progress,
 ): Promise<TokenExchangeAnswer> {
   if (form.get('grant_type') !== TOKEN_EXCHANGE_GRANT_TYPE) {
     return refuse('invalid_request', 'grant_type must be token exchange');
@@ -235,6 +262,7 @@ export async function exchangeToken(
   if (registeredMethod !== credentials.method) {
     return refuse('invalid_client', `this client authenticates with ${registeredMethod ?? 'another method'}`, basic);
   }
+  progress.client = credentials.clientId;
   const client = registrationOfClient(deps.sql, credentials.clientId);
   if (!client) return refuse('unauthorized_client', 'this client is not registered for token exchange');
 
@@ -251,8 +279,10 @@ export async function exchangeToken(
   // Which exchange this is: a subject with no delegation claim is a login (A), one with a
   // delegation claim is the product of an earlier exchange (B, and only if it is an assertion).
   if (subject['substrat_delegation'] === undefined) {
+    progress.stage = 'assertion';
     return assertionFor(deps, form, credentials.clientId, client, subject, subjectType);
   }
+  progress.stage = 'access';
   const delegation = delegationClaimOf(subject);
   if (!delegation) return refuse('invalid_grant', 'the subject token is not an assertion of this issuer');
   return accessFor(deps, form, credentials.clientId, client, subject, subjectType, delegation);
@@ -303,16 +333,29 @@ async function assertionFor(
   if (scope.length === 0) return refuse('invalid_scope', 'none of the requested scope is delegated');
 
   const exp = deps.nowSeconds + EXCHANGED_TOKEN_TTL_SECONDS;
+  // The assertion is a bearer at NO vertical — not the host's, not the actor's. A vertical on
+  // this issuer admits a bearer through `isOwnToken` (packages/vertical-auth/src/oidc.ts), and
+  // these claims fail each of its three rules for every client id and resource:
+  //   1. `aud` names no resource: the actor's client id and a URN, never a vertical's MCP URL.
+  //   2. There is no authorized party: no `azp` and no `client_id`, so there is no party for
+  //      the rule to find equal to anyone. (With the host as `azp`, as a first draft had it,
+  //      the host's API took the assertion as the user's own token, unscoped.)
+  //   3. `aud` is not single-valued, so it cannot pass as an id_token addressed to one client
+  //      (without the marker, the actor's API would take it as its own user's id_token).
+  // The host's client travels inside `substrat_delegation` instead, where only B reads it.
   const token = await deps.sign({
     iss: deps.issuer,
     sub: subject['sub'],
-    aud: actorClientId,
-    azp: hostClientId,
-    client_id: hostClientId,
+    aud: [actorClientId, DELEGATION_ASSERTION_AUDIENCE],
     scope: scope.join(' '),
     // Informational (RFC 8693 §4.4): the grant is what B checks, never this.
     may_act: { iss: deps.issuer, sub: actorClientId },
-    substrat_delegation: { stage: 'assertion', host: host.appScopeId, actor: actor.appScopeId },
+    substrat_delegation: {
+      stage: 'assertion',
+      host: host.appScopeId,
+      actor: actor.appScopeId,
+      host_client: hostClientId,
+    },
     iat: deps.nowSeconds,
     exp,
     jti: crypto.randomUUID(),
@@ -350,12 +393,12 @@ async function accessFor(
   // presenting its own assertion back as an A is refused as a grant, not as a form). Every fact
   // is re-read from the platform's bindings rather than trusted from the token: which app this
   // client is NOW, and which app the host's client is NOW.
-  if (soleAudience(assertion['aud']) !== actorClientId) {
+  const audiences = audiencesOf(assertion['aud']);
+  if (!audiences.includes(actorClientId) || !audiences.includes(DELEGATION_ASSERTION_AUDIENCE)) {
     return refuse('invalid_grant', 'the assertion is not addressed to this client');
   }
   if (actorNow.appScopeId !== delegation.actor) return refuse('invalid_grant', 'the assertion is for another app');
-  const hostClientId = assertion['azp'];
-  const hostNow = typeof hostClientId === 'string' ? registrationOfClient(deps.sql, hostClientId) : undefined;
+  const hostNow = delegation.hostClient ? registrationOfClient(deps.sql, delegation.hostClient) : undefined;
   if (!hostNow || hostNow.appScopeId !== delegation.host) {
     return refuse('invalid_grant', 'the app that issued the assertion is no longer bound to it');
   }

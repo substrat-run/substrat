@@ -34,6 +34,14 @@ export const TOKEN_TYPE = {
   jwt: 'urn:ietf:params:oauth:token-type:jwt',
 } as const;
 
+/**
+ * The second `aud` of a delegation ASSERTION (the first exchange's product), beside the actor's
+ * client id. It makes the audience multi-valued, which is one of the reasons no vertical's
+ * bearer check takes an assertion as a user's token, and it is what the second exchange
+ * requires to find. A URN rather than a URL, so it can never be anybody's resource.
+ */
+export const DELEGATION_ASSERTION_AUDIENCE = 'urn:substrat:delegation-assertion';
+
 /** More permissions than one host defines; a bound on what one grant carries. */
 export const MAX_DELEGATED_PERMISSIONS = 64;
 

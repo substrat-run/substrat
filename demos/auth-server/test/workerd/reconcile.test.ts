@@ -1023,6 +1023,12 @@ describe('token exchange: one app acting for another app’s user (#1824)', () =
     expect(a.headers.get('cache-control')).toBe('no-store');
     const assertion = (await a.json()) as Record<string, unknown>;
     expect(assertion).toMatchObject({ issued_token_type: 'urn:ietf:params:oauth:token-type:jwt', token_type: 'N_A', expires_in: 300 });
+    // As the real signer emits it: no authorized party, and a two-valued audience, so no
+    // vertical's bearer check takes it as the user's token (`isOwnToken`, vertical-auth).
+    const asserted = JSON.parse(atob((assertion['access_token'] as string).split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/'))) as Record<string, unknown>;
+    expect(asserted).not.toHaveProperty('azp');
+    expect(asserted).not.toHaveProperty('client_id');
+    expect(asserted['aud']).toEqual([w.help.id, 'urn:substrat:delegation-assertion']);
 
     const b = await stageB(w, assertion['access_token'] as string);
     expect(b.status).toBe(200);

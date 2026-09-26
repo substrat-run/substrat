@@ -1,8 +1,16 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { SignJWT, compactVerify, generateKeyPair, type CryptoKey } from 'jose';
-import { TOKEN_EXCHANGE_GRANT_TYPE, TOKEN_TYPE, scopeId, tenantId } from '@substrat-run/contracts';
+import {
+  DELEGATION_ASSERTION_AUDIENCE,
+  TOKEN_EXCHANGE_GRANT_TYPE,
+  TOKEN_TYPE,
+  mcpResourceOf,
+  scopeId,
+  tenantId,
+} from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
+import { oidcAuthProvider } from '@substrat-run/vertical-auth/oidc';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import type { SqlExec } from '../src/introspect.js';
 import { grantFor, parseDelegationsEntry, syncDelegations } from '../src/delegations.js';
@@ -27,8 +35,11 @@ const DESK = scopeId.parse(ulid());
 const HELP = scopeId.parse(ulid());
 const CRM = scopeId.parse(ulid());
 const ELSEWHERE = scopeId.parse(ulid());
-const DESK_MCP = 'https://desk.acme.test/api/mcp';
-const CRM_MCP = 'https://crm.acme.test/api/mcp';
+const DESK_ORIGIN = 'https://desk.acme.test';
+const HELP_ORIGIN = 'https://help.acme.test';
+/** Spelled the one way the vertical's mount, the dashboard and the issuer all spell it. */
+const DESK_MCP = mcpResourceOf(DESK_ORIGIN);
+const CRM_MCP = mcpResourceOf('https://crm.acme.test');
 
 const CLIENT = {
   desk: { id: 'desk-client', secret: 'desk-secret' },
@@ -65,6 +76,7 @@ function sqlExecOf(database: Database.Database): SqlExec {
 
 let sql: SqlExec;
 let now: number;
+let logged: string[];
 let issuerKey: { privateKey: CryptoKey; publicKey: CryptoKey };
 let strangerKey: { privateKey: CryptoKey; publicKey: CryptoKey };
 
@@ -87,6 +99,7 @@ function deps(): TokenExchangeDeps {
       }
     },
     sign: (payload) => signWith(issuerKey.privateKey, payload),
+    log: (line) => logged.push(line),
   };
 }
 
@@ -142,6 +155,7 @@ beforeEach(async () => {
   for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
   sql = sqlExecOf(db);
   now = T0;
+  logged = [];
   issuerKey = await generateKeyPair('EdDSA');
   strangerKey = await generateKeyPair('EdDSA');
   for (const c of Object.values(CLIENT)) {
@@ -299,16 +313,47 @@ describe('token exchange A: the host asks for an assertion addressed to the acto
     expect(claims).toMatchObject({
       iss: ISSUER,
       sub: 'user-ann',
-      aud: CLIENT.help.id,
-      azp: CLIENT.desk.id,
-      client_id: CLIENT.desk.id,
+      aud: [CLIENT.help.id, DELEGATION_ASSERTION_AUDIENCE],
       scope: 'tickets.read tickets.comment',
       may_act: { iss: ISSUER, sub: CLIENT.help.id },
-      substrat_delegation: { stage: 'assertion', host: DESK, actor: HELP },
+      substrat_delegation: { stage: 'assertion', host: DESK, actor: HELP, host_client: CLIENT.desk.id },
       iat: T0,
       exp: T0 + EXCHANGED_TOKEN_TTL_SECONDS,
     });
     expect(typeof claims['jti']).toBe('string');
+  });
+
+  /**
+   * The assertion is handed to the actor, so it must be a bearer at NO vertical: if a vertical
+   * took it as the user's own token, the actor (or anyone it leaked to) could act as the user
+   * there, unscoped. A vertical on this issuer admits a bearer through `isOwnToken`
+   * (`packages/vertical-auth/src/oidc.ts`), which is not exported; this drives the same check
+   * through the provider every vertical mounts, `oidcAuthProvider`, configured as the host
+   * and as the actor would be, each with its own MCP resource. Then the three structural
+   * properties that fail `isOwnToken`'s three rules are asserted directly.
+   */
+  it('the assertion is a bearer at no vertical: refused by the host’s and the actor’s own bearer check', async () => {
+    const minted = await assertion();
+    const verifierFor = (clientId: string) =>
+      oidcAuthProvider({ issuer: ISSUER, keys: async () => issuerKey.publicKey, clientId, resourceOf: mcpResourceOf });
+    const bearer = (token: string) => new Headers({ authorization: `Bearer ${token}` });
+    const host = verifierFor(CLIENT.desk.id);
+    const actor = verifierFor(CLIENT.help.id);
+    expect(await host.resolve(bearer(minted), `${DESK_ORIGIN}/api/tickets`)).toBeNull();
+    expect(await host.resolve(bearer(minted), `${DESK_MCP}`)).toBeNull();
+    expect(await actor.resolve(bearer(minted), `${HELP_ORIGIN}/api/tickets`)).toBeNull();
+    // The twin: the same verifiers admit what is theirs, so the refusal above is about the claims.
+    expect(await host.resolve(bearer(await idTokenFor(CLIENT.desk.id)), `${DESK_ORIGIN}/api/tickets`)).toMatchObject({ sub: 'user-ann' });
+    expect(await actor.resolve(bearer(await idTokenFor(CLIENT.help.id)), `${HELP_ORIGIN}/api/tickets`)).toMatchObject({ sub: 'user-ann' });
+
+    const claims = claimsOf(minted);
+    // isOwnToken rule 2: no authorized party.
+    expect(claims).not.toHaveProperty('azp');
+    expect(claims).not.toHaveProperty('client_id');
+    // Rule 3: `aud` is not single-valued.
+    expect(Array.isArray(claims['aud']) && (claims['aud'] as unknown[]).length).toBe(2);
+    // Rule 1: no resource in `aud` — nothing in it is a URL at all.
+    for (const aud of claims['aud'] as string[]) expect(aud).not.toMatch(/^https?:/);
   });
 
   it('narrows to the requested scope, and refuses a scope the grant does not cover', async () => {
@@ -478,6 +523,26 @@ describe('token exchange B: the actor asks for a token for the host’s MCP endp
     expect((await stageB(await signWith(issuerKey.privateKey, minted))).status).toBe(200);
   });
 
+  it('refuses an assertion without the assertion marker in its audience, or without its host client', async () => {
+    const minted = claimsOf(await assertion());
+    const unmarked = await signWith(issuerKey.privateKey, { ...minted, aud: CLIENT.help.id });
+    expect((await stageB(unmarked)).body['error']).toBe('invalid_grant');
+    const markerOnly = await signWith(issuerKey.privateKey, { ...minted, aud: [DELEGATION_ASSERTION_AUDIENCE] });
+    expect((await stageB(markerOnly)).body['error']).toBe('invalid_grant');
+    const delegation = minted['substrat_delegation'] as Record<string, unknown>;
+    const hostless = await signWith(issuerKey.privateKey, {
+      ...minted,
+      azp: CLIENT.desk.id,
+      substrat_delegation: { ...delegation, host_client: undefined },
+    });
+    expect((await stageB(hostless)).body['error']).toBe('invalid_grant');
+    // The host binding is read from the claim, not from the token's parties.
+    const otherHost = await signWith(issuerKey.privateKey, { ...minted, substrat_delegation: { ...delegation, host_client: CLIENT.crm.id } });
+    expect((await stageB(otherHost)).body['error']).toBe('invalid_grant');
+    // The twin: re-signed exactly as minted, it is accepted.
+    expect((await stageB(await signWith(issuerKey.privateKey, minted))).status).toBe(200);
+  });
+
   it('refuses an assertion that has expired, and a token of the right shape this issuer did not sign', async () => {
     const minted = await assertion();
     now += EXCHANGED_TOKEN_TTL_SECONDS;
@@ -505,5 +570,39 @@ describe('token exchange B: the actor asks for a token for the host’s MCP endp
     expect((await stageB(minted, { resource: [DESK_MCP, DESK_MCP] })).body['error']).toBe('invalid_target');
     expect((await stageB(minted, { resource: CRM_MCP })).body['error']).toBe('invalid_target');
     expect((await stageB(minted, { resource: 'https://nobody.test/api/mcp' })).body['error']).toBe('invalid_target');
+  });
+});
+
+describe('token exchange: what a refusal leaves behind (#1824)', () => {
+  const refusals = () => logged.filter((l) => l.startsWith('auth-server: token exchange refused '));
+  const parsed = (line: string) => JSON.parse(line.slice('auth-server: token exchange refused '.length)) as Record<string, unknown>;
+
+  it('logs one line per refusal: the stage, the error and the authenticated client, and nothing else', async () => {
+    const subject = await idTokenFor(CLIENT.desk.id);
+    await stageA(subject, { audience: CLIENT.crm.id });
+    expect(refusals()).toHaveLength(1);
+    expect(parsed(refusals()[0]!)).toEqual({ stage: 'assertion', error: 'invalid_target', client: CLIENT.desk.id });
+    // No token, no subject, no description text.
+    expect(refusals()[0]).not.toContain(subject);
+    expect(refusals()[0]).not.toContain('user-ann');
+    expect(refusals()[0]).not.toContain('delegate');
+
+    const minted = await assertion();
+    delegate(DESK, '');
+    await stageB(minted);
+    expect(parsed(refusals()[1]!)).toEqual({ stage: 'access', error: 'invalid_grant', client: CLIENT.help.id });
+    expect(refusals()[1]).not.toContain(minted);
+  });
+
+  it('names no client that has not authenticated, and no stage before the subject is read', async () => {
+    await stageA(await idTokenFor(CLIENT.desk.id), {}, { id: CLIENT.desk.id, secret: 'wrong' });
+    expect(parsed(refusals()[0]!)).toEqual({ stage: null, error: 'invalid_client', client: null });
+    await stageA('not-a-jwt');
+    expect(parsed(refusals()[1]!)).toEqual({ stage: null, error: 'invalid_grant', client: CLIENT.desk.id });
+  });
+
+  it('logs no refusal for an exchange that succeeds', async () => {
+    await stageB(await assertion());
+    expect(refusals()).toEqual([]);
   });
 });
