@@ -49,9 +49,14 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   denial and event reads (`tables`, `tables/:table`, `query`, `health`, `denials`,
   `denials/summary`, `history`, `facets`, `cause`, `effects`, `invocation`, `dead-letters`) run one ladder: resolve the
   scope record, then ask the vertical's own `/internal/*` route when one is bound and the
-  co-located host otherwise — and on the delegated branch the transport writes the K-24
+  co-located host otherwise. The vertical's answer is relayed as it came, with one
+  exception: a `facets` answer is normalized, and a payload grouping from a vertical whose
+  kernel predates #1762 is refused — no buckets, the events counted in `withheldPersonal`,
+  and `withheldReason: 'vertical-predates-rule'` — since that kernel groups personal data.
+  On the delegated branch the transport writes the K-24
   access row itself, through `HostAdmin.recordDelegatedRead`, so an auditor cannot tell
-  which branch served a read from the row it left. Two scope reads sit outside that
+  which branch served a read from the row it left. A `facets` row also records the
+  answer's `withheldPersonal` and any `withheldReason`, on both branches. Two scope reads sit outside that
   ladder on purpose: `export` always goes through `HostAdmin.exportScope` first, because
   that is the call that writes its access-log entry (the vertical supplies only the bytes
   when one is bound), and `migrations` is schema metadata, read from whichever side holds
