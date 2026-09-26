@@ -68,7 +68,8 @@
     "fortnox:seed": "tsx connectors/fortnox/scripts/seed-sandbox.mts",
     "lint:wrangler-config": "node tools/wrangler-config-check.mjs",
     "lint:secrets-coverage": "node tools/secrets-coverage.mjs",
-    "test:docs-union": "node --test tools/docs-union-check.test.mjs"
+    "test:docs-union": "node --test tools/docs-union-check.test.mjs",
+    "test:ci-scope": "node --test tools/ci-scope.test.mjs"
   },
   "devDependencies": {
     "@babel/parser": "^7.29.7",

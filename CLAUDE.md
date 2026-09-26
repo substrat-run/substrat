@@ -90,11 +90,14 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   both reasons the root scripts exist are absent there. A CI checkout has no
   `.builder/projects/**` to exclude — the directory is gitignored, so it is never cloned —
   and a PR wants a filter the root script cannot carry.
-  `.github/workflows/ci.yml:31` builds everything (`pnpm -r build`, as `:295` does again
-  for the test deploy), while `:249` and `:257` run typecheck and test as
-  `pnpm -r --filter=...[origin/<base>]` — the packages the diff touched plus everything
-  that depends on them, decided by the `scope` step at `:212`, which widens back to
-  everything when the change lands outside every package. That scoping is what #878's
+  In `.github/workflows/ci.yml` the `checks` job builds everything (`pnpm -r build`, as
+  `deploy-test` does again), because its lints read built output from every package, and
+  runs typecheck over a selection; the three `test-shard` jobs each build and test only
+  their slice of that same selection. The selection is `tools/ci-scope.mjs`: the packages
+  the diff touched plus everything that depends on them (pnpm's `...[<base>]`), plus the
+  importers a lockfile change can be pinned to, widening back to everything when the
+  change lands outside every package or the lockfile change cannot be pinned. A job
+  named `test` aggregates the verdict. That scoping is what #878's
   template gate rides on, so neither side is the other's mistake: don't "fix" the workflow
   into the root scripts, and don't teach a local agent to run the unfiltered sweep.
 - `node tools/boundary-lint.mjs` — the layer rules below, enforced mechanically (runs in CI)
@@ -160,9 +163,10 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   `pnpm -r typecheck`, `pnpm -r test` and `node tools/boundary-lint.mjs` all reach it
   with no new command to remember. On a **PR**, `typecheck` and `test` run only over the
   packages the diff changed plus everything that depends on them — pnpm's own
-  `--filter="...[origin/main]"`, decided by the `scope` step in `.github/workflows/ci.yml`;
-  a change outside every package (`tools/`, the lockfile, the catalog) widens it back to
-  everything, and a push to `main` always runs everything. The graph has to name every
+  `--filter="...[<base>]"`, decided by `tools/ci-scope.mjs` in `.github/workflows/ci.yml`;
+  a change outside every package (`tools/`, the catalog) widens it back to everything,
+  a lockfile change adds the importers it can be pinned to (or widens when it cannot),
+  and a push to `main` always runs everything. The graph has to name every
   edge for that to hold, which is why `template-check` declares `create-substrat` as a
   devDependency: the edge is a file copy, not an import, and pnpm cannot see it otherwise.
   This is the gate that makes a **non-additive engine
