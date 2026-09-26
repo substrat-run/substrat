@@ -1,6 +1,7 @@
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { warmControlPlane } from './do-warmup.js';
+import { armRewind, landRewind } from './pitr-emulation.js';
 import {
   connectionId,
   errorCodeOf,
@@ -47,7 +48,12 @@ import {
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
-import { CloudflareScopeHost } from '../src/host.js';
+import {
+  CloudflareScopeHost,
+  SWITCH_HOLD_SETTLE_MS,
+  SWITCH_HOLD_SNAPSHOT_MS,
+  SWITCH_HOLDS_NAME,
+} from '../src/host.js';
 
 // Absorb the inter-file DO reload before any suite's first directory call
 // (see do-warmup.ts) — file-level, so it runs before every suite below.
@@ -2079,6 +2085,329 @@ describe('#1742 — the CP-full seat and restore switch off in their own unit', 
     expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 2, failed: 0 });
   });
 });
+
+/**
+ * #1819 — a PITR rewind to a bookmark from before the kill switch was pulled. The rewound
+ * storage has the module's `system:` grants live and no OFF marker, and nothing re-asserts the
+ * switch until the platform's next reconcile. The rewind now holds the scope's OFF modules on
+ * `SWITCH_HOLDS_NAME`, outside the object it rewinds, and the pass skips a held module.
+ *
+ * The rewind is EMULATED (`pitr-emulation.ts`): workerd has no PITR. The DO's real
+ * `rewindToBookmark` runs, and so does the restart it causes; the rewound bytes are a dump from
+ * before the switch, written into the restarted object with no host code in between.
+ */
+// Every rewind waits `SWITCH_HOLD_SETTLE_MS` before it rewinds, so these outlast vitest's 5 s default.
+describe('#1819 — a PITR rewind to before the switch runs nothing until the switch is back', { timeout: 20_000 }, () => {
+  const SCHED = moduleId.parse('@test/sched');
+  const t = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const READ = permissionKey.parse('perm:read');
+  const roles: RoleDefinition[] = [{ key: 'office-admin', permissions: [READ], source: 'vertical' }];
+
+  /** A deployment's host over `ns` (the scope namespace, or a counting wrapper of it). */
+  const deployment = (ns: DurableObjectNamespace = env.SCOPE) => {
+    const h = new CloudflareScopeHost({ scope: ns, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+    h.registerModule(scheduleMod);
+    return h;
+  };
+  const host = deployment();
+  afterAll(async () => host.close());
+
+  const reconcile = (s: ScopeId, extra: { switchedOff?: ModuleId[] } = {}) =>
+    host.provisionScopeLocal({ tenantId: t, scopeId: s, owner, roles, ownerRoleKey: 'office-admin', ...extra });
+  const newScope = async (): Promise<ScopeId> => {
+    const s = scopeId.parse(ulid());
+    await reconcile(s);
+    return s;
+  };
+  const off = (s: ScopeId) => host.systemSwitchLocal(s, SCHED, 'off');
+  /** A fresh host each pass, the way the sweeper builds one per pass. */
+  const pass = (s: ScopeId, on = deployment()) => on.runDueSchedules(SCHED, t, s);
+  const holdsStub = () =>
+    env.SCOPE.get(env.SCOPE.idFromName(SWITCH_HOLDS_NAME)) as unknown as {
+      switchHoldsAll(): Promise<{ scopeId: string; moduleId: string }[]>;
+      switchHoldAdd(scopeId: string, moduleIds: string[], at: string): Promise<string[]>;
+      switchHoldRelease(scopeId: string, moduleIds: string[] | null): Promise<number>;
+    };
+  const heldOn = async (s: ScopeId) =>
+    (await holdsStub().switchHoldsAll()).filter((h) => h.scopeId === s).map((h) => h.moduleId);
+
+  /** Switch off, then rewind to a bookmark taken before the switch (the whole issue). */
+  const rewoundPastTheSwitch = async (): Promise<ScopeId> => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    expect(await host.rewindScopeLocal(s, 'bm-before-switch', { force: true })).toEqual({
+      rewindingTo: 'bm-before-switch',
+    });
+    await landRewind(env.SCOPE, s, atBookmark);
+    // The rewound storage really has the switch undone: this is the state the issue is about.
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'on' }]);
+    return s;
+  };
+
+  it('the next pass after the rewind fires nothing, and neither does any pass before the re-assert', async () => {
+    const s = await rewoundPastTheSwitch();
+    expect(await heldOn(s)).toEqual([SCHED]);
+    for (let i = 0; i < 3; i++) {
+      expect(await pass(s)).toMatchObject({ fired: 0, skipped: 2, failed: 0, errors: [], switchedOff: true });
+    }
+  });
+
+  it('twin: nothing recorded off — the rewind holds nothing, and the next pass fires', async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await armRewind(env.SCOPE, s);
+    await host.rewindScopeLocal(s, 'bm', { force: true });
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it("the hold is this scope's only: another scope's module still fires while it holds", async () => {
+    const held = await rewoundPastTheSwitch();
+    const other = await newScope();
+    const h = deployment();
+    expect(await pass(held, h)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(await pass(other, h)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it('the hold survives the restart the rewind causes, and a restart of the object holding it', async () => {
+    const s = await rewoundPastTheSwitch(); // `landRewind` waited out the scope's own restart
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(SWITCH_HOLDS_NAME)), (_i, state) => {
+      state.abort('restart the hold object');
+    }).catch(() => undefined);
+    expect(await heldOn(s)).toEqual([SCHED]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it("the re-assert clears the hold: OFF is back in the scope's own storage, and still nothing fires", async () => {
+    const s = await rewoundPastTheSwitch();
+    // `/internal/system-switch`'s far end, which the platform's re-assert lands on.
+    expect(await off(s)).toEqual({ held: true, changed: true, permissions: ['sched:tick'] });
+    expect(await heldOn(s)).toEqual([]);
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    // And the lever still works: ON brings the schedules back.
+    await host.systemSwitchLocal(s, SCHED, 'on');
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it("an operator's ON clears the hold: the module fires on the next pass", async () => {
+    const s = await rewoundPastTheSwitch();
+    expect(await host.systemSwitchLocal(s, SCHED, 'on')).toMatchObject({ held: true });
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it('a reconcile carrying the off list switches it off in its unit and clears the hold', async () => {
+    const s = await rewoundPastTheSwitch();
+    await reconcile(s, { switchedOff: [SCHED] });
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('twin: a reconcile with no list leaves the hold, so the pass still fires nothing', async () => {
+    const s = await rewoundPastTheSwitch();
+    await reconcile(s);
+    expect(await heldOn(s)).toEqual([SCHED]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('a restore carrying the off list clears the hold too', async () => {
+    const s = await rewoundPastTheSwitch();
+    await host.restoreScopeLocal(s, await host.exportScopeLocal(s), { switchedOff: [SCHED] });
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('deleting the scope releases its holds', async () => {
+    const s = await rewoundPastTheSwitch();
+    await host.deleteScopeLocal(s);
+    expect(await heldOn(s)).toEqual([]);
+  });
+
+  it('a refused rewind releases what it held, and nothing else', async () => {
+    const s = await newScope();
+    await off(s);
+    // Not armed, and no such bookmark: the DO refuses before anything is restored.
+    await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/unknown bookmark/);
+    expect(await heldOn(s)).toEqual([]);
+    // Twin: a hold that was already there before the refused rewind stays.
+    await holdsStub().switchHoldAdd(s, [SCHED], new Date().toISOString());
+    await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/unknown bookmark/);
+    expect(await heldOn(s)).toEqual([SCHED]);
+    await holdsStub().switchHoldRelease(s, null);
+  });
+
+  /**
+   * The race the order in `runDueSchedules` closes. One pass reads the hold ONCE and keeps it
+   * for `SWITCH_HOLD_SNAPSHOT_MS`. A pass that read it before the rewind wrote its hold must
+   * not act on that read when it meets the rewound storage. The rewind waits longer than a
+   * snapshot lives, so that snapshot is always too old by then.
+   */
+  it('a pass that read the hold before the rewind re-reads it before acting on the rewound scope', async () => {
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    const bystander = await newScope();
+    await pass(bystander, h); // the snapshot, taken before any hold for `s` exists
+    expect(counting.holdReads).toBe(1);
+    const s = await rewoundPastTheSwitch();
+    expect(await pass(s, h)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(counting.holdReads).toBe(2);
+  });
+
+  it('twin, pinning the constants that argument rests on: the rewind outwaits a snapshot', () => {
+    expect(SWITCH_HOLD_SETTLE_MS).toBeGreaterThan(SWITCH_HOLD_SNAPSHOT_MS);
+  });
+
+  /**
+   * The cost on the hot path. A pass reads the hold once, whatever the number of scopes, and
+   * a scope that was never rewound costs no RPC of its own.
+   */
+  it('a pass over many scopes reads the hold once, not once per scope', async () => {
+    const scopes = await Promise.all(Array.from({ length: 10 }, () => newScope()));
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    const started = Date.now();
+    for (const s of scopes) expect(await pass(s, h)).toMatchObject({ fired: 2 });
+    const passMs = Date.now() - started;
+    const readStarted = Date.now();
+    await holdsStub().switchHoldsAll();
+    const readMs = Date.now() - readStarted;
+    // Once per snapshot age: one read, unless this machine took longer than that for the pass.
+    expect(counting.holdReads).toBeGreaterThanOrEqual(1);
+    expect(counting.holdReads).toBeLessThanOrEqual(1 + Math.floor(passMs / SWITCH_HOLD_SNAPSHOT_MS));
+    expect(counting.holdReads).toBeLessThan(scopes.length);
+    expect(counting.scopeCalls).toBeGreaterThanOrEqual(scopes.length * 4);
+    console.log(
+      `#1819 cost: ${scopes.length} scopes, ${counting.scopeCalls} scope RPCs, ${counting.holdReads} hold read; ` +
+        `pass ${passMs} ms, one hold read ${readMs} ms`,
+    );
+  });
+
+  /**
+   * A hold object that cannot be read fails OPEN, except for what the pass already knows is
+   * held. Closed would stop every schedule in the deployment over one object; open reopens only
+   * this issue's gap, for a rewind during the outage. The error is reported either way.
+   */
+  it('an unreadable hold fails open, and says so', async () => {
+    const s = await rewoundPastTheSwitch();
+    const counting = countingScopes(env.SCOPE);
+    counting.failReads = true;
+    const r = await pass(s, deployment(counting.ns));
+    expect(r).toMatchObject({ fired: 2, failed: 0 });
+    expect(r.errors).toEqual([{ operation: 'switch-hold', error: expect.stringMatching(/switch hold unreadable.*holds down/) }]);
+    await holdsStub().switchHoldRelease(s, null);
+  });
+
+  it('twin: a hold this pass already read stays held when a later read fails', async () => {
+    const s = await rewoundPastTheSwitch();
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    expect(await pass(s, h)).toMatchObject({ fired: 0, switchedOff: true });
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SNAPSHOT_MS + 100));
+    counting.failReads = true;
+    const r = await pass(s, h);
+    expect(r).toMatchObject({ fired: 0, switchedOff: true });
+    expect(r.errors).toEqual([{ operation: 'switch-hold', error: expect.stringMatching(/holds down/) }]);
+    expect(counting.holdReads).toBe(2);
+  });
+});
+
+/**
+ * #1819 on the CP-full host, for a scope whose store is this host's own: the co-located
+ * rewind (`admin.rewindScope`, `localApply`) holds, and the platform's own lever and
+ * reconcile release it here.
+ */
+describe('#1819 — the co-located rewind holds, and the CP-full switch releases it', { timeout: 20_000 }, () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  host.registerModule(scheduleMod);
+  const t = tenantId.parse(ulid());
+  beforeAll(async () => {
+    await host.admin.createTenant(staff, { id: t, slug: `hold-${t.slice(-10).toLowerCase()}`, name: 'Hold' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+  });
+  afterAll(async () => host.close());
+
+  const node = (s: ScopeId) => ({ tenantId: t, scopeId: s });
+  const rewound = async (): Promise<ScopeId> => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, node(s));
+    await host.admin.activateScope(staff, t, s);
+    const atBookmark = await host.admin.exportScope(staff, t, s);
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: node(s), reason: 'incident' });
+    await armRewind(env.SCOPE, s);
+    await host.admin.rewindScope(staff, t, s, 'bm', { force: true, localApply: true });
+    await landRewind(env.SCOPE, s, atBookmark.tables);
+    return s;
+  };
+
+  it('the next pass fires nothing; the reconcile re-asserts it and the hold is gone', async () => {
+    const s = await rewound();
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+    await host.provisionScope(staff, node(s));
+    const held = (await (env.SCOPE.get(env.SCOPE.idFromName(SWITCH_HOLDS_NAME)) as unknown as {
+      switchHoldsAll(): Promise<{ scopeId: string }[]>;
+    }).switchHoldsAll()).filter((h) => h.scopeId === s);
+    expect(held).toEqual([]);
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it("twin: the operator's restore releases it, and the module fires", async () => {
+    const s = await rewound();
+    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: node(s), reason: 'fixed' });
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+});
+
+/**
+ * #1819: the scope namespace as a host sees it, counting what it asks of the hold object and
+ * of the scopes, and able to make the hold unreadable. Calls go through arrows on the real
+ * stub, never `.bind` (workerd stub proxies).
+ */
+function countingScopes(ns: DurableObjectNamespace) {
+  const holdsId = ns.idFromName(SWITCH_HOLDS_NAME);
+  const state = { holdReads: 0, scopeCalls: 0, failReads: false, ns: undefined as unknown as DurableObjectNamespace };
+  const counted = (real: Record<string, (...a: unknown[]) => unknown>) =>
+    new Proxy(
+      {},
+      {
+        // Not thenable: an `await` of the stub must not read `then` as an RPC method.
+        get: (_t, prop: string) =>
+          prop === 'then'
+            ? undefined
+            : (...args: unknown[]) => {
+                state.scopeCalls += 1;
+                return real[prop]!(...args);
+              },
+      },
+    );
+  state.ns = {
+    idFromName: (name: string) => ns.idFromName(name),
+    get: (id: DurableObjectId) => {
+      const real = ns.get(id) as unknown as Record<string, (...a: unknown[]) => unknown>;
+      if (!id.equals(holdsId)) return counted(real);
+      return {
+        switchHoldsAll: async () => {
+          state.holdReads += 1;
+          if (state.failReads) throw new Error('holds down');
+          return real.switchHoldsAll!();
+        },
+        switchHoldAdd: (...args: unknown[]) => real.switchHoldAdd!(...args),
+        switchHoldRelease: (...args: unknown[]) => real.switchHoldRelease!(...args),
+      };
+    },
+  } as unknown as DurableObjectNamespace;
+  return state;
+}
 
 /**
  * #355 regression: `provisionScopeLocal` must apply the bundled modules' migrations

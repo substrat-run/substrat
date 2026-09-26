@@ -1034,6 +1034,10 @@ interface ScopeStubRpc {
   /** Every module this scope holds or has held system authority for, and where each
    *  stands (#1674) — the kernel's `systemGrantsStatus`, run in the scope's own storage. */
   systemGrantsStatus(): Promise<SystemGrantsEntry[]>;
+  /** #1819: the rewind hold, on the `SWITCH_HOLDS_NAME` object only — see `scope-do.ts`. */
+  switchHoldAdd(scopeId: string, moduleIds: string[], at: string): Promise<string[]>;
+  switchHoldsAll(): Promise<{ scopeId: string; moduleId: string }[]>;
+  switchHoldRelease(scopeId: string, moduleIds: string[] | null): Promise<number>;
   /** Where every peer this scope holds or has held grants for stands (#1706) — the kernel's
    *  `peerGrantsStatus`, run in the scope's own storage. */
   peerGrantsStatus(): Promise<PeerGrantsRow[]>;
@@ -1682,6 +1686,28 @@ function nullControlPlane(): ControlPlaneStub {
   });
 }
 
+/**
+ * #1819: the name of the ONE object in a deployment's scope namespace that carries the rewind
+ * hold, the modules a PITR rewind must keep switched off until the switch is back in the
+ * rewound scope. It lives outside every scope because a rewind replaces the rewound scope's
+ * whole storage. A name no `ScopeId` can parse to, so it is never a scope.
+ */
+export const SWITCH_HOLDS_NAME = 'substrat:switch-holds';
+
+/**
+ * #1819: how long one read of the hold serves a sweep pass. The pass reads the whole hold once
+ * (it is normally empty) rather than once per scope, so a scope never rewound costs no RPC.
+ */
+export const SWITCH_HOLD_SNAPSHOT_MS = 2_000;
+
+/**
+ * #1819: how long a rewind waits between writing its hold and rewinding. Longer than
+ * `SWITCH_HOLD_SNAPSHOT_MS`, so a snapshot read before the hold was written is always past its
+ * age by the time the rewound storage exists, and the pass re-reads before it can act on it.
+ * Both sides measure a duration on their own clock; nothing compares two clocks.
+ */
+export const SWITCH_HOLD_SETTLE_MS = SWITCH_HOLD_SNAPSHOT_MS + 1_000;
+
 export class CloudflareScopeHost implements ScopeHost {
   readonly admin: HostAdmin;
 
@@ -1752,6 +1778,11 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly peerSwitchDelegation?: PeerSwitchDelegation;
   /** #1705 PR 3: the replay lever's reach into the deployment serving a consumer scope. */
   private readonly importCursorDelegation?: ImportCursorDelegation;
+  /**
+   * #1819: the last read of the rewind hold, and when it was taken (before the read went out).
+   * Per instance, so per pass: the host is built per request, and never outlives one.
+   */
+  private holdSnapshot: { at: number; held: Set<string> } | null = null;
 
   /**
    * MUST be constructed per request. Never cache an instance across requests.
@@ -2306,6 +2337,8 @@ export class CloudflareScopeHost implements ScopeHost {
       scopeId,
       opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
     );
+    // #1819: a restore that switched a held module off in its replay put it back in the scope.
+    if (opts?.switchedOff) await this.releaseSwitchedInUnit(scopeId, switchedOff);
     return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}) };
   }
 
@@ -2338,6 +2371,8 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async deleteScopeLocal(scopeId: ScopeId): Promise<void> {
     await this.scopeStub(scopeId).destroyStorage();
+    // #1819: a deleted scope runs nothing; its holds go with it. Best effort, never a failed reap.
+    await this.releaseSwitchHold(scopeId, null).catch(() => undefined);
   }
 
   /**
@@ -2444,13 +2479,16 @@ export class CloudflareScopeHost implements ScopeHost {
    * Rewind one scope to a pre-migration bookmark (#286's backout) — schema AND data,
    * discarding every write since; the DO enforces the freshness window and restarts
    * itself to complete the restore. Behind the vertical's `/internal/rewind`.
+   *
+   * #1819: what the scope has switched off is held outside it first, so the rewound grants
+   * run nothing until the switch is back in the scope. See `rewindHolding`.
    */
   async rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
     opts?: { force?: boolean },
   ): Promise<{ rewindingTo: string }> {
-    return this.scopeStub(scopeId).rewindToBookmark(bookmark, opts);
+    return this.rewindHolding(scopeId, () => this.scopeStub(scopeId).rewindToBookmark(bookmark, opts));
   }
 
   registerModule(registration: ModuleRegistration): void {
@@ -3581,7 +3619,11 @@ export class CloudflareScopeHost implements ScopeHost {
     // does not touch its cadence rows — so a restore fires a due schedule on the next pass.
     const state = await stub.systemScheduleState(moduleId);
     if (state === 'ungranted') return report;
-    if (state === 'off') {
+    // #1819: a scope rewound to before its switch was pulled answers `on`. The rewind held the
+    // module outside the scope; read AFTER the state, which is the order `switchHeld` needs.
+    const hold = state === 'on' ? await this.switchHeld(scopeId, moduleId) : { held: false };
+    if (hold.error) report.errors.push({ operation: 'switch-hold', error: hold.error });
+    if (state === 'off' || hold.held) {
       for (const schedule of schedules) {
         report.skipped += 1;
         report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
@@ -4132,10 +4174,14 @@ export class CloudflareScopeHost implements ScopeHost {
         vertical = rec.vertical;
       }
       const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
-      const move = (moduleId: ModuleId, to: 'on' | 'off', at: string): Promise<SwitchOutcome> =>
-        delegation
-          ? delegation.switch({ tenantId, scopeId, moduleId, to })
-          : this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, at);
+      const move = async (moduleId: ModuleId, to: 'on' | 'off', at: string): Promise<SwitchOutcome> => {
+        if (delegation) return delegation.switch({ tenantId, scopeId, moduleId, to });
+        const outcome = await this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, at);
+        // #1819: a scope whose store is here was rewound here, so its hold is here too — the
+        // co-located twin of `systemSwitchLocal`'s release. A delegated move releases there.
+        if (outcome.held) await this.releaseSwitchHold(scopeId, [moduleId]);
+        return outcome;
+      };
       return { vertical, move };
     };
 
@@ -5416,7 +5462,10 @@ export class CloudflareScopeHost implements ScopeHost {
           // host's namespace here would PITR an unrelated, unused DO.
           return { rewindingTo: bookmark };
         }
-        return this.scopeStub(scopeId).rewindToBookmark(bookmark, { force: opts?.force });
+        // #1819: the co-located twin of `rewindScopeLocal`, holding what the scope switched off.
+        return this.rewindHolding(scopeId, () =>
+          this.scopeStub(scopeId).rewindToBookmark(bookmark, { force: opts?.force }),
+        );
       },
       createOrg: async (actor: PlatformActorId, input: CreateOrgInput) => {
         const parsed = createOrgInput.parse(input);
@@ -7059,6 +7108,88 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.scopeNs.get(this.scopeNs.idFromName(scopeId)) as unknown as ScopeStubRpc;
   }
 
+  // -- the rewind hold (#1819) ------------------------------------------------
+  // A PITR rewind to a bookmark from before a schedule kill switch was pulled brings the
+  // module's `system:` grants back live, and nothing in the rewound storage says otherwise.
+  // The scope's OFF modules are read while the pre-rewind storage still holds them, and held
+  // on `SWITCH_HOLDS_NAME`, which the rewind cannot reach. `runDueSchedules` skips a held
+  // module. Any move of that module's switch here releases it: the re-assert (OFF back in the
+  // scope), an operator's ON, and a reconcile or restore that switched it off in its own unit.
+
+  private switchHoldsStub(): ScopeStubRpc {
+    return this.scopeNs.get(this.scopeNs.idFromName(SWITCH_HOLDS_NAME)) as unknown as ScopeStubRpc;
+  }
+
+  /**
+   * Is this module held off on this scope? Read from one snapshot of the whole hold, re-read
+   * once it is older than `SWITCH_HOLD_SNAPSHOT_MS`. Called only AFTER the scope's own state
+   * read, and `now` is taken after it: a state read that met rewound storage finished at least
+   * `SWITCH_HOLD_SETTLE_MS` after the hold was written, so a snapshot that predates the hold is
+   * too old to be used here.
+   *
+   * A failed read fails OPEN except for what this pass already knows is held. Failing closed
+   * would turn one object's outage into every schedule of the deployment stopping; failing open
+   * reopens only the gap this closes, for a rewind that lands during the outage, and the next
+   * reconcile still switches that module off. The error is answered, for the pass to report.
+   */
+  private async switchHeld(scopeId: ScopeId, moduleId: ModuleId): Promise<{ held: boolean; error?: string }> {
+    const key = `${scopeId} ${moduleId}`;
+    const now = Date.now();
+    let error: string | undefined;
+    if (!this.holdSnapshot || now - this.holdSnapshot.at > SWITCH_HOLD_SNAPSHOT_MS) {
+      const at = Date.now();
+      try {
+        const rows = await this.switchHoldsStub().switchHoldsAll();
+        this.holdSnapshot = { at, held: new Set(rows.map((r) => `${r.scopeId} ${r.moduleId}`)) };
+      } catch (err) {
+        error = `switch hold unreadable, schedules not held: ${err instanceof Error ? err.message : String(err)}`;
+        // What was known stays held; the next read is tried once this one's age has passed.
+        this.holdSnapshot = { at, held: this.holdSnapshot?.held ?? new Set() };
+      }
+    }
+    return { held: this.holdSnapshot.held.has(key), ...(error ? { error } : {}) };
+  }
+
+  /** Release holds on one scope: these modules, or all of them when `moduleIds` is null. */
+  private async releaseSwitchHold(scopeId: ScopeId, moduleIds: readonly string[] | null): Promise<void> {
+    if (moduleIds !== null && moduleIds.length === 0) return;
+    this.holdSnapshot = null;
+    await this.switchHoldsStub().switchHoldRelease(scopeId, moduleIds === null ? null : [...moduleIds]);
+  }
+
+  /** The #1742 in-unit outcomes, released: each module the unit switched off is back in the scope. */
+  private async releaseSwitchedInUnit(scopeId: ScopeId, outcomes: readonly SwitchedOff[] | undefined): Promise<void> {
+    // Best effort: the platform's re-assert after this call moves the same modules through
+    // `systemSwitchLocal`, which releases them again and reports its own failure.
+    await this.releaseSwitchHold(
+      scopeId,
+      (outcomes ?? []).filter((o) => o.held).map((o) => o.moduleId),
+    ).catch(() => undefined);
+  }
+
+  /**
+   * Rewind one scope, holding what it has switched off. The OFF modules are read and held
+   * BEFORE the rewind, while this storage still holds them. The rewind then waits
+   * `SWITCH_HOLD_SETTLE_MS` (see `switchHeld`). A refused rewind releases what it added.
+   */
+  private async rewindHolding(
+    scopeId: ScopeId,
+    rewind: () => Promise<{ rewindingTo: string }>,
+  ): Promise<{ rewindingTo: string }> {
+    const off = (await this.scopeStub(scopeId).systemGrantsStatus())
+      .filter((e) => e.schedules === 'off')
+      .map((e) => e.moduleId);
+    const added = off.length > 0 ? await this.switchHoldsStub().switchHoldAdd(scopeId, off, new Date().toISOString()) : [];
+    this.holdSnapshot = null;
+    try {
+      if (off.length > 0) await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS));
+      return await rewind();
+    } catch (err) {
+      await this.releaseSwitchHold(scopeId, added).catch(() => undefined);
+      throw err;
+    }
+  }
+
   // -- live reads (#938): the door ------------------------------------------
   // The coordinator's half of the live-read path. It decides two things and no more:
   // whether this CONNECTION can carry a push at all, and who is asking. What a
@@ -7462,6 +7593,8 @@ export class CloudflareScopeHost implements ScopeHost {
         ? { scopeId: input.scopeId, moduleIds: input.switchedOff, at: new Date().toISOString() }
         : undefined,
     );
+    // #1819: a reconcile of a rewound scope switches its modules off in this unit.
+    if (input.switchedOff) await this.releaseSwitchedInUnit(input.scopeId, switchedOff);
     return input.switchedOff ? { switchedOff } : {};
   }
 
@@ -7655,9 +7788,14 @@ export class CloudflareScopeHost implements ScopeHost {
   async systemSwitchLocal(scopeId: ScopeId, moduleId: ModuleId, to: 'on' | 'off'): Promise<SystemSwitchOutcome> {
     // Parsed on the way out: this is the wire answer the platform reads, and the DO's
     // plain strings become the published shape here rather than on trust.
-    return systemSwitchOutcome.parse(
+    const outcome = systemSwitchOutcome.parse(
       await this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, new Date().toISOString()),
     );
+    // #1819: the scope's own switch now says where the module stands — OFF re-asserted, or an
+    // operator's ON — so a rewind's hold on it has done its job. A failed release throws, and
+    // the platform treats that as a failed move; the hold stays, which errs toward OFF.
+    if (outcome.held) await this.releaseSwitchHold(scopeId, [moduleId]);
+    return outcome;
   }
 
   /**

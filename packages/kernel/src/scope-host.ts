@@ -916,10 +916,15 @@ export interface ScheduleRunReport {
   /**
    * The module is switched off on this scope (#1666) — every `skipped` above is that,
    * not a cadence window. Optional and absent otherwise, so a stored or pre-widening
-   * report stays valid.
+   * report stays valid. A module a PITR rewind holds off until its switch is back in the
+   * scope (#1819, Cloudflare only) reports the same.
    */
   switchedOff?: true;
-  /** Per-schedule failures on this scope: the operation name and the error. */
+  /**
+   * Per-schedule failures on this scope: the operation name and the error. One entry is
+   * not a schedule's: `operation: 'switch-hold'` says the rewind hold (#1819) could not be
+   * read, so the pass ran without it. Nothing else about the pass changes.
+   */
   errors: { operation: string; error: string }[];
   /**
    * Per-schedule outcomes, in declaration order (#1232) — what the durable sweep
