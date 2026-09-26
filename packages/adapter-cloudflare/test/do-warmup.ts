@@ -28,3 +28,20 @@ export async function warmControlPlane(ns: DurableObjectNamespace): Promise<void
     }
   }
 }
+
+/**
+ * The same absorb, for any one call on any Durable Object (#1819): a suite whose first call
+ * lands on a singleton other than the directory warms that one too. `touch` must re-get its
+ * stub each time it is called, because the stub is invalidated along with the object.
+ */
+export async function warmDurableObject(touch: () => Promise<unknown>): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await touch();
+      return;
+    } catch (err) {
+      const transient = err instanceof Error && err.message.includes('invalidating this Durable Object');
+      if (!transient || attempt >= 2) throw err;
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { warmControlPlane } from './do-warmup.js';
+import { warmControlPlane, warmDurableObject } from './do-warmup.js';
 import { armRewind, landRewind } from './pitr-emulation.js';
 import {
   connectionId,
@@ -2131,6 +2131,8 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     };
   const heldOn = async (s: ScopeId) =>
     (await holdsStub().switchHoldsAll()).filter((h) => h.scopeId === s).map((h) => h.moduleId);
+  // The hold singleton is this suite's first call on an object the directory warm-up does not touch.
+  beforeAll(() => warmDurableObject(() => holdsStub().switchHoldsAll()));
 
   /** Switch off, then rewind to a bookmark taken before the switch (the whole issue). */
   const rewoundPastTheSwitch = async (): Promise<ScopeId> => {

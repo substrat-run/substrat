@@ -13,8 +13,9 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { scheduleMod } from '@substrat-run/contract-tests';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost, SWITCH_HOLDS_NAME } from '../src/host.js';
 import { armRewind, landRewind } from './pitr-emulation.js';
+import { warmDurableObject } from './do-warmup.js';
 import {
   SCOPE_SWEEPER_NAME,
   type ScopeSweepOutcome,
@@ -216,6 +217,20 @@ describe('#1819 — the deployment sweep after a rewind to before the switch', {
   };
   const ticksOn = async (s: ScopeId): Promise<number> =>
     (await (await host().getScope(owner, t, s)).invoke('sched/count')) as number;
+
+  // The inter-file reload (see do-warmup.ts) lands on the first call of this file. When a filter
+  // skips the describe above, nothing else absorbs it, so touch both singletons this suite uses
+  // first: the roster, and the hold object in this namespace.
+  beforeAll(async () => {
+    await warmDurableObject(() => runInDurableObject(sweeperStub(), (_i, state) => state.storage.getAlarm()));
+    await warmDurableObject(() =>
+      (
+        env.LOCAL_SWEEP_SCOPE.get(env.LOCAL_SWEEP_SCOPE.idFromName(SWITCH_HOLDS_NAME)) as unknown as {
+          switchHoldsAll(): Promise<unknown>;
+        }
+      ).switchHoldsAll(),
+    );
+  });
 
   /** Provision, take the "bookmark", optionally switch off, rewind, and put it on the roster. */
   const rewound = async (switchOff: boolean): Promise<ScopeId> => {
