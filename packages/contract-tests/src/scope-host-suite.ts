@@ -1550,6 +1550,14 @@ export function scopeHostContractSuite(
       expect(byEmail.buckets.reduce((n, b) => n + b.count, 0) + byEmail.erased + byEmail.withheldPersonal).toBe(
         byEmail.total,
       );
+      // The access row says what the read held back, on this co-located branch as on the
+      // delegated one — `delegatedReadParams.facetEvents` is the one projection.
+      const rows = (await host.admin.accessLog(staff, { method: 'facetEvents' }))
+        .filter((e) => e.scopeId === s1)
+        .map((e) => (typeof e.params === 'string' ? JSON.parse(e.params) : e.params) as Record<string, unknown>)
+        .filter((p) => (p.groupBy as { field?: string } | undefined)?.field === 'email');
+      expect(rows.at(-1)).toMatchObject({ withheldPersonal: 3 });
+      expect(rows.at(-1)).not.toHaveProperty('withheldReason');
 
       // An envelope grouping is not payload content: every class is counted, and the
       // class itself stays available as a dimension.

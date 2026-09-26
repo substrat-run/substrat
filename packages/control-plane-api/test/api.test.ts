@@ -594,10 +594,26 @@ describe('control-plane API', () => {
     expect((await dreq(`/tenants/${t2}/scopes/${sF}/facets?groupBy=type`)).status).toBe(404);
     expect(calls).toHaveLength(1);
 
-    // An ENVELOPE grouping from the same old vertical passes through untouched: a
-    // kernel-stamped column is not payload content, and that kernel answered it right.
+    // The K-24 row says what was held back: a refused grouping otherwise reads as a query
+    // that found nothing. It names the field asked for, the buckets relayed (none), and why.
+    const rows = (await host.admin.accessLog(staff, { method: 'facetEvents' })).filter((e) => e.scopeId === sF);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.resultCount).toBe(0);
+    // The adapter stores `params` as its JSON text.
+    expect(JSON.parse(rows[0]!.params as string)).toMatchObject({
+      groupBy: { kind: 'payload', field: 'currency' },
+      withheldPersonal: 3,
+      withheldReason: 'vertical-predates-rule',
+    });
+
+    // An ENVELOPE grouping from the same old vertical passes through: a kernel-stamped
+    // column is not payload content, and that kernel answered it right. Only the count it
+    // could not have withheld anything under is filled in, as the schema requires.
     answer = { buckets: [{ value: 'order.placed', count: 4 }], erased: 0, total: 4, truncated: false };
-    expect(await (await dreq(`/tenants/${t1}/scopes/${sF}/facets?groupBy=type`)).json()).toEqual(answer);
+    expect(await (await dreq(`/tenants/${t1}/scopes/${sF}/facets?groupBy=type`)).json()).toEqual({
+      ...answer,
+      withheldPersonal: 0,
+    });
 
     // And a vertical on the new kernel is relayed as it answered, its own count intact.
     answer = { buckets: [{ value: 'SEK', count: 1 }], erased: 1, withheldPersonal: 2, total: 4, truncated: false };

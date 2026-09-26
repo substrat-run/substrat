@@ -1,4 +1,5 @@
 import {
+  delegatedReadParams,
   fromWireFailure,
   type WireFailure,
   exportReadInput,
@@ -5685,7 +5686,13 @@ export class CloudflareScopeHost implements ScopeHost {
       facetEvents: async (actor, tenantId, scopeId, input: EventFacetInput): Promise<EventFacetResult> => {
         await this.scopeRecordForRead(tenantId, scopeId);
         const result = await this.scopeStub(scopeId).facetEvents(input);
-        await this.recordAccess(actor, 'facetEvents', { tenantId, scopeId }, input, result.buckets.length);
+        await this.recordAccess(
+          actor,
+          'facetEvents',
+          { tenantId, scopeId },
+          delegatedReadParams.facetEvents(input, result),
+          result.buckets.length,
+        );
         return result;
       },
       entityHistory: async (

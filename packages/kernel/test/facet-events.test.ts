@@ -1,3 +1,6 @@
+// `node:sqlite` needs Node >= 22.13. The CI LIKE/GLOB pattern-limit shim patches
+// better-sqlite3 connections only, so it does not apply here — harmless, since the facet
+// read uses no LIKE or GLOB.
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { facetEvents, type ScopedSql } from '../src/index.js';

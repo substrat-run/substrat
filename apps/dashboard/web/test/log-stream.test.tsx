@@ -54,7 +54,7 @@ describe('log-stream derivations', () => {
     expect(emptyGroupingText(result({ buckets: [], total: 0, erased: 0 }))).toBe('No events matched this filter.');
     expect(
       emptyGroupingText(result({ buckets: [], total: 9, erased: 0, withheldPersonal: 9, withheldReason: 'vertical-predates-rule' })),
-    ).toMatch(/^This app was pushed before personal-data events were withheld/);
+    ).toMatch(/^This app was pushed with Substrat packages from before personal-data events were withheld/);
   });
 });
 
@@ -157,7 +157,7 @@ describe('Events mode', () => {
     // The count covers every event not erased, so it does not claim to be personal data.
     expect(container.querySelector('[data-event-totals]')!.textContent).toBe('58 events · 3 erased · 55 withheld');
     expect(container.textContent).toContain(
-      'This app was pushed before personal-data events were withheld, so payload groupings are unavailable until it is pushed again.',
+      'This app was pushed with Substrat packages from before personal-data events were withheld, so payload groupings are unavailable. Update its Substrat packages and push it again.',
     );
   });
 

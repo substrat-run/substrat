@@ -211,10 +211,10 @@ export const eventFacetResult = z.object({
    * `total = Σ bucket counts + erased + withheldPersonal` whenever `truncated` is
    * false; when it is true the bucket sum falls short by the tail not shown.
    *
-   * Added after the field shipped: a scope still running an older kernel omits it,
-   * because that kernel groups every event, personal data included. The control plane
-   * does not pass such a payload grouping on (see `withheldReason`); a reader that
-   * meets the field missing anyway must treat it as unknown, never as 0.
+   * Required. A vertical still running a kernel from before the rule omits it, and the
+   * control plane normalizes that answer before relaying it: an envelope grouping gets 0,
+   * and a payload grouping — which that kernel answered over personal data too — is
+   * refused (see `withheldReason`). So every answer the control plane serves carries it.
    */
   withheldPersonal: z.number().int().nonnegative(),
   /**

@@ -27,8 +27,10 @@ export function modeHint(mode: LogMode): string {
 /**
  * What the Events mode groups by. `field` is not a spine dimension but the payload
  * grouping, which the read takes as its own parameter. Any top-level field can be named;
- * the read groups only events not classed as personal data and counts the rest in
- * `withheldPersonal` (#1762), so naming `email` cannot list people.
+ * the read groups it only over events classed `none` and counts the events classed as
+ * personal data in `withheldPersonal` (#1762). The class is per event, so a `none` event
+ * that carries personal data is still grouped; and the SQL console and table browse
+ * read the same outbox without this rule (#1821).
  */
 export type EventGroup = 'type' | 'operation' | 'actor' | 'version' | 'entityType' | 'piiClass' | 'field';
 
@@ -98,7 +100,9 @@ export function withheldOf(result: EventFacetAnswer): number | null {
 
 /**
  * True when the control plane refused to relay a payload grouping because the app's
- * kernel predates #1762 — its buckets could be one per person. The withheld count then
+ * kernel predates #1762 — its buckets could be one per person. A re-push alone does not
+ * fix it: `@substrat-run/*` is a 0.x fixed group and an app's `^0.x` ranges do not cross
+ * a minor, so the app's Substrat packages have to be updated first. The withheld count then
  * covers every event that was not erased, not only those classed as personal data.
  */
 export function predatesRule(result: EventFacetAnswer): boolean {
@@ -113,7 +117,7 @@ export function predatesRule(result: EventFacetAnswer): boolean {
 export function emptyGroupingText(result: EventFacetAnswer): string {
   if (result.total === 0) return 'No events matched this filter.';
   if (predatesRule(result)) {
-    return 'This app was pushed before personal-data events were withheld, so payload groupings are unavailable until it is pushed again.';
+    return 'This app was pushed with Substrat packages from before personal-data events were withheld, so payload groupings are unavailable. Update its Substrat packages and push it again.';
   }
   if (result.erased === result.total) return 'Every matching event had its payload erased, so there is nothing left to group by.';
   const withheld = withheldOf(result) ?? 0;
