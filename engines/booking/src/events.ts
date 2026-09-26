@@ -203,6 +203,35 @@ export type BookingEvents = {
 export type BookingEventType = keyof BookingEvents['events'];
 
 /**
+ * Every event type this engine emits, and the `schemaVersion` each is emitted at.
+ *
+ * The ONE home for that number (#1597): `emitBookingEvent` stamps it onto every
+ * emission and the manifest's `emits` is derived from it below, so the two cannot
+ * drift. `satisfies` holds it to exactly the types `BookingEvents` declares — a type
+ * missing here, or one the map does not know, is a compile error. Bumping a
+ * version is K-39's REPLACE: change it here, and the payload type beside it.
+ */
+export const bookingEventVersions = {
+  'booking.held': 1,
+  'booking.confirmed': 1,
+  'booking.expired': 1,
+  'booking.cancelled': 1,
+  'booking.moved': 1,
+  'booking.started': 1,
+  'booking.completed': 1,
+  'booking.no-show': 1,
+  'booking.participant-joined': 1,
+  'booking.participant-left': 1,
+  'booking.opened': 1,
+  'booking.resource-created': 1,
+} as const satisfies Record<BookingEventType, number>;
+
+/** The manifest's `events.emits`, read off {@link bookingEventVersions} — never hand-declared. */
+export const bookingEmitDeclarations: { type: string; schemaVersion: number }[] = Object.entries(
+  bookingEventVersions,
+).map(([type, schemaVersion]) => ({ type, schemaVersion }));
+
+/**
  * `ctx.emit`, with the event type and its payload welded together.
  *
  * This is what stops `BookingEvents` becoming a description nothing holds in
@@ -216,10 +245,10 @@ export type BookingEventType = keyof BookingEvents['events'];
  */
 export function emitBookingEvent<K extends BookingEventType>(
   ctx: OperationContext,
-  event: Omit<DomainEventInput, 'type' | 'payload'> & {
+  event: Omit<DomainEventInput, 'type' | 'payload' | 'schemaVersion'> & {
     type: K;
     payload: BookingEvents['events'][K];
   },
 ): void {
-  ctx.emit(event);
+  ctx.emit({ ...event, schemaVersion: bookingEventVersions[event.type] });
 }

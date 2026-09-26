@@ -113,7 +113,16 @@ function _emitSiteChecks(ctx: OperationContext, closed: MeteringPeriodClosedPayl
   // --- positive twin: the declared types, accepted --------------------------
   emitMeteringEvent(ctx, {
     type: 'metering.period-closed',
-    schemaVersion: 1,
+    entity: { entityType: 'metering-period', entityId: '01J' },
+    piiClass: 'none',
+    payload: closed,
+  });
+
+  // --- a schemaVersion at the emit site: the engine owns it (#1597) ----------
+  emitMeteringEvent(ctx, {
+    type: 'metering.period-closed',
+    // @ts-expect-error the version is the engine's (`meteringEventVersions`) — an emit site cannot name one
+    schemaVersion: 2,
     entity: { entityType: 'metering-period', entityId: '01J' },
     piiClass: 'none',
     payload: closed,
@@ -121,7 +130,6 @@ function _emitSiteChecks(ctx: OperationContext, closed: MeteringPeriodClosedPayl
 
   emitMeteringEvent(ctx, {
     type: 'metering.meter-configured',
-    schemaVersion: 1,
     entity: { entityType: 'metering-meter', entityId: 'turns' },
     piiClass: 'none',
     payload: { key: 'turns', kind: 'counter', unit: 'turn', active: true },
@@ -131,7 +139,6 @@ function _emitSiteChecks(ctx: OperationContext, closed: MeteringPeriodClosedPayl
   emitMeteringEvent(ctx, {
     // @ts-expect-error engine-metering declares no 'metering.meter-retired'
     type: 'metering.meter-retired',
-    schemaVersion: 1,
     entity: { entityType: 'metering-meter', entityId: 'turns' },
     piiClass: 'none',
     payload: { key: 'turns', kind: 'counter', unit: 'turn', active: false },
@@ -140,7 +147,6 @@ function _emitSiteChecks(ctx: OperationContext, closed: MeteringPeriodClosedPayl
   // --- a meter kind this engine does not have -------------------------------
   emitMeteringEvent(ctx, {
     type: 'metering.meter-configured',
-    schemaVersion: 1,
     entity: { entityType: 'metering-meter', entityId: 'turns' },
     piiClass: 'none',
     // @ts-expect-error there are two kinds: 'counter' and 'gauge'
@@ -150,7 +156,6 @@ function _emitSiteChecks(ctx: OperationContext, closed: MeteringPeriodClosedPayl
   // --- a payload field the map declares and the emit drops ------------------
   emitMeteringEvent(ctx, {
     type: 'metering.usage-recorded',
-    schemaVersion: 1,
     entity: { entityType: 'metering-entry', entityId: '01J' },
     piiClass: 'none',
     // @ts-expect-error 'dedupeKey' is required — it is what makes ingest idempotent (D-C)
@@ -168,7 +173,6 @@ function _emitSiteChecks(ctx: OperationContext, closed: MeteringPeriodClosedPayl
   // --- a price on a line that is unpriced by design -------------------------
   emitMeteringEvent(ctx, {
     type: 'metering.period-closed',
-    schemaVersion: 1,
     entity: { entityType: 'metering-period', entityId: '01J' },
     piiClass: 'none',
     payload: {
@@ -188,7 +192,6 @@ describe('#696 engine-metering event contract', () => {
     const ctx = { emit: (event: unknown) => emitted.push(event) } as unknown as OperationContext;
     emitMeteringEvent(ctx, {
       type: 'metering.meter-configured',
-      schemaVersion: 1,
       entity: { entityType: 'metering-meter', entityId: 'turns' },
       piiClass: 'none',
       payload: { key: 'turns', kind: 'counter', unit: 'turn', active: true },

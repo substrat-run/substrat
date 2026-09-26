@@ -116,7 +116,16 @@ function _emitSiteChecks(
   // --- positive twin: the declared types, accepted --------------------------
   emitWorkorderEvent(ctx, {
     type: 'workorder.completed',
-    schemaVersion: 1,
+    entity: { entityType: 'workorder', entityId: '01J' },
+    piiClass: 'none',
+    payload: completed,
+  });
+
+  // --- a schemaVersion at the emit site: the engine owns it (#1597) ----------
+  emitWorkorderEvent(ctx, {
+    type: 'workorder.completed',
+    // @ts-expect-error the version is the engine's (`workorderEventVersions`) — an emit site cannot name one
+    schemaVersion: 2,
     entity: { entityType: 'workorder', entityId: '01J' },
     piiClass: 'none',
     payload: completed,
@@ -124,7 +133,6 @@ function _emitSiteChecks(
 
   emitWorkorderEvent(ctx, {
     type: 'workorder.assigned',
-    schemaVersion: 1,
     entity: { entityType: 'workorder', entityId: '01J' },
     piiClass: 'pseudonymous',
     subjectId: technician,
@@ -135,7 +143,6 @@ function _emitSiteChecks(
   emitWorkorderEvent(ctx, {
     // @ts-expect-error engine-workorder declares no 'workorder.cancelled'
     type: 'workorder.cancelled',
-    schemaVersion: 1,
     entity: { entityType: 'workorder', entityId: '01J' },
     piiClass: 'none',
     payload: { orderId: '01J' },
@@ -144,7 +151,6 @@ function _emitSiteChecks(
   // --- a payload field the map does not declare -----------------------------
   emitWorkorderEvent(ctx, {
     type: 'workorder.closed',
-    schemaVersion: 1,
     entity: { entityType: 'workorder', entityId: '01J' },
     piiClass: 'none',
     // @ts-expect-error 'closedBy' is not on WorkorderClosedPayload
@@ -154,7 +160,6 @@ function _emitSiteChecks(
   // --- a payload field the map declares and the emit drops ------------------
   emitWorkorderEvent(ctx, {
     type: 'workorder.time-reported',
-    schemaVersion: 1,
     entity: { entityType: 'workorder', entityId: '01J' },
     piiClass: 'none',
     // @ts-expect-error 'hours' is required on WorkorderTimeReportedPayload
@@ -164,7 +169,6 @@ function _emitSiteChecks(
   // --- a decimal handed over as a number ------------------------------------
   emitWorkorderEvent(ctx, {
     type: 'workorder.time-reported',
-    schemaVersion: 1,
     entity: { entityType: 'workorder', entityId: '01J' },
     piiClass: 'none',
     // @ts-expect-error money and decimals are strings, never floats (K-14)
@@ -179,7 +183,6 @@ describe('#696 engine-workorder event contract', () => {
     const ctx = { emit: (event: unknown) => emitted.push(event) } as unknown as OperationContext;
     emitWorkorderEvent(ctx, {
       type: 'workorder.closed',
-      schemaVersion: 1,
       entity: { entityType: 'workorder', entityId: '01J' },
       piiClass: 'none',
       payload: { orderId: '01J' },

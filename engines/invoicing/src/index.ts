@@ -88,7 +88,7 @@ export {
   type InvoicingUnderlagUpdatedPayload,
   type InvoicingUnderlagExportedPayload,
 } from './events.js';
-import { emitInvoicingEvent } from './events.js';
+import { emitInvoicingEvent, invoicingEmitDeclarations } from './events.js';
 import {
   assertAllowed,
   ulid,
@@ -121,22 +121,7 @@ export const invoicingManifest = moduleManifest.parse({
     { key: 'invoicing:export', description: 'Export an invoice basis (makes it immutable)' },
   ],
   events: {
-    emits: [
-      { type: 'invoicing.underlag-updated', schemaVersion: 1 },
-      // v2: `total` is Money, not a bare amount string. v1 stated a number with
-      // no currency on a financial artifact — and `demos/callout/spec/testrun.md`
-      // always specified `total: Money`, so this is the code meeting its own
-      // spec rather than a change of intent.
-      //
-      // NOT dual-emitted, despite D-28's deprecation-window rule: consumer
-      // dispatch keys on event TYPE only (`WHERE o.type = ?`; the schemaVersion
-      // in `consumes` is discarded at registration), so emitting v1 and v2 would
-      // deliver BOTH to every consumer of this type. For an export event that
-      // means a connector could invoice twice, silently. A clean replace instead
-      // fails loudly — a v1 consumer's strict parse rejects v2 and dead-letters,
-      // which is visible. See kernel-design open question on version routing.
-      { type: 'invoicing.underlag-exported', schemaVersion: 2 },
-    ],
+    emits: invoicingEmitDeclarations,
     consumes: [
       { type: 'workorder.completed', schemaVersion: 1 },
       { type: 'commerce.order-placed', schemaVersion: 1 },
@@ -523,7 +508,6 @@ const onWorkOrderCompleted: ConsumerHandler = (ctx, event) => {
 
   emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-updated',
-    schemaVersion: 1,
     entity: { entityType: 'underlag', entityId: underlag.id },
     piiClass: 'none',
     payload: {
@@ -602,7 +586,6 @@ const onCommerceOrderPlaced: ConsumerHandler = (ctx, event) => {
 
   emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-updated',
-    schemaVersion: 1,
     entity: { entityType: 'underlag', entityId: underlag.id },
     piiClass: 'none',
     payload: {
@@ -679,7 +662,6 @@ const onTimesheetPeriodClosed: ConsumerHandler = (ctx, event) => {
 
   emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-updated',
-    schemaVersion: 1,
     entity: { entityType: 'underlag', entityId: underlag.id },
     piiClass: 'none',
     payload: {
@@ -767,7 +749,6 @@ const exportOp: OperationHandler<{ underlagId: string; currency?: string }, Unde
   );
   emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-exported',
-    schemaVersion: 2,
     entity: { entityType: 'underlag', entityId: underlag.id },
     piiClass: 'none',
     payload: {

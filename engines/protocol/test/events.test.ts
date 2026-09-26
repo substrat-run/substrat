@@ -166,7 +166,17 @@ function _emitSiteChecks(
   // --- positive twin: the declared type, accepted ---------------------------
   emitProtocolEvent(ctx, {
     type: 'protocol.signed',
-    schemaVersion: 1,
+    entity: { entityType: 'protocol', entityId: '01J' },
+    piiClass: 'pseudonymous',
+    subjectId,
+    payload,
+  });
+
+  // --- a schemaVersion at the emit site: the engine owns it (#1597) ----------
+  emitProtocolEvent(ctx, {
+    type: 'protocol.signed',
+    // @ts-expect-error the version is the engine's (`protocolEventVersions`) — an emit site cannot name one
+    schemaVersion: 2,
     entity: { entityType: 'protocol', entityId: '01J' },
     piiClass: 'pseudonymous',
     subjectId,
@@ -175,7 +185,6 @@ function _emitSiteChecks(
 
   emitProtocolEvent(ctx, {
     type: 'protocol.voided',
-    schemaVersion: 1,
     entity: { entityType: 'protocol', entityId: '01J' },
     piiClass: 'none',
     payload: voided,
@@ -186,7 +195,6 @@ function _emitSiteChecks(
   emitProtocolEvent(ctx, {
     // @ts-expect-error engine-protocol declares no 'protocol.finished'
     type: 'protocol.finished',
-    schemaVersion: 1,
     entity: { entityType: 'protocol', entityId: '01J' },
     piiClass: 'none',
     payload: voided,
@@ -195,7 +203,6 @@ function _emitSiteChecks(
   // --- a payload field the map does not declare -----------------------------
   emitProtocolEvent(ctx, {
     type: 'protocol.voided',
-    schemaVersion: 1,
     entity: { entityType: 'protocol', entityId: '01J' },
     piiClass: 'none',
     // @ts-expect-error 'supersededBy' is not on ProtocolVoidedPayload
@@ -205,7 +212,6 @@ function _emitSiteChecks(
   // --- a payload field the map declares and the emit drops ------------------
   emitProtocolEvent(ctx, {
     type: 'protocol.voided',
-    schemaVersion: 1,
     entity: { entityType: 'protocol', entityId: '01J' },
     piiClass: 'none',
     // @ts-expect-error 'reason' is required on ProtocolVoidedPayload
@@ -215,7 +221,6 @@ function _emitSiteChecks(
   // --- the right payload under the wrong key --------------------------------
   emitProtocolEvent(ctx, {
     type: 'protocol.countersigned',
-    schemaVersion: 1,
     entity: { entityType: 'protocol', entityId: '01J' },
     piiClass: 'pseudonymous',
     subjectId,
@@ -239,7 +244,6 @@ describe('#696 engine-protocol event contract', () => {
     const ctx = { emit: (event: unknown) => emitted.push(event) } as unknown as OperationContext;
     emitProtocolEvent(ctx, {
       type: 'protocol.voided',
-      schemaVersion: 1,
       entity: { entityType: 'protocol', entityId: '01J' },
       piiClass: 'none',
       payload: { instanceId: '01J', entity: { entityType: 'workorder', entityId: '01K' }, previousStatus: 'signed', reason: 'superseded' },

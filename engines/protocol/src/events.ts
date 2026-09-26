@@ -248,6 +248,32 @@ export type ProtocolEvents = {
 export type ProtocolEventType = keyof ProtocolEvents['events'];
 
 /**
+ * Every event type this engine emits, and the `schemaVersion` each is emitted at.
+ *
+ * The ONE home for that number (#1597): `emitProtocolEvent` stamps it onto every
+ * emission and the manifest's `emits` is derived from it below, so the two cannot
+ * drift. `satisfies` holds it to exactly the types `ProtocolEvents` declares — a type
+ * missing here, or one the map does not know, is a compile error. Bumping a
+ * version is K-39's REPLACE: change it here, and the payload type beside it.
+ */
+export const protocolEventVersions = {
+  'protocol.instantiated': 1,
+  'protocol.response-recorded': 1,
+  'protocol.content-bound': 1,
+  'protocol.signatures-requested': 1,
+  'protocol.signature-declined': 1,
+  'protocol.signatures-cancelled': 1,
+  'protocol.signed': 1,
+  'protocol.countersigned': 1,
+  'protocol.voided': 1,
+} as const satisfies Record<ProtocolEventType, number>;
+
+/** The manifest's `events.emits`, read off {@link protocolEventVersions} — never hand-declared. */
+export const protocolEmitDeclarations: { type: string; schemaVersion: number }[] = Object.entries(
+  protocolEventVersions,
+).map(([type, schemaVersion]) => ({ type, schemaVersion }));
+
+/**
  * `ctx.emit`, with the event type and its payload welded together.
  *
  * This is what stops `ProtocolEvents` becoming a description nothing holds in
@@ -261,10 +287,10 @@ export type ProtocolEventType = keyof ProtocolEvents['events'];
  */
 export function emitProtocolEvent<K extends ProtocolEventType>(
   ctx: OperationContext,
-  event: Omit<DomainEventInput, 'type' | 'payload'> & {
+  event: Omit<DomainEventInput, 'type' | 'payload' | 'schemaVersion'> & {
     type: K;
     payload: ProtocolEvents['events'][K];
   },
 ): void {
-  ctx.emit(event);
+  ctx.emit({ ...event, schemaVersion: protocolEventVersions[event.type] });
 }

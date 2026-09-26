@@ -63,7 +63,7 @@ export {
   type InvitesRevokedPayload,
   type MemberAddRequestedPayload,
 } from './events.js';
-import { emitInvitesEvent } from './events.js';
+import { emitInvitesEvent, invitesEmitDeclarations } from './events.js';
 import { columnsOf, returns } from './seam.js';
 import { z } from 'zod';
 import {
@@ -110,15 +110,7 @@ export const invitesManifest = moduleManifest.parse({
     { key: 'invites:revoke', description: 'Withdraw an invitation before it is accepted' },
   ],
   events: {
-    emits: [
-      { type: 'invites.sent', schemaVersion: 1 },
-      { type: 'invites.accepted', schemaVersion: 1 },
-      { type: 'invites.revoked', schemaVersion: 1 },
-      // The connector seam's request (K-22 §4.2). The engine cannot write a
-      // membership tuple — it is tenant-wide directory state, outside this
-      // scope's transaction — so it asks, and an executor effects.
-      { type: 'member.add-requested', schemaVersion: 1 },
-    ],
+    emits: invitesEmitDeclarations,
     consumes: [],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
@@ -321,7 +313,6 @@ export async function sendInvite(
 
   emitInvitesEvent(ctx, {
     type: 'invites.sent',
-    schemaVersion: 1,
     entity: entityRef.parse({ entityType: 'invitation', entityId: id }),
     piiClass: 'none', // the identifier is hashed; nothing here names a person
     payload: { invitationId: id, orgId: input.orgId, roleKey: input.roleKey, expiresAt },
@@ -374,7 +365,6 @@ export async function acceptInvite(
 
   emitInvitesEvent(ctx, {
     type: 'invites.accepted',
-    schemaVersion: 1,
     entity: entityRef.parse({ entityType: 'invitation', entityId: row.id }),
     piiClass: 'none',
     // `principal` is who accepted — a ULID, not an identifier, so it names nobody
@@ -390,7 +380,6 @@ export async function acceptInvite(
   // Fat (D-19): the executor must never need a cross-module read to act.
   emitInvitesEvent(ctx, {
     type: 'member.add-requested',
-    schemaVersion: 1,
     entity: entityRef.parse({ entityType: 'membership', entityId: ctx.principal }),
     piiClass: 'none',
     payload: {
@@ -419,7 +408,6 @@ export function revokeInvite(ctx: OperationContext, invitationId: string): void 
   if (!changed[0]) return; // already settled, or never existed — idempotent and silent
   emitInvitesEvent(ctx, {
     type: 'invites.revoked',
-    schemaVersion: 1,
     entity: entityRef.parse({ entityType: 'invitation', entityId: invitationId }),
     piiClass: 'none',
     payload: { invitationId },

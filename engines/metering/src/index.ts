@@ -101,7 +101,7 @@ export {
   type MeteringPeriodLine,
   type MeteringPeriodClosedPayload,
 } from './events.js';
-import { emitMeteringEvent } from './events.js';
+import { emitMeteringEvent, meteringEmitDeclarations } from './events.js';
 // The value formats, shared with the declared surface above so a caller cannot be
 // told a value is acceptable and then have the handler refuse it.
 import { isoInstant, isoInstantIn, nonNegDecimal, signedDecimal } from './formats.js';
@@ -128,11 +128,7 @@ export const meteringManifest = moduleManifest.parse({
     { key: 'metering:close', description: 'Close a billing period, freezing its aggregates' },
   ],
   events: {
-    emits: [
-      { type: 'metering.meter-configured', schemaVersion: 1 },
-      { type: 'metering.usage-recorded', schemaVersion: 1 },
-      { type: 'metering.period-closed', schemaVersion: 1 },
-    ],
+    emits: meteringEmitDeclarations,
     consumes: [],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
@@ -504,7 +500,6 @@ export function configureMeter(ctx: OperationContext, rawInput: ConfigureMeterIn
   const row = getMeterRow(ctx, input.key);
   emitMeteringEvent(ctx, {
     type: 'metering.meter-configured',
-    schemaVersion: 1,
     entity: { entityType: 'metering-meter', entityId: row.key },
     piiClass: 'none',
     payload: { key: row.key, kind: row.kind, unit: row.unit, active: row.active === 1 },
@@ -633,7 +628,6 @@ export function recordUsage(
   );
   emitMeteringEvent(ctx, {
     type: 'metering.usage-recorded',
-    schemaVersion: 1,
     entity: { entityType: 'metering-entry', entityId: id },
     piiClass: 'none',
     payload: {
@@ -752,7 +746,6 @@ export function closePeriod(
 
   emitMeteringEvent(ctx, {
     type: 'metering.period-closed',
-    schemaVersion: 1,
     entity: { entityType: 'metering-period', entityId: id },
     piiClass: 'none',
     payload: { periodId: id, from: input.from, to: input.to, lines },

@@ -30,7 +30,7 @@
  * basis and its terminal export — sequential facts about one artifact, not one
  * fact by two routes.
  *
- * ## `schemaVersion` lives on the emit, not here
+ * ## `schemaVersion` lives in `invoicingEventVersions`, not on the payload
  *
  * `invoicing.underlag-exported` is at **v2** (`total` is `Money`, not a bare
  * amount string), and `InvoicingUnderlagExportedPayload` describes v2. There is
@@ -92,6 +92,28 @@ export type InvoicingEvents = {
 export type InvoicingEventType = keyof InvoicingEvents['events'];
 
 /**
+ * Every event type this engine emits, and the `schemaVersion` each is emitted at.
+ *
+ * The ONE home for that number (#1597): `emitInvoicingEvent` stamps it onto every
+ * emission and the manifest's `emits` is derived from it below, so the two cannot
+ * drift. `satisfies` holds it to exactly the types `InvoicingEvents` declares — a type
+ * missing here, or one the map does not know, is a compile error. Bumping a
+ * version is K-39's REPLACE: change it here, and the payload type beside it.
+ */
+export const invoicingEventVersions = {
+  'invoicing.underlag-updated': 1,
+  // v2: `total` is Money, not a bare amount string (see the header). NOT
+  // dual-emitted: consumer dispatch keys on event TYPE only, so v1 and v2 side by
+  // side would deliver both to every consumer — for an export, a double invoice.
+  'invoicing.underlag-exported': 2,
+} as const satisfies Record<InvoicingEventType, number>;
+
+/** The manifest's `events.emits`, read off {@link invoicingEventVersions} — never hand-declared. */
+export const invoicingEmitDeclarations: { type: string; schemaVersion: number }[] = Object.entries(
+  invoicingEventVersions,
+).map(([type, schemaVersion]) => ({ type, schemaVersion }));
+
+/**
  * `ctx.emit`, with the event type and its payload welded together.
  *
  * This is what stops `InvoicingEvents` becoming a description nothing holds in
@@ -105,10 +127,10 @@ export type InvoicingEventType = keyof InvoicingEvents['events'];
  */
 export function emitInvoicingEvent<K extends InvoicingEventType>(
   ctx: OperationContext,
-  event: Omit<DomainEventInput, 'type' | 'payload'> & {
+  event: Omit<DomainEventInput, 'type' | 'payload' | 'schemaVersion'> & {
     type: K;
     payload: InvoicingEvents['events'][K];
   },
 ): void {
-  ctx.emit(event);
+  ctx.emit({ ...event, schemaVersion: invoicingEventVersions[event.type] });
 }

@@ -101,7 +101,16 @@ function _emitSiteChecks(ctx: OperationContext, total: Money): void {
   // --- positive twin: the declared types, accepted --------------------------
   emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-updated',
-    schemaVersion: 1,
+    entity: { entityType: 'underlag', entityId: '01J' },
+    piiClass: 'none',
+    payload: { underlagId: '01J', addedLines: 3, source: { entityType: 'workorder', entityId: '01K' } },
+  });
+
+  // --- a schemaVersion at the emit site: the engine owns it (#1597) ----------
+  emitInvoicingEvent(ctx, {
+    type: 'invoicing.underlag-updated',
+    // @ts-expect-error the version is the engine's (`invoicingEventVersions`) — an emit site cannot name one
+    schemaVersion: 2,
     entity: { entityType: 'underlag', entityId: '01J' },
     piiClass: 'none',
     payload: { underlagId: '01J', addedLines: 3, source: { entityType: 'workorder', entityId: '01K' } },
@@ -109,7 +118,6 @@ function _emitSiteChecks(ctx: OperationContext, total: Money): void {
 
   emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-exported',
-    schemaVersion: 2,
     entity: { entityType: 'underlag', entityId: '01J' },
     piiClass: 'none',
     payload: { underlagId: '01J', number: 12, total },
@@ -119,7 +127,6 @@ function _emitSiteChecks(ctx: OperationContext, total: Money): void {
   emitInvoicingEvent(ctx, {
     // @ts-expect-error engine-invoicing declares no 'invoicing.underlag-voided'
     type: 'invoicing.underlag-voided',
-    schemaVersion: 1,
     entity: { entityType: 'underlag', entityId: '01J' },
     piiClass: 'none',
     payload: { underlagId: '01J', addedLines: 0, source: { entityType: 'workorder', entityId: '01K' } },
@@ -128,7 +135,6 @@ function _emitSiteChecks(ctx: OperationContext, total: Money): void {
   // --- a payload field the map does not declare -----------------------------
   emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-updated',
-    schemaVersion: 1,
     entity: { entityType: 'underlag', entityId: '01J' },
     piiClass: 'none',
     // @ts-expect-error the running total is not on this payload — `addedLines` is what changed
@@ -138,7 +144,6 @@ function _emitSiteChecks(ctx: OperationContext, total: Money): void {
   // --- an export that regresses to the v1 shape ------------------------------
   emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-exported',
-    schemaVersion: 2,
     entity: { entityType: 'underlag', entityId: '01J' },
     piiClass: 'none',
     // @ts-expect-error "1550" without a currency is not an amount (v1's defect)
@@ -169,7 +174,6 @@ describe('#696 engine-invoicing event contract', () => {
     const ctx = { emit: (event: unknown) => emitted.push(event) } as unknown as OperationContext;
     emitInvoicingEvent(ctx, {
       type: 'invoicing.underlag-exported',
-      schemaVersion: 2,
       entity: { entityType: 'underlag', entityId: '01J' },
       piiClass: 'none',
       payload: { underlagId: '01J', number: 12, total: moneyOf('1550.00', 'SEK') },

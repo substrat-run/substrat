@@ -112,6 +112,30 @@ export type WorkorderEvents = {
 export type WorkorderEventType = keyof WorkorderEvents['events'];
 
 /**
+ * Every event type this engine emits, and the `schemaVersion` each is emitted at.
+ *
+ * The ONE home for that number (#1597): `emitWorkorderEvent` stamps it onto every
+ * emission and the manifest's `emits` is derived from it below, so the two cannot
+ * drift. `satisfies` holds it to exactly the types `WorkorderEvents` declares — a type
+ * missing here, or one the map does not know, is a compile error. Bumping a
+ * version is K-39's REPLACE: change it here, and the payload type beside it.
+ */
+export const workorderEventVersions = {
+  'workorder.created': 1,
+  'workorder.assigned': 1,
+  'workorder.started': 1,
+  'workorder.time-reported': 1,
+  'workorder.material-reported': 1,
+  'workorder.completed': 1,
+  'workorder.closed': 1,
+} as const satisfies Record<WorkorderEventType, number>;
+
+/** The manifest's `events.emits`, read off {@link workorderEventVersions} — never hand-declared. */
+export const workorderEmitDeclarations: { type: string; schemaVersion: number }[] = Object.entries(
+  workorderEventVersions,
+).map(([type, schemaVersion]) => ({ type, schemaVersion }));
+
+/**
  * `ctx.emit`, with the event type and its payload welded together.
  *
  * This is what stops `WorkorderEvents` becoming a description nothing holds in
@@ -125,10 +149,10 @@ export type WorkorderEventType = keyof WorkorderEvents['events'];
  */
 export function emitWorkorderEvent<K extends WorkorderEventType>(
   ctx: OperationContext,
-  event: Omit<DomainEventInput, 'type' | 'payload'> & {
+  event: Omit<DomainEventInput, 'type' | 'payload' | 'schemaVersion'> & {
     type: K;
     payload: WorkorderEvents['events'][K];
   },
 ): void {
-  ctx.emit(event);
+  ctx.emit({ ...event, schemaVersion: workorderEventVersions[event.type] });
 }
