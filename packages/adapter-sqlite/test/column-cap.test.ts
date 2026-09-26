@@ -27,10 +27,14 @@ const manifest = moduleManifest.parse({
   entitlementKey: 'wide',
 });
 const read: OperationHandler<{ sql: string }, unknown> = (ctx, input) => ctx.sql.query(input.sql);
+const run: OperationHandler<{ sql: string }, unknown> = (ctx, input) => ctx.sql.exec(input.sql);
 const modWith = (migrations: { version: string; sql: string }[]): ModuleRegistration => ({
   manifest,
   migrations,
-  operations: { 'wide/read': read as OperationHandler<never, unknown> },
+  operations: {
+    'wide/read': read as OperationHandler<never, unknown>,
+    'wide/exec': run as OperationHandler<never, unknown>,
+  },
 });
 
 describe('the column cap of a Durable Object, on node (#1811)', () => {
@@ -127,6 +131,45 @@ describe('the column cap of a Durable Object, on node (#1811)', () => {
           { version: '0002', sql: 'CREATE TABLE wide_u (id); INSERT INTO wide_u VALUES (1); DROP TABLE wide_t' },
         ]),
       ).resolves.toBeDefined();
+    });
+  });
+
+  describe('DDL a module runs itself, outside a migration', () => {
+    const tableExists = async (stub: { invoke: (op: string, i: unknown) => Promise<unknown> }, name: string) =>
+      ((await stub.invoke('wide/read', { sql: `SELECT name FROM sqlite_master WHERE name = '${name}'` })) as unknown[]).length === 1;
+    const seed = [{ version: '0001', sql: `CREATE TABLE wide_t (${cols(0, columns)}); CREATE TABLE wide_n (${cols(0, columns - 1)})` }];
+
+    it(`a CREATE TABLE of ${columns} columns runs`, async () => {
+      const { stub } = await provision(seed);
+      await stub.invoke('wide/exec', { sql: `CREATE TABLE wide_rt (${cols(0, columns)})` });
+      expect(await tableExists(stub, 'wide_rt')).toBe(true);
+    });
+
+    it(`a CREATE TABLE of ${columns + 1} columns is refused and rolled back`, async () => {
+      const { stub } = await provision(seed);
+      await expect(stub.invoke('wide/exec', { sql: `CREATE TABLE wide_rt (${cols(0, columns + 1)})` })).rejects.toThrow(
+        /too many columns on wide_rt/,
+      );
+      expect(await tableExists(stub, 'wide_rt')).toBe(false);
+    });
+
+    it(`an ADD COLUMN to ${columns} columns runs`, async () => {
+      const { stub } = await provision(seed);
+      await stub.invoke('wide/exec', { sql: 'ALTER TABLE wide_n ADD COLUMN one_more' });
+      expect((await stub.invoke('wide/read', { sql: 'SELECT one_more FROM wide_n' })) as unknown[]).toEqual([]);
+    });
+
+    it(`an ADD COLUMN across ${columns} is refused and rolled back`, async () => {
+      const { stub } = await provision(seed);
+      await expect(stub.invoke('wide/exec', { sql: 'ALTER TABLE wide_t ADD COLUMN one_too_many' })).rejects.toThrow(
+        /too many columns on wide_t/,
+      );
+      await expect(stub.invoke('wide/read', { sql: 'SELECT one_too_many FROM wide_t' })).rejects.toThrow(/no such column/);
+    });
+
+    it('a write to a table already at the limit is unaffected', async () => {
+      const { stub } = await provision(seed);
+      await expect(stub.invoke('wide/exec', { sql: 'INSERT INTO wide_t (c0) VALUES (1)' })).resolves.toEqual({ changes: 1 });
     });
   });
 

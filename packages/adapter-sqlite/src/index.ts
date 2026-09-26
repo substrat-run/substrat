@@ -11002,8 +11002,16 @@ function scopedSql(db: Database.Database, judgeWidth = false): ScopedSql {
     query: <T>(sql: string, params: readonly SqlValue[] = []): T[] =>
       prepare(sql).all(...params) as T[],
     exec: (sql: string, params: readonly SqlValue[] = []) => {
-      const info = prepare(sql).run(...params);
+      const stmt = prepare(sql);
+      // Runtime DDL (a module's own `CREATE TABLE` / `ADD COLUMN` outside a migration) is judged
+      // the same way a migration is: by what the schema is afterwards. `schema_version` moves on
+      // exactly the statements that change it, so a plain write costs two header reads and no scan.
+      const before = judgeWidth && !stmt.reader ? schemaVersion(db) : 0;
+      const info = stmt.run(...params);
+      if (judgeWidth && !stmt.reader && schemaVersion(db) !== before) assertTablesWithinColumnLimit(db);
       return { changes: info.changes };
     },
   });
 }
+
+const schemaVersion = (db: Database.Database): number => db.pragma('schema_version', { simple: true }) as number;
