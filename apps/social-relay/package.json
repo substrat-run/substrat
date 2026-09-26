@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/social-relay",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "The platform's social sign-in relay — one OAuth client per upstream, held here so no tenant ever holds one (#1544)",
   "type": "module",

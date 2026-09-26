@@ -1,5 +1,12 @@
 # @substrat-run/demo-callout-app
 
+## 0.0.35
+
+### Patch Changes
+
+- Updated dependencies [0803833]
+  - @substrat-run/contracts@0.122.0
+
 ## 0.0.34
 
 ### Patch Changes

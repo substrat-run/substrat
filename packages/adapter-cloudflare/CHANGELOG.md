@@ -1,5 +1,45 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.122.0
+
+### Minor Changes
+
+- 0803833: Moving one app onto a version that stops exporting an event type another app in the same tenant imports is now refused, the same way a promote already is. Before, updating one app could stop another app's events arriving, and nobody would have agreed to that.
+
+  A move is either of the two things that decide what code an app runs: binding it to a version, or routing it onto (or off) its vertical's serving script, which is what adopting a legacy app does before its version ever changes. Both are judged by the code the app runs before and after. An app that stays on the serving script runs the served version whatever its pointer says, so re-pointing it is never refused; the promote that replaced that script already judged every tenant. A fork, a preview, an app still provisioning, and an app's first bind are never refused either. A move to another vertical (`rebind-vertical` across lineages) is not judged, which is a known gap.
+
+  The refusal counts what would break. Pass `acknowledge: { exportBreak: true }` to move anyway, and the admin log records it.
+
+  - The control plane's bind (`POST /tenants/:t/scopes/:s/version`), `adopt-serving` (per app and vertical-wide) and `rebind-vertical` take `acknowledge`, ask before moving any data, and refuse with the affected apps listed. `GET /tenants/:t/scopes/:s/binding-impact?versionId=` asks the same question without moving anything.
+  - A private vertical's promote passes its export-break acknowledgement on to the apps it adopts, and its impact (`promote-impact` and the promote's own refusal) names what adopting each app still on an older version would break. Without the acknowledgement such an app is left where it is, every other app still moves, and the promote says which were left.
+  - `substrat scope bind`, `scope adopt-serving` and `scope rebind` take `--ack-export-break` and print the affected apps.
+  - The dashboard's Update and Bind list the affected apps in a confirm and send again acknowledged. A refused Update leaves nothing on the Activity trail, and an acknowledged one says it was acknowledged.
+  - A version that is not admitted is refused as that before any acknowledgement is asked for.
+
+  `HostAdmin` gains `bindingImpact(actor, tenantId, scopeId, versionId, opts?)`, which lists the apps a move would break (`opts.servingRef` for a routing move). `bindScopeVersion` and `setScopeServingRef` gain `acknowledge` in their options. Anything that implements `HostAdmin` needs the new method. The kernel exports `bindExportBreaksOf` and the refusal helpers, and `exportBreaksOf` takes an optional `tenantId`.
+
+- 3a3338d: A version's SQL migrations are now stored apart from its deploy manifest. Reading a version no longer moves its SQL. Admitting, promoting, binding and serving a version read only the manifest, and the promote review reads the SQL on its own.
+
+  `substrat push` sends the same manifest as before. The control plane takes the `migrations` field out when the version is published, stores each migration as its own row, and keeps the manifest without it. As before, `substrat push` leaves off a set over the limits (2000 migrations, 512 KiB of SQL) with a warning, and the deploy endpoint refuses one before anything is uploaded. A version published any other way with such a set, or with one not shaped like migrations, still publishes without it, and the promote dialog says the SQL is not available and asks for the acknowledgement.
+
+  Versions pushed earlier are moved over in the background, a few at a time, and read correctly while they wait. A version pushed before manifests carried migrations still reads as "SQL not available", never as "no migrations". A directory restored from a backup taken before the move is moved again.
+
+  `HostAdmin` gains `versionMigrations(actor, verticalSlug, versionId)`, which returns one version's migrations in the order the host runs them. It returns `null` for a version with none to show. Like `versionManifest`, it refuses a version of another vertical. Anything that implements `HostAdmin` needs the new method.
+
+### Patch Changes
+
+- 1e326dd: Fixes the event drain on the hosted adapter. A Durable Object refuses a statement with more than 100 bound parameters, and marking a drained batch bound one parameter per event. The default batch is 200, so on a real Durable Object every default drain of more than 100 events failed and marked nothing. Reopening drained events (`redrainEvents`, up to 5000 per call) failed past 100 in the same way.
+
+  The platform's other statements that took a list now bind it as one JSON array too. These are the fleet listing's status filter and the audit log's action filter (neither list had a length bound, because an entry may repeat), the freshness probe's event types, and the cross-vertical export read and count. The node adapter has no parameter limit on platform SQL, so these failed only on the hosted adapter. They are converted on both, so the two adapters keep running the same statements.
+
+  Every converted statement is checked on workerd for behaviour past the limit. `contract-tests` drains, stamps and reopens 350 events in one scope, and filters the fleet and the audit log by 151-entry lists. The freshness probe and both export statements are run with 150 event types. The query plan is compared with the one-parameter-per-entry form's for three statements only: the export read, the export count and the drain-stamp count. Each uses the same index as before, on a scope with no table statistics. The other statements are checked for behaviour only. Once `ANALYZE` has run on a scope, the export read chooses a slower plan than the old form did; it returns the same rows (#1787).
+
+- Updated dependencies [0803833]
+- Updated dependencies [1e326dd]
+- Updated dependencies [3a3338d]
+  - @substrat-run/contracts@0.122.0
+  - @substrat-run/kernel@0.122.0
+
 ## 0.121.0
 
 ### Minor Changes
@@ -5605,7 +5645,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
