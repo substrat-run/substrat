@@ -553,8 +553,8 @@ interface InviteClaim {
   exp: number;
 }
 
-function signInviteToken(env: Env, claim: Omit<InviteClaim, 'exp'>): Promise<string> {
-  const payload: InviteClaim = { ...claim, exp: Date.now() + 14 * 24 * 60 * 60 * 1000 };
+function signInviteToken(env: Env, claim: Omit<InviteClaim, 'exp'>, notAfter = Infinity): Promise<string> {
+  const payload: InviteClaim = { ...claim, exp: Math.min(Date.now() + 14 * 24 * 60 * 60 * 1000, notAfter) };
   return signClaim(env.SESSION_SECRET, INVITE_TOKEN_PURPOSE, payload);
 }
 
@@ -1108,18 +1108,26 @@ app.get('/api/members', async (c) => {
 });
 
 /**
- * Invite a member to the current team at a role. The in-scope op enforces the §5.1
- * bound (invite only at a role you already hold) and composes the invites engine,
- * then we email the invitee an accept link.
- *
- * The email is sent HERE, host-side, because this is the only place the raw address
- * exists: the invites engine hashes the identifier and the `invites.sent` event
- * carries only the hash (piiClass 'none'), so no outbox executor could recover an
- * address to send to. Delivery is best-effort — the invitation is already committed,
- * so a send failure is reported (`emailDelivered: false`) rather than rolling back a
- * recorded invite; the returned `acceptUrl` lets the inviter share the link manually
- * and is what a resend would use.
+ * A freshly-signed accept link for one invitation (14 days, or the invitation's own
+ * deadline if that comes first). The token names the invitation,
+ * not the address, and accepting still requires the invited email (the engine's hash is the
+ * gate), so minting a link grants nothing an invite did not already grant.
  */
+async function inviteAcceptUrl(
+  env: Env,
+  origin: string,
+  node: DashboardNode,
+  invitationId: string,
+  notAfter?: number,
+): Promise<string> {
+  const token = await signInviteToken(
+    env,
+    { tenantId: node.tenantId, scopeId: node.scopeId, invitationId },
+    notAfter,
+  );
+  return `${origin}/invite/${token}`;
+}
+
 /**
  * Mint a fresh accept link for an invitation and mail it to the invitee. Shared by
  * the initial invite and the resend button: both send the SAME message with the raw
@@ -1138,12 +1146,7 @@ async function mailInvite(
   to: string,
   invitationId: string,
 ): Promise<{ acceptUrl: string; emailDelivered: boolean }> {
-  const token = await signInviteToken(env, {
-    tenantId: node.tenantId,
-    scopeId: node.scopeId,
-    invitationId,
-  });
-  const acceptUrl = `${origin}/invite/${token}`;
+  const acceptUrl = await inviteAcceptUrl(env, origin, node, invitationId);
   const team = await host.admin.getTenant(STAFF, node.tenantId);
   let emailDelivered = false;
   try {
@@ -1163,6 +1166,19 @@ async function mailInvite(
   return { acceptUrl, emailDelivered };
 }
 
+/**
+ * Invite a member to the current team at a role. The in-scope op enforces the §5.1
+ * bound (invite only at a role you already hold) and composes the invites engine,
+ * then we email the invitee an accept link.
+ *
+ * The email is sent HERE, host-side, because this is the only place the raw address
+ * exists: the invites engine hashes the identifier and the `invites.sent` event
+ * carries only the hash (piiClass 'none'), so no outbox executor could recover an
+ * address to send to. Delivery is best-effort — the invitation is already committed,
+ * so a send failure is reported (`emailDelivered: false`) rather than rolling back a
+ * recorded invite; the returned `acceptUrl` lets the inviter share the link manually
+ * and is what a resend would use.
+ */
 const inviteMemberBody = z.object({
   email: z.string().trim().min(1),
   roleKey: z.enum(['admin', 'member', 'viewer']),
@@ -1216,6 +1232,29 @@ app.post('/api/members/resend-invite', async (c) => {
     resent.invitationId,
   );
   return c.json({ invitationId: resent.invitationId, acceptUrl, emailDelivered });
+});
+
+/**
+ * A pending invite's accept link, to copy and share — the roster's "Copy link". A pure
+ * read: it sends no email and changes nothing. The in-scope op asks what a resend asks
+ * (manage-members, and the §5.1 bound on the invite's role), and answers for an OPEN
+ * invitation only — a lapsed one is a 409 pointing at Resend, which is what renews it.
+ * The token expires with the invitation, never after it.
+ */
+app.post('/api/members/invite-link', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const { invitationId } = z.object({ invitationId: z.string().min(1) }).parse(await c.req.json());
+  const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const live = (await scope.invoke('dashboard/invite-link', { invitationId })) as
+    | { invitationId: string; expiresAt: string }
+    | { lapsed: true }
+    | null;
+  if (!live) throw new HTTPException(404, { message: 'no such pending invite' });
+  if ('lapsed' in live) throw new HTTPException(409, { message: 'invite expired — use Resend to renew it' });
+  const acceptUrl = await inviteAcceptUrl(c.env, new URL(c.req.url).origin, node, live.invitationId, Date.parse(live.expiresAt));
+  return c.json({ invitationId: live.invitationId, acceptUrl, expiresAt: live.expiresAt });
 });
 
 /** Withdraw a pending invite from the current team. */

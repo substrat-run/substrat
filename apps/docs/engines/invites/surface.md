@@ -37,6 +37,7 @@ the invitees the invitation was issued to.
 sendInvite(ctx, { orgId, identifier, roleKey, ttlMs? })  → Promise<{ id }>
 acceptInvite(ctx, { invitationId, identifier })          → Promise<Invitation>
 listInvites(ctx, orgId)                                  → Invitation[]
+readInvitation(ctx, invitationId)                        → Invitation | null
 revokeInvite(ctx, invitationId)                          → void
 expireOverdue(ctx, orgId)                                → void
 hashIdentifier(scopeSalt, identifier)                    → Promise<string>
@@ -60,6 +61,9 @@ Notes worth knowing:
   instead, through `effectiveStateOf`, so a still-`invited` invitation past `expires_at`
   reports `expired` while its row is untouched and its `settled_at` is still `null`. Call
   the same list twice and you get the same answer, having written nothing either time.
+- `readInvitation` is the one-invitation twin of that read: the same rendered state, nothing
+  written, no rate limit applied, no event emitted, `null` for an unknown id. Use it to ask
+  "is this invitation still open, and until when?" without going through `sendInvite`.
 - `effectiveStateOf(state, expiresAt, now)` is that one comparison, exported so a vertical
   folding `listInvites` into its own read asks the engine's question rather than
   re-deriving it. It touches `invited` rows only: an `accepted`, `revoked` or already-swept

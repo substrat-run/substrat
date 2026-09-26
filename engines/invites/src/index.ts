@@ -458,6 +458,17 @@ export function listInvites(ctx: OperationContext, orgId: OrgId): Invitation[] {
     .map((r) => publishedInvitation({ ...r, state: effectiveStateOf(r.state, r.expires_at, now) }));
 }
 
+/**
+ * One invitation by id, with state — a pure read like `listInvites`: an overdue
+ * invitation reports `expired` without the row being touched, nothing is emitted, and
+ * no rate limit or expiry sweep runs. `null` when there is no such invitation.
+ * Like `listInvites` it checks no permission; the caller does, first.
+ */
+export function readInvitation(ctx: OperationContext, invitationId: string): Invitation | null {
+  const r = ctx.sql.query<Invitation>(`SELECT ${PUBLIC_COLUMNS} FROM invites_invitation WHERE id = ?`, [invitationId])[0];
+  return r ? publishedInvitation({ ...r, state: effectiveStateOf(r.state, r.expires_at, ctx.now()) }) : null;
+}
+
 // -- operations: the permission check plus one exported function (D-28) -------
 
 const sendOp: OperationHandler<SendInviteInput, { id: string }> = async (ctx, input) => {

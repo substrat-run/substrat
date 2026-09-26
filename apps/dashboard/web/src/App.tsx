@@ -668,7 +668,7 @@ export function App() {
   // Invite a member → returns a shareable accept link (Team shows it to copy). The
   // roster refreshes so the pending invite appears. Dev-preview fakes both.
   const inviteMember = useCallback(
-    async (email: string, roleKey: InviteRole): Promise<{ acceptUrl: string } | void> => {
+    async (email: string, roleKey: InviteRole): Promise<{ acceptUrl: string; emailDelivered?: boolean } | void> => {
       if (DEV_MOCK) {
         const id = String(Date.now());
         setMembers((ms) => [
@@ -683,6 +683,16 @@ export function App() {
     },
     [reloadMembers],
   );
+
+  // A pending invite's accept link and deadline for the roster's "Copy link": a pure read,
+  // no email, nothing renewed. Dev-preview fakes it.
+  const copyInviteLink = useCallback(async (invitationId: string) => {
+    if (DEV_MOCK) {
+      return { acceptUrl: `${window.location.origin}/invite/demo-${invitationId}`, expiresAt: new Date(Date.now() + 14 * 864e5).toISOString() };
+    }
+    const { acceptUrl, expiresAt } = await api.inviteLink(invitationId);
+    return { acceptUrl, expiresAt };
+  }, []);
 
   const revokeInvite = useCallback(
     async (invitationId: string) => {
@@ -929,6 +939,7 @@ export function App() {
           meEmail={me.email ?? ''}
           canManage={['owner', 'admin'].includes(members.find((m) => m.principal === me.principal)?.role_key ?? 'owner')}
           onInvite={inviteMember}
+          onCopyLink={copyInviteLink}
           onResend={(id) => void resendInvite(id)}
           onRevoke={(id) => void revokeInvite(id)}
           onRemove={(id) => void removeMember(id)}

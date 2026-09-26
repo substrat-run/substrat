@@ -6,6 +6,7 @@ import {
   invitesModule,
   INVITES_PERM as PERM,
   hashIdentifier,
+  readInvitation,
   type Invitation,
 } from '../src/index.js';
 
@@ -178,6 +179,27 @@ describe('invites engine', () => {
     await expect(
       late.invoke('invites/accept', { invitationId: id, identifier: 'gone@example.com' }),
     ).rejects.toThrow(/not acceptable/);
+  });
+
+  it('readInvitation is a pure read: open, lapsed and unknown, with nothing written or emitted', async () => {
+    const s = await sender();
+    const open = await send('open@example.com');
+    const lapsed = (
+      await s.invoke<{ id: string }>('invites/send', { orgId: org, identifier: 'late@example.com', roleKey: 'member', ttlMs: -1 })
+    ).id;
+    const events = h.eventsOfType('invites.sent').length;
+    const snapshot = () =>
+      h.run((ctx) => ctx.sql.query<Record<string, unknown>>('SELECT * FROM invites_invitation ORDER BY id'), [PERM.read]);
+    const before = await snapshot();
+
+    const read = (id: string) => h.run((ctx) => readInvitation(ctx, id), [PERM.read]);
+    expect(await read(open)).toMatchObject({ id: open, state: 'invited' });
+    expect(await read(lapsed)).toMatchObject({ id: lapsed, state: 'expired' });
+    expect(await read(ulid())).toBeNull();
+    expect(JSON.stringify(await read(open))).not.toContain('identifier_hash');
+
+    expect(await snapshot()).toEqual(before);
+    expect(h.eventsOfType('invites.sent')).toHaveLength(events);
   });
 
   it('renders an overdue invitation as expired without writing to it (#964)', async () => {
