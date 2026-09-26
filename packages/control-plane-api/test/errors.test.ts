@@ -184,3 +184,20 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     expect(body.error).toBe('not implemented');
   });
 });
+
+describe('mapError — a ScopeDO refusing a projection for another tenant (#1738)', () => {
+  // As it arrives across the Durable Object hop: a plain Error, the code only in the text.
+  const refusal = new Error(
+    'Substrat.conflict: applyProjection refused: this scope was provisioned for tenant 01AAA, and a projection for tenant 01BBB would re-point it',
+  );
+
+  it('answers 409, with its text intact, not a generic 500', () => {
+    const { status, body } = mapError(refusal);
+    expect(status).toBe(409);
+    expect(JSON.stringify(body)).toContain('would re-point it');
+  });
+
+  it('the twin: an unrelated plain Error is still the generic 500', () => {
+    expect(mapError(new Error('boom')).status).toBe(500);
+  });
+});

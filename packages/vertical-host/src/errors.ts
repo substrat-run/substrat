@@ -116,6 +116,9 @@ export function classifyError(err: unknown): ErrorClassification | undefined {
   if (isParseFailure(err)) return { status: 400, message };
   if (/not found|unknown scope/i.test(message)) return { status: 404, message };
   if (/invalid transition|immutable/i.test(message)) return { status: 409, message };
+  // #1738: a ScopeDO refusing a projection for a tenant it was not provisioned for. It throws
+  // inside the DO, so the code arrives flattened into the message, past the taxonomy read above.
+  if (/applyProjection refused/.test(message)) return { status: 409, message };
   return explicit === undefined ? undefined : { status: explicit, message };
 }
 

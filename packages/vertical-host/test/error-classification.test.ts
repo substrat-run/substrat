@@ -143,3 +143,17 @@ describe('problemFor renders the body', () => {
     );
   });
 });
+
+describe('classifyError on a ScopeDO refusing a projection for another tenant (#1738)', () => {
+  const refusal = new Error(
+    'Substrat.conflict: applyProjection refused: this scope was provisioned for tenant 01AAA, and a projection for tenant 01BBB would re-point it',
+  );
+
+  it('answers 409 rather than the caller\'s 400', () => {
+    expect(classifyError(refusal)?.status).toBe(409);
+  });
+
+  it('the twin: an unrelated plain Error keeps no opinion', () => {
+    expect(classifyError(new Error('boom'))).toBeUndefined();
+  });
+});
