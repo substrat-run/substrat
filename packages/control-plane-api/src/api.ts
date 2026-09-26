@@ -4540,9 +4540,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'forbidden' }, 403);
     }
     input.verticalSlug = slug;
-    // `manifestJson` is a string the schema cannot look inside, and every reader
-    // (registry, outbound, assets, promote) parses it with `storedDeployManifest` and 500s on
-    // a row it refuses. Hold it to that same parser here, at the trust boundary. The STORED
+    // `manifestJson` is a string the schema cannot look inside, and every reader parses it
+    // with `storedDeployManifest` and 500s on a row it refuses: the per-version reads below
+    // (registry, schedules, flow, model, assets), the serving-upload rebuild that promote
+    // and backout run (`serveVersionInPlace`), and `tenant-stores.ts`.
+    // Hold it to that same parser here, at the trust boundary. The STORED
     // form, not the push-time one: this route keeps accepting what the platform already holds
     // (no `registry`, pre-#286 nulls), and refuses only what no reader could open. The string
     // is stored as sent — re-serializing would drop keys a newer publisher carries.
