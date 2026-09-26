@@ -135,7 +135,9 @@ listed them as deferred:
   it (over `systemSwitchDelegation`), and the `ControlPlaneDO` records each switch beside it.
   `reassertSystemSwitches` puts a recorded OFF back after a wipe, a stale restore or a rewind
   (always after provisioning's seat), and `listSystemSwitches` is the fleet read of what is
-  off. With no delegation configured, a hosted scope's status read and re-assert refuse
+  off. A point-in-time rewind replaces the scope's whole storage, so it first holds the scope's
+  switched-off modules on one object outside it (`SWITCH_HOLDS_NAME`), and `runDueSchedules`
+  skips a held module until its switch moves again. With no delegation configured, a hosted scope's status read and re-assert refuse
   `unavailable` rather than answer from this host's placeholder namespace.
 
 Still deferred, honestly:

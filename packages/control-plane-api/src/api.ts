@@ -4115,6 +4115,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // through, makes the next sweep reconcile the scope, and that reconcile re-asserts
       // what the directory records as off. Left to the sweep rather than done here: the
       // scope's store restarts to finish the restore, and a re-assert now would race it.
+      // Until then, the deployment that rewound it holds those modules off (#1819).
       await admin.markScopeProvisioned(actor, tenantId, scopeId, null);
       return c.json(answer);
     } catch (e) {
