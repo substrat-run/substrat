@@ -391,7 +391,7 @@ describe('list statements keep their index once table statistics exist (#1787)',
       expect(new Set(pinned).size).toBe(pinned.length);
     });
 
-    it(`exportReadQuery without a cursor seeks by type as well, and pages by LIMIT (${phase})`, async () => {
+    it(`exportReadQuery without a cursor still reads by a type index, and pages by LIMIT (${phase}; a no-regression record, not a pin: the unpinned form seeks by type here too)`, async () => {
       const [now, page, expected] = await inScope((sql) => {
         const q = exportReadQuery(wanted, null, 7);
         return [plan(sql, q), idsOf(sql, q), idsOf(sql, oldExportRead(wanted, null, 7))] as const;
