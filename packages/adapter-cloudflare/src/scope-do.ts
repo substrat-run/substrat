@@ -1,3 +1,4 @@
+import { REWIND_REFUSED } from './rewind-refusal.js';
 import { DurableObject } from 'cloudflare:workers';
 import {
   ATTACHMENT_ADDED,
@@ -1644,12 +1645,12 @@ export function defineScopeDO(
     async rewindToBookmark(
       bookmark: string,
       opts?: { force?: boolean },
-    ): Promise<{ rewindingTo: string }> {
+    ): Promise<{ rewindingTo: string; instance: string }> {
       const storage = this.ctx.storage as unknown as {
         onNextSessionRestoreBookmark?: (b: string) => Promise<string>;
       };
       if (typeof storage.onNextSessionRestoreBookmark !== 'function') {
-        throw new Error('point-in-time rewind is not available on this host (PITR is production-plane only)');
+        throw new Error(`${REWIND_REFUSED}point-in-time rewind is not available on this host (PITR is production-plane only)`);
       }
       const row = this.sql
         .exec('SELECT taken_at FROM _substrat_migration_bookmarks WHERE bookmark = ?', bookmark)
@@ -1657,22 +1658,30 @@ export function defineScopeDO(
       if (!opts?.force) {
         if (!row) {
           throw new Error(
-            'unknown bookmark — not one this scope recorded before a migration (force admits any bookmark Cloudflare holds)',
+            `${REWIND_REFUSED}unknown bookmark — not one this scope recorded before a migration ` +
+              '(force admits any bookmark Cloudflare holds)',
           );
         }
         const ageMs = Date.now() - Date.parse(row.taken_at);
         if (ageMs > 24 * 60 * 60 * 1000) {
           throw new Error(
-            `bookmark is ${Math.round(ageMs / 3_600_000)}h old — rewinding discards EVERY write since; ` +
+            `${REWIND_REFUSED}bookmark is ${Math.round(ageMs / 3_600_000)}h old — rewinding discards EVERY write since; ` +
               `use the backup restore path (#278), or force if the loss is intended`,
           );
         }
       }
+      // #1819: arming from BEFORE the call, so a probe that lands while it is in flight answers
+      // armed. Left set if the call throws: that is not a refusal, and it may have armed.
+      this.rewindArming = true;
       const confirmed = await storage.onNextSessionRestoreBookmark(bookmark);
+      // #1819: from here, everything this instance writes is discarded at the restart.
+      this.rewindArmed = true;
       // Answer first, then restart to complete the restore — an immediate abort
       // would take the RPC response down with it.
       setTimeout(() => this.ctx.abort(), 100);
-      return { rewindingTo: confirmed ?? bookmark };
+      // #1819: which instance is doomed, so the host can tell a switch move made here from one
+      // made on the restored storage after the restart.
+      return { rewindingTo: confirmed ?? bookmark, instance: this.instanceId };
     }
 
     /**
@@ -3090,10 +3099,17 @@ export function defineScopeDO(
      * `switchSystemSchedules`, serialized on the queue with every other tuple write and run
      * as one `transactionSync`, so its reads and writes are one unit.
      */
-    async switchSystemSchedules(moduleId: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome> {
-      return this.queue.enqueue(() =>
+    async switchSystemSchedules(
+      moduleId: string,
+      scopeId: string,
+      to: 'on' | 'off',
+      at: string,
+    ): Promise<SwitchOutcome & { instance: string }> {
+      const outcome = await this.queue.enqueue(() =>
         this.ctx.storage.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
       );
+      // #1819: the instance that applied it, which the rewind hold's release rule reads.
+      return { ...outcome, instance: this.instanceId };
     }
 
     /**
@@ -3154,6 +3170,130 @@ export function defineScopeDO(
      */
     async systemGrantsStatus(): Promise<SystemGrantsEntry[]> {
       return systemGrantsStatus(this.switchSql(), new Date().toISOString());
+    }
+
+    // -- the rewind hold (#1819) ------------------------------------------------
+    // Two halves. On EVERY scope instance: its identity, and whether it has armed a rewind, so
+    // the host can tell storage the rewind will discard from storage it restored. On ONE object
+    // per deployment, the one named `SWITCH_HOLDS_NAME` and never a scope's own: the claims
+    // themselves, because a rewind replaces the rewound scope's whole storage. The claims table
+    // is created on first use, so no scope ever carries it.
+
+    /** This instance, and nothing before or after it: a restart is a new id. */
+    private readonly instanceId = crypto.randomUUID();
+    /** Whether this instance armed a rewind: then its writes are discarded at the restart. */
+    private rewindArmed = false;
+    /** Whether this instance began arming one: set before the restore call, and never cleared. */
+    private rewindArming = false;
+
+    /**
+     * Which instance is serving, and whether it armed a rewind or began to. For an ambiguous
+     * rewind throw: arming counts as armed, because the restore call may yet land.
+     */
+    rewindProbe(): { instance: string; armed: boolean } {
+      return { instance: this.instanceId, armed: this.rewindArmed || this.rewindArming };
+    }
+
+    /** Whether this instance has created the claims table; it never goes away once it exists. */
+    private switchHoldsReady = false;
+
+    private switchHoldsTable(): void {
+      if (this.switchHoldsReady) return;
+      this.sql.exec(
+        `CREATE TABLE IF NOT EXISTS _substrat_switch_holds (
+           scope_id TEXT NOT NULL,
+           module_id TEXT NOT NULL,
+           claim_id TEXT NOT NULL,
+           state TEXT NOT NULL,
+           doomed TEXT,
+           held_at TEXT NOT NULL,
+           PRIMARY KEY (scope_id, module_id, claim_id)
+         )`,
+      );
+      this.switchHoldsReady = true;
+    }
+
+    /** One rewind's claim on these modules, `pending` until the rewind has armed. */
+    switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string, at: string): void {
+      this.switchHoldsTable();
+      this.ctx.storage.transactionSync(() => {
+        for (const moduleId of moduleIds) {
+          this.sql.exec(
+            `INSERT OR IGNORE INTO _substrat_switch_holds (scope_id, module_id, claim_id, state, doomed, held_at)
+             VALUES (?, ?, ?, 'pending', NULL, ?)`,
+            scopeId,
+            moduleId,
+            claimId,
+            at,
+          );
+        }
+      });
+    }
+
+    /** The rewind armed (or may have): its claim is `armed`, naming the instance it doomed. */
+    switchHoldArm(scopeId: string, claimId: string, doomed: string | null): void {
+      this.switchHoldsTable();
+      this.sql.exec(
+        `UPDATE _substrat_switch_holds SET state = 'armed', doomed = ? WHERE scope_id = ? AND claim_id = ?`,
+        doomed,
+        scopeId,
+        claimId,
+      );
+    }
+
+    /** A definite refusal: this rewind's own claim goes, and no other. */
+    switchHoldDrop(scopeId: string, claimId: string): void {
+      this.switchHoldsTable();
+      this.sql.exec('DELETE FROM _substrat_switch_holds WHERE scope_id = ? AND claim_id = ?', scopeId, claimId);
+    }
+
+    /** Every held (scope, module) in the deployment, one read for a whole sweep pass. */
+    switchHoldsAll(): { scopeId: string; moduleId: string }[] {
+      this.switchHoldsTable();
+      return this.sql
+        .exec('SELECT DISTINCT scope_id, module_id FROM _substrat_switch_holds')
+        .toArray()
+        .map((r) => ({ scopeId: r.scope_id as string, moduleId: r.module_id as string }));
+    }
+
+    /** The claims on one held module, for the release rule to read before a switch move. */
+    switchHoldClaims(
+      scopeId: string,
+      moduleId: string,
+    ): { claimId: string; state: 'pending' | 'armed'; doomed: string | null; heldAt: string }[] {
+      this.switchHoldsTable();
+      return this.sql
+        .exec(
+          'SELECT claim_id, state, doomed, held_at FROM _substrat_switch_holds WHERE scope_id = ? AND module_id = ?',
+          scopeId,
+          moduleId,
+        )
+        .toArray()
+        .map((r) => ({
+          claimId: r.claim_id as string,
+          state: r.state as 'pending' | 'armed',
+          doomed: (r.doomed as string | null) ?? null,
+          heldAt: r.held_at as string,
+        }));
+    }
+
+    /** Release these claims on one module, or every claim on the scope when `claimIds` is null. */
+    switchHoldRelease(scopeId: string, moduleId: string | null, claimIds: string[] | null): void {
+      this.switchHoldsTable();
+      this.ctx.storage.transactionSync(() => {
+        if (moduleId === null || claimIds === null) {
+          this.sql.exec('DELETE FROM _substrat_switch_holds WHERE scope_id = ?', scopeId);
+          return;
+        }
+        for (const claimId of claimIds) {
+          this.sql.exec(
+            'DELETE FROM _substrat_switch_holds WHERE scope_id = ? AND module_id = ? AND claim_id = ?',
+            scopeId,
+            moduleId,
+            claimId,
+          );
+        }
+      });
     }
 
     /**

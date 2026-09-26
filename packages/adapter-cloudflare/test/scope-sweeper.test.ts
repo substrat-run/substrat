@@ -14,6 +14,8 @@ import {
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { scheduleMod } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
+import { armRewind, holdsStub, landRewind } from './pitr-emulation.js';
+import { warmDurableObject, warmSwitchHolds } from './do-warmup.js';
 import {
   SCOPE_SWEEPER_NAME,
   type ScopeSweepOutcome,
@@ -58,6 +60,14 @@ const asReport = (outcome: ScopeSweepOutcome): ScopeSweepReport => {
   if ('error' in outcome) throw new Error(`pass sank whole: ${outcome.error}`);
   return outcome;
 };
+
+// The inter-file reload (see do-warmup.ts) lands on the first call of this file, and every pass
+// here now reads the #1819 hold object too. Absorb it on both singletons a pass touches, before
+// any test's own assertion can be the thing that meets it. Read-only: the roster stays unarmed.
+beforeAll(async () => {
+  await warmDurableObject(() => runInDurableObject(sweeperStub(), (_i, state) => state.storage.getAlarm()));
+  await warmSwitchHolds(env.LOCAL_SWEEP_SCOPE);
+});
 
 describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-less)', () => {
   const SCHED = moduleId.parse('@test/sched');
@@ -191,5 +201,63 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
     expect(host().registeredSchedules()).toEqual([
       { moduleId: SCHED, schedules: scheduleMod.manifest.schedules },
     ]);
+  });
+});
+
+/**
+ * #1819, the issue's own test, through the deployment's real sweeper: switch off, rewind to a
+ * bookmark from before the switch, then run the sweeper's pass before any platform reconcile.
+ * It used to fire. The rewind is EMULATED (`pitr-emulation.ts`: workerd has no PITR); the
+ * DO's own `rewindToBookmark` and the restart it causes are real.
+ */
+describe('#1819 — the deployment sweep after a rewind to before the switch', { timeout: 20_000 }, () => {
+  const SCHED = moduleId.parse('@test/sched');
+  const READ = permissionKey.parse('perm:read');
+  const t = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const host = () => {
+    const h = new CloudflareScopeHost({
+      scope: env.LOCAL_SWEEP_SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    h.registerModule(scheduleMod);
+    return h;
+  };
+  const ticksOn = async (s: ScopeId): Promise<number> =>
+    (await (await host().getScope(owner, t, s)).invoke('sched/count')) as number;
+
+  /** Provision, take the "bookmark", optionally switch off, rewind, and put it on the roster. */
+  const rewound = async (switchOff: boolean): Promise<ScopeId> => {
+    const s = scopeId.parse(ulid());
+    await host().provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [READ], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    const atBookmark = await host().exportScopeLocal(s);
+    if (switchOff) await host().systemSwitchLocal(s, SCHED, 'off');
+    await armRewind(env.LOCAL_SWEEP_SCOPE, s);
+    await host().rewindScopeLocal(s, 'bm', { force: true });
+    await landRewind(env.LOCAL_SWEEP_SCOPE, s, atBookmark);
+    await sweeperStub().noteScope(t, s);
+    return s;
+  };
+
+  it('the switched-off module fires nothing on the sweep; a module that was on still fires', async () => {
+    const wasOff = await rewound(true);
+    const wasOn = await rewound(false);
+    // The rewound storage has the switch undone: the state the sweep used to fire on.
+    expect(await host().systemGrantsStatusLocal(wasOff)).toEqual([{ moduleId: SCHED, schedules: 'on' }]);
+    const report = asReport(await sweeperStub().sweepNow());
+    expect(report.errors).toEqual([]);
+    expect(await ticksOn(wasOff)).toBe(0);
+    expect(await ticksOn(wasOn)).toBe(1);
+    // …and the next pass still fires nothing on it: no reconcile has run.
+    asReport(await sweeperStub().sweepNow());
+    expect(await ticksOn(wasOff)).toBe(0);
+    await sweeperStub().forgetScope(wasOff);
+    await sweeperStub().forgetScope(wasOn);
   });
 });
