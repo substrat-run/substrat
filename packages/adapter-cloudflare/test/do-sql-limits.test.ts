@@ -525,3 +525,62 @@ describe.skipIf(!__PROBE_DO_LIMITS__)('the SQL limits of a Durable Object: the m
     expect(outcomes).toEqual(['ok', 'statement too long: SQLITE_TOOBIG']);
   });
 });
+
+/**
+ * #1811: a dump holding a table past the column cap cannot be replayed onto a Durable Object —
+ * its `CREATE TABLE` is refused, and no change to the replay could help. Refused up front with a
+ * sentence, before the first `CREATE`, and the transaction rolls back so the scope keeps its data.
+ * Node accepts such a dump (`adapter-sqlite/test/column-cap.test.ts`): only this side cannot hold it.
+ */
+describe('a dump with a table over the column cap (#1811)', () => {
+  const names = (n: number): string[] => Array.from({ length: n }, (_, i) => `c${i}`);
+  const table = (name: string, n: number, rows: unknown[][] = []) => ({
+    name,
+    ddl: `CREATE TABLE ${name} (${names(n).join(', ')})`,
+    columns: names(n),
+    rows,
+  });
+  interface Importer {
+    importDump(tables: unknown[]): Promise<void>;
+  }
+  const scopeImport = async <T>(fn: (i: Importer, sql: SqlStorage) => Promise<T>): Promise<T> => {
+    const stub = env.SCOPE.get(env.SCOPE.idFromName('do-dump-columns-1811'));
+    return runInDurableObject(stub, (i, state) => fn(i as unknown as Importer, state.storage.sql));
+  };
+
+  it(`a table of exactly ${columns} columns replays, rows and all`, async () => {
+    const row = names(columns).map((_, i) => i);
+    await scopeImport(async (i, sql) => {
+      await i.importDump([table('wide_ok', columns, [row])]);
+      expect(sql.exec('SELECT COUNT(*) AS n FROM wide_ok').one().n).toBe(1);
+    });
+  });
+
+  it(`${columns + 1} columns is refused before anything is replayed, and the scope keeps what it had`, async () => {
+    await scopeImport(async (i, sql) => {
+      const err = await i.importDump([table('wide_too_far', columns + 1)]).then(
+        () => 'accepted',
+        (e: Error) => e.message,
+      );
+      expect(err).toMatch(/^refusing this dump: table "wide_too_far" has 101 columns, and a Durable Object's SQLite holds at most 100 per table/);
+      // The transaction rolled back: the drop of the previous tables did not stick.
+      expect(sql.exec(`SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'wide_ok'`).one().n).toBe(1);
+      expect(sql.exec(`SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'wide_too_far'`).one().n).toBe(0);
+    });
+  });
+
+  it('a directory restore holds to the same cap', async () => {
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('do-dump-columns-1811-cp'));
+    const [ok, past] = await runInDurableObject(stub, async (i) => {
+      const cp = i as unknown as Importer;
+      const attempt = (n: number) =>
+        cp.importDump([table('wide_dir', n)]).then(
+          () => 'ok',
+          (e: Error) => e.message,
+        );
+      return [await attempt(columns), await attempt(columns + 1)];
+    });
+    expect(ok).toBe('ok');
+    expect(past).toMatch(/has 101 columns/);
+  });
+});

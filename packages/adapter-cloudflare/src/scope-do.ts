@@ -50,6 +50,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   ulid,
+  DO_SQL_LIMITS,
   createUlid,
   type UlidMint,
   assertAllowed,
@@ -4266,7 +4267,7 @@ export function defineScopeDO(
         // TABLE executed that too — with entirely plain identifiers, which is why no
         // amount of name checking reaches it. There is no prepare step here to compile
         // only the first statement, so the text itself has to be the one statement.
-        assertReplayableDump(replayable);
+        assertReplayableDump(replayable, { maxColumns: DO_SQL_LIMITS.columns });
         for (const t of replayable) this.sql.exec(t.ddl);
         for (const t of replayable) {
           if (t.rows.length === 0) continue;

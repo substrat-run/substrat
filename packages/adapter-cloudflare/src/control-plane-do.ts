@@ -30,6 +30,7 @@ import {
   type SystemSwitchRecordRow,
   type SystemSwitchRecordWrite,
   MODEL_USAGE_RETENTION_DAYS,
+  DO_SQL_LIMITS,
   ulid,
   isPrimaryScope,
   resolveVerticalInstanceFrom,
@@ -1538,7 +1539,7 @@ export class ControlPlaneDO extends DurableObject {
       // Same untrusted dump, same two holes as the scope path (#1143): names reaching
       // SQL as identifiers, and `exec` running everything a `ddl` contains. Judged
       // before the first statement of it runs.
-      assertReplayableDump(tables);
+      assertReplayableDump(tables, { maxColumns: DO_SQL_LIMITS.columns });
       for (const t of tables) this.sql.exec(t.ddl);
       for (const t of tables) {
         if (t.rows.length === 0) continue;

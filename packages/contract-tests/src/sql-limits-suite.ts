@@ -18,7 +18,10 @@ import { DO_SQL_LIMITS, ulid, type ScopeHost, type ScopeStub } from '@substrat-r
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { testMod } from './modules.js';
 
-const { compoundTerms, boundParameters, statementBytes } = DO_SQL_LIMITS;
+const { compoundTerms, boundParameters, statementBytes, columns } = DO_SQL_LIMITS;
+
+/** `SELECT 0, 1, …` — a result set `n` columns wide. */
+const selectColumns = (n: number): string => `SELECT ${Array.from({ length: n }, (_, i) => i).join(', ')}`;
 
 const compound = (terms: number, op = 'UNION ALL'): string =>
   Array.from({ length: terms }, (_, i) => `SELECT ${i}`).join(` ${op} `);
@@ -35,6 +38,13 @@ interface Case {
 }
 
 const cases: Case[] = [
+  // -- columns in a result set (#1811) ---------------------------------------
+  { name: `${columns} result columns`, sql: selectColumns(columns) },
+  {
+    name: `${columns + 1} result columns`,
+    sql: selectColumns(columns + 1),
+    refusal: 'too many columns in result set: SQLITE_ERROR',
+  },
   // -- compound SELECT terms -------------------------------------------------
   { name: `${compoundTerms} UNION ALL terms`, sql: compound(compoundTerms) },
   {

@@ -233,6 +233,12 @@ export function assertWithinSqlLimits(sql: string): void {
   }
 }
 
+/** The DO's refusal of a result set wider than `DO_SQL_LIMITS.columns`. */
+export const TOO_MANY_RESULT_COLUMNS = 'too many columns in result set: SQLITE_ERROR';
+
+/** The DO's refusal of a table wider than `DO_SQL_LIMITS.columns`. */
+export const tooManyTableColumns = (table: string): string => `too many columns on ${table}: SQLITE_ERROR`;
+
 /**
  * Wrap a module-facing `ScopedSql` so every statement passes `assertWithinSqlLimits` first.
  * The node adapter wraps `ctx.sql` in it; the DO needs no wrapper — its SQLite is the

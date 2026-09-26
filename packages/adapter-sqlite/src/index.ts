@@ -218,6 +218,9 @@ import {
   foldMeterReading,
   guardSpine,
   guardSqlLimits,
+  DO_SQL_LIMITS,
+  TOO_MANY_RESULT_COLUMNS,
+  tooManyTableColumns,
   parseValidationRecords,
   resolveScopeRecord,
   ulid,
@@ -10244,7 +10247,7 @@ export class SqliteScopeHost implements ScopeHost {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
       principal,
-      sql: guardSecrets(guardSqlLimits(scopedSql(rt.db)), minted),
+      sql: guardSecrets(guardSqlLimits(scopedSql(rt.db, true)), minted),
       now: () => at,
       emit: (event: DomainEventInput) => {
         assertImpersonationWrites(impersonation, 'ctx.emit');
@@ -10605,6 +10608,7 @@ export class SqliteScopeHost implements ScopeHost {
               .get(moduleId, migration.version);
             if (!already) {
               rt.db.exec(migration.sql);
+              assertTablesWithinColumnLimit(rt.db);
               rt.db
                 .prepare(
                   'INSERT INTO _substrat_migrations (module_id, version, applied_at) VALUES (?, ?, ?)',
@@ -10965,12 +10969,39 @@ interface VerticalPeerAuthority {
   caller: VerticalCaller;
 }
 
-function scopedSql(db: Database.Database): ScopedSql {
+/**
+ * Refuse a migration that left a table wider than a Durable Object allows (#1811). Judged on the
+ * schema AFTER the migration ran, inside its transaction, so the throw rolls the migration back
+ * and the scope fails closed as it would hosted — from `CREATE TABLE` and from `ADD COLUMN` alike,
+ * with no parsing of the migration's text.
+ */
+function assertTablesWithinColumnLimit(db: Database.Database): void {
+  const wide = db
+    .prepare(
+      `SELECT m.name AS name FROM sqlite_master m, pragma_table_info(m.name) c
+        WHERE m.type = 'table' GROUP BY m.name HAVING COUNT(*) > ? ORDER BY m.name LIMIT 1`,
+    )
+    .get(DO_SQL_LIMITS.columns) as { name: string } | undefined;
+  if (wide) throw new Error(tooManyTableColumns(wide.name));
+}
+
+function scopedSql(db: Database.Database, judgeWidth = false): ScopedSql {
+  // #1811: a Durable Object refuses a result set over its column cap, `exec` of a SELECT included.
+  // The driver knows the width, so it is read off the prepared statement rather than parsed out
+  // of the text (a `SELECT *` is as wide as the tables under it). Module SQL only, like the
+  // other limits.
+  const prepare = (sql: string) => {
+    const stmt = db.prepare(sql);
+    if (judgeWidth && stmt.reader && stmt.columns().length > DO_SQL_LIMITS.columns) {
+      throw new Error(TOO_MANY_RESULT_COLUMNS);
+    }
+    return stmt;
+  };
   return guardSpine({
     query: <T>(sql: string, params: readonly SqlValue[] = []): T[] =>
-      db.prepare(sql).all(...params) as T[],
+      prepare(sql).all(...params) as T[],
     exec: (sql: string, params: readonly SqlValue[] = []) => {
-      const info = db.prepare(sql).run(...params);
+      const info = prepare(sql).run(...params);
       return { changes: info.changes };
     },
   });
