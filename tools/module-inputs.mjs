@@ -337,7 +337,9 @@ const unbound = (src, operationsValue, inputsValue) => {
       return `the handler map spreads another object — this check cannot see whether what it contributes was cast. ${fix}`;
     }
     if (/\bas\b/.test(surface(entry.value))) {
-      return `the handler map entry ${entry.key.replace(/:\s*$/, '')} is cast — \`as never\` and \`as any\` pass the \`satisfies\` silently, and any other cast exists to erase the handler's type. ${fix}`;
+      // Named by its value: string contents are neutralised by `flatten`, so the key would print
+      // as `'workorderXget'` rather than the operation a reader searches for.
+      return `a handler map entry is cast (\`${entry.value.trim().replace(/\s+/g, ' ')}\`) — \`as never\` and \`as any\` pass the \`satisfies\` silently, and any other cast exists to erase the handler's type. ${fix}`;
     }
   }
   const parsed = /^operationInputsOf\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*$/.exec(inputsValue.trim());
