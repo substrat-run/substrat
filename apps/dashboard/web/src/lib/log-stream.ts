@@ -1,4 +1,4 @@
-import type { EventFacetResult } from './api';
+import type { EventFacetAnswer } from './api';
 import type { ObsQuery } from './observability-query';
 
 /**
@@ -26,8 +26,11 @@ export function modeHint(mode: LogMode): string {
 
 /**
  * What the Events mode groups by. `field` is not a spine dimension but the payload
- * grouping, which the read takes as its own parameter. Any top-level field can be named
- * today; restricting it to fields not classed as personal data is #1762.
+ * grouping, which the read takes as its own parameter. Any top-level field can be named;
+ * the read groups it only over events classed `none` and counts the events classed as
+ * personal data in `withheldPersonal` (#1762). The class is per event, so a `none` event
+ * that carries personal data is still grouped; and the SQL console and table browse
+ * read the same outbox without this rule (#1821).
  */
 export type EventGroup = 'type' | 'operation' | 'actor' | 'version' | 'entityType' | 'piiClass' | 'field';
 
@@ -73,7 +76,7 @@ export function bucketNarrow(group: EventGroup, value: string | null): Partial<O
   return { type: value, groupBy: 'operation', field: undefined };
 }
 
-export function bucketRows(result: EventFacetResult, group: EventGroup): BucketRow[] {
+export function bucketRows(result: EventFacetAnswer, group: EventGroup): BucketRow[] {
   const widest = Math.max(1, ...result.buckets.map((b) => b.count));
   return result.buckets.map((b) => ({
     key: b.value ?? '\u0000null',
@@ -84,4 +87,42 @@ export function bucketRows(result: EventFacetResult, group: EventGroup): BucketR
     lastSeen: b.lastSeen,
     narrow: bucketNarrow(group, b.value),
   }));
+}
+
+/**
+ * The withheld count (#1762), or null when the answer does not carry it — an app still
+ * running a kernel from before the rule, which groups personal-data events instead of
+ * withholding them. Null is "unknown" and must never be drawn as 0.
+ */
+export function withheldOf(result: EventFacetAnswer): number | null {
+  return typeof result.withheldPersonal === 'number' ? result.withheldPersonal : null;
+}
+
+/**
+ * True when the control plane refused to relay a payload grouping because the app's
+ * kernel predates #1762 — its buckets could be one per person. A re-push alone does not
+ * fix it: `@substrat-run/*` is a 0.x fixed group and an app's `^0.x` ranges do not cross
+ * a minor, so the app's Substrat packages have to be updated first. The withheld count then
+ * covers every event that was not erased, not only those classed as personal data.
+ */
+export function predatesRule(result: EventFacetAnswer): boolean {
+  return result.withheldReason === 'vertical-predates-rule';
+}
+
+/**
+ * What the Events mode says when a grouping produced no bucket. Empty buckets over a
+ * non-empty match is a different answer from no match at all, and each way of getting
+ * there is named: every event erased, or every event withheld as personal data.
+ */
+export function emptyGroupingText(result: EventFacetAnswer): string {
+  if (result.total === 0) return 'No events matched this filter.';
+  if (predatesRule(result)) {
+    return 'This app was pushed with Substrat packages from before personal-data events were withheld, so payload groupings are unavailable. Update its Substrat packages and push it again.';
+  }
+  if (result.erased === result.total) return 'Every matching event had its payload erased, so there is nothing left to group by.';
+  const withheld = withheldOf(result) ?? 0;
+  if (withheld > 0 && result.erased + withheld === result.total) {
+    return 'Every matching event is classed as personal data, so none is grouped by a payload field.';
+  }
+  return 'The matching events produced no groupable value.';
 }

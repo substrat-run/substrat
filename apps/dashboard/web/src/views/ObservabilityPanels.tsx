@@ -1,12 +1,12 @@
 import { exactTime, type ObsQuery } from '../lib/observability-query';
 import { useEffect, useState } from 'react';
 import { Button, Input } from '@substrat-run/ui';
-import { type EventFacetResult, api, ApiError, type ObservabilityLogEvent } from '../lib/api';
+import { type EventFacetAnswer, api, ApiError, type ObservabilityLogEvent } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { MOCK_LOG_LINES } from '../lib/mock-pulse';
 import { card, MonoTag } from '../components/ui';
 import { LogList } from '../components/LogList';
-import { EVENT_GROUPS, bucketRows, dimensionLabel, type BucketRow, type EventGroup } from '../lib/log-stream';
+import { EVENT_GROUPS, bucketRows, dimensionLabel, emptyGroupingText, predatesRule, withheldOf, type BucketRow, type EventGroup } from '../lib/log-stream';
 import { mockEventFacets } from '../lib/mock-events';
 
 /**
@@ -239,6 +239,10 @@ interface AppliedFacet {
  * counts them apart and this shows the erased count beside the buckets. Without
  * it a distribution over redacted history looks complete.
  *
+ * **Withheld personal data is counted, not hidden.** A payload grouping buckets only
+ * events not classed as personal data (#1762); the rest are a count in the header, so
+ * a short distribution says why it is short.
+ *
  * **A truncated result says so.** Buckets are capped; a tail that exists and is
  * not shown must not read as a tail that does not exist.
  */
@@ -264,7 +268,7 @@ export function EventExplorer({
 }) {
   const [groupBy, setGroupBy] = useState(query?.groupBy ?? 'type');
   const [field, setField] = useState(query?.field ?? '');
-  const [result, setResult] = useState<EventFacetResult | null>(null);
+  const [result, setResult] = useState<EventFacetAnswer | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   /**
@@ -372,6 +376,7 @@ export function EventExplorer({
   const group: EventGroup = fieldMode || applied.field ? 'field' : (groupBy as EventGroup);
   const rows = result ? bucketRows(result, applied.field ? 'field' : (applied.groupBy as EventGroup)) : [];
   const frame = embedded ? {} : { ...card, overflow: 'hidden' as const };
+  const withheld = result ? withheldOf(result) : null;
 
   /**
    * The card stays and says what is missing, rather than hiding: a page one row shorter
@@ -490,13 +495,28 @@ export function EventExplorer({
               {result.erased.toLocaleString('en-US')}
             </span>{' '}
             erased
+            {/* #1762: a payload grouping counts only events not classed as personal data.
+                An answer without the count is from an app whose kernel predates the rule,
+                and says "unknown" rather than a 0 that would claim nothing was withheld. */}
+            {applied.field && withheld !== null && withheld > 0 && (
+              <span data-event-withheld style={{ color: 'var(--text-tertiary)' }}>
+                {/* Refused for the app's age, the count is every event not erased — not a
+                    count of personal data, so it does not say it is one. */}
+                {' '}· {withheld.toLocaleString('en-US')} withheld{predatesRule(result) ? '' : ' as personal data'}
+              </span>
+            )}
+            {applied.field && withheld === null && (
+              <span data-event-withheld style={{ color: 'var(--text-tertiary)' }}>
+                {' '}· withheld unknown
+              </span>
+            )}
             {result.truncated && <> · largest buckets only</>}
           </span>
         )}
       </div>
       {group === 'field' && (
-        // Any top-level field is accepted today. Restricting this to fields the model does
-        // not class as personal data is #1762; until then the note says only what holds.
+        // Any top-level field is accepted; the read, not this input, withholds events
+        // classed as personal data (#1762), so the note says what the count covers.
         <div style={{ padding: '6px 16px', fontSize: 11.5, color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
           Groups by the value of one top-level payload field. Events whose payload was erased are counted apart, never as &ldquo;no value&rdquo;.
         </div>
@@ -520,13 +540,9 @@ export function EventExplorer({
               {/* Empty buckets over a non-empty match is a different answer from no match
                   at all, and saying "nothing matched" under a line reading "N events
                   matched" is how a reader concludes the page is broken. Events that
-                  matched and produced no bucket are the erased ones — this is the whole
-                  erased-vs-absent distinction, seen from the degenerate end. */}
-              {result.total === 0
-                ? 'No events matched this filter.'
-                : result.erased === result.total
-                  ? 'Every matching event had its payload erased, so there is nothing left to group by.'
-                  : 'The matching events produced no groupable value.'}
+                  matched and produced no bucket are erased or withheld as personal data —
+                  the erased-vs-absent distinction, seen from the degenerate end. */}
+              {emptyGroupingText(result)}
             </div>
           ) : (
             rows.map((b) => (
@@ -553,6 +569,14 @@ export function EventExplorer({
 
       <div style={{ padding: '10px 16px', fontSize: 12, color: 'var(--text-tertiary)' }}>
         {windowText} · erased = payload removed by an erasure request, counted apart and never grouped
+        {/* The rule is claimed only for an answer that carries its count: one without it came
+            through a control plane that predates the rule, and a refused one says why itself. */}
+        {applied.field && result && withheld !== null && !predatesRule(result)
+          ? ' · Grouping by a payload field counts only events not classed as personal data.'
+          : ''}
+        {applied.field && result && withheld === null
+          ? ' · This answer does not say whether personal-data events were withheld, so this grouping may include them.'
+          : ''}
         {result?.truncated ? ' · the tail beyond the largest buckets exists and is not shown' : ''}
       </div>
     </div>

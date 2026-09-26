@@ -4,6 +4,7 @@ import Database from 'better-sqlite3';
 import {
   accessLogEntry,
   adminLogEntry,
+  delegatedReadParams,
   opsFailureEntry,
   opsFailureFingerprint,
   issueEntry,
@@ -7714,7 +7715,13 @@ export class SqliteScopeHost implements ScopeHost {
         // NULL a missing field does, and only the helper counts them apart.
         const db = this.scopeReadDbFor(tenantId, scopeId);
         const result = facetEvents({ sql: scopedSql(db) }, input);
-        this.recordAccess(actor, 'facetEvents', { tenantId, scopeId }, input, result.buckets.length);
+        this.recordAccess(
+          actor,
+          'facetEvents',
+          { tenantId, scopeId },
+          delegatedReadParams.facetEvents(input, result),
+          result.buckets.length,
+        );
         return result;
       },
       entityHistory: async (actor, tenantId, scopeId, input) => {

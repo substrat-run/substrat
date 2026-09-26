@@ -193,7 +193,45 @@ export const eventFacetResult = z.object({
    * grouping, where erasure cannot affect the answer.
    */
   erased: z.number().int().nonnegative(),
-  /** Events matching the filter before grouping — the denominator. */
+  /**
+   * Events matching the filter that were NOT grouped because they are classed as
+   * personal data (#1762). A payload grouping buckets only events whose `piiClass`
+   * is exactly `'none'`; every other event that still carries its payload is counted
+   * here instead. Without it, grouping by `email` or `body` is one bucket per person
+   * or per message — a personal-data search for anyone who can open the explorer.
+   *
+   * The classification is per event, not per field, so this withholds harmless
+   * fields of a classified event too. It fails closed: a class the kernel does not
+   * recognise is withheld, never grouped. Always 0 for an envelope grouping, where
+   * the dimension is a kernel-stamped fact rather than payload content.
+   *
+   * For a payload grouping the three counts partition `total`: every matching event
+   * is exactly one of grouped (classed `'none'`), `erased` (classed otherwise, payload
+   * shredded) or `withheldPersonal` (classed otherwise, payload intact). So
+   * `total = Σ bucket counts + erased + withheldPersonal` whenever `truncated` is
+   * false; when it is true the bucket sum falls short by the tail not shown.
+   *
+   * Required. A vertical still running a kernel from before the rule omits it, and the
+   * control plane normalizes that answer before relaying it: an envelope grouping gets 0,
+   * and a payload grouping — which that kernel answered over personal data too — is
+   * refused (see `withheldReason`). So every answer the control plane serves carries it.
+   */
+  withheldPersonal: z.number().int().nonnegative(),
+  /**
+   * Set only when `withheldPersonal` covers MORE than events classed as personal data,
+   * and says why (#1762). `'vertical-predates-rule'`: the scope's data is held by a
+   * vertical pushed before the rule, whose kernel groups personal data. The control
+   * plane refuses to relay that grouping, so it answers with no buckets and every
+   * event that was not erased counted in `withheldPersonal` — which then includes
+   * events classed `'none'` too, since that kernel cannot tell them apart for us.
+   * The partition above still holds. Absent on every other answer, and on an
+   * envelope grouping, which an older kernel answers correctly.
+   */
+  withheldReason: z.literal('vertical-predates-rule').optional(),
+  /**
+   * Events matching the filter before grouping — the denominator. It includes the
+   * erased and withheld events: they happened, whatever they said.
+   */
   total: z.number().int().nonnegative(),
   /** True when `buckets` was cut at `limit`; the tail exists and is not shown. */
   truncated: z.boolean(),

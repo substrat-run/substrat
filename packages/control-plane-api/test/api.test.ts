@@ -473,7 +473,7 @@ describe('control-plane API', () => {
     const res = await req(`/tenants/${t1}/scopes/${s1}/facets?groupBy=type`);
     expect(res.status).toBe(200);
     // No modules here, so the outbox is empty — an empty facet, not a 404.
-    expect(await res.json()).toEqual({ buckets: [], erased: 0, total: 0, truncated: false });
+    expect(await res.json()).toEqual({ buckets: [], erased: 0, withheldPersonal: 0, total: 0, truncated: false });
 
     // A dimension the enum does not name is refused: `groupBy` selects a column, so the
     // enum is what keeps a caller's string out of the query.
@@ -539,10 +539,14 @@ describe('control-plane API', () => {
     await host.admin.activateScope(staff, t1, sF);
 
     const calls: unknown[] = [];
+    // A vertical pushed before #1762: its kernel groups a payload field over personal data
+    // and answers without `withheldPersonal`. It is the shape every deployed vertical
+    // returns until it is pushed again.
+    let answer: Record<string, unknown> = { buckets: [{ value: 'SEK', count: 3 }], erased: 1, total: 4, truncated: false };
     const fakeVertical = {
       facetEvents: async (s: string, input: unknown) => {
         calls.push([s, input]);
-        return { buckets: [{ value: 'SEK', count: 3 }], erased: 1, total: 4, truncated: false };
+        return answer;
       },
     } as unknown as VerticalClient;
 
@@ -558,7 +562,17 @@ describe('control-plane API', () => {
         `&since=2026-09-01T00:00:00.000Z&until=2026-09-08T00:00:00.000Z&limit=25`,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ buckets: [{ value: 'SEK', count: 3 }], erased: 1, total: 4, truncated: false });
+    // #1762, fail closed: the old vertical's buckets may be one per person, so none are
+    // relayed. Every event that was not erased is counted as withheld, and the reason
+    // says it is the vertical's age, not a count of personal data.
+    expect(await res.json()).toEqual({
+      buckets: [],
+      erased: 1,
+      withheldPersonal: 3,
+      withheldReason: 'vertical-predates-rule',
+      total: 4,
+      truncated: false,
+    });
     // Every part of the query crossed — a dropped `until` is an unbounded-to-the-future
     // answer to a question that named a window, which no error would ever reveal.
     expect(calls).toEqual([
@@ -579,6 +593,46 @@ describe('control-plane API', () => {
     expect((await dreq(`/tenants/${t1}/scopes/${sF}/facets?groupBy=payload_json`)).status).toBe(400);
     expect((await dreq(`/tenants/${t2}/scopes/${sF}/facets?groupBy=type`)).status).toBe(404);
     expect(calls).toHaveLength(1);
+
+    // The K-24 row says what was held back: a refused grouping otherwise reads as a query
+    // that found nothing. It names the field asked for, the buckets relayed (none), and why.
+    const rows = (await host.admin.accessLog(staff, { method: 'facetEvents' })).filter((e) => e.scopeId === sF);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.resultCount).toBe(0);
+    // The adapter stores `params` as its JSON text.
+    expect(JSON.parse(rows[0]!.params as string)).toMatchObject({
+      groupBy: { kind: 'payload', field: 'currency' },
+      withheldPersonal: 3,
+      withheldReason: 'vertical-predates-rule',
+    });
+
+    // The stored params are cut at 500 chars and `type` is unbounded, so the withheld facts
+    // lead the row: a long request still leaves them readable in what was kept.
+    const long = `order.${'x'.repeat(600)}`;
+    expect((await dreq(`/tenants/${t1}/scopes/${sF}/facets?field=currency&type=${long}`)).status).toBe(200);
+    const cut = (await host.admin.accessLog(staff, { method: 'facetEvents' }))
+      .filter((e) => e.scopeId === sF)
+      .map((e) => e.params as string)
+      .filter((text) => text.includes('x'.repeat(100)));
+    expect(cut).toHaveLength(1);
+    expect(cut[0]!.length).toBeLessThanOrEqual(500);
+    expect(cut[0]!.startsWith('{"withheldPersonal":3,"withheldReason":"vertical-predates-rule",')).toBe(true);
+
+    // An ENVELOPE grouping from the same old vertical passes through: a kernel-stamped
+    // column is not payload content, and that kernel answered it right. Only the count it
+    // could not have withheld anything under is filled in, as the schema requires.
+    answer = { buckets: [{ value: 'order.placed', count: 4 }], erased: 0, total: 4, truncated: false };
+    expect(await (await dreq(`/tenants/${t1}/scopes/${sF}/facets?groupBy=type`)).json()).toEqual({
+      ...answer,
+      withheldPersonal: 0,
+    });
+
+    // And a vertical on the new kernel is relayed as it answered, its own count intact.
+    answer = { buckets: [{ value: 'SEK', count: 1 }], erased: 1, withheldPersonal: 2, total: 4, truncated: false };
+    expect(await (await dreq(`/tenants/${t1}/scopes/${sF}/facets?field=currency`)).json()).toEqual(answer);
+    // Including a count of 0, which is an answer and not an absence.
+    answer = { buckets: [{ value: 'SEK', count: 3 }], erased: 1, withheldPersonal: 0, total: 4, truncated: false };
+    expect(await (await dreq(`/tenants/${t1}/scopes/${sF}/facets?field=currency`)).json()).toEqual(answer);
   });
 
   it("delegates a record's history to the vertical that holds the scope (#1235)", async () => {
