@@ -187,7 +187,7 @@ function _emitSiteChecks(ctx: OperationContext, closed: MeteringPeriodClosedPayl
 void _emitSiteChecks;
 
 describe('#696 engine-metering event contract', () => {
-  it('is a pass-through at runtime — types only', () => {
+  it('forwards to ctx.emit, stamping only the schemaVersion', () => {
     const emitted: unknown[] = [];
     const ctx = { emit: (event: unknown) => emitted.push(event) } as unknown as OperationContext;
     emitMeteringEvent(ctx, {

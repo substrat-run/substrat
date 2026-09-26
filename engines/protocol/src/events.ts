@@ -18,14 +18,15 @@
  * site in this engine goes through it, so the declared payload and the emitted
  * literal cannot drift apart without `tsc` saying so.
  *
- * ## TYPES ONLY — this changes nothing at runtime
+ * ## Types, plus one stamp — nothing else changes at runtime
  *
  * The runtime contract is still the fat payload and **the consumer's own Zod
  * parse** (kernel `EventContract`, `packages/kernel/src/scope-host.ts`).
  * Importing a producer's validator is what turns version skew into a crash
  * instead of a tolerated absence; these types are for the compiler, not for the
  * boundary. `emitProtocolEvent` is not erased — it is a real call that forwards
- * to `ctx.emit` unchanged — but nothing about the emitted event differs.
+ * to `ctx.emit`, adding only the `schemaVersion` it stamps from
+ * `protocolEventVersions` (#1597); nothing else about the emitted event differs.
  *
  * ## VERTICAL-FACING ONLY
  *
@@ -283,7 +284,8 @@ export const protocolEmitDeclarations: { type: string; schemaVersion: number }[]
  * the *source*: rename a payload field on one side and the other side fails to
  * compile, and emitting a type the map does not declare fails too.
  *
- * Zero runtime behaviour of its own — it forwards to `ctx.emit` unchanged.
+ * Its one runtime act is stamping `schemaVersion` from `protocolEventVersions` onto
+ * the event (#1597); everything else is forwarded to `ctx.emit` unchanged.
  */
 export function emitProtocolEvent<K extends ProtocolEventType>(
   ctx: OperationContext,

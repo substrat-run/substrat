@@ -178,7 +178,7 @@ function _emitSiteChecks(
 void _emitSiteChecks;
 
 describe('#696 engine-workorder event contract', () => {
-  it('is a pass-through at runtime — types only', () => {
+  it('forwards to ctx.emit, stamping only the schemaVersion', () => {
     const emitted: unknown[] = [];
     const ctx = { emit: (event: unknown) => emitted.push(event) } as unknown as OperationContext;
     emitWorkorderEvent(ctx, {

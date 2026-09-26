@@ -14,7 +14,7 @@
  * shape is accepted" both pass, because nothing is left to accept anything.
  *
  * The runtime assertions are deliberately thin — `emitProtocolEvent` forwards to
- * `ctx.emit` unchanged and there is no behaviour here to test.
+ * `ctx.emit` and only stamps `schemaVersion`; `event-versions.test.ts` holds that stamp.
  */
 import { describe, expect, it } from 'vitest';
 import type { DataSubjectId } from '@substrat-run/contracts';
@@ -239,7 +239,7 @@ function _countersignedIsASupersetOfSigned(payload: ProtocolCountersignedPayload
 void _countersignedIsASupersetOfSigned;
 
 describe('#696 engine-protocol event contract', () => {
-  it('is a pass-through at runtime — types only', () => {
+  it('forwards to ctx.emit, stamping only the schemaVersion', () => {
     const emitted: unknown[] = [];
     const ctx = { emit: (event: unknown) => emitted.push(event) } as unknown as OperationContext;
     emitProtocolEvent(ctx, {

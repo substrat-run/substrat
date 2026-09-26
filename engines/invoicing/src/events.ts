@@ -20,8 +20,8 @@
  * - a vertical already imports the engines it composes, ships as one unit and
  *   upgrades them together, so for it the compile break is the point.
  *
- * TYPES ONLY. `emitInvoicingEvent` forwards to `ctx.emit` unchanged — one extra
- * call in the stack, and no change in what is emitted; the runtime contract is
+ * TYPES, plus one stamp. `emitInvoicingEvent` forwards to `ctx.emit`, adding only the
+ * `schemaVersion` it stamps from `invoicingEventVersions` (#1597); the runtime contract is
  * still the fat payload and the consumer's Zod parse (kernel `EventContract`,
  * `packages/kernel/src/scope-host.ts`).
  *
@@ -123,7 +123,8 @@ export const invoicingEmitDeclarations: { type: string; schemaVersion: number }[
  * *source*: rename a payload field on one side and the other side fails to
  * compile, and emitting a type the map does not declare fails too.
  *
- * Zero runtime behaviour of its own — it forwards to `ctx.emit` unchanged.
+ * Its one runtime act is stamping `schemaVersion` from `invoicingEventVersions` onto
+ * the event (#1597); everything else is forwarded to `ctx.emit` unchanged.
  */
 export function emitInvoicingEvent<K extends InvoicingEventType>(
   ctx: OperationContext,

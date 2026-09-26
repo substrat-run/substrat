@@ -2,11 +2,10 @@
  * engine-booking's event contract (#696) — what a VERTICAL imports so that
  * consuming this engine by event is checked rather than guessed.
  *
- * TYPES ONLY. The runtime contract is still the fat payload and **the
+ * TYPES, plus one stamp. The runtime contract is still the fat payload and **the
  * consumer's own Zod parse** (kernel `EventContract`,
- * `packages/kernel/src/scope-host.ts`); `emitBookingEvent` forwards to
- * `ctx.emit` unchanged — one extra call in the stack, and no change in what is
- * emitted.
+ * `packages/kernel/src/scope-host.ts`); `emitBookingEvent` forwards to `ctx.emit`, adding only the
+ * `schemaVersion` it stamps from `bookingEventVersions` (#1597).
  *
  * VERTICAL-FACING ONLY. A sibling engine consuming one of these must NOT import
  * it — R1 (star topology) forbids the import, and the defensive parse is what
@@ -241,7 +240,8 @@ export const bookingEmitDeclarations: { type: string; schemaVersion: number }[] 
  * *source*: rename a payload field on one side and the other side fails to
  * compile, and emitting a type the map does not declare fails too.
  *
- * Zero runtime behaviour of its own — it forwards to `ctx.emit` unchanged.
+ * Its one runtime act is stamping `schemaVersion` from `bookingEventVersions` onto
+ * the event (#1597); everything else is forwarded to `ctx.emit` unchanged.
  */
 export function emitBookingEvent<K extends BookingEventType>(
   ctx: OperationContext,
