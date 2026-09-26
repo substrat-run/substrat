@@ -433,22 +433,53 @@ export function systemSwitchContractSuite(
       expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: SCHEDULES, failed: 0 });
     });
 
-    it('a restore of a dump from BEFORE the switch shows the drift, and the re-assert puts it back off', async () => {
+    it('a restore of a dump from BEFORE the switch lands switched off: the first pass after it runs nothing (#1742)', async () => {
       const s = await newScope();
       const before = await host.admin.exportScope(staff, t, s);
       await off(s);
       await host.restoreScope(staff, t, s, before);
-      // The dump carried the grant live and no marker: the scope says on, the record off.
-      expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['on', 'off']]);
-
-      expect(await reassert(s)).toEqual([{ moduleId: SCHED, held: true, changed: true }]);
-      expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
+      // The dump carried the grant live and no marker. The restore re-asserted the record in
+      // its own unit, so there is no moment at which the scope says on — the very next pass,
+      // with no re-assert call in between, runs nothing.
       expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
-
-      // Idempotent: the marker is live, so a second pass moves and audits nothing more.
-      expect(await reassert(s)).toEqual([{ moduleId: SCHED, held: true, changed: false }]);
+      expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
+      // …and audited once, as the move it was.
       const rows = await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: ['reassertSystemSwitch'] });
-      expect(rows).toHaveLength(1);
+      expect(rows.map((e) => e.after)).toEqual([
+        expect.objectContaining({ moduleId: SCHED, changed: true, permissions: ['sched:tick'] }),
+      ]);
+
+      // Idempotent: the marker is live, so a later re-assert moves and audits nothing more.
+      expect(await reassert(s)).toEqual([{ moduleId: SCHED, held: true, changed: false }]);
+      expect(
+        await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: ['reassertSystemSwitch'] }),
+      ).toHaveLength(1);
+      // What OFF took from the restored grants, ON gives back.
+      expect(await on(s)).toEqual({ ...moved('on', true), permissions: ['sched:tick'] });
+      expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: SCHEDULES, failed: 0 });
+    });
+
+    it('a restore with nothing recorded off lands on, and fires (#1742, the twin)', async () => {
+      const s = await newScope();
+      const before = await host.admin.exportScope(staff, t, s);
+      await off(s);
+      await on(s); // recorded `on`: nothing for the restore to put back
+      await host.restoreScope(staff, t, s, before);
+      expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: SCHEDULES, failed: 0 });
+    });
+
+    it("the re-assert in a provision or a restore reaches only that scope's own switch (#1742)", async () => {
+      const a = await newScope();
+      const b = await newScope();
+      const beforeA = await host.admin.exportScope(staff, t, a);
+      await off(a);
+      await wipe(a);
+      await provision(a); // seats a's grants and switches them off in the same unit
+      await host.restoreScope(staff, t, a, beforeA); // …and again for the restore
+      expect(await host.runDueSchedules(SCHED, t, a)).toEqual(switchedOff);
+      // b was never switched off, and neither of a's units touched it.
+      expect((await status(b)).map((e) => [e.schedules, e.recorded])).toEqual([['on', null]]);
+      expect(await host.runDueSchedules(SCHED, t, b)).toMatchObject({ fired: SCHEDULES, failed: 0 });
     });
 
     it('a REFUSED restore leaves the record off, so the next reconcile still switches the module off (#1674 review)', async () => {

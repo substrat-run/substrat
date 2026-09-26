@@ -1385,3 +1385,96 @@ describe('mountPlatformSurface — the owner seat (#925)', () => {
     expect((await app.request('/internal/owner-claim', { method: 'POST' }, ENV)).status).toBe(403);
   });
 });
+
+/**
+ * #1742: the platform carries the record's off list on provision, reconcile and restore, and
+ * the host switches those modules off inside the unit that re-creates the scope's grants.
+ * The list names modules only. The scope it applies to is the one the request provisions or
+ * restores, so no body can aim it anywhere else.
+ */
+describe('mountPlatformSurface — the recorded-off list rides provision, reconcile and restore (#1742)', () => {
+  const SCHED = '@test/sched';
+  const OTHER_SCOPE = '01JZ0000000000000000SCP002';
+  const moved = { moduleId: SCHED, held: true, changed: true, permissions: ['sched:tick'] };
+  const post = (host: VerticalScopeHost, path: string, body: unknown) =>
+    appWith(host, { resolveOwner: async () => OWNER as never }).request(
+      path,
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) },
+      ENV,
+    );
+  /** A host that records what the provision and restore halves were handed, and answers a move. */
+  const recording = () => {
+    const seen: { verb: string; scopeId: string; switchedOff: unknown }[] = [];
+    const host = fakeHost({
+      provisionScopeLocal: async (input) => {
+        seen.push({ verb: 'provision', scopeId: input.scopeId, switchedOff: input.switchedOff });
+        return input.switchedOff ? { switchedOff: [moved] } : undefined;
+      },
+      restoreScopeLocal: async (scopeId, _tables, opts) => {
+        seen.push({ verb: 'restore', scopeId, switchedOff: opts?.switchedOff });
+        return { tables: 0, ...(opts?.switchedOff ? { switchedOff: [moved] } : {}) };
+      },
+    });
+    return { host, seen };
+  };
+
+  it("hands the list to the host with the request's own scope, and answers what the unit moved", async () => {
+    const { host, seen } = recording();
+    const provision = await post(host, '/internal/provision', { tenantId: TENANT, scopeId: SCOPE, owner: OWNER, switchedOff: [SCHED] });
+    expect(provision.status).toBe(201);
+    expect(await provision.json()).toEqual({ tenantId: TENANT, scopeId: SCOPE, owner: OWNER, switchedOff: [moved] });
+    const reconcile = await post(host, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE, switchedOff: [SCHED] });
+    expect(await reconcile.json()).toEqual({ tenantId: TENANT, scopeId: SCOPE, owner: OWNER, switchedOff: [moved] });
+    const restore = await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [], switchedOff: [SCHED] });
+    expect(await restore.json()).toEqual({ tables: 0, switchedOff: [moved] });
+    expect(seen).toEqual([
+      { verb: 'provision', scopeId: SCOPE, switchedOff: [SCHED] },
+      { verb: 'provision', scopeId: SCOPE, switchedOff: [SCHED] },
+      { verb: 'restore', scopeId: SCOPE, switchedOff: [SCHED] },
+    ]);
+  });
+
+  it('a body without the list hands the host none, and the answer carries none — the pre-#1742 shape', async () => {
+    const { host, seen } = recording();
+    const reconcile = await post(host, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE });
+    expect(await reconcile.json()).toEqual({ tenantId: TENANT, scopeId: SCOPE, owner: OWNER });
+    const restore = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [] });
+    expect(await restore.json()).toEqual({ tables: 0 });
+    expect(seen.map((s) => s.switchedOff)).toEqual([undefined, undefined]);
+  });
+
+  it('cannot be aimed at another scope: an entry naming a scope is refused before the host is called', async () => {
+    const { host, seen } = recording();
+    for (const path of ['/internal/provision', '/internal/reconcile', '/internal/restore']) {
+      const res = await post(host, path, {
+        tenantId: TENANT,
+        scopeId: SCOPE,
+        owner: OWNER,
+        tables: [],
+        switchedOff: [{ scopeId: OTHER_SCOPE, moduleId: SCHED }],
+      });
+      expect(res.status, path).toBe(400);
+    }
+    // A field beside it naming another scope is stripped, never read: the host still sees
+    // only the request's own scope.
+    await post(host, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE, switchedOffScopeId: OTHER_SCOPE, switchedOff: [SCHED] });
+    expect(seen).toEqual([{ verb: 'provision', scopeId: SCOPE, switchedOff: [SCHED] }]);
+  });
+
+  it('an older host that ignores the list answers without one, so the platform falls back to its re-assert', async () => {
+    const host = fakeHost(); // provisionScopeLocal → void, restoreScopeLocal → { tables: 3 }
+    const reconcile = await post(host, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE, switchedOff: [SCHED] });
+    expect(await reconcile.json()).toEqual({ tenantId: TENANT, scopeId: SCOPE, owner: OWNER });
+    const restore = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], switchedOff: [SCHED] });
+    expect(await restore.json()).toEqual({ tables: 3 });
+  });
+
+  // Parsed on the way out, as the owner seat is: a wrong shape is refused (the envelope's
+  // 400 for a parse failure), never relayed to the platform as if it were the wire shape.
+  it('a host reporting a malformed move is refused here, never relayed', async () => {
+    const host = fakeHost({ provisionScopeLocal: async () => ({ switchedOff: [{ moduleId: SCHED, held: 'yes' }] as never }) });
+    const res = await post(host, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE, switchedOff: [SCHED] });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).not.toContain('"held":"yes"');
+  });
+});

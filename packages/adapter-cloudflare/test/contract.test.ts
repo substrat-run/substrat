@@ -14,8 +14,10 @@ import {
   scopeId,
   tenantId,
   type EntitlementGrant,
+  type ModuleId,
   type ProjectedConnectionGrant,
   type RoleDefinition,
+  type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
 import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
@@ -1677,6 +1679,143 @@ describe('CP-less schedules — declared schedules run without a control plane (
     // system principal `sched:tick` only — same lever as the CP-full suite.
     const sys = await host.getSystemScope(SCHED, t, s);
     await expect(sys.invoke('sched/needs-admin')).rejects.toThrow();
+  });
+});
+
+/**
+ * #1742 — the hosted half of the kill switch's re-assert, on the host a vertical's own
+ * deployment runs: no control plane, the switch in this DO. A wiped scope's reconcile
+ * re-seats the module's `system:` grants (#1659), and the platform's re-assert used to
+ * follow as a second call, so this deployment's own sweeper could fire the module in
+ * between. The platform now carries the record's off list into the call, and the seat's
+ * unit switches those modules off before anything can run.
+ *
+ * Every assertion that matters is the pass run IMMEDIATELY after the call, with no
+ * re-assert in between: that pass is the sweep that used to land in the window.
+ */
+describe('#1742 — a wiped scope is switched off inside the unit that re-seats it (CP-less)', () => {
+  const SCHED = moduleId.parse('@test/sched');
+  const NOT_HELD = moduleId.parse('@test/not-held');
+  const t = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const READ = permissionKey.parse('perm:read');
+  const roles: RoleDefinition[] = [{ key: 'office-admin', permissions: [READ], source: 'vertical' }];
+
+  /** A deployment's host; `withSchedules: false` is a version that does not ship the module. */
+  const deployment = (withSchedules = true) => {
+    const h = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    if (withSchedules) h.registerModule(scheduleMod);
+    return h;
+  };
+  const host = deployment();
+  afterAll(async () => host.close());
+
+  /** The reconcile's kernel half, as `/internal/reconcile` calls it. */
+  const reconcile = (s: ScopeId, extra: { switchedOff?: ModuleId[] } = {}, on = host) =>
+    on.provisionScopeLocal({ tenantId: t, scopeId: s, owner, roles, ownerRoleKey: 'office-admin', ...extra });
+  const newScope = async (): Promise<ScopeId> => {
+    const s = scopeId.parse(ulid());
+    await reconcile(s);
+    return s;
+  };
+  const off = (s: ScopeId) => host.systemSwitchLocal(s, SCHED, 'off');
+  /** The scope's storage, gone: an empty restore re-asserts the bare spine (#321). */
+  const wipe = (s: ScopeId) => host.restoreScopeLocal(s, []);
+  const pass = (s: ScopeId) => host.runDueSchedules(SCHED, t, s);
+  const tookBack = { moduleId: SCHED, held: true, changed: true, permissions: ['sched:tick'] };
+
+  it('a wiped scope reconciled WITH its off list runs nothing on the very next pass, and ON gives back what the unit took', async () => {
+    const s = await newScope();
+    await off(s);
+    await wipe(s);
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([]); // the marker is gone with the storage
+
+    expect(await reconcile(s, { switchedOff: [SCHED] })).toEqual({ switchedOff: [tookBack] });
+    expect(await pass(s)).toMatchObject({ fired: 0, skipped: 2, failed: 0, switchedOff: true });
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
+
+    // The grants the seat re-created are exactly what OFF recorded, so ON returns them.
+    expect(await host.systemSwitchLocal(s, SCHED, 'on')).toEqual({
+      held: true,
+      changed: true,
+      permissions: ['sched:tick'],
+    });
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it('the same reconcile WITHOUT the field fires on that pass — the window the post-call re-assert is the fallback for', async () => {
+    const s = await newScope();
+    await off(s);
+    await wipe(s);
+    expect(await reconcile(s)).toEqual({});
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it("the list reaches only the scope being reconciled: another scope's module still fires", async () => {
+    const a = await newScope();
+    const b = await newScope();
+    await off(a);
+    await wipe(a);
+    await reconcile(a, { switchedOff: [SCHED] });
+    await reconcile(b); // b was never switched off, and reconciles with no list
+    expect(await pass(a)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(await host.systemGrantsStatusLocal(b)).toEqual([{ moduleId: SCHED, schedules: 'on' }]);
+    expect(await pass(b)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it('a live marker is left alone: the list re-asserts, it never double-moves', async () => {
+    const s = await newScope();
+    await off(s);
+    // Not wiped: the marker survived, so the seat seated nothing and the unit moves nothing.
+    expect(await reconcile(s, { switchedOff: [SCHED, SCHED] })).toEqual({
+      switchedOff: [{ moduleId: SCHED, held: true, changed: false, permissions: [] }],
+    });
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('a module the deployment does not ship is held: false and plants no marker — and is switched off in the reconcile that first seats it', async () => {
+    const s = scopeId.parse(ulid());
+    const older = deployment(false);
+    // A version without the module: its seat holds nothing for it, so OFF writes nothing.
+    expect(await reconcile(s, { switchedOff: [SCHED, NOT_HELD] }, older)).toEqual({
+      switchedOff: [
+        { moduleId: SCHED, held: false, changed: false, permissions: [] },
+        { moduleId: NOT_HELD, held: false, changed: false, permissions: [] },
+      ],
+    });
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([]);
+    // The version that ships it arrives. Its first seat creates the grants, and the same
+    // unit switches them off, so the module never runs on this scope, not even once.
+    expect(await reconcile(s, { switchedOff: [SCHED] })).toEqual({ switchedOff: [tookBack] });
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    await older.close();
+  });
+
+  it('a module added later with nothing recorded off still fires — the twin: no marker was planted', async () => {
+    const s = scopeId.parse(ulid());
+    const older = deployment(false);
+    await reconcile(s, { switchedOff: [NOT_HELD] }, older);
+    await reconcile(s);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+    await older.close();
+  });
+
+  it('a restore of a dump from before the switch lands off when the off list rides it; without it, it fires', async () => {
+    const s = await newScope();
+    const before = await host.exportScopeLocal(s);
+    await off(s);
+    const restored = await host.restoreScopeLocal(s, before, { switchedOff: [SCHED] });
+    expect(restored).toEqual({ tables: before.length, switchedOff: [tookBack] });
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+
+    const twin = await newScope();
+    const beforeTwin = await host.exportScopeLocal(twin);
+    await host.systemSwitchLocal(twin, SCHED, 'off');
+    expect(await host.restoreScopeLocal(twin, beforeTwin)).toEqual({ tables: beforeTwin.length });
+    expect(await pass(twin)).toMatchObject({ fired: 2, failed: 0 });
   });
 });
 

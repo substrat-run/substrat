@@ -375,7 +375,7 @@ const reconcileBody = z.object({
   switchedOff: z.array(moduleIdOf).optional(),
 });
 
-/** The in-unit outcomes, parsed on the way OUT — a host answering another shape is a 500 here. */
+/** The in-unit outcomes, parsed on the way OUT — a host answering another shape is refused here. */
 const switchedOffAnswer = (switched: InUnitSwitch[] | undefined) =>
   switched ? { switchedOff: z.array(switchedOffInUnit).parse(switched) } : {};
 
