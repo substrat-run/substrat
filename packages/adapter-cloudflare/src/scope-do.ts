@@ -1670,6 +1670,9 @@ export function defineScopeDO(
           );
         }
       }
+      // #1819: arming from BEFORE the call, so a probe that lands while it is in flight answers
+      // armed. Left set if the call throws: that is not a refusal, and it may have armed.
+      this.rewindArming = true;
       const confirmed = await storage.onNextSessionRestoreBookmark(bookmark);
       // #1819: from here, everything this instance writes is discarded at the restart.
       this.rewindArmed = true;
@@ -3180,10 +3183,15 @@ export function defineScopeDO(
     private readonly instanceId = crypto.randomUUID();
     /** Whether this instance armed a rewind: then its writes are discarded at the restart. */
     private rewindArmed = false;
+    /** Whether this instance began arming one: set before the restore call, and never cleared. */
+    private rewindArming = false;
 
-    /** Which instance is serving, and whether it armed a rewind. For an ambiguous rewind throw. */
+    /**
+     * Which instance is serving, and whether it armed a rewind or began to. For an ambiguous
+     * rewind throw: arming counts as armed, because the restore call may yet land.
+     */
     rewindProbe(): { instance: string; armed: boolean } {
-      return { instance: this.instanceId, armed: this.rewindArmed };
+      return { instance: this.instanceId, armed: this.rewindArmed || this.rewindArming };
     }
 
     /** Whether this instance has created the claims table; it never goes away once it exists. */

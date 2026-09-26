@@ -35,7 +35,7 @@ type Instance = Record<string, unknown>;
 export async function armRewind(
   ns: DurableObjectNamespace,
   scopeId: string,
-  opts?: { throwing?: string; holdAbort?: boolean },
+  opts?: { throwing?: string; holdAbort?: boolean; gate?: Promise<void> },
 ): Promise<void> {
   await runInDurableObject(ns.get(ns.idFromName(scopeId)), (instance, state) => {
     if (opts?.holdAbort) {
@@ -45,6 +45,7 @@ export async function armRewind(
     }
     (state.storage as unknown as { onNextSessionRestoreBookmark: (b: string) => Promise<string> })
       .onNextSessionRestoreBookmark = async (bookmark) => {
+      if (opts?.gate) await opts.gate; // the restore call still in flight until the test opens it
       if (opts?.throwing) throw new Error(opts.throwing);
       return bookmark;
     };

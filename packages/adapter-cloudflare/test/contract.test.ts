@@ -2396,6 +2396,29 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
   });
 
+  /**
+   * Re-review on #1838: the ambiguous-throw probe can land while the restore call is still in
+   * flight. The DO now counts itself arming from BEFORE that call, so such a probe answers armed,
+   * naming this instance as doomed, rather than "not armed" and a claim that any move releases.
+   */
+  it('a probe while the restore call is in flight answers armed', async () => {
+    const s = await newScope();
+    const scope = () =>
+      env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as {
+        rewindProbe(): Promise<{ instance: string; armed: boolean }>;
+        rewindToBookmark(b: string, o: { force: boolean }): Promise<unknown>;
+      };
+    expect(await scope().rewindProbe()).toMatchObject({ armed: false });
+    let open!: () => void;
+    await armRewind(env.SCOPE, s, { gate: new Promise<void>((resolve) => (open = resolve)), holdAbort: true });
+    const rewinding = scope().rewindToBookmark('bm', { force: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await scope().rewindProbe()).toMatchObject({ armed: true });
+    open();
+    await rewinding;
+    await restartNow(env.SCOPE, s);
+  });
+
   it('a claim still pending past the bound is released by a move; a fresh pending one is not', async () => {
     const s = await newScope();
     await off(s);
@@ -2461,7 +2484,8 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await armRewind(env.SCOPE, s, { throwing: 'Network connection lost.' });
     await expect(host.rewindScopeLocal(s, 'bm', { force: true })).rejects.toThrow(/Network connection lost/);
     expect(await heldOn(s)).toEqual([SCHED]);
-    // Inert on a scope that is still off, and the next move of the switch releases it.
+    // Inert on a scope that is still off. The operator's ON releases it; an OFF would wait for
+    // the next instance, since the probe found this one arming and named it doomed.
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
     await host.systemSwitchLocal(s, SCHED, 'on');
     expect(await heldOn(s)).toEqual([]);
