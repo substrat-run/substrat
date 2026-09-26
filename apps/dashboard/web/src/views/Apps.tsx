@@ -213,7 +213,7 @@ function AppsSkeleton() {
 }
 
 /** The empty Overview / onboarding (screen 1d). */
-function Onboarding({ onCreate }: { onCreate: () => void }) {
+export function Onboarding({ onCreate }: { onCreate: () => void }) {
   const steps = [
     { n: 1, label: 'Create an app', here: true },
     { n: 2, label: 'Invite your team' },

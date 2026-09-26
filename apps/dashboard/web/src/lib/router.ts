@@ -47,6 +47,15 @@ export function obsPath(
   return `/observability${qs ? `?${qs}` : ''}`;
 }
 
+/**
+ * Whether a click on a real-href anchor is one the SPA should take over: an unmodified
+ * primary click. Cmd/Ctrl/Shift/Alt-click and the middle button belong to the browser
+ * (new tab, new window, download), which is the whole reason the anchor has an href.
+ */
+export function isPlainClick(e: { button: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }): boolean {
+  return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+}
+
 export function navigate(path: string): void {
   window.history.pushState(null, '', teamPath(path));
   window.dispatchEvent(new PopStateEvent('popstate'));

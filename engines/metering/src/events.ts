@@ -9,11 +9,10 @@
  * vertical prices them and feeds invoicing — so the consumer is a billing path
  * by construction.
  *
- * TYPES ONLY. The runtime contract is still the fat payload and **the
+ * TYPES, plus one stamp. The runtime contract is still the fat payload and **the
  * consumer's own Zod parse** (kernel `EventContract`,
- * `packages/kernel/src/scope-host.ts`); `emitMeteringEvent` forwards to
- * `ctx.emit` unchanged — one extra call in the stack, and no change in what is
- * emitted.
+ * `packages/kernel/src/scope-host.ts`); `emitMeteringEvent` forwards to `ctx.emit`, adding only the
+ * `schemaVersion` it stamps from `meteringEventVersions` (#1597).
  *
  * VERTICAL-FACING ONLY. A sibling engine consuming one of these must NOT import
  * it — R1 (star topology) forbids the import, and the defensive parse is what
@@ -101,6 +100,26 @@ export type MeteringEvents = {
 export type MeteringEventType = keyof MeteringEvents['events'];
 
 /**
+ * Every event type this engine emits, and the `schemaVersion` each is emitted at.
+ *
+ * The ONE home for that number (#1597): `emitMeteringEvent` stamps it onto every
+ * emission and the manifest's `emits` is derived from it below, so the two cannot
+ * drift. `satisfies` holds it to exactly the types `MeteringEvents` declares — a type
+ * missing here, or one the map does not know, is a compile error. Bumping a
+ * version is K-39's REPLACE: change it here, and the payload type beside it.
+ */
+export const meteringEventVersions = {
+  'metering.meter-configured': 1,
+  'metering.usage-recorded': 1,
+  'metering.period-closed': 1,
+} as const satisfies Record<MeteringEventType, number>;
+
+/** The manifest's `events.emits`, read off {@link meteringEventVersions} — never hand-declared. */
+export const meteringEmitDeclarations: { type: string; schemaVersion: number }[] = Object.entries(
+  meteringEventVersions,
+).map(([type, schemaVersion]) => ({ type, schemaVersion }));
+
+/**
  * `ctx.emit`, with the event type and its payload welded together.
  *
  * This is what stops `MeteringEvents` becoming a description nothing holds in
@@ -110,14 +129,15 @@ export type MeteringEventType = keyof MeteringEvents['events'];
  * *source*: rename a payload field on one side and the other side fails to
  * compile, and emitting a type the map does not declare fails too.
  *
- * Zero runtime behaviour of its own — it forwards to `ctx.emit` unchanged.
+ * Its one runtime act is stamping `schemaVersion` from `meteringEventVersions` onto
+ * the event (#1597); everything else is forwarded to `ctx.emit` unchanged.
  */
 export function emitMeteringEvent<K extends MeteringEventType>(
   ctx: OperationContext,
-  event: Omit<DomainEventInput, 'type' | 'payload'> & {
+  event: Omit<DomainEventInput, 'type' | 'payload' | 'schemaVersion'> & {
     type: K;
     payload: MeteringEvents['events'][K];
   },
 ): void {
-  ctx.emit(event);
+  ctx.emit({ ...event, schemaVersion: meteringEventVersions[event.type] });
 }

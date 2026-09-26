@@ -543,6 +543,7 @@ export const MOCK_APPS: AppRow[] = [
   { id: '2', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P7LEGA', vertical_slug: 'protocol', name: 'Acme Legal', status: 'active', hostname: 'acme-legal.substrat.run', created_by: 'dana@acme.com', created_at: ago(30 * 3600e3) },
   { id: '3', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P7FIEL', vertical_slug: 'workorder', name: 'Acme Field Ops', status: 'provisioning', hostname: null, created_by: 'dana@acme.com', created_at: ago(20e3) },
   { id: '4', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P7FINA', vertical_slug: 'invoicing', name: 'Acme Finance', status: 'failed', hostname: null, created_by: 'dana@acme.com', created_at: ago(3 * 86400e3) },
+  { id: '5', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P7SUPP', vertical_slug: 'ticket0', name: 'Acme Support', status: 'active', hostname: 'acme-support.substrat.run', created_by: 'dana@acme.com', created_at: ago(9 * 86400e3) },
 ];
 
 /**
@@ -616,7 +617,7 @@ export const MOCK_APP_OVERLAYS: AppOverlays = (() => {
  * with a burst of errors, one steady and quiet — because the whole point of the all-apps
  * mode is telling two installations apart on one axis.
  *
- * `MOCK_APPS` has four rows and this covers two, which is the honest fixture: an app
+ * `MOCK_APPS` has five rows and this covers two, which is the honest fixture: an app
  * still provisioning and a failed one have no traffic, and the page must draw them as
  * flat zero lines rather than leaving them out.
  */
@@ -673,8 +674,12 @@ export const MOCK_OBSERVABILITY_LOGS: ObservabilityLogEvent[] = [
 export const MOCK_FLEET_HEALTH: AppHealthRow[] = [
   { scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', name: 'Acme HR', vertical: 'protocol', state: 'failing', reason: '3 operation failures and 1 failed schedule run recorded.', failures: 3, sweepFailures: 1, stale: 0, lastSweepAt: ago(4 * 60e3) },
   { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7LEGA', name: 'Acme Legal', vertical: 'protocol', state: 'stale', reason: '1 freshness expectation overdue — an event that should have arrived has not.', failures: 0, sweepFailures: 0, stale: 1, lastSweepAt: ago(9 * 60e3) },
+  // Field Ops is still installing and Finance's install failed: neither runs any code, so
+  // no sweep has reached either, and `silent` is what the worker answers for both. The
+  // web side judges them by install state instead (`appVerdict`), which is the point.
   { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7FIEL', name: 'Acme Field Ops', vertical: 'workorder', state: 'silent', reason: 'No sweep has reached this app in the window — nothing is checking it.', failures: 0, sweepFailures: 0, stale: 0, lastSweepAt: null },
-  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7FINA', name: 'Acme Finance', vertical: 'invoicing', state: 'ok', reason: 'Swept, with nothing failing or overdue.', failures: 0, sweepFailures: 0, stale: 0, lastSweepAt: ago(2 * 60e3) },
+  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7FINA', name: 'Acme Finance', vertical: 'invoicing', state: 'silent', reason: 'No sweep has reached this app in the window — nothing is checking it.', failures: 0, sweepFailures: 0, stale: 0, lastSweepAt: null },
+  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7SUPP', name: 'Acme Support', vertical: 'ticket0', state: 'ok', reason: 'Swept, with nothing failing or overdue.', failures: 0, sweepFailures: 0, stale: 0, lastSweepAt: ago(2 * 60e3) },
 ];
 
 export const MOCK_APP_METRICS: AppMetricsView = {
@@ -685,5 +690,6 @@ export const MOCK_APP_METRICS: AppMetricsView = {
     { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7LEGA', requests: 1164, errors: 3, p95: 140 },
     { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7FIEL', requests: 0, errors: 0, p95: null },
     { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7FINA', requests: 0, errors: 0, p95: null },
+    { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7SUPP', requests: 412, errors: 0, p95: 95 },
   ],
 };

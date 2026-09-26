@@ -141,7 +141,17 @@ function _emitSiteChecks(ctx: OperationContext, approved: AbsenceApprovedPayload
   // --- positive twin: the declared types, accepted --------------------------
   emitAbsenceEvent(ctx, {
     type: 'absence.decided',
-    schemaVersion: 1,
+    entity: subject,
+    piiClass: 'pseudonymous',
+    subjectId: who,
+    payload: approved,
+  });
+
+  // --- a schemaVersion at the emit site: the engine owns it (#1597) ----------
+  emitAbsenceEvent(ctx, {
+    type: 'absence.decided',
+    // @ts-expect-error the version is the engine's (`absenceEventVersions`) — an emit site cannot name one
+    schemaVersion: 2,
     entity: subject,
     piiClass: 'pseudonymous',
     subjectId: who,
@@ -150,7 +160,6 @@ function _emitSiteChecks(ctx: OperationContext, approved: AbsenceApprovedPayload
 
   emitAbsenceEvent(ctx, {
     type: 'absence.expired',
-    schemaVersion: 1,
     entity: subject,
     piiClass: 'pseudonymous',
     subjectId: who,
@@ -161,7 +170,6 @@ function _emitSiteChecks(ctx: OperationContext, approved: AbsenceApprovedPayload
   emitAbsenceEvent(ctx, {
     // @ts-expect-error engine-absence declares no 'absence.accrued'
     type: 'absence.accrued',
-    schemaVersion: 1,
     entity: subject,
     piiClass: 'pseudonymous',
     subjectId: who,
@@ -173,7 +181,6 @@ function _emitSiteChecks(ctx: OperationContext, approved: AbsenceApprovedPayload
   // balance change that never happened.
   emitAbsenceEvent(ctx, {
     type: 'absence.decided',
-    schemaVersion: 1,
     entity: subject,
     piiClass: 'pseudonymous',
     subjectId: who,
@@ -191,7 +198,6 @@ function _emitSiteChecks(ctx: OperationContext, approved: AbsenceApprovedPayload
   // --- an approval with no booking to name ----------------------------------
   emitAbsenceEvent(ctx, {
     type: 'absence.decided',
-    schemaVersion: 1,
     entity: subject,
     piiClass: 'pseudonymous',
     subjectId: who,
@@ -211,7 +217,6 @@ function _emitSiteChecks(ctx: OperationContext, approved: AbsenceApprovedPayload
   // --- a decimal handed over as a number ------------------------------------
   emitAbsenceEvent(ctx, {
     type: 'absence.requested',
-    schemaVersion: 1,
     entity: subject,
     piiClass: 'pseudonymous',
     subjectId: who,
@@ -222,12 +227,11 @@ function _emitSiteChecks(ctx: OperationContext, approved: AbsenceApprovedPayload
 void _emitSiteChecks;
 
 describe('#696 engine-absence event contract', () => {
-  it('is a pass-through at runtime — types only', () => {
+  it('forwards to ctx.emit, stamping only the schemaVersion', () => {
     const emitted: unknown[] = [];
     const ctx = { emit: (event: unknown) => emitted.push(event) } as unknown as OperationContext;
     emitAbsenceEvent(ctx, {
       type: 'absence.leave-type-configured',
-      schemaVersion: 1,
       entity: { entityType: 'absence-leave-type', entityId: 'vacation' },
       piiClass: 'none',
       payload: { key: 'vacation', floor: '0', active: true },

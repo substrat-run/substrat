@@ -2,11 +2,10 @@
  * engine-invites' event contract (#696) — what a VERTICAL imports so that
  * consuming this engine by event is checked rather than guessed.
  *
- * TYPES ONLY. The runtime contract is still the fat payload and **the
+ * TYPES, plus one stamp. The runtime contract is still the fat payload and **the
  * consumer's own Zod parse** (kernel `EventContract`,
- * `packages/kernel/src/scope-host.ts`); `emitInvitesEvent` forwards to
- * `ctx.emit` unchanged — one extra call in the stack, and no change in what is
- * emitted.
+ * `packages/kernel/src/scope-host.ts`); `emitInvitesEvent` forwards to `ctx.emit`, adding only the
+ * `schemaVersion` it stamps from `invitesEventVersions` (#1597).
  *
  * VERTICAL-FACING ONLY. A sibling engine consuming one of these must NOT import
  * it — R1 (star topology) forbids the import, and the defensive parse is what
@@ -104,6 +103,27 @@ export type InvitesEvents = {
 export type InvitesEventType = keyof InvitesEvents['events'];
 
 /**
+ * Every event type this engine emits, and the `schemaVersion` each is emitted at.
+ *
+ * The ONE home for that number (#1597): `emitInvitesEvent` stamps it onto every
+ * emission and the manifest's `emits` is derived from it below, so the two cannot
+ * drift. `satisfies` holds it to exactly the types `InvitesEvents` declares — a type
+ * missing here, or one the map does not know, is a compile error. Bumping a
+ * version is K-39's REPLACE: change it here, and the payload type beside it.
+ */
+export const invitesEventVersions = {
+  'invites.sent': 1,
+  'invites.accepted': 1,
+  'invites.revoked': 1,
+  'member.add-requested': 1,
+} as const satisfies Record<InvitesEventType, number>;
+
+/** The manifest's `events.emits`, read off {@link invitesEventVersions} — never hand-declared. */
+export const invitesEmitDeclarations: { type: string; schemaVersion: number }[] = Object.entries(
+  invitesEventVersions,
+).map(([type, schemaVersion]) => ({ type, schemaVersion }));
+
+/**
  * `ctx.emit`, with the event type and its payload welded together.
  *
  * This is what stops `InvitesEvents` becoming a description nothing holds in
@@ -113,14 +133,15 @@ export type InvitesEventType = keyof InvitesEvents['events'];
  * *source*: rename a payload field on one side and the other side fails to
  * compile, and emitting a type the map does not declare fails too.
  *
- * Zero runtime behaviour of its own — it forwards to `ctx.emit` unchanged.
+ * Its one runtime act is stamping `schemaVersion` from `invitesEventVersions` onto
+ * the event (#1597); everything else is forwarded to `ctx.emit` unchanged.
  */
 export function emitInvitesEvent<K extends InvitesEventType>(
   ctx: OperationContext,
-  event: Omit<DomainEventInput, 'type' | 'payload'> & {
+  event: Omit<DomainEventInput, 'type' | 'payload' | 'schemaVersion'> & {
     type: K;
     payload: InvitesEvents['events'][K];
   },
 ): void {
-  ctx.emit(event);
+  ctx.emit({ ...event, schemaVersion: invitesEventVersions[event.type] });
 }

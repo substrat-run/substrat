@@ -132,3 +132,53 @@ describe('guardSqlLimits', () => {
     expect(seen).toEqual(['SELECT 1', 'DELETE FROM t']);
   });
 });
+
+describe('result columns in every select core (#1811)', () => {
+  const C = DO_SQL_LIMITS.columns;
+  const list = (n: number, alias = false): string => Array.from({ length: n }, (_, i) => (alias ? `${i} AS c${i}` : `${i}`)).join(', ');
+  const wide = /^too many columns in result set: SQLITE_ERROR \(\d+ columns; limit 100\)$/;
+
+  it('counts the outermost list: the limit passes, one more is refused', () => {
+    expect(() => assertWithinSqlLimits(`SELECT ${list(C)}`)).not.toThrow();
+    expect(() => assertWithinSqlLimits(`SELECT ${list(C + 1)}`)).toThrow(wide);
+  });
+
+  for (const [shape, build] of [
+    ['a subquery', (n: number) => `SELECT c0 FROM (SELECT ${list(n, true)})`],
+    ['a CTE body', (n: number) => `WITH w AS (SELECT ${list(n, true)}) SELECT c0 FROM w`],
+    ['a compound arm', (n: number) => `SELECT 1 UNION ALL SELECT c0 FROM (SELECT ${list(n, true)})`],
+    ['the first arm of a compound', (n: number) => `SELECT ${list(n)} UNION ALL SELECT ${list(n)}`],
+    ['a scalar subquery', (n: number) => `SELECT (SELECT c0 FROM (SELECT ${list(n, true)}))`],
+  ] as const) {
+    it(`counts ${shape}, whatever the outer projection is`, () => {
+      expect(() => assertWithinSqlLimits(build(C))).not.toThrow();
+      expect(() => assertWithinSqlLimits(build(C + 1))).toThrow(wide);
+    });
+  }
+
+  it('reports the width it counted', () => {
+    expect(() => assertWithinSqlLimits(`SELECT ${list(130)}`)).toThrow('(130 columns; limit 100)');
+  });
+
+  it('does not count commas outside the list, or inside a nested call', () => {
+    const inList = Array.from({ length: 60 }, (_, i) => `max(${i}, ${i + 1})`).join(', ');
+    expect(() =>
+      assertWithinSqlLimits(
+        `SELECT ${inList} FROM t WHERE x IN (${list(150)}) GROUP BY ${list(150)} ORDER BY ${list(150)} LIMIT 1, 2`,
+      ),
+    ).not.toThrow();
+  });
+
+  it('does not count an INSERT … VALUES row, or a later statement, against an earlier list', () => {
+    expect(() => assertWithinSqlLimits(`INSERT INTO t VALUES (${list(150)})`)).not.toThrow();
+    expect(() => assertWithinSqlLimits(`SELECT ${list(C)}; SELECT ${list(C)}`)).not.toThrow();
+  });
+
+  it('ignores commas in strings, quoted names and comments, and a column named select', () => {
+    expect(() => assertWithinSqlLimits(`SELECT ${"'a,b'," .repeat(60)} "x,y", t.select /* ${list(150)} */ FROM t`)).not.toThrow();
+  });
+
+  it('ends a list at FROM even inside a function that has its own FROM', () => {
+    expect(() => assertWithinSqlLimits(`SELECT ${list(60)}, trim(x FROM y) FROM t, u, v`)).not.toThrow();
+  });
+});

@@ -48,10 +48,15 @@ const attempt = (sql: SqlStorage, t: Trial, n: number): string => {
 const terms = (n: number, op: string): string => Array.from({ length: n }, (_, i) => `SELECT ${i}`).join(` ${op} `);
 const marks = (n: number): string => Array.from({ length: n }, () => '?').join(',');
 
-const { compoundTerms, boundParameters, statementBytes, likePatternBytes } = DO_SQL_LIMITS;
+const { compoundTerms, boundParameters, statementBytes, likePatternBytes, columns } = DO_SQL_LIMITS;
 const compoundTrial = (op: string): Trial => (n) => ({ sql: terms(n, op) });
 const paramTrial: Trial = (n) => ({ sql: `SELECT 1 WHERE 1 IN (${marks(n)})`, params: Array(n).fill(1) });
 const lengthTrial: Trial = (n) => ({ sql: `SELECT '${'a'.repeat(n - "SELECT ''".length)}'` });
+const cols = (n: number): string => Array.from({ length: n }, (_, i) => `c${i}`).join(', ');
+// A fresh table name per trial: a CREATE that succeeds must not collide with the next.
+let tableSeq = 0;
+const tableTrial: Trial = (n) => ({ sql: `CREATE TABLE wide_${tableSeq++} (${cols(n)})` });
+const resultTrial: Trial = (n) => ({ sql: `SELECT ${Array.from({ length: n }, (_, i) => i).join(', ')}` });
 const likeTrial: Trial = (n) => ({ sql: `SELECT 'x' LIKE ?`, params: ['%' + 'a'.repeat(n - 2) + '%'] });
 
 describe('the SQL limits of a Durable Object: the boundary (#1741)', () => {
@@ -132,6 +137,50 @@ describe('the SQL limits of a Durable Object: the boundary (#1741)', () => {
     expect(at).toBe('ok');
     expect(past).toBe('statement too long: SQLITE_TOOBIG');
   });
+
+  it('columns in a table: 100 run, the 101st is refused', async () => {
+    const [at, past] = await run((sql) => [attempt(sql, tableTrial, columns), attempt(sql, tableTrial, columns + 1)]);
+    expect(at).toBe('ok');
+    expect(past).toMatch(/^too many columns on wide_\d+: SQLITE_ERROR$/);
+  });
+
+  it('columns in a table: ADD COLUMN past 100 is refused too', async () => {
+    const [at, past] = await run((sql) => {
+      sql.exec(`CREATE TABLE grown (${cols(columns - 1)})`);
+      return [
+        attempt(sql, () => ({ sql: 'ALTER TABLE grown ADD COLUMN one_more' }), 0),
+        attempt(sql, () => ({ sql: 'ALTER TABLE grown ADD COLUMN one_too_many' }), 0),
+      ];
+    });
+    expect(at).toBe('ok');
+    // ALTER builds a shadow table, so the DO names that one.
+    expect(past).toBe('too many columns on sqlite_altertab_grown: SQLITE_ERROR');
+  });
+
+  it('columns in a result set: 100 run, the 101st is refused', async () => {
+    const [at, past] = await run((sql) => [attempt(sql, resultTrial, columns), attempt(sql, resultTrial, columns + 1)]);
+    expect(at).toBe('ok');
+    expect(past).toBe('too many columns in result set: SQLITE_ERROR');
+  });
+
+  // SQLITE_LIMIT_COLUMN is checked on every SELECT core, not only the outermost projection
+  // (#1811 review): a wide inner SELECT projected down to one column is refused too.
+  const inner = (n: number): string => Array.from({ length: n }, (_, i) => `${i} AS c${i}`).join(', ');
+  const innerShapes: Record<string, (n: number) => string> = {
+    subquery: (n) => `SELECT c0 FROM (SELECT ${inner(n)})`,
+    CTE: (n) => `WITH w AS (SELECT ${inner(n)}) SELECT c0 FROM w`,
+    'compound arm': (n) => `SELECT 1 UNION ALL SELECT c0 FROM (SELECT ${inner(n)})`,
+  };
+  for (const [shape, build] of Object.entries(innerShapes)) {
+    it(`columns in an inner SELECT (${shape}): ${columns} run, ${columns + 1} are refused`, async () => {
+      const [at, past] = await run((sql) => [
+        attempt(sql, (n) => ({ sql: build(n) }), columns),
+        attempt(sql, (n) => ({ sql: build(n) }), columns + 1),
+      ]);
+      expect(at).toBe('ok');
+      expect(past).toBe('too many columns in result set: SQLITE_ERROR');
+    });
+  }
 
   it('LIKE pattern length: 50 bytes run, one more is refused', async () => {
     const [at, past] = await run((sql) => [attempt(sql, likeTrial, likePatternBytes), attempt(sql, likeTrial, likePatternBytes + 1)]);
@@ -493,5 +542,100 @@ describe.skipIf(!__PROBE_DO_LIMITS__)('the SQL limits of a Durable Object: the m
     const half = `SELECT '${'a'.repeat(statementBytes * 0.6)}'`;
     const outcomes = await run((sql) => [attempt(sql, () => ({ sql: half }), 1), attempt(sql, () => ({ sql: `${half}; ${half}` }), 1)]);
     expect(outcomes).toEqual(['ok', 'statement too long: SQLITE_TOOBIG']);
+  });
+});
+
+/**
+ * #1811: a dump holding a table past the column cap cannot be replayed onto a Durable Object —
+ * its `CREATE TABLE` is refused, and no change to the replay could help. Refused up front with a
+ * sentence, before the first `CREATE`, and the transaction rolls back so the scope keeps its data.
+ * Node accepts such a dump (`adapter-sqlite/test/column-cap.test.ts`): only this side cannot hold it.
+ */
+describe('a dump with a table over the column cap (#1811)', () => {
+  const names = (n: number): string[] => Array.from({ length: n }, (_, i) => `c${i}`);
+  const table = (name: string, n: number, rows: unknown[][] = []) => ({
+    name,
+    ddl: `CREATE TABLE ${name} (${names(n).join(', ')})`,
+    columns: names(n),
+    rows,
+  });
+  interface Importer {
+    importDump(tables: unknown[]): Promise<void>;
+  }
+  const scopeImport = async <T>(fn: (i: Importer, sql: SqlStorage) => Promise<T>): Promise<T> => {
+    const stub = env.SCOPE.get(env.SCOPE.idFromName('do-dump-columns-1811'));
+    return runInDurableObject(stub, (i, state) => fn(i as unknown as Importer, state.storage.sql));
+  };
+
+  const row = names(columns).map((_, i) => i);
+  const rowsOf = (sql: SqlStorage, t: string): number => sql.exec(`SELECT COUNT(*) AS n FROM ${t}`).one().n as number;
+  const tablesOf = (sql: SqlStorage): string[] =>
+    (sql.exec(`SELECT name FROM sqlite_master WHERE name LIKE 'wide_%'`).toArray() as { name: string }[]).map((r) => r.name);
+
+  it(`a table of exactly ${columns} columns replays, rows and all`, async () => {
+    await scopeImport(async (i, sql) => {
+      await i.importDump([table('wide_ok', columns, [row])]);
+      expect(rowsOf(sql, 'wide_ok')).toBe(1);
+    });
+  });
+
+  it(`${columns + 1} columns is refused before anything is replayed, and the scope keeps what it had`, async () => {
+    await scopeImport(async (i, sql) => {
+      // Its own starting state: a scope holding one row, whatever ran before.
+      await i.importDump([table('wide_ok', columns, [row])]);
+      const err = await i.importDump([table('wide_ok', columns, []), table('wide_too_far', columns + 1)]).then(
+        () => 'accepted',
+        (e: Error) => e.message,
+      );
+      expect(err).toMatch(/^refusing this dump: table "wide_too_far" has 101 columns, and a Durable Object's SQLite holds at most 100 per table/);
+      // Refused before the drop: the old table still has its row, and nothing new exists.
+      expect(rowsOf(sql, 'wide_ok')).toBe(1);
+      expect(tablesOf(sql)).toEqual(['wide_ok']);
+    });
+  });
+
+  // #1811 review: does `SELECT *` under-count a table a dump carries? Measured on workerd: a
+  // generated column IS in `SELECT *` (`columns` = `table_xinfo`, 4 = 4, where `table_info` says 2),
+  // and only a virtual table's hidden columns are not, which is an fts5 table's two. A virtual
+  // table never reaches the width check: a dump's schema has to be one `CREATE TABLE`, so it is
+  // refused up front, by name, before any of it is replayed. So `columns` is the whole width of
+  // every table a dump can carry, and no separate width is needed.
+  it("a generated column is in `SELECT *`, so the dump's columns list counts it", async () => {
+    const generated = (n: number) => Array.from({ length: n }, (_, k) => `g${k} GENERATED ALWAYS AS (c0) VIRTUAL`);
+    await scopeImport(async (_i, sql) => {
+      // 95 plain + 5 generated is 100 wide, and `SELECT *` lists all 100 (`table_info` would say 95).
+      sql.exec(`CREATE TABLE wide_g (${[...names(columns - 5), ...generated(5)].join(', ')})`);
+      expect(sql.exec('SELECT * FROM wide_g').columnNames).toHaveLength(columns);
+      sql.exec('DROP TABLE wide_g');
+    });
+    await scopeImport(async (i) => {
+      const ddl = `CREATE TABLE wide_g (${[...names(columns - 5), ...generated(6)].join(', ')})`;
+      const listed = [...names(columns - 5), ...Array.from({ length: 6 }, (_, k) => `g${k}`)];
+      await expect(i.importDump([{ name: 'wide_g', ddl, columns: listed, rows: [] }])).rejects.toThrow(/has 101 columns/);
+    });
+  });
+
+  it('an fts5 table in a dump is refused up front, by name, before anything is replayed', async () => {
+    await scopeImport(async (i, sql) => {
+      await i.importDump([table('wide_ok', columns, [row])]);
+      const fts = { name: 'wide_f', ddl: `CREATE VIRTUAL TABLE wide_f USING fts5(${names(columns - 1).join(', ')})`, columns: names(columns - 1), rows: [] };
+      await expect(i.importDump([fts])).rejects.toThrow(/schema given for table "wide_f" does not begin with `CREATE TABLE wide_f \(`/);
+      expect(rowsOf(sql, 'wide_ok')).toBe(1);
+    });
+  });
+
+  it('a directory restore holds to the same cap', async () => {
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('do-dump-columns-1811-cp'));
+    const [ok, past] = await runInDurableObject(stub, async (i) => {
+      const cp = i as unknown as Importer;
+      const attempt = (n: number) =>
+        cp.importDump([table('wide_dir', n)]).then(
+          () => 'ok',
+          (e: Error) => e.message,
+        );
+      return [await attempt(columns), await attempt(columns + 1)];
+    });
+    expect(ok).toBe('ok');
+    expect(past).toMatch(/has 101 columns/);
   });
 });
