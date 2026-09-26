@@ -113,8 +113,7 @@ export function Team({
       if (res && 'acceptUrl' in res) {
         setLink(res.acceptUrl);
         setEmailed(res.emailDelivered);
-      }
-      else reset();
+      } else reset();
     } finally {
       setSending(false);
     }
