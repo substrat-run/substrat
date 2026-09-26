@@ -1477,7 +1477,8 @@ export function scopeHostContractSuite(
     it('facets the outbox, and keeps an ERASED payload out of the null bucket (#1239)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       const subject = ulid();
-      // Three events: two whose payload carries `secret`, one that never had it.
+      // Three events: two whose payload carries `secret` — both classed pseudonymous,
+      // since they name a subject — and one that never had it.
       await stub.invoke('test/emit-event', { subject, secret: 'kept' });
       await stub.invoke('test/emit-event', { subject: ulid(), secret: 'kept' });
       await stub.invoke('test/emit-event');
@@ -1493,7 +1494,10 @@ export function scopeHostContractSuite(
         type: 'test.happened',
       });
       expect(before.erased).toBe(0);
-      expect(before.buckets.find((b) => b.value === 'kept')!.count).toBe(2);
+      // #1762: a classified event is withheld from a payload grouping, so the two
+      // `kept` events are counted apart rather than bucketed.
+      expect(before.buckets.find((b) => b.value === 'kept')).toBeUndefined();
+      expect(before.withheldPersonal).toBeGreaterThanOrEqual(2);
       // The event that never carried the field is a genuine null bucket — an
       // absence in the data, which is a different fact from an erasure.
       expect(before.buckets.find((b) => b.value === null)!.count).toBeGreaterThanOrEqual(1);
@@ -1507,14 +1511,58 @@ export function scopeHostContractSuite(
       });
       // THE RULE: the erased event is counted apart, and did NOT join the null
       // bucket. Folding it in would show a reader a clean distribution with no
-      // hint that part of the history was redacted.
+      // hint that part of the history was redacted. It moves from withheld to
+      // erased — counted once, in the one place that says what happened to it.
       expect(after.erased).toBe(1);
-      expect(after.buckets.find((b) => b.value === 'kept')!.count).toBe(1);
+      expect(after.withheldPersonal).toBe(before.withheldPersonal - 1);
       expect(after.buckets.find((b) => b.value === null)?.count ?? 0).toBe(
         before.buckets.find((b) => b.value === null)!.count,
       );
       // And the denominator still counts it: the event happened, whatever it said.
       expect(after.total).toBe(before.total);
+      expect(after.truncated).toBe(false);
+      expect(after.buckets.reduce((n, b) => n + b.count, 0) + after.erased + after.withheldPersonal).toBe(after.total);
+    });
+
+    it('withholds personal-data events from a payload grouping, and only there (#1762)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const shredded = ulid();
+      // One payload field under every class. Grouped by it, only the `none` events may
+      // produce buckets: a bucket per address is a search for a person.
+      await stub.invoke('test/emit-classified', { pii: 'none', email: 'ops@acme.test' });
+      await stub.invoke('test/emit-classified', { pii: 'none', email: 'ops@acme.test' });
+      await stub.invoke('test/emit-classified', { pii: 'pseudonymous', email: 'anna@acme.test' });
+      await stub.invoke('test/emit-classified', { pii: 'pseudonymous', email: 'anna@acme.test' });
+      await stub.invoke('test/emit-classified', { pii: 'direct', email: 'bo@acme.test' });
+      await stub.invoke('test/emit-classified', { pii: 'direct', email: 'cy@acme.test', subject: shredded });
+      await host.admin.shredSubject(staff, t1, s1, dataSubjectId.parse(shredded));
+
+      const byEmail = await host.admin.facetEvents(staff, t1, s1, {
+        groupBy: { kind: 'payload', field: 'email' },
+        type: 'test.classified',
+      });
+      expect(byEmail.buckets.map((b) => [b.value, b.count])).toEqual([['ops@acme.test', 2]]);
+      // Three classified events still carry their payload; the fourth was shredded and
+      // is counted as erased, not twice.
+      expect(byEmail.withheldPersonal).toBe(3);
+      expect(byEmail.erased).toBe(1);
+      expect(byEmail.total).toBe(6);
+      expect(byEmail.buckets.reduce((n, b) => n + b.count, 0) + byEmail.erased + byEmail.withheldPersonal).toBe(
+        byEmail.total,
+      );
+
+      // An envelope grouping is not payload content: every class is counted, and the
+      // class itself stays available as a dimension.
+      const byClass = await host.admin.facetEvents(staff, t1, s1, {
+        groupBy: { kind: 'piiClass' },
+        type: 'test.classified',
+      });
+      expect(Object.fromEntries(byClass.buckets.map((b) => [b.value, b.count]))).toEqual({
+        none: 2,
+        pseudonymous: 2,
+        direct: 2,
+      });
+      expect([byClass.erased, byClass.withheldPersonal, byClass.total]).toEqual([0, 0, 6]);
     });
 
     it('carries WHEN each bucket last saw an event, not only how many (#1234)', async () => {
@@ -1567,6 +1615,7 @@ export function scopeHostContractSuite(
       // as erased would tell a reader that history was withheld from them when it
       // was simply never written.
       expect(facet.erased).toBe(0);
+      expect(facet.withheldPersonal).toBe(0);
       expect(facet.buckets.find((b) => b.value === null)!.count).toBe(1);
       expect(facet.total).toBe(3);
     });

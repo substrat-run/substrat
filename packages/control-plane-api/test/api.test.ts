@@ -473,7 +473,7 @@ describe('control-plane API', () => {
     const res = await req(`/tenants/${t1}/scopes/${s1}/facets?groupBy=type`);
     expect(res.status).toBe(200);
     // No modules here, so the outbox is empty — an empty facet, not a 404.
-    expect(await res.json()).toEqual({ buckets: [], erased: 0, total: 0, truncated: false });
+    expect(await res.json()).toEqual({ buckets: [], erased: 0, withheldPersonal: 0, total: 0, truncated: false });
 
     // A dimension the enum does not name is refused: `groupBy` selects a column, so the
     // enum is what keeps a caller's string out of the query.

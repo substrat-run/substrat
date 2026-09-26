@@ -480,6 +480,13 @@ export interface AppHealthRow {
  */
 export type { EventFacetBucket, EventFacetResult } from '@substrat-run/contracts';
 
+/**
+ * A facet answer as the wire may carry it. `withheldPersonal` (#1762) is absent from an
+ * app still running a kernel from before it — and that kernel groups personal-data
+ * events rather than withholding them, so the absence is "unknown", never 0.
+ */
+export type EventFacetAnswer = Omit<EventFacetResult, 'withheldPersonal'> & { withheldPersonal?: number };
+
 /** One declared field and whether anything declares it as output (#1321). */
 /** One node of the flow map (#1234), already laid out. */
 export interface FlowNode {
@@ -1934,7 +1941,7 @@ export const api = {
     scopeId: string,
     q: { groupBy?: string; field?: string; type?: string; since?: string; until?: string },
   ) =>
-    call<EventFacetResult>(
+    call<EventFacetAnswer>(
       `/apps/${encodeURIComponent(scopeId)}/facets?${new URLSearchParams(
         Object.fromEntries(Object.entries(q).filter(([, v]) => v !== undefined && v !== '')) as Record<string, string>,
       )}`,

@@ -82,7 +82,28 @@ const FIELDS: Record<string, Row[]> = {
   ],
 };
 
+/**
+ * Fields only personal-data events carry (#1762), as [count, minutes since last seen]. A
+ * payload grouping withholds every one of them, so grouping by one answers no bucket and
+ * a withheld count — the case the mode has to say plainly rather than draw as empty.
+ */
+const PERSONAL_FIELDS: Record<string, [number, number]> = {
+  email: [2140, 3],
+  body: [3912, 2],
+};
+
+/** Withheld events per grouped one under any other payload grouping: the fixture's
+ *  classified share from its own `piiClass` dimension, so the two views agree. */
+const WITHHELD_RATIO = (6802 + 36) / 5210;
+
 const TYPE_TOTAL = TYPES.reduce((n, [, c]) => n + c, 0);
+
+/** Elsewhere the fixture has no per-type breakdown, so a narrowed type gets its share of
+ *  every bucket — and an unknown type none at all, as the real read would. */
+function typeShare(type: string | undefined): number {
+  if (!type) return 1;
+  return (TYPES.find(([t]) => t === type)?.[1] ?? 0) / TYPE_TOTAL;
+}
 
 /** The rows a grouping answers with, narrowed to one type where the fixture can say so. */
 function rowsFor(q: { groupBy?: string; field?: string; type?: string }): Row[] {
@@ -101,9 +122,7 @@ function rowsFor(q: { groupBy?: string; field?: string; type?: string }): Row[] 
   }
   const rows = groupBy === 'field' ? (FIELDS[q.field!] ?? [[null, 1840, 4]]) : (DIMENSIONS[groupBy] ?? TYPES);
   if (!q.type) return rows;
-  // Elsewhere the fixture has no per-type breakdown, so a narrowed type gets its share of
-  // every bucket — and an unknown type none at all, as the real read would.
-  const share = (TYPES.find(([t]) => t === q.type)?.[1] ?? 0) / TYPE_TOTAL;
+  const share = typeShare(q.type);
   return rows.map(([v, c, ago]): Row => [v, Math.round(c * share), ago]).filter(([, c]) => c > 0);
 }
 
@@ -114,14 +133,17 @@ export function mockEventFacets(
   const start = now - FIXTURE_SPAN_MINUTES * 60_000;
   const since = q.since ? Math.max(Date.parse(q.since), start) : start;
   const until = q.until ? Math.min(Date.parse(q.until), now) : now;
-  const buckets = rowsFor(q)
+  // This bucket's events run from the fixture's start to its last-seen instant; the
+  // window counts the share it overlaps, and one it misses entirely is no bucket.
+  const inWindow = (count: number, ago: number): { n: number; to: number } => {
+    const last = now - ago * 60_000;
+    const to = Math.min(until, last);
+    return { n: to < since ? 0 : Math.round((count * (to - since)) / Math.max(1, last - start)), to };
+  };
+  const personal = q.field ? PERSONAL_FIELDS[q.field] : undefined;
+  const buckets = (personal ? ([] as Row[]) : rowsFor(q))
     .flatMap(([value, count, ago]) => {
-      // This bucket's events run from the fixture's start to its last-seen instant; the
-      // window counts the share it overlaps, and one it misses entirely is no bucket.
-      const last = now - ago * 60_000;
-      const to = Math.min(until, last);
-      if (to < since) return [];
-      const n = Math.round((count * (to - since)) / Math.max(1, last - start));
+      const { n, to } = inWindow(count, ago);
       return n > 0 ? [{ value, count: n, lastSeen: new Date(to).toISOString() }] : [];
     })
     .sort((a, b) => b.count - a.count);
@@ -129,10 +151,17 @@ export function mockEventFacets(
   // Erasure only shows under a payload grouping, where it can hide a value — and only
   // when something in the window was grouped at all.
   const erased = q.field && grouped > 0 ? Math.max(1, Math.round(grouped * 0.001)) : 0;
+  // #1762: only a payload grouping withholds, and a personal-only field withholds all.
+  const withheldPersonal = !q.field
+    ? 0
+    : personal
+      ? inWindow(Math.round(personal[0] * typeShare(q.type)), personal[1]).n
+      : Math.round(grouped * WITHHELD_RATIO);
   return {
     buckets,
-    total: grouped + erased,
+    total: grouped + erased + withheldPersonal,
     erased,
+    withheldPersonal,
     truncated: !q.field && (q.groupBy ?? 'type') === 'type' && !q.type && buckets.length > 0,
   };
 }

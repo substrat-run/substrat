@@ -33,4 +33,18 @@ describe('mockEventFacets', () => {
     const recent = mockEventFacets({ groupBy: 'type', since: ago(60), until: ago(0) }, now);
     expect(recent.buckets.map((b) => b.value)).not.toContain('deal.closed');
   });
+
+  it('a payload grouping withholds personal data, and the counts add up to the total (#1762)', () => {
+    const channel = mockEventFacets({ field: 'channel' }, now);
+    expect(channel.withheldPersonal).toBeGreaterThan(0);
+    const sum = (r: typeof channel) => r.buckets.reduce((n, b) => n + b.count, 0) + r.erased + r.withheldPersonal;
+    expect(sum(channel)).toBe(channel.total);
+    // A field only personal-data events carry: nothing grouped, all of it withheld.
+    const email = mockEventFacets({ field: 'email' }, now);
+    expect(email.buckets).toEqual([]);
+    expect(email.withheldPersonal).toBe(email.total);
+    expect(email.total).toBeGreaterThan(0);
+    // An envelope grouping withholds nothing.
+    expect(mockEventFacets({ groupBy: 'type' }, now).withheldPersonal).toBe(0);
+  });
 });

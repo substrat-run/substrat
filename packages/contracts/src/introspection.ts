@@ -193,7 +193,33 @@ export const eventFacetResult = z.object({
    * grouping, where erasure cannot affect the answer.
    */
   erased: z.number().int().nonnegative(),
-  /** Events matching the filter before grouping — the denominator. */
+  /**
+   * Events matching the filter that were NOT grouped because they are classed as
+   * personal data (#1762). A payload grouping buckets only events whose `piiClass`
+   * is exactly `'none'`; every other event that still carries its payload is counted
+   * here instead. Without it, grouping by `email` or `body` is one bucket per person
+   * or per message — a personal-data search for anyone who can open the explorer.
+   *
+   * The classification is per event, not per field, so this withholds harmless
+   * fields of a classified event too. It fails closed: a class the kernel does not
+   * recognise is withheld, never grouped. Always 0 for an envelope grouping, where
+   * the dimension is a kernel-stamped fact rather than payload content.
+   *
+   * For a payload grouping the three counts partition `total`: every matching event
+   * is exactly one of grouped (classed `'none'`), `erased` (classed otherwise, payload
+   * shredded) or `withheldPersonal` (classed otherwise, payload intact). So
+   * `total = Σ bucket counts + erased + withheldPersonal` whenever `truncated` is
+   * false; when it is true the bucket sum falls short by the tail not shown.
+   *
+   * Added after the field shipped: an answer from a scope still running an older
+   * kernel omits it, and a reader must treat that as unknown — not as 0, since that
+   * kernel groups every event, personal data included.
+   */
+  withheldPersonal: z.number().int().nonnegative(),
+  /**
+   * Events matching the filter before grouping — the denominator. It includes the
+   * erased and withheld events: they happened, whatever they said.
+   */
   total: z.number().int().nonnegative(),
   /** True when `buckets` was cut at `limit`; the tail exists and is not shown. */
   truncated: z.boolean(),

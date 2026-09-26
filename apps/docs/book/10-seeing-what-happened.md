@@ -139,7 +139,9 @@ and time window, groups by type, actor, operation, version, entity type, PII cla
 or one payload field, and returns counts per bucket. Each bucket carries `lastSeen`, the time of
 its latest event. That tells a path that **stopped** (it has old events) from a path that
 **never ran** (it has none). Erased payloads are counted separately rather than folded into a
-"null" bucket. This is the **Events** explorer.
+"null" bucket. A payload grouping counts only events classed as carrying no personal data; the
+rest are counted in `withheldPersonal`, so grouping by `email` cannot list people. This is the
+**Events** explorer.
 
 **Flow.** `substrat push` records what each module *declares* it emits and consumes. The dashboard
 compares that with what the outbox *shows* happening. Triggers lead to modules, modules to event
