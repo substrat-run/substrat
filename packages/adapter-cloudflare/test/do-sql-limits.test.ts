@@ -193,12 +193,23 @@ describe('platform list statements past the parameter limit (#1776)', () => {
     expect(Object.values(probe).every((p) => p.observedAt !== null && p.stateOutcome === 'ok')).toBe(true);
   });
 
-  // The access path the table is read by: the plan minus json_each's own lines. The old form,
-  // one `?` per type, is planned for a list short enough to run, and must read the same way.
-  const access = (detail: string): string => detail.split(' | ').find((l) => l.includes('_substrat_outbox'))!;
+  // The access path the table is read by: the plan minus json_each's own lines, and minus the
+  // table's name (a join aliases it). The old form, one `?` per type, is planned for a list short
+  // enough to run, and must read the same way.
+  const access = (detail: string): string =>
+    detail.split(' | ').find((l) => l.includes('_substrat_outbox'))!.replace(/^.*?USING /, '');
   const oldForm = (q: { sql: string; params: unknown[] }, few: readonly string[]) => ({
     sql: q.sql.replace('(SELECT value FROM json_each(?))', `(${few.map(() => '?').join(', ')})`),
     params: q.params.flatMap((p): unknown[] => (p === JSON.stringify(few) ? [...few] : [p])),
+  });
+
+  /** `exportReadQuery` as it was before #1776: one `?` per type, no join. */
+  const oldExportRead = (few: readonly string[], after: string | null, limit: number) => ({
+    sql:
+      `SELECT * FROM _substrat_outbox WHERE type IN (${few.map(() => '?').join(', ')})` +
+      (after === null ? '' : ' AND id > ?') +
+      ' ORDER BY id LIMIT ?',
+    params: [...few, ...(after === null ? [] : [after]), limit],
   });
 
   for (const after of [null, `01J${'0'.repeat(22)}9`]) {
@@ -206,12 +217,15 @@ describe('platform list statements past the parameter limit (#1776)', () => {
       const few = types.slice(0, 3);
       const [rows, now, before] = await inScope((_i, sql) => {
         const q = exportReadQuery(types, after, 1000);
-        const small = exportReadQuery(few, after, 1000);
-        return [sql.exec(q.sql, ...(q.params as never[])).toArray().length, plan(sql, small), plan(sql, oldForm(small, few))] as const;
+        return [
+          sql.exec(q.sql, ...(q.params as never[])).toArray().length,
+          plan(sql, exportReadQuery(few, after, 1000)),
+          plan(sql, oldExportRead(few, after, 1000)),
+        ] as const;
       });
       expect(rows).toBe(after === null ? n : n - 10);
       expect(access(now)).toBe(access(before));
-      expect(access(now)).toMatch(/USING (COVERING )?INDEX _substrat_outbox_type_/);
+      expect(access(now)).toMatch(/INDEX _substrat_outbox_type_/);
     });
   }
 
@@ -238,6 +252,218 @@ describe('platform list statements past the parameter limit (#1776)', () => {
     });
     expect(access(now)).toBe(access(before));
     expect(access(now)).toContain('_substrat_outbox_drained');
+  });
+});
+
+/** The slice of a ControlPlaneDO the #1787 block below drives: the audit read, and the SQL it runs. */
+interface ControlPlaneInstance {
+  auditLog(query: { action?: string[]; cursor?: string; limit?: number; order?: 'asc' | 'desc' }): { id: string }[];
+  sql: SqlStorage;
+}
+
+/**
+ * #1787: a plan that holds only while no table statistics exist is not pinned, it is lucky. A
+ * platform statement never runs `ANALYZE`, but a module's `ctx.sql` can (the spine guard judges
+ * write targets, not `ANALYZE`), and after it `type IN (SELECT value FROM json_each(?))` stopped
+ * seeking `_substrat_outbox_type_id` and walked the primary key with a bloom filter, reading the
+ * whole tail for a rare type. The statements below have their join order pinned, and each is
+ * planned here with and without statistics. Each also returns the rows the unpinned form did.
+ *
+ * The rows are the issue's own shape: 20 000 of them over 50 types, read for 3 after a cursor.
+ */
+describe('list statements keep their index once table statistics exist (#1787)', () => {
+  const rows = 20_000;
+  const kinds = 50;
+  const id = (i: number): string => `01J${String(i).padStart(23, '0')}`;
+  const cursor = id(5_000);
+  const wanted = ['probe.t1', 'probe.t2', 'probe.t3'];
+
+  const plan = (sql: SqlStorage, q: { sql: string; params: unknown[] }): string =>
+    (sql.exec(`EXPLAIN QUERY PLAN ${q.sql}`, ...(q.params as never[])).toArray() as { detail: string }[])
+      .map((r) => r.detail)
+      .join(' | ');
+  const idsOf = (sql: SqlStorage, q: { sql: string; params: unknown[] }): string[] =>
+    (sql.exec(q.sql, ...(q.params as never[])).toArray() as { id: string }[]).map((r) => r.id);
+  // `sqlite_stat1` does not exist until something has run ANALYZE.
+  const statRows = (sql: SqlStorage): number =>
+    sql.exec(`SELECT 1 FROM sqlite_master WHERE name = 'sqlite_stat1'`).toArray().length === 0
+      ? 0
+      : (sql.exec('SELECT COUNT(*) AS c FROM sqlite_stat1').one() as { c: number }).c;
+
+  /** `exportReadQuery` as #1776 shipped it: `json_each` in an `IN`, and no join order. */
+  const unpinnedExport = (types: readonly string[], after: string | null, limit: number) => ({
+    sql:
+      'SELECT * FROM _substrat_outbox WHERE type IN (SELECT value FROM json_each(?))' +
+      (after === null ? '' : ' AND id > ?') +
+      ' ORDER BY id LIMIT ?',
+    params: [JSON.stringify(types), ...(after === null ? [] : [after]), limit],
+  });
+  /** …and before it: one `?` per type. */
+  const listedExport = (types: readonly string[], after: string | null, limit: number) => ({
+    sql:
+      `SELECT * FROM _substrat_outbox WHERE type IN (${types.map(() => '?').join(', ')})` +
+      (after === null ? '' : ' AND id > ?') +
+      ' ORDER BY id LIMIT ?',
+    params: [...types, ...(after === null ? [] : [after]), limit],
+  });
+
+  const inScope = async <T>(fn: (sql: SqlStorage) => T): Promise<T> => {
+    const stub = env.SCOPE.get(env.SCOPE.idFromName('do-sql-stats-1787'));
+    return runInDurableObject(stub, (_i, state) => fn(state.storage.sql));
+  };
+  const inControlPlane = async <T>(fn: (i: ControlPlaneInstance, sql: SqlStorage) => T): Promise<T> => {
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('do-sql-stats-1787-cp'));
+    return runInDurableObject(stub, (i, state) => fn(i as unknown as ControlPlaneInstance, state.storage.sql));
+  };
+
+  // Each read is asserted twice: before ANALYZE, where the pin must not have cost anything, and
+  // after it, where the pin is the whole point. The seed below is the state both are read in
+  // (its counts are written into the SQL: a bound JS number is a REAL, and `i % 50.0` is `1.0`).
+  it('seeds 20 000 outbox rows over 50 types and as many admin-log entries over 50 actions', async () => {
+    await inScope((sql) => {
+      sql.exec('DELETE FROM _substrat_outbox');
+      sql.exec(
+        `INSERT INTO _substrat_outbox (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
+           entity_type, entity_id, pii_class)
+         WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ${rows - 1})
+         SELECT printf('01J%023d', i), 'probe.t' || (i % ${kinds}), 1, '2026-09-25T00:00:00.000Z', 't', 's', 'a', 'e',
+                CAST(i AS TEXT), 'none' FROM n`,
+      );
+      expect(statRows(sql)).toBe(0);
+    });
+    await inControlPlane((_i, sql) => {
+      sql.exec('DELETE FROM _substrat_admin_log');
+      sql.exec(
+        `INSERT INTO _substrat_admin_log (id, actor, action, tenant_id, scope_id, at)
+         WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ${rows - 1})
+         SELECT printf('01J%023d', i), 'a', 'probe.a' || (i % ${kinds}), 't', 's', '2026-09-25T00:00:00.000Z' FROM n`,
+      );
+    });
+  });
+
+  const exportSeek = /_substrat_outbox_type_id \(type=\? AND id>\?\)/;
+
+  for (const phase of ['without statistics', 'after ANALYZE'] as const) {
+    if (phase === 'after ANALYZE') {
+      it('ANALYZE runs on a Durable Object and leaves statistics behind (the premise)', async () => {
+        await inScope((sql) => {
+          sql.exec('ANALYZE');
+          expect(statRows(sql)).toBeGreaterThan(0);
+        });
+        await inControlPlane((_i, sql) => {
+          sql.exec('ANALYZE');
+          expect(statRows(sql)).toBeGreaterThan(0);
+        });
+      });
+    }
+
+    it(`exportReadQuery seeks (type, id) and returns what the old forms did (${phase})`, async () => {
+      const [now, pinned, unpinned, listed] = await inScope((sql) => {
+        // A repeated type is in the list on purpose: `IN` is a set test, and the read must stay one.
+        const q = exportReadQuery([...wanted, 'probe.t1'], cursor, 1000);
+        return [
+          plan(sql, q),
+          idsOf(sql, q),
+          idsOf(sql, unpinnedExport(wanted, cursor, 1000)),
+          idsOf(sql, listedExport(wanted, cursor, 1000)),
+        ] as const;
+      });
+      expect(now).toMatch(exportSeek);
+      expect(now).not.toContain('sqlite_autoindex__substrat_outbox');
+      expect(pinned).toHaveLength(3 * (rows / kinds - 100));
+      expect(pinned).toEqual(unpinned);
+      expect(pinned).toEqual(listed);
+      expect(pinned).toEqual([...pinned].sort());
+      expect(new Set(pinned).size).toBe(pinned.length);
+    });
+
+    it(`exportReadQuery without a cursor seeks by type as well, and pages by LIMIT (${phase})`, async () => {
+      const [now, page, expected] = await inScope((sql) => {
+        const q = exportReadQuery(wanted, null, 7);
+        return [plan(sql, q), idsOf(sql, q), idsOf(sql, listedExport(wanted, null, 7))] as const;
+      });
+      expect(now).toMatch(/_substrat_outbox_type_(at|id) \(type=\?\)/);
+      expect(page).toHaveLength(7);
+      expect(page).toEqual(expected);
+    });
+
+    it(`the audit log's action filter reads (action, id) and returns what the unpinned form did (${phase})`, async () => {
+      const actions = ['probe.a1', 'probe.a2', 'probe.a3'];
+      const unpinned = async (sql: SqlStorage, order: string) =>
+        (
+          sql
+            .exec(
+              `SELECT * FROM _substrat_admin_log WHERE action IN (SELECT value FROM json_each(?)) AND id ${order === 'asc' ? '>' : '<'} ? ORDER BY id ${order.toUpperCase()} LIMIT ?`,
+              JSON.stringify(actions),
+              cursor,
+              50,
+            )
+            .toArray() as { id: string }[]
+        ).map((r) => r.id);
+      for (const order of ['asc', 'desc'] as const) {
+        const [ran, got, want] = await inControlPlane(async (i, sql) => {
+          // Capture the statement the producer itself sends, so the plan is read off the real one.
+          const real = i.sql;
+          const sent: { q: string; p: unknown[] }[] = [];
+          i.sql = { exec: (q: string, ...p: unknown[]) => (sent.push({ q, p }), real.exec(q, ...(p as never[]))) } as SqlStorage;
+          let entries: { id: string }[];
+          try {
+            entries = i.auditLog({ action: [...actions, 'probe.a1'], cursor, limit: 50, order });
+          } finally {
+            i.sql = real;
+          }
+          const last = sent.at(-1)!;
+          return [plan(sql, { sql: last.q, params: last.p }), entries.map((e) => e.id), await unpinned(sql, order)] as const;
+        });
+        expect(ran).toContain('_substrat_admin_log_action (action=?');
+        expect(ran).not.toContain('sqlite_autoindex__substrat_admin_log');
+        expect(got).toHaveLength(50);
+        expect(got).toEqual(want);
+      }
+    });
+  }
+
+  // The other `json_each` lists #1776 introduced, planned after statistics. None lost its index,
+  // so none is pinned; this is the record that each was looked at, and the alarm if one starts to.
+  it('the lists that need no pin keep their access path after ANALYZE', async () => {
+    const [scope, cp] = await Promise.all([
+      inScope((sql) => {
+        const at = (q: string, ...p: unknown[]) => plan(sql, { sql: q, params: p });
+        const ids = JSON.stringify([id(1), id(2)]);
+        return {
+          drain: at(
+            'SELECT COUNT(*) AS c FROM _substrat_outbox WHERE drained_at IS NULL AND id IN (SELECT value FROM json_each(?))',
+            ids,
+          ),
+          freshnessObserved: at(
+            'SELECT type, MAX(occurred_at) AS at FROM _substrat_outbox WHERE type IN (SELECT value FROM json_each(?)) GROUP BY type',
+            JSON.stringify(wanted),
+          ),
+          freshnessState: at(
+            `SELECT schedule_op, last_run_at, last_status FROM _substrat_schedule_state
+              WHERE kind = 'freshness' AND schedule_op IN (SELECT value FROM json_each(?))`,
+            JSON.stringify(wanted.map((t) => `freshness:${t}`)),
+          ),
+          exportedSince: at(exportedSinceQuery(wanted, rows - 1000).sql, ...exportedSinceQuery(wanted, rows - 1000).params),
+        };
+      }),
+      inControlPlane((_i, sql) => {
+        const at = (q: string, ...p: unknown[]) => plan(sql, { sql: q, params: p });
+        return {
+          // `scopes` has no index on `status`: a fleet read narrows by tenant, or scans, with or without statistics.
+          fleetByTenant: at(
+            'SELECT * FROM scopes WHERE tenant_id = ? AND status IN (SELECT value FROM json_each(?)) AND scope_id > ? ORDER BY scope_id LIMIT ?',
+            't', JSON.stringify(['suspended']), 'S', 100,
+          ),
+        };
+      }),
+    ]);
+    expect(scope.drain).toContain('_substrat_outbox_drained (drained_at=? AND id=?)');
+    expect(scope.freshnessObserved).toMatch(/_substrat_outbox_type_(at|id) \(type=\?\)/);
+    expect(scope.freshnessState).toContain('sqlite_autoindex__substrat_schedule_state_1 (kind=? AND schedule_op=?)');
+    // `exportedSinceQuery` seeks the rowid after ANALYZE, as its own doc says: it walks only what the invoke added.
+    expect(scope.exportedSince).toContain('INTEGER PRIMARY KEY (rowid>?)');
+    expect(cp.fleetByTenant).toContain('scopes_tenant (tenant_id=? AND scope_id>?)');
   });
 });
 
