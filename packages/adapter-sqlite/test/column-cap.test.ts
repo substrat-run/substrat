@@ -122,7 +122,9 @@ describe('the column cap of a Durable Object, on node (#1811)', () => {
 
     it(`runs the same join projected to exactly ${columns} columns`, async () => {
       const { stub } = await provision(two);
-      const sel = `${cols(0, 60).split(', ').map((c) => `a.${c}`).join(', ')}, ${cols(100, 140).split(', ').map((c) => `b.${c}`).join(', ')}`;
+      const of = (alias: string, from: number, to: number): string =>
+        cols(from, to).split(', ').map((c) => `${alias}.${c}`).join(', ');
+      const sel = `${of('a', 0, 60)}, ${of('b', 100, 140)}`;
       await expect(stub.invoke('wide/read', { sql: `SELECT ${sel} FROM wide_a a, wide_b b` })).resolves.toEqual([]);
     });
   });
