@@ -269,7 +269,9 @@ const entriesOf = (body) =>
     .map((p) => {
       if (/^\s*\.\.\./.test(p)) return { spread: true, value: p };
       const m = /^\s*(?:(['"`])[^'"`\n]*\1|[A-Za-z_$][\w$]*)\s*:/.exec(p);
-      return { spread: false, value: m ? p.slice(m[0].length) : '' };
+      // A key this reader does not recognise — computed (`[K]: …`), a method, a shorthand — is
+      // judged on the WHOLE entry, never skipped: an empty value would pass `[K]: op as never`.
+      return { spread: false, value: m ? p.slice(m[0].length) : p };
     });
 
 /** A value with everything inside its brackets blanked — what is left is what applies to it. */
@@ -598,6 +600,9 @@ const BOUND_CHECK = [
   [REG(`{ 'x/get': getOp as OperationHandler<never, unknown> } ${BOUND}`), 1],
   [REG(`{ 'x/get': getOp as unknown as OperationHandler<never, unknown> } ${BOUND}`), 1],
   [`const OPS = { 'x/get': getOp, 'x/list': listOp as never } ${BOUND};\n${REG('OPS')}`, 1],
+  // An entry this reader has no key pattern for is still judged — a computed key hid a cast.
+  [REG(`{ [GET]: getOp as never } ${BOUND}`), 1],
+  [REG(`{ [GET]: getOp, getOp, 'x/list'(ctx, input) { return input as Thing; } } ${BOUND}`), 0],
   // A cast INSIDE a handler's own body is the handler's business, not the map's.
   [REG(`{ 'x/get': async (ctx, input) => { return input as Thing; } } ${BOUND}`), 0],
   // Bound to a different declaration from the one the host parses with.
