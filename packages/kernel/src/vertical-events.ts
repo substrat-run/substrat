@@ -128,16 +128,20 @@ export function exportReadQuery(
 ): { sql: string; params: unknown[] } {
   if (types.length === 0) throw new Error('exportReadQuery: no types to read');
   // The types travel as ONE bound JSON array (#1776): a Durable Object binds at most 100
-  // parameters, and nothing caps how many event types a manifest exports. The plan depends on
-  // there being no table statistics: with none, this seeks `_substrat_outbox_type_id` as the
-  // old `IN (?, …)` did. After an ANALYZE, SQLite walks the primary key with a bloom filter
-  // instead. The platform runs neither ANALYZE nor `PRAGMA optimize`, but a module's `ctx.sql` can
-  // (#1787). Whoever adds one should recheck this plan (`adapter-cloudflare/test/do-sql-limits.test.ts` pins it).
+  // parameters, and nothing caps how many event types a manifest exports. The join order is
+  // PINNED (#1787). `type IN (SELECT value FROM json_each(?))` seeks `_substrat_outbox_type_id`
+  // only while no table statistics exist; after an ANALYZE, which the platform never runs but
+  // a module's `ctx.sql` can, the planner walks the primary key from the cursor with a bloom
+  // filter instead, and a consumer of a rare type reads the whole tail. `CROSS JOIN` is the one
+  // join SQLite never reorders, so the (deduplicated) types drive and the index answers, with
+  // or without statistics. `DISTINCT` keeps `IN`'s set semantics for a repeated type.
+  // `adapter-cloudflare/test/do-sql-limits.test.ts` pins the plan on workerd, both ways.
   return {
     sql:
-      'SELECT * FROM _substrat_outbox WHERE type IN (SELECT value FROM json_each(?))' +
-      (after === null ? '' : ' AND id > ?') +
-      ' ORDER BY id LIMIT ?',
+      'SELECT o.* FROM (SELECT DISTINCT value AS type FROM json_each(?)) j' +
+      ' CROSS JOIN _substrat_outbox o ON o.type = j.type' +
+      (after === null ? '' : ' WHERE o.id > ?') +
+      ' ORDER BY o.id LIMIT ?',
     params: [JSON.stringify(types), ...(after === null ? [] : [after]), limit],
   };
 }
