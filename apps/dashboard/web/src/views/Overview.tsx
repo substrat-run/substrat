@@ -5,7 +5,7 @@ import { DEV_MOCK, MOCK_FLEET_HEALTH } from '../lib/mock';
 import { MOCK_OVERVIEW_AUDIT, MOCK_OVERVIEW_INTEGRATIONS } from '../lib/mock-overview';
 import { VERDICTS, fleetRows, type FleetRow } from '../lib/fleet-rows';
 import { activityRows, appHref, attentionRows, clock, filterApps, integrationRows, statusSentence, type AppsFilter, type Read } from '../lib/overview-status';
-import { navigate, obsPath, teamPath } from '../lib/router';
+import { isPlainClick, navigate, obsPath, teamPath } from '../lib/router';
 import { Ic } from '../lib/icons';
 import { AppCard } from '../components/AppCard';
 import { Page } from '../components/layout';
@@ -54,7 +54,8 @@ export function Overview({
   loadSteps?: (scopeId: string) => Promise<InstallStep[]>;
   hasMore?: boolean;
   loadingMore?: boolean;
-  onLoadMore?: () => void;
+  /** Loads the next page; a rejection is how the Overview learns the walk failed. */
+  onLoadMore?: () => Promise<void> | void;
 }) {
   const [health, setHealth] = useState<Read<AppHealthRow[]>>(null);
   const [integrations, setIntegrations] = useState<Read<AccountIntegration[]>>(null);
@@ -87,11 +88,17 @@ export function Overview({
     };
   }, []);
 
-  const walking = !!hasMore && !!onLoadMore;
+  // A page that fails ends the walk: its row count never changes, so nothing would ever
+  // re-run it, and every composed card would wait on "Reading…" for good. The page then
+  // composes from the apps it has, says the list is partial, and offers Retry.
+  const [walkFailed, setWalkFailed] = useState(false);
+  const walking = !!hasMore && !!onLoadMore && !walkFailed;
   useEffect(() => {
-    if (walking && !loadingMore) onLoadMore!();
+    if (!walking || loadingMore) return;
+    Promise.resolve(onLoadMore!()).catch(() => setWalkFailed(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the row count, as the Apps table's walk is
   }, [walking, apps.length]);
+  const partial = walkFailed && !!hasMore;
 
   const settled = health !== null && integrations !== null && audit !== null;
   useEffect(() => {
@@ -104,7 +111,7 @@ export function Overview({
   if (!loading && apps.length === 0) return <Onboarding onCreate={onCreate} />;
 
   const ready = !loading && !walking && health !== null && integrations !== null;
-  const sentence = ready ? statusSentence({ apps: rows, healthRead: health === 'failed' ? 'failed' : 'ok', integrations: integrations === 'failed' ? 'failed' : integrations! }) : null;
+  const sentence = ready ? statusSentence({ apps: rows, healthRead: health === 'failed' ? 'failed' : 'ok', integrations: integrations === 'failed' ? 'failed' : integrations!, partial }) : null;
   const attention = ready ? attentionRows({ apps: rows, integrations }) : null;
   const shown = filterApps(rows, q, filter);
 
@@ -125,6 +132,18 @@ export function Overview({
             {sentence ? sentence.headline : 'Reading app health and integrations…'}
           </div>
           {sentence?.detail && <div style={{ fontSize: 13.5, lineHeight: '21px', color: 'var(--text-secondary)', textWrap: 'pretty' } as CSSProperties}>{sentence.detail}</div>}
+          {partial && (
+            <div style={{ fontSize: 13, lineHeight: '20px', color: 'var(--status-warning-fg)' }}>
+              Partial list: {apps.length} {apps.length === 1 ? 'app' : 'apps'} read; the rest could not be loaded.{' '}
+              <button
+                type="button"
+                onClick={() => setWalkFailed(false)}
+                style={{ appearance: 'none', border: 0, background: 'none', padding: 0, font: 'inherit', color: 'var(--text-link)', textDecoration: 'underline', cursor: 'pointer' }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
         </div>
         {landedAt !== null && <span style={{ fontSize: 12, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>updated <span style={{ fontFamily: 'var(--font-mono)' }}>{clock(landedAt)}</span></span>}
       </div>
@@ -162,7 +181,7 @@ export function Overview({
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Apps</span>
           <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-            {loading ? 'listing apps…' : `${apps.length} ${apps.length === 1 ? 'app' : 'apps'}${walking ? ' so far' : ''} · health in plain words, details in Observability`}
+            {loading ? 'listing apps…' : `${apps.length} ${apps.length === 1 ? 'app' : 'apps'}${walking ? ' so far' : partial ? ' read, list incomplete' : ''} · health in plain words, details in Observability`}
           </span>
           <span style={{ flex: 1 }} />
           <Input size="sm" ariaLabel="Search apps" placeholder="Search apps…" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 220 }} />
@@ -291,7 +310,7 @@ function Go({ href, style, plain, children }: { href: string; style: CSSProperti
     <a
       href={teamPath(href)}
       onClick={(e) => {
-        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+        if (!isPlainClick(e)) return;
         e.preventDefault();
         navigate(href);
       }}

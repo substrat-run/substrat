@@ -79,41 +79,51 @@ function sentence(s: string): string {
  *
  * `apps` is the fleet as `fleetRows` judges it; `healthRead` says whether the verdict
  * read landed, because without it every running app reads `unknown` and "nothing is
- * failing" would be a claim nothing supports.
+ * failing" would be a claim nothing supports. `partial` says the app list itself stopped
+ * short, so "all" may only be said of the apps that were read.
+ *
+ * A read that failed is said in the HEADLINE, in every branch: the detail's two
+ * sentences belong to the rows, and a failure competing with them for a slot gets
+ * crowded out exactly when there is most to list.
  */
 export function statusSentence(input: {
   apps: FleetRow[];
   healthRead: 'ok' | 'failed';
   integrations: AccountIntegration[] | 'failed';
+  partial?: boolean;
 }): { headline: string; detail: string } {
   const { apps } = input;
   const running = apps.filter((a) => a.verdict !== 'installing').length;
   const ok = apps.filter((a) => a.verdict === 'ok');
+  const integrationsUnread = input.integrations === 'failed';
   const conns = input.integrations === 'failed' ? [] : connectionsOf(input.integrations);
   const badConns = conns.filter(troubled);
-  const note = input.integrations === 'failed' ? 'Integrations could not be read.' : null;
   const supplier = supplierClause(badConns);
+  // Appended to a headline whose own clause has no read failure in it.
+  const unreadTail = integrationsUnread ? '; integrations could not be read' : '';
 
-  if (apps.length === 0) return { headline: 'No apps yet.', detail: note ?? '' };
+  if (apps.length === 0) return { headline: `No apps yet${unreadTail}.`, detail: '' };
 
   // Health unread: no running app can be called working, and saying so IS the headline.
   if (input.healthRead === 'failed') {
     const known = apps.filter((a) => a.verdict === 'install-failed').length + badConns.length;
     return {
-      headline: `App health could not be read${supplier ? `, and ${supplier}` : ''}.`,
-      detail: ['No app is reported as working until its health can be read.', known ? `${known} more below.` : note].filter(Boolean).join(' '),
+      headline: integrationsUnread
+        ? 'App health and integrations could not be read.'
+        : `App health could not be read${supplier ? `, and ${supplier}` : ''}.`,
+      detail: ['No app is reported as working until its health can be read.', known ? `${known} more below.` : null].filter(Boolean).join(' '),
     };
   }
 
   const problems = apps.filter((a) => needsAttention(a.verdict));
   if (problems.length === 0 && badConns.length === 0) {
-    const n = `${running} ${running === 1 ? 'app is' : 'apps are'}`;
+    const n = input.partial ? `${running} ${running === 1 ? 'app read is' : 'apps read are'}` : `${running} ${running === 1 ? 'app is' : 'apps are'}`;
     const connected = conns.filter((c) => c.connection.status === 'active').length;
     return {
-      headline: note ? `All ${n} working; integrations could not be read.` : `All ${n} working.`,
+      headline: `All ${n} working${unreadTail}.`,
       detail: [
         'Nothing is failing, overdue or unchecked.',
-        !note && connected ? `${connected === 1 ? 'The one integration is' : `All ${connected} integrations are`} connected.` : null,
+        connected ? `${connected === 1 ? 'The one integration is' : `All ${connected} integrations are`} connected.` : null,
       ]
         .filter(Boolean)
         .join(' '),
@@ -123,7 +133,7 @@ export function statusSentence(input: {
   const appPart = problems.length === 1 ? `${problems[0]!.name} ${APP_PHRASE[problems[0]!.verdict]}` : problems.length > 1 ? `${problems.length} apps need attention` : null;
   const headline = !appPart
     ? `Your apps are working, but ${supplier}.`
-    : `${ok.length > 0 ? 'Mostly working. ' : ''}${ok.length > 0 ? appPart : appPart.charAt(0).toUpperCase() + appPart.slice(1)}${supplier ? `, and ${supplier}` : ''}.`;
+    : `${ok.length > 0 ? 'Mostly working. ' : ''}${ok.length > 0 ? appPart : appPart.charAt(0).toUpperCase() + appPart.slice(1)}${supplier ? `, and ${supplier}` : unreadTail}.`;
 
   // In the Needs attention list's order, so the items named here are its first rows.
   const items = [
@@ -132,10 +142,9 @@ export function statusSentence(input: {
   ]
     .sort((a, b) => a.rank - b.rank)
     .map((r) => r.text);
-  const room = note ? 1 : 2;
-  const named = items.length <= room ? items : items.slice(0, room - 1);
+  const named = items.length <= 2 ? items : items.slice(0, 1);
   const more = items.length - named.length;
-  return { headline, detail: [...named, more ? `${more} more below.` : null, note].filter(Boolean).join(' ') };
+  return { headline, detail: [...named, more ? `${more} more below.` : null].filter(Boolean).join(' ') };
 }
 
 function lowerFirst(s: string): string {

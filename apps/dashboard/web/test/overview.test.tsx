@@ -5,6 +5,7 @@ import { api, type AccountIntegration, type AppHealthRow, type AppRow, type Audi
 import { fleetRows } from '../src/lib/fleet-rows';
 import { actionWords, attentionRows, errorWords, filterApps, integrationRows, statusSentence } from '../src/lib/overview-status';
 import { Overview } from '../src/views/Overview';
+import { AppCard } from '../src/components/AppCard';
 
 const app = (id: string, status: AppRow['status'] = 'active') =>
   ({ id, app_scope_id: id, name: `App ${id}`, vertical_slug: 'todo', status, hostname: null, created_by: 'a@acme.com', created_at: new Date().toISOString() }) as AppRow;
@@ -80,6 +81,23 @@ describe('statusSentence (#1815)', () => {
     const allOk = statusSentence({ apps: rows([app('b'), app('new', 'provisioning')], [health('b', 'ok')]), healthRead: 'ok', integrations: [] });
     expect(allOk.headline).toBe('All 1 app is working.');
     expect(allOk.detail).not.toMatch(/App new|install/);
+  });
+
+  it('keeps every read failure in the headline, whatever else there is to say', () => {
+    const both = statusSentence({ apps: rows([app('a'), app('boom', 'failed')], null), healthRead: 'failed', integrations: 'failed' });
+    expect(both).toEqual({ headline: 'App health and integrations could not be read.', detail: 'No app is reported as working until its health can be read. 1 more below.' });
+    const bothNothingKnown = statusSentence({ apps: rows([app('a')], null), healthRead: 'failed', integrations: 'failed' });
+    expect(bothNothingKnown).toEqual({ headline: 'App health and integrations could not be read.', detail: 'No app is reported as working until its health can be read.' });
+    const integrationsOnly = statusSentence({ apps: rows([app('a'), app('b'), app('c')], [health('a', 'failing'), health('b', 'stale'), health('c', 'ok')]), healthRead: 'ok', integrations: 'failed' });
+    expect(integrationsOnly.headline).toBe('Mostly working. 2 apps need attention; integrations could not be read.');
+    expect(integrationsOnly.detail).toBe('App a is failing on the app’s side: failing reason. App b is stale on the app’s side: stale reason.');
+    const oneApp = statusSentence({ apps: rows([app('a'), app('c')], [health('a', 'silent'), health('c', 'ok')]), healthRead: 'ok', integrations: 'failed' });
+    expect(oneApp.headline).toBe('Mostly working. App a is not being checked; integrations could not be read.');
+    for (const s of [both, bothNothingKnown, integrationsOnly, oneApp]) {
+      expect(words(s.headline)).toBeLessThanOrEqual(14);
+      expect(ands(s.headline)).toBeLessThanOrEqual(1);
+      expect(sentences(s.detail)).toBeLessThanOrEqual(2);
+    }
   });
 
   it('never claims all-clear when a read failed', () => {
@@ -182,7 +200,7 @@ describe('Overview page', () => {
     expect(section('Recent activity')).toContain('dana@acme.com assigned role on App a');
     expect(section('Needs attention')).toContain('App a');
     expect(section('Needs attention')).toContain('connection problems are not listed here');
-    expect(container.querySelector('[role="status"]')!.textContent).toContain('Integrations could not be read.');
+    expect(container.querySelector('[role="status"]')!.textContent).toContain('integrations could not be read.');
     expect(cards()).toHaveLength(2);
   });
 
@@ -194,6 +212,25 @@ describe('Overview page', () => {
     expect(section('Needs attention')).toContain('Nothing needs attention.');
     expect(section('Recent activity')).toContain('The audit log could not be read.');
     expect(container.querySelector('[role="status"]')!.textContent).toContain('All 2 apps are working.');
+  });
+
+  it('ends the walk when an older page fails, composes from what it has, and retries', async () => {
+    vi.spyOn(api, 'fleetHealth').mockResolvedValue({ rows: [health('a', 'ok'), health('b', 'ok')] });
+    vi.spyOn(api, 'integrations').mockResolvedValue({ providers: [] });
+    vi.spyOn(api, 'auditLogAll').mockResolvedValue({ entries: [], nextCursor: null });
+    const onLoadMore = vi.fn().mockRejectedValue(new Error('page 2 failed'));
+    await act(async () =>
+      root.render(<Overview apps={[app('a'), app('b')]} teamName="Acme" hasMore onLoadMore={onLoadMore} onCreate={() => {}} onOpen={() => {}} onRetry={() => {}} />),
+    );
+    const status = () => container.querySelector('[role="status"]')!.textContent!;
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+    expect(status()).not.toContain('Reading');
+    expect(status()).toContain('All 2 apps read are working.');
+    expect(status()).toContain('2 apps read; the rest could not be loaded.');
+    expect(section('Needs attention')).toContain('Nothing needs attention.');
+    const retry = [...container.querySelectorAll('[role="status"] button')].find((b) => b.textContent === 'Retry')!;
+    await act(async () => retry.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(onLoadMore).toHaveBeenCalledTimes(2);
   });
 
   it('filters the cards by status', async () => {
@@ -212,5 +249,44 @@ describe('Overview page', () => {
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
     expect(cards()).toEqual(['/observability?app=a']);
+  });
+});
+
+describe('AppCard links (#1815)', () => {
+  let container: HTMLDivElement, root: Root;
+  beforeEach(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  it('leaves a modified click to the browser, and takes a plain one in place', async () => {
+    const push = vi.spyOn(window.history, 'pushState');
+    const onOpen = vi.fn();
+    const card = { name: 'App a', verticalLabel: 'Todo', version: '', status: 'active' as const, host: null, updated: 'today', accent: 'red' };
+    await act(async () => root.render(<AppCard app={card} onOpen={onOpen} observeHref="/observability?app=a" />));
+    const link = [...container.querySelectorAll('a')].find((a) => a.textContent === 'Observe →')!;
+    // A click left to the browser makes jsdom attempt a real navigation and print "Not
+    // implemented: navigation" — that line is this test's expected outcome, not a failure.
+    const click = (init: MouseEventInit) => {
+      const e = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ...init });
+      act(() => void link.dispatchEvent(e));
+      return e;
+    };
+    const meta = click({ metaKey: true });
+    expect(meta.defaultPrevented).toBe(false);
+    expect(push).not.toHaveBeenCalled();
+    expect(click({ ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(push).not.toHaveBeenCalled();
+    const plain = click({});
+    expect(plain.defaultPrevented).toBe(true);
+    expect(push).toHaveBeenCalledWith(null, '', '/observability?app=a');
+    expect(onOpen).not.toHaveBeenCalled();
   });
 });

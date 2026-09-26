@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { InstallStep } from '../lib/api';
 import { Ic } from '../lib/icons';
-import { navigate, teamPath } from '../lib/router';
+import { isPlainClick, navigate, teamPath } from '../lib/router';
 import { InstallSteps } from './InstallSteps';
 import { Pill, RowActions } from './ui';
 
@@ -172,7 +172,9 @@ function CardLink({ href, style, children, onHover }: { href: string; style: Rea
       onMouseEnter={() => onHover?.(true)}
       onMouseLeave={() => onHover?.(false)}
       onClick={(e) => {
+        // Never the card's own open; and a modified click is the browser's (new tab).
         e.stopPropagation();
+        if (!isPlainClick(e)) return;
         e.preventDefault();
         navigate(href);
       }}
