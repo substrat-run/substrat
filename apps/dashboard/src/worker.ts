@@ -1121,15 +1121,6 @@ app.get('/api/members', async (c) => {
  * and is what a resend would use.
  */
 /**
- * Mint a fresh accept link for an invitation and mail it to the invitee. Shared by
- * the initial invite and the resend button: both send the SAME message with the raw
- * address (only ever in hand host-side) and a freshly-signed 14-day token. Delivery is
- * best-effort — the invitation is already committed, so a send failure is reported
- * (`emailDelivered: false`), never thrown, and the returned `acceptUrl` is always a
- * shareable fallback. Cloudflare Email Service is asynchronous, so a successful send
- * lands the recipient in `queued` (accepted, in flight), not `delivered` — count either.
- */
-/**
  * A freshly-signed 14-day accept link for one invitation. The token names the invitation,
  * not the address, and accepting still requires the invited email (the engine's hash is the
  * gate), so minting a link grants nothing an invite did not already grant.
@@ -1143,6 +1134,15 @@ async function inviteAcceptUrl(env: Env, origin: string, node: DashboardNode, in
   return `${origin}/invite/${token}`;
 }
 
+/**
+ * Mint a fresh accept link for an invitation and mail it to the invitee. Shared by
+ * the initial invite and the resend button: both send the SAME message with the raw
+ * address (only ever in hand host-side) and a freshly-signed 14-day token. Delivery is
+ * best-effort — the invitation is already committed, so a send failure is reported
+ * (`emailDelivered: false`), never thrown, and the returned `acceptUrl` is always a
+ * shareable fallback. Cloudflare Email Service is asynchronous, so a successful send
+ * lands the recipient in `queued` (accepted, in flight), not `delivered` — count either.
+ */
 async function mailInvite(
   env: Env,
   host: ScopeHost,
