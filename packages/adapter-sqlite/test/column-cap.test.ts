@@ -97,6 +97,29 @@ describe('the column cap of a Durable Object, on node (#1811)', () => {
       expect((await host.admin.getScopeRecord(staff, t, s))?.migrationFailure?.version).toBe('@test/wide@0002');
     });
 
+    // The DO counts a generated column and a virtual table's hidden columns (measured on
+    // workerd), and `PRAGMA table_info` shows neither.
+    const generated = (plain: number, gen: number): string =>
+      `CREATE TABLE wide_g (${cols(0, plain)}, ${Array.from({ length: gen }, (_, i) => `g${i} GENERATED ALWAYS AS (c0) VIRTUAL`).join(', ')})`;
+    it(`counts generated columns: ${columns - 5} plain + 5 generated runs`, async () => {
+      await expect(provision([{ version: '0001', sql: generated(columns - 5, 5) }])).resolves.toBeDefined();
+    });
+    it(`counts generated columns: ${columns - 5} plain + 6 generated is refused`, async () => {
+      await expect(provision([{ version: '0001', sql: generated(columns - 5, 6) }])).rejects.toThrow(
+        /too many columns on wide_g/,
+      );
+    });
+    // fts5 carries two hidden columns (the table's name and rank) on top of the ones declared.
+    const fts = (n: number): string => `CREATE VIRTUAL TABLE wide_f USING fts5(${cols(0, n)})`;
+    it(`counts an fts5 table's hidden columns: ${columns - 2} declared (+2 hidden) runs`, async () => {
+      await expect(provision([{ version: '0001', sql: fts(columns - 2) }])).resolves.toBeDefined();
+    });
+    it(`counts an fts5 table's hidden columns: ${columns - 1} declared (+2 hidden) is refused`, async () => {
+      await expect(provision([{ version: '0001', sql: fts(columns - 1) }])).rejects.toThrow(
+        /too many columns on wide_f/,
+      );
+    });
+
     it('judges the schema after the migration, not its text: a rebuild that narrows the table passes', async () => {
       await expect(
         provision([

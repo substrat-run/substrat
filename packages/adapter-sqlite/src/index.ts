@@ -10973,12 +10973,13 @@ interface VerticalPeerAuthority {
  * Refuse a migration that left a table wider than a Durable Object allows (#1811). Judged on the
  * schema AFTER the migration ran, inside its transaction, so the throw rolls the migration back
  * and the scope fails closed as it would hosted — from `CREATE TABLE` and from `ADD COLUMN` alike,
- * with no parsing of the migration's text.
+ * with no parsing of the migration's text. `table_xinfo`, not `table_info`: the DO counts a
+ * generated column and a virtual table's hidden columns, and `table_info` shows neither.
  */
 function assertTablesWithinColumnLimit(db: Database.Database): void {
   const wide = db
     .prepare(
-      `SELECT m.name AS name FROM sqlite_master m, pragma_table_info(m.name) c
+      `SELECT m.name AS name FROM sqlite_master m, pragma_table_xinfo(m.name) c
         WHERE m.type = 'table' GROUP BY m.name HAVING COUNT(*) > ? ORDER BY m.name LIMIT 1`,
     )
     .get(DO_SQL_LIMITS.columns) as { name: string } | undefined;
