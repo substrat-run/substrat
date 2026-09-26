@@ -7267,8 +7267,9 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * Rewind one scope, claiming what it has switched off. The OFF modules are read and claimed
-   * BEFORE the rewind, while this storage still holds them, and the rewind then waits
+   * Rewind one scope, claiming what it has switched off, and what an earlier rewind still holds on
+   * it. The OFF modules are read and claimed BEFORE the rewind, while this storage still holds
+   * them, and the rewind then waits
    * `SWITCH_HOLD_SETTLE_MS`. Its claim is `armed` once the rewind arms, naming the doomed
    * instance. Only a DEFINITE refusal drops the claim, and only this rewind's own. Any other throw
    * may come after the DO armed the bookmark, so the claim is armed on what a probe finds: the
@@ -7279,11 +7280,20 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     rewind: () => Promise<{ rewindingTo: string; instance?: string }>,
   ): Promise<{ rewindingTo: string }> {
-    const off = (await this.systemGrantsStatusLocal(scopeId))
-      .filter((e) => e.schedules === 'off')
-      .map((e) => e.moduleId);
-    if (off.length === 0) return { rewindingTo: (await rewind()).rewindingTo };
     const holds = this.switchHoldsStub();
+    // What this rewind must keep off: what the storage has off, AND what an earlier rewind still
+    // holds here. A module held by an earlier rewind is ON in this storage (that is why it is
+    // held), so the storage alone would give this rewind no claim on it. Then a re-assert that
+    // lands on the instance THIS rewind dooms would release the earlier claim, and this
+    // rewind's restart would discard the re-assert's write.
+    const [status, held] = await Promise.all([this.systemGrantsStatusLocal(scopeId), holds.switchHoldsAll()]);
+    const off = [
+      ...new Set([
+        ...status.filter((e) => e.schedules === 'off').map((e) => e.moduleId as string),
+        ...held.filter((h) => h.scopeId === scopeId).map((h) => h.moduleId),
+      ]),
+    ];
+    if (off.length === 0) return { rewindingTo: (await rewind()).rewindingTo };
     const claimId = ulid();
     await holds.switchHoldClaim(scopeId, off, claimId, new Date().toISOString());
     this.holdSnapshot = null;

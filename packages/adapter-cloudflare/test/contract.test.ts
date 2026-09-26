@@ -2337,6 +2337,31 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await holdsStub().switchHoldRelease(s, null, null);
   });
 
+  /**
+   * Re-review on #1838: a LATER rewind can doom the instance a release runs on. After R1 lands,
+   * the module is ON in storage and held, so R2 found nothing off and claimed nothing. A re-assert
+   * OFF then landed on R2's doomed instance, which is not R1's, so it released R1's claim; R2's
+   * restart discarded the OFF, and the pass fired. R2 now also claims what is held on the scope.
+   */
+  it('a second rewind claims what an earlier one still holds, so a re-assert on its doomed instance releases nothing', async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    await host.rewindScopeLocal(s, 'bm-1', { force: true });
+    await landRewind(env.SCOPE, s, atBookmark); // R1 landed: ON in storage, held
+    await armRewind(env.SCOPE, s, { holdAbort: true });
+    await host.rewindScopeLocal(s, 'bm-2', { force: true }); // R2 armed on the serving instance
+    expect((await holdsStub().switchHoldClaims(s, SCHED)).length).toBe(2);
+    await off(s); // the re-assert lands on R2's doomed instance
+    await restartNow(env.SCOPE, s);
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    // The first re-assert after R2 landed clears both.
+    await off(s);
+    expect(await heldOn(s)).toEqual([]);
+  });
+
   it('a claim still pending past the bound is released by a move; a fresh pending one is not', async () => {
     const s = await newScope();
     await off(s);
