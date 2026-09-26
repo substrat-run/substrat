@@ -14,19 +14,11 @@
  * re-thrown — this must never mask a real failure.
  */
 export async function warmControlPlane(ns: DurableObjectNamespace): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    const stub = ns.get(ns.idFromName('control-plane')) as unknown as {
-      listScopes(filter: object): Promise<unknown>;
-    };
-    try {
-      await stub.listScopes({});
-      return;
-    } catch (err) {
-      const transient =
-        err instanceof Error && err.message.includes('invalidating this Durable Object');
-      if (!transient || attempt >= 2) throw err;
-    }
-  }
+  await warmDurableObject(() =>
+    (ns.get(ns.idFromName('control-plane')) as unknown as { listScopes(filter: object): Promise<unknown> }).listScopes(
+      {},
+    ),
+  );
 }
 
 /**

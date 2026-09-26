@@ -1,5 +1,6 @@
 import { runInDurableObject } from 'cloudflare:test';
 import type { ScopeDumpTable } from '@substrat-run/contracts';
+import { SWITCH_HOLDS_NAME } from '../src/host.js';
 
 /**
  * #1819: a PITR rewind, as close to the real one as workerd allows.
@@ -57,4 +58,13 @@ export async function landRewind(
     importDump(tables: ScopeDumpTable[], scopeId: string): Promise<unknown>;
   };
   await stub.importDump(atBookmark, scopeId);
+}
+
+/** The deployment's hold object (`SWITCH_HOLDS_NAME`) in this namespace, typed for the tests. */
+export function holdsStub(ns: DurableObjectNamespace): {
+  switchHoldsAll(): Promise<{ scopeId: string; moduleId: string }[]>;
+  switchHoldAdd(scopeId: string, moduleIds: string[], at: string): Promise<string[]>;
+  switchHoldRelease(scopeId: string, moduleIds: string[] | null): Promise<void>;
+} {
+  return ns.get(ns.idFromName(SWITCH_HOLDS_NAME)) as unknown as ReturnType<typeof holdsStub>;
 }

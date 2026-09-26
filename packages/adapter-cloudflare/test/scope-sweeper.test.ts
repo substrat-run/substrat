@@ -13,8 +13,8 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { scheduleMod } from '@substrat-run/contract-tests';
-import { CloudflareScopeHost, SWITCH_HOLDS_NAME } from '../src/host.js';
-import { armRewind, landRewind } from './pitr-emulation.js';
+import { CloudflareScopeHost } from '../src/host.js';
+import { armRewind, holdsStub, landRewind } from './pitr-emulation.js';
 import { warmDurableObject } from './do-warmup.js';
 import {
   SCOPE_SWEEPER_NAME,
@@ -223,13 +223,7 @@ describe('#1819 — the deployment sweep after a rewind to before the switch', {
   // first: the roster, and the hold object in this namespace.
   beforeAll(async () => {
     await warmDurableObject(() => runInDurableObject(sweeperStub(), (_i, state) => state.storage.getAlarm()));
-    await warmDurableObject(() =>
-      (
-        env.LOCAL_SWEEP_SCOPE.get(env.LOCAL_SWEEP_SCOPE.idFromName(SWITCH_HOLDS_NAME)) as unknown as {
-          switchHoldsAll(): Promise<unknown>;
-        }
-      ).switchHoldsAll(),
-    );
+    await warmDurableObject(() => holdsStub(env.LOCAL_SWEEP_SCOPE).switchHoldsAll());
   });
 
   /** Provision, take the "bookmark", optionally switch off, rewind, and put it on the roster. */

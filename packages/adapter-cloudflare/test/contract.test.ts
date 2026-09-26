@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { warmControlPlane, warmDurableObject } from './do-warmup.js';
-import { armRewind, landRewind } from './pitr-emulation.js';
+import { armRewind, holdsStub as holdsOf, landRewind } from './pitr-emulation.js';
 import {
   connectionId,
   errorCodeOf,
@@ -2123,22 +2123,17 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   const off = (s: ScopeId) => host.systemSwitchLocal(s, SCHED, 'off');
   /** A fresh host each pass, the way the sweeper builds one per pass. */
   const pass = (s: ScopeId, on = deployment()) => on.runDueSchedules(SCHED, t, s);
-  const holdsStub = () =>
-    env.SCOPE.get(env.SCOPE.idFromName(SWITCH_HOLDS_NAME)) as unknown as {
-      switchHoldsAll(): Promise<{ scopeId: string; moduleId: string }[]>;
-      switchHoldAdd(scopeId: string, moduleIds: string[], at: string): Promise<string[]>;
-      switchHoldRelease(scopeId: string, moduleIds: string[] | null): Promise<number>;
-    };
+  const holdsStub = () => holdsOf(env.SCOPE);
   const heldOn = async (s: ScopeId) =>
     (await holdsStub().switchHoldsAll()).filter((h) => h.scopeId === s).map((h) => h.moduleId);
   // The hold singleton is this suite's first call on an object the directory warm-up does not touch.
   beforeAll(() => warmDurableObject(() => holdsStub().switchHoldsAll()));
 
-  /** Switch off, then rewind to a bookmark taken before the switch (the whole issue). */
-  const rewoundPastTheSwitch = async (): Promise<ScopeId> => {
+  /** Switch off (or not), then rewind to a bookmark taken before that (the whole issue). */
+  const rewoundPastTheSwitch = async (switchOff = true): Promise<ScopeId> => {
     const s = await newScope();
     const atBookmark = await host.exportScopeLocal(s);
-    await off(s);
+    if (switchOff) await off(s);
     await armRewind(env.SCOPE, s);
     expect(await host.rewindScopeLocal(s, 'bm-before-switch', { force: true })).toEqual({
       rewindingTo: 'bm-before-switch',
@@ -2158,11 +2153,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   });
 
   it('twin: nothing recorded off — the rewind holds nothing, and the next pass fires', async () => {
-    const s = await newScope();
-    const atBookmark = await host.exportScopeLocal(s);
-    await armRewind(env.SCOPE, s);
-    await host.rewindScopeLocal(s, 'bm', { force: true });
-    await landRewind(env.SCOPE, s, atBookmark);
+    const s = await rewoundPastTheSwitch(false);
     expect(await heldOn(s)).toEqual([]);
     expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
   });
@@ -2177,7 +2168,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
 
   it('the hold survives the restart the rewind causes, and a restart of the object holding it', async () => {
     const s = await rewoundPastTheSwitch(); // `landRewind` waited out the scope's own restart
-    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(SWITCH_HOLDS_NAME)), (_i, state) => {
+    await runInDurableObject(holdsOf(env.SCOPE) as unknown as DurableObjectStub, (_i, state) => {
       state.abort('restart the hold object');
     }).catch(() => undefined);
     expect(await heldOn(s)).toEqual([SCHED]);
@@ -2356,9 +2347,7 @@ describe('#1819 — the co-located rewind holds, and the CP-full switch releases
     const s = await rewound();
     expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });
     await host.provisionScope(staff, node(s));
-    const held = (await (env.SCOPE.get(env.SCOPE.idFromName(SWITCH_HOLDS_NAME)) as unknown as {
-      switchHoldsAll(): Promise<{ scopeId: string }[]>;
-    }).switchHoldsAll()).filter((h) => h.scopeId === s);
+    const held = (await holdsOf(env.SCOPE).switchHoldsAll()).filter((h) => h.scopeId === s);
     expect(held).toEqual([]);
     expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });
   });
@@ -2377,8 +2366,9 @@ describe('#1819 — the co-located rewind holds, and the CP-full switch releases
  */
 function countingScopes(ns: DurableObjectNamespace) {
   const holdsId = ns.idFromName(SWITCH_HOLDS_NAME);
-  const state = { holdReads: 0, scopeCalls: 0, failReads: false, ns: undefined as unknown as DurableObjectNamespace };
-  const counted = (real: Record<string, (...a: unknown[]) => unknown>) =>
+  const counts = { holdReads: 0, scopeCalls: 0, failReads: false };
+  type Rpc = Record<string, (...a: unknown[]) => unknown>;
+  const counted = (real: Rpc) =>
     new Proxy(
       {},
       {
@@ -2387,28 +2377,28 @@ function countingScopes(ns: DurableObjectNamespace) {
           prop === 'then'
             ? undefined
             : (...args: unknown[]) => {
-                state.scopeCalls += 1;
+                counts.scopeCalls += 1;
                 return real[prop]!(...args);
               },
       },
     );
-  state.ns = {
+  const holds = (real: Rpc) => ({
+    switchHoldsAll: async () => {
+      counts.holdReads += 1;
+      if (counts.failReads) throw new Error('holds down');
+      return real.switchHoldsAll!();
+    },
+    switchHoldAdd: (...args: unknown[]) => real.switchHoldAdd!(...args),
+    switchHoldRelease: (...args: unknown[]) => real.switchHoldRelease!(...args),
+  });
+  const counting = {
     idFromName: (name: string) => ns.idFromName(name),
     get: (id: DurableObjectId) => {
-      const real = ns.get(id) as unknown as Record<string, (...a: unknown[]) => unknown>;
-      if (!id.equals(holdsId)) return counted(real);
-      return {
-        switchHoldsAll: async () => {
-          state.holdReads += 1;
-          if (state.failReads) throw new Error('holds down');
-          return real.switchHoldsAll!();
-        },
-        switchHoldAdd: (...args: unknown[]) => real.switchHoldAdd!(...args),
-        switchHoldRelease: (...args: unknown[]) => real.switchHoldRelease!(...args),
-      };
+      const real = ns.get(id) as unknown as Rpc;
+      return id.equals(holdsId) ? holds(real) : counted(real);
     },
   } as unknown as DurableObjectNamespace;
-  return state;
+  return Object.assign(counts, { ns: counting });
 }
 
 /**

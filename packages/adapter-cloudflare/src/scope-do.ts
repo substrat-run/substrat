@@ -3146,7 +3146,11 @@ export function defineScopeDO(
     // list of modules it must keep switched off has to live somewhere the rewind cannot
     // reach. The table is created on first use, so no scope ever carries it.
 
+    /** Whether this instance has created the hold table; it never goes away once it exists. */
+    private switchHoldsReady = false;
+
     private switchHoldsTable(): void {
+      if (this.switchHoldsReady) return;
       this.sql.exec(
         `CREATE TABLE IF NOT EXISTS _substrat_switch_holds (
            scope_id TEXT NOT NULL,
@@ -3155,55 +3159,45 @@ export function defineScopeDO(
            PRIMARY KEY (scope_id, module_id)
          )`,
       );
+      this.switchHoldsReady = true;
     }
 
     /** Hold these modules off on one scope. Answers the ones not already held. */
     switchHoldAdd(scopeId: string, moduleIds: string[], at: string): string[] {
       this.switchHoldsTable();
-      return this.ctx.storage.transactionSync(() => {
-        const added: string[] = [];
-        for (const moduleId of new Set(moduleIds)) {
-          const held = this.sql
-            .exec('SELECT 1 FROM _substrat_switch_holds WHERE scope_id = ? AND module_id = ?', scopeId, moduleId)
-            .toArray();
-          if (held.length > 0) continue;
-          this.sql.exec(
-            'INSERT INTO _substrat_switch_holds (scope_id, module_id, held_at) VALUES (?, ?, ?)',
-            scopeId,
-            moduleId,
-            at,
-          );
-          added.push(moduleId);
-        }
-        return added;
-      });
+      return this.ctx.storage.transactionSync(() =>
+        moduleIds.filter(
+          (moduleId) =>
+            this.sql.exec(
+              'INSERT OR IGNORE INTO _substrat_switch_holds (scope_id, module_id, held_at) VALUES (?, ?, ?)',
+              scopeId,
+              moduleId,
+              at,
+            ).rowsWritten > 0,
+        ),
+      );
     }
 
     /** Every hold this deployment carries, one read for a whole sweep pass. Normally empty. */
     switchHoldsAll(): { scopeId: string; moduleId: string }[] {
       this.switchHoldsTable();
       return this.sql
-        .exec('SELECT scope_id, module_id FROM _substrat_switch_holds ORDER BY scope_id, module_id')
+        .exec('SELECT scope_id, module_id FROM _substrat_switch_holds')
         .toArray()
         .map((r) => ({ scopeId: r.scope_id as string, moduleId: r.module_id as string }));
     }
 
     /** Release these modules' holds on one scope, or every hold on it when `moduleIds` is null. */
-    switchHoldRelease(scopeId: string, moduleIds: string[] | null): number {
+    switchHoldRelease(scopeId: string, moduleIds: string[] | null): void {
       this.switchHoldsTable();
-      return this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.transactionSync(() => {
         if (moduleIds === null) {
-          return this.sql.exec('DELETE FROM _substrat_switch_holds WHERE scope_id = ?', scopeId).rowsWritten;
+          this.sql.exec('DELETE FROM _substrat_switch_holds WHERE scope_id = ?', scopeId);
+          return;
         }
-        let released = 0;
-        for (const moduleId of new Set(moduleIds)) {
-          released += this.sql.exec(
-            'DELETE FROM _substrat_switch_holds WHERE scope_id = ? AND module_id = ?',
-            scopeId,
-            moduleId,
-          ).rowsWritten;
+        for (const moduleId of moduleIds) {
+          this.sql.exec('DELETE FROM _substrat_switch_holds WHERE scope_id = ? AND module_id = ?', scopeId, moduleId);
         }
-        return released;
       });
     }
 
