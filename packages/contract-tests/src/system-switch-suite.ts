@@ -724,11 +724,11 @@ export function systemSwitchContractSuite(
       await tn.grant('sched:admin');
     });
 
-    // #1743's adjacent case, pinned rather than silent: a tenant-level system grant that
+    // #1823, #1743's adjacent case, pinned rather than silent: a tenant-level system grant that
     // ALREADY exists when a scope is switched off is not touched by OFF (which tombstones only
     // the scope's own `granted:` tuples), so the module keeps its system authority there.
     // `it.fails` passes while the gap is open and goes red the day it closes — update it then.
-    it.fails('GAP: scope-level OFF does not take back an existing tenant-level grant (#1743 follow-up)', async () => {
+    it.fails('GAP: scope-level OFF does not take back an existing tenant-level grant (#1823)', async () => {
       const tn = await newTenant();
       const s = await tn.scope();
       await tn.grant('sched:tick');
