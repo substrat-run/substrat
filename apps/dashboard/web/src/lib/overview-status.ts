@@ -1,6 +1,7 @@
 import type { AccountIntegration, AuditEntry, ConnectionView } from './api';
 import { VERDICTS, type FleetRow, type FleetVerdict } from './fleet-rows';
 import { relativeTime } from './format';
+import { actorOf, entryHref, entrySentence } from './audit-activity';
 import { obsPath } from './router';
 
 /**
@@ -296,6 +297,9 @@ function connectionText(name: string, c: ConnectionView, now: number): string {
   }
 }
 
+// The sentence words live beside the Audit page's, so an entry reads the same on both.
+export { actionWords } from './audit-activity';
+
 /** One Recent activity row. */
 export interface ActivityRow {
   id: string;
@@ -305,35 +309,6 @@ export interface ActivityRow {
   text: string;
   time: string;
   href: string;
-}
-
-// Past tense for the verbs audit actions start with. The rest get "-ed"/"-d", which is
-// right for every regular verb the control plane logs today.
-const IRREGULAR: Record<string, string> = { set: 'set', bind: 'bound', unbind: 'unbound', rewind: 'rewound', reset: 'reset', put: 'put' };
-
-/** `bindScopeVersion` → "bound scope version". */
-export function actionWords(action: string): string {
-  const words = action
-    .replace(/[_.-]+/g, ' ')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-    .trim()
-    .split(/\s+/);
-  const [verb, ...rest] = words;
-  if (!verb) return action;
-  const past = IRREGULAR[verb] ?? (verb.endsWith('ed') ? verb : verb.endsWith('e') ? `${verb}d` : `${verb}ed`);
-  return [past, ...rest].join(' ');
-}
-
-/** `service:control-plane` is the platform acting; a person's actor is their email. */
-function actorName(actor: string): string {
-  return actor.startsWith('service:') ? 'Substrat' : actor;
-}
-
-function avatar(name: string): string {
-  const local = name.split('@')[0]!.replace(/[._-]+/g, ' ').trim();
-  const parts = local.split(/\s+/);
-  return (parts.length > 1 ? parts[0]![0]! + parts[parts.length - 1]![0]! : local.slice(0, 2)).toUpperCase() || '?';
 }
 
 /** Today → "14:02"; this week → "Mon"; older → "Sep 3". */
@@ -348,16 +323,15 @@ export function activityTime(iso: string, now = Date.now()): string {
 
 export function activityRows(entries: AuditEntry[], appName: (scopeId: string) => string | null, now = Date.now()): ActivityRow[] {
   return entries.slice(0, 6).map((e) => {
-    const who = actorName(e.actor);
-    const app = e.scopeId ? appName(e.scopeId) : null;
+    const who = actorOf(e.actor);
     return {
       id: e.id,
-      initials: avatar(who),
-      who,
+      initials: who.initials,
+      who: who.name,
       actor: e.actor,
-      text: `${actionWords(e.action)}${app ? ` on ${app}` : ''}`,
+      text: entrySentence(e, appName),
       time: activityTime(e.at, now),
-      href: e.scopeId ? `/audit?app=${e.scopeId}` : '/audit',
+      href: entryHref(e),
     };
   });
 }
