@@ -198,14 +198,16 @@ const braced = (src, start) => {
 };
 
 /**
- * The object's OWN properties, as `{ key, value }`.
+ * An object body split on its depth-0 commas, as `{ text, at }` — `at` being where the part
+ * starts in `body`.
  *
  * Depth-tracked across `{}`, `()` and `[]` so a nested `operations:` — one inside a consumer,
  * or inside another module's registration quoted in a comment-free example — cannot answer for
  * the registration itself, and so an arrow handler's argument commas do not split a property
- * in half.
+ * in half. Type arguments are NOT tracked: `<` is also less-than and `=>` ends in `>`, so a
+ * reader that must see past `OperationImpl<typeof ops, OperationContext>` uses `at` instead.
  */
-const ownProperties = (body) => {
+const splitTop = (body) => {
   const parts = [];
   let depth = 0;
   let start = 0;
@@ -219,8 +221,13 @@ const ownProperties = (body) => {
     }
   }
   parts.push({ text: body.slice(start), at: start });
+  return parts;
+};
+
+/** The object's OWN properties, as `{ key, value, at }`, read off `splitTop`. */
+const ownProperties = (body) => {
   const props = [];
-  for (const { text: part, at } of parts) {
+  for (const { text: part, at } of splitTop(body)) {
     const m = /^\s*(['"`])?([A-Za-z_$][\w$]*)\1?\s*:/.exec(part);
     // `at`: where the value starts in `body`, for a reader that must look past the split.
     if (m) props.push({ key: m[2], value: part.slice(m[0].length), at: at + m[0].length });
@@ -250,33 +257,20 @@ const derived = (value) => {
 };
 
 /**
- * The top-level entries of an object body, split on the commas at depth 0 — each entry's key
- * and value, whatever the key is spelled with. `ownProperties` reads only identifier-shaped
- * keys, which is right for a registration and wrong for a handler map, whose keys are
- * `'workorder/report-time'`: a hyphen would make it skip the very entry it has to read.
+ * A handler map's entries, as `{ spread, value }`, whatever the key is spelled with.
+ * `ownProperties` reads only identifier-shaped keys, which is right for a registration and
+ * wrong for a handler map, whose keys are `'workorder/report-time'`: a hyphen would make it
+ * skip the very entry it has to read.
  */
-const entriesOf = (body) => {
-  const parts = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i];
-    if (c === '{' || c === '(' || c === '[') depth++;
-    else if (c === '}' || c === ')' || c === ']') depth--;
-    else if (c === ',' && depth === 0) {
-      parts.push(body.slice(start, i));
-      start = i + 1;
-    }
-  }
-  parts.push(body.slice(start));
-  return parts
+const entriesOf = (body) =>
+  splitTop(body)
+    .map(({ text }) => text)
     .filter((p) => p.trim() !== '')
     .map((p) => {
-      if (/^\s*\.\.\./.test(p)) return { key: '...', value: p };
+      if (/^\s*\.\.\./.test(p)) return { spread: true, value: p };
       const m = /^\s*(?:(['"`])[^'"`\n]*\1|[A-Za-z_$][\w$]*)\s*:/.exec(p);
-      return m ? { key: m[0], value: p.slice(m[0].length) } : { key: p.trim(), value: '' };
+      return { spread: false, value: m ? p.slice(m[0].length) : '' };
     });
-};
 
 /** A value with everything inside its brackets blanked — what is left is what applies to it. */
 const surface = (value) => {
@@ -323,9 +317,9 @@ const unbound = (src, operationsValue, inputsValue) => {
       return `\`operations: ${named[1]}\` names no object literal in this file — this check cannot read the map it has to judge. ${fix}`;
     }
     const open = decl.index + decl[0].length - 1;
-    const body = braced(src, open);
-    if (body === null) return `the handler map \`${named[1]}\` never closes — this check cannot read it`;
-    value = src.slice(open, src.indexOf(';', body.end) === -1 ? src.length : src.indexOf(';', body.end));
+    if (braced(src, open) === null) return `the handler map \`${named[1]}\` never closes — this check cannot read it`;
+    // Only the map and the clause straight after it are read, so the rest of the file is inert.
+    value = src.slice(open);
   }
   if (!value.startsWith('{')) return `\`operations:\` is not an object literal, so it cannot be bound. ${fix}`;
   const map = braced(value, 0);
@@ -337,7 +331,7 @@ const unbound = (src, operationsValue, inputsValue) => {
     return `the \`operations:\` map is not bound to its declaration, so a handler returning the wrong shape compiles. ${fix}`;
   }
   for (const entry of entriesOf(map.body)) {
-    if (entry.key === '...') {
+    if (entry.spread) {
       return `the handler map spreads another object — this check cannot see whether what it contributes was cast. ${fix}`;
     }
     if (/\bas\b/.test(surface(entry.value))) {
@@ -615,14 +609,15 @@ const BOUND_CHECK = [
   [REG('OPS'), 1],
   // The generic registration rules still hold on a bound file.
   [`const m: ModuleRegistration = { manifest: x, operations: { 'x/get': getOp } ${BOUND} };`, 1],
+  // …and the join is demanded of engines alone: judged unbound, a cast map is not refused.
+  [REG("{ 'x/get': getOp as never }"), 0, false],
 ];
-const boundDrift = BOUND_CHECK.filter(([src, want]) => judge(src, { bound: true }).offences.length !== want);
-// …and the join is demanded of engines alone: an unbound map outside `engines/` is not refused.
-if (judge(REG("{ 'x/get': getOp as never }")).offences.length !== 0) boundDrift.push([REG("{ 'x/get': getOp as never }"), 0]);
+const boundDrift = BOUND_CHECK.filter(([src, want, bound = true]) => judge(src, { bound }).offences.length !== want);
 if (boundDrift.length > 0) {
   console.error('module-inputs: the handler-map rule no longer tells its own cases apart — fix the predicate before trusting a run:');
-  for (const [src, want] of boundDrift) {
-    console.error(`  expected ${want} offence(s): ${src.replace(/\n/g, ' ')}`);
+  for (const [src, want, bound = true] of boundDrift) {
+    const got = judge(src, { bound }).offences.length;
+    console.error(`  expected ${want} offence(s), got ${got}${bound ? '' : ' (judged unbound)'}: ${src.replace(/\n/g, ' ')}`);
   }
   process.exit(2);
 }
