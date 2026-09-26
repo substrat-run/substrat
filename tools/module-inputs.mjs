@@ -301,14 +301,17 @@ const surface = (value) => {
 };
 
 /**
- * The value with every pair of parentheses that wraps ALL of it removed: `(h as never)` is
+ * The value with every pair of parentheses that wraps ALL of it removed, and every trailing
+ * non-null `!` with them, in any interleaving: `(h as never)` and `((h as never)!)!` are both
  * `h as never`. `surface` blanks what is inside brackets, so without this a wrapped cast would
  * read as an empty surface and pass. A value that only STARTS with a paren — the parameter list
  * of `(input) => …` — closes before its end and is left alone.
  */
 const unwrapped = (value) => {
   let v = value.trim();
-  while (v.startsWith('(')) {
+  for (;;) {
+    while (v.endsWith('!')) v = v.slice(0, -1).trimEnd();
+    if (!v.startsWith('(')) break;
     let depth = 0;
     let close = -1;
     for (let i = 0; i < v.length && close === -1; i++) {
@@ -643,6 +646,10 @@ const BOUND_CHECK = [
   [REG(`{ 'x/get': (getOp as never) } ${BOUND}`), 1],
   [REG(`{ 'x/get': ((getOp) as any) } ${BOUND}`), 1],
   [REG(`{ 'x/get': (input) => handle(input), 'x/list': ((input) => list(input)) } ${BOUND}`), 0],
+  // …and neither does a non-null `!` after them, however the two are interleaved.
+  [REG(`{ 'x/get': (getOp as never)! } ${BOUND}`), 1],
+  [REG(`{ 'x/get': ((getOp as any)!)! } ${BOUND}`), 1],
+  [REG(`{ 'x/get': getOp!, 'x/list': (listOp)! } ${BOUND}`), 0],
   // The angle-bracket spelling of the same cast.
   [REG(`{ 'x/get': <never>getOp } ${BOUND}`), 1],
   [REG(`{ 'x/get': (<never>getOp) } ${BOUND}`), 1],
