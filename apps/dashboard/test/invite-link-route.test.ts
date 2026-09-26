@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { orgId, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { manualClock, ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { INVITE_TOKEN_PURPOSE, verifyClaim } from '../src/signed-token.js';
 
@@ -54,6 +54,9 @@ describe('POST /api/members/invite-link', () => {
   let dir: string;
   let host: SqliteScopeHost;
   let send: ReturnType<typeof vi.fn>;
+  let clock: ReturnType<typeof manualClock>;
+  let org: ReturnType<typeof orgId.parse>;
+  let ownerPrincipal: ReturnType<typeof principalId.parse>;
   let env: Record<string, unknown>;
   const tenant = tenantId.parse(ulid());
   const dashScope = scopeId.parse(ulid());
@@ -61,7 +64,8 @@ describe('POST /api/members/invite-link', () => {
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-invite-link-'));
-    host = new SqliteScopeHost({ dir });
+    clock = manualClock(new Date());
+    host = new SqliteScopeHost({ dir, clock: clock.read });
     shared.host = host;
     for (const m of MODULES) host.registerModule(m);
     send = vi.fn(async () => ({ delivered: ['x'], queued: [], permanent_bounces: [] }));
@@ -74,8 +78,9 @@ describe('POST /api/members/invite-link', () => {
 
     await host.admin.registerIdentityPool(staff, { provider: PROVIDER, topology: 'central', tenantId: null });
     const owner = principalId.parse(ulid());
+    ownerPrincipal = owner;
     await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'links', name: 'Links' });
-    const org = orgId.parse(ulid());
+    org = orgId.parse(ulid());
     await host.admin.createOrg(staff, { id: org, tenantId: tenant, slug: 'team', name: 'Links' });
     await (await host.getScope(owner, tenant, dashScope)).invoke('dashboard/init-team', { orgId: org, ownerEmail: 'owner@links.test' });
     const link = (sub: string, principal: typeof owner) =>
@@ -165,6 +170,69 @@ describe('POST /api/members/invite-link', () => {
     const sam = principalId.parse(ulid());
     await (await host.getScope(sam, tenant, dashScope)).invoke('dashboard/accept-invite', { invitationId: accepted, identifier: 'sam@links.test' });
     expect((await asRole('owner', '/api/members/invite-link', { invitationId: accepted })).status).toBe(404);
+  });
+
+  const invitationsOf = async (): Promise<string[]> => {
+    const scope = await host.getScope(ownerPrincipal, tenant, dashScope);
+    const page = await scope.invoke<{ entries: { id: string }[] }>('invites/list', { orgId: org });
+    return page.entries.map((e) => e.id).sort();
+  };
+
+  it('is a pure read: no invitation is created, and an admin at the open-invite cap still gets the link', async () => {
+    const first = await invite('cap0@links.test');
+    for (let i = 1; i <= 25; i++) {
+      expect((await asRole('admin', '/api/members/invite', { email: `cap${i}@links.test`, roleKey: 'viewer' })).status).toBe(201);
+    }
+    // The cap is real: a 26th send by this admin is refused …
+    expect((await asRole('admin', '/api/members/invite', { email: 'over@links.test', roleKey: 'viewer' })).status).toBeGreaterThanOrEqual(400);
+    const before = await invitationsOf();
+    // … and looking at a link is not a send.
+    for (const id of [first, before[0]!]) {
+      expect((await asRole('admin', '/api/members/invite-link', { invitationId: id })).status).toBe(200);
+    }
+    expect(await invitationsOf()).toEqual(before);
+  });
+
+  it('a lapsed invite is a 409 pointing at Resend, and nothing is inserted', async () => {
+    const invitationId = await invite();
+    clock.advance(15 * 24 * 60 * 60 * 1000);
+    const before = await invitationsOf();
+    const res = await asRole('owner', '/api/members/invite-link', { invitationId });
+    expect(res.status).toBe(409);
+    expect(await res.text()).toMatch(/use Resend/);
+    expect(await invitationsOf()).toEqual(before);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('the token never outlives the invitation', async () => {
+    clock.advance(-10 * 24 * 60 * 60 * 1000); // sent ten days ago: four days left
+    const invitationId = await invite();
+    clock.advance(10 * 24 * 60 * 60 * 1000);
+    const body = (await (await asRole('owner', '/api/members/invite-link', { invitationId })).json()) as { acceptUrl: string; expiresAt: string };
+    const claim = await verifyClaim<{ exp: number }>(SECRET, INVITE_TOKEN_PURPOSE, tokenOf(body.acceptUrl), Date.now());
+    expect(claim!.exp).toBeLessThanOrEqual(Date.parse(body.expiresAt));
+    expect(Date.parse(body.expiresAt)).toBeLessThan(Date.now() + 5 * 24 * 60 * 60 * 1000);
+  });
+
+  it('team A’s invite gets no link from team B, and team B’s scope cannot preview it', async () => {
+    const invitationId = await invite();
+    const tenantB = tenantId.parse(ulid());
+    const scopeB = scopeId.parse(ulid());
+    const ownerB = principalId.parse(ulid());
+    await provisionDashboard(host, { tenantId: tenantB, scopeId: scopeB, owner: ownerB, slug: 'other', name: 'Other' });
+    const orgB = orgId.parse(ulid());
+    await host.admin.createOrg(staff, { id: orgB, tenantId: tenantB, slug: 'team', name: 'Other' });
+    await (await host.getScope(ownerB, tenantB, scopeB)).invoke('dashboard/init-team', { orgId: orgB, ownerEmail: 'owner@other.test' });
+    await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: 'sub-owner-b', principal: ownerB, tenantId: tenantB, scopeId: scopeB });
+
+    const asB = await app.request(
+      '/api/members/invite-link',
+      { method: 'POST', headers: { cookie: 'sb_session=sub-owner-b', 'content-type': 'application/json' }, body: JSON.stringify({ invitationId }) },
+      env,
+    );
+    expect(asB.status).toBe(404);
+    const preview = await (await host.getScope(principalId.parse(ulid()), tenantB, scopeB)).invoke('dashboard/preview-invite', { invitationId });
+    expect(preview).toBeNull();
   });
 
   it('no session is a 401', async () => {

@@ -7,7 +7,7 @@ import {
   type OperationContext,
   type OperationHandler,
 } from '@substrat-run/kernel';
-import { INVITES_PERM, sendInvite, acceptInvite, revokeInvite } from '@substrat-run/engine-invites';
+import { INVITES_PERM, sendInvite, acceptInvite, revokeInvite, readInvitation } from '@substrat-run/engine-invites';
 
 // ============================================================================
 // The Dashboard — the tenant-facing self-service surface, built AS a Substrat
@@ -1163,6 +1163,37 @@ const resendInviteOp: OperationHandler<
   return { invitationId, email: row.email, roleKey: row.role_key };
 };
 
+const inviteLinkInput = z.object({ invitationId: z.string().min(1) });
+
+/**
+ * The facts a pending invite's "Copy link" needs — a pure READ. It asks what a resend
+ * asks (manage-members, and the §5.1 bound on the row's role) but composes no `sendInvite`:
+ * no rate limit, no expiry sweep, no new invitation, no event. An open invitation returns
+ * its id and deadline; one that has lapsed (or is no longer open in the engine) returns
+ * `{ lapsed: true }` — renewing it is the resend's job, not a side effect of looking.
+ * `null` when the roster has no such pending invite.
+ */
+const inviteLinkOp: OperationHandler<
+  z.infer<typeof inviteLinkInput>,
+  { invitationId: string; expiresAt: string } | { lapsed: true } | null
+> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.manageMembers));
+  const input = inviteLinkInput.parse(raw);
+  const row = ctx.sql.query<DashboardMemberRow>(
+    `SELECT * FROM dashboard_members WHERE invitation_id = ? AND status = 'invited'`,
+    [input.invitationId],
+  )[0];
+  if (!row) return null;
+
+  const perms = MEMBER_ROLES[row.role_key];
+  if (!perms) throw new Error(`unknown role '${row.role_key}'`);
+  for (const perm of perms) assertAllowed(await ctx.check(perm));
+
+  const invitation = readInvitation(ctx, input.invitationId);
+  if (!invitation || invitation.state !== 'invited') return { lapsed: true };
+  return { invitationId: invitation.id, expiresAt: invitation.expires_at };
+};
+
 const revokeInviteInput = z.object({ invitationId: z.string().min(1) });
 
 /** Withdraw a pending invite (composes the engine's revoke) + drop it from the roster. */
@@ -1440,6 +1471,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/accept-invite': acceptInviteOp as OperationHandler<never, unknown>,
     'dashboard/preview-invite': previewInviteOp as OperationHandler<never, unknown>,
     'dashboard/resend-invite': resendInviteOp as OperationHandler<never, unknown>,
+    'dashboard/invite-link': inviteLinkOp as OperationHandler<never, unknown>,
     'dashboard/revoke-invite': revokeInviteOp as OperationHandler<never, unknown>,
     'dashboard/list-members': listMembersOp as OperationHandler<never, unknown>,
     'dashboard/remove-member': removeMemberOp as OperationHandler<never, unknown>,
