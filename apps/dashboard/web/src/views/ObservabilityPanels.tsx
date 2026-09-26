@@ -1,12 +1,11 @@
 import { exactTime, type ObsQuery } from '../lib/observability-query';
 import { useEffect, useState } from 'react';
-import { Button, Input, Select } from '@substrat-run/ui';
-import { type EventFacetResult, api, ApiError, type ObservabilityLogEvent, type TenantMetricsRow } from '../lib/api';
-import { DEV_MOCK, MOCK_INSTALLED_APP_SCOPE, MOCK_OBSERVABILITY_LOGS, MOCK_TENANT_METRICS } from '../lib/mock';
-import { GridTable, Row } from '../components/layout';
+import { Button, Input } from '@substrat-run/ui';
+import { type EventFacetResult, api, ApiError, type ObservabilityLogEvent } from '../lib/api';
+import { DEV_MOCK } from '../lib/mock';
+import { MOCK_LOG_LINES } from '../lib/mock-pulse';
 import { card, MonoTag } from '../components/ui';
 import { LogList } from '../components/LogList';
-import { navigate, teamPath } from '../lib/router';
 import { EVENT_GROUPS, bucketRows, dimensionLabel, type BucketRow, type EventGroup } from '../lib/log-stream';
 import { mockEventFacets } from '../lib/mock-events';
 
@@ -23,8 +22,6 @@ import { mockEventFacets } from '../lib/mock-events';
  * those are a fact about the code and they belong on the Vertical page, where the fleet
  * question is already asked. The traffic panel links up to it for an owned vertical.
  */
-
-const LEVELS = ['All levels', 'error', 'warn', 'info', 'log', 'debug'];
 
 /** The page's window, as a panel's own header says it. Capped at 72h by the plane. */
 function windowLabel(hours: number): string {
@@ -44,152 +41,18 @@ function cursorLabel(w: { from: string; to: string }): string {
 }
 
 /**
- * One installed app's traffic, split by the surface that answered — the tenant grain
- * (observability.md §3 view 4).
- *
- * This is narrower than the fleet numbers a vertical's builder reads, and more accurate
- * here for exactly that reason: it is keyed on this installation rather than on a script
- * shared with every other team that installed the same vertical. Two teams running the
- * same vertical see two different tables.
- *
- * What is deliberately absent is the per-version breakdown. A version is a fact about the
- * code — for an app running someone else's vertical the code is not this team's, and for
- * one this team publishes the link below goes where that question is already answered.
- */
-export function TenantTrafficTable({ scopeId, hours, nonce, window }: { scopeId: string; hours: number; nonce: number; window?: { since: string; until: string } }) {
-  const [rows, setRows] = useState<TenantMetricsRow[] | null>(null);
-  const [state, setState] = useState<'loading' | 'ready' | 'absent' | 'error'>('loading');
-  // `false` only when the per-app deployments read says the vertical is someone else's.
-  // That is what decides whether there is a fleet view to offer at all.
-  const [owned, setOwned] = useState<boolean | null>(null);
-  const [slug, setSlug] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (DEV_MOCK) {
-      // Fixture-driven rather than a flat `true`: one mock scope runs another team's
-      // vertical (`MOCK_INSTALLED_APP_SCOPE`), which is the only way the dev preview can
-      // show this panel both with and without its fleet link.
-      setOwned(scopeId !== MOCK_INSTALLED_APP_SCOPE);
-      setSlug('acme/helpdesk');
-      return;
-    }
-    let live = true;
-    setOwned(null);
-    setSlug(null);
-    api
-      .appDeployments(scopeId)
-      .then((d) => {
-        if (!live) return;
-        setOwned(d.owned !== false);
-        setSlug(d.slug);
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [scopeId]);
-
-  useEffect(() => {
-    let live = true;
-    setState('loading');
-    // Cleared with the state, not left in place: the loader only shows over an EMPTY
-    // table, so keeping the old rows would leave one app's totals on screen under the
-    // heading of another until the new read lands — the misreading this page exists
-    // to prevent.
-    setRows(null);
-    void (async () => {
-      try {
-        const r = DEV_MOCK ? MOCK_TENANT_METRICS : await api.appTenantMetrics(scopeId, hours, window);
-        if (!live) return;
-        setRows(r);
-        setState('ready');
-      } catch (e) {
-        if (!live) return;
-        setState(e instanceof ApiError && e.status === 501 ? 'absent' : 'error');
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, [scopeId, hours, nonce, window?.since, window?.until]);
-
-  if (state === 'absent') {
-    return (
-      <div style={{ padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
-        Traffic queries are not available on this platform for this window.
-      </div>
-    );
-  }
-
-  const fleetPath = owned === true && slug ? `/verticals/${encodeURIComponent(slug)}` : null;
-
-  return (
-    <div style={{ display: 'grid', gap: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          What the router dispatched to this app in {window ? `${exactTime(window.since)} – ${exactTime(window.until)}` : windowLabel(hours)}, by the surface that answered. P50 is median latency; P95 is the 95th percentile. These are sampled estimates.
-        </span>
-        <div style={{ flex: 1 }} />
-        {fleetPath && (
-          // The builder's question — how is the CODE doing across every team that installed
-          // it — is answered on the vertical, not here. This page is one installation, for
-          // its publisher too; the link is what makes that a narrowing rather than a loss.
-          <a
-            href={teamPath(fleetPath)}
-            onClick={(e) => {
-              e.preventDefault();
-              navigate(fleetPath);
-            }}
-            style={{ color: 'var(--text-brand)', fontSize: 12.5, whiteSpace: 'nowrap' }}
-          >
-            ↑ Fleet view on the vertical
-          </a>
-        )}
-      </div>
-
-      {state === 'error' ? (
-        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
-          Traffic data is unavailable right now.
-        </div>
-      ) : state === 'loading' && rows === null ? (
-        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>Loading…</div>
-      ) : rows && rows.length === 0 ? (
-        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
-          No traffic recorded in this window.
-        </div>
-      ) : (
-        <GridTable
-          columns="0.8fr 1fr 0.8fr 0.9fr 0.9fr 0.9fr"
-          header={['Surface', 'Requests', 'Errors', 'Error rate', 'P50', 'P95']}
-        >
-          {(rows ?? []).map((r, i) => (
-            <Row key={`${r.scopeId}:${r.surface}`} columns="0.8fr 1fr 0.8fr 0.9fr 0.9fr 0.9fr" last={i === (rows ?? []).length - 1}>
-              <MonoTag>{r.surface ?? '—'}</MonoTag>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{r.requests.toLocaleString('en-US')}</span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: r.errors > 0 ? 'var(--status-danger-fg)' : undefined }}>
-                {r.errors.toLocaleString('en-US')}
-              </span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>
-                {r.requests === 0 ? '—' : `${((r.errors / r.requests) * 100).toFixed(2)}%`}
-              </span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{Math.round(r.durationP50)} ms</span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{Math.round(r.durationP95)} ms</span>
-            </Row>
-          ))}
-        </GridTable>
-      )}
-    </div>
-  );
-}
-
-/**
  * One installed app's log lines, level- and text-filtered, newest first.
  *
  * At script grain the lines belong to the vertical's builder and still do. What this
  * shows is the subset written while serving THIS app, which is the viewing team's to read.
+ *
+ * The filters are the page's (#1767): the Logs query bar above the stream card owns them
+ * as chips in the URL, and this panel only reads them — a second set of controls here
+ * would be a second place the same filter could be half-applied.
  */
 export function TenantLogs({
-  filters, onFilters,
+  filters = {},
+  onFilters,
   scopeId,
   hours,
   nonce,
@@ -202,9 +65,9 @@ export function TenantLogs({
   onFilters?: (filters: Partial<ObsQuery>) => void;
   hours: number;
   nonce: number;
-  /** Whether the page's chart saw any request for this app in the window. It decides
-   *  which of two very different empty states this panel shows; undefined means the
-   *  chart could not say, and then the panel claims neither. */
+  /** Whether the app served any request over the page's range. It decides which of two
+   *  very different empty states this panel shows; undefined means nothing could say,
+   *  and then the panel claims neither. */
   hadTraffic?: boolean;
   /** The page's time cursor. The window this panel reads is the cursor's when there is
    *  one and the page's range when there is not — never both, since `hours` can only
@@ -214,13 +77,9 @@ export function TenantLogs({
    *  already say what this is, so the panel drops its own frame and title. */
   embedded?: boolean;
 }) {
-  const [localLevel, setLevel] = useState(LEVELS[0]);
-  const level = filters ? (filters.level || LEVELS[0]) : localLevel;
-  const [query, setQuery] = useState('');
-  const [localSearch, setSearch] = useState('');
-  const search = filters ? (filters.search ?? '') : localSearch;
-  const [invocation, setInvocation] = useState(filters?.invocationId ?? '');
-  useEffect(() => { setQuery(search); setInvocation(filters?.invocationId ?? ''); }, [search, filters?.invocationId]);
+  const level = filters.level;
+  const search = filters.search;
+  const invocationId = filters.invocationId;
   const [logs, setLogs] = useState<ObservabilityLogEvent[] | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
 
@@ -231,10 +90,11 @@ export function TenantLogs({
     void (async () => {
       try {
         const events = DEV_MOCK
-          ? MOCK_OBSERVABILITY_LOGS.filter(
+          ? MOCK_LOG_LINES.filter(
               (l) =>
-                (level === LEVELS[0] || l.level === level) &&
+                (!level || l.level === level) &&
                 (!search || (l.message ?? '').includes(search)) &&
+                (!invocationId || l.invocationId === invocationId) &&
                 // The preview narrows too, so a bar click visibly does something without
                 // a plane behind it.
                 (!cursor ||
@@ -243,13 +103,13 @@ export function TenantLogs({
                     l.timestamp <= Date.parse(cursor.to))),
             )
           : await api.appTenantLogs(scopeId, {
-              level: level === LEVELS[0] ? undefined : level,
-              search: search || undefined,
+              level,
+              search,
               // The cursor's window REPLACES the range; sending both would let `hours`,
               // which always ends at now, overrule the instant the reader clicked on.
               ...(cursor ? { since: cursor.from, until: cursor.to } : { hours }),
               limit: 100,
-              invocationId: filters?.invocationId,
+              invocationId,
             });
         if (live) setLogs(events);
       } catch (e) {
@@ -269,69 +129,50 @@ export function TenantLogs({
     return () => {
       live = false;
     };
-  }, [scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, filters?.invocationId]);
+  }, [scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, invocationId]);
 
+  const quiet = { padding: 16, fontSize: 13, color: 'var(--text-tertiary)' };
   return (
     <div style={embedded ? {} : { ...card, padding: 0, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
-        {!embedded && <span style={{ fontSize: 13, fontWeight: 600 }}>Logs</span>}
-        {!embedded && <MonoTag>this app</MonoTag>}
-        <Select
-          ariaLabel="Level"
-          options={LEVELS}
-          value={level}
-          onChange={(e) => onFilters ? onFilters({ level: e.target.value === LEVELS[0] ? undefined : e.target.value }) : setLevel(e.target.value)}
-          style={{ width: 110 }}
-        />
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (onFilters) onFilters({ search: query.trim() || undefined, invocationId: invocation.trim() || undefined });
-            else setSearch(query.trim());
-          }}
-          style={{ display: 'flex', gap: 8, flex: 1, minWidth: 220 }}
-        >
-          <Input
-            ariaLabel="Search messages"
-            placeholder="Message contains (case-sensitive)…"
-            maxLength={200}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            style={{ flex: 1 }}
-          />
-          {onFilters && <Input ariaLabel="Invocation ID" placeholder="Invocation ULID (optional)" pattern="[0-7][0-9A-HJKMNP-TV-Z]{25}" value={invocation} onChange={(e) => setInvocation(e.target.value)} />}
-          {/* No explicit type: the native default inside a form is `submit`. */}
-          <Button variant="ghost" size="sm">
-            Search
-          </Button>
-        </form>
-        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          {cursor ? `around ${cursorLabel(cursor)}` : `${windowLabel(hours)}, newest 100`}
-        </span>
-      </div>
-      <p style={{ padding: '0 14px', fontSize: 12 }}>Up to 100 recent lines from bounded invocation discovery (40 invocations, normally 20 lines each). Filters search that bounded coverage, not an exhaustive log archive. Empty results do not establish that no matching event occurred. Retention and sampling depend on the backend.</p>
-      {onFilters && <button style={{ margin: '0 14px 10px' }} onClick={() => onFilters({ level: undefined, search: undefined, invocationId: undefined })}>Clear log filters</button>}
+      {!embedded && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)' }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>Logs</span>
+          <MonoTag>this app</MonoTag>
+        </div>
+      )}
       {logsError ? (
-        <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>{logsError}</div>
+        <div style={quiet}>{logsError}</div>
       ) : logs === null ? (
-        <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading…</div>
+        <div style={quiet}>Loading…</div>
       ) : logs.length === 0 ? (
-        <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>
+        <div style={quiet}>
           {/* Two very different reasons for an empty list, and conflating them sent the
               last reader looking in the wrong place. Traffic with no lines means the
               version serving this app predates the stamped invocation line, so there is
               nothing to correlate — a re-push fixes it. No traffic means no traffic. */}
-          {/* Under a cursor the hint is withheld, not because it stopped being true but
-              because `hadTraffic` is a fact about the page's whole RANGE: attaching it to
-              a ten-minute window would answer a question about minutes with evidence
-              about days. */}
-          {hadTraffic && !cursor
+          {/* `hadTraffic` is a fact about the page's whole RANGE, so the caller withholds
+              it under a custom window: attaching it to ten minutes would answer a
+              question about minutes with evidence about days. (`window` is always set —
+              it is the range's own bounds without a cursor — so it cannot tell here.) */}
+          {hadTraffic
             ? 'No log events in this window. If this app’s version was deployed before per-request logging, its lines are not attributed to your team yet — a new deploy of the vertical starts that.'
             : 'No log events in this window.'}
         </div>
       ) : (
-        <LogList events={logs} onFilter={onFilters} />
+        <LogList events={logs} {...(onFilters ? { onFilter: onFilters } : {})} />
       )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '10px 16px', fontSize: 12, color: 'var(--text-tertiary)', borderTop: logs?.length ? undefined : '1px solid var(--border-subtle)' }}>
+        {/* The read has no total to report, so the footer says what it holds and where
+            the list stops rather than "N of M". */}
+        {logs && logs.length > 0 && (
+          <span>
+            Showing latest <span style={{ fontFamily: 'var(--font-mono)' }}>{logs.length}</span> {logs.length === 1 ? 'line' : 'lines'} ·
+          </span>
+        )}
+        <span title="Up to 100 recent lines from bounded invocation discovery (40 invocations, normally 20 lines each). Filters search that bounded coverage, not an exhaustive log archive. Retention and sampling depend on the backend.">
+          Bounded read — the newest 100 lines of the latest 40 invocations; an empty result does not prove nothing matched.
+        </span>
+      </div>
     </div>
   );
 }

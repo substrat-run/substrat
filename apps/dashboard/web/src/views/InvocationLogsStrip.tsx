@@ -84,7 +84,7 @@ export function InvocationLogsStrip({
         </div>
       ) : (
         <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 6, overflow: 'hidden' }}>
-          <LogList events={logs} maxHeight={260} />
+          <LogList events={logs} maxHeight={260} compact />
         </div>
       )}
     </div>
