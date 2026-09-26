@@ -13,7 +13,15 @@ import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table,
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api, EgressReport } from '../lib/api';
-import { exportBreakAckNeeded, promoteAckSatisfied, type ImpactState } from '../lib/promote';
+import {
+  exportBreakAckNeeded,
+  promoteAckSatisfied,
+  readReview,
+  type ImpactState,
+  type MigrationReview,
+  type PermissionReview,
+  type ReviewState,
+} from '../lib/promote';
 import {
   admissionLabel,
   admissionTone,
@@ -389,6 +397,25 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   const migChanged = !!(current && target && current.migrationDigest !== target.migrationDigest);
   const breaks = exportBreakAckNeeded(impact);
   const ackSatisfied = promoteAckSatisfied({ permission: permChanged, migration: migChanged, exportBreak: breaks }, ack);
+
+  // #1677: the diffs the digests only hint at. Read for the kinds that changed; the
+  // acknowledgement above never waits on them, so an unreadable diff still asks.
+  const [review, setReview] = useState<ReviewState>({ kind: 'loading' });
+  const reviewFrom = current?.id;
+  const reviewTo = target?.id;
+  useEffect(() => {
+    if (!reviewFrom || !reviewTo || (!permChanged && !migChanged)) return;
+    let cancelled = false;
+    setReview({ kind: 'loading' });
+    void readReview(api, vertical.slug, reviewFrom, reviewTo, { permission: permChanged, migration: migChanged }).then(
+      (r) => {
+        if (!cancelled) setReview(r);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [api, vertical.slug, reviewFrom, reviewTo, permChanged, migChanged]);
 
   const scopeColumns: TableColumn<Scope>[] = [
     {
@@ -1135,6 +1162,15 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                 {!permChanged && !migChanged ? ' No permission or migration change.' : ' Review the change below.'}
               </p>
             )}
+            {(permChanged || migChanged) && review.kind === 'loading' && (
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Reading the diff…</span>
+            )}
+            {(permChanged || migChanged) && review.kind === 'error' && (
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                Could not read the diff ({review.message}). The digests differ, so the change still needs acknowledging.
+              </span>
+            )}
+            {permChanged && review.kind === 'ready' && review.permission && <PermissionDiffView review={review.permission} />}
             {permChanged && (
               <Checkbox
                 label="Permission surface changed"
@@ -1143,6 +1179,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                 onChange={(v) => setAck((a) => ({ ...a, permissionChange: v }))}
               />
             )}
+            {migChanged && review.kind === 'ready' && review.migration && <MigrationDiffView review={review.migration} />}
             {migChanged && (
               <Checkbox
                 label="Migrations changed"
@@ -1185,6 +1222,97 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
           </div>
         )}
       </Dialog>
+    </div>
+  );
+}
+
+const diffBox = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  fontSize: 12.5,
+  maxHeight: 220,
+  overflow: 'auto',
+} as const;
+
+export function PermissionDiffView({ review }: { review: PermissionReview }) {
+  if (review.kind === 'cannot-diff') {
+    return (
+      <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+        One of the two versions declares no permission registry, so the diff cannot be shown. That is not “no change”: the
+        digests differ.
+      </span>
+    );
+  }
+  const { diff, unitemised } = review;
+  const lines: string[] = [
+    ...diff.addedKeys.map((k) => `+ permission ${k}`),
+    ...diff.removedKeys.map((k) => `− permission ${k}`),
+    ...diff.changedKeys.map((k) => `~ permission ${k} (description)`),
+    ...diff.roleChanges.map(
+      (r) =>
+        `role ${r.key}: ${r.isNew ? 'new' : r.isGone ? 'removed' : ''} ${r.added.map((k) => `+${k}`).concat(r.removed.map((k) => `−${k}`)).join(' ')}`.trim(),
+    ),
+    ...diff.grantChanges.map(
+      (g) =>
+        `entity grant ${g.entityType}: ${g.isNew ? 'new' : g.isGone ? 'removed' : ''} ${g.added.map((k) => `+${k}`).concat(g.removed.map((k) => `−${k}`)).join(' ')}`.trim(),
+    ),
+    ...unitemised.map((f) => `~ ${f} (not itemised)`),
+  ];
+  return (
+    <div style={diffBox}>
+      <span style={{ color: 'var(--text-secondary)' }}>Permission diff</span>
+      {lines.length === 0 ? (
+        <span style={{ color: 'var(--text-tertiary)' }}>The registries list the same permissions, roles and grants.</span>
+      ) : (
+        lines.map((l) => (
+          <code key={l} style={{ whiteSpace: 'pre-wrap' }}>
+            {l}
+          </code>
+        ))
+      )}
+    </div>
+  );
+}
+
+export function MigrationDiffView({ review }: { review: MigrationReview }) {
+  if (review.kind === 'unavailable') {
+    return (
+      <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+        The migration SQL is not available for this version, so it cannot be shown. That is not “no migrations”: the
+        digests differ.
+      </span>
+    );
+  }
+  const { diff } = review;
+  const entries = [
+    ...diff.changed.map((m) => ({ ...m, tag: 'edited' })),
+    ...diff.added.map((m) => ({ ...m, tag: 'new' })),
+  ];
+  return (
+    <div style={diffBox}>
+      <span style={{ color: 'var(--text-secondary)' }}>
+        Migrations{diff.baseline === 'version' ? '' : ' (every one — nothing to compare against)'}
+      </span>
+      {entries.length === 0 && (
+        <span style={{ color: 'var(--text-tertiary)' }}>No migration is new or edited.</span>
+      )}
+      {entries.map((m) => (
+        <div key={`${m.tag}:${m.moduleId}:${m.version}`}>
+          <Tag mono>{`${m.moduleId}@${m.version}`}</Tag>{' '}
+          {m.tag === 'edited' ? 'edited after shipping — scopes that ran it will not run the new SQL' : 'new'}
+          {m.sql === null ? (
+            <div style={{ color: 'var(--text-tertiary)' }}>SQL left out: over the read's size bound.</div>
+          ) : (
+            <pre style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap', fontSize: 12 }}>{m.sql}</pre>
+          )}
+        </div>
+      ))}
+      {diff.truncated && (
+        <span style={{ color: 'var(--text-tertiary)' }}>
+          Showing part of {diff.total} changed migrations; the rest are left out by the read's bounds.
+        </span>
+      )}
     </div>
   );
 }
