@@ -81,6 +81,9 @@ const CODE_PATTERNS: readonly [RegExp, ErrorCode][] = [
   [/cannot provision scope under unknown tenant/, 'conflict'],
   [/already taken/, 'conflict'],
   [/illegal scope transition/, 'conflict'],
+  // #1738: a ScopeDO refusing a projection for a tenant other than the one it was provisioned
+  // for. Thrown inside the DO, so it arrives with the code flattened into the message.
+  [/applyProjection refused/, 'conflict'],
   [/non-active tenant/, 'conflict'],
   [/not active \(status:/, 'conflict'],
   // Registry (#31): well-formed, but conflicts with a version's admission state or

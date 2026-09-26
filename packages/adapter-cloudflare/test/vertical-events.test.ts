@@ -858,3 +858,157 @@ describe('adapter-cloudflare (workerd): the replay is atomic (#1705 PR 3)', () =
     expect(await snapshot()).toMatchObject({ imports: [], deliveries: [], cursors: [], replays: { n: 2 } });
   });
 });
+
+/**
+ * #1738 on workerd: what a CP-less scope serves is its `provisioned_for` RECEIPT, written by
+ * `applyProjection`, not an inference from role rows. Driven through the vertical's own
+ * `/internal/provision` and the host's restore, and read back from the Durable Object's SQL.
+ */
+describe('adapter-cloudflare (workerd): the served-here gate reads a provisioned_for receipt (#1738)', () => {
+  const crm = deployment(env.CRM_SCOPE, crmExportMod, CRM_OWNER);
+  const stubOf = (s: ScopeId) => env.CRM_SCOPE.get(env.CRM_SCOPE.idFromName(s));
+  const serves = (t: TenantId, s: ScopeId) => crm.hostFor().importStateLocal(t, s);
+  const receiptOf = (s: ScopeId) =>
+    runInDurableObject(stubOf(s), async (_i, state) =>
+      (state.storage.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`).toArray()[0] as { value: string } | undefined)?.value ?? null,
+    );
+  const sql = (s: ScopeId, q: string, ...params: unknown[]) =>
+    runInDurableObject(stubOf(s), async (_i, state) => {
+      state.storage.sql.exec(q, ...(params as never[]));
+    });
+  const stray = (s: ScopeId, t: TenantId) =>
+    sql(s, `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, revoked_at) VALUES (?, 'stray', '[]', 'vertical', NULL)`, t);
+  const refused = async (p: Promise<unknown>) => errorCodeOf(await p.then(() => undefined, (e: unknown) => e));
+
+  it('a scope serves exactly the tenant its receipt names', async () => {
+    const t = tenantId.parse(ulid());
+    const u = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await crm.provision(t, s);
+    expect(await receiptOf(s)).toBe(t);
+    await expect(serves(t, s)).resolves.toHaveProperty('cursors');
+    expect(await refused(serves(u, s))).toBe('conflict');
+  });
+
+  it('K-3: a stray role row for another tenant does not make the scope serve it', async () => {
+    const t = tenantId.parse(ulid());
+    const u = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await crm.provision(t, s);
+    await stray(s, u);
+    // Inference alone would now say yes for `u`; the receipt says no.
+    expect(await refused(serves(u, s))).toBe('conflict');
+    await expect(serves(t, s)).resolves.toHaveProperty('cursors');
+  });
+
+  it('a scope provisioned before the receipt existed falls back to its role rows', async () => {
+    const t = tenantId.parse(ulid());
+    const u = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await crm.provision(t, s);
+    await sql(s, `DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+    expect(await receiptOf(s)).toBeNull();
+    await expect(serves(t, s)).resolves.toHaveProperty('cursors');
+    expect(await refused(serves(u, s))).toBe('conflict');
+    // No receipt and no roles is still a scope this deployment never provisioned.
+    expect(await refused(serves(t, scopeId.parse(ulid())))).toBe('conflict');
+  });
+
+  it('a reconcile writes the receipt for a legacy scope, after which a stray row no longer counts', async () => {
+    const t = tenantId.parse(ulid());
+    const u = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await crm.provision(t, s);
+    await sql(s, `DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+    await stray(s, u);
+    // Legacy scope, no receipt: the fallback is the old behaviour, stray row and all.
+    await expect(serves(u, s)).resolves.toHaveProperty('cursors');
+    await crm.hostFor().projectRolesLocal(t, s, [CRM_OWNER]);
+    expect(await receiptOf(s)).toBe(t);
+    expect(await refused(serves(u, s))).toBe('conflict');
+    await expect(serves(t, s)).resolves.toHaveProperty('cursors');
+  });
+
+  it('a projection for another tenant is refused, and moves neither the receipt nor the roles', async () => {
+    const t = tenantId.parse(ulid());
+    const u = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await crm.provision(t, s);
+    const roles = () =>
+      runInDurableObject(stubOf(s), async (_i, state) =>
+        state.storage.sql.exec(`SELECT tenant_id, role_key FROM _substrat_roles ORDER BY tenant_id, role_key`).toArray(),
+      );
+    const before = await roles();
+    const e = await crm.hostFor().projectRolesLocal(u, s, [CRM_OWNER]).then(() => undefined, (x: unknown) => x);
+    // Across the Durable Object boundary the error's code survives only in its message.
+    expect(String((e as Error).message)).toContain('Substrat.conflict');
+    expect(String((e as Error).message)).toContain(t);
+    expect(String((e as Error).message)).toContain(u);
+    expect(await receiptOf(s)).toBe(t);
+    expect(await roles()).toEqual(before);
+    await expect(serves(t, s)).resolves.toHaveProperty('cursors');
+    expect(await refused(serves(u, s))).toBe('conflict');
+    // The twin: the same tenant re-projects, as a reconcile does.
+    await crm.hostFor().projectRolesLocal(t, s, [CRM_OWNER]);
+    expect(await receiptOf(s)).toBe(t);
+  });
+
+  it('a projection that fails part-way writes no receipt and leaves the prior roles intact', async () => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await crm.provision(t, s);
+    // A scope with no receipt yet, so "not written" is observable.
+    await sql(s, `DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+    const rolesOf = () =>
+      runInDurableObject(stubOf(s), async (_i, state) =>
+        state.storage.sql.exec(`SELECT tenant_id, role_key, permissions FROM _substrat_roles ORDER BY role_key`).toArray(),
+      );
+    const before = await rolesOf();
+    expect(before.length).toBeGreaterThan(0);
+    const stub = stubOf(s) as unknown as {
+      applyProjection(t: string, roles: unknown[], tuples: unknown[]): Promise<unknown>;
+    };
+    const good = { role_key: 'ok', permissions: '[]', source: 'vertical' };
+    // `permissions` is NOT NULL: this insert throws AFTER the roles were deleted and `ok` inserted.
+    const bad = { role_key: 'bad', permissions: null, source: 'vertical' };
+    await expect(stub.applyProjection(t, [good, bad], [])).rejects.toThrow();
+    expect(await receiptOf(s)).toBeNull();
+    expect(await rolesOf()).toEqual(before);
+    // The twin: a valid projection commits the receipt and the new roles together.
+    await stub.applyProjection(t, [good], []);
+    expect(await receiptOf(s)).toBe(t);
+    expect((await rolesOf()).map((r) => (r as { role_key: string }).role_key)).toEqual(['ok']);
+  });
+
+  it('the receipt survives a restore of the same tenant\'s own dump', async () => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await crm.provision(t, s);
+    const dump = await crm.hostFor().exportScopeLocal(s);
+    expect(JSON.stringify(dump)).toContain('provisioned_for');
+    await crm.hostFor().restoreScopeLocal(s, dump);
+    // The import drops the dump's receipt; the repair the route always runs puts it back.
+    expect(await receiptOf(s)).toBeNull();
+    await crm.hostFor().projectRolesLocal(t, s, [CRM_OWNER]);
+    expect(await receiptOf(s)).toBe(t);
+    await expect(serves(t, s)).resolves.toHaveProperty('cursors');
+  });
+
+  it('a dump from another tenant\'s scope carries no receipt over: the repair writes this tenant\'s', async () => {
+    const a = tenantId.parse(ulid());
+    const b = tenantId.parse(ulid());
+    const from = scopeId.parse(ulid());
+    const into = scopeId.parse(ulid());
+    await crm.provision(a, from);
+    await crm.provision(b, into);
+    const dump = await crm.hostFor().exportScopeLocal(from);
+    await crm.hostFor().restoreScopeLocal(into, dump);
+    // After the import alone, the wrong receipt is not there to be believed.
+    expect(await receiptOf(into)).toBeNull();
+    await crm.hostFor().projectRolesLocal(b, into, [CRM_OWNER]);
+    expect(await receiptOf(into)).toBe(b);
+    await expect(serves(b, into)).resolves.toHaveProperty('cursors');
+    // The dump's roles for `a` came along, and the receipt is what stops them serving `a`.
+    expect(await refused(serves(a, into))).toBe('conflict');
+  });
+});
