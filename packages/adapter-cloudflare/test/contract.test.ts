@@ -2319,6 +2319,24 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await heldOn(s)).toEqual([]);
   });
 
+  /**
+   * Why the claims are read BEFORE the move. Here a move lands while the claim is still pending,
+   * and before its answer is back, the rewind arms on a different instance (the one serving had
+   * been evicted). That move was in storage the rewind discards. Read before the move, the claim
+   * was pending, so it stays. Read after it, the claim would look armed with a doomed instance
+   * that is not the move's, and would be released.
+   */
+  it('a claim armed while a move is in flight stays: the release reads the claims before the move', async () => {
+    const s = await newScope();
+    await off(s);
+    await holdsStub().switchHoldClaim(s, [SCHED], 'arming-now', new Date().toISOString());
+    const counting = countingScopes(env.SCOPE);
+    counting.afterMove = () => holdsStub().switchHoldArm(s, 'arming-now', 'an-instance-started-after-this-move');
+    expect(await deployment(counting.ns).systemSwitchLocal(s, SCHED, 'off')).toMatchObject({ held: true });
+    expect(await heldOn(s)).toEqual([SCHED]);
+    await holdsStub().switchHoldRelease(s, null, null);
+  });
+
   it('a claim still pending past the bound is released by a move; a fresh pending one is not', async () => {
     const s = await newScope();
     await off(s);
@@ -2562,6 +2580,8 @@ function countingScopes(ns: DurableObjectNamespace) {
     failReads: false,
     /** Hold one scope's `systemScheduleState` until `until` settles: to place a pass's state read. */
     gateStateRead: null as { scopeId: string; until: Promise<void> } | null,
+    /** Run after a scope's switch move completes, before its answer returns to the host. */
+    afterMove: null as (() => Promise<void>) | null,
   };
   type Rpc = Record<string, (...a: unknown[]) => unknown>;
   const counted = (real: Rpc, id: DurableObjectId) =>
@@ -2578,7 +2598,9 @@ function countingScopes(ns: DurableObjectNamespace) {
                 if (prop === 'systemScheduleState' && gate && id.equals(ns.idFromName(gate.scopeId))) {
                   await gate.until;
                 }
-                return real[prop]!(...args);
+                const answer = await real[prop]!(...args);
+                if (prop === 'switchSystemSchedules' && counts.afterMove) await counts.afterMove();
+                return answer;
               },
       },
     );
