@@ -7237,9 +7237,14 @@ export class CloudflareScopeHost implements ScopeHost {
   /** Project the tenant's current state into ONE scope + flip it to local. */
   private async projectScope(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     if (!this.scopeLocalPermissions) return;
-    const { roles, tuples, entitlements, identities } = await this.tenantProjection(tenantId);
+    // The directory decides which tenant this scope belongs to (#1738): the scope's first
+    // projection pins its `provisioned_for` receipt, so a tenant taken from a request rather
+    // than from the record must not reach `applyProjection` — it would pin the wrong one for
+    // good. Read first, so a pair the directory does not hold writes nothing.
     const scope = await this.cp.getScopeRecord(tenantId, scopeId);
-    const connectionKeys = await this.connectionKeyRows(tenantId, scope?.vertical);
+    if (!scope) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    const { roles, tuples, entitlements, identities } = await this.tenantProjection(tenantId);
+    const connectionKeys = await this.connectionKeyRows(tenantId, scope.vertical);
     await this.scopeStub(scopeId).applyProjection(
       tenantId,
       roles,
