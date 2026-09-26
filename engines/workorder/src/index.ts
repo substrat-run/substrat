@@ -106,7 +106,7 @@ export {
   type WorkorderCompletedPayload,
   type WorkorderClosedPayload,
 } from './events.js';
-import { emitWorkorderEvent } from './events.js';
+import { emitWorkorderEvent, workorderEmitDeclarations } from './events.js';
 // The declared state machine (#844). PUBLIC: a composing vertical reads it to
 // render available actions, and `substrat.model` emits it into `model.json`.
 export { workorderLifecycles, workorderLifecycle } from './lifecycle.js';
@@ -148,15 +148,7 @@ export const workorderManifest = moduleManifest.parse({
     { key: 'workorder:close', description: 'Close a completed work order' },
   ],
   events: {
-    emits: [
-      { type: 'workorder.created', schemaVersion: 1 },
-      { type: 'workorder.assigned', schemaVersion: 1 },
-      { type: 'workorder.started', schemaVersion: 1 },
-      { type: 'workorder.time-reported', schemaVersion: 1 },
-      { type: 'workorder.material-reported', schemaVersion: 1 },
-      { type: 'workorder.completed', schemaVersion: 1 },
-      { type: 'workorder.closed', schemaVersion: 1 },
-    ],
+    emits: workorderEmitDeclarations,
     consumes: [],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
@@ -379,7 +371,6 @@ export function createWorkOrder(ctx: OperationContext, rawInput: CreateWorkOrder
   ctx.link(orderRef(id), input.facility);
   emitWorkorderEvent(ctx, {
     type: 'workorder.created',
-    schemaVersion: 1,
     entity: orderRef(id),
     piiClass: 'none',
     payload: {
@@ -482,7 +473,6 @@ export function assignWorkOrder(ctx: OperationContext, rawInput: AssignWorkOrder
   ]);
   emitWorkorderEvent(ctx, {
     type: 'workorder.assigned',
-    schemaVersion: 1,
     entity: orderRef(row.id),
     piiClass: 'pseudonymous',
     subjectId: dataSubjectId.parse(input.technician),
@@ -499,7 +489,6 @@ export function startWorkOrder(ctx: OperationContext, rawInput: StartWorkOrderIn
   ctx.sql.exec(`UPDATE workorder_orders SET status = 'in_progress' WHERE id = ?`, [row.id]);
   emitWorkorderEvent(ctx, {
     type: 'workorder.started',
-    schemaVersion: 1,
     entity: orderRef(row.id),
     piiClass: 'none',
     payload: { orderId: row.id },
@@ -524,7 +513,6 @@ export function reportTime(ctx: OperationContext, rawInput: ReportTimeInput): Ti
   );
   emitWorkorderEvent(ctx, {
     type: 'workorder.time-reported',
-    schemaVersion: 1,
     entity: orderRef(row.id),
     piiClass: 'pseudonymous',
     subjectId: dataSubjectId.parse(ctx.principal),
@@ -554,7 +542,6 @@ export function reportMaterial(ctx: OperationContext, rawInput: ReportMaterialIn
   );
   emitWorkorderEvent(ctx, {
     type: 'workorder.material-reported',
-    schemaVersion: 1,
     entity: orderRef(row.id),
     piiClass: 'none',
     payload: { orderId: row.id, lineId: id, article: input.article, qty },
@@ -604,7 +591,6 @@ export function completeWorkOrder(
   ]);
   emitWorkorderEvent(ctx, {
     type: 'workorder.completed',
-    schemaVersion: 1,
     entity: orderRef(row.id),
     piiClass: 'none',
     payload: {
@@ -634,7 +620,6 @@ export function closeWorkOrder(ctx: OperationContext, input: { orderId: string }
   ctx.sql.exec(`UPDATE workorder_orders SET status = 'closed' WHERE id = ?`, [row.id]);
   emitWorkorderEvent(ctx, {
     type: 'workorder.closed',
-    schemaVersion: 1,
     entity: orderRef(row.id),
     piiClass: 'none',
     payload: { orderId: row.id },

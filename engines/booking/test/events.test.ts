@@ -132,7 +132,16 @@ function _emitSiteChecks(ctx: OperationContext, moved: BookingMovedPayload, part
   // --- positive twin: the declared types, accepted --------------------------
   emitBookingEvent(ctx, {
     type: 'booking.moved',
-    schemaVersion: 1,
+    entity: { entityType: 'reservation', entityId: '01J' },
+    piiClass: 'none',
+    payload: moved,
+  });
+
+  // --- a schemaVersion at the emit site: the engine owns it (#1597) ----------
+  emitBookingEvent(ctx, {
+    type: 'booking.moved',
+    // @ts-expect-error the version is the engine's (`bookingEventVersions`) — an emit site cannot name one
+    schemaVersion: 2,
     entity: { entityType: 'reservation', entityId: '01J' },
     piiClass: 'none',
     payload: moved,
@@ -140,7 +149,6 @@ function _emitSiteChecks(ctx: OperationContext, moved: BookingMovedPayload, part
 
   emitBookingEvent(ctx, {
     type: 'booking.participant-joined',
-    schemaVersion: 1,
     entity: { entityType: 'reservation', entityId: '01J' },
     piiClass: 'pseudonymous',
     subjectId: party,
@@ -151,7 +159,6 @@ function _emitSiteChecks(ctx: OperationContext, moved: BookingMovedPayload, part
   emitBookingEvent(ctx, {
     // @ts-expect-error engine-booking declares no 'booking.resource-retired'
     type: 'booking.resource-retired',
-    schemaVersion: 1,
     entity: { entityType: 'resource', entityId: '01J' },
     piiClass: 'none',
     payload: { reservationId: '01J', resourceId: '01K' },
@@ -160,7 +167,6 @@ function _emitSiteChecks(ctx: OperationContext, moved: BookingMovedPayload, part
   // --- a payload field the map does not declare -----------------------------
   emitBookingEvent(ctx, {
     type: 'booking.started',
-    schemaVersion: 1,
     entity: { entityType: 'reservation', entityId: '01J' },
     piiClass: 'none',
     // @ts-expect-error 'startedBy' is not on BookingStartedPayload
@@ -170,7 +176,6 @@ function _emitSiteChecks(ctx: OperationContext, moved: BookingMovedPayload, part
   // --- a payload field the map declares and the emit drops ------------------
   emitBookingEvent(ctx, {
     type: 'booking.held',
-    schemaVersion: 1,
     entity: { entityType: 'reservation', entityId: '01J' },
     piiClass: 'none',
     // @ts-expect-error 'expiresAt' is required — a hold without a deadline is not a hold
@@ -187,7 +192,6 @@ function _emitSiteChecks(ctx: OperationContext, moved: BookingMovedPayload, part
   // --- a nullable field handed over as required, and vice versa -------------
   emitBookingEvent(ctx, {
     type: 'booking.opened',
-    schemaVersion: 1,
     entity: { entityType: 'reservation', entityId: '01J' },
     piiClass: 'none',
     payload: {
@@ -204,12 +208,11 @@ function _emitSiteChecks(ctx: OperationContext, moved: BookingMovedPayload, part
 void _emitSiteChecks;
 
 describe('#696 engine-booking event contract', () => {
-  it('is a pass-through at runtime — types only', () => {
+  it('forwards to ctx.emit, stamping only the schemaVersion', () => {
     const emitted: unknown[] = [];
     const ctx = { emit: (event: unknown) => emitted.push(event) } as unknown as OperationContext;
     emitBookingEvent(ctx, {
       type: 'booking.started',
-      schemaVersion: 1,
       entity: { entityType: 'reservation', entityId: '01J' },
       piiClass: 'none',
       payload: { reservationId: '01J', resourceId: '01K' },

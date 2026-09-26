@@ -20,8 +20,8 @@
  * - a vertical already imports the engines it composes, ships as one unit and
  *   upgrades them together, so for it the compile break is the point.
  *
- * TYPES ONLY. `emitInvoicingEvent` forwards to `ctx.emit` unchanged — one extra
- * call in the stack, and no change in what is emitted; the runtime contract is
+ * TYPES, plus one stamp. `emitInvoicingEvent` forwards to `ctx.emit`, adding only the
+ * `schemaVersion` it stamps from `invoicingEventVersions` (#1597); the runtime contract is
  * still the fat payload and the consumer's Zod parse (kernel `EventContract`,
  * `packages/kernel/src/scope-host.ts`).
  *
@@ -30,7 +30,7 @@
  * basis and its terminal export — sequential facts about one artifact, not one
  * fact by two routes.
  *
- * ## `schemaVersion` lives on the emit, not here
+ * ## `schemaVersion` lives in `invoicingEventVersions`, not on the payload
  *
  * `invoicing.underlag-exported` is at **v2** (`total` is `Money`, not a bare
  * amount string), and `InvoicingUnderlagExportedPayload` describes v2. There is
@@ -92,6 +92,28 @@ export type InvoicingEvents = {
 export type InvoicingEventType = keyof InvoicingEvents['events'];
 
 /**
+ * Every event type this engine emits, and the `schemaVersion` each is emitted at.
+ *
+ * The ONE home for that number (#1597): `emitInvoicingEvent` stamps it onto every
+ * emission and the manifest's `emits` is derived from it below, so the two cannot
+ * drift. `satisfies` holds it to exactly the types `InvoicingEvents` declares — a type
+ * missing here, or one the map does not know, is a compile error. Bumping a
+ * version is K-39's REPLACE: change it here, and the payload type beside it.
+ */
+export const invoicingEventVersions = {
+  'invoicing.underlag-updated': 1,
+  // v2: `total` is Money, not a bare amount string (see the header). NOT
+  // dual-emitted: consumer dispatch keys on event TYPE only, so v1 and v2 side by
+  // side would deliver both to every consumer — for an export, a double invoice.
+  'invoicing.underlag-exported': 2,
+} as const satisfies Record<InvoicingEventType, number>;
+
+/** The manifest's `events.emits`, read off {@link invoicingEventVersions} — never hand-declared. */
+export const invoicingEmitDeclarations: { type: string; schemaVersion: number }[] = Object.entries(
+  invoicingEventVersions,
+).map(([type, schemaVersion]) => ({ type, schemaVersion }));
+
+/**
  * `ctx.emit`, with the event type and its payload welded together.
  *
  * This is what stops `InvoicingEvents` becoming a description nothing holds in
@@ -101,14 +123,15 @@ export type InvoicingEventType = keyof InvoicingEvents['events'];
  * *source*: rename a payload field on one side and the other side fails to
  * compile, and emitting a type the map does not declare fails too.
  *
- * Zero runtime behaviour of its own — it forwards to `ctx.emit` unchanged.
+ * Its one runtime act is stamping `schemaVersion` from `invoicingEventVersions` onto
+ * the event (#1597); everything else is forwarded to `ctx.emit` unchanged.
  */
 export function emitInvoicingEvent<K extends InvoicingEventType>(
   ctx: OperationContext,
-  event: Omit<DomainEventInput, 'type' | 'payload'> & {
+  event: Omit<DomainEventInput, 'type' | 'payload' | 'schemaVersion'> & {
     type: K;
     payload: InvoicingEvents['events'][K];
   },
 ): void {
-  ctx.emit(event);
+  ctx.emit({ ...event, schemaVersion: invoicingEventVersions[event.type] });
 }

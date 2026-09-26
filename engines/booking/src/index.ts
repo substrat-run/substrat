@@ -136,7 +136,7 @@ export {
   type BookingCompletedPayload,
   type BookingNoShowPayload,
 } from './events.js';
-import { emitBookingEvent } from './events.js';
+import { emitBookingEvent, bookingEmitDeclarations } from './events.js';
 
 import {
   createResourceInput,
@@ -209,20 +209,7 @@ export const bookingManifest = moduleManifest.parse({
     { key: 'booking:manage-resources', description: 'Create, edit and deactivate bookable resources' },
   ],
   events: {
-    emits: [
-      { type: 'booking.held', schemaVersion: 1 },
-      { type: 'booking.confirmed', schemaVersion: 1 },
-      { type: 'booking.expired', schemaVersion: 1 },
-      { type: 'booking.cancelled', schemaVersion: 1 },
-      { type: 'booking.moved', schemaVersion: 1 },
-      { type: 'booking.started', schemaVersion: 1 },
-      { type: 'booking.completed', schemaVersion: 1 },
-      { type: 'booking.no-show', schemaVersion: 1 },
-      { type: 'booking.participant-joined', schemaVersion: 1 },
-      { type: 'booking.participant-left', schemaVersion: 1 },
-      { type: 'booking.opened', schemaVersion: 1 },
-      { type: 'booking.resource-created', schemaVersion: 1 },
-    ],
+    emits: bookingEmitDeclarations,
     consumes: [],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
@@ -561,7 +548,6 @@ export function createResource(ctx: OperationContext, rawInput: CreateResourceIn
   );
   emitBookingEvent(ctx, {
     type: 'booking.resource-created',
-    schemaVersion: 1,
     entity: resourceRef(id),
     piiClass: 'none',
     payload: { resourceId: id, kind: input.kind, name: input.name, capacity: input.capacity ?? 1 },
@@ -659,7 +645,6 @@ export function holdReservation(
   ctx.link(reservationRef(id), resourceRef(resource.id));
   emitBookingEvent(ctx, {
     type: 'booking.held',
-    schemaVersion: 1,
     entity: reservationRef(id),
     piiClass: 'none',
     payload: {
@@ -702,7 +687,6 @@ export function confirmReservation(
   );
   emitBookingEvent(ctx, {
     type: 'booking.confirmed',
-    schemaVersion: 1,
     entity: reservationRef(row.id),
     piiClass: 'none',
     payload: {
@@ -735,7 +719,6 @@ export function expireReservation(
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'expired' WHERE id = ?`, [row.id]);
   emitBookingEvent(ctx, {
     type: 'booking.expired',
-    schemaVersion: 1,
     entity: reservationRef(row.id),
     piiClass: 'none',
     payload: {
@@ -779,7 +762,6 @@ export function joinReservation(
   );
   emitBookingEvent(ctx, {
     type: 'booking.participant-joined',
-    schemaVersion: 1,
     entity: reservationRef(row.id),
     piiClass: 'pseudonymous',
     subjectId: input.partyRef,
@@ -838,7 +820,6 @@ export function openReservation(
   ]);
   emitBookingEvent(ctx, {
     type: 'booking.opened',
-    schemaVersion: 1,
     entity: reservationRef(row.id),
     piiClass: 'none',
     payload: {
@@ -869,7 +850,6 @@ export function leaveReservation(
   ctx.sql.exec('UPDATE booking_participants SET left_at = ? WHERE id = ?', [now, participant.id]);
   emitBookingEvent(ctx, {
     type: 'booking.participant-left',
-    schemaVersion: 1,
     entity: reservationRef(row.id),
     piiClass: 'pseudonymous',
     subjectId: dataSubjectId.parse(participant.party_ref),
@@ -893,7 +873,6 @@ export function cancelReservation(
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'cancelled' WHERE id = ?`, [row.id]);
   emitBookingEvent(ctx, {
     type: 'booking.cancelled',
-    schemaVersion: 1,
     entity: reservationRef(row.id),
     piiClass: 'none',
     payload: {
@@ -962,7 +941,6 @@ export function moveReservation(
   );
   emitBookingEvent(ctx, {
     type: 'booking.moved',
-    schemaVersion: 1,
     entity: reservationRef(row.id),
     piiClass: 'none',
     payload: {
@@ -985,7 +963,6 @@ export function startReservation(
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'in_service' WHERE id = ?`, [row.id]);
   emitBookingEvent(ctx, {
     type: 'booking.started',
-    schemaVersion: 1,
     entity: reservationRef(row.id),
     piiClass: 'none',
     payload: { reservationId: row.id, resourceId: row.resource_id },
@@ -1009,7 +986,6 @@ export function completeReservation(
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'completed' WHERE id = ?`, [row.id]);
   emitBookingEvent(ctx, {
     type: 'booking.completed',
-    schemaVersion: 1,
     entity: reservationRef(row.id),
     piiClass: 'none',
     payload: {
@@ -1033,7 +1009,6 @@ export function markNoShow(
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'no_show' WHERE id = ?`, [row.id]);
   emitBookingEvent(ctx, {
     type: 'booking.no-show',
-    schemaVersion: 1,
     entity: reservationRef(row.id),
     piiClass: 'none',
     payload: {

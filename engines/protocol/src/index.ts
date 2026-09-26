@@ -190,6 +190,7 @@ import {
   emitProtocolEvent,
   type ProtocolCountersignedPayload,
   type ProtocolSignedPayload,
+  protocolEmitDeclarations,
 } from './events.js';
 /**
  * The declared operation surface (#738) — what a vertical binds to its own URLs
@@ -346,17 +347,7 @@ export const protocolManifest = moduleManifest.parse({
     { key: 'protocol:void', description: 'Void (supersede) a protocol — never deletes' },
   ],
   events: {
-    emits: [
-      { type: 'protocol.instantiated', schemaVersion: 1 },
-      { type: 'protocol.response-recorded', schemaVersion: 1 },
-      { type: 'protocol.content-bound', schemaVersion: 1 },
-      { type: 'protocol.signatures-requested', schemaVersion: 1 },
-      { type: 'protocol.signature-declined', schemaVersion: 1 },
-      { type: 'protocol.signatures-cancelled', schemaVersion: 1 },
-      { type: 'protocol.signed', schemaVersion: 1 },
-      { type: 'protocol.countersigned', schemaVersion: 1 },
-      { type: 'protocol.voided', schemaVersion: 1 },
-    ],
+    emits: protocolEmitDeclarations,
     consumes: [],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
@@ -1106,7 +1097,6 @@ export function instantiateProtocol(
   ctx.link(protocolRef(id), input.entity);
   emitProtocolEvent(ctx, {
     type: 'protocol.instantiated',
-    schemaVersion: 1,
     entity: protocolRef(id),
     piiClass: 'none',
     payload: {
@@ -1192,7 +1182,6 @@ export function fillProtocol(
   );
   emitProtocolEvent(ctx, {
     type: 'protocol.response-recorded',
-    schemaVersion: 1,
     entity: protocolRef(instance.id),
     piiClass: 'pseudonymous',
     subjectId: dataSubjectId.parse(ctx.principal),
@@ -1292,7 +1281,6 @@ export function bindDocument(
   );
   emitProtocolEvent(ctx, {
     type: 'protocol.content-bound',
-    schemaVersion: 1,
     entity: protocolRef(instance.id),
     piiClass: 'none',
     payload: {
@@ -1456,7 +1444,6 @@ export async function requestSignatures(
   const requests = getRequestRows(ctx, instance.id).filter((r) => created.includes(r.id));
   emitProtocolEvent(ctx, {
     type: 'protocol.signatures-requested',
-    schemaVersion: 1,
     entity: protocolRef(instance.id),
     // Party refs are opaque ids and labels are role names, never PII — and the
     // contact cell does not change that, which is the one point worth stating
@@ -1670,7 +1657,6 @@ export function declineSignature(
   );
   emitProtocolEvent(ctx, {
     type: 'protocol.signature-declined',
-    schemaVersion: 1,
     entity: protocolRef(instance.id),
     piiClass: 'none',
     payload: {
@@ -1722,7 +1708,6 @@ export function cancelSignatureRequests(
   );
   emitProtocolEvent(ctx, {
     type: 'protocol.signatures-cancelled',
-    schemaVersion: 1,
     entity: protocolRef(instance.id),
     piiClass: 'none',
     payload: {
@@ -1791,7 +1776,6 @@ function emitSignatureEvent(
   if (signature.kind === 'primary') {
     emitProtocolEvent(ctx, {
       type: 'protocol.signed',
-      schemaVersion: 1,
       entity: protocolRef(instance.id),
       piiClass: 'pseudonymous',
       subjectId: dataSubjectId.parse(signature.signed_by),
@@ -1811,7 +1795,6 @@ function emitSignatureEvent(
   };
   emitProtocolEvent(ctx, {
     type: 'protocol.countersigned',
-    schemaVersion: 1,
     entity: protocolRef(instance.id),
     piiClass: 'pseudonymous',
     subjectId: dataSubjectId.parse(signature.signed_by),
@@ -1947,7 +1930,6 @@ export function voidProtocol(
   );
   emitProtocolEvent(ctx, {
     type: 'protocol.voided',
-    schemaVersion: 1,
     entity: protocolRef(instance.id),
     piiClass: 'pseudonymous',
     subjectId: dataSubjectId.parse(ctx.principal),

@@ -76,7 +76,7 @@ export {
   type AbsenceCancelledPayload,
   type AbsenceExpiredPayload,
 } from './events.js';
-import { emitAbsenceEvent } from './events.js';
+import { emitAbsenceEvent, absenceEmitDeclarations } from './events.js';
 import { absenceOperations } from './operations.js';
 import { leaveTypeRow } from './entities.js';
 import { columnsOf, returns } from './seam.js';
@@ -149,14 +149,7 @@ export const absenceManifest = moduleManifest.parse({
     { key: 'absence:configure', description: 'Configure leave types; record accrual/correction/carryover entries' },
   ],
   events: {
-    emits: [
-      { type: 'absence.leave-type-configured', schemaVersion: 1 },
-      { type: 'absence.entry-recorded', schemaVersion: 1 },
-      { type: 'absence.requested', schemaVersion: 1 },
-      { type: 'absence.decided', schemaVersion: 1 },
-      { type: 'absence.cancelled', schemaVersion: 1 },
-      { type: 'absence.expired', schemaVersion: 1 },
-    ],
+    emits: absenceEmitDeclarations,
     consumes: [],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
@@ -427,7 +420,6 @@ function insertEntry(
   const entry = toEntry(getEntryRow(ctx, id));
   emitAbsenceEvent(ctx, {
     type: 'absence.entry-recorded',
-    schemaVersion: 1,
     entity: input.subject.ref,
     piiClass: 'pseudonymous',
     subjectId: input.subject.dataSubjectId,
@@ -473,7 +465,6 @@ export function configureLeaveType(
   const row = getLeaveTypeRow(ctx, input.key);
   emitAbsenceEvent(ctx, {
     type: 'absence.leave-type-configured',
-    schemaVersion: 1,
     entity: { entityType: 'absence-leave-type', entityId: input.key },
     piiClass: 'none',
     payload: { key: row.key, floor: row.floor, active: row.active === 1 },
@@ -561,7 +552,6 @@ export function requestAbsence(ctx: OperationContext, rawInput: RequestAbsenceIn
   );
   emitAbsenceEvent(ctx, {
     type: 'absence.requested',
-    schemaVersion: 1,
     entity: input.subject.ref,
     piiClass: 'pseudonymous',
     subjectId: input.subject.dataSubjectId,
@@ -600,7 +590,6 @@ export function decideAbsence(
     );
     emitAbsenceEvent(ctx, {
       type: 'absence.decided',
-      schemaVersion: 1,
       entity: subject.ref,
       piiClass: 'pseudonymous',
       subjectId: subject.dataSubjectId,
@@ -640,7 +629,6 @@ export function decideAbsence(
   );
   emitAbsenceEvent(ctx, {
     type: 'absence.decided',
-    schemaVersion: 1,
     entity: subject.ref,
     piiClass: 'pseudonymous',
     subjectId: subject.dataSubjectId,
@@ -702,7 +690,6 @@ export function cancelAbsence(
   );
   emitAbsenceEvent(ctx, {
     type: 'absence.cancelled',
-    schemaVersion: 1,
     entity: subject.ref,
     piiClass: 'pseudonymous',
     subjectId: subject.dataSubjectId,
@@ -745,7 +732,6 @@ export function expireStaleRequests(ctx: OperationContext): { expired: number } 
     );
     emitAbsenceEvent(ctx, {
       type: 'absence.expired',
-      schemaVersion: 1,
       entity: subjectRefOf(req),
       piiClass: 'pseudonymous',
       subjectId: dataSubjectId.parse(req.data_subject_id),

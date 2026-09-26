@@ -101,7 +101,16 @@ function _emitSiteChecks(ctx: OperationContext): void {
   // --- positive twin: the declared types, accepted --------------------------
   emitInvitesEvent(ctx, {
     type: 'invites.sent',
-    schemaVersion: 1,
+    entity: { entityType: 'invitation', entityId: '01J' },
+    piiClass: 'none',
+    payload: { invitationId: '01J', orgId: '01K', roleKey: 'member', expiresAt: '2026-09-27T00:00:00.000Z' },
+  });
+
+  // --- a schemaVersion at the emit site: the engine owns it (#1597) ----------
+  emitInvitesEvent(ctx, {
+    type: 'invites.sent',
+    // @ts-expect-error the version is the engine's (`invitesEventVersions`) — an emit site cannot name one
+    schemaVersion: 2,
     entity: { entityType: 'invitation', entityId: '01J' },
     piiClass: 'none',
     payload: { invitationId: '01J', orgId: '01K', roleKey: 'member', expiresAt: '2026-09-27T00:00:00.000Z' },
@@ -109,7 +118,6 @@ function _emitSiteChecks(ctx: OperationContext): void {
 
   emitInvitesEvent(ctx, {
     type: 'member.add-requested',
-    schemaVersion: 1,
     entity: { entityType: 'membership', entityId: '01M' },
     piiClass: 'none',
     payload: { principal: '01M', orgId: '01K', tenantId: '01T', roleKey: 'member', invitationId: '01J' },
@@ -119,7 +127,6 @@ function _emitSiteChecks(ctx: OperationContext): void {
   emitInvitesEvent(ctx, {
     // @ts-expect-error engine-invites declares no 'invites.expired'
     type: 'invites.expired',
-    schemaVersion: 1,
     entity: { entityType: 'invitation', entityId: '01J' },
     piiClass: 'none',
     payload: { invitationId: '01J' },
@@ -130,7 +137,6 @@ function _emitSiteChecks(ctx: OperationContext): void {
   // event is how the non-enumerable surface would quietly stop being one.
   emitInvitesEvent(ctx, {
     type: 'invites.sent',
-    schemaVersion: 1,
     entity: { entityType: 'invitation', entityId: '01J' },
     piiClass: 'none',
     // @ts-expect-error the identifier is hashed before storage and is on no event
@@ -140,7 +146,6 @@ function _emitSiteChecks(ctx: OperationContext): void {
   // --- a payload field the map declares and the emit drops ------------------
   emitInvitesEvent(ctx, {
     type: 'member.add-requested',
-    schemaVersion: 1,
     entity: { entityType: 'membership', entityId: '01M' },
     piiClass: 'none',
     // @ts-expect-error 'tenantId' is required — an executor outside the scope needs it
@@ -150,12 +155,11 @@ function _emitSiteChecks(ctx: OperationContext): void {
 void _emitSiteChecks;
 
 describe('#696 engine-invites event contract', () => {
-  it('is a pass-through at runtime — types only', () => {
+  it('forwards to ctx.emit, stamping only the schemaVersion', () => {
     const emitted: unknown[] = [];
     const ctx = { emit: (event: unknown) => emitted.push(event) } as unknown as OperationContext;
     emitInvitesEvent(ctx, {
       type: 'invites.revoked',
-      schemaVersion: 1,
       entity: { entityType: 'invitation', entityId: '01J' },
       piiClass: 'none',
       payload: { invitationId: '01J' },
