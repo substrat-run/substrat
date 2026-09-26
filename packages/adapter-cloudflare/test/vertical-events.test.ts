@@ -929,6 +929,30 @@ describe('adapter-cloudflare (workerd): the served-here gate reads a provisioned
     await expect(serves(t, s)).resolves.toHaveProperty('cursors');
   });
 
+  it('a projection for another tenant is refused, and moves neither the receipt nor the roles', async () => {
+    const t = tenantId.parse(ulid());
+    const u = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await crm.provision(t, s);
+    const roles = () =>
+      runInDurableObject(stubOf(s), async (_i, state) =>
+        state.storage.sql.exec(`SELECT tenant_id, role_key FROM _substrat_roles ORDER BY tenant_id, role_key`).toArray(),
+      );
+    const before = await roles();
+    const e = await crm.hostFor().projectRolesLocal(u, s, [CRM_OWNER]).then(() => undefined, (x: unknown) => x);
+    // Across the Durable Object boundary the error's code survives only in its message.
+    expect(String((e as Error).message)).toContain('Substrat.conflict');
+    expect(String((e as Error).message)).toContain(t);
+    expect(String((e as Error).message)).toContain(u);
+    expect(await receiptOf(s)).toBe(t);
+    expect(await roles()).toEqual(before);
+    await expect(serves(t, s)).resolves.toHaveProperty('cursors');
+    expect(await refused(serves(u, s))).toBe('conflict');
+    // The twin: the same tenant re-projects, as a reconcile does.
+    await crm.hostFor().projectRolesLocal(t, s, [CRM_OWNER]);
+    expect(await receiptOf(s)).toBe(t);
+  });
+
   it('the receipt survives a restore of the same tenant\'s own dump', async () => {
     const t = tenantId.parse(ulid());
     const s = scopeId.parse(ulid());

@@ -5336,10 +5336,21 @@ export function defineScopeDO(
       // convergence over many scopes and one dead sibling must not fail the others,
       // and a reaped scope converging to "nothing" IS convergence.
       return this.queue.enqueue(() => {
-        // #1738: the receipt `servesTenant` reads. Written first and unconditionally, so every
-        // path that provisions, reconciles or repairs a restore leaves it, whichever guard below
-        // returns early. Overwrites: the projection is keyed on this tenant already, and a
-        // restore's repair is what replaces a receipt the import dropped.
+        // #1738: the receipt `servesTenant` reads. First writer wins: absent or equal is written,
+        // a receipt for ANOTHER tenant refuses the whole projection (K-3), before a single row
+        // moves, so a misdirected projection can never re-point a scope or leave its roles behind.
+        // A restore does not trip this: `importDump` drops the dump's receipt, so the repair
+        // projection that follows finds none and writes the destination's own.
+        const held = this.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`).toArray()[0] as
+          | { value: string }
+          | undefined;
+        if (held && held.value !== tenantId) {
+          throw substratError(
+            'conflict',
+            `applyProjection refused: this scope was provisioned for tenant ${held.value}, and a projection for tenant ${tenantId} would re-point it`,
+          );
+        }
+        // Written before any guard below can return early, so every projection leaves it.
         this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('provisioned_for', ?)`, tenantId);
         this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
         for (const r of roles) {
