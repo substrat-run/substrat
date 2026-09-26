@@ -121,6 +121,13 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   `liftLimit(db)` and says why. `pnpm lint:like-pattern` is the source half: a `LIKE`/`GLOB`
   literal over 50 bytes, or a `const` of three or more `[0-9]`-style classes over it, is
   refused — the run-time limit is what catches a pattern built from input.
+- **The same preload chain judges ALL node adapter SQL against the DO's other limits** (#1786):
+  `tools/vitest/sql-limits.cjs` runs the kernel's `assertWithinSqlLimits` on every statement
+  the driver prepares or execs — platform-internal ones included, which `guardSqlLimits`
+  (module `ctx.sql` only) never saw — so a 101-parameter `IN (?, …)` fails the node suite
+  instead of a deployed scope (#1776). Wired beside the LIKE preload in the root `pnpm test`
+  and CI's test step; it reads the kernel's built `dist`. No opt-out exists yet: add one, with the
+  reason at its call, when a node-only path legitimately exceeds a limit.
 - `pnpm lint:permissions` — emit each vertical's `PERMISSIONS.md` (the permission-diff
   checkpoint below); CI runs it with `--check` and fails on drift
 - `pnpm lint:changelog` — the published weekly changelog (`apps/docs/changelog/`).

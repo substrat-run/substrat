@@ -14,6 +14,10 @@
  * compound `SELECT` terms, statement bytes, and the columns a select list writes out. (The
  * width of a table and of a `*` result is the adapter's own check, #1811.)
  *
+ * No per-connection opt-out exists, because no path needed one: dump replay into `restoreDirectory`,
+ * migrations and every suite in the repo ran clean. Add a `liftLimit`-style one, with the reason at
+ * its call, the first time a node-only path legitimately exceeds.
+ *
  * `--require`d beside the LIKE preload, and test-only: it never ships, so self-host and
  * production behaviour are unchanged. The kernel is read from its BUILT `dist`, which is what
  * `pnpm test` and CI's test step have; a checkout that has not built fails loudly on the first
@@ -43,26 +47,15 @@ const judge = (sql) => {
   assertWithinSqlLimits(sql);
 };
 
-const exempt = new WeakSet();
 // Statements already judged clean: the adapter re-prepares the same few hundred texts.
 const clean = new Set();
 const CLEAN_MAX = 5000;
 
-const check = (db, sql) => {
-  if (typeof sql !== 'string' || exempt.has(db) || clean.has(sql)) return;
+const check = (sql) => {
+  if (typeof sql !== 'string' || clean.has(sql)) return;
   judge(sql);
   if (clean.size >= CLEAN_MAX) clean.clear();
   clean.add(sql);
-};
-
-/**
- * Take the limits off ONE connection — for SQL that is legitimately over a limit on node and
- * never runs on a Durable Object. Say why where it is called: a connection that is lifted is a
- * connection this preload no longer judges.
- */
-const liftSqlLimits = (db) => {
-  exempt.add(db);
-  return db;
 };
 
 if (!Database.prototype.__sqlLimits) {
@@ -70,10 +63,8 @@ if (!Database.prototype.__sqlLimits) {
   for (const method of ['prepare', 'exec']) {
     const original = Database.prototype[method];
     Database.prototype[method] = function patched(sql, ...rest) {
-      check(this, sql);
+      check(sql);
       return original.call(this, sql, ...rest);
     };
   }
 }
-
-module.exports = { liftSqlLimits };
