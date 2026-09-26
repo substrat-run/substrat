@@ -2,9 +2,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { moduleManifest, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { moduleManifest, type ScopeDump, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { DO_SQL_LIMITS, ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
-import type { ModuleRegistration, OperationHandler, ScopeDump } from '@substrat-run/kernel';
+import type { ModuleRegistration, OperationHandler } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
