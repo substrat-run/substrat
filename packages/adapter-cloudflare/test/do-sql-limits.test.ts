@@ -259,7 +259,7 @@ describe('platform list statements past the parameter limit (#1776)', () => {
 
 /** The slice of a ControlPlaneDO the #1787 block below drives: the audit read, and the SQL it runs. */
 interface ControlPlaneInstance {
-  auditLog(query: { action?: string[]; cursor?: string; limit?: number; order?: 'asc' | 'desc' }): { id: string }[];
+  auditLog(query: { tenantId?: string; action?: string[]; limit?: number; order?: 'asc' | 'desc' }): { id: string }[];
   sql: SqlStorage;
 }
 
@@ -268,8 +268,8 @@ interface ControlPlaneInstance {
  * platform statement never runs `ANALYZE`, but a module's `ctx.sql` can (the spine guard judges
  * write targets, not `ANALYZE`), and after it `type IN (SELECT value FROM json_each(?))` stopped
  * seeking `_substrat_outbox_type_id` and walked the primary key with a bloom filter, reading the
- * whole tail for a rare type. The statements below have their join order pinned, and each is
- * planned here with and without statistics. Each also returns the rows the unpinned form did.
+ * whole tail for a rare type. `exportReadQuery` has its join order pinned, and is planned here with
+ * and without statistics, returning the rows the unpinned form did. The other lists are planned too.
  *
  * The rows are the issue's own shape: 20 000 of them over 50 types, read for 3 after a cursor.
  */
@@ -308,7 +308,7 @@ describe('list statements keep their index once table statistics exist (#1787)',
   // Each read is asserted twice: before ANALYZE, where the pin must not have cost anything, and
   // after it, where the pin is the whole point. The seed below is the state both are read in
   // (its counts are written into the SQL: a bound JS number is a REAL, and `i % 50.0` is `1.0`).
-  it('seeds 20 000 outbox rows over 50 types and as many admin-log entries over 50 actions', async () => {
+  it('seeds 20 000 outbox rows over 50 types and as many admin-log entries over 50 actions and 200 tenants', async () => {
     await inScope((sql) => {
       sql.exec('DELETE FROM _substrat_outbox');
       sql.exec(
@@ -325,9 +325,34 @@ describe('list statements keep their index once table statistics exist (#1787)',
       sql.exec(
         `INSERT INTO _substrat_admin_log (id, actor, action, tenant_id, scope_id, at)
          WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ${rows - 1})
-         SELECT printf('01J%023d', i), 'a', 'probe.a' || (i % ${kinds}), 't', 's', '2026-09-25T00:00:00.000Z' FROM n`,
+         SELECT printf('01J%023d', i), 'a', 'probe.a' || (i % ${kinds}), 'probe.tenant' || (i % 200), 's', '2026-09-25T00:00:00.000Z' FROM n`,
       );
     });
+  });
+
+  // ASSESSED AND NOT PINNED: the audit log's `action IN (SELECT value FROM json_each(?))`. After an
+  // ANALYZE its paged read (`id > ?`) also walks the primary key, but a CROSS JOIN pin makes the
+  // action list drive even when a more selective (tenant_id, id) index applies, and with no
+  // statistics, which is the control-plane DO's state, `{ tenantId, action: [common] }` went from
+  // 0.03 ms to 14.7 ms. Nothing runs ANALYZE there, so a pin buys a hypothetical case with a real one.
+  // This is the real one, kept: with no statistics a tenant-narrowed action filter reads the tenant's index.
+  it('the audit log narrows by tenant before the action list (no statistics: the state it runs in)', async () => {
+    const [ran, got] = await inControlPlane((i, sql) => {
+      // Capture the statement the producer itself sends, so the plan is read off the real one.
+      const real = i.sql;
+      const sent: { q: string; p: unknown[] }[] = [];
+      i.sql = { exec: (q: string, ...p: unknown[]) => (sent.push({ q, p }), real.exec(q, ...(p as never[]))) } as SqlStorage;
+      let entries: { id: string }[];
+      try {
+        entries = i.auditLog({ tenantId: 'probe.tenant1', action: ['probe.a1', 'probe.a2'], order: 'desc', limit: 50 });
+      } finally {
+        i.sql = real;
+      }
+      const last = sent.at(-1)!;
+      return [plan(sql, { sql: last.q, params: last.p }), entries] as const;
+    });
+    expect(ran).toContain('_substrat_admin_log_tenant (tenant_id=?)');
+    expect(got.length).toBeGreaterThan(0);
   });
 
   const exportSeek = /_substrat_outbox_type_id \(type=\? AND id>\?\)/;
@@ -374,41 +399,6 @@ describe('list statements keep their index once table statistics exist (#1787)',
       expect(now).toMatch(/_substrat_outbox_type_(at|id) \(type=\?\)/);
       expect(page).toHaveLength(7);
       expect(page).toEqual(expected);
-    });
-
-    it(`the audit log's action filter reads (action, id) and returns what the unpinned form did (${phase})`, async () => {
-      const actions = ['probe.a1', 'probe.a2', 'probe.a3'];
-      const unpinned = (sql: SqlStorage, order: string) =>
-        (
-          sql
-            .exec(
-              `SELECT * FROM _substrat_admin_log WHERE action IN (SELECT value FROM json_each(?)) AND id ${order === 'asc' ? '>' : '<'} ? ORDER BY id ${order.toUpperCase()} LIMIT ?`,
-              JSON.stringify(actions),
-              cursor,
-              50,
-            )
-            .toArray() as { id: string }[]
-        ).map((r) => r.id);
-      for (const order of ['asc', 'desc'] as const) {
-        const [ran, got, want] = await inControlPlane((i, sql) => {
-          // Capture the statement the producer itself sends, so the plan is read off the real one.
-          const real = i.sql;
-          const sent: { q: string; p: unknown[] }[] = [];
-          i.sql = { exec: (q: string, ...p: unknown[]) => (sent.push({ q, p }), real.exec(q, ...(p as never[]))) } as SqlStorage;
-          let entries: { id: string }[];
-          try {
-            entries = i.auditLog({ action: [...actions, 'probe.a1'], cursor, limit: 50, order });
-          } finally {
-            i.sql = real;
-          }
-          const last = sent.at(-1)!;
-          return [plan(sql, { sql: last.q, params: last.p }), entries.map((e) => e.id), unpinned(sql, order)] as const;
-        });
-        expect(ran).toContain('_substrat_admin_log_action (action=?');
-        expect(ran).not.toContain('sqlite_autoindex__substrat_admin_log');
-        expect(got).toHaveLength(50);
-        expect(got).toEqual(want);
-      }
     });
   }
 
