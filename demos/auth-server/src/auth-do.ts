@@ -2,6 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
 import { Hono } from 'hono';
+import { compactVerify, createLocalJWKSet, type JSONWebKeySet } from 'jose';
 import {
   resolveScopedEnvSpec,
   type ScopeDumpTable,
@@ -34,7 +35,9 @@ import { transportFor, senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
 import { isResourcesEntry, parseResourcesEntry, syncPlatformResources } from './resources.js';
 import { isPlacesEntry, parsePlacesEntry, syncPlaceRegistrations } from './places.js';
-import { servePlaces, serveReport } from './places-http.js';
+import { authenticateClient, servePlaces, serveReport } from './places-http.js';
+import { isDelegationsEntry, parseDelegationsEntry, syncDelegations } from './delegations.js';
+import { exchangeToken } from './token-exchange.js';
 import {
   PreviewClientRefusal,
   claimsParent,
@@ -389,7 +392,13 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     // `places.ts`): the platform's registration of which of a team's apps sign in here. Rows
     // in `place_app`, never a `cfg:` row, and parsed up front for the same reason.
     const places = entries.filter((e) => isPlacesEntry(e.key)).map((e) => parsePlacesEntry(e.key, e.value));
-    const config = entries.filter((e) => !isResourcesEntry(e.key) && !isPlacesEntry(e.key));
+    // `substrat:delegations:<host scope>` likewise (#1824, `delegations.ts`): which apps may act
+    // for the host's users. Rows in `delegation_grant`, which token exchange re-reads on every
+    // request, and never a `cfg:` row.
+    const delegations = entries
+      .filter((e) => isDelegationsEntry(e.key))
+      .map((e) => parseDelegationsEntry(e.key, e.value));
+    const config = entries.filter((e) => !isResourcesEntry(e.key) && !isPlacesEntry(e.key) && !isDelegationsEntry(e.key));
     // ONE transaction for the whole delivery. DO SQLite commits each `exec` on its own
     // unless it is wrapped, so a statement that fails halfway through a multi-host
     // un-registration would leave part of the set removed, and a deleted app has no later
@@ -405,8 +414,12 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         tenant: delivery.tenantId,
         ...syncPlaceRegistrations(this.ctx.storage.sql, delivery, now),
       }));
+      const delegationResults = delegations.map((delivery) => ({
+        host: delivery.hostAppScopeId,
+        ...syncDelegations(this.ctx.storage.sql, delivery, now),
+      }));
       if (config.length) putDeliveredConfig(this.ctx.storage.sql, config);
-      return { results, placeResults };
+      return { results, placeResults, delegationResults };
     });
     // Logged only once committed, so a line never describes writes that rolled back.
     for (const sync of synced.results) {
@@ -417,6 +430,11 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     for (const sync of synced.placeResults) {
       if (sync.registered.length || sync.updated.length || sync.cleared.length) {
         console.log('auth-server: place registrations synced', JSON.stringify(sync));
+      }
+    }
+    for (const sync of synced.delegationResults) {
+      if (sync.granted.length || sync.updated.length || sync.revoked.length) {
+        console.log('auth-server: delegation grants synced', JSON.stringify(sync));
       }
     }
     await this.seedEnvAdmin();
@@ -468,6 +486,45 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    */
   async destroyStorage(): Promise<void> {
     await this.ctx.storage.deleteAll();
+  }
+
+  /**
+   * The DO's bindings for `exchangeToken`: this issuer's own client authentication, keys and
+   * clock. Verification is by the JWKS the issuer publishes, read in-process from the plugin's
+   * own endpoint, so it trusts exactly the keys a relying party would; and it checks the
+   * signature ONLY, because `token-exchange.ts` judges every claim against one clock.
+   */
+  private async tokenExchange(auth: ReturnType<typeof buildAuth>, origin: string, request: Request): Promise<Response> {
+    const form = new URLSearchParams(await request.text());
+    // The same issuer the plugin stamps into its own tokens (`jwt({ jwt: { issuer: baseURL } })`).
+    const issuer = this.effectiveCfg().PUBLIC_ORIGIN ?? origin;
+    const jwks = (await (await auth.handler(new Request(`${origin}/api/auth/jwks`))).json()) as JSONWebKeySet;
+    const keys = createLocalJWKSet(jwks);
+    const answer = await exchangeToken(
+      {
+        sql: this.ctx.storage.sql,
+        issuer,
+        nowSeconds: Math.floor(Date.now() / 1000),
+        authenticate: (clientId, secret) =>
+          authenticateClient(this.ctx.storage.sql, (r) => auth.handler(r), origin, clientId, secret),
+        verify: async (token) => {
+          try {
+            const { payload } = await compactVerify(token, keys);
+            const claims: unknown = JSON.parse(new TextDecoder().decode(payload));
+            return claims && typeof claims === 'object' && !Array.isArray(claims) ? (claims as Record<string, unknown>) : null;
+          } catch {
+            return null;
+          }
+        },
+        sign: async (payload) => (await auth.api.signJWT({ body: { payload } })).token,
+        log: (line) => console.log(line),
+      },
+      form,
+      request.headers.get('authorization'),
+    );
+    const headers: Record<string, string> = { 'content-type': 'application/json', 'cache-control': 'no-store', pragma: 'no-cache' };
+    if (answer.wwwAuthenticate) headers['www-authenticate'] = answer.wwwAuthenticate;
+    return new Response(JSON.stringify(answer.body), { status: answer.status, headers });
   }
 
   /** Is the issuer un-bootstrapped (no users yet)? The worker shows "create the first admin". */
@@ -553,6 +610,12 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         transaction: (fn) => this.ctx.storage.transactionSync(fn),
         log: (line) => console.log(line),
       });
+    }
+    // RFC 8693 token exchange (#1824, `token-exchange.ts`). The worker sends a token-endpoint
+    // POST here only when its `grant_type` is token exchange; every other grant reaches the
+    // plugin's own `/oauth2/token` below, untouched.
+    if (url.pathname === '/__token-exchange' && request.method === 'POST') {
+      return this.tokenExchange(auth, url.origin, request);
     }
     if (url.pathname === '/__client-options') {
       // No `client_id` is the console asking about ITSELF — the one caller with no relying

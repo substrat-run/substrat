@@ -17,6 +17,7 @@ import { SELF, env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
+import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose';
 
 const t = tenantId.parse(ulid());
 const owner = ulid();
@@ -853,5 +854,249 @@ describe('preview-client redirect URIs on workerd (#1704)', () => {
       });
       expect(res.status).toBe(400);
     }
+  });
+});
+
+/**
+ * RFC 8693 token exchange (#1824, `src/token-exchange.ts`), on the real worker and the real
+ * `AuthServerDO`: a host app's user, signed in for real, is acted for by another app of the
+ * same team at the host's MCP endpoint — and not once the platform revokes the grant.
+ *
+ * In workerd because every piece that matters is the runtime's: the worker splitting the one
+ * token endpoint between the plugin and the exchange (and passing every other grant through
+ * with its body unread), the plugin's own client authentication, the JWKS its `jwt` plugin
+ * signs with, and the three platform registries on DO SQLite.
+ */
+describe('token exchange: one app acting for another app’s user (#1824)', () => {
+  const RP_CALLBACK = 'https://desk.acme.test/api/auth/callback';
+  const EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange';
+  const DESK_MCP = 'https://desk.acme.test/api/mcp';
+
+  async function world() {
+    const scope = scopeId.parse(ulid());
+    expect(
+      (
+        await platform('/internal/provision', {
+          ...install(scope),
+          config: { ADMIN_EMAIL: 'root@acme.test', ADMIN_PASSWORD: 'correct-horse-battery', ALLOW_SIGNUP: 'true' },
+        })
+      ).status,
+    ).toBe(201);
+    const routed = (path: string, init: RequestInit = {}) =>
+      SELF.fetch(`https://auth.acme.test${path}`, {
+        ...init,
+        redirect: 'manual',
+        headers: {
+          ...(init.headers as Record<string, string> | undefined),
+          'x-substrat-tenant': t,
+          'x-substrat-scope': scope,
+          'x-substrat-router': env.ROUTER_SECRET,
+        },
+      });
+    const client = async (name: string) => {
+      const res = await routed('/api/auth/oauth2/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ client_name: name, redirect_uris: [RP_CALLBACK], token_endpoint_auth_method: 'client_secret_post' }),
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { client_id: string; client_secret: string };
+      return { id: body.client_id, secret: body.client_secret };
+    };
+    const desk = await client('Desk');
+    const help = await client('Help');
+    const deskApp = scopeId.parse(ulid());
+    const helpApp = scopeId.parse(ulid());
+    const delegations = (value: unknown) =>
+      platform('/internal/configure', {
+        scopeId: scope,
+        entries: [{ key: `substrat:delegations:${deskApp}`, value: value === '' ? '' : JSON.stringify(value) }],
+      });
+    expect(
+      (
+        await platform('/internal/configure', {
+          scopeId: scope,
+          entries: [
+            { key: `substrat:resources:${deskApp}`, value: JSON.stringify([DESK_MCP]) },
+            {
+              key: `substrat:places:${t}`,
+              value: JSON.stringify([
+                { appScopeId: deskApp, clientId: desk.id, hostname: 'desk.acme.test', name: 'Acme Desk' },
+                { appScopeId: helpApp, clientId: help.id, hostname: 'help.acme.test', name: 'Acme Help' },
+              ]),
+            },
+            {
+              key: `substrat:delegations:${deskApp}`,
+              value: JSON.stringify([{ actor: helpApp, permissions: ['tickets.read', 'tickets.comment'] }]),
+            },
+          ],
+        })
+      ).status,
+    ).toBe(200);
+    return { scope, routed, desk, help, deskApp, helpApp, delegations };
+  }
+  type World = Awaited<ReturnType<typeof world>>;
+
+  const b64url = (bytes: ArrayBuffer) =>
+    btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  /** A user signing up, then signing in to the desk for real: authorize, consent, code for tokens. */
+  async function signedInToDesk(w: World): Promise<{ sub: string; idToken: string }> {
+    const up = await w.routed('/api/auth/sign-up/email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: `ann-${ulid()}@acme.test`, password: 'correct-horse-battery', name: 'Ann' }),
+    });
+    expect(up.status).toBe(200);
+    const sub = ((await up.json()) as { user: { id: string } }).user.id;
+    const cookie = (up.headers as unknown as { getSetCookie(): string[] })
+      .getSetCookie()
+      .map((c) => c.split(';')[0] ?? '')
+      .filter((pair) => !pair.endsWith('='))
+      .join('; ');
+    const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)).buffer as ArrayBuffer);
+    const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+    const q = new URLSearchParams({
+      response_type: 'code',
+      client_id: w.desk.id,
+      redirect_uri: RP_CALLBACK,
+      scope: 'openid profile',
+      state: 'st',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    const authorize = await w.routed(`/api/auth/oauth2/authorize?${q}`, { headers: { 'sec-fetch-mode': 'navigate', cookie } });
+    const location = authorize.headers.get('location') ?? '';
+    expect(location.startsWith('/consent?')).toBe(true);
+    const consent = await w.routed('/api/auth/oauth2/consent', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'sec-fetch-mode': 'cors', origin: 'https://auth.acme.test', cookie },
+      body: JSON.stringify({ accept: true, oauth_query: location.slice('/consent?'.length) }),
+    });
+    expect(consent.status).toBe(200);
+    const code = new URL(((await consent.json()) as { url: string }).url).searchParams.get('code') ?? '';
+    // Through the same route the exchange is split off from: an ordinary grant still reaches the plugin.
+    const token = await w.routed('/api/auth/oauth2/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: RP_CALLBACK,
+        code_verifier: verifier,
+        client_id: w.desk.id,
+        client_secret: w.desk.secret,
+      }).toString(),
+    });
+    expect(token.status).toBe(200);
+    return { sub, idToken: ((await token.json()) as { id_token: string }).id_token };
+  }
+
+  const exchange = (w: World, client: { id: string; secret: string }, params: Record<string, string>) =>
+    w.routed('/api/auth/oauth2/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: EXCHANGE, client_id: client.id, client_secret: client.secret, ...params }).toString(),
+    });
+
+  const stageA = (w: World, idToken: string) =>
+    exchange(w, w.desk, {
+      subject_token: idToken,
+      subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
+      audience: w.help.id,
+    });
+
+  const stageB = (w: World, assertion: string) =>
+    exchange(w, w.help, {
+      subject_token: assertion,
+      subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+      resource: DESK_MCP,
+      scope: 'tickets.read',
+    });
+
+  it('mints an assertion for the actor, then a token for the host’s MCP endpoint, both verifiable at the JWKS', async () => {
+    const w = await world();
+    const ann = await signedInToDesk(w);
+
+    const a = await stageA(w, ann.idToken);
+    expect(a.status).toBe(200);
+    expect(a.headers.get('cache-control')).toBe('no-store');
+    const assertion = (await a.json()) as Record<string, unknown>;
+    expect(assertion).toMatchObject({ issued_token_type: 'urn:ietf:params:oauth:token-type:jwt', token_type: 'N_A', expires_in: 300 });
+
+    const b = await stageB(w, assertion['access_token'] as string);
+    expect(b.status).toBe(200);
+    const access = (await b.json()) as Record<string, unknown>;
+    expect(access).toMatchObject({
+      issued_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+      token_type: 'Bearer',
+      scope: 'tickets.read',
+    });
+    expect(access).not.toHaveProperty('refresh_token');
+
+    // Verified the way the host's MCP endpoint verifies a bearer: the published JWKS, this
+    // issuer, and its own resource as the audience.
+    const jwks = (await (await w.routed('/api/auth/jwks')).json()) as JSONWebKeySet;
+    const { payload } = await jwtVerify(access['access_token'] as string, createLocalJWKSet(jwks), {
+      issuer: 'https://auth.acme.test',
+      audience: DESK_MCP,
+    });
+    expect(payload).toMatchObject({
+      sub: ann.sub,
+      azp: w.help.id,
+      client_id: w.help.id,
+      scope: 'tickets.read',
+      act: { iss: 'https://auth.acme.test', sub: w.help.id },
+      substrat_delegation: { stage: 'access', host: w.deskApp, actor: w.helpApp },
+    });
+
+    // Discovery says the grant exists.
+    const discovery = (await (await w.routed('/.well-known/openid-configuration')).json()) as { grant_types_supported: string[] };
+    expect(discovery.grant_types_supported).toContain(EXCHANGE);
+    expect(discovery.grant_types_supported).toContain('authorization_code');
+  });
+
+  it('refuses the actor once the platform re-delivers the host’s grants empty', async () => {
+    const w = await world();
+    const ann = await signedInToDesk(w);
+    const assertion = ((await (await stageA(w, ann.idToken)).json()) as { access_token: string }).access_token;
+    expect((await stageB(w, assertion)).status).toBe(200);
+
+    expect((await w.delegations('')).status).toBe(200);
+    const revoked = await stageB(w, assertion);
+    expect(revoked.status).toBe(400);
+    expect(((await revoked.json()) as { error: string }).error).toBe('invalid_grant');
+    // And the host can no longer start one either.
+    const again = await stageA(w, ann.idToken);
+    expect(((await again.json()) as { error: string }).error).toBe('invalid_target');
+    // The delivery is rows, never a `cfg:` entry.
+    const dump = await dumpOf(w.scope);
+    expect(dump['delegation_grant']).toEqual([]);
+    expect(dump['config']!.some((r) => r.includes('substrat:delegations'))).toBe(false);
+  });
+
+  it('refuses a client that authenticates badly, before it can learn anything', async () => {
+    const w = await world();
+    const ann = await signedInToDesk(w);
+    const res = await exchange(w, { id: w.desk.id, secret: 'not-the-secret' }, {
+      subject_token: ann.idToken,
+      subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
+      audience: w.help.id,
+    });
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { error: string }).error).toBe('invalid_client');
+  });
+
+  it('refuses a subject token whose signature is not the issuer’s', async () => {
+    const w = await world();
+    const ann = await signedInToDesk(w);
+    // The real id_token's header and claims, under another signature.
+    const [header, claims] = ann.idToken.split('.');
+    const forged = `${header}.${claims}.${b64url(crypto.getRandomValues(new Uint8Array(64)).buffer as ArrayBuffer)}`;
+    const res = await stageA(w, forged);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('invalid_grant');
+    // The twin: the token as issued is accepted.
+    expect((await stageA(w, ann.idToken)).status).toBe(200);
   });
 });

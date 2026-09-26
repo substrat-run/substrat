@@ -271,6 +271,18 @@ ${models
   // The primary key serves the login's own read (\`WHERE sub = ?\`); this serves an app's
   // whole-set repair and the drop of an app's entries.
   \`CREATE INDEX IF NOT EXISTS place_member_app_idx ON place_member (app_scope_id)\`,
+  // DELEGATION (#1824, \`src/delegations.ts\`): which host app lets which actor app act for its
+  // users, and with which of the host's permissions (a JSON array of permission keys). Token
+  // exchange (\`src/token-exchange.ts\`) re-reads it on every exchange, which is what makes a
+  // revocation take effect. Written ONLY by the platform's delivery
+  // (\`substrat:delegations:<host scope>\`); the primary key serves both that host's whole-set
+  // replace and the exchange's single-row read.
+  \`CREATE TABLE IF NOT EXISTS delegation_grant (
+    host_app_scope_id TEXT NOT NULL,
+    actor_app_scope_id TEXT NOT NULL,
+    permissions TEXT NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
+    PRIMARY KEY (host_app_scope_id, actor_app_scope_id))\`,
   // A PREVIEW's own clients (#1704, \`src/preview-clients.ts\`): every client the platform
   // minted for a preview scope. A delete selects from here and nothing else, so no client the
   // platform did not mint for that preview — prod's included — can be reached by one. The

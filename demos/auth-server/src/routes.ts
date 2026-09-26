@@ -36,6 +36,7 @@ import {
   previewClientCheck,
   previewClientMint,
   previewClientRetire,
+  TOKEN_EXCHANGE_GRANT_TYPE,
 } from '@substrat-run/contracts';
 import {
   readRoutedNode,
@@ -251,6 +252,30 @@ app.get(PLACES_DISCOVERY_PATH, (c) => {
   return c.json({ report_endpoint: `${origin}/api/places/report` });
 });
 
+/**
+ * RFC 8693 token exchange (#1824, `src/token-exchange.ts`) shares the token endpoint with the
+ * plugin's own grants, and the plugin implements none of it. So a form POST whose `grant_type`
+ * is token exchange goes to the DO's `/__token-exchange`, and anything else — every other
+ * grant, and any body this does not read as a form — reaches the plugin exactly as it came:
+ * the grant is read from a CLONE, so the original body is still unread when it is passed on.
+ * MUST precede the Better Auth forward below.
+ */
+app.post('/api/auth/oauth2/token', async (c) => {
+  const issuer = issuerFor(c.env, c.req.raw);
+  if (c.req.header('content-type')?.toLowerCase().startsWith('application/x-www-form-urlencoded')) {
+    const body = await c.req.raw.clone().text();
+    if (new URLSearchParams(body).get('grant_type') === TOKEN_EXCHANGE_GRANT_TYPE) {
+      const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' };
+      const authorization = c.req.header('authorization');
+      if (authorization) headers.authorization = authorization;
+      return issuer.fetch(
+        new Request(`${new URL(c.req.url).origin}/__token-exchange`, { method: 'POST', headers, body }),
+      );
+    }
+  }
+  return issuer.fetch(c.req.raw);
+});
+
 // The whole Better Auth surface — sign-in/up, password reset, the OIDC endpoints
 // (authorize, token, userinfo, jwks, register, endsession), and the admin API — lives in the
 // issuer DO. The worker only forwards; it never runs Better Auth itself. Better Auth's own
@@ -318,6 +343,8 @@ app.post('/internal/reconcile', async (c) => {
  * `substrat:resources:<scope>` is not config but that vertical's whole set of RFC 8707
  * resources, which the DO writes into the issuer's resource registry
  * (`src/resources.ts`). A malformed one is a 400, and nothing in the delivery is applied.
+ * `substrat:places:<tenant>` (#1670) and `substrat:delegations:<host scope>` (#1824) are the
+ * same kind of entry, written into `place_app` and `delegation_grant`.
  */
 app.post('/internal/configure', async (c) => {
   assertPlatform(c.env, c.req.raw);
