@@ -923,7 +923,8 @@ export interface ScheduleRunReport {
   /**
    * Per-schedule failures on this scope: the operation name and the error. One entry is
    * not a schedule's: `operation: 'switch-hold'` says the rewind hold (#1819) could not be
-   * read, so the pass ran without it. Nothing else about the pass changes.
+   * read. The pass applied only holds it had already read, and its message says which case
+   * it was. Nothing else about the pass changes.
    */
   errors: { operation: string; error: string }[];
   /**

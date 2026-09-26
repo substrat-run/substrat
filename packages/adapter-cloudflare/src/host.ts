@@ -7144,9 +7144,16 @@ export class CloudflareScopeHost implements ScopeHost {
         const rows = await this.switchHoldsStub().switchHoldsAll();
         this.holdSnapshot = { at, held: new Set(rows.map((r) => `${r.scopeId} ${r.moduleId}`)) };
       } catch (err) {
-        error = `switch hold unreadable, schedules not held: ${err instanceof Error ? err.message : String(err)}`;
-        // What was known stays held; the next read is tried once this one's age has passed.
-        this.holdSnapshot = { at, held: this.holdSnapshot?.held ?? new Set() };
+        const known = this.holdSnapshot?.held;
+        const why = err instanceof Error ? err.message : String(err);
+        error = known
+          ? `switch hold unreadable (${why}); the ${known.size} hold(s) from this pass's last good read ` +
+            `still applied, any newer ones did not`
+          : `switch hold unreadable (${why}); no earlier read in this pass, so no hold applied`;
+        // Deliberately re-stamped, so a failing hold object is retried once per snapshot age rather
+        // than hammered per scope. For that long, other scopes reuse this possibly pre-hold set
+        // silently, and only this scope reports the error: the declared fail-open, attributed once.
+        this.holdSnapshot = { at, held: known ?? new Set() };
       }
     }
     return { held: this.holdSnapshot.held.has(key), ...(error ? { error } : {}) };

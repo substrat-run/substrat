@@ -2332,7 +2332,9 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     counting.failReads = true;
     const r = await pass(s, deployment(counting.ns));
     expect(r).toMatchObject({ fired: 2, failed: 0 });
-    expect(r.errors).toEqual([{ operation: 'switch-hold', error: expect.stringMatching(/switch hold unreadable.*holds down/) }]);
+    expect(r.errors).toEqual([
+      { operation: 'switch-hold', error: expect.stringMatching(/unreadable \(holds down\); no earlier read in this pass, so no hold applied/) },
+    ]);
     await holdsStub().switchHoldRelease(s, null);
   });
 
@@ -2345,7 +2347,12 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     counting.failReads = true;
     const r = await pass(s, h);
     expect(r).toMatchObject({ fired: 0, switchedOff: true });
-    expect(r.errors).toEqual([{ operation: 'switch-hold', error: expect.stringMatching(/holds down/) }]);
+    expect(r.errors).toEqual([
+      {
+        operation: 'switch-hold',
+        error: expect.stringMatching(/unreadable \(holds down\); the \d+ hold\(s\) from this pass's last good read still applied/),
+      },
+    ]);
     expect(counting.holdReads).toBe(2);
   });
 });
