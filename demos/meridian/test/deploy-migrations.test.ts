@@ -57,7 +57,9 @@ async function uploadMetadata(inPlace?: { priorDoClasses: string[]; priorMigrati
     },
     inPlace,
   );
-  return JSON.parse(await (body!.get('metadata') as File).text()) as Record<string, unknown>;
+  const metadata = body!.get('metadata');
+  if (!(metadata instanceof Blob)) throw new Error('the upload carried no metadata part');
+  return JSON.parse(await metadata.text()) as Record<string, unknown>;
 }
 
 afterEach(() => vi.unstubAllGlobals());
