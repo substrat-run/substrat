@@ -776,6 +776,21 @@ describe('#1742 — a staff OFF racing the stale-carry revert still ends OFF', (
     expect(JSON.stringify(await rows())).not.toContain('staleCarry');
   });
 
+  it('an OFF whose record lands during the revert is switched off by the pass after it: the OFF pass re-reads the record', async () => {
+    const { deployment, staffOff, reassert, rows } = await setup();
+    // The OFF's move lands before the revert's ON (so the ON overrides it) and its record
+    // lands before the OFF pass reads the record again.
+    deployment.duringOn = async () => {
+      deployment.offMovedEarlier = true;
+      await staffOff();
+      deployment.offMovedEarlier = false;
+    };
+    await reassert();
+    expect(deployment.calls).toEqual(['on', 'off', 'off']);
+    expect(deployment.position).toBe('off');
+    expect((await rows()).at(-1)).toMatchObject({ schedules: 'off', changed: true });
+  });
+
   it('twin: with no OFF racing, the revert stands and the module ends ON', async () => {
     const { deployment, reassert, rows } = await setup();
     await reassert();
