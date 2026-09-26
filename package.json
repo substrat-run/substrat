@@ -31,7 +31,7 @@
     "lint:playbook": "tsx tools/playbook-sync.mts",
     "substrat": "node packages/cli/dist/cli.js",
     "typecheck": "pnpm -r --filter='!./.builder/projects/**' typecheck",
-    "test": "pnpm run build && NODE_OPTIONS=\"--require=$PWD/tools/vitest/like-pattern-limit.cjs\" pnpm -r --filter='!./.builder/projects/**' test",
+    "test": "pnpm run build && NODE_OPTIONS=\"--require=$PWD/tools/vitest/like-pattern-limit.cjs --require=$PWD/tools/vitest/sql-limits.cjs\" pnpm -r --filter='!./.builder/projects/**' test",
     "docs:dev": "pnpm --filter @substrat-run/docs dev",
     "docs:build": "pnpm --filter @substrat-run/docs build",
     "docs:preview": "pnpm --filter @substrat-run/docs preview",
