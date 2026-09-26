@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { warmControlPlane, warmDurableObject } from './do-warmup.js';
+import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
 import { armRewind, holdsStub as holdsOf, landRewind } from './pitr-emulation.js';
 import {
   connectionId,
@@ -58,6 +58,8 @@ import {
 // Absorb the inter-file DO reload before any suite's first directory call
 // (see do-warmup.ts) — file-level, so it runs before every suite below.
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
+// …and the #1819 hold object every schedule pass over SCOPE reads.
+beforeAll(() => warmSwitchHolds(env.SCOPE));
 
 // The scope-host suite runs against an allow-all checker (it exercises no
 // ctx.check). Runtime module registration is unsupported on CF — the ScopeDO
@@ -2126,8 +2128,6 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   const holdsStub = () => holdsOf(env.SCOPE);
   const heldOn = async (s: ScopeId) =>
     (await holdsStub().switchHoldsAll()).filter((h) => h.scopeId === s).map((h) => h.moduleId);
-  // The hold singleton is this suite's first call on an object the directory warm-up does not touch.
-  beforeAll(() => warmDurableObject(() => holdsStub().switchHoldsAll()));
 
   /** Switch off (or not), then rewind to a bookmark taken before that (the whole issue). */
   const rewoundPastTheSwitch = async (switchOff = true): Promise<ScopeId> => {

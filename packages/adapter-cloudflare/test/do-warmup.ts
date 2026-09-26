@@ -1,3 +1,5 @@
+import { SWITCH_HOLDS_NAME } from '../src/host.js';
+
 /**
  * vitest-pool-workers re-patches the worker's module graph between test FILES
  * (even with `singleWorker: true`), which invalidates live Durable Objects: the
@@ -36,4 +38,16 @@ export async function warmDurableObject(touch: () => Promise<unknown>): Promise<
       if (!transient || attempt >= 2) throw err;
     }
   }
+}
+
+/**
+ * #1819: every schedule pass that finds a module on reads the deployment's hold object, which is
+ * a singleton in the scope namespace and so lives across test files. A file whose passes assert
+ * `errors: []` absorbs the reload on it up front; the pass would otherwise report the reload as
+ * an unreadable hold (and fail open, correctly).
+ */
+export function warmSwitchHolds(ns: DurableObjectNamespace): Promise<void> {
+  return warmDurableObject(() =>
+    (ns.get(ns.idFromName(SWITCH_HOLDS_NAME)) as unknown as { switchHoldsAll(): Promise<unknown> }).switchHoldsAll(),
+  );
 }
