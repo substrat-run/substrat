@@ -1820,6 +1820,70 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
 });
 
 /**
+ * #1742 on the CP-full host, for a scope whose store is this host's own (bound to no
+ * vertical). The provision's seat and the restore's replay now switch the recorded-off
+ * modules off in their own DO unit; the re-assert after them finds nothing to move. What
+ * tells the two apart from outside is the audit row: only an in-unit move is marked
+ * `inUnit`, so a seat or replay that stopped switching (leaving the window to the re-assert
+ * after it) turns these red even though the end state is the same.
+ */
+describe('#1742 — the CP-full seat and restore switch off in their own unit', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  host.registerModule(scheduleMod);
+  const t = tenantId.parse(ulid());
+  beforeAll(async () => {
+    await host.admin.createTenant(staff, { id: t, slug: `unit-${t.slice(-10).toLowerCase()}`, name: 'Unit' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+  });
+  afterAll(async () => host.close());
+
+  const newScope = async () => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s });
+    await host.admin.activateScope(staff, t, s);
+    return s;
+  };
+  const off = (s: ScopeId) =>
+    host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+  const reasserts = async (s: ScopeId) =>
+    (await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: ['reassertSystemSwitch'] })).map((e) => e.after);
+  const inUnit = expect.objectContaining({ moduleId: SCHED, changed: true, inUnit: true, permissions: ['sched:tick'] });
+
+  it("a wiped scope's re-provision switches the module off in the seat's unit", async () => {
+    const s = await newScope();
+    await off(s);
+    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s });
+    expect(await reasserts(s)).toEqual([inUnit]);
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it("a restore from before the switch switches the module off in the replay's event", async () => {
+    const s = await newScope();
+    const before = await host.admin.exportScope(staff, t, s);
+    await off(s);
+    await host.restoreScope(staff, t, s, before);
+    expect(await reasserts(s)).toEqual([inUnit]);
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('twin: a scope never switched off provisions and restores with no re-assert at all, and fires', async () => {
+    const s = await newScope();
+    const before = await host.admin.exportScope(staff, t, s);
+    await host.restoreScope(staff, t, s, before);
+    await host.provisionScope(staff, { tenantId: t, scopeId: s });
+    expect(await reasserts(s)).toEqual([]);
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+});
+
+/**
  * #355 regression: `provisionScopeLocal` must apply the bundled modules' migrations
  * AS PART OF provisioning — not lazily on the first `getScope`. The field symptom was
  * a hosted vertical whose scope had roles projected but `_substrat_migrations = 0` and
