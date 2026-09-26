@@ -528,6 +528,8 @@ export function assertReplayableDump(
   const { maxColumns } = opts;
   if (maxColumns !== undefined) {
     for (const t of tables) {
+      // `columns` is `SELECT *`, which lists a generated column; the only columns it leaves out
+      // are a virtual table's hidden ones, and a virtual table is refused above (#1811 review).
       const width = t.columns?.length ?? 0;
       if (width > maxColumns) {
         throw new Error(

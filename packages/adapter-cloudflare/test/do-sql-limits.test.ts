@@ -594,6 +594,36 @@ describe('a dump with a table over the column cap (#1811)', () => {
     });
   });
 
+  // #1811 review: does `SELECT *` under-count a table a dump carries? Measured on workerd: a
+  // generated column IS in `SELECT *` (`columns` = `table_xinfo`, 4 = 4, where `table_info` says 2),
+  // and only a virtual table's hidden columns are not, which is an fts5 table's two. A virtual
+  // table never reaches the width check: a dump's schema has to be one `CREATE TABLE`, so it is
+  // refused up front, by name, before any of it is replayed. So `columns` is the whole width of
+  // every table a dump can carry, and no separate width is needed.
+  it("a generated column is in `SELECT *`, so the dump's columns list counts it", async () => {
+    const generated = (n: number) => Array.from({ length: n }, (_, k) => `g${k} GENERATED ALWAYS AS (c0) VIRTUAL`);
+    await scopeImport(async (_i, sql) => {
+      // 95 plain + 5 generated is 100 wide, and `SELECT *` lists all 100 (`table_info` would say 95).
+      sql.exec(`CREATE TABLE wide_g (${[...names(columns - 5), ...generated(5)].join(', ')})`);
+      expect(sql.exec('SELECT * FROM wide_g').columnNames).toHaveLength(columns);
+      sql.exec('DROP TABLE wide_g');
+    });
+    await scopeImport(async (i) => {
+      const ddl = `CREATE TABLE wide_g (${[...names(columns - 5), ...generated(6)].join(', ')})`;
+      const listed = [...names(columns - 5), ...Array.from({ length: 6 }, (_, k) => `g${k}`)];
+      await expect(i.importDump([{ name: 'wide_g', ddl, columns: listed, rows: [] }])).rejects.toThrow(/has 101 columns/);
+    });
+  });
+
+  it('an fts5 table in a dump is refused up front, by name, before anything is replayed', async () => {
+    await scopeImport(async (i, sql) => {
+      await i.importDump([table('wide_ok', columns, [row])]);
+      const fts = { name: 'wide_f', ddl: `CREATE VIRTUAL TABLE wide_f USING fts5(${names(columns - 1).join(', ')})`, columns: names(columns - 1), rows: [] };
+      await expect(i.importDump([fts])).rejects.toThrow(/schema given for table "wide_f" does not begin with `CREATE TABLE wide_f \(`/);
+      expect(rowsOf(sql, 'wide_ok')).toBe(1);
+    });
+  });
+
   it('a directory restore holds to the same cap', async () => {
     const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('do-dump-columns-1811-cp'));
     const [ok, past] = await runInDurableObject(stub, async (i) => {
