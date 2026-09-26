@@ -220,7 +220,7 @@ export { assertReadOnlyQuery } from './read-only-sql.js';
 export { assertNoSpineWrite, guardSpine } from './spine-guard.js';
 export {
   DO_SQL_LIMITS,
-  TOO_MANY_RESULT_COLUMNS,
+  tooManyResultColumns,
   tooManyTableColumns,
   assertWithinSqlLimits,
   guardSqlLimits,

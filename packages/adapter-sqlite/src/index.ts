@@ -219,7 +219,7 @@ import {
   guardSpine,
   guardSqlLimits,
   DO_SQL_LIMITS,
-  TOO_MANY_RESULT_COLUMNS,
+  tooManyResultColumns,
   tooManyTableColumns,
   parseValidationRecords,
   resolveScopeRecord,
@@ -10979,11 +10979,11 @@ interface VerticalPeerAuthority {
 function assertTablesWithinColumnLimit(db: Database.Database): void {
   const wide = db
     .prepare(
-      `SELECT m.name AS name FROM sqlite_master m, pragma_table_xinfo(m.name) c
+      `SELECT m.name AS name, COUNT(*) AS width FROM sqlite_master m, pragma_table_xinfo(m.name) c
         WHERE m.type = 'table' GROUP BY m.name HAVING COUNT(*) > ? ORDER BY m.name LIMIT 1`,
     )
-    .get(DO_SQL_LIMITS.columns) as { name: string } | undefined;
-  if (wide) throw new Error(tooManyTableColumns(wide.name));
+    .get(DO_SQL_LIMITS.columns) as { name: string; width: number } | undefined;
+  if (wide) throw new Error(tooManyTableColumns(wide.name, wide.width));
 }
 
 function scopedSql(db: Database.Database, judgeWidth = false): ScopedSql {
@@ -10993,8 +10993,9 @@ function scopedSql(db: Database.Database, judgeWidth = false): ScopedSql {
   // other limits.
   const prepare = (sql: string) => {
     const stmt = db.prepare(sql);
-    if (judgeWidth && stmt.reader && stmt.columns().length > DO_SQL_LIMITS.columns) {
-      throw new Error(TOO_MANY_RESULT_COLUMNS);
+    if (judgeWidth && stmt.reader) {
+      const width = stmt.columns().length;
+      if (width > DO_SQL_LIMITS.columns) throw new Error(tooManyResultColumns(width));
     }
     return stmt;
   };

@@ -35,6 +35,8 @@ interface Case {
   readonly params?: number[];
   /** The exact refusal, or undefined when the statement must run. */
   readonly refusal?: string;
+  /** The refusal may carry more after it (the node adapter names the width). */
+  readonly refusalTail?: boolean;
 }
 
 const cases: Case[] = [
@@ -44,6 +46,8 @@ const cases: Case[] = [
     name: `${columns + 1} result columns`,
     sql: selectColumns(columns + 1),
     refusal: 'too many columns in result set: SQLITE_ERROR',
+    // The node adapter appends the width and the limit; the DO's message ends at SQLITE_ERROR.
+    refusalTail: true,
   },
   // -- compound SELECT terms -------------------------------------------------
   { name: `${compoundTerms} UNION ALL terms`, sql: compound(compoundTerms) },
@@ -165,7 +169,7 @@ export function sqlLimitsContractSuite(
             await expect(run).resolves.not.toBeUndefined();
           } else {
             // The hosted message is the whole contract: match it exactly, not by prefix.
-            await expect(run).rejects.toThrow(new RegExp(`^${c.refusal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+            await expect(run).rejects.toThrow(new RegExp(`^${c.refusal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${c.refusalTail ? '( \\(.*\\))?' : ''}$`));
           }
         });
       }

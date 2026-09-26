@@ -233,11 +233,17 @@ export function assertWithinSqlLimits(sql: string): void {
   }
 }
 
-/** The DO's refusal of a result set wider than `DO_SQL_LIMITS.columns`. */
-export const TOO_MANY_RESULT_COLUMNS = 'too many columns in result set: SQLITE_ERROR';
+/**
+ * The refusal of a result set wider than `DO_SQL_LIMITS.columns`: the DO's own words, then what
+ * the DO does not say. (A DO names a table it refuses `sqlite_altertab_<t>` for an `ADD COLUMN`,
+ * so the two adapters do not share the table message exactly; a suite matches its prefix.)
+ */
+export const tooManyResultColumns = (width: number): string =>
+  `too many columns in result set: SQLITE_ERROR (${width} columns; limit ${DO_SQL_LIMITS.columns})`;
 
-/** The DO's refusal of a table wider than `DO_SQL_LIMITS.columns`. */
-export const tooManyTableColumns = (table: string): string => `too many columns on ${table}: SQLITE_ERROR`;
+/** The refusal of a table wider than `DO_SQL_LIMITS.columns`, counted as the DO counts. */
+export const tooManyTableColumns = (table: string, width: number): string =>
+  `too many columns on ${table}: SQLITE_ERROR (${width} columns; limit ${DO_SQL_LIMITS.columns})`;
 
 /**
  * Wrap a module-facing `ScopedSql` so every statement passes `assertWithinSqlLimits` first.

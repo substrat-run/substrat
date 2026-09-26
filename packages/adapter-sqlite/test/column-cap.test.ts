@@ -73,7 +73,7 @@ describe('the column cap of a Durable Object, on node (#1811)', () => {
 
     it(`refuses a table of ${columns + 1} columns, as the DO would, and the scope fails closed`, async () => {
       await expect(provision([{ version: '0001', sql: `CREATE TABLE wide_t (${cols(0, columns + 1)})` }])).rejects.toThrow(
-        /migration failed for @test\/wide@0001 — scope fails closed: too many columns on wide_t: SQLITE_ERROR/,
+        /migration failed for @test\/wide@0001 — scope fails closed: too many columns on wide_t: SQLITE_ERROR \(101 columns; limit 100\)/,
       );
     });
 
@@ -189,7 +189,7 @@ describe('the column cap of a Durable Object, on node (#1811)', () => {
     it('refuses a SELECT * over a join of two mid-width tables', async () => {
       const { stub } = await provision(two);
       await expect(stub.invoke('wide/read', { sql: 'SELECT * FROM wide_a, wide_b' })).rejects.toThrow(
-        /^too many columns in result set: SQLITE_ERROR$/,
+        /^too many columns in result set: SQLITE_ERROR \(120 columns; limit 100\)$/,
       );
     });
 
