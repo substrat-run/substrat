@@ -1280,23 +1280,39 @@ export function defineScopeDO(
     }
 
     /**
-     * #1705 PR 2: does this DO hold a scope PROVISIONED here for `tenantId`?
+     * #1705 PR 2 / #1738: does this DO hold a scope PROVISIONED here for `tenantId`?
      *
      * A CP-less deployment has no directory to ask whether it serves a scope. What it does
-     * have is what provisioning wrote: `provisionScopeLocal` projects the vertical's role
-     * definitions under the tenant (`_substrat_roles`), and a restore re-projects them. A scope
-     * this deployment never provisioned has none of that. Its DO is empty, and a cross-vertical
-     * verb answering from it is a wrong answer rather than a failure: a watermark of "never
-     * read", or a delivery journaled into a scope that is not the install. A scope provisioned
-     * for ANOTHER tenant has roles under that tenant's id only, so the same read is K-3's pair
-     * check too.
+     * have is what provisioning wrote. A scope this deployment never provisioned has none of
+     * it: its DO is empty, and a cross-vertical verb answering from it is a wrong answer rather
+     * than a failure: a watermark of "never read", or a delivery journaled into a scope that is
+     * not the install.
+     *
+     * The answer is the `provisioned_for` RECEIPT `applyProjection` writes (#1738): the tenant
+     * this scope was provisioned for, stated rather than inferred. A receipt decides alone, so
+     * a scope holding a receipt for ANOTHER tenant is refused whatever role rows sit in it (K-3's
+     * pair check), and a stray role row can no longer make a scope serve a tenant it was never
+     * provisioned for.
+     *
+     * A scope with NO receipt was provisioned before it existed, or has just been restored (a
+     * dump's receipt is dropped on import: it describes the scope the dump came from). Only
+     * then is the old inference used: `provisionScopeLocal` projected role definitions under
+     * the tenant, so a `_substrat_roles` row for it says the same thing. The next projection
+     * (reconcile, or the restore's repair) writes the receipt, after which the inference is
+     * never consulted again.
      *
      * Read without migrating, so asking about a foreign scope leaves its DO as empty as it found it.
      */
     async servesTenant(tenantId: TenantId): Promise<boolean> {
-      const hasRoles =
-        this.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_substrat_roles'`).toArray().length > 0;
-      if (!hasRoles) return false;
+      const has = (table: string) =>
+        this.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, table).toArray().length > 0;
+      if (has('_substrat_meta')) {
+        const receipt = this.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`).toArray()[0] as
+          | { value: string }
+          | undefined;
+        if (receipt) return receipt.value === tenantId;
+      }
+      if (!has('_substrat_roles')) return false;
       return this.sql.exec('SELECT 1 FROM _substrat_roles WHERE tenant_id = ? LIMIT 1', tenantId).toArray().length > 0;
     }
 
@@ -4324,6 +4340,10 @@ export function defineScopeDO(
         // in this instance fails with `no such column` until a cold start re-runs the
         // constructor's pass.
         this.applySpineColumnAdditions();
+        // #1738: a dump's `provisioned_for` names the scope (and tenant) it was captured from,
+        // not this one. Dropped, so a restore never carries a receipt over; the repair
+        // projection that follows writes this scope's own.
+        this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
         // Re-point the restored grants at THIS scope (after the spine exists, so a dump
         // that carried no tuples table still finds one here).
         if (destScopeId) this.rewriteScopeTuples(destScopeId);
@@ -5316,6 +5336,11 @@ export function defineScopeDO(
       // convergence over many scopes and one dead sibling must not fail the others,
       // and a reaped scope converging to "nothing" IS convergence.
       return this.queue.enqueue(() => {
+        // #1738: the receipt `servesTenant` reads. Written first and unconditionally, so every
+        // path that provisions, reconciles or repairs a restore leaves it, whichever guard below
+        // returns early. Overwrites: the projection is keyed on this tenant already, and a
+        // restore's repair is what replaces a receipt the import dropped.
+        this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('provisioned_for', ?)`, tenantId);
         this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
         for (const r of roles) {
           this.sql.exec(
