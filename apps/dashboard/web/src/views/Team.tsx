@@ -299,7 +299,7 @@ export function Team({
         width={480}
       >
         {shared && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div role="status" aria-live="polite" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {shared.error ? (
               <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>Could not read the invite link: {shared.error}</div>
             ) : shared.link === null ? (

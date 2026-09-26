@@ -138,4 +138,14 @@ describe('Team: Copy link on a pending invite', () => {
     expect(document.querySelector('input[value="https://x.test/invite/rae"]')).toBeNull();
     expect(writeText).toHaveBeenCalledTimes(1);
   });
+
+  it('announces the dialog’s loading, error and ready states through a polite live region', async () => {
+    let resolve!: (l: Link) => void;
+    render({ canManage: true, onCopyLink: () => new Promise<Link>((r) => (resolve = r)) });
+    await act(async () => copyButtons()[0]!.click());
+    const region = () => document.querySelector('[role="status"][aria-live="polite"]');
+    expect(region()?.textContent).toContain('Reading the link');
+    await act(async () => resolve(link('https://x.test/invite/tok')));
+    expect(region()?.textContent).toContain('No email was sent');
+  });
 });
