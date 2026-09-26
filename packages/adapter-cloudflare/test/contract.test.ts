@@ -682,6 +682,110 @@ describe('#1674 — a hosted scope is re-asserted through the delegation, after 
 });
 
 /**
+ * #1742 review round 2 — the stale-carry revert's ordering on the delegated path, where every
+ * read and move is its own call and a staff OFF can land between any two of them. The control
+ * plane's stub is wrapped so a hook runs right after the re-assert's first record read; the
+ * fake deployment can run one inside the revert's own move.
+ */
+describe('#1742 — a staff OFF racing the stale-carry revert still ends OFF', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+
+  const setup = async () => {
+    let afterRecordsRead: (() => Promise<void>) | null = null;
+    const hooked = {
+      idFromName: (name: string) => env.CONTROL_PLANE.idFromName(name),
+      get: (id: DurableObjectId) => {
+        const real = env.CONTROL_PLANE.get(id) as unknown as Record<string, (...a: unknown[]) => unknown>;
+        return new Proxy(real, {
+          get: (target, prop) => {
+            const value = target[prop as string];
+            if (typeof value !== 'function') return value;
+            return async (...a: unknown[]) => {
+              const result = await target[prop as string]!(...a);
+              if (prop === 'systemSwitchRecordsOf' && afterRecordsRead) {
+                const hook = afterRecordsRead;
+                afterRecordsRead = null; // one-shot
+                await hook();
+              }
+              return result;
+            };
+          },
+        });
+      },
+    } as unknown as DurableObjectNamespace;
+    const deployment = {
+      position: 'on' as 'on' | 'off',
+      calls: [] as ('on' | 'off')[],
+      /** Runs inside the next ON move, before it applies. */
+      duringOn: null as (() => Promise<void>) | null,
+      /** An OFF whose move is reported but does not touch the position: it "landed before" the ON. */
+      offMovedEarlier: false,
+    };
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: hooked,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      systemSwitchDelegation: {
+        switch: async (a) => {
+          deployment.calls.push(a.to);
+          if (a.to === 'off' && deployment.offMovedEarlier) return { held: true, changed: true, permissions: [] };
+          if (a.to === 'on' && deployment.duringOn) {
+            const hook = deployment.duringOn;
+            deployment.duringOn = null;
+            await hook();
+          }
+          const changed = deployment.position !== a.to;
+          deployment.position = a.to;
+          return { held: true, changed, permissions: [] };
+        },
+        status: async () => [{ moduleId: SCHED, schedules: deployment.position }],
+      },
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `race-${t.slice(-10).toLowerCase()}`, name: 'Race' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    const node = { tenantId: t, scopeId: s };
+    // Off, then restored by an operator: record `on`. Then the deployment applies a stale list.
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'incident' });
+    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'resolved' });
+    deployment.position = 'off';
+    deployment.calls.length = 0;
+    const staffOff = () => host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'again' }).then(() => undefined);
+    const reassert = () =>
+      host.admin.reassertSystemSwitches(staff, node, {
+        appliedInUnit: [{ moduleId: SCHED, changed: true, permissions: [] }],
+      });
+    const rows = async () =>
+      (await host.admin.auditLog(staff, { scopeId: s, action: ['reassertSystemSwitch'] })).map((e) => e.after as Record<string, unknown>);
+    const arm = (hook: () => Promise<void>) => {
+      afterRecordsRead = hook;
+    };
+    return { host, deployment, staffOff, reassert, rows, arm };
+  };
+
+  it('an OFF completed after the first record read gets no transient ON: the revert re-reads first', async () => {
+    const { deployment, staffOff, reassert, rows, arm } = await setup();
+    arm(staffOff); // record `off` (and the deployment already off) before the revert's move
+    await reassert();
+    expect(deployment.calls).not.toContain('on');
+    expect(deployment.position).toBe('off');
+    expect(JSON.stringify(await rows())).not.toContain('staleCarry');
+  });
+
+  it('twin: with no OFF racing, the revert stands and the module ends ON', async () => {
+    const { deployment, reassert, rows } = await setup();
+    await reassert();
+    expect(deployment.calls).toEqual(['on']);
+    expect(deployment.position).toBe('on');
+    expect((await rows()).map((r) => r.staleCarry ?? null)).toEqual([true]);
+  });
+});
+
+/**
  * #1674 review #5 — a directory record write that fails AFTER the scope moved is retried
  * once, and a failure of both is never swallowed: it lands on the outcome row as
  * `recordError`, and the call does not answer plain success. The control plane's stub is

@@ -4385,6 +4385,10 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       const at = new Date().toISOString();
       for (const moduleId of reverts) {
+        // Re-read immediately before the move: a staff OFF that completed since the read above
+        // (record `off`) must not get a transient ON a due schedule could run in.
+        const current = new Map(await this.cp.systemSwitchRecordsOf(tenantId, scopeId));
+        if (current.get(moduleId) !== 'on') continue;
         const outcome = await move(moduleId as ModuleId, 'on', at);
         if (outcome.changed) {
           await this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId, vertical }, null, {
