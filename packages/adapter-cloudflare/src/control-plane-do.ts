@@ -17,6 +17,7 @@ import {
   recordSystemSwitchedOff,
   recordSystemSwitchedOn,
   restoreSystemSwitchRecord,
+  scopesSwitchedOffFor,
   switchedOffModulesOf,
   systemSwitchRecordsOf,
   systemSwitchesTableExists,
@@ -2294,6 +2295,24 @@ export class ControlPlaneDO extends DurableObject {
       object,
       expiresAt,
     );
+  }
+
+  /**
+   * #1743: a tenant-level `system:<module>` grant, refused while the record holds the module
+   * off on any scope (`scopesSwitchedOffFor`). Synchronous, so the read and the write are one
+   * DO unit. Answers the switched-off scopes; non-empty means nothing was written.
+   */
+  writeTenantSystemGrant(
+    tenantId: string,
+    moduleId: string,
+    relation: string,
+    expiresAt: string | null,
+  ): string[] {
+    const off = scopesSwitchedOffFor(this.kernelSql, tenantId, moduleId);
+    if (off.length === 0) {
+      this.writeTenantTuple(tenantId, `system:${moduleId}`, relation, `tenant:${tenantId}`, expiresAt);
+    }
+    return off;
   }
 
   // -- the hostname map (K-26) ------------------------------------------------

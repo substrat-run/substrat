@@ -2813,6 +2813,105 @@ describe('#1659 — a re-provision keeps a revoked schedule grant (CP-full)', ()
   });
 });
 
+/**
+ * #1743, the interleaving the shared suite cannot drive: a scope switched OFF between the
+ * tenant-level grant's CHECK and its WRITE. The shared suite awaits each call in turn, so
+ * a host that read the record in one control-plane call and wrote the tenant tuple in a
+ * second would pass it. Here the OFF is driven from inside that gap: the control-plane stub
+ * runs it immediately before forwarding the grant's WRITE call — whichever method that is.
+ *
+ * Today the check and the write are ONE call (`ControlPlaneDO.writeTenantSystemGrant`, a
+ * synchronous method, so nothing can run inside it), and the injected OFF necessarily lands
+ * before that unit: the grant must be refused. A host split into read-then-write would have
+ * already read "nothing off" when the OFF lands, and would write — this goes red.
+ */
+describe('#1743 — an OFF landing between a tenant grant’s check and its write never lets it through', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+  const WRITES = new Set(['writeTenantTuple', 'writeTenantSystemGrant']);
+
+  it('the OFF is injected before the write call, and the grant is refused', async () => {
+    let beforeWrite: (() => Promise<unknown>) | null = null;
+    const hooked = {
+      idFromName: (name: string) => env.CONTROL_PLANE.idFromName(name),
+      get: (id: DurableObjectId) => {
+        const real = env.CONTROL_PLANE.get(id) as unknown as Record<string, (...a: unknown[]) => unknown>;
+        return new Proxy(real, {
+          get: (target, prop) => {
+            const value = target[prop as string];
+            if (typeof value !== 'function') return value;
+            return async (...a: unknown[]) => {
+              if (beforeWrite && WRITES.has(String(prop))) {
+                const hook = beforeWrite;
+                beforeWrite = null; // one-shot: the OFF's own calls pass straight through
+                await hook();
+              }
+              return target[prop as string]!(...a);
+            };
+          },
+        });
+      },
+    } as unknown as DurableObjectNamespace;
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: hooked,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const tenantGrant = () =>
+      host.admin.grantToSystem(staff, {
+        moduleId: SCHED,
+        permission: permissionKey.parse('sched:admin'),
+        node: { tenantId: t, scopeId: null },
+        grantedBy: staff,
+      });
+    const node = { tenantId: t, scopeId: s };
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `gap-${t.slice(-10).toLowerCase()}`, name: 'Gap' });
+      await host.admin.grantEntitlement(staff, t, 'sched');
+      await host.provisionScope(staff, node);
+      await host.admin.activateScope(staff, t, s);
+
+      let injected = false;
+      beforeWrite = async () => {
+        injected = true;
+        await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'lands in the gap' });
+      };
+      const refused = await tenantGrant().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(injected).toBe(true); // the OFF really ran before the write call
+      expect(errorCodeOf(refused)).toBe('conflict');
+      expect(String(refused)).toContain(s);
+      // Nothing was granted: no audit row, and restoring the scope lets the SAME grant in.
+      expect(await host.admin.auditLog(staff, { tenantId: t, action: ['grantToSystem'] })).toEqual([]);
+      await host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'resolved' });
+      await tenantGrant();
+      expect(await host.admin.auditLog(staff, { tenantId: t, action: ['grantToSystem'] })).toHaveLength(1);
+    } finally {
+      await host.close();
+    }
+  });
+
+  it('the check-and-write is one SYNCHRONOUS DO method, so nothing can interleave inside it', async () => {
+    // A DO runs one event at a time and yields only at an await, so a synchronous method is
+    // indivisible. Pinned: the method answers a value, not a promise — making it async (the
+    // only way to put a gap inside it) turns this red.
+    const t = tenantId.parse(ulid());
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane'));
+    const answer = await runInDurableObject(stub, (instance: unknown) => {
+      const r = (
+        instance as { writeTenantSystemGrant(t: string, m: string, rel: string, x: string | null): unknown }
+      ).writeTenantSystemGrant(t, '@test/none', 'granted:none:x', null);
+      return { isPromise: r instanceof Promise, value: Array.isArray(r) ? r : null };
+    });
+    expect(answer).toEqual({ isPromise: false, value: [] });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Appended LAST on purpose. `runPlatformSweep` in the schedule suite above is
 // platform-WIDE, so a scope provisioned by any earlier-running file lands in its
