@@ -1815,6 +1815,12 @@ export class CloudflareScopeHost implements ScopeHost {
    * Per instance, so per pass: the host is built per request, and never outlives one.
    */
   private holdSnapshot: { at: number; held: Set<string> } | null = null;
+  /**
+   * #1819: the hold read in flight, and when it went out. The sweepers run up to eight scopes
+   * at once on one host, and each can find the snapshot missing or old at the same moment; they
+   * join this one read rather than each sending their own.
+   */
+  private holdRefresh: { at: number; done: Promise<{ error?: string }> } | null = null;
 
   /**
    * MUST be constructed per request. Never cache an instance across requests.
@@ -7169,27 +7175,53 @@ export class CloudflareScopeHost implements ScopeHost {
    * reconcile still switches that module off. The error is answered, for the pass to report.
    */
   private async switchHeld(scopeId: ScopeId, moduleId: ModuleId): Promise<{ held: boolean; error?: string }> {
-    const key = `${scopeId} ${moduleId}`;
     const at = Date.now();
     let error: string | undefined;
     if (!this.holdSnapshot || at - this.holdSnapshot.at > SWITCH_HOLD_SNAPSHOT_MS) {
-      try {
-        const rows = await this.switchHoldsStub().switchHoldsAll();
-        this.holdSnapshot = { at, held: new Set(rows.map((r) => `${r.scopeId} ${r.moduleId}`)) };
-      } catch (err) {
-        const known = this.holdSnapshot?.held;
-        const why = err instanceof Error ? err.message : String(err);
-        error = known
-          ? `switch hold unreadable (${why}); the ${known.size} hold(s) from this pass's last good read ` +
-            `still applied, any newer ones did not`
-          : `switch hold unreadable (${why}); no earlier read in this pass, so no hold applied`;
-        // Deliberately re-stamped, so a failing hold object is retried once per snapshot age rather
-        // than hammered per scope. For that long, other scopes reuse this possibly pre-hold set
-        // silently, and only this scope reports the error: the declared fail-open, attributed once.
-        this.holdSnapshot = { at, held: known ?? new Set() };
+      const inflight = this.holdRefresh;
+      // Join a read that went out within the snapshot age of this consult: its result is then as
+      // fresh as one this consult would take itself, which is what the settle argument needs.
+      // Only the consult that sent the read reports its failure.
+      if (inflight && at - inflight.at <= SWITCH_HOLD_SNAPSHOT_MS) {
+        await inflight.done;
+      } else {
+        const refresh = { at, done: this.refreshHolds(at) };
+        this.holdRefresh = refresh;
+        try {
+          ({ error } = await refresh.done);
+        } finally {
+          if (this.holdRefresh === refresh) this.holdRefresh = null;
+        }
       }
     }
-    return { held: this.holdSnapshot.held.has(key), ...(error ? { error } : {}) };
+    const held = this.holdSnapshot?.held.has(`${scopeId} ${moduleId}`) ?? false;
+    return { held, ...(error ? { error } : {}) };
+  }
+
+  /** One read of the whole hold into the snapshot, stamped with when it went out. Never throws. */
+  private async refreshHolds(at: number): Promise<{ error?: string }> {
+    try {
+      const rows = await this.switchHoldsStub().switchHoldsAll();
+      // A slow read that lands after a newer one never replaces it.
+      if (!this.holdSnapshot || at >= this.holdSnapshot.at) {
+        this.holdSnapshot = { at, held: new Set(rows.map((r) => `${r.scopeId} ${r.moduleId}`)) };
+      }
+      return {};
+    } catch (err) {
+      const known = this.holdSnapshot?.held;
+      const why = err instanceof Error ? err.message : String(err);
+      // Deliberately re-stamped, so a failing hold object is retried once per snapshot age rather
+      // than hammered per scope. For that long, other scopes reuse this possibly pre-hold set
+      // silently, and only the consult that sent this read reports the error: the declared
+      // fail-open, attributed once.
+      if (!this.holdSnapshot || at >= this.holdSnapshot.at) this.holdSnapshot = { at, held: known ?? new Set() };
+      return {
+        error: known
+          ? `switch hold unreadable (${why}); the ${known.size} hold(s) from this pass's last good read ` +
+            `still applied, any newer ones did not`
+          : `switch hold unreadable (${why}); no earlier read in this pass, so no hold applied`,
+      };
+    }
   }
 
   /**

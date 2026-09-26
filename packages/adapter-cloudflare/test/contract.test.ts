@@ -2482,6 +2482,38 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   });
 
   /**
+   * Copilot review on #1838: the sweepers run up to eight scopes at once on one host. Each
+   * consult that finds the snapshot missing used to send its own read; they now join one.
+   */
+  it('concurrent consults on a cold host send exactly one hold read, and report a failure once', async () => {
+    const scopes = await Promise.all(Array.from({ length: 8 }, () => newScope()));
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    const reports = await Promise.all(scopes.map((s) => pass(s, h)));
+    expect(reports.every((r) => r.fired === 2)).toBe(true);
+    expect(counting.holdReads).toBe(1);
+
+    const failing = countingScopes(env.SCOPE);
+    failing.failReads = true;
+    const cold = deployment(failing.ns);
+    const failed = await Promise.all(scopes.map((s) => pass(s, cold)));
+    expect(failing.holdReads).toBe(1);
+    expect(failed.flatMap((r) => r.errors).filter((e) => e.operation === 'switch-hold')).toHaveLength(1);
+  });
+
+  it('a consult does not join a read that went out longer ago than the snapshot age', async () => {
+    const [a, b] = await Promise.all([newScope(), newScope()]);
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    counting.slowNextReadMs = SWITCH_HOLD_SNAPSHOT_MS + 1_000;
+    const first = pass(a, h); // its read is still in flight when the next consult comes
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SNAPSHOT_MS + 300));
+    await pass(b, h); // too old to join: it sends its own read
+    await first;
+    expect(counting.holdReads).toBe(2);
+  });
+
+  /**
    * A hold object that cannot be read fails OPEN, except for what the pass already knows is
    * held. Closed would stop every schedule in the deployment over one object; open reopens only
    * this issue's gap, for a rewind during the outage. The error is reported either way.
@@ -2582,6 +2614,8 @@ function countingScopes(ns: DurableObjectNamespace) {
     gateStateRead: null as { scopeId: string; until: Promise<void> } | null,
     /** Run after a scope's switch move completes, before its answer returns to the host. */
     afterMove: null as (() => Promise<void>) | null,
+    /** Delay the NEXT hold read by this long, once: a slow read still in flight. */
+    slowNextReadMs: 0,
   };
   type Rpc = Record<string, (...a: unknown[]) => unknown>;
   const counted = (real: Rpc, id: DurableObjectId) =>
@@ -2615,6 +2649,9 @@ function countingScopes(ns: DurableObjectNamespace) {
               ? async () => {
                   counts.holdReads += 1;
                   if (counts.failReads) throw new Error('holds down');
+                  const slow = counts.slowNextReadMs;
+                  counts.slowNextReadMs = 0;
+                  if (slow > 0) await new Promise((resolve) => setTimeout(resolve, slow));
                   return real.switchHoldsAll!();
                 }
               : (...args: unknown[]) => real[prop]!(...args),
