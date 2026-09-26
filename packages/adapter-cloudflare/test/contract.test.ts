@@ -2132,7 +2132,7 @@ describe('#332 — recovery from a scope bricked to zero tuples (CP-less)', () =
   const owner = principalId.parse(ulid());
   const ADMIN = permissionKey.parse('perm:admin');
 
-  const provision = (scope: typeof s): Promise<void> =>
+  const provision = (scope: typeof s): Promise<unknown> =>
     host.provisionScopeLocal({
       tenantId: t,
       scopeId: scope,
@@ -2237,7 +2237,7 @@ describe('#1659 — a reconcile keeps an operator’s revoke (CP-less)', () => {
     scope: string,
     connectionGrants?: ProjectedConnectionGrant[],
     roles: RoleDefinition[] = [OFFICE_ADMIN],
-  ): Promise<void> =>
+  ): Promise<unknown> =>
     host.provisionScopeLocal({
       tenantId: t,
       scopeId: scopeId.parse(scope),
