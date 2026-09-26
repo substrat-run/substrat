@@ -318,6 +318,7 @@ import {
   type PeerGrantsRow,
   type SystemGrantsEntry,
   systemSwitchedOffMessage,
+  tenantSystemSwitchedOffMessage,
   CrossVerticalRegistry,
   importCursorSourceOf,
   exportBreaksOf,
@@ -543,10 +544,7 @@ interface ControlPlaneStub {
     object: string,
     expiresAt: string | null,
   ): Promise<void>;
-  /**
-   * #1743: a tenant-level `system:` grant, refused while the switch record holds the module
-   * off on any of the tenant's scopes. Answers those scopes; empty means it was written.
-   */
+  /** #1743: a tenant-level `system:` grant — answers the switched-off scopes; empty = written. */
   writeTenantSystemGrant(
     tenantId: string,
     moduleId: string,
@@ -4683,9 +4681,8 @@ export class CloudflareScopeHost implements ScopeHost {
             throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, grant.node.scopeId));
           }
         } else {
-          // #1743: a tenant tuple reaches every scope of the tenant, so it is refused while
-          // the directory records the module off on any of them — checked and written in one
-          // call on the control plane, which holds both the record and the tenant tuple.
+          // #1743: refused while the record holds the module off on any scope — checked and
+          // written in one control-plane call, where the record and the tenant tuple both live.
           const off = await this.cp.writeTenantSystemGrant(
             grant.node.tenantId,
             grant.moduleId,
@@ -4693,7 +4690,7 @@ export class CloudflareScopeHost implements ScopeHost {
             grant.expiresAt ?? null,
           );
           if (off.length > 0) {
-            throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, off));
+            throw substratError('conflict', tenantSystemSwitchedOffMessage(grant.moduleId, off));
           }
         }
         await this.recordAdmin(

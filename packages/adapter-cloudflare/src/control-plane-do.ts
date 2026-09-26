@@ -2298,11 +2298,9 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
-   * #1743: a tenant-level `system:<module>` grant, refused while the switch record holds the
-   * module off on any scope of the tenant. The record and the tenant tuple both live here,
-   * and this method is synchronous, so the read and the write are one DO unit: no switch
-   * call's record write can land between them. Answers the switched-off scopes; the caller
-   * throws on a non-empty answer, and nothing was written.
+   * #1743: a tenant-level `system:<module>` grant, refused while the record holds the module
+   * off on any scope (`scopesSwitchedOffFor`). Synchronous, so the read and the write are one
+   * DO unit. Answers the switched-off scopes; non-empty means nothing was written.
    */
   writeTenantSystemGrant(
     tenantId: string,

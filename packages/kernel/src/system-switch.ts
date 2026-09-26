@@ -152,23 +152,25 @@ export function subjectSwitchedOff(db: SwitchSql, subject: string): boolean {
 /** How many scopes a tenant-level refusal names before it says "and N more". */
 const NAMED_SCOPES = 5;
 
+const switchedOffMessage = (moduleId: string, where: string, reach: string): string =>
+  `module '${moduleId}' is switched off on ${where} (#1666) — restore it first ` +
+  `(restoreToSystem). A grant is not the lever: ${reach}granting while it is off would hand the ` +
+  `module's system authority back to anything but its schedules.`;
+
+/** The refusal `grantToSystem` throws while the switch is off — one wording, both adapters. */
+export function systemSwitchedOffMessage(moduleId: string, scopeId: string): string {
+  return switchedOffMessage(moduleId, `scope ${scopeId}`, '');
+}
+
 /**
- * The refusal `grantToSystem` throws while the switch is off — one wording, both adapters,
- * both levels. A scope-level grant names its own scope. A tenant-level grant (#1743) names
- * the scopes the directory records the module off on, because a tenant tuple reaches every
- * scope of the tenant, those included.
+ * The same refusal for a TENANT-level grant (#1743), naming the scopes the directory records
+ * the module off on: a tenant tuple reaches every scope of the tenant, those included.
  */
-export function systemSwitchedOffMessage(moduleId: string, scopeIds: string | readonly string[]): string {
-  const scopes = typeof scopeIds === 'string' ? [scopeIds] : scopeIds;
-  const named = scopes.slice(0, NAMED_SCOPES).join(', ');
-  const more = scopes.length > NAMED_SCOPES ? ` and ${scopes.length - NAMED_SCOPES} more` : '';
-  const where = scopes.length === 1 ? `scope ${named}` : `scopes ${named}${more}`;
-  const reach = typeof scopeIds === 'string' ? '' : 'a tenant-level grant reaches every scope of the tenant, so ';
-  return (
-    `module '${moduleId}' is switched off on ${where} (#1666) — restore it first ` +
-    `(restoreToSystem). A grant is not the lever: ${reach}granting while it is off would hand the ` +
-    `module's system authority back to anything but its schedules.`
-  );
+export function tenantSystemSwitchedOffMessage(moduleId: string, scopeIds: readonly string[]): string {
+  const named = scopeIds.slice(0, NAMED_SCOPES).join(', ');
+  const more = scopeIds.length > NAMED_SCOPES ? ` and ${scopeIds.length - NAMED_SCOPES} more` : '';
+  const where = scopeIds.length === 1 ? `scope ${named}` : `scopes ${named}${more}`;
+  return switchedOffMessage(moduleId, where, 'a tenant-level grant reaches every scope of the tenant, so ');
 }
 
 /** What one switch call did in the scope's own storage — `SystemSwitchOutcome`'s shape. */

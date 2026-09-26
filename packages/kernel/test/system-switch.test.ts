@@ -5,6 +5,8 @@ import {
   systemGrantsStatus,
   systemScheduleState,
   systemSwitchedOff,
+  systemSwitchedOffMessage,
+  tenantSystemSwitchedOffMessage,
   type SwitchSql,
 } from '../src/index.js';
 
@@ -165,5 +167,23 @@ describe('systemGrantsStatus (#1674)', () => {
       { moduleId: '@m/off', schedules: 'off' },
       { moduleId: '@m/on', schedules: 'on' },
     ]);
+  });
+});
+
+describe('the grant refusal wording (#1743)', () => {
+  it('a scope-level refusal names its scope, and says nothing about the tenant', () => {
+    const m = systemSwitchedOffMessage('@m/x', 's1');
+    expect(m).toMatch(/^module '@m\/x' is switched off on scope s1 \(#1666\) — restore it first/);
+    expect(m).not.toMatch(/tenant-level/);
+  });
+
+  it('a tenant-level refusal uses the same wording, naming every scope up to five and counting the rest', () => {
+    expect(tenantSystemSwitchedOffMessage('@m/x', ['s1'])).toMatch(/switched off on scope s1 \(#1666\)/);
+    const two = tenantSystemSwitchedOffMessage('@m/x', ['s1', 's2']);
+    expect(two).toMatch(/switched off on scopes s1, s2 \(#1666\) — restore it first/);
+    expect(two).toMatch(/a tenant-level grant reaches every scope of the tenant/);
+    const seven = tenantSystemSwitchedOffMessage('@m/x', ['s1', 's2', 's3', 's4', 's5', 's6', 's7']);
+    expect(seven).toMatch(/scopes s1, s2, s3, s4, s5 and 2 more \(#1666\)/);
+    expect(seven).not.toContain('s6');
   });
 });

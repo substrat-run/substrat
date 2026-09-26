@@ -7,7 +7,6 @@ import {
   principalId,
   scopeId,
   tenantId,
-  type ModuleId,
   type PrincipalId,
   type ScopeDump,
   type ScopeId,
@@ -47,10 +46,10 @@ export function systemSwitchContractSuite(
     const staff = platformActorId.parse(ulid());
     const reason = 'incident: runaway tick';
 
-    const newScope = async (): Promise<ScopeId> => {
+    const newScope = async (tn: TenantId = t): Promise<ScopeId> => {
       const s = scopeId.parse(ulid());
-      await provision(s);
-      await host.admin.activateScope(staff, t, s);
+      await provision(s, tn);
+      await host.admin.activateScope(staff, tn, s);
       return s;
     };
     // `provisionScope` IS the reconcile on a CP-full host: it seats each schedule's
@@ -64,11 +63,11 @@ export function systemSwitchContractSuite(
     // `systemGrantsStatus` correctly refuse (#1674 review: a hosted scope with no
     // delegation configured fails loudly rather than silently reading the CF host's own
     // placeholder DO) — the refusal this suite does not intend to exercise.
-    const provision = (s: ScopeId) => host.provisionScope(staff, { tenantId: t, scopeId: s });
-    const off = (s: ScopeId, module = SCHED) =>
-      host.admin.revokeFromSystem(staff, { moduleId: module, node: { tenantId: t, scopeId: s }, reason });
-    const on = (s: ScopeId, module = SCHED) =>
-      host.admin.restoreToSystem(staff, { moduleId: module, node: { tenantId: t, scopeId: s }, reason: 'resolved' });
+    const provision = (s: ScopeId, tn: TenantId = t) => host.provisionScope(staff, { tenantId: tn, scopeId: s });
+    const off = (s: ScopeId, module = SCHED, tn: TenantId = t) =>
+      host.admin.revokeFromSystem(staff, { moduleId: module, node: { tenantId: tn, scopeId: s }, reason });
+    const on = (s: ScopeId, module = SCHED, tn: TenantId = t) =>
+      host.admin.restoreToSystem(staff, { moduleId: module, node: { tenantId: tn, scopeId: s }, reason: 'resolved' });
     const ticks = async (s: ScopeId): Promise<number> =>
       (await (await host.getScope(reader, t, s)).invoke('sched/count')) as number;
     const grant = (s: ScopeId, key: string, module = SCHED) =>
@@ -79,6 +78,13 @@ export function systemSwitchContractSuite(
         grantedBy: staff,
       });
     const status = (s: ScopeId) => host.admin.systemGrantsStatus(staff, { tenantId: t, scopeId: s });
+    /** The error a call rejects with, or null when it resolved. */
+    const refusal = (p: Promise<unknown>) => p.then(() => null, (err: unknown) => err);
+    const setupTenant = async (tn: TenantId, name: string) => {
+      await host.admin.createTenant(staff, { id: tn, slug: `kill-${tn.slice(-10).toLowerCase()}`, name });
+      await host.admin.grantEntitlement(staff, tn, 'sched');
+      await host.admin.grantEntitlement(staff, tn, 'jobs');
+    };
 
     /** What a switch call answers, less its permissions — the operation id is per call. */
     const moved = (schedules: 'on' | 'off', changed: boolean) => ({
@@ -116,9 +122,7 @@ export function systemSwitchContractSuite(
         },
         { maxAttempts: 3, baseDelayMs: 0 },
       );
-      await host.admin.createTenant(staff, { id: t, slug: `kill-${t.slice(-10).toLowerCase()}`, name: 'Kill switch' });
-      await host.admin.grantEntitlement(staff, t, 'sched');
-      await host.admin.grantEntitlement(staff, t, 'jobs');
+      await setupTenant(t, 'Kill switch');
     });
 
     afterAll(async () => {
@@ -154,7 +158,7 @@ export function systemSwitchContractSuite(
       await off(s);
       await off(s, JOBS);
       const refusedGrant = async (key: string, module = SCHED) => {
-        const e = await grant(s, key, module).then(() => null, (err: unknown) => err);
+        const e = await refusal(grant(s, key, module));
         expect(errorCodeOf(e)).toBe('conflict');
         expect(String(e)).toMatch(/switched off .* restore it first/);
       };
@@ -236,7 +240,7 @@ export function systemSwitchContractSuite(
       expect(String(refused)).toMatch(/holds no system grant for module '@test\/not-held'/);
       // Had the refusal written a marker, the scope would now "hold" the module and the
       // restore would answer. It refuses the same way, so nothing was written.
-      expect(errorCodeOf(await on(s, stranger).then(() => null, (e: unknown) => e))).toBe('not_found');
+      expect(errorCodeOf(await refusal(on(s, stranger)))).toBe('not_found');
       // …and the module this scope does run is untouched by the attempt.
       expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: SCHEDULES });
     });
@@ -576,7 +580,7 @@ export function systemSwitchContractSuite(
       await off(s);
       await wipe(s);
       // The wiped scope holds nothing for the module, so the restore is refused…
-      const refused = await on(s).then(() => null, (e: unknown) => e);
+      const refused = await refusal(on(s));
       expect(errorCodeOf(refused)).toBe('not_found');
       // …and the record it wrote ahead of the move is put back: still off, still the incident.
       expect(await records(s)).toEqual([expect.objectContaining({ position: 'off', reason })]);
@@ -618,34 +622,15 @@ export function systemSwitchContractSuite(
     // #1743: a TENANT-level grant reaches every scope of the tenant, so it is refused while
     // the directory records the module off on any of them. Each case gets its own tenant: a
     // tenant tuple would otherwise reach every other case's scopes in `t`.
-    const newTenant = async (): Promise<{
-      tenant: TenantId;
-      scope: () => Promise<ScopeId>;
-      off: (s: ScopeId, module?: ModuleId) => Promise<unknown>;
-      on: (s: ScopeId, module?: ModuleId) => Promise<unknown>;
-      grant: (key: string, module?: ModuleId) => Promise<void>;
-    }> => {
+    const newTenant = async () => {
       const tenant = tenantId.parse(ulid());
-      await host.admin.createTenant(staff, {
-        id: tenant,
-        slug: `kill-${tenant.slice(-10).toLowerCase()}`,
-        name: 'Kill switch, tenant-level',
-      });
-      await host.admin.grantEntitlement(staff, tenant, 'sched');
-      await host.admin.grantEntitlement(staff, tenant, 'jobs');
-      const node = (s: ScopeId) => ({ tenantId: tenant, scopeId: s });
+      await setupTenant(tenant, 'Kill switch, tenant-level');
       return {
         tenant,
-        scope: async () => {
-          const s = scopeId.parse(ulid());
-          await host.provisionScope(staff, node(s));
-          await host.admin.activateScope(staff, tenant, s);
-          return s;
-        },
-        off: (s, module = SCHED) => host.admin.revokeFromSystem(staff, { moduleId: module, node: node(s), reason }),
-        on: (s, module = SCHED) =>
-          host.admin.restoreToSystem(staff, { moduleId: module, node: node(s), reason: 'resolved' }),
-        grant: (key, module = SCHED) =>
+        scope: () => newScope(tenant),
+        off: (s: ScopeId, module = SCHED) => off(s, module, tenant),
+        on: (s: ScopeId, module = SCHED) => on(s, module, tenant),
+        grant: (key: string, module = SCHED) =>
           host.admin.grantToSystem(staff, {
             moduleId: module,
             permission: permissionKey.parse(key),
@@ -654,7 +639,6 @@ export function systemSwitchContractSuite(
           }),
       };
     };
-    const refusal = (p: Promise<unknown>) => p.then(() => null, (err: unknown) => err);
 
     it('a tenant-level grant is refused while ANY scope holds the module off, naming each one (#1743)', async () => {
       const tn = await newTenant();
