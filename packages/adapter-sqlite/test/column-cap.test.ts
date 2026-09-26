@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { moduleManifest, type ScopeDump, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { DO_SQL_LIMITS, ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
@@ -76,10 +77,16 @@ describe('the column cap of a Durable Object, on node (#1811)', () => {
       );
     });
 
-    it('rolls the refused migration back: no table, no journal row', async () => {
-      const sql = `CREATE TABLE wide_t (${cols(0, columns + 1)})`;
-      await expect(provision([{ version: '0001', sql }])).rejects.toThrow();
-      expect((await host.admin.getScopeRecord(staff, t, s))?.schemaVersion).toBe('0');
+    it('rolls the refused migration back: the table is absent and no journal row was written', async () => {
+      await expect(provision([{ version: '0001', sql: `CREATE TABLE wide_t (${cols(0, columns + 1)})` }])).rejects.toThrow();
+      // The scope fails closed, so read its file directly.
+      const db = new Database(join(dir, `${t}__${s}.sqlite`), { readonly: true });
+      try {
+        expect(db.prepare(`SELECT name FROM sqlite_master WHERE name = 'wide_t'`).all()).toEqual([]);
+        expect(db.prepare(`SELECT version FROM _substrat_migrations WHERE module_id = '@test/wide'`).all()).toEqual([]);
+      } finally {
+        db.close();
+      }
     });
 
     it(`ALTER TABLE … ADD COLUMN up to ${columns} columns runs`, async () => {
