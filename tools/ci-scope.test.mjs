@@ -1,7 +1,7 @@
 // node --test tools/ci-scope.test.mjs
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { assertPartition, assignShards, classify, decide, lockfileScope, parseLockfile, PINNED } from './ci-scope.mjs';
+import { assertPartition, assignShards, buildNames, classify, decide, lockfileScope, parseLockfile, PINNED } from './ci-scope.mjs';
 
 // A lockfile in pnpm v9's shape: two workspace packages sharing one third-party
 // dependency, plus the root importer.
@@ -275,4 +275,17 @@ test('assertPartition refuses a missing, duplicated or extra package', () => {
   assert.throws(() => assertPartition(['a', 'b'], [['a'], []]), /missing: \[b\]/);
   assert.throws(() => assertPartition(['a'], [['a'], ['a']]), /in shard 1 and shard 2/);
   assert.throws(() => assertPartition(['a'], [['a', 'z']]), /extra: \[z\]/);
+});
+
+test('a shard builds the apps nested under the packages it tests', () => {
+  const all = [
+    { name: 'auth', dir: 'demos/auth-server' },
+    { name: 'auth-app', dir: 'demos/auth-server/app' },
+    { name: 'auth-server-2', dir: 'demos/auth-server-2' },
+    { name: 'shop', dir: 'demos/shop' },
+    { name: 'shop-admin', dir: 'demos/shop/admin' },
+  ];
+  assert.deepEqual(buildNames(['auth'], all), ['auth', 'auth-app']);
+  assert.deepEqual(buildNames(['auth-app'], all), ['auth-app']);
+  assert.deepEqual(buildNames(['shop', 'auth-server-2'], all), ['auth-server-2', 'shop', 'shop-admin']);
 });

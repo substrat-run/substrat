@@ -322,6 +322,19 @@ export function assertPartition(selection, shards) {
   }
 }
 
+/**
+ * What a shard builds before it tests `names`: each of them, the workspace packages
+ * nested under its directory (a demo's `app/`, `admin/`), and — through pnpm's `name...`
+ * — everything those depend on. The nesting is not a declared edge: a demo's
+ * `pretypecheck` inlines its built `app/dist` into `src/assets.generated.ts`, and its
+ * suites assert against that SPA, so the app must be built even though nothing imports it.
+ */
+export function buildNames(names, all) {
+  const dirs = all.filter((p) => names.includes(p.name)).map((p) => `${p.dir}/`);
+  const nested = all.filter((p) => dirs.some((d) => p.dir.startsWith(d))).map((p) => p.name);
+  return [...new Set([...names, ...nested])].sort();
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
@@ -422,8 +435,8 @@ function main(argv) {
     for (const name of mine) console.log(`  ${name}`);
     outputs.count = String(mine.length);
     outputs.filters = mine.map((name) => `--filter=${name}`).join(' ');
-    // What this shard's tests need built: its packages and their dependencies.
-    outputs.build_filters = mine.map((name) => `--filter=${name}...`).join(' ');
+    // What this shard's tests need built: its packages, their nested apps, and dependencies.
+    outputs.build_filters = buildNames(mine, all).map((name) => `--filter=${name}...`).join(' ');
   }
   if (process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(outputs).map(([k, v]) => `${k}=${v}\n`).join(''));

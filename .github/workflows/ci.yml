@@ -391,6 +391,18 @@ jobs:
             read -ra filters <<< "$BUILD_FILTERS"
             pnpm -r "${filters[@]}" build
           fi
+      # What `typecheck` used to generate on its way past, when it ran in this job just
+      # before the tests: a demo's `pretypecheck` inlines its built app into the gitignored
+      # `src/assets.generated.ts`, and its suites import it — auth-server's assert that no
+      # /internal or /api route falls through to that SPA, which an empty map would pass
+      # without testing. Runs after the build above, so the app it inlines is the real one.
+      - name: generated sources the suites import
+        if: steps.scope.outputs.count != '0'
+        env:
+          SCOPE_FILTERS: ${{ steps.scope.outputs.filters }}
+        run: |
+          read -ra filters <<< "$SCOPE_FILTERS"
+          pnpm -r --if-present "${filters[@]}" run pretypecheck
       # Every node suite runs with a Durable Object's LIKE/GLOB pattern limit (50 bytes)
       # switched on: `better-sqlite3` cannot set `sqlite3_limit`, so the preload overrides
       # `like()` and `glob()` per connection (#1655). Without it a 92-byte GLOB passed
