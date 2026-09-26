@@ -236,6 +236,15 @@ export const systemSwitchOutcome = z.object({
 export type SystemSwitchOutcome = z.infer<typeof systemSwitchOutcome>;
 
 /**
+ * One recorded-off module a deployment switched off INSIDE the unit that re-created the
+ * scope's grants (#1742): the seat of a provision or reconcile, or the replay of a restore.
+ * The wire shape those routes answer with when the platform sent `switchedOff`, so the
+ * platform can audit a move its own re-assert, arriving after it, will find already made.
+ */
+export const switchedOffInUnit = systemSwitchOutcome.extend({ moduleId });
+export type SwitchedOffInUnit = z.infer<typeof switchedOffInUnit>;
+
+/**
  * What `revokeFromSystem` / `restoreToSystem` answer (#1666) — the position the switch is now
  * in. `operationId` names this call's rows on the admin log (its intent, then its outcome),
  * so an operator can tie what the route answered to what the log recorded.

@@ -1223,28 +1223,35 @@ async function reconcileOneScope(
 }
 
 /**
- * The sweep's reconcile once a deployment is reached (#1172): the reconcile call, then the
- * directory's recorded OFF positions put back after its seat (#1674). A re-assert failure
+ * The sweep's reconcile once a deployment is reached (#1172): the reconcile call, carrying
+ * the directory's recorded OFF positions into the seat's own unit (#1742), then the re-assert
+ * after it as the fallback for a deployment built before that (#1674). A re-assert failure
  * fails the scope for this pass, so the sweep writes no receipt for a scope it left on.
  * Exported so the sweep's own path is tested, not only the helper it goes through.
  */
-export function reconcileReachedScope(
+export async function reconcileReachedScope(
   admin: Parameters<typeof reconcileThenReassert>[0],
   node: { tenantId: TenantId; scopeId: ScopeId },
   client: Pick<VerticalClient, 'reconcileInstance'>,
   payload: Awaited<ReturnType<typeof reconcilePayloadFor>>,
 ): Promise<void | 'unsupported'> {
-  return reconcileThenReassert(admin, SWEEP_ACTOR, node, () =>
-    reconcileOrUnsupported(() =>
-      client.reconcileInstance({
+  const outcome = await reconcileThenReassert(admin, SWEEP_ACTOR, node, async (carry) => {
+    let answered: Awaited<ReturnType<VerticalClient['reconcileInstance']>> | undefined;
+    const unsupported = await reconcileOrUnsupported(async () => {
+      answered = await client.reconcileInstance({
         ...node,
         entitlements: payload.entitlements as never,
         identityLinks: payload.identityLinks as never,
         connectionGrants: payload.connectionGrants as never,
         connectionKeys: payload.connectionKeys as never,
-      }),
-    ),
-  );
+        // #1742: the recorded-off modules, switched off in the deployment's own unit.
+        ...carry,
+      });
+    });
+    // The answer rather than `void`: what it reports switching off is what the re-assert audits.
+    return unsupported ?? answered;
+  });
+  return outcome === 'unsupported' ? 'unsupported' : undefined;
 }
 
 /**

@@ -12,7 +12,13 @@
  * genuinely differ — the repair route mints missing stores first, the drain settles an
  * intent, the sweep records a receipt.
  */
-import type { PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type {
+  ModuleId,
+  PlatformActorId,
+  ScopeId,
+  SwitchedOffInUnit,
+  TenantId,
+} from '@substrat-run/contracts';
 import type { HostAdmin } from '@substrat-run/kernel';
 import { connectionGrantsForScope } from './vertical-client.js';
 
@@ -70,25 +76,66 @@ export async function reconcilePayloadFor(
 }
 
 /**
+ * What a reconcile, provision or restore carries of the switch (#1742): the modules the
+ * directory records OFF on this one scope. Spread into the call's body, so the deployment
+ * switches them off again inside the unit that re-creates the scope's grants. Empty when
+ * nothing is recorded off, so a body for a scope never switched off is unchanged.
+ */
+export interface SwitchCarry {
+  switchedOff?: ModuleId[];
+}
+
+/**
+ * Read the record for one scope, for `SwitchCarry`. The fleet read, narrowed to this scope
+ * and `off`; access-logged like the gather's other reads.
+ */
+export async function switchCarryFor(
+  admin: Pick<HostAdmin, 'listSystemSwitches'>,
+  actor: PlatformActorId,
+  node: { tenantId: TenantId; scopeId: ScopeId },
+): Promise<SwitchCarry> {
+  const rows = await admin.listSystemSwitches(actor, {
+    position: 'off',
+    tenantId: node.tenantId,
+    scopeId: node.scopeId,
+  });
+  return rows.length ? { switchedOff: rows.map((r) => r.moduleId) } : {};
+}
+
+/**
+ * What a deployment reported switching off in the unit, off a reconcile, provision or
+ * restore answer, for the re-assert to audit. Any other result (a bare ack, `'unsupported'`,
+ * `void`) reports nothing.
+ */
+export function appliedInUnitOf(result: unknown): SwitchedOffInUnit[] | undefined {
+  const reported = (result as { switchedOff?: unknown } | null | undefined)?.switchedOff;
+  return Array.isArray(reported) ? (reported as SwitchedOffInUnit[]) : undefined;
+}
+
+/**
  * Run a hosted reconcile or provision, then put the directory's recorded OFF positions back
- * (#1674).
+ * (#1674, #1742).
  *
  * Both run in the vertical's own deployment, and its seat recreates the `system:` grants a
- * wiped scope lost (#1659), so the kill switch has to be re-asserted AFTER it — from here,
- * where the record is. Every caller of `reconcileInstance`, and every `provisionInstance`
- * whose directory row already exists, goes through this, so no path can forget it. A
- * re-assert failure throws, so a caller that records a receipt does not record one for a
- * scope it left switched on.
+ * wiped scope lost (#1659). So the record is read first and CARRIED into the call (#1742):
+ * the deployment switches those modules off inside the seat's own unit, and no sweep of its
+ * own can land between the two. The re-assert after the call stays, as the fallback for a
+ * deployment built before the field, and it is idempotent: it finds the carried modules
+ * already off, and audits the moves the deployment reported instead (`appliedInUnit`).
+ *
+ * Every caller of `reconcileInstance`, and every `provisionInstance` whose directory row
+ * already exists, goes through this, so no path can forget either half. A re-assert failure
+ * throws, so a caller that records a receipt does not record one for a scope it left on.
  *
  * Its own narrow admin slice: unlike the gather above, this one writes.
  */
 export async function reconcileThenReassert<T>(
-  admin: Pick<HostAdmin, 'reassertSystemSwitches'>,
+  admin: Pick<HostAdmin, 'reassertSystemSwitches' | 'listSystemSwitches'>,
   actor: PlatformActorId,
   node: { tenantId: TenantId; scopeId: ScopeId },
-  reconcile: () => Promise<T>,
+  reconcile: (carry: SwitchCarry) => Promise<T>,
 ): Promise<T> {
-  const result = await reconcile();
-  await admin.reassertSystemSwitches(actor, node);
+  const result = await reconcile(await switchCarryFor(admin, actor, node));
+  await admin.reassertSystemSwitches(actor, node, { appliedInUnit: appliedInUnitOf(result) });
   return result;
 }

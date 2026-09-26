@@ -266,6 +266,34 @@ export interface SystemSwitchReassert {
 }
 
 /**
+ * What the deployment reports it switched off inside the reconcile's own unit (#1742), passed
+ * to `HostAdmin.reassertSystemSwitches` so the move is audited here. The re-assert that
+ * follows finds those modules already off (`changed: false`), and without this the admin log
+ * would stop showing that a wiped scope was put back off.
+ */
+export interface SystemSwitchReassertOptions {
+  appliedInUnit?: readonly { moduleId: string; changed: boolean; permissions: readonly string[] }[];
+}
+
+/**
+ * The in-unit moves the re-assert audits: those that changed something, on a module the
+ * directory records `off` for this scope. That filter is the point. The report comes from
+ * the deployment, and an audit row naming a module the record never switched off would be
+ * the deployment writing the platform's log. One row per module, first report wins.
+ */
+export function inUnitMovesToAudit(
+  recordedOff: readonly string[],
+  applied: SystemSwitchReassertOptions['appliedInUnit'],
+): { moduleId: string; permissions: string[] }[] {
+  const off = new Set(recordedOff);
+  const moves = new Map<string, string[]>();
+  for (const a of applied ?? []) {
+    if (a.changed && off.has(a.moduleId) && !moves.has(a.moduleId)) moves.set(a.moduleId, [...a.permissions]);
+  }
+  return [...moves].map(([moduleId, permissions]) => ({ moduleId, permissions }));
+}
+
+/**
  * Overwrite one existing row's position and provenance — ON's write, and its undo. With
  * `ifOperationId`, only while the row is still the one that operation wrote (a CAS).
  */

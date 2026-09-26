@@ -75,6 +75,7 @@ import {
   type SubjectRedactionCounts,
   seatScopeTuple,
   effectiveRoleGrantQuery,
+  switchRecordedOff,
   switchSystemSchedules,
   peerGrantsStatus,
   systemGrantsStatus,
@@ -82,6 +83,7 @@ import {
   systemSwitchedOff,
   type SwitchOutcome,
   type SwitchSql,
+  type SwitchedOff,
   type PeerGrantsRow,
   type SystemGrantsEntry,
   type SystemScheduleState,
@@ -1735,6 +1737,27 @@ export function defineScopeDO(
         const seat = seatScopeTuple(subject, relation, object, expiresAt);
         this.sql.exec(seat.sql, ...seat.params);
       });
+    }
+
+    /**
+     * Provisioning's seat of many tuples as ONE unit, then the directory's recorded-off
+     * modules switched off in it (#1742) — the CP-full mirror of what `applyProjection` does
+     * for a CP-less provision. One tuple per `seatTuple` call left a window between the seat
+     * and the re-assert in which a sweep could run the grants just seated.
+     */
+    async seatTuples(
+      tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
+      switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+    ): Promise<SwitchedOff[]> {
+      return this.queue.enqueue(() =>
+        this.ctx.storage.transactionSync(() => {
+          for (const t of tuples) {
+            const seat = seatScopeTuple(t.subject, t.relation, t.object, t.expires_at);
+            this.sql.exec(seat.sql, ...seat.params);
+          }
+          return switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
+        }),
+      );
     }
 
     /**
@@ -4226,7 +4249,14 @@ export function defineScopeDO(
       });
     }
 
-    async importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void> {
+    async importDump(
+      tables: ScopeDumpTable[],
+      destScopeId?: ScopeId,
+      /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
+       *  the replay re-points the grants, in the same event: a dump from before the switch was
+       *  pulled carries the grants live and no marker. Needs `destScopeId`, the scope restored. */
+      switchOff?: { moduleIds: readonly string[]; at: string },
+    ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
       //
       // Two distinct FK hazards, and both need the deferral — the second is why it cannot
@@ -4312,6 +4342,14 @@ export function defineScopeDO(
       // Re-point the restored grants at THIS scope (after the spine exists, so a dump
       // that carried no tuples table still finds one here).
       if (destScopeId) this.rewriteScopeTuples(destScopeId);
+      // #1742: before anything can run on the grants the dump brought back live. No await
+      // between the re-point and this, so no sweep lands in between.
+      const switched =
+        destScopeId && switchOff
+          ? this.ctx.storage.transactionSync(() =>
+              switchRecordedOff(this.switchSql(), { scopeId: destScopeId, ...switchOff }),
+            )
+          : [];
       // The frontier arrived with the dump — refresh the in-memory applied set so a
       // later migrate() builds on the imported state, not the provisioning state.
       this.applied.clear();
@@ -4343,6 +4381,7 @@ export function defineScopeDO(
       // is complete applies nothing, so there is nothing to report either way.
       this.migrationPromise = undefined;
       this.lastFailure = null;
+      return switched;
     }
 
     /**
@@ -5265,14 +5304,18 @@ export function defineScopeDO(
        *  untouched; passing a list — even `[]` — full-replaces them, which is how a
        *  revoked connection stops being sealable to. */
       connectionKeys?: { connection_id: string; provider: string; key_id: string; public_key: string }[],
-    ): Promise<void> {
-      if (await this.isReaped()) return;
+      /** The directory's recorded-off modules (#1742), switched off in THIS unit right after the
+       *  seat, so no sweep can run the grants the seat just re-created. `scopeId` is the scope
+       *  this projection provisions (the object of `scopeTuples`), never another. */
+      switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+    ): Promise<SwitchedOff[]> {
+      if (await this.isReaped()) return [];
       // A projection that arrives after this scope was reaped is dropped, not
       // applied: writing it would recreate storage the platform deliberately
       // destroyed. Silent rather than throwing — the fan-out is a best-effort
       // convergence over many scopes and one dead sibling must not fail the others,
       // and a reaped scope converging to "nothing" IS convergence.
-      await this.queue.enqueue(() => {
+      return this.queue.enqueue(() => {
         this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
         for (const r of roles) {
           this.sql.exec(
@@ -5392,6 +5435,11 @@ export function defineScopeDO(
             );
           }
         }
+        // #1742: the directory's recorded-off modules go back off HERE, after the seat and in
+        // its unit. A wiped scope's seat has just re-created their `system:` grants (#1659), and
+        // a re-assert arriving later from the control plane left a window in which this
+        // deployment's own sweeper could fire them. Nothing runs between these two lines.
+        const switched = switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
         // #332: only switch on strict local enforcement when SOMEONE actually holds a role.
         // A projection that leaves role definitions but no effective principal→role grant would
         // make every check fail closed — a scope serving nothing but denials, unfixable from
@@ -5399,10 +5447,11 @@ export function defineScopeDO(
         // grant re-runs this and flips safely. (A CP-less vertical uses the local reader
         // regardless of this flag, so the owner grant is written above in the same unit — this
         // guard is the belt to that suspenders, and it protects the CP-backed flip outright.)
-        if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId)) return;
+        if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId)) return switched;
         this.sql.exec(
           `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('permission_source', 'local')`,
         );
+        return switched;
       });
     }
 

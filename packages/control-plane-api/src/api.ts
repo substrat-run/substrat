@@ -102,6 +102,7 @@ import type {
   ScopeDump,
   ScopeId,
   ServiceDimensions,
+  SwitchedOffInUnit,
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
@@ -124,7 +125,7 @@ import { connectionGrantsForScope, type VerticalClient } from './vertical-client
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
-import { reconcileThenReassert } from './reconcile.js';
+import { reconcileThenReassert, switchCarryFor } from './reconcile.js';
 import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
 import { ControlPlaneError } from './client.js';
 import { provisionSiblingScope } from './platform-drain.js';
@@ -2306,7 +2307,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw new ControlPlaneError(501, 'adopt-serving needs dispatch resolution for both ends');
     }
     const dump = await source.exportScope(scopeId);
-    const restored = await retryTransient(() => dest.restoreScope(tenantId, scopeId, dump));
+    // #1742: the recorded OFF positions ride the restore, applied in the replay's own event.
+    const switches = await switchCarryFor(admin, actor, { tenantId, scopeId });
+    const restored = await retryTransient(() => dest.restoreScope(tenantId, scopeId, dump, switches));
     // Data landed — only now flip routing and move the version pointer.
     await admin
       .setScopeServingRef(actor, tenantId, scopeId, serving.ref, { acknowledge: opts.acknowledge })
@@ -2315,8 +2318,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       .bindScopeVersion(actor, tenantId, scopeId, serving.versionId, { acknowledge: opts.acknowledge })
       .catch(relayHostRefusal);
     // #1674: the scope now routes to a different store, so put the directory's recorded
-    // OFF positions back there — cheap and idempotent when the dump carried them.
-    await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
+    // OFF positions back there — cheap and idempotent when the dump or the restore did.
+    await admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
     return { servingRef: serving.ref, tables: restored.tables };
   };
 
@@ -2471,7 +2474,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw new ControlPlaneError(501, 'rebind-vertical needs dispatch resolution for both ends');
     }
     const dump = await source.exportScope(scopeId);
-    const restored = await retryTransient(() => dest.restoreScope(tenantId, scopeId, dump));
+    const switches = await switchCarryFor(admin, actor, { tenantId, scopeId }); // #1742, as adopt
+    const restored = await retryTransient(() => dest.restoreScope(tenantId, scopeId, dump, switches));
     // Data landed on the target script — only now flip routing and cross the pointer.
     // `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited. No
     // extra snapshot here (adopt-serving's precedent): the source script's copy is the
@@ -2479,7 +2483,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref, move).catch(relayHostRefusal);
     await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId, move).catch(relayHostRefusal);
     // #1674: re-assert the recorded OFF positions in the store the scope now routes to.
-    await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
+    await admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
     return { servingRef: serving.ref, versionId: serving.versionId, tables: restored.tables };
   };
 
@@ -2523,7 +2527,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     scope: Scope,
     versionId: string,
     opts: { dropServingRef?: boolean } = {},
-  ): Promise<{ from: string; to: string; tables: number } | null> => {
+  ): Promise<{ from: string; to: string; tables: number; switchedOff?: SwitchedOffInUnit[] } | null> => {
     const resolveVersion = options.resolveVerticalVersion;
     if (!scope.vertical) return null;
     const actor = c.get('actor');
@@ -2563,8 +2567,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     }
     const dump = await retryTransient(() => source.exportScope(scope.id));
-    const restored = await retryTransient(() => dest.restoreScope(scope.tenantId, scope.id, dump));
-    return { from, to, tables: restored.tables };
+    // #1742: the recorded OFF positions ride the restore, as on adopt and rebind.
+    const switches = await switchCarryFor(admin, actor, { tenantId: scope.tenantId, scopeId: scope.id });
+    const restored = await retryTransient(() => dest.restoreScope(scope.tenantId, scope.id, dump, switches));
+    return {
+      from,
+      to,
+      tables: restored.tables,
+      ...(restored.switchedOff ? { switchedOff: restored.switchedOff } : {}),
+    };
   };
 
   app.get('/tenants/:tenantId/scopes/:scopeId/tables', async (c) => {
@@ -2829,7 +2840,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const ranAs = versionReachedAt(reached.via, scope, serving);
     try {
       // #1674: the recorded OFF positions go back after the reconcile, before the receipt.
-      const result = await reconcileThenReassert(admin, actor, { tenantId, scopeId }, () =>
+      const result = await reconcileThenReassert(admin, actor, { tenantId, scopeId }, (carry) =>
         vertical.reconcileInstance({
           tenantId,
           scopeId,
@@ -2837,6 +2848,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           identityLinks,
           connectionGrants,
           connectionKeys,
+          ...carry,
           // Handed over exactly as at provision: a store minted HERE has never been migrated
           // by the vertical, so the reconcile must carry it into the same ready-gate — a bound
           // but unmigrated database fails as loudly as an absent one.
@@ -4007,10 +4019,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const landing = { ...dump, tables };
       await host.restoreScope(actor, tenantId, scopeId, landing);
       const vertical = await verticalForScope(c, scope);
-      if (vertical) await retryTransient(() => vertical.restoreScope(tenantId, scopeId, tables));
+      // #1742: the recorded OFF positions ride the restore, so the deployment switches them
+      // off in the replay's own event — its own sweeper cannot land in between.
+      const restored = vertical
+        ? await retryTransient(async () =>
+            vertical.restoreScope(tenantId, scopeId, tables, await switchCarryFor(admin, actor, { tenantId, scopeId })),
+          )
+        : undefined;
       // #1674: a backup from before a module was switched off brings it back on; the
-      // directory's record puts it back off now, not at the next reconcile.
-      await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
+      // directory's record puts it back off now, not at the next reconcile. Where the
+      // deployment already did (#1742), this finds it done and audits what it reported.
+      await admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored?.switchedOff });
       return c.json({ restored: scopeId, tables: tables.length });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
@@ -4224,13 +4243,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A refusal throws a ControlPlaneError, which the app's error boundary relays with its
     // status and records as an ops failure. An unknown scope carries nothing, and the bind
     // below refuses it as it always has.
+    let carried: Awaited<ReturnType<typeof carryOntoVersion>> = null;
     const carry = async (): Promise<void> => {
-      if (scope) await carryOntoVersion(c, scope, versionId);
+      if (scope) carried = await carryOntoVersion(c, scope, versionId);
     };
     // #1674: after the bind, the scope may route to a different store (the carry's
-    // destination); put the directory's recorded OFF positions back there.
+    // destination); put the directory's recorded OFF positions back there. #1742: the carry
+    // already did so in the restore's own event; what it reports is audited here.
     const reassert = async (): Promise<void> => {
-      if (scope) await admin.reassertSystemSwitches(actor, { tenantId, scopeId });
+      if (scope) {
+        await admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: carried?.switchedOff });
+      }
     };
     // The host's own refusal, should the impact have changed since it was read above (a
     // promote landing in between): relayed as the same 409, never as a 500.
@@ -4364,6 +4387,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       tenantId: input.tenantId,
       patchBindings: options.patchScriptBindings,
     });
+    // #1742: the recorded OFF positions ride the provision into the seat's own unit. Read
+    // from the directory whether or not the row exists yet: a brand-new install has no
+    // record, so nothing is carried and the body is unchanged.
+    const switches = await switchCarryFor(admin, c.get('actor'), { tenantId: input.tenantId, scopeId: input.scopeId });
     try {
       // #424 case 2: the binding attach above races Cloudflare script-settings
       // propagation, so the vertical's FIRST answer can be a transient 5xx that a
@@ -4377,6 +4404,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           connectionGrants,
           connectionKeys,
           ...(tenantStores.length ? { tenantStores } : {}),
+          ...switches,
         }),
       );
       // #1172: the hook has just run, so record what it ran against — WHEN the scope is
@@ -4393,7 +4421,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // directory row exists: a brand-new install's is written after this call (see above),
       // has no record to re-assert, and `reassertSystemSwitches` refuses an unknown scope.
       if (provisioned) {
-        await admin.reassertSystemSwitches(c.get('actor'), { tenantId: input.tenantId, scopeId: input.scopeId });
+        await admin.reassertSystemSwitches(
+          c.get('actor'),
+          { tenantId: input.tenantId, scopeId: input.scopeId },
+          { appliedInUnit: instance.switchedOff },
+        );
       }
       if (provisioned?.verticalVersionId) {
         await admin.markScopeProvisioned(
@@ -6580,7 +6612,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (existing.servingRef) await admin.setScopeServingRef(actor, tenantId, existing.id, null);
       await admin.bindScopeVersion(actor, tenantId, existing.id, opts.versionId);
       // #1674: re-assert any recorded OFF in the script the preview now routes to.
-      await admin.reassertSystemSwitches(actor, { tenantId, scopeId: existing.id });
+      await admin.reassertSystemSwitches(
+        actor,
+        { tenantId, scopeId: existing.id },
+        { appliedInUnit: carried?.switchedOff },
+      );
       // Renew (or clear) the preview's GC deadline so a reused preview does not silently die.
       await admin.setScopeExpiresAt(actor, tenantId, existing.id, expiresAt);
       const hostname = await bindPreviewHostname(actor, baseHostname, tenantId, existing.id, opts.tag, surface);
