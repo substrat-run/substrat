@@ -569,9 +569,13 @@ export function EventExplorer({
 
       <div style={{ padding: '10px 16px', fontSize: 12, color: 'var(--text-tertiary)' }}>
         {windowText} · erased = payload removed by an erasure request, counted apart and never grouped
-        {applied.field ? ' · Grouping by a payload field counts only events not classed as personal data.' : ''}
-        {applied.field && withheld === null
-          ? ' This answer does not say whether they were withheld, so this grouping may include them.'
+        {/* The rule is claimed only for an answer that carries its count: one without it came
+            through a control plane that predates the rule, and a refused one says why itself. */}
+        {applied.field && result && withheld !== null && !predatesRule(result)
+          ? ' · Grouping by a payload field counts only events not classed as personal data.'
+          : ''}
+        {applied.field && result && withheld === null
+          ? ' · This answer does not say whether personal-data events were withheld, so this grouping may include them.'
           : ''}
         {result?.truncated ? ' · the tail beyond the largest buckets exists and is not shown' : ''}
       </div>

@@ -146,7 +146,11 @@ describe('Events mode', () => {
     vi.spyOn(api, 'appFacets').mockResolvedValue(older as EventFacetAnswer);
     await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'currency' }} />));
     expect(container.querySelector('[data-event-totals]')!.textContent).toBe('58 events · 3 erased · withheld unknown');
-    expect(container.textContent).toContain('This answer does not say whether they were withheld, so this grouping may include them.');
+    // The rule is not claimed for an answer that cannot show it held: only the doubt is.
+    expect(container.textContent).not.toContain('counts only events not classed as personal data');
+    expect(container.textContent).toContain(
+      'This answer does not say whether personal-data events were withheld, so this grouping may include them.',
+    );
   });
 
   it('a payload grouping refused because the app predates the rule shows no buckets and says why (#1762)', async () => {
@@ -159,6 +163,7 @@ describe('Events mode', () => {
     expect(container.textContent).toContain(
       'This app was pushed with Substrat packages from before personal-data events were withheld, so payload groupings are unavailable. Update its Substrat packages and push it again.',
     );
+    expect(container.textContent).not.toContain('counts only events not classed as personal data');
   });
 
   it('an envelope grouping mentions no withholding at all', async () => {

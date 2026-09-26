@@ -537,11 +537,13 @@ export const delegatedReadParams: {
   listDenials: (f) => f ?? null,
   summarizeDenials: (f) => f ?? null,
   entityHistory: (i) => ({ entityType: i.entityType, entityId: i.entityId }),
-  // The request, plus what the answer withheld — on both branches, so the row stays one row.
+  // What the answer withheld, then the request — on both branches, so the row stays one
+  // row. The withheld fields go FIRST: both adapters cut the stored params at 500 chars,
+  // and `type`/`since`/`until` are unbounded, so a long request would otherwise cut them off.
   facetEvents: (i, a) =>
     a === undefined
       ? i
-      : { ...i, withheldPersonal: a.withheldPersonal, ...(a.withheldReason ? { withheldReason: a.withheldReason } : {}) },
+      : { withheldPersonal: a.withheldPersonal, ...(a.withheldReason ? { withheldReason: a.withheldReason } : {}), ...i },
   eventCause: (i) => ({ eventId: i.eventId }),
   eventEffects: (i) => ({ eventId: i.eventId }),
   invocationEvents: (i) => ({ invocationId: i.invocationId }),

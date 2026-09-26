@@ -1559,6 +1559,17 @@ export function scopeHostContractSuite(
       expect(rows.at(-1)).toMatchObject({ withheldPersonal: 3 });
       expect(rows.at(-1)).not.toHaveProperty('withheldReason');
 
+      // The row's params are cut at 500 chars, and `type` is unbounded: what was withheld
+      // must survive a request long enough to be cut.
+      const long = `test.${'x'.repeat(600)}`;
+      await host.admin.facetEvents(staff, t1, s1, { groupBy: { kind: 'payload', field: 'email' }, type: long });
+      const cut = (await host.admin.accessLog(staff, { method: 'facetEvents' }))
+        .filter((e) => e.scopeId === s1)
+        .map((e) => (typeof e.params === 'string' ? e.params : JSON.stringify(e.params)))
+        .filter((text) => text.includes('x'.repeat(100)));
+      expect(cut).toHaveLength(1);
+      expect(cut[0]!.startsWith('{"withheldPersonal":0,')).toBe(true);
+
       // An envelope grouping is not payload content: every class is counted, and the
       // class itself stays available as a dimension.
       const byClass = await host.admin.facetEvents(staff, t1, s1, {

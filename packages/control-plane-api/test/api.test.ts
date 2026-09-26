@@ -606,6 +606,18 @@ describe('control-plane API', () => {
       withheldReason: 'vertical-predates-rule',
     });
 
+    // The stored params are cut at 500 chars and `type` is unbounded, so the withheld facts
+    // lead the row: a long request still leaves them readable in what was kept.
+    const long = `order.${'x'.repeat(600)}`;
+    expect((await dreq(`/tenants/${t1}/scopes/${sF}/facets?field=currency&type=${long}`)).status).toBe(200);
+    const cut = (await host.admin.accessLog(staff, { method: 'facetEvents' }))
+      .filter((e) => e.scopeId === sF)
+      .map((e) => e.params as string)
+      .filter((text) => text.includes('x'.repeat(100)));
+    expect(cut).toHaveLength(1);
+    expect(cut[0]!.length).toBeLessThanOrEqual(500);
+    expect(cut[0]!.startsWith('{"withheldPersonal":3,"withheldReason":"vertical-predates-rule",')).toBe(true);
+
     // An ENVELOPE grouping from the same old vertical passes through: a kernel-stamped
     // column is not payload content, and that kernel answered it right. Only the count it
     // could not have withheld anything under is filled in, as the schema requires.
