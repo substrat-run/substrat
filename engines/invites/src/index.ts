@@ -72,6 +72,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  type OperationHandlersFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -459,9 +460,23 @@ export function readInvitation(ctx: OperationContext, invitationId: string): Inv
 
 // -- operations: the permission check plus one exported function (D-28) -------
 
-const sendOp: OperationHandler<SendInviteInput, { id: string }> = async (ctx, input) => {
+/**
+ * The declared `orgId` is any non-empty string (`operations.ts`), and nothing on
+ * the way in proves it is an `OrgId`: the host parses the DECLARED schema, and a
+ * brand is not in it. An erasing cast on the handler map hid that until #959
+ * bound the map to the declaration. The brand is asserted here, where it can be
+ * read, and nowhere else. Tightening the declaration to the ULID `orgId` schema
+ * instead would refuse input the surface accepts today — a wire change, which is
+ * a decision of its own rather than a side effect of a type fix.
+ */
+const wireOrgId = (id: string): OrgId => id as OrgId;
+
+const sendOp: OperationHandler<Omit<SendInviteInput, 'orgId'> & { orgId: string }, { id: string }> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(INVITES_PERM.send));
-  return sendInvite(ctx, input);
+  return sendInvite(ctx, { ...input, orgId: wireOrgId(input.orgId) });
 };
 
 const acceptOp: OperationHandler<{ invitationId: string; identifier: string }, Invitation> = async (
@@ -477,14 +492,14 @@ const acceptOp: OperationHandler<{ invitationId: string; identifier: string }, I
 // Paged (#959). `listInvites` above stays unpaged: a vertical composing it inside
 // its own operation is reading one org's invitations to decide something, not
 // rendering a table — the same split `listOrders` kept in #811.
-const listOp: OperationHandler<{ orgId: OrgId } & ListPage, Page<Invitation>> = async (
+const listOp: OperationHandler<{ orgId: string } & ListPage, Page<Invitation>> = async (
   ctx,
   input,
 ) => {
   assertAllowed(await ctx.check(INVITES_PERM.read));
   // Newest first, so the walk descends; the id is a ULID, unique and ordered the
   // same way `created_at` is.
-  return pageOverFold(listInvites(ctx, input.orgId), input, (i) => i.id, 'desc');
+  return pageOverFold(listInvites(ctx, wireOrgId(input.orgId)), input, (i) => i.id, 'desc');
 };
 
 const revokeOp: OperationHandler<{ invitationId: string }, void> = async (ctx, input) => {
@@ -498,9 +513,9 @@ export const invitesModule: ModuleRegistration = {
   // Parse, don't trust: the HOST applies the declared schemas, on every path in.
   operationInputs: operationInputsOf(invitesOperations),
   operations: {
-    'invites/send': sendOp as unknown as OperationHandler<never, unknown>,
-    'invites/accept': acceptOp as unknown as OperationHandler<never, unknown>,
-    'invites/list': listOp as unknown as OperationHandler<never, unknown>,
-    'invites/revoke': revokeOp as unknown as OperationHandler<never, unknown>,
-  },
+    'invites/send': sendOp,
+    'invites/accept': acceptOp,
+    'invites/list': listOp,
+    'invites/revoke': revokeOp,
+  } satisfies OperationHandlersFor<typeof invitesOperations>,
 };

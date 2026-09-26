@@ -143,6 +143,8 @@ import type {
   IssueStatus,
   IssueStatusInput,
   DeclaredMigration,
+  HandlerInput,
+  HandlerOutput,
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
@@ -596,6 +598,35 @@ export type OperationHandler<I = unknown, O = unknown> = (
   ctx: OperationContext,
   input: I,
 ) => O | Promise<O>;
+
+/**
+ * The handler map a declared operation surface requires, one handler per
+ * operation, each typed from its own declaration (#959).
+ *
+ * A module binds its map to the declaration with `satisfies`:
+ *
+ * ```ts
+ * operations: {
+ *   'workorder/get': getOp,
+ *   …
+ * } satisfies OperationHandlersFor<typeof workorderOperations>,
+ * ```
+ *
+ * which makes three disagreements compile errors rather than review catches: a
+ * handler returning something other than the declared output (a paged read
+ * returning the bare array rather than its `Page`, #811), a handler that needs
+ * more of its input than the declaration makes the host parse, and an operation
+ * declared with no handler (or a handler for an operation nobody declared).
+ *
+ * `ModuleRegistration.operations` stays `OperationHandler<never, unknown>`,
+ * because the host does not know a module's declaration. That is why the binding
+ * is a `satisfies` on the map itself. An entry cast `as never` or `as any` is
+ * assignable to anything and passes silently, which is why `lint:module-inputs`
+ * refuses a cast entry on an engine's map rather than trusting this type to.
+ */
+export type OperationHandlersFor<Ops> = {
+  [K in keyof Ops]: OperationHandler<HandlerInput<Ops[K]>, HandlerOutput<Ops[K]>>;
+};
 
 /**
  * The per-invocation transport channel: what the caller requires to be true

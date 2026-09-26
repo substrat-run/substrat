@@ -34,6 +34,7 @@ export type {
   OperationContext,
   PageParams,
   OperationHandler,
+  OperationHandlersFor,
   AppliedMigration,
   OpsFailureFilter,
   OpsFailureInput,

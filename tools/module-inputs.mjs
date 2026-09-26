@@ -35,6 +35,16 @@
  * exist. A registration that genuinely has no surface opts out with a
  * `module-inputs-allow: <reason>` comment, and has to give the reason.
  *
+ * ## The output half (#959), engines only
+ *
+ * Parsing the input is half of "the handler agrees with its declaration". The other half is
+ * a type, `OperationHandlersFor<typeof ops>` from `@substrat-run/kernel`, applied to the map
+ * with `satisfies` — and a `satisfies` is the one kind of check no test can see removed. So an
+ * `engines/` registration is also held to a map bound that way, with no cast on an entry and
+ * bound to the same declaration it parses with (see `unbound`). Engines, because their
+ * surfaces are published and composed by verticals that cannot read the handler; the demos
+ * and the scaffold are the next case along, and are named in #959 rather than silently judged.
+ *
  * Text, not an AST — a loud false positive beats a silent pass.
  */
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
@@ -236,6 +246,108 @@ const derived = (value) => {
 };
 
 /**
+ * The top-level entries of an object body, split on the commas at depth 0 — each entry's key
+ * and value, whatever the key is spelled with. `ownProperties` reads only identifier-shaped
+ * keys, which is right for a registration and wrong for a handler map, whose keys are
+ * `'workorder/report-time'`: a hyphen would make it skip the very entry it has to read.
+ */
+const entriesOf = (body) => {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === '{' || c === '(' || c === '[') depth++;
+    else if (c === '}' || c === ')' || c === ']') depth--;
+    else if (c === ',' && depth === 0) {
+      parts.push(body.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(body.slice(start));
+  return parts
+    .filter((p) => p.trim() !== '')
+    .map((p) => {
+      if (/^\s*\.\.\./.test(p)) return { key: '...', value: p };
+      const m = /^\s*(?:(['"`])[^'"`\n]*\1|[A-Za-z_$][\w$]*)\s*:/.exec(p);
+      return m ? { key: m[0], value: p.slice(m[0].length) } : { key: p.trim(), value: '' };
+    });
+};
+
+/** A value with everything inside its brackets blanked — what is left is what applies to it. */
+const surface = (value) => {
+  let out = '';
+  let depth = 0;
+  for (const c of value) {
+    if (c === '{' || c === '(' || c === '[') depth++;
+    if (depth === 0) out += c;
+    if (c === '}' || c === ')' || c === ']') depth--;
+  }
+  return out;
+};
+
+/**
+ * Is an engine's `operations:` map bound to its declaration (#959)?
+ *
+ * `ModuleRegistration.operations` is `OperationHandler<never, unknown>`, because the host does
+ * not know a module's declaration, so nothing makes a handler agree with what its operation
+ * declares unless the MAP says so: `{ … } satisfies OperationHandlersFor<typeof ops>`. That
+ * clause is invisible to every test — deleting it, or casting one entry `as never`, compiles
+ * and passes exactly like the bound map does — which is why it is held here rather than hoped
+ * for. Three things are refused:
+ *
+ * - a map with no `satisfies OperationHandlersFor<typeof …>` behind it, inline or on the
+ *   `const` the registration names;
+ * - a cast on an entry. `as never` and `as any` are assignable to anything and pass the
+ *   `satisfies` silently; the other casts fail it, and are refused anyway because the only
+ *   reason to write one is to erase the handler's type;
+ * - a binding to a DIFFERENT declaration from the one `operationInputsOf` parses with — the
+ *   handler would be checked against one surface while the host parses another.
+ *
+ * Returns the sentence to report, or null when the map is bound.
+ */
+const unbound = (src, operationsValue, inputsValue) => {
+  const fix =
+    'Bind the map to its declaration: `{ … } satisfies OperationHandlersFor<typeof ops>` ' +
+    '(`OperationHandlersFor` from `@substrat-run/kernel`), with no cast on any entry';
+  let value = operationsValue.trim();
+  const named = /^([A-Za-z_$][\w$]*)$/.exec(value);
+  if (named !== null) {
+    // `operations: OPERATIONS` — the map is the initializer of that const, in this file.
+    const decl = new RegExp(`\\b(?:const|let|var)\\s+${named[1].replace(/\$/g, '\\$')}\\s*=\\s*\\{`).exec(src);
+    if (decl === null) {
+      return `\`operations: ${named[1]}\` names no object literal in this file — this check cannot read the map it has to judge. ${fix}`;
+    }
+    const open = decl.index + decl[0].length - 1;
+    const body = braced(src, open);
+    if (body === null) return `the handler map \`${named[1]}\` never closes — this check cannot read it`;
+    value = src.slice(open, src.indexOf(';', body.end) === -1 ? src.length : src.indexOf(';', body.end));
+  }
+  if (!value.startsWith('{')) return `\`operations:\` is not an object literal, so it cannot be bound. ${fix}`;
+  const map = braced(value, 0);
+  if (map === null) return 'the handler map never closes — this check cannot read it';
+  const clause = /^\s*satisfies\s+OperationHandlersFor\s*<\s*typeof\s+([A-Za-z_$][\w$]*)\s*>/.exec(
+    value.slice(map.end + 1),
+  );
+  if (clause === null) {
+    return `the \`operations:\` map is not bound to its declaration, so a handler returning the wrong shape compiles. ${fix}`;
+  }
+  for (const entry of entriesOf(map.body)) {
+    if (entry.key === '...') {
+      return `the handler map spreads another object — this check cannot see whether what it contributes was cast. ${fix}`;
+    }
+    if (/\bas\b/.test(surface(entry.value))) {
+      return `the handler map entry ${entry.key.replace(/:\s*$/, '')} is cast — \`as never\` and \`as any\` pass the \`satisfies\` silently, and any other cast exists to erase the handler's type. ${fix}`;
+    }
+  }
+  const parsed = /^operationInputsOf\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*$/.exec(inputsValue.trim());
+  if (parsed !== null && parsed[1] !== clause[1]) {
+    return `the handler map is bound to \`${clause[1]}\` while the host parses \`${parsed[1]}\` — the handlers are checked against one surface and invoked with another. Bind both to the same declaration`;
+  }
+  return null;
+};
+
+/**
  * Every offence in one file's source, as a list of sentences.
  *
  * A registration is judged on three things, in the order they go wrong:
@@ -254,7 +366,7 @@ const derived = (value) => {
  * is a registration it passes, and `satisfies` is the idiom a new module is most likely to
  * reach for.
  */
-const judge = (source) => {
+const judge = (source, { bound = false } = {}) => {
   const src = flatten(source);
   const found = [];
   let judged = 0;
@@ -269,8 +381,13 @@ const judge = (source) => {
       );
       return;
     }
-    if (!props.some((p) => p.key === 'operations')) return; // no invocation surface to parse
+    const operations = props.find((p) => p.key === 'operations');
+    if (operations === undefined) return; // no invocation surface to parse
     const inputs = props.find((p) => p.key === 'operationInputs');
+    if (bound) {
+      const why = unbound(src, operations.value, inputs?.value ?? '');
+      if (why !== null) found.push(`${name}: ${why}`);
+    }
     if (inputs === undefined) {
       found.push(
         `${name}: declares \`operations:\` and no \`operationInputs:\` — the Zod inputs in its ` +
@@ -452,6 +569,49 @@ const OPT_OUT = [
   ['// module-inputs-allow:\nconst x = 1;', false],
   ["const note = 'module-inputs-allow: written about, not decided';", false],
 ];
+// The #959 half: an engine's handler map is bound to its declaration. Judged with `bound`, as
+// every `engines/` file is. Each refusal has its accepted twin, so a rule that has stopped
+// telling them apart fails here rather than passing the tree.
+const REG = (ops, inputs = 'operationInputsOf(xOps)') =>
+  `const m: ModuleRegistration = { manifest: x, operationInputs: ${inputs}, operations: ${ops} };`;
+const BOUND = 'satisfies OperationHandlersFor<typeof xOps>';
+const BOUND_CHECK = [
+  // The converted form, inline and on a named const — both accepted.
+  [REG(`{ 'x/get': getOp, 'x/report-time': reportOp } ${BOUND}`), 0],
+  [`const OPS = { 'x/get': getOp } ${BOUND};\n${REG('OPS')}`, 0],
+  // No join at all: the map every engine carried before #959.
+  [REG("{ 'x/get': getOp }"), 1],
+  [`const OPS = { 'x/get': getOp };\n${REG('OPS')}`, 1],
+  // Bound, with one entry cast — each spelling the tree has used, including the two that pass
+  // the `satisfies` silently. The hyphenated key is the one an identifier-only key reader skips.
+  [REG(`{ 'x/get': getOp, 'x/report-time': reportOp as never } ${BOUND}`), 1],
+  [REG(`{ 'x/get': getOp as any } ${BOUND}`), 1],
+  [REG(`{ 'x/get': getOp as OperationHandler<never, unknown> } ${BOUND}`), 1],
+  [REG(`{ 'x/get': getOp as unknown as OperationHandler<never, unknown> } ${BOUND}`), 1],
+  [`const OPS = { 'x/get': getOp, 'x/list': listOp as never } ${BOUND};\n${REG('OPS')}`, 1],
+  // A cast INSIDE a handler's own body is the handler's business, not the map's.
+  [REG(`{ 'x/get': async (ctx, input) => { return input as Thing; } } ${BOUND}`), 0],
+  // Bound to a different declaration from the one the host parses with.
+  [REG(`{ 'x/get': getOp } ${BOUND}`, 'operationInputsOf(yOps)'), 1],
+  // A spread contributes entries this check cannot see.
+  [REG(`{ ...others, 'x/get': getOp } ${BOUND}`), 1],
+  // A map this check cannot find is refused, not passed.
+  [REG('makeHandlers()'), 1],
+  [REG('OPS'), 1],
+  // The generic registration rules still hold on a bound file.
+  [`const m: ModuleRegistration = { manifest: x, operations: { 'x/get': getOp } ${BOUND} };`, 1],
+];
+const boundDrift = BOUND_CHECK.filter(([src, want]) => judge(src, { bound: true }).offences.length !== want);
+// …and the join is demanded of engines alone: an unbound map outside `engines/` is not refused.
+if (judge(REG("{ 'x/get': getOp as never }")).offences.length !== 0) boundDrift.push([REG("{ 'x/get': getOp as never }"), 0]);
+if (boundDrift.length > 0) {
+  console.error('module-inputs: the handler-map rule no longer tells its own cases apart — fix the predicate before trusting a run:');
+  for (const [src, want] of boundDrift) {
+    console.error(`  expected ${want} offence(s): ${src.replace(/\n/g, ' ')}`);
+  }
+  process.exit(2);
+}
+
 const optDrift = OPT_OUT.filter(([src, want]) => ALLOW.test(comments(src)) !== want);
 if (optDrift.length > 0) {
   console.error('module-inputs: the opt-out no longer tells a reasoned comment from the rest:');
@@ -491,7 +651,8 @@ for (const file of sources) {
     skipped++;
     continue;
   }
-  const verdict = judge(source);
+  // An engine's handler map is also bound to its declaration (#959) — see `unbound`.
+  const verdict = judge(source, { bound: file.split(/[\\/]/)[0] === 'engines' });
   if (verdict.judged === 0) {
     // The raw file names the type and the scan then found nothing to judge. Either the mention
     // is only a `type` import or an indexed access — harmless, and the common case — or the
@@ -518,10 +679,11 @@ if (registrations === 0) {
 }
 
 if (offenders.length > 0) {
-  console.error('module-inputs: a declared operation input would reach the handler unparsed (#953).');
-  console.error('  `ModuleRegistration.operationInputs` is optional, so the host parses only what a module hands it:');
-  console.error('    operations: { … },');
-  console.error('    operationInputs: operationInputsOf(ops),   // from `@substrat-run/contracts`');
+  console.error('module-inputs: a registration disagrees with its declared operation surface.');
+  console.error('  The host parses only what a module hands it (#953), and an engine\'s handlers are bound to');
+  console.error('  what they declare only by the map saying so (#959):');
+  console.error('    operationInputs: operationInputsOf(ops),                          // `@substrat-run/contracts`');
+  console.error('    operations: { … } satisfies OperationHandlersFor<typeof ops>,     // `@substrat-run/kernel`, engines');
   for (const o of offenders) console.error(`  ${o}`);
   process.exit(1);
 }

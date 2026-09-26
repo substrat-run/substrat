@@ -96,6 +96,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  type OperationHandlersFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -767,10 +768,10 @@ const exportOp: OperationHandler<{ underlagId: string; currency?: string }, Unde
 };
 
 const OPERATIONS = {
-  'invoicing/list': listOp as never,
-  'invoicing/get': getOp as never,
-  'invoicing/export': exportOp as never,
-};
+  'invoicing/list': listOp,
+  'invoicing/get': getOp,
+  'invoicing/export': exportOp,
+} satisfies OperationHandlersFor<typeof invoicingOperations>;
 
 /**
  * The underlag's state machine, declared (#844).
