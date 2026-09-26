@@ -1235,10 +1235,9 @@ export async function reconcileReachedScope(
   client: Pick<VerticalClient, 'reconcileInstance'>,
   payload: Awaited<ReturnType<typeof reconcilePayloadFor>>,
 ): Promise<void | 'unsupported'> {
-  const outcome = await reconcileThenReassert(admin, SWEEP_ACTOR, node, async (carry) => {
-    let answered: Awaited<ReturnType<VerticalClient['reconcileInstance']>> | undefined;
-    const unsupported = await reconcileOrUnsupported(async () => {
-      answered = await client.reconcileInstance({
+  const outcome = await reconcileThenReassert(admin, SWEEP_ACTOR, node, (carry) =>
+    reconcileOrUnsupported(() =>
+      client.reconcileInstance({
         ...node,
         entitlements: payload.entitlements as never,
         identityLinks: payload.identityLinks as never,
@@ -1246,11 +1245,9 @@ export async function reconcileReachedScope(
         connectionKeys: payload.connectionKeys as never,
         // #1742: the recorded-off modules, switched off in the deployment's own unit.
         ...carry,
-      });
-    });
-    // The answer rather than `void`: what it reports switching off is what the re-assert audits.
-    return unsupported ?? answered;
-  });
+      }),
+    ),
+  );
   return outcome === 'unsupported' ? 'unsupported' : undefined;
 }
 
@@ -1292,9 +1289,10 @@ export function drainKickOf(body: { platformRequests?: unknown; exports?: unknow
  * refusal for every such install, and bury the ones somebody has to act on. Every other
  * refusal still throws, so it is still a failure.
  */
-export async function reconcileOrUnsupported(call: () => Promise<unknown>): Promise<void | 'unsupported'> {
+export async function reconcileOrUnsupported<T>(call: () => Promise<T>): Promise<T | 'unsupported'> {
   try {
-    await call();
+    // The answer passes through: what it reports switching off is what the re-assert audits (#1742).
+    return await call();
   } catch (e) {
     if (e instanceof ControlPlaneError && e.status === 501) return 'unsupported';
     throw e;

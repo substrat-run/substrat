@@ -2566,16 +2566,8 @@ export class SqliteScopeHost implements ScopeHost {
     const recordedOff = switchedOffModulesOf(switchSqlOf(this.directory), tenantId, scopeId);
     // #1742: what a deployment already switched off inside its own unit, audited here — the
     // switch below answers `changed: false` for it and would write no row.
-    for (const move of inUnitMovesToAudit(recordedOff, opts?.appliedInUnit)) {
-      this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, {
-        operationId: ulid(),
-        moduleId: move.moduleId,
-        schedules: 'off',
-        phase: 'applied',
-        changed: true,
-        permissions: move.permissions,
-        inUnit: true,
-      });
+    for (const row of inUnitMovesToAudit(recordedOff, opts?.appliedInUnit)) {
+      this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, { operationId: ulid(), ...row });
     }
     return recordedOff.map((moduleId) => {
       const outcome = rt.db.transaction(() =>

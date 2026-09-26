@@ -251,8 +251,7 @@ const PROVISION_ACK_FIELDS = new Set(['tenantId', 'scopeId', 'owner', 'result', 
  * what the platform's own re-assert will then find already done, so a report that does not
  * parse is dropped rather than failing a provision that succeeded. The re-assert still runs.
  */
-function switchedOffFrom(body: unknown): { switchedOff?: SwitchedOffInUnit[] } {
-  const raw = (body as { switchedOff?: unknown } | null)?.switchedOff;
+function switchedOffFrom(raw: unknown): { switchedOff?: SwitchedOffInUnit[] } {
   if (raw === undefined) return {};
   const parsed = switchedOffInUnit.array().safeParse(raw);
   return parsed.success ? { switchedOff: parsed.data } : {};
@@ -384,7 +383,7 @@ export class VerticalClient {
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     const ack = { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner };
     const result = provisionResultFrom(body);
-    return { ...ack, ...(result ? { result } : {}), ...switchedOffFrom(body) };
+    return { ...ack, ...(result ? { result } : {}), ...switchedOffFrom(body['switchedOff']) };
   }
 
   /**
@@ -409,12 +408,10 @@ export class VerticalClient {
    * idempotent provision. Entitlements are re-gathered and re-delivered exactly as at provision.
    */
   async reconcileInstance(input: ReconcileInstanceInput): Promise<ReconciledInstance> {
-    const { switchedOff: _raw, ...ack } = await this.postInternal<ReconciledInstance>(
-      '/internal/reconcile',
-      input,
-      'reconcile',
-    );
-    return { ...ack, ...switchedOffFrom({ switchedOff: _raw }) };
+    const { switchedOff, ...ack } = await this.postInternal<
+      Omit<ReconciledInstance, 'switchedOff'> & { switchedOff?: unknown }
+    >('/internal/reconcile', input, 'reconcile');
+    return { ...ack, ...switchedOffFrom(switchedOff) };
   }
 
   /**
@@ -973,7 +970,7 @@ export class VerticalClient {
       { tenantId, scopeId, tables, ...(opts?.switchedOff ? { switchedOff: opts.switchedOff } : {}) },
       'restore',
     );
-    return { tables: count, ...switchedOffFrom({ switchedOff }) };
+    return { tables: count, ...switchedOffFrom(switchedOff) };
   }
 
   /** Facets over one scope's outbox (#1239) — through the vertical that holds the data. */

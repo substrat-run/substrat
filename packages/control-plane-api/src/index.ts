@@ -76,8 +76,8 @@ export {
   type ProvisionSiblingInput,
   type ProvisionSiblingResult,
 } from './platform-drain.js';
-export { appliedInUnitOf, reconcilePayloadFor, reconcileThenReassert, switchCarryFor } from './reconcile.js';
-export type { ReconcilePayload, ReconcileGatherAdmin, SwitchCarry } from './reconcile.js';
+export { reconcilePayloadFor, reconcileThenReassert } from './reconcile.js';
+export type { ReconcilePayload, ReconcileGatherAdmin } from './reconcile.js';
 export { attributeFailure, terminalFailureNote } from './failure-attribution.js';
 export type {
   VerticalClientOptions,

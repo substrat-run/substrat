@@ -4379,15 +4379,10 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       // #1742: what the deployment already switched off inside its own unit, audited here —
       // the move below answers `changed: false` for it and would write no row.
-      for (const inUnit of inUnitMovesToAudit(modules, opts?.appliedInUnit)) {
+      for (const row of inUnitMovesToAudit(modules, opts?.appliedInUnit)) {
         await this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId, vertical }, null, {
           operationId: ulid(),
-          moduleId: inUnit.moduleId,
-          schedules: 'off',
-          phase: 'applied',
-          changed: true,
-          permissions: inUnit.permissions,
-          inUnit: true,
+          ...row,
         });
       }
       const at = new Date().toISOString();

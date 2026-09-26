@@ -25,7 +25,7 @@
  * The admin log is still the history. This is only the current position.
  */
 import type { ListPage } from '@substrat-run/contracts';
-import type { SwitchSql, SystemScheduleState } from './system-switch.js';
+import type { SwitchSql, SwitchedOff, SystemScheduleState } from './system-switch.js';
 
 /**
  * The table. Interpolated into both adapters' directory DDL, so `lint:spine-ddl` sees the
@@ -272,25 +272,40 @@ export interface SystemSwitchReassert {
  * would stop showing that a wiped scope was put back off.
  */
 export interface SystemSwitchReassertOptions {
-  appliedInUnit?: readonly { moduleId: string; changed: boolean; permissions: readonly string[] }[];
+  appliedInUnit?: readonly Pick<SwitchedOff, 'moduleId' | 'changed' | 'permissions'>[];
 }
 
 /**
- * The in-unit moves the re-assert audits: those that changed something, on a module the
- * directory records `off` for this scope. That filter is the point. The report comes from
- * the deployment, and an audit row naming a module the record never switched off would be
- * the deployment writing the platform's log. One row per module, first report wins.
+ * The `reassertSystemSwitch` audit rows (less their `operationId`) for the in-unit moves:
+ * those that changed something, on a module the directory records `off` for this scope.
+ * That filter is the point. The report comes from the deployment, and an audit row naming
+ * a module the record never switched off would be the deployment writing the platform's
+ * log. One row per module, first report wins. Built here so both adapters write one shape.
  */
 export function inUnitMovesToAudit(
   recordedOff: readonly string[],
   applied: SystemSwitchReassertOptions['appliedInUnit'],
-): { moduleId: string; permissions: string[] }[] {
+): {
+  moduleId: string;
+  schedules: 'off';
+  phase: 'applied';
+  changed: true;
+  permissions: string[];
+  inUnit: true;
+}[] {
   const off = new Set(recordedOff);
   const moves = new Map<string, string[]>();
   for (const a of applied ?? []) {
     if (a.changed && off.has(a.moduleId) && !moves.has(a.moduleId)) moves.set(a.moduleId, [...a.permissions]);
   }
-  return [...moves].map(([moduleId, permissions]) => ({ moduleId, permissions }));
+  return [...moves].map(([moduleId, permissions]) => ({
+    moduleId,
+    schedules: 'off',
+    phase: 'applied',
+    changed: true,
+    permissions,
+    inUnit: true,
+  }));
 }
 
 /**

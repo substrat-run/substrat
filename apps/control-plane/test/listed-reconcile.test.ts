@@ -233,7 +233,8 @@ describe('reconcileOrUnsupported (#1653)', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
-    await expect(reconcileOrUnsupported(call(clientAnswering(ok)))).resolves.toBeUndefined();
+    // A success passes the deployment's answer through (#1742: its report is what gets audited).
+    await expect(reconcileOrUnsupported(call(clientAnswering(ok)))).resolves.toMatchObject({ tenantId: T, scopeId: S });
     for (const [status, error] of [
       [409, 'no owner of record for scope — cannot reconcile; re-run the full install'],
       [500, 'the vertical broke'],

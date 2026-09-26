@@ -31,6 +31,7 @@ import {
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   PlatformCallError,
   type InvokeOptions,
+  type SwitchedOff,
   type UndrainedEvents,
 } from '@substrat-run/kernel';
 import {
@@ -123,13 +124,6 @@ import {
 } from '@substrat-run/contracts';
 
 /**
- * What a host reports it switched off in the unit (#1742), before the route parses it into
- * the wire's `switchedOffInUnit`. Plain strings, because the host is structural and computes
- * these from its own SQL.
- */
-type InUnitSwitch = { moduleId: string; held: boolean; changed: boolean; permissions: string[] };
-
-/**
  * The slice of the scope host the platform surface delegates to. Structural on purpose:
  * this package names behaviour, never the concrete `CloudflareScopeHost`. Every method
  * here is one the sandbox-clean host already exports (the `…Local` CP-less halves plus
@@ -152,13 +146,13 @@ export interface VerticalScopeHost {
      * field and answers `void`, and the platform's re-assert after the call covers it.
      */
     switchedOff?: ModuleId[];
-  }): Promise<void | { switchedOff?: InUnitSwitch[] }>;
+  }): Promise<void | { switchedOff?: SwitchedOff[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event. */
   restoreScopeLocal(
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
     opts?: { switchedOff?: ModuleId[] },
-  ): Promise<{ tables: number; switchedOff?: InUnitSwitch[] }>;
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
@@ -376,7 +370,7 @@ const reconcileBody = z.object({
 });
 
 /** The in-unit outcomes, parsed on the way OUT — a host answering another shape is refused here. */
-const switchedOffAnswer = (switched: InUnitSwitch[] | undefined) =>
+const switchedOffAnswer = (switched: SwitchedOff[] | undefined) =>
   switched ? { switchedOff: z.array(switchedOffInUnit).parse(switched) } : {};
 
 const restoreBody = z.object({
@@ -620,11 +614,7 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/restore', async (c) => {
     const body = restoreBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
-    const result = await host.restoreScopeLocal(
-      body.scopeId,
-      body.tables,
-      body.switchedOff ? { switchedOff: body.switchedOff } : undefined,
-    );
+    const result = await host.restoreScopeLocal(body.scopeId, body.tables, { switchedOff: body.switchedOff });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
   });
@@ -1150,7 +1140,7 @@ export function mountPlatformSurface<Env extends object>(
       identityLinks: body.identityLinks,
       connectionGrants: body.connectionGrants,
       connectionKeys: body.connectionKeys,
-      ...(body.switchedOff ? { switchedOff: body.switchedOff } : {}),
+      switchedOff: body.switchedOff,
     });
     await deps.onProvision?.(c.env, body);
     return c.json(
@@ -1193,7 +1183,7 @@ export function mountPlatformSurface<Env extends object>(
       connectionGrants: body.connectionGrants,
       connectionKeys: body.connectionKeys,
       // #1742: back off inside the seat's unit — see `provisionScopeLocal`.
-      ...(body.switchedOff ? { switchedOff: body.switchedOff } : {}),
+      switchedOff: body.switchedOff,
     });
     /**
      * The VERTICAL's half of a provision runs here too — and it did not, which made this

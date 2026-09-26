@@ -2264,6 +2264,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * installs short-circuit.
    * Throws `ControlPlaneError` so callers surface an actionable status, never a bare 500.
    */
+  /**
+   * #1742: restore a dump into a deployment carrying the scope's recorded-off modules, so the
+   * deployment switches them off in the replay's own event. The record is read once, outside
+   * the retry. Every caller still re-asserts after it (the fallback), passing what this reports.
+   */
+  const restoreCarryingSwitches = async (
+    actor: PlatformActorId,
+    dest: Pick<VerticalClient, 'restoreScope'>,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    tables: Parameters<VerticalClient['restoreScope']>[2],
+  ): ReturnType<VerticalClient['restoreScope']> => {
+    const switches = await switchCarryFor(admin, actor, { tenantId, scopeId });
+    return retryTransient(() => dest.restoreScope(tenantId, scopeId, tables, switches));
+  };
+
   const adoptScopeOntoServing = async (
     c: { get: (k: 'actor') => PlatformActorId },
     tenantId: TenantId,
@@ -2308,8 +2324,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const dump = await source.exportScope(scopeId);
     // #1742: the recorded OFF positions ride the restore, applied in the replay's own event.
-    const switches = await switchCarryFor(admin, actor, { tenantId, scopeId });
-    const restored = await retryTransient(() => dest.restoreScope(tenantId, scopeId, dump, switches));
+    const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump);
     // Data landed — only now flip routing and move the version pointer.
     await admin
       .setScopeServingRef(actor, tenantId, scopeId, serving.ref, { acknowledge: opts.acknowledge })
@@ -2474,8 +2489,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw new ControlPlaneError(501, 'rebind-vertical needs dispatch resolution for both ends');
     }
     const dump = await source.exportScope(scopeId);
-    const switches = await switchCarryFor(admin, actor, { tenantId, scopeId }); // #1742, as adopt
-    const restored = await retryTransient(() => dest.restoreScope(tenantId, scopeId, dump, switches));
+    const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump); // #1742, as adopt
     // Data landed on the target script — only now flip routing and cross the pointer.
     // `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited. No
     // extra snapshot here (adopt-serving's precedent): the source script's copy is the
@@ -2568,14 +2582,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const dump = await retryTransient(() => source.exportScope(scope.id));
     // #1742: the recorded OFF positions ride the restore, as on adopt and rebind.
-    const switches = await switchCarryFor(admin, actor, { tenantId: scope.tenantId, scopeId: scope.id });
-    const restored = await retryTransient(() => dest.restoreScope(scope.tenantId, scope.id, dump, switches));
-    return {
-      from,
-      to,
-      tables: restored.tables,
-      ...(restored.switchedOff ? { switchedOff: restored.switchedOff } : {}),
-    };
+    const restored = await restoreCarryingSwitches(actor, dest, scope.tenantId, scope.id, dump);
+    return { from, to, tables: restored.tables, switchedOff: restored.switchedOff };
   };
 
   app.get('/tenants/:tenantId/scopes/:scopeId/tables', async (c) => {
@@ -4021,11 +4029,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const vertical = await verticalForScope(c, scope);
       // #1742: the recorded OFF positions ride the restore, so the deployment switches them
       // off in the replay's own event — its own sweeper cannot land in between.
-      const restored = vertical
-        ? await retryTransient(async () =>
-            vertical.restoreScope(tenantId, scopeId, tables, await switchCarryFor(admin, actor, { tenantId, scopeId })),
-          )
-        : undefined;
+      const restored = vertical ? await restoreCarryingSwitches(actor, vertical, tenantId, scopeId, tables) : undefined;
       // #1674: a backup from before a module was switched off brings it back on; the
       // directory's record puts it back off now, not at the next reconcile. Where the
       // deployment already did (#1742), this finds it done and audits what it reported.

@@ -103,16 +103,6 @@ export async function switchCarryFor(
 }
 
 /**
- * What a deployment reported switching off in the unit, off a reconcile, provision or
- * restore answer, for the re-assert to audit. Any other result (a bare ack, `'unsupported'`,
- * `void`) reports nothing.
- */
-export function appliedInUnitOf(result: unknown): SwitchedOffInUnit[] | undefined {
-  const reported = (result as { switchedOff?: unknown } | null | undefined)?.switchedOff;
-  return Array.isArray(reported) ? (reported as SwitchedOffInUnit[]) : undefined;
-}
-
-/**
  * Run a hosted reconcile or provision, then put the directory's recorded OFF positions back
  * (#1674, #1742).
  *
@@ -129,13 +119,15 @@ export function appliedInUnitOf(result: unknown): SwitchedOffInUnit[] | undefine
  *
  * Its own narrow admin slice: unlike the gather above, this one writes.
  */
-export async function reconcileThenReassert<T>(
+export async function reconcileThenReassert<T extends { switchedOff?: SwitchedOffInUnit[] } | 'unsupported'>(
   admin: Pick<HostAdmin, 'reassertSystemSwitches' | 'listSystemSwitches'>,
   actor: PlatformActorId,
   node: { tenantId: TenantId; scopeId: ScopeId },
   reconcile: (carry: SwitchCarry) => Promise<T>,
 ): Promise<T> {
   const result = await reconcile(await switchCarryFor(admin, actor, node));
-  await admin.reassertSystemSwitches(actor, node, { appliedInUnit: appliedInUnitOf(result) });
+  // What the deployment reported switching off in the unit, for the re-assert to audit.
+  const appliedInUnit = result === 'unsupported' ? undefined : result.switchedOff;
+  await admin.reassertSystemSwitches(actor, node, { appliedInUnit });
   return result;
 }
