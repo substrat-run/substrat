@@ -324,6 +324,46 @@ describe('tenant tokens', () => {
       expect(foreign.status).toBe(404);
     });
 
+    it('reads what it runs of a LISTED vertical another tenant published — and nothing narrowed on purpose', async () => {
+      // A listed vertical is installable by every tenant, so a tenant running it must see
+      // its versions and prod channel (the app page's "Running"); owning it decides who may
+      // push or promote, not who may read. Before this, the app page of every tenant but
+      // the publisher's showed "no version".
+      const slug = 'rival/listed';
+      await host.admin.registerVertical(staff, { slug, name: 'Rival Listed', source: 'cli', ownerTenant: tB });
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: slug, version: '2.0.0',
+        manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: 'rival-listed',
+      });
+      await host.admin.admitVersion(staff, id);
+      await host.admin.promoteVersion(staff, slug, 'prod', id);
+      const path = `/verticals/${encodeURIComponent(slug)}`;
+
+      // Unlisted: absent, exactly like any other tenant's vertical.
+      expect((await app.request(`${path}/versions`, { headers: asA })).status).toBe(404);
+      expect((await app.request(`${path}/channels`, { headers: asA })).status).toBe(404);
+
+      await host.admin.setVerticalListed(staff, slug, true);
+      const versions = await app.request(`${path}/versions`, { headers: asA });
+      expect(versions.status).toBe(200);
+      expect((await versions.json()).entries.map((v: { id: string }) => v.id)).toEqual([id]);
+      const channels = await app.request(`${path}/channels`, { headers: asA });
+      expect(channels.status).toBe(200);
+      expect((await channels.json()).entries.find((c: { channel: string }) => c.channel === 'prod')?.versionId).toBe(id);
+      for (const read of ['registry', 'schedules', 'flow', 'model', 'assets']) {
+        expect((await app.request(`${path}/versions/${id}/${read}`, { headers: asA })).status, read).not.toBe(404);
+      }
+
+      // Still owner-only: migration SQL, the prod history, and every write.
+      expect((await app.request(`${path}/versions/${id}/migrations`, { headers: asA })).status).toBe(404);
+      expect((await app.request(`${path}/channels/prod/history`, { headers: asA })).status).toBe(404);
+      expect((await app.request(path, { method: 'DELETE', headers: asA })).status).toBe(404);
+      expect((await app.request(`${path}/channels/prod/promote`, {
+        method: 'POST', headers: asA, body: JSON.stringify({ versionId: id }),
+      })).status).not.toBe(200);
+    });
+
     it('cannot DELETE another tenant’s vertical', async () => {
       const foreign = await app.request(`/verticals/${encodeURIComponent('rival/app')}`, {
         method: 'DELETE', headers: asA,
