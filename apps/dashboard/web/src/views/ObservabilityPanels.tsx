@@ -6,7 +6,7 @@ import { DEV_MOCK } from '../lib/mock';
 import { MOCK_LOG_LINES } from '../lib/mock-pulse';
 import { card, MonoTag } from '../components/ui';
 import { LogList } from '../components/LogList';
-import { EVENT_GROUPS, bucketRows, dimensionLabel, emptyGroupingText, withheldOf, type BucketRow, type EventGroup } from '../lib/log-stream';
+import { EVENT_GROUPS, bucketRows, dimensionLabel, emptyGroupingText, predatesRule, withheldOf, type BucketRow, type EventGroup } from '../lib/log-stream';
 import { mockEventFacets } from '../lib/mock-events';
 
 /**
@@ -500,7 +500,9 @@ export function EventExplorer({
                 and says "unknown" rather than a 0 that would claim nothing was withheld. */}
             {applied.field && withheld !== null && withheld > 0 && (
               <span data-event-withheld style={{ color: 'var(--text-tertiary)' }}>
-                {' '}· {withheld.toLocaleString('en-US')} withheld as personal data
+                {/* Refused for the app's age, the count is every event not erased — not a
+                    count of personal data, so it does not say it is one. */}
+                {' '}· {withheld.toLocaleString('en-US')} withheld{predatesRule(result) ? '' : ' as personal data'}
               </span>
             )}
             {applied.field && withheld === null && (
@@ -569,7 +571,7 @@ export function EventExplorer({
         {windowText} · erased = payload removed by an erasure request, counted apart and never grouped
         {applied.field ? ' · Grouping by a payload field counts only events not classed as personal data.' : ''}
         {applied.field && withheld === null
-          ? ' This app was pushed before that rule, so this grouping may include them; a newer push applies it.'
+          ? ' This answer does not say whether they were withheld, so this grouping may include them.'
           : ''}
         {result?.truncated ? ' · the tail beyond the largest buckets exists and is not shown' : ''}
       </div>

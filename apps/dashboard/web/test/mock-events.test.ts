@@ -46,5 +46,7 @@ describe('mockEventFacets', () => {
     expect(email.total).toBeGreaterThan(0);
     // An envelope grouping withholds nothing.
     expect(mockEventFacets({ groupBy: 'type' }, now).withheldPersonal).toBe(0);
+    // And the PII-class dimension speaks the kernel's classes, not invented ones.
+    expect(mockEventFacets({ groupBy: 'piiClass' }, now).buckets.map((b) => b.value).sort()).toEqual(['direct', 'none', 'pseudonymous']);
   });
 });

@@ -52,6 +52,9 @@ describe('log-stream derivations', () => {
     );
     expect(emptyGroupingText(result({ buckets: [], total: 4, erased: 4, withheldPersonal: 0 }))).toMatch(/erased/);
     expect(emptyGroupingText(result({ buckets: [], total: 0, erased: 0 }))).toBe('No events matched this filter.');
+    expect(
+      emptyGroupingText(result({ buckets: [], total: 9, erased: 0, withheldPersonal: 9, withheldReason: 'vertical-predates-rule' })),
+    ).toMatch(/^This app was pushed before personal-data events were withheld/);
   });
 });
 
@@ -138,12 +141,24 @@ describe('Events mode', () => {
     expect(container.textContent).toContain('Every matching event is classed as personal data, so none is grouped by a payload field.');
   });
 
-  it('an answer from an older app carries no withheld count, and the header says unknown, not 0 (#1762)', async () => {
+  it('an answer with no withheld count says unknown, not 0 (#1762)', async () => {
     const { withheldPersonal: _, ...older } = result();
     vi.spyOn(api, 'appFacets').mockResolvedValue(older as EventFacetAnswer);
     await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'currency' }} />));
     expect(container.querySelector('[data-event-totals]')!.textContent).toBe('58 events · 3 erased · withheld unknown');
-    expect(container.textContent).toContain('This app was pushed before that rule, so this grouping may include them');
+    expect(container.textContent).toContain('This answer does not say whether they were withheld, so this grouping may include them.');
+  });
+
+  it('a payload grouping refused because the app predates the rule shows no buckets and says why (#1762)', async () => {
+    vi.spyOn(api, 'appFacets').mockResolvedValue(
+      result({ buckets: [], total: 58, erased: 3, withheldPersonal: 55, withheldReason: 'vertical-predates-rule' }),
+    );
+    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'email' }} />));
+    // The count covers every event not erased, so it does not claim to be personal data.
+    expect(container.querySelector('[data-event-totals]')!.textContent).toBe('58 events · 3 erased · 55 withheld');
+    expect(container.textContent).toContain(
+      'This app was pushed before personal-data events were withheld, so payload groupings are unavailable until it is pushed again.',
+    );
   });
 
   it('an envelope grouping mentions no withholding at all', async () => {

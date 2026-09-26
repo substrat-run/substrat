@@ -94,6 +94,8 @@ import type {
   ConnectionCredential,
   ConnectionHealthPage,
   ConnectionProbe,
+  EventFacetInput,
+  EventFacetResult,
   ListPageQuery,
   Page,
   PlatformActorId,
@@ -526,6 +528,28 @@ class ExportBreakRefused extends ControlPlaneError {
 /** The body a route answers an `ExportBreakRefused` with: the sentence and the listing. */
 function exportBreakBody(e: ControlPlaneError): { error: string; exportBreaks?: { affected: ExportBreak[] } } {
   return { error: e.message, ...(e instanceof ExportBreakRefused ? { exportBreaks: { affected: e.breaks } } : {}) };
+}
+
+/**
+ * A delegated facet answer, refused when the vertical that produced it predates #1762.
+ *
+ * The facet runs inside the vertical holding the scope, on the kernel that vertical was
+ * pushed with, and a kernel from before the rule groups a payload field over personal
+ * data too — one bucket per email address. It says so by omitting `withheldPersonal`.
+ * Such a PAYLOAD grouping is not relayed: no buckets, every event that was not erased
+ * counted as withheld, and `withheldReason` saying why. An envelope grouping is a
+ * kernel-stamped column, which the old kernel answered correctly, so it passes.
+ */
+function withholdIfPredatesRule(input: EventFacetInput, answer: EventFacetResult): EventFacetResult {
+  if (input.groupBy.kind !== 'payload' || typeof answer.withheldPersonal === 'number') return answer;
+  return {
+    buckets: [],
+    erased: answer.erased,
+    withheldPersonal: Math.max(0, answer.total - answer.erased),
+    withheldReason: 'vertical-predates-rule',
+    total: answer.total,
+    truncated: false,
+  };
 }
 
 /**
@@ -2890,7 +2914,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await delegatedRead(
         c, tenantId, scopeId, scope, 'facetEvents', input,
         {
-          viaVertical: (v) => v.facetEvents(scopeId, input),
+          // #1762: only the vertical's answer needs the guard. The co-located read runs
+          // this platform's own kernel, which withholds by construction.
+          viaVertical: async (v) => withholdIfPredatesRule(input, await v.facetEvents(scopeId, input)),
           colocated: () => admin.facetEvents(c.get('actor'), tenantId, scopeId, input),
         },
         // The buckets RETURNED, not `total`: the row says how much this read handed

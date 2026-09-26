@@ -211,11 +211,23 @@ export const eventFacetResult = z.object({
    * `total = Σ bucket counts + erased + withheldPersonal` whenever `truncated` is
    * false; when it is true the bucket sum falls short by the tail not shown.
    *
-   * Added after the field shipped: an answer from a scope still running an older
-   * kernel omits it, and a reader must treat that as unknown — not as 0, since that
-   * kernel groups every event, personal data included.
+   * Added after the field shipped: a scope still running an older kernel omits it,
+   * because that kernel groups every event, personal data included. The control plane
+   * does not pass such a payload grouping on (see `withheldReason`); a reader that
+   * meets the field missing anyway must treat it as unknown, never as 0.
    */
   withheldPersonal: z.number().int().nonnegative(),
+  /**
+   * Set only when `withheldPersonal` covers MORE than events classed as personal data,
+   * and says why (#1762). `'vertical-predates-rule'`: the scope's data is held by a
+   * vertical pushed before the rule, whose kernel groups personal data. The control
+   * plane refuses to relay that grouping, so it answers with no buckets and every
+   * event that was not erased counted in `withheldPersonal` — which then includes
+   * events classed `'none'` too, since that kernel cannot tell them apart for us.
+   * The partition above still holds. Absent on every other answer, and on an
+   * envelope grouping, which an older kernel answers correctly.
+   */
+  withheldReason: z.literal('vertical-predates-rule').optional(),
   /**
    * Events matching the filter before grouping — the denominator. It includes the
    * erased and withheld events: they happened, whatever they said.

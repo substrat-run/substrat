@@ -63,8 +63,8 @@ const DIMENSIONS: Record<string, Row[]> = {
   ],
   piiClass: [
     ['none', 5210, 2],
-    ['personal', 6802, 3],
-    ['sensitive', 36, 140],
+    ['pseudonymous', 6802, 3],
+    ['direct', 36, 140],
   ],
 };
 

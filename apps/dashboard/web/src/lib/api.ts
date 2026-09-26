@@ -481,9 +481,10 @@ export interface AppHealthRow {
 export type { EventFacetBucket, EventFacetResult } from '@substrat-run/contracts';
 
 /**
- * A facet answer as the wire may carry it. `withheldPersonal` (#1762) is absent from an
- * app still running a kernel from before it — and that kernel groups personal-data
- * events rather than withholding them, so the absence is "unknown", never 0.
+ * A facet answer as the wire may carry it. The control plane refuses a payload grouping
+ * from an app whose kernel predates #1762 and says so in `withheldReason`; a control plane
+ * from before this release relays such an answer without `withheldPersonal` at all, so
+ * the absence is "unknown", never 0.
  */
 export type EventFacetAnswer = Omit<EventFacetResult, 'withheldPersonal'> & { withheldPersonal?: number };
 

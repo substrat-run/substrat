@@ -97,12 +97,24 @@ export function withheldOf(result: EventFacetAnswer): number | null {
 }
 
 /**
+ * True when the control plane refused to relay a payload grouping because the app's
+ * kernel predates #1762 — its buckets could be one per person. The withheld count then
+ * covers every event that was not erased, not only those classed as personal data.
+ */
+export function predatesRule(result: EventFacetAnswer): boolean {
+  return result.withheldReason === 'vertical-predates-rule';
+}
+
+/**
  * What the Events mode says when a grouping produced no bucket. Empty buckets over a
  * non-empty match is a different answer from no match at all, and each way of getting
  * there is named: every event erased, or every event withheld as personal data.
  */
 export function emptyGroupingText(result: EventFacetAnswer): string {
   if (result.total === 0) return 'No events matched this filter.';
+  if (predatesRule(result)) {
+    return 'This app was pushed before personal-data events were withheld, so payload groupings are unavailable until it is pushed again.';
+  }
   if (result.erased === result.total) return 'Every matching event had its payload erased, so there is nothing left to group by.';
   const withheld = withheldOf(result) ?? 0;
   if (withheld > 0 && result.erased + withheld === result.total) {
