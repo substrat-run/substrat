@@ -4275,7 +4275,7 @@ export function defineScopeDO(
       // Deferral holds every check until commit, by which point the old rows are gone and
       // the new ones are all in. It also covers what a topological sort cannot express: FK
       // cycles, and self-referencing rows within a single table.
-      await this.ctx.storage.transaction(async () => {
+      const switched = await this.ctx.storage.transaction(async () => {
         this.sql.exec('PRAGMA defer_foreign_keys = ON');
         // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
         const existing = this.sql
@@ -4305,24 +4305,33 @@ export function defineScopeDO(
           const insert = `INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`;
           for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
         }
+        // Re-assert the kernel spine (#321). A dump captured from a WORLD that stores some
+        // `_substrat_*` tables ELSEWHERE carries only a subset — an `@substrat-run/adapter-
+        // sqlite` scope file, for instance, keeps `_substrat_roles`/`_substrat_tenant_tuples`
+        // in its DIRECTORY database, so its per-scope dump omits them. Replaying such a dump
+        // verbatim would leave this DO missing those spine tables, and the very next
+        // permission check would raise a bare `no such table: _substrat_roles`. KERNEL_DDL is
+        // all IF NOT EXISTS, so this recreates only what the dump did not carry (empty), and
+        // never disturbs a table the dump DID bring. Roles land empty here and are re-projected
+        // by the restore's repair leg (host.projectRolesLocal) — the spine's job is only to
+        // exist so the checker can read it.
+        for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
+        // …and the additive columns, for the same reason KERNEL_DDL is re-asserted: a
+        // dump captured before a column existed replays DDL WITHOUT it, and IF NOT
+        // EXISTS cannot widen a table the dump did bring. Without this, the next emit
+        // in this instance fails with `no such column` until a cold start re-runs the
+        // constructor's pass.
+        this.applySpineColumnAdditions();
+        // Re-point the restored grants at THIS scope (after the spine exists, so a dump
+        // that carried no tuples table still finds one here).
+        if (destScopeId) this.rewriteScopeTuples(destScopeId);
+        // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
+        // the spine and the re-point. A switch that throws rolls the whole restore back, so
+        // the dump's grants never commit live without the switch that should cover them.
+        return destScopeId && switchOff
+          ? switchRecordedOff(this.switchSql(), { scopeId: destScopeId, ...switchOff })
+          : [];
       });
-      // Re-assert the kernel spine (#321). A dump captured from a WORLD that stores some
-      // `_substrat_*` tables ELSEWHERE carries only a subset — an `@substrat-run/adapter-
-      // sqlite` scope file, for instance, keeps `_substrat_roles`/`_substrat_tenant_tuples`
-      // in its DIRECTORY database, so its per-scope dump omits them. Replaying such a dump
-      // verbatim would leave this DO missing those spine tables, and the very next
-      // permission check would raise a bare `no such table: _substrat_roles`. KERNEL_DDL is
-      // all IF NOT EXISTS, so this recreates only what the dump did not carry (empty), and
-      // never disturbs a table the dump DID bring. Roles land empty here and are re-projected
-      // by the restore's repair leg (host.projectRolesLocal) — the spine's job is only to
-      // exist so the checker can read it.
-      for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
-      // …and the additive columns, for the same reason KERNEL_DDL is re-asserted: a
-      // dump captured before a column existed replays DDL WITHOUT it, and IF NOT
-      // EXISTS cannot widen a table the dump did bring. Without this, the next emit
-      // in this instance fails with `no such column` until a cold start re-runs the
-      // constructor's pass.
-      this.applySpineColumnAdditions();
       // Rebuild the derived search indexes over the rows just loaded (#827). Drop-then-
       // create, so it also repairs an index a dump left stale, and the triggers it
       // recreates are what keep the restored scope in step from here. Skipped for a plan
@@ -4339,17 +4348,6 @@ export function defineScopeDO(
         if (!present.has(plan.table)) continue;
         for (const stmt of splitSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
       }
-      // Re-point the restored grants at THIS scope (after the spine exists, so a dump
-      // that carried no tuples table still finds one here).
-      if (destScopeId) this.rewriteScopeTuples(destScopeId);
-      // #1742: before anything can run on the grants the dump brought back live. No await
-      // between the re-point and this, so no sweep lands in between.
-      const switched =
-        destScopeId && switchOff
-          ? this.ctx.storage.transactionSync(() =>
-              switchRecordedOff(this.switchSql(), { scopeId: destScopeId, ...switchOff }),
-            )
-          : [];
       // The frontier arrived with the dump — refresh the in-memory applied set so a
       // later migrate() builds on the imported state, not the provisioning state.
       this.applied.clear();

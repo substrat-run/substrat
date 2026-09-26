@@ -1803,6 +1803,38 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
     await older.close();
   });
 
+  /**
+   * #1742 review: the switch runs inside the replay's own transaction. A dump whose
+   * `_substrat_tuples` refuses the OFF marker (a CHECK) makes the switch throw part-way
+   * through a restore. That must roll the whole restore back rather than commit the dump's
+   * live grants with no switch over them. Outside the transaction, the replay committed
+   * first and the throw came after it.
+   */
+  const refusingMarker = (dump: Awaited<ReturnType<CloudflareScopeHost['exportScopeLocal']>>) =>
+    dump.map((tbl) =>
+      tbl.name === '_substrat_tuples'
+        ? { ...tbl, ddl: tbl.ddl.replace(/\)\s*$/, ", CHECK (relation <> 'switch:off'))") }
+        : tbl,
+    );
+
+  it('a switch that fails inside a restore rolls the whole restore back: the scope stays off', async () => {
+    const s = await newScope();
+    const before = refusingMarker(await host.exportScopeLocal(s));
+    await off(s);
+    await expect(host.restoreScopeLocal(s, before, { switchedOff: [SCHED] })).rejects.toThrow(/CHECK constraint failed/);
+    // Nothing of the dump landed: the marker the scope had is still live.
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('twin: the same dump with nothing to switch restores, and fires', async () => {
+    const s = await newScope();
+    const before = refusingMarker(await host.exportScopeLocal(s));
+    await off(s);
+    expect(await host.restoreScopeLocal(s, before)).toEqual({ tables: before.length });
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
   it('a restore of a dump from before the switch lands off when the off list rides it; without it, it fires', async () => {
     const s = await newScope();
     const before = await host.exportScopeLocal(s);
