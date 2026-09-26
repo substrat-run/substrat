@@ -32,8 +32,8 @@ declare function declared<T>(): T;
 
 // --- a paged read answers its Page, not the bare list (#811) ------------------
 export const pagedOk: Handlers['workorder/list'] = async () => declared<Out<'workorder/list'>>();
-// @ts-expect-error 'workorder/list' is paged: the handler returns a Page, not its items
-export const pagedBare: Handlers['workorder/list'] = async () => declared<Out<'workorder/list'>['items']>();
+// @ts-expect-error 'workorder/list' is paged: the handler returns a Page, not its entries
+export const pagedBare: Handlers['workorder/list'] = async () => declared<Out<'workorder/list'>['entries']>();
 
 // --- a read that declares one object returns one object, not a list of them ---
 export const singleOk: Handlers['workorder/get'] = async () => declared<Out<'workorder/get'>>();
