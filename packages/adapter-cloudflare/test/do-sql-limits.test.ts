@@ -48,10 +48,15 @@ const attempt = (sql: SqlStorage, t: Trial, n: number): string => {
 const terms = (n: number, op: string): string => Array.from({ length: n }, (_, i) => `SELECT ${i}`).join(` ${op} `);
 const marks = (n: number): string => Array.from({ length: n }, () => '?').join(',');
 
-const { compoundTerms, boundParameters, statementBytes, likePatternBytes } = DO_SQL_LIMITS;
+const { compoundTerms, boundParameters, statementBytes, likePatternBytes, columns } = DO_SQL_LIMITS;
 const compoundTrial = (op: string): Trial => (n) => ({ sql: terms(n, op) });
 const paramTrial: Trial = (n) => ({ sql: `SELECT 1 WHERE 1 IN (${marks(n)})`, params: Array(n).fill(1) });
 const lengthTrial: Trial = (n) => ({ sql: `SELECT '${'a'.repeat(n - "SELECT ''".length)}'` });
+const cols = (n: number): string => Array.from({ length: n }, (_, i) => `c${i}`).join(', ');
+// A fresh table name per trial: a CREATE that succeeds must not collide with the next.
+let tableSeq = 0;
+const tableTrial: Trial = (n) => ({ sql: `CREATE TABLE wide_${tableSeq++} (${cols(n)})` });
+const resultTrial: Trial = (n) => ({ sql: `SELECT ${Array.from({ length: n }, (_, i) => i).join(', ')}` });
 const likeTrial: Trial = (n) => ({ sql: `SELECT 'x' LIKE ?`, params: ['%' + 'a'.repeat(n - 2) + '%'] });
 
 describe('the SQL limits of a Durable Object: the boundary (#1741)', () => {
@@ -131,6 +136,31 @@ describe('the SQL limits of a Durable Object: the boundary (#1741)', () => {
     const [at, past] = await run((sql) => [attempt(sql, lengthTrial, statementBytes), attempt(sql, lengthTrial, statementBytes + 1)]);
     expect(at).toBe('ok');
     expect(past).toBe('statement too long: SQLITE_TOOBIG');
+  });
+
+  it('columns in a table: 100 run, the 101st is refused', async () => {
+    const [at, past] = await run((sql) => [attempt(sql, tableTrial, columns), attempt(sql, tableTrial, columns + 1)]);
+    expect(at).toBe('ok');
+    expect(past).toMatch(/^too many columns on wide_\d+: SQLITE_ERROR$/);
+  });
+
+  it('columns in a table: ADD COLUMN past 100 is refused too', async () => {
+    const [at, past] = await run((sql) => {
+      sql.exec(`CREATE TABLE grown (${cols(columns - 1)})`);
+      return [
+        attempt(sql, () => ({ sql: 'ALTER TABLE grown ADD COLUMN one_more' }), 0),
+        attempt(sql, () => ({ sql: 'ALTER TABLE grown ADD COLUMN one_too_many' }), 0),
+      ];
+    });
+    expect(at).toBe('ok');
+    // ALTER builds a shadow table, so the DO names that one.
+    expect(past).toBe('too many columns on sqlite_altertab_grown: SQLITE_ERROR');
+  });
+
+  it('columns in a result set: 100 run, the 101st is refused', async () => {
+    const [at, past] = await run((sql) => [attempt(sql, resultTrial, columns), attempt(sql, resultTrial, columns + 1)]);
+    expect(at).toBe('ok');
+    expect(past).toBe('too many columns in result set: SQLITE_ERROR');
   });
 
   it('LIKE pattern length: 50 bytes run, one more is refused', async () => {

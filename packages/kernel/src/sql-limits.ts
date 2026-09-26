@@ -25,6 +25,13 @@
  * | bound parameters              | 100            | `too many SQL variables at offset N`                |
  * | statement length              | 100 000 bytes  | `statement too long` (`SQLITE_TOOBIG`)              |
  * | `LIKE`/`GLOB` pattern length  | 50 bytes       | `LIKE or GLOB pattern too complex` (not judged here: preload only) |
+ * | columns in a table            | 100            | `too many columns on <table>`                       |
+ * | columns in a result set       | 100            | `too many columns in result set`                    |
+ *
+ * The two column limits cannot be judged from the text: a `SELECT *` or a `RETURNING *` is as
+ * wide as the tables under it. The node adapter reads the width from the driver instead — a
+ * prepared statement's `columns()` for a result set, and the schema AFTER a migration ran for a
+ * table (#1811). Neither is done here, because this wrapper sees only `ScopedSql`.
  *
  * What is NOT a limit, measured: a multi-row `VALUES` list — SQLite does not count its rows
  * as compound terms; 5 000 rows ran on the DO. So `INSERT … VALUES (…),(…),…` is bounded by
@@ -56,6 +63,8 @@ export const DO_SQL_LIMITS = {
   statementBytes: 100_000,
   /** `LIKE`/`GLOB` pattern length, in UTF-8 bytes. Enforced by `tools/vitest/like-pattern-limit.cjs`. */
   likePatternBytes: 50,
+  /** Columns in one table, and in one result set. Measured by a 1–2001 binary search on workerd (#1811). */
+  columns: 100,
 } as const;
 
 // Declared locally, as `secret-box.ts` does: the kernel builds without DOM or node typings.
