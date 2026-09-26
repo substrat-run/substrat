@@ -5,8 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+# Three jobs, one verdict. `checks` builds everything and runs every lint and the
+# typecheck — the lints import built output from all over the workspace, so their
+# build stays whole. `test-shard` runs the test suites in three parallel slices, each
+# building only what its own slice needs, so the long suites stop queueing behind one
+# another. `test` is the aggregate that fails unless both did their job, and it keeps
+# the name everything downstream (deploy-test's `needs`) already waits on.
+#
+# Which packages a run covers is decided by tools/ci-scope.mjs, once per job, from the
+# same inputs — the merge commit and its first parent — so every job agrees without
+# having to hand the answer along. A push to main always covers everything.
 jobs:
-  test:
+  checks:
     runs-on: ubuntu-latest
     steps:
       # Full history, not the default depth-1. Two checks read it: docs-drift
@@ -42,6 +52,16 @@ jobs:
       # that passes depends on which tsc wins. Reading the declared graph gives
       # the same answer every time, and names the cycle instead of a stray TS2307.
       - run: pnpm lint:cycles
+      # The scope tool's own tests first, so a rule that stopped refusing (a lockfile
+      # change it should widen on, a package no shard would test) is red, not quiet.
+      # Then the scope itself — its log line says what this PR covers and why.
+      - run: pnpm test:ci-scope
+      - id: scope
+        run: node tools/ci-scope.mjs
+      # Whole on purpose, scoped PR or not: the lints below read built output from
+      # packages the PR never touched (declared-deps reads every package's emitted
+      # .d.ts; permissions, api, model, conformance and client import engines and
+      # verticals through their dist). The test shards are where the build is scoped.
       - run: pnpm -r build
       # The layer rules run from packages/boundary-lint (published as
       # @substrat-run/boundary-lint), so they need the build above — the repo
@@ -137,7 +157,8 @@ jobs:
       # base is the first parent: the main this change landed on.
       - name: exported payload schemas vs the base branch
         env:
-          # Through the environment, not interpolated into the script (the scope step's reason).
+          # Through the environment, not interpolated into the script: a `${{ }}` inside
+          # `run:` is pasted into Bash source before it runs.
           BASE_REF: ${{ github.base_ref }}
           EVENT: ${{ github.event_name }}
         run: |
@@ -271,13 +292,14 @@ jobs:
       # ── Scope ────────────────────────────────────────────────────────────
       # Everything above this line runs in full on every PR: the build is what
       # the lints import from, and the lints together take fifteen seconds. The
-      # two steps below are the other ~80% of the job, and most of it is spent
-      # re-checking packages a PR never touched. So on a PR they run only over
-      # the packages the diff can have changed — the ones with a modified file,
-      # plus everything that depends on them, which is pnpm's own
-      # `--filter="...[ref]"` and reads the declared workspace graph.
+      # typecheck below, and the test shards, are most of the run, and most of it
+      # used to be spent re-checking packages a PR never touched. So on a PR they
+      # run only over the packages the diff can have changed — the ones with a
+      # modified file, plus everything that depends on them, which is pnpm's own
+      # `--filter="...[ref]"` and reads the declared workspace graph. The `scope`
+      # step above (tools/ci-scope.mjs) decides it.
       #
-      # Two things keep that honest:
+      # Three things keep that honest:
       #
       #   1. A push to main always runs everything. If the graph ever lies —
       #      an edge a package.json does not declare — the merge goes red on
@@ -286,42 +308,23 @@ jobs:
       #      everything, unless it is one of the paths that cannot feed a
       #      typecheck or a test (docs/, .changeset/, .claude/, a root README).
       #      tools/ can — `template-sync.mjs` writes `packages/template-check`'s
-      #      sources — and so can the lockfile, pnpm-workspace.yaml (the
-      #      catalog), tsconfig.base.json and this workflow, so none of those
-      #      are on the inert list.
+      #      sources — and so can pnpm-workspace.yaml (the catalog),
+      #      tsconfig.base.json and this workflow, so none of those are on the
+      #      inert list.
+      #   3. The lockfile is READ rather than widening on sight. The importers whose
+      #      block changed, and every importer whose resolved closure reaches a
+      #      changed third-party entry, join the selection with their dependents.
+      #      Anything it cannot pin to an importer — settings, overrides, catalogs,
+      #      patches, the root importer, a third-party change with no importer
+      #      change, an entry nothing reaches, a line it does not recognise — is
+      #      everything again, and the log line says which.
       #
       # The graph has to name every edge for this to hold, including the ones
       # that are not imports: `packages/template-check` compiles files COPIED
       # from `packages/create-substrat/template`, so it declares create-substrat
       # as a devDependency purely for this step to see. A test reading another
       # package's files by relative path would be the same hole; today none does.
-      - id: scope
-        if: github.event_name == 'pull_request'
-        env:
-          # Through the environment, not interpolated into the script: a `${{ }}`
-          # inside `run:` is pasted into Bash source before it runs.
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          base="origin/$BASE_REF"
-          members='^(packages|engines|connectors|demos|apps)/'
-          inert='^(docs/|\.changeset/|\.claude/|\.githooks/|\.vscode/|[^/]+\.md$|LICENSE|\.gitignore$|\.editorconfig$)'
-          changed=$(git diff --name-only "$base" HEAD)
-          widening=$(echo "$changed" | grep -vE "$members" | grep -vE "$inert" || true)
-          in_members=$(echo "$changed" | grep -cE "$members" || true)
-          selected=$(pnpm ls -r --depth -1 --parseable --filter "...[$base]" | grep -vxF "$PWD" | sed "s#^$PWD/##")
-          count=$(echo "$selected" | grep -c . || true)
-          if [ -n "$widening" ]; then
-            echo "scope: everything — changed outside every package:"; echo "$widening" | sed 's/^/  /'
-          elif [ "$in_members" -gt 0 ] && [ "$count" -eq 0 ]; then
-            # pnpm's selector answers "nothing" for reasons other than "nothing
-            # changed" — it does inside a linked git worktree, for one — and a
-            # gate that skips work must never mistake the two. Files changed under
-            # a package directory and the selector saw none of them: run everything.
-            echo "scope: everything — $in_members package file(s) changed but pnpm selected no package"
-          else
-            echo "scope: $count package(s) — changed against $base, plus their dependents:"; echo "$selected" | sed 's/^/  /'
-            echo "filter=--filter=...[$base]" >> "$GITHUB_OUTPUT"
-          fi
+      #
       # Includes packages/template-check, which compiles create-substrat's template
       # against THIS checkout (#878). The template is not a workspace member — #797
       # needs it to install from npm — so it was the one call site the compiler never
@@ -332,24 +335,94 @@ jobs:
       # its own gates. This asks the question a PR CAN answer — does the template's
       # source still match the surface we are about to ship — while scaffold.yml keeps
       # asking the post-release one: does a real npm install work.
-      - run: pnpm -r ${SCOPE_FILTER:+"$SCOPE_FILTER"} typecheck
+      - name: typecheck
         env:
-          SCOPE_FILTER: ${{ steps.scope.outputs.filter }}
-      # The rule this job exists to enforce: the pure-SQLite adapter stays
-      # green in CI forever (master plan D-14). Contract tests + the FSM
-      # demo's nine-step scenario — and the TEMPLATE's own nine-step scenario,
-      # via packages/template-check (#878), which is how a surface that still
-      # typechecks but no longer behaves gets caught before it is published.
-      #
+          # Empty when the scope is everything: an unfiltered `pnpm -r`, as always.
+          SCOPE_FILTERS: ${{ steps.scope.outputs.filters }}
+        run: |
+          read -ra filters <<< "$SCOPE_FILTERS"
+          pnpm -r "${filters[@]}" typecheck
+
+  # The rule the tests exist to enforce: the pure-SQLite adapter stays green in CI
+  # forever (master plan D-14). Contract tests + the FSM demo's nine-step scenario —
+  # and the TEMPLATE's own nine-step scenario, via packages/template-check (#878),
+  # which is how a surface that still typechecks but no longer behaves gets caught
+  # before it is published.
+  #
+  # Three slices of one selection, run side by side. Serially the suites add up to
+  # about thirteen minutes, and the three longest (adapter-cloudflare, auth-server,
+  # control-plane) are pinned to different shards so they never queue behind one
+  # another; tools/ci-scope.mjs spreads the rest by recorded duration and refuses to
+  # answer unless the three slices partition the selection exactly. A shard whose
+  # slice of a scoped PR is empty installs, finds nothing to do, and passes.
+  test-shard:
+    name: test (shard ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      # Depth 2 is the merge commit and both its parents: all the scope needs to diff
+      # the PR against its base. The changelog and docs-drift history lives in `checks`.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - id: scope
+        run: node tools/ci-scope.mjs --shard ${{ matrix.shard }} --of 3
+      # What this slice's tests import: its packages and their workspace dependencies
+      # (`--filter=<name>...`). When the scope is everything, the whole build, exactly
+      # as before the split.
+      - name: build
+        if: steps.scope.outputs.count != '0'
+        env:
+          MODE: ${{ steps.scope.outputs.mode }}
+          BUILD_FILTERS: ${{ steps.scope.outputs.build_filters }}
+        run: |
+          if [ "$MODE" = "everything" ]; then
+            pnpm -r build
+          else
+            read -ra filters <<< "$BUILD_FILTERS"
+            pnpm -r "${filters[@]}" build
+          fi
       # Every node suite runs with a Durable Object's LIKE/GLOB pattern limit (50 bytes)
       # switched on: `better-sqlite3` cannot set `sqlite3_limit`, so the preload overrides
       # `like()` and `glob()` per connection (#1655). Without it a 92-byte GLOB passed
       # every suite and failed every hosted call. An absolute path, because `pnpm -r`
       # changes directory into each package before it starts node.
-      - run: pnpm -r ${SCOPE_FILTER:+"$SCOPE_FILTER"} test
+      #
+      # `--no-sort`: everything a suite imports is built by the step above, so no suite
+      # waits on another's. The topological order only held a long suite back until
+      # every package beneath it had finished testing.
+      - name: test
+        if: steps.scope.outputs.count != '0'
         env:
-          SCOPE_FILTER: ${{ steps.scope.outputs.filter }}
+          SCOPE_FILTERS: ${{ steps.scope.outputs.filters }}
           NODE_OPTIONS: --require=${{ github.workspace }}/tools/vitest/like-pattern-limit.cjs
+        run: |
+          read -ra filters <<< "$SCOPE_FILTERS"
+          pnpm -r --no-sort "${filters[@]}" test
+
+  # The one verdict: green only when the checks and every shard succeeded. A skipped
+  # or cancelled shard is not a pass. Named `test` because that is the job name
+  # deploy-test waits on and the one a merge has always been judged by.
+  test:
+    needs: [checks, test-shard]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHECKS: ${{ needs.checks.result }}
+          SHARDS: ${{ needs.test-shard.result }}
+        run: |
+          echo "checks: $CHECKS, test shards: $SHARDS"
+          [ "$CHECKS" = "success" ] && [ "$SHARDS" = "success" ]
 
   # Deploy the prod apps to the shared TEST environment on every green push to
   # main. Prod itself is deployed separately, only on an actual changeset
