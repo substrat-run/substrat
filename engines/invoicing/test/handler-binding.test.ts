@@ -36,7 +36,7 @@ export const pagedOk: Handlers['invoicing/list'] = async () => declared<Out<'inv
 // @ts-expect-error 'invoicing/list' is paged: the handler returns a Page, not its entries
 export const pagedBare: Handlers['invoicing/list'] = async () => declared<Out<'invoicing/list'>['entries']>();
 
-// --- a read that declares one object returns one object, not a list of them ---
+// --- an operation declaring one object returns one object, not a list of them -
 export const singleOk: Handlers['invoicing/get'] = async () => declared<Out<'invoicing/get'>>();
 // @ts-expect-error 'invoicing/get' declares one object, and a list of them is not it
 export const singleList: Handlers['invoicing/get'] = async () => declared<Out<'invoicing/get'>[]>();
