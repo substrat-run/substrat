@@ -36,14 +36,16 @@ function fmtDate(iso: string): string {
 /**
  * Team roster + invite. The roster is the dashboard's own projection (there is no
  * kernel "who holds a role here" query); an invite composes the invites engine and,
- * on accept, becomes a kernel role assignment. Email delivery is a later connector,
- * so an invite hands back a shareable link.
+ * on accept, becomes a kernel role assignment. An invite is emailed, and its accept
+ * link can also be copied and shared — when it is created, and later from the roster
+ * ("Copy link") for as long as it is pending.
  */
 export function Team({
   members,
   meEmail,
   canManage,
   onInvite,
+  onCopyLink,
   onResend,
   onRevoke,
   onRemove,
@@ -54,7 +56,9 @@ export function Team({
   members: Member[];
   meEmail: string;
   canManage: boolean;
-  onInvite: (email: string, roleKey: InviteRole) => Promise<{ acceptUrl: string } | void>;
+  onInvite: (email: string, roleKey: InviteRole) => Promise<{ acceptUrl: string; emailDelivered?: boolean } | void>;
+  /** A pending invite's accept link (sends no email); rejects when it cannot be read. */
+  onCopyLink?: (invitationId: string) => Promise<string>;
   onResend: (invitationId: string) => void;
   onRevoke: (invitationId: string) => void;
   onRemove: (memberId: string) => void;
@@ -68,7 +72,10 @@ export function Team({
   const [role, setRole] = useState<InviteRole>('member');
   const [sending, setSending] = useState(false);
   const [link, setLink] = useState<string | null>(null);
+  const [emailed, setEmailed] = useState<boolean | undefined>(undefined);
   const [copied, setCopied] = useState(false);
+  /** The roster's "Copy link": whose invite, and its link once read. */
+  const [shared, setShared] = useState<{ email: string; link: string | null; error: string | null; copied: boolean } | null>(null);
   const [matrixOpen, setMatrixOpen] = useState(false);
 
   const rows = members.filter((m) => m.status !== 'revoked');
@@ -78,14 +85,35 @@ export function Team({
     setEmail('');
     setRole('member');
     setLink(null);
+    setEmailed(undefined);
     setCopied(false);
+  };
+  const copyLink = async (m: Member) => {
+    if (!onCopyLink || !m.invitation_id) return;
+    setShared({ email: m.email, link: null, error: null, copied: false });
+    try {
+      const url = await onCopyLink(m.invitation_id);
+      let copied = false;
+      try {
+        await navigator.clipboard?.writeText(url);
+        copied = !!navigator.clipboard;
+      } catch {
+        // The link is shown to copy by hand; a denied clipboard is not a failure.
+      }
+      setShared({ email: m.email, link: url, error: null, copied });
+    } catch (e) {
+      setShared({ email: m.email, link: null, error: e instanceof Error ? e.message : String(e), copied: false });
+    }
   };
   const send = async () => {
     if (!email.trim() || sending) return;
     setSending(true);
     try {
       const res = await onInvite(email.trim(), role);
-      if (res && 'acceptUrl' in res) setLink(res.acceptUrl);
+      if (res && 'acceptUrl' in res) {
+        setLink(res.acceptUrl);
+        setEmailed(res.emailDelivered);
+      }
       else reset();
     } finally {
       setSending(false);
@@ -126,6 +154,15 @@ export function Team({
               <span style={{ textAlign: 'right' }}>
                 {canManage && m.status === 'invited' && m.invitation_id && (
                   <span style={{ display: 'inline-flex', gap: 4, justifyContent: 'flex-end' }}>
+                    {onCopyLink && (
+                      <button
+                        type="button"
+                        onClick={() => void copyLink(m)}
+                        style={{ border: 0, background: 'transparent', color: 'var(--text-secondary)', fontSize: 12.5, cursor: 'pointer', padding: 4 }}
+                      >
+                        Copy link
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => onResend(m.invitation_id!)}
@@ -195,13 +232,17 @@ export function Team({
         cancelLabel={link ? 'Invite another' : 'Cancel'}
         confirmDisabled={!link && (!email.trim() || sending)}
         onConfirm={() => (link ? reset() : void send())}
-        onCancel={() => (link ? (setLink(null), setEmail(''), setCopied(false)) : reset())}
+        onCancel={() => (link ? (setLink(null), setEmailed(undefined), setEmail(''), setCopied(false)) : reset())}
         width={480}
       >
         {link ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-              Invite created. Email delivery is coming — for now, share this link with them:
+              {emailed === true
+                ? `Invite created and emailed to ${email}. You can also share this link with them:`
+                : emailed === false
+                  ? 'Invite created, but the email could not be sent. Share this link with them:'
+                  : 'Invite created. Share this link with them:'}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <Input value={link} mono style={{ flex: 1 }} onChange={() => {}} />
@@ -225,6 +266,43 @@ export function Team({
                 You can only grant a role whose permissions you already hold.
               </div>
             </div>
+          </div>
+        )}
+      </Dialog>
+
+      <Dialog
+        open={shared !== null}
+        title="Invite link"
+        confirmLabel="Done"
+        onConfirm={() => setShared(null)}
+        onCancel={() => setShared(null)}
+        width={480}
+      >
+        {shared && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {shared.error ? (
+              <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>Could not read the invite link: {shared.error}</div>
+            ) : shared.link === null ? (
+              <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>Reading the link…</div>
+            ) : (
+              <>
+                <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                  {shared.copied ? 'Copied. ' : ''}Share this link with {shared.email}. No email was sent.
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Input value={shared.link} mono style={{ flex: 1 }} onChange={() => {}} />
+                  <Button
+                    variant="secondary"
+                    onClick={() => { void navigator.clipboard?.writeText(shared.link!); setShared({ ...shared, copied: true }); }}
+                  >
+                    {shared.copied ? 'Copied' : 'Copy'}
+                  </Button>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                  The link works only for the invited email, and expires in 14 days.
+                </div>
+              </>
+            )}
           </div>
         )}
       </Dialog>

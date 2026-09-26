@@ -684,6 +684,18 @@ export function App() {
     [reloadMembers],
   );
 
+  // A pending invite's accept link for the roster's "Copy link" — no email is sent. A lapsed
+  // invitation is renewed on the way (new id), so the roster is reloaded. Dev-preview fakes it.
+  const copyInviteLink = useCallback(
+    async (invitationId: string): Promise<string> => {
+      if (DEV_MOCK) return `${window.location.origin}/invite/demo-${invitationId}`;
+      const res = await api.inviteLink(invitationId);
+      if (res.invitationId !== invitationId) await reloadMembers();
+      return res.acceptUrl;
+    },
+    [reloadMembers],
+  );
+
   const revokeInvite = useCallback(
     async (invitationId: string) => {
       try {
@@ -929,6 +941,7 @@ export function App() {
           meEmail={me.email ?? ''}
           canManage={['owner', 'admin'].includes(members.find((m) => m.principal === me.principal)?.role_key ?? 'owner')}
           onInvite={inviteMember}
+          onCopyLink={copyInviteLink}
           onResend={(id) => void resendInvite(id)}
           onRevoke={(id) => void revokeInvite(id)}
           onRemove={(id) => void removeMember(id)}

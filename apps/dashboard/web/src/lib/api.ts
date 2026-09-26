@@ -1452,15 +1452,21 @@ export const api = {
   catalog: () => call<CatalogEntry[]>('/catalog'),
   /** The current team's roster (active members + outstanding invites), one page newest-first. */
   listMembers: (opts?: PageOpts) => call<ListPage<Member>>(`/members${pageQs(opts)}`),
-  /** Invite someone at a role; returns a shareable accept link (no email delivery yet). */
+  /** Invite someone at a role; emails them and returns the shareable accept link + whether the email was accepted for delivery. */
   inviteMember: (email: string, roleKey: InviteRole) =>
-    call<{ invitationId: string; acceptUrl: string }>('/members/invite', {
+    call<{ invitationId: string; acceptUrl: string; emailDelivered: boolean }>('/members/invite', {
       method: 'POST',
       body: JSON.stringify({ email, roleKey }),
     }),
   /** Re-send a pending invite's email; returns the (possibly refreshed) link + whether it was accepted for delivery. */
   resendInvite: (invitationId: string) =>
     call<{ invitationId: string; acceptUrl: string; emailDelivered: boolean }>('/members/resend-invite', {
+      method: 'POST',
+      body: JSON.stringify({ invitationId }),
+    }),
+  /** A pending invite's accept link, to copy and share. Sends no email. */
+  inviteLink: (invitationId: string) =>
+    call<{ invitationId: string; acceptUrl: string }>('/members/invite-link', {
       method: 'POST',
       body: JSON.stringify({ invitationId }),
     }),

@@ -1129,6 +1129,20 @@ app.get('/api/members', async (c) => {
  * shareable fallback. Cloudflare Email Service is asynchronous, so a successful send
  * lands the recipient in `queued` (accepted, in flight), not `delivered` — count either.
  */
+/**
+ * A freshly-signed 14-day accept link for one invitation. The token names the invitation,
+ * not the address, and accepting still requires the invited email (the engine's hash is the
+ * gate), so minting a link grants nothing an invite did not already grant.
+ */
+async function inviteAcceptUrl(env: Env, origin: string, node: DashboardNode, invitationId: string): Promise<string> {
+  const token = await signInviteToken(env, {
+    tenantId: node.tenantId,
+    scopeId: node.scopeId,
+    invitationId,
+  });
+  return `${origin}/invite/${token}`;
+}
+
 async function mailInvite(
   env: Env,
   host: ScopeHost,
@@ -1138,12 +1152,7 @@ async function mailInvite(
   to: string,
   invitationId: string,
 ): Promise<{ acceptUrl: string; emailDelivered: boolean }> {
-  const token = await signInviteToken(env, {
-    tenantId: node.tenantId,
-    scopeId: node.scopeId,
-    invitationId,
-  });
-  const acceptUrl = `${origin}/invite/${token}`;
+  const acceptUrl = await inviteAcceptUrl(env, origin, node, invitationId);
   const team = await host.admin.getTenant(STAFF, node.tenantId);
   let emailDelivered = false;
   try {
@@ -1216,6 +1225,26 @@ app.post('/api/members/resend-invite', async (c) => {
     resent.invitationId,
   );
   return c.json({ invitationId: resent.invitationId, acceptUrl, emailDelivered });
+});
+
+/**
+ * A pending invite's accept link, to copy and share — the roster's "Copy link". Sends no
+ * email. Goes through the same in-scope op as a resend, so it asks the same things
+ * (manage-members, and the §5.1 bound on the invite's role) and renews a lapsed
+ * invitation rather than handing out a link that can no longer be accepted.
+ */
+app.post('/api/members/invite-link', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const { invitationId } = z.object({ invitationId: z.string().min(1) }).parse(await c.req.json());
+  const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const live = (await scope.invoke('dashboard/resend-invite', { invitationId })) as
+    | { invitationId: string; email: string; roleKey: string }
+    | null;
+  if (!live) throw new HTTPException(404, { message: 'no such pending invite' });
+  const acceptUrl = await inviteAcceptUrl(c.env, new URL(c.req.url).origin, node, live.invitationId);
+  return c.json({ invitationId: live.invitationId, acceptUrl });
 });
 
 /** Withdraw a pending invite from the current team. */
