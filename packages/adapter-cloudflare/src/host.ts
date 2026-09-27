@@ -7425,11 +7425,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * argument holds per row: a row younger than that when the rewound storage exists can be missed
    * by a pass whose hold snapshot was read just before it. So after the settle, each round reads
    * the scope's OFF modules again and claims them (an OFF that landed after the capture, in storage
-   * this rewind discards), then asks the hold object how old the claim's youngest row is. Each
-   * status read is preceded by a token read, so a module an operator turned ON after that read is
-   * not claimed from it (`switchHoldClaim`). That
-   * includes a row a switch move joined (`switchInScope`). The age is measured on the hold
-   * object's clock, the same one that stamped the row; this host only sleeps the difference.
+   * this rewind discards), then asks the hold object how old the claim's youngest row is, joined
+   * rows (`switchInScope`) included. The age is measured on the hold object's clock, the same one
+   * that stamped the row; this host only sleeps the difference. Each status read is preceded by a
+   * token read, so a module an operator turned ON after that read is not claimed from it
+   * (`switchHoldClaim`).
    *
    * Bounded at `SWITCH_HOLD_EXTRA_WAITS` more waits: past that, the rewind is REFUSED, with the
    * refusal prefix. Nothing was asked to arm, so `rewindHolding` drops only this claim, and every
