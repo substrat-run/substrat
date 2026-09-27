@@ -106,16 +106,26 @@ describe("the ScopeDO's importDump picks the rows to re-point (#1869)", () => {
     expect(tuplesIn(await host.exportScopeLocal(self))).toEqual([kept(self, 1), kept(self, 2), kept(self, 3)]);
   });
 
-  it('exact, with grants on a third scope: refused, and the target keeps what it held', async () => {
+  it('grants on a third scope: a caller-supplied dump is refused and the target kept; a platform copy leaves them be', async () => {
     const dest = scopeId.parse(ulid());
     await host.restoreScopeLocal(dest, dumpFrom(source), { sourceScopeId: source, exact: true });
     const before = tuplesIn(await host.exportScopeLocal(dest));
     const third = scopeId.parse(ulid());
-    const mixed = dumpFrom(source).map((t) => ({ ...t, rows: [...t.rows, ['principal:lena', 'role:reader', `scope:${third}`, null, null]] }));
-    await expect(host.restoreScopeLocal(dest, mixed, { sourceScopeId: source, exact: true })).rejects.toThrow(
+    const strayRow = ['principal:lena', 'role:reader', `scope:${third}`, null, null];
+    const mixed = dumpFrom(source).map((t) => ({ ...t, rows: [...t.rows, strayRow] }));
+    await expect(host.restoreScopeLocal(dest, mixed, { sourceScopeId: source })).rejects.toThrow(
       new RegExp(`restore refused: the dump holds grants on 1 scope\\(s\\) other than its source .*scope:${third}`),
     );
     expect(tuplesIn(await host.exportScopeLocal(dest))).toEqual(before);
+    // The platform exported it, so the third-scope row authorized nothing in the source: kept as is.
+    await host.restoreScopeLocal(dest, mixed, { sourceScopeId: source, exact: true });
+    expect(tuplesIn(await host.exportScopeLocal(dest))).toEqual([
+      moved(source, 0, `scope:${dest}`),
+      kept(source, 1),
+      kept(source, 2),
+      kept(source, 3),
+      strayRow,
+    ]);
   });
 
   it('a dump that declares the object column COLLATE NOCASE does not make the match fold case again', async () => {

@@ -35,11 +35,13 @@ export interface RepointSource {
  *   rule before #1869 minus LIKE's case folding, so `Scope:<id>` and `SCOPE:<id>` still stay
  *   put. An entity typed exactly `scope` cannot be told apart from a node grant here, and moves.
  *
- * The exact rule refuses a dump that also holds grants on a THIRD scope, shaped like a scope
- * node (`scope:<ULID>`) and neither the source nor the destination: moving them would guess,
- * and leaving them would strand grants that authorize nothing here. The refusal throws inside
- * the load's transaction, so the target keeps what it held. A `scope:<id>` whose id is not a
- * scope id's shape is an entity grant, and is left alone.
+ * A caller-supplied dump that holds its source's grants AND grants on a THIRD scope, shaped
+ * like a scope node (`scope:<ULID>`) and neither the source nor the destination, is refused:
+ * its stated provenance describes only part of it, and moving the rest would guess. The
+ * refusal throws inside the load's transaction, so the target keeps what it held. A platform
+ * copy (`exact`) is not refused: there a `scope:<X>` row authorized nothing in the source it
+ * was exported from, so it is left untouched and authorizes nothing here either. A
+ * `scope:<id>` whose id is not a scope id's shape is an entity grant, and is left alone.
  *
  * The probe and the update are separate statements rather than one with an `EXISTS` in its
  * `WHERE`: the update rewrites the very rows the probe looks for, and the answer must not
@@ -56,10 +58,12 @@ export function repointScopeGrants(sql: SwitchSql, destScopeId: string, source?:
     sql.run(`${update} substr(object, 1, 6) = 'scope:' COLLATE BINARY`, dest, dest);
     return;
   }
-  const strays = sql
-    .all(STRAY_SCOPES, from, dest)
-    .map((r) => String(r.object))
-    .filter((o) => scopeId.safeParse(o.slice('scope:'.length)).success);
+  const strays = source!.exact
+    ? []
+    : sql
+        .all(STRAY_SCOPES, from, dest)
+        .map((r) => String(r.object))
+        .filter((o) => scopeId.safeParse(o.slice('scope:'.length)).success);
   if (strays.length > 0) {
     throw substratError(
       'validation_failed',

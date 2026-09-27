@@ -183,10 +183,11 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
       await expectEntityGrantsKept(dest);
     });
 
-    it('a dump holding grants on a third scope is refused, and the target keeps what it held', async () => {
+    it('a restored dump holding grants on a third scope is refused, and the target keeps what it held', async () => {
       const third = scopeId.parse(ulid());
+      const lena = principalId.parse(ulid()); // holds a role on the third scope
       const stray = tuplesOf(planted).columns.map((c) =>
-        c === 'subject' ? `principal:${gina}` : c === 'relation' ? 'role:reader' : c === 'object' ? `scope:${third}` : null,
+        c === 'subject' ? `principal:${lena}` : c === 'relation' ? 'role:reader' : c === 'object' ? `scope:${third}` : null,
       );
       const mixed = variant((rows) => [...rows, stray]);
       const dest = await blank();
@@ -195,10 +196,13 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         new RegExp(`restore refused: the dump holds grants on 1 scope\\(s\\) other than its source .*scope:${third}`),
       );
       expect(await tuplesAt(dest)).toEqual(before);
-      // …and a fork of it, where the platform vouches for the source, the same.
-      await expect(
-        host.importScope(staff, { tenantId: t, scopeId: scopeId.parse(ulid()), vertical: 'repoint-vertical' }, mixed),
-      ).rejects.toThrow(/restore refused: the dump holds grants on 1 scope\(s\)/);
+      // A fork of the same dump is a platform copy: the third-scope row authorized nothing in the
+      // source, so it is not refused and stays exactly as it was, while the source grant moves.
+      const fork = scopeId.parse(ulid());
+      await host.importScope(staff, { tenantId: t, scopeId: fork, vertical: 'repoint-vertical' }, mixed);
+      await expectGenuineGrantMoved(fork);
+      const strayRow = Object.fromEntries(tuplesOf(planted).columns.map((c, i) => [c, stray[i]]));
+      expect(await rowsFor(fork, lena)).toEqual([strayRow]);
       // The twin is every other case here: a dump whose `scope:` rows are its source's, or an
       // entity id that is not a scope id (`scope:e-1`), re-points without complaint.
     });
