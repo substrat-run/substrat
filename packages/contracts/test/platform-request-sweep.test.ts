@@ -15,9 +15,20 @@ describe('sweep runs: the fleet drain row is the platform\'s, never a scope batc
     expect(parsed.success).toBe(false);
   });
 
-  it('still accepts the schedule entry beside it — the refusal is the kind, not the batch', () => {
+  it('a schedule-only batch still parses — the refusal is the kind, not the road', () => {
     const parsed = sweepRunsPayload.safeParse({ version: null, entries: [{ kind: 'schedule', operation: 'm/tick', outcome: 'ok', at }] });
     expect(parsed.success).toBe(true);
+  });
+
+  it('a mixed batch carrying one platform-request entry is refused whole — nothing in it lands', () => {
+    const parsed = sweepRunsPayload.safeParse({
+      version: null,
+      entries: [
+        { kind: 'platform-request', outcome: 'ok', at },
+        { kind: 'schedule', operation: 'm/tick', outcome: 'ok', at },
+      ],
+    });
+    expect(parsed.success).toBe(false);
   });
 });
 
