@@ -2436,6 +2436,13 @@ export const contractTestModules: ModuleRegistration[] = [
   impersonationEchoMod,
   connectorMod,
   scheduleMod,
+  // #1525: the failed-schedule fixture. A Durable Object bakes its operations in at
+  // define time (this array), so registering it on a coordinator mid-test is not
+  // enough for the CLOUDFLARE adapter to know the operation exists — it has to be
+  // here too, or `stub.invoke('sched-denied/tick', …)` throws `not_found` before
+  // `ctx.check` ever runs, which still counts as a failed schedule but records no
+  // denial. Inert for every other suite — nothing else invokes `sched-denied/tick`.
+  deniedScheduleMod,
   // #1577: the operation a resumable run's steps write through. Inert for every
   // other suite — nothing else reads `job_items`.
   jobsMod,
