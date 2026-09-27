@@ -1,5 +1,15 @@
 # @substrat-run/contracts
 
+## 0.124.0
+
+### Minor Changes
+
+- 02942e0: `GET /platform-requests/backlog` now also reports how many platform requests are still waiting (#1840). Until now it counted only the requests the platform had given up on, because a waiting request lives in its app's own storage and nothing indexed it across the fleet. The platform's scheduled sweep already visits every active app to deliver those requests, so each pass now records what it found as one sweep-run row: a new `platform-request` kind, unit `fleet`, with the pass's totals in a new `platformRequests` field. The route reads the newest of those rows and returns `pending: { count, asOf, floor }`, where `asOf` is when that pass ran. The count is only as fresh as the last pass. `pending` is `null` when no pass is on record, which is a different answer from `0`. `floor` is true when that pass could not reach every app, so the real number may be higher: an app whose drain failed, an app skipped because its migration failed (counted as `skipped` in the totals), or an app with no deployment to reach (`unreachable`). The existing fields are unchanged. An app cannot write this row: a batch of sweep results sent from an app's own storage that claims the `platform-request` kind is refused.
+
+### Patch Changes
+
+- 45421e8: `sweepRunsPayload` now refuses any entry whose `kind` is not `schedule` or `freshness`, instead of naming the three other kinds one by one. A scope-drained sweep batch only ever legitimately carries those two, so a kind added to `sweepRunKind` later is refused by default rather than silently accepted from a scope batch.
+
 ## 0.123.0
 
 ### Minor Changes
@@ -5812,7 +5822,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
