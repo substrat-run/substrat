@@ -832,4 +832,45 @@ describe('the per-request record on a tool call (#1746)', () => {
     await rpc(app, 'tools/call', { name: 'todo_create-list', arguments: { title: 'x' } });
     expect(record).toMatchObject({ operation: 'todo/create-list', problemCode: 'permission_denied' });
   });
+
+  it("names only the last tool of a batch, with none of an earlier tool's outcome", async () => {
+    const report = { events: [{ type: 'todo.list-created', entity: 'list:1' }], total: 1 };
+    let first = true;
+    // The first call fails in-band, the second succeeds having emitted nothing: neither the
+    // first's code nor any stale report may reach the line beside the second's name.
+    const failing = recordHarness(() => {
+      if (first) {
+        first = false;
+        throw new PermissionDenied(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          'todo:create' as any,
+        );
+      }
+      return { ok: true };
+    });
+    const batch = (target: Hono) =>
+      target.request('/api/mcp', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify([
+          { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'todo_create-list', arguments: { title: 'a' } } },
+          { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'todo_my-lists', arguments: {} } },
+        ]),
+      });
+    await batch(failing.app);
+    expect(failing.record).toEqual({ operation: 'todo/my-lists', principalKind: 'principal' });
+
+    // And the other way round: an earlier tool's events do not survive into a later one
+    // that reported none.
+    let emitting = true;
+    const second = recordHarness((options) => {
+      if (emitting) {
+        emitting = false;
+        options?.onEmitted?.(report);
+      }
+      return { ok: true };
+    });
+    await batch(second.app);
+    expect(second.record).toEqual({ operation: 'todo/my-lists', principalKind: 'principal' });
+  });
 });

@@ -507,9 +507,15 @@ export function mountMcp(
       : {};
 
     // #1746: a batch may call several tools; the line names the last one, which is the
-    // common case of one call per request stated precisely rather than a list.
+    // common case of one call per request stated precisely rather than a list. Everything
+    // the record says about a call is reset with the operation, so the line never pairs
+    // this tool's name with an earlier tool's failure or events.
     const { record, invocationId } = invocation;
-    if (record) record.operation = tool.operation;
+    if (record) {
+      record.operation = tool.operation;
+      delete record.problemCode;
+      delete record.emitted;
+    }
     try {
       const result = await stub.invoke(tool.operation, payloadOf(tool, args), {
         // #1237: the same stamp the HTTP mount gives an operation's events.
