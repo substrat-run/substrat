@@ -101,10 +101,32 @@ describe("the live route's Upgrade check", () => {
     expect(pureLive).not.toHaveBeenCalled();
   });
 
-  it('reads the Upgrade token case-insensitively, as the RFC does', async () => {
-    const res = await answering.fetch(handshake({ origin: ORIGIN, upgrade: 'WebSocket' }));
+  // `Upgrade` is a comma-separated protocol list (RFC 9110 §7.8), compared per token and
+  // case-insensitively. Each accepted value beside the near misses that are refused.
+  it.each([
+    ['websocket', 'websocket'],
+    ['a mixed-case token', 'WebSocket'],
+    ['a padded token', ' WebSocket '],
+    ['websocket after another protocol', 'h2c, websocket'],
+    ['websocket before another protocol', 'websocket,h2c'],
+  ])('accepts %s', async (_what, upgrade) => {
+    const res = await answering.fetch(handshake({ origin: ORIGIN, upgrade }));
     expect(res.status).toBe(204);
     expect(subscribed).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['another protocol alone', 'h2c'],
+    ['a longer token', 'websocketx'],
+    ['a versioned token', 'websocket2'],
+    ['an empty value', ''],
+    ['a list of empty tokens', ', ,'],
+  ])('answers 426 to %s', async (_what, upgrade) => {
+    const res = await answering.fetch(handshake({ origin: ORIGIN, upgrade }));
+    expect(res.status).toBe(426);
+    expect(res.headers.get('x-substrat-live')).toBe('not-an-upgrade');
+    expect(subscriber).not.toHaveBeenCalled();
+    expect(subscribed).not.toHaveBeenCalled();
   });
 });
 

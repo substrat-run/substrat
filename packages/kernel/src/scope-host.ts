@@ -4906,9 +4906,14 @@ export type LiveRefusal =
  * `Origin` did not come from a browser page. A plain GET with a cookie on it cannot.
  */
 export function isUpgradeRequest(request: LiveUpgradeRequest): boolean {
-  // Case-insensitive: the header is `Upgrade: websocket` by the RFC, but the token is
-  // compared case-insensitively there too, and browsers are not the only clients.
-  return (request.headers.get('Upgrade') ?? '').toLowerCase() === 'websocket';
+  // `Upgrade` is a comma-separated protocol list (RFC 9110 §7.8), e.g. `h2c, websocket`,
+  // and protocol names compare case-insensitively. Browsers send `websocket` alone, but
+  // they are not the only clients. A whole token must match: `websocketx` is not one.
+  // Accepting a list is safe for the Origin rule that follows: `fetch()` cannot set
+  // `Upgrade` at all, so only a real WebSocket client reaches it.
+  return (request.headers.get('Upgrade') ?? '')
+    .split(',')
+    .some((token) => token.trim().toLowerCase() === 'websocket');
 }
 
 /**
