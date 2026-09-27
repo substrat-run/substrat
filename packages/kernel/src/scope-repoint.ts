@@ -76,6 +76,8 @@ export function repointScopeGrants(sql: SwitchSql, destScopeId: string, source?:
 }
 
 const SOURCE_PROBE = 'SELECT 1 FROM _substrat_tuples WHERE object = ? COLLATE BINARY LIMIT 1';
+// Live rows only: a revoked grant (K-21 tombstone) on a third scope authorizes nothing anywhere.
 const STRAY_SCOPES = `SELECT DISTINCT object FROM _substrat_tuples
   WHERE substr(object, 1, 6) = 'scope:' COLLATE BINARY AND object <> ? COLLATE BINARY AND object <> ? COLLATE BINARY
+    AND revoked_at IS NULL
   ORDER BY object`;

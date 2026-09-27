@@ -117,6 +117,11 @@ describe("the ScopeDO's importDump picks the rows to re-point (#1869)", () => {
       new RegExp(`restore refused: the dump holds grants on 1 scope\\(s\\) other than its source .*scope:${third}`),
     );
     expect(tuplesIn(await host.exportScopeLocal(dest))).toEqual(before);
+    // A revoked third-scope grant (K-21 tombstone) authorizes nothing, so it does not refuse.
+    const revoked = ['principal:lena', 'role:reader', `scope:${third}`, null, '2026-01-01T00:00:00.000Z'];
+    const tombstoned = dumpFrom(source).map((t) => ({ ...t, rows: [...t.rows, revoked] }));
+    await host.restoreScopeLocal(dest, tombstoned, { sourceScopeId: source });
+    expect(tuplesIn(await host.exportScopeLocal(dest))).toEqual([...before, revoked]);
     // The platform exported it, so the third-scope row authorized nothing in the source: kept as is.
     await host.restoreScopeLocal(dest, mixed, { sourceScopeId: source, exact: true });
     expect(tuplesIn(await host.exportScopeLocal(dest))).toEqual([
