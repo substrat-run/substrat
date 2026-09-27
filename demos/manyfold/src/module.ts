@@ -44,6 +44,22 @@ type ManyfoldConflictReason = 'slug_taken' | 'not_editable' | 'not_restorable' |
 const conflict = (reason: ManyfoldConflictReason, message: string) =>
   substratError('conflict', message, { reason });
 
+/**
+ * Split a composite (X, Y) cursor back into its two SQL params, refusing one
+ * that isn't shaped like one this vertical issued.
+ *
+ * A malformed `cursor` — no separator, or a half missing — otherwise binds
+ * `undefined` as a SQL parameter, which fails inside SQLite's own binding
+ * (an unclassified error, not the validation refusal a bad request deserves).
+ */
+function splitCompositeCursor(cursor: string): [string, string] {
+  const parts = cursor.split(CURSOR_FIELD_SEPARATOR);
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw substratError('validation_failed', `invalid cursor: ${cursor}`);
+  }
+  return [parts[0], parts[1]];
+}
+
 // ============================================================================
 // Manyfold — a multi-scope headless CMS. The vertical owns the content types
 // (content-types.ts) and, for Milestone A (decision 27; the engine extraction
@@ -470,9 +486,9 @@ const listEntriesOp: OperationHandler<
   // `manyfold_entry_updated_id` index (migrations.ts #0003), which is what
   // turns the walk into a seek instead of a rescan of everything already seen.
   if (raw?.cursor) {
-    const [cUpdatedAt, cId] = raw.cursor.split(CURSOR_FIELD_SEPARATOR);
+    const [cUpdatedAt, cId] = splitCompositeCursor(raw.cursor);
     where.push(order === 'asc' ? '(updated_at, id) > (?, ?)' : '(updated_at, id) < (?, ?)');
-    params.push(cUpdatedAt!, cId!);
+    params.push(cUpdatedAt, cId);
   }
   const rows = ctx.sql.query<EntryRow>(listEntriesSql(where, dir), [...params, limit]);
   // The ROW is paged; the per-entry work below (`loadType`/`currentDraft`,
@@ -531,7 +547,10 @@ interface ContentTypeListItem {
 const listTypesOp: OperationHandler<ListPage | undefined, Page<ContentTypeListItem>> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.read));
   ensureTypes(ctx);
-  const order: 'asc' | 'desc' = raw?.order === 'asc' ? 'asc' : 'desc';
+  // The declaration names no `order`, so `PagedCommon.order`'s own default
+  // applies — ascending, unlike `list-entries`/`list-delivery`, which declare
+  // `order: 'desc'` and default there instead.
+  const order: 'asc' | 'desc' = raw?.order === 'desc' ? 'desc' : 'asc';
   const dir = order === 'asc' ? 'ASC' : 'DESC';
   const limit = listLimitOf(raw?.limit);
   const where: string[] = [];
@@ -706,9 +725,9 @@ const listDeliveryOp: OperationHandler<
   // `manyfold_delivery_published_id` index (migrations.ts #0003) seeks on,
   // rather than a rescan of every row a prior page already answered.
   if (raw?.cursor) {
-    const [cPublishedAt, cEntryId] = raw.cursor.split(CURSOR_FIELD_SEPARATOR);
+    const [cPublishedAt, cEntryId] = splitCompositeCursor(raw.cursor);
     where.push(order === 'asc' ? '(published_at, entry_id) > (?, ?)' : '(published_at, entry_id) < (?, ?)');
-    params.push(cPublishedAt!, cEntryId!);
+    params.push(cPublishedAt, cEntryId);
   }
   const rows = ctx.sql.query<DeliveryRow>(listDeliverySql(where, dir), [...params, limit]);
   const page = pageOf(rows, limit, (r) => `${r.published_at}${CURSOR_FIELD_SEPARATOR}${r.entry_id}`);

@@ -471,3 +471,39 @@ describe('Manyfold demo scenario — paging under tied timestamps (#1833)', () =
     }
   });
 });
+
+describe('Manyfold demo scenario — CodeRabbit review of PR #1847', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  let w: ManyfoldWorld;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-manyfold-review-'));
+    host = buildDemoHost(dir);
+    w = await seedDemo(host, dir);
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a malformed cursor is refused, not bound into SQL as undefined', async () => {
+    const maja = await host.getScope(w.maja, w.t1, w.cafe);
+    // No separator at all — the shape a hand-typed or truncated cursor takes,
+    // as opposed to one a real `nextCursor` ever produces.
+    await expect(maja.invoke('manyfold/list-entries', { cursor: 'not-a-real-cursor' })).rejects.toThrow(
+      /invalid cursor/,
+    );
+    await expect(maja.invoke('manyfold/list-delivery', { cursor: 'not-a-real-cursor' })).rejects.toThrow(
+      /invalid cursor/,
+    );
+  });
+
+  it("list-types defaults to ASCENDING — the declaration names no order, so PagedCommon's own default applies", async () => {
+    const maja = await host.getScope(w.maja, w.t1, w.padel); // no seeded types beyond the four defaults
+    const page = await maja.invoke<Page<{ key: string }>>('manyfold/list-types', {});
+    const keys = page.entries.map((t) => t.key);
+    expect(keys).toEqual([...keys].sort());
+  });
+});
