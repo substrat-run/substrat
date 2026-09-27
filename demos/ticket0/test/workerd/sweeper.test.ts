@@ -877,14 +877,14 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
    * portal has no turns read at all). So each feed is asserted beside that subscriber's
    * own poll, and the frame must never be the wider of the two.
    *
-   * Today it is the NARROWER for the follower, and pinned as such: the walk from
-   * `aiTurn:…` up to its conversation throws on the camelCase entity type (#1856), and
-   * the fan-out reads a check that throws as a refusal. So a follower sees the turn at
-   * the next poll rather than on a push. An agent is unaffected, because a scope-wide
-   * grant answers before any walk. When #1856 is fixed, the pinned `[]` below becomes
-   * the turn's id, and the subset assertion beside it still holds.
+   * For the follower the frame reaches the turn only by walking from `aiTurn:…` up to
+   * its conversation. That walk used to throw on the camelCase entity type (#1856), and
+   * the fan-out read the throw as a refusal, so the follower's feed was pinned `[]`. It
+   * now carries exactly the followed turn, which is also what lets the conversation view
+   * poll at the floor (`app/src/pace.ts`). An agent never needed the walk: a scope-wide
+   * grant answers before it.
    */
-  it("announces an assistant turn to nobody who could not poll it: not the customer, not the thread beside it, and today not the follower (#1856)", async () => {
+  it("announces an assistant turn to exactly who could poll it: the follower, not the customer, not the thread beside it (#1856)", async () => {
     await member('sub-turn-agent', 'agent');
     const follower = await member('sub-turn-follower', 'customer');
     const customer = await member('sub-turn-customer', 'customer');
@@ -935,7 +935,7 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     for (const id of turnsOf(followerFeed)) expect(followerPolls).toContain(id);
     expect(await poll(follower, beside.conversation)).toBe('refused');
     expect(turnsOf(followerFeed)).not.toContain(onBeside.id);
-    expect(turnsOf(followerFeed)).toEqual([]); // #1856: becomes [onFollowed.id]
+    expect(turnsOf(followerFeed)).toEqual([onFollowed.id]); // #1856: the walk up from aiTurn answers
 
     // The positive twin, from the same two writes: an agent hears both turns.
     expect(turnsOf(agentFeed)).toEqual([onFollowed.id, onBeside.id]);

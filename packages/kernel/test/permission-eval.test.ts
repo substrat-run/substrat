@@ -296,3 +296,82 @@ describe('createTupleEvaluator', () => {
     });
   });
 });
+
+/**
+ * #1856: the walk parses every tuple it puts in a proof, and it used to refuse an
+ * upper-case letter in the namespace half, which is how every camelCase entity type is
+ * spelled. `ctx.link` wrote the edge; `check()` threw on it. These run on the shared
+ * evaluator, so both adapters inherit them; the contract suite repeats the headline pair
+ * against real storage.
+ */
+describe('a camelCase entity type (#1856)', () => {
+  const CONV_READ = p('conversation:read');
+  const TURN = { entityType: 'aiTurn', entityId: 't1' };
+
+  it('a grant on the parent reaches a camelCase child through the walk, with the edge in the proof', async () => {
+    const checker = createTupleEvaluator(
+      readerFor({
+        scope: [
+          row('aiTurn:t1', 'parent', 'conversation:c1'),
+          row(`principal:${ALICE}`, 'granted:conversation:read', 'conversation:c1'),
+        ],
+      }),
+    );
+    const decision = await checker.check(alice, CONV_READ, NODE, TURN);
+    expect(decision.allowed && decision.proof).toEqual([
+      { subject: 'aiTurn:t1', relation: 'parent', object: 'conversation:c1' },
+      { subject: `principal:${ALICE}`, relation: 'granted:conversation:read', object: 'conversation:c1' },
+    ]);
+  });
+
+  it('...and without the grant, the same walk DENIES rather than throwing', async () => {
+    const checker = createTupleEvaluator(
+      readerFor({ scope: [row('aiTurn:t1', 'parent', 'conversation:c1')] }),
+    );
+    await expect(checker.check(alice, CONV_READ, NODE, TURN)).resolves.toMatchObject({
+      allowed: false,
+      checked: CONV_READ,
+    });
+  });
+
+  it('a camelCase parent, and a grant directly on a camelCase entity, both answer', async () => {
+    const checker = createTupleEvaluator(
+      readerFor({
+        scope: [
+          row('aiTurn:t1', 'parent', 'widgetSession:w1'),
+          row(`principal:${ALICE}`, 'granted:conversation:read', 'widgetSession:w1'),
+          row(`principal:${ALICE}`, 'granted:conversation:read', 'kbArticle:k1'),
+        ],
+      }),
+    );
+    expect((await checker.check(alice, CONV_READ, NODE, TURN)).allowed).toBe(true);
+    expect(
+      (await checker.check(alice, CONV_READ, NODE, { entityType: 'kbArticle', entityId: 'k1' })).allowed,
+    ).toBe(true);
+  });
+
+  /**
+   * Stored data: every edge the walk could read before still reads the same. These are
+   * the namespace spellings the old pattern accepted that a stricter "letter first"
+   * grammar would have refused, which is why the widening is the old set plus A–Z and
+   * nothing else.
+   */
+  it.each(['9item', '_item', '-item', 'kb_source', 'v2-item'])(
+    'a stored edge through a %s entity still walks as it did',
+    async (type) => {
+      const checker = createTupleEvaluator(
+        readerFor({
+          scope: [
+            row(`${type}:x1`, 'parent', 'list:l1'),
+            row(`principal:${ALICE}`, 'granted:todo:read', 'list:l1'),
+          ],
+        }),
+      );
+      const decision = await checker.check(alice, TODO_READ, NODE, { entityType: type, entityId: 'x1' });
+      expect(decision.allowed && decision.proof).toEqual([
+        { subject: `${type}:x1`, relation: 'parent', object: 'list:l1' },
+        { subject: `principal:${ALICE}`, relation: 'granted:todo:read', object: 'list:l1' },
+      ]);
+    },
+  );
+});

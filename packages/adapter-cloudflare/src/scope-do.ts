@@ -10,6 +10,7 @@ import {
   eventId,
   instant,
   objectRef,
+  entityObjectRef,
   toWireFailure,
   type WireFailure,
   grantRefFromProof,
@@ -5366,6 +5367,7 @@ export function defineScopeDO(
          */
         grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
           assertImpersonationWrites(impersonation, 'ctx.grant');
+          entityObjectRef(entity, 'ctx.grant'); // #1856: a tuple the walk can read back
           const held = await runCheck(permission, entity);
           if (!held.allowed) {
             throw new PermissionDenied(
@@ -5415,6 +5417,8 @@ export function defineScopeDO(
         }),
         link: (child: EntityRef, parent: EntityRef) => {
           assertImpersonationWrites(impersonation, 'ctx.link');
+          entityObjectRef(child, 'ctx.link'); // #1856: an edge the walk can read back
+          entityObjectRef(parent, 'ctx.link');
           const allowed = relations.get(child.entityType);
           if (!allowed?.has(parent.entityType)) {
             throw new Error(

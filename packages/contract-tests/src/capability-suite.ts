@@ -407,6 +407,29 @@ export function capabilityContractSuite(
         expect(errorCodeOf(err)).toBe('validation_failed');
       });
 
+      // #1856: the walk reads the root back as `<entityType>:<entityId>`. alice holds the
+      // key tenant-wide, so the delegation check would ALLOW these; only the grammar
+      // refuses them, and it refuses before a row is written.
+      it('a root the permission walk could not read back is refused at the mint, and leaves no row', async () => {
+        const count = async () =>
+          (await (await as(alice)).invoke<unknown[]>('cap/list', { includeRevoked: true })).length;
+        const before = await count();
+        for (const entity of [
+          { entityType: 'folder', entityId: 'F 2' },
+          { entityType: 'fol:der', entityId: 'F' },
+          { entityType: 'fol der', entityId: 'F' },
+        ]) {
+          const err = await refusal(share(alice, { entity, permissions: [CAP_READ] }));
+          expect(errorCodeOf(err)).toBe('validation_failed');
+          expect((err as Error).message).toMatch(/ctx\.capabilities\.mint: malformed entity ref/);
+        }
+        expect(await count()).toBe(before);
+        // The twin: the same minter, key and shape, well-formed, mints.
+        await expect(share(alice, { entity: folder('F'), permissions: [CAP_READ] })).resolves.toMatchObject({
+          id: expect.any(String),
+        });
+      });
+
       it('a secret that is not one of ours, or one never minted, exchanges for nothing', async () => {
         expect(await exchange('not-a-secret')).toBeNull();
         expect(await exchange(`${CAPABILITY_SECRET_PREFIX}${'A'.repeat(43)}`)).toBeNull();

@@ -10,7 +10,8 @@ import {
   tenantId,
   verticalSlug,
 } from './ids.js';
-import { entityRef } from './events.js';
+import { entityRef, type EntityRef } from './events.js';
+import { substratError, type ValidationIssue } from './errors.js';
 
 // ============================================================================
 // Authored surface — what humans and agents write (design doc §4.1).
@@ -330,11 +331,63 @@ export type SystemSwitchRecord = z.infer<typeof systemSwitchRecord>;
 // need not be ULIDs. The kernel-owned namespaces above ARE all branded ULIDs at their
 // own boundary — `org:` became one in K-22, which is when this comment stopped being
 // aspirational.
+//
+// The namespace half admits upper case (#1856) because an entity type is a module's
+// own name for a thing, and module names are camelCase by convention (`aiTurn`,
+// `widgetSession`). `ctx.link` wrote those edges while the walk refused to read them
+// back, so an entity-narrowed check that reached one threw instead of answering.
+// Upper case is the ONLY addition: every string this accepted before it still accepts,
+// and every string it refused that has no upper-case letter before the first colon it
+// still refuses. The kernel's own namespaces are exact lower-case words, so none of
+// them can be spelled by a camelCase entity type.
+const OBJECT_NAMESPACE = /^[A-Za-z0-9_-]+$/;
+const OBJECT_ID = /^[^\s]+$/;
 export const objectRef = z
   .string()
-  .regex(/^[a-z0-9_-]+:[^\s]+$/)
+  .regex(/^[A-Za-z0-9_-]+:[^\s]+$/)
   .brand<'ObjectRef'>();
 export type ObjectRef = z.infer<typeof objectRef>;
+
+/**
+ * The tuple object an entity ref is stored as — `<entityType>:<entityId>` — refused with
+ * `validation_failed` (`Substrat.validation_failed`) when the evaluator could not read it
+ * back (#1856).
+ *
+ * The write verbs that turn an `EntityRef` into a tuple (`ctx.link`, `ctx.grant`,
+ * `ctx.capabilities.mint`, `HostAdmin.grant` narrowed onto an entity) call this, so an
+ * edge the walk cannot parse fails loudly where it is written rather than as a ZodError
+ * out of some later `ctx.check`.
+ *
+ * Each half is judged ON ITS OWN, which is stricter than parsing the joined string: the
+ * joined string splits at its FIRST colon, so `{ entityType: 'a:b', entityId: 'c' }`
+ * would parse as `a:b:c` and then read back as `{ a, 'b:c' }` — a different entity. A
+ * colon in the id is fine (it lands after the split); a colon in the type is refused.
+ *
+ * `EntityRef` itself is deliberately NOT tightened: it types event payloads that are
+ * already stored, and a consumer's parse of one must not start failing. Only the write
+ * into the permission graph is held to this grammar.
+ */
+export function entityObjectRef(entity: EntityRef, verb: string): ObjectRef {
+  const errors: ValidationIssue[] = [];
+  if (typeof entity?.entityType !== 'string' || !OBJECT_NAMESPACE.test(entity.entityType)) {
+    errors.push({
+      path: 'entityType',
+      message: 'letters, digits, _ and - only (no colon, no whitespace), at least one',
+    });
+  }
+  if (typeof entity?.entityId !== 'string' || !OBJECT_ID.test(entity.entityId)) {
+    errors.push({ path: 'entityId', message: 'no whitespace, at least one character' });
+  }
+  if (errors.length > 0) {
+    throw substratError(
+      'validation_failed',
+      `${verb}: malformed entity ref ${JSON.stringify(entity)} — the permission graph ` +
+        'stores it as <entityType>:<entityId>, and the evaluator could not read that back',
+      { errors },
+    );
+  }
+  return objectRef.parse(`${entity.entityType}:${entity.entityId}`);
+}
 
 // 'member' | 'parent' | 'role:staff' | 'granted:workorder:read' …
 export const relationName = z.string().regex(/^[a-z0-9_:-]+$/);

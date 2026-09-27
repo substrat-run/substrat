@@ -14,6 +14,7 @@ import {
   permissionKey,
   principalId as principalIdSchema,
   substratError,
+  entityObjectRef,
   type BecomeCapabilityInput,
   type CapabilityAuthor,
   type CapabilityExchange,
@@ -475,6 +476,8 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
       deps.assertWrites('ctx.capabilities.mint');
       const minter = principalOf(deps.subject, 'ctx.capabilities.mint');
       const input = capabilityMintInput.parse(raw);
+      // #1856: the walk reads the root back as `<entityType>:<entityId>`.
+      entityObjectRef(input.entity, 'ctx.capabilities.mint');
       const permissions = [...new Set(input.permissions)];
       const operations = input.operations ? [...new Set(input.operations)] : null;
       for (const op of operations ?? []) {
