@@ -1462,6 +1462,28 @@ export interface RequestRecord {
   versionId: string | null;
 }
 
+/** #1747: one template and the lines written from it. */
+export interface LogPattern {
+  template: string;
+  count: number;
+  /** Of every matching `ctx.log` line in the window, 0–1. */
+  share: number;
+  levels: Record<'debug' | 'info' | 'warn' | 'error', number>;
+  dominant: 'debug' | 'info' | 'warn' | 'error';
+  /** Lines per bucket, oldest first; an empty bucket is absent. */
+  buckets: { start: string; count: number }[];
+}
+
+/** #1747: the pattern read. */
+export interface LogPatterns {
+  total: number;
+  bucketMs: number;
+  patterns: LogPattern[];
+  /** More templates existed than were listed. */
+  truncated: boolean;
+  estimated: boolean;
+}
+
 export interface ObservabilityLogEvent {
   timestamp: number | null;
   level: string | null;
@@ -1832,6 +1854,8 @@ export const api = {
       search?: string;
       /** One call's lines (#1525) — narrows within this app, never past it. */
       invocationId?: string;
+      /** #1747: one pattern's lines. */
+      template?: string;
       hours?: number;
       limit?: number;
       since?: string;
@@ -1849,6 +1873,9 @@ export const api = {
     call<RequestVolume>(`/apps/${encodeURIComponent(scopeId)}/observability/requests/volume?${query.toString()}`),
   appRequestFacets: (scopeId: string, query: URLSearchParams) =>
     call<RequestFacets>(`/apps/${encodeURIComponent(scopeId)}/observability/requests/facets?${query.toString()}`),
+  /** #1747: one app's `ctx.log` lines grouped by template. */
+  appLogPatterns: (scopeId: string, query: URLSearchParams) =>
+    call<LogPatterns>(`/apps/${encodeURIComponent(scopeId)}/observability/log-patterns?${query.toString()}`),
   appRequests: (scopeId: string, query: URLSearchParams) =>
     call<RequestRecord[]>(`/apps/${encodeURIComponent(scopeId)}/observability/requests/list?${query.toString()}`),
   /** The tenant's GitHub-import state — connection status + the selected account's repos. */

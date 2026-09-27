@@ -6032,7 +6032,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // Raw, not `|| undefined`: an EMPTY id is a caller bug, and folding it into
         // "absent" would answer it with the tenant's whole log.
         invocationId: c.req.query('invocationId'),
-        template: c.req.query('template') || undefined,
+        // Raw, like the invocation id: an EMPTY template is a caller bug, and folding it into
+        // "absent" would answer it with the app's whole log instead of the schema's 400.
+        template: c.req.query('template'),
         hours: c.req.query('hours'),
         since: c.req.query('since') || undefined,
         until: c.req.query('until') || undefined,

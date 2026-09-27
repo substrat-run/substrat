@@ -420,10 +420,40 @@ describe('menu children (#1767)', () => {
     vi.spyOn(api, 'appFacets').mockResolvedValue({ buckets: [], total: 0, erased: 0, truncated: false });
     const onNav = await render('events', 'app-a');
     expect(heading()).toBe('Logs');
-    expect(modes()).toEqual(['Lines', 'Requests', 'Events']);
+    expect(modes()).toEqual(['Lines', 'Requests', 'Patterns', 'Events']);
     expect(container.querySelector('[aria-label="Sub-view"]')).toBeNull();
     click(button('Lines'));
     expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-a', view: 'logs' }));
+  });
+
+  it('opens a pattern on its template alone, dropping filters left over from Lines (#1747)', async () => {
+    vi.spyOn(api, 'appLogPatterns').mockResolvedValue({
+      total: 3,
+      bucketMs: 360_000,
+      truncated: false,
+      estimated: false,
+      patterns: [{ template: 'sent {id}', count: 3, share: 1, levels: { debug: 0, info: 3, warn: 0, error: 0 }, dominant: 'info', buckets: [] }],
+    });
+    const onNav = vi.fn();
+    await act(async () =>
+      root.render(
+        <Observability
+          apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
+          query="view=patterns&app=app-a&level=error&search=boom&invocationId=01J8Z3KX0Q5R7T9V1W2Y4A6B8C"
+          scopeId="app-a"
+          view="patterns"
+          focusEventType={null}
+          cursor={null}
+          onNav={onNav}
+        />,
+      ),
+    );
+    await act(async () => container.querySelector('[data-pattern]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    const next = onNav.mock.calls.at(-1)![0];
+    expect(next).toMatchObject({ app: 'app-a', view: 'logs', tpl: 'sent {id}' });
+    expect(next.level).toBeUndefined();
+    expect(next.search).toBeUndefined();
+    expect(next.invocationId).toBeUndefined();
   });
 
   it('asks for an app on Logs with All apps, instead of falling back to Pulse', async () => {

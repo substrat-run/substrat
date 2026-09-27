@@ -1385,6 +1385,18 @@ export class TenantNarrowedControlPlane {
     return this.call<unknown>(`/observability/tenant-requests?${q.toString()}`);
   }
 
+  /**
+   * MY log patterns (#1747) — this tenant's `ctx.log` lines grouped by template. `params`
+   * pass through as they arrived, the plane parses them; the tenant is set here, after them.
+   */
+  async tenantLogPatterns(scopeId: string, params: ReadonlyArray<readonly [string, string]>): Promise<unknown> {
+    const q = new URLSearchParams();
+    for (const [k, v] of params) q.append(k, v);
+    q.set('scopeId', scopeId);
+    q.set('tenantId', this.tenantId);
+    return this.call<unknown>(`/observability/tenant-log-patterns?${q.toString()}`);
+  }
+
   /** MY logs — same grain, same narrowing, same reasoning as `tenantMetrics` above. */
   async tenantLogs(input: {
     scopeId?: string;
@@ -1393,6 +1405,8 @@ export class TenantNarrowedControlPlane {
     search?: string;
     /** One call's lines (#1525). Narrows within this tenant and app; the plane judges its shape. */
     invocationId?: string;
+    /** #1747: one pattern's lines — a `ctx.log` template, verbatim. */
+    template?: string;
     hours: number;
     /** The chart's time cursor (#1447) — a window that ENDS in the past, which `hours`
      *  cannot name. Sent only when the caller has one; the plane defaults the rest. */
@@ -1428,6 +1442,7 @@ export class TenantNarrowedControlPlane {
     // `!== undefined`, not truthiness like its neighbours: an EMPTY id is a caller bug the
     // plane answers with a 400, and dropping it here would answer it with the whole log.
     if (input.invocationId !== undefined) q.set('invocationId', input.invocationId);
+    if (input.template !== undefined) q.set('template', input.template);
     if (input.since) q.set('since', input.since);
     if (input.until) q.set('until', input.until);
     const events =

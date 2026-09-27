@@ -8,6 +8,7 @@ import { card, MonoTag } from '../components/ui';
 import { LogList } from '../components/LogList';
 import { EVENT_GROUPS, bucketRows, dimensionLabel, emptyGroupingText, predatesRule, withheldOf, type BucketRow, type EventGroup } from '../lib/log-stream';
 import { mockEventFacets } from '../lib/mock-events';
+import { mockPatternLines } from '../lib/mock-patterns';
 
 /**
  * The panels the team Observability page composes for ONE app (#1447) — its traffic per
@@ -80,6 +81,8 @@ export function TenantLogs({
   const level = filters.level;
   const search = filters.search;
   const invocationId = filters.invocationId;
+  // #1747: one pattern's lines, opened from the Patterns mode.
+  const template = filters.tpl;
   const [logs, setLogs] = useState<ObservabilityLogEvent[] | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
 
@@ -90,7 +93,14 @@ export function TenantLogs({
     void (async () => {
       try {
         const events = DEV_MOCK
-          ? MOCK_LOG_LINES.filter(
+          ? template
+            ? mockPatternLines(
+                template,
+                cursor
+                  ? { from: Date.parse(cursor.from), to: Date.parse(cursor.to) }
+                  : { from: Date.now() - hours * 3_600_000, to: Date.now() },
+              )
+            : MOCK_LOG_LINES.filter(
               (l) =>
                 (!level || l.level === level) &&
                 (!search || (l.message ?? '').includes(search)) &&
@@ -110,6 +120,7 @@ export function TenantLogs({
               ...(cursor ? { since: cursor.from, until: cursor.to } : { hours }),
               limit: 100,
               invocationId,
+              ...(template ? { template } : {}),
             });
         if (live) setLogs(events);
       } catch (e) {
@@ -129,7 +140,7 @@ export function TenantLogs({
     return () => {
       live = false;
     };
-  }, [scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, invocationId]);
+  }, [scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, invocationId, template]);
 
   const quiet = { padding: 16, fontSize: 13, color: 'var(--text-tertiary)' };
   return (
@@ -169,9 +180,15 @@ export function TenantLogs({
             Showing latest <span style={{ fontFamily: 'var(--font-mono)' }}>{logs.length}</span> {logs.length === 1 ? 'line' : 'lines'} ·
           </span>
         )}
-        <span title="Up to 100 recent lines from bounded invocation discovery (40 invocations, normally 20 lines each). Filters search that bounded coverage, not an exhaustive log archive. Retention and sampling depend on the backend.">
-          Bounded read — the newest 100 lines of the latest 40 invocations; an empty result does not prove nothing matched.
-        </span>
+        {template ? (
+          // #1747: a pattern's lines are read directly by their template — no invocation
+          // walk, so the only bound is the page size.
+          <span>The newest 100 lines written from this template in this window.</span>
+        ) : (
+          <span title="Up to 100 recent lines from bounded invocation discovery (40 invocations, normally 20 lines each). Filters search that bounded coverage, not an exhaustive log archive. Retention and sampling depend on the backend.">
+            Bounded read — the newest 100 lines of the latest 40 invocations; an empty result does not prove nothing matched.
+          </span>
+        )}
       </div>
     </div>
   );

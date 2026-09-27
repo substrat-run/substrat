@@ -18,6 +18,8 @@ export interface ObsQuery {
   lvl?: string;
   status?: string;
   surface?: string;
+  /** #1747: one log pattern — a `ctx.log` template, verbatim. Narrows the Lines mode. */
+  tpl?: string;
 }
 export const OBS_KEYS = [
   'app',
@@ -37,6 +39,7 @@ export const OBS_KEYS = [
   'lvl',
   'status',
   'surface',
+  'tpl',
 ] as const;
 export function readObsQuery(search: string): ObsQuery {
   const p = new URLSearchParams(search);

@@ -504,7 +504,8 @@ export interface ObservabilityReader {
   /**
    * The tenant's `ctx.log` lines grouped by the template they were written from (#1747).
    * Grouping is by EQUALITY on the recorded template, not by mining free text for similar
-   * lines, so a pattern is exactly the lines one call site wrote. Lines written without
+   * lines, so a pattern is exactly the lines written from one template (two call sites
+   * sharing a template share a pattern). Lines written without
    * `ctx.log` have no template and are not in any pattern.
    *
    * Optional, with the tenant grain's usual reasons: absent must 501, never an empty list,

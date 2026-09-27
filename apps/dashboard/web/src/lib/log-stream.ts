@@ -6,15 +6,15 @@ import type { ObsQuery } from './observability-query';
  * the card and its tests read the same rules.
  *
  * A mode is still a sub-view in the URL — `?view=logs` is Lines, `?view=requests` is
- * Requests, `?view=events` is Events — so every link written before the card existed
- * lands on the mode it meant. Patterns is in the design but not here: nothing records a
- * line template yet (#1747), and a tab over no data is a dead end.
+ * Requests, `?view=patterns` is Patterns, `?view=events` is Events — so every link written
+ * before the card existed lands on the mode it meant.
  */
-export type LogMode = 'logs' | 'requests' | 'events';
+export type LogMode = 'logs' | 'requests' | 'patterns' | 'events';
 
 export const LOG_MODES: { value: LogMode; label: string }[] = [
   { value: 'logs', label: 'Lines' },
   { value: 'requests', label: 'Requests' },
+  { value: 'patterns', label: 'Patterns' },
   { value: 'events', label: 'Events' },
 ];
 
@@ -22,6 +22,7 @@ export const LOG_MODES: { value: LogMode; label: string }[] = [
 export function modeHint(mode: LogMode): string {
   if (mode === 'events') return 'Events the app emitted, grouped · click an event type to narrow to it';
   if (mode === 'requests') return 'One row per request · tick a value to filter, drag the chart to zoom';
+  if (mode === 'patterns') return 'Lines grouped by the template they were written with · click one for its lines';
   return 'Click a row for structured fields · any underlined value filters';
 }
 
