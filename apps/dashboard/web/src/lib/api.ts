@@ -1415,6 +1415,53 @@ export interface TenantMetricsBucket {
 }
 
 /** One recent log event from a team vertical's deployed service. */
+/** #1746: one bucket of the request histogram — per-level counts from `start`. */
+export interface RequestVolumeBucket {
+  start: string;
+  info: number;
+  warn: number;
+  error: number;
+  /** Requests whose line predates `level` — a version not re-pushed since #1746. */
+  unrecorded: number;
+}
+
+/** #1746: the request histogram over a window. Buckets with no requests are absent. */
+export interface RequestVolume {
+  bucketMs: number;
+  buckets: RequestVolumeBucket[];
+  /** The backend counted from a sample; the numbers are estimates. */
+  estimated: boolean;
+}
+
+/** #1746: facet counts — each counted with every other filter applied, its own left out. */
+export interface RequestFacets {
+  total: number;
+  facets: Record<string, { value: string | number; count: number }[]>;
+  estimated: boolean;
+}
+
+/** #1746: one request, as its stamped invocation line recorded it. `null` = not recorded. */
+export interface RequestRecord {
+  timestamp: number | null;
+  invocationId: string | null;
+  scopeId: string | null;
+  vertical: string | null;
+  surface: string | null;
+  method: string | null;
+  path: string | null;
+  status: number | null;
+  threw: boolean;
+  durationMs: number | null;
+  level: string | null;
+  operation: string | null;
+  problemCode: string | null;
+  principalKind: string | null;
+  eventCount: number | null;
+  eventTypes: string[];
+  entities: string[];
+  versionId: string | null;
+}
+
 export interface ObservabilityLogEvent {
   timestamp: number | null;
   level: string | null;
@@ -1796,6 +1843,14 @@ export const api = {
       `/apps/${encodeURIComponent(scopeId)}/observability/logs?${p.toString()}`,
     );
   },
+  /** #1746: one app's request histogram, facet counts and request list. `query` is built
+   *  by `requestReadQuery`, so the three reads always carry the same window and filters. */
+  appRequestVolume: (scopeId: string, query: URLSearchParams) =>
+    call<RequestVolume>(`/apps/${encodeURIComponent(scopeId)}/observability/requests/volume?${query.toString()}`),
+  appRequestFacets: (scopeId: string, query: URLSearchParams) =>
+    call<RequestFacets>(`/apps/${encodeURIComponent(scopeId)}/observability/requests/facets?${query.toString()}`),
+  appRequests: (scopeId: string, query: URLSearchParams) =>
+    call<RequestRecord[]>(`/apps/${encodeURIComponent(scopeId)}/observability/requests/list?${query.toString()}`),
   /** The tenant's GitHub-import state — connection status + the selected account's repos. */
   gitRepos: (account?: string) =>
     call<GitReposResult>(`/github/repos${account ? `?account=${encodeURIComponent(account)}` : ''}`),

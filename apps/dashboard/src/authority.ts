@@ -1362,6 +1362,29 @@ export class TenantNarrowedControlPlane {
       }));
   }
 
+  /**
+   * MY requests (#1746) — the request record's histogram, facet counts and list, same grain
+   * and narrowing as `tenantLogs`. `params` are passed on as they arrived: the plane parses
+   * the window, the facet filters and each read's own knob, and a second reading of them
+   * here could only disagree with it. The tenant is set here and nowhere else, after them,
+   * so no param can name another.
+   */
+  async tenantRequests(
+    kind: 'volume' | 'facets' | 'list',
+    scopeId: string,
+    params: ReadonlyArray<readonly [string, string]>,
+  ): Promise<unknown> {
+    const q = new URLSearchParams();
+    for (const [k, v] of params) q.append(k, v);
+    q.set('scopeId', scopeId);
+    q.set('tenantId', this.tenantId);
+    // Each route spelled out, not templated: `credential-reach.test.ts` reads the call
+    // sites out of this file and checks each against the credential's allowlist.
+    if (kind === 'volume') return this.call<unknown>(`/observability/tenant-request-volume?${q.toString()}`);
+    if (kind === 'facets') return this.call<unknown>(`/observability/tenant-request-facets?${q.toString()}`);
+    return this.call<unknown>(`/observability/tenant-requests?${q.toString()}`);
+  }
+
   /** MY logs — same grain, same narrowing, same reasoning as `tenantMetrics` above. */
   async tenantLogs(input: {
     scopeId?: string;

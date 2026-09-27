@@ -420,7 +420,7 @@ describe('menu children (#1767)', () => {
     vi.spyOn(api, 'appFacets').mockResolvedValue({ buckets: [], total: 0, erased: 0, truncated: false });
     const onNav = await render('events', 'app-a');
     expect(heading()).toBe('Logs');
-    expect(modes()).toEqual(['Lines', 'Events']);
+    expect(modes()).toEqual(['Lines', 'Requests', 'Events']);
     expect(container.querySelector('[aria-label="Sub-view"]')).toBeNull();
     click(button('Lines'));
     expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-a', view: 'logs' }));
