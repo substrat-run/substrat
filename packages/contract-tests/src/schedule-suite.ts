@@ -5,6 +5,8 @@ import type { ScopeHostFixture } from './scope-host-suite.js';
 import { scheduleMod } from './modules.js';
 
 const SCHED_MODULE = moduleId.parse('@test/sched');
+// Crockford base32, 26 chars — the shape a minted `ulid()` always has (#1525).
+const ULID_SHAPE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 // Never called: the sweep runs no connector sweepers here. A throwing stub proves it.
 const noFetch = (() => {
   throw new Error('fetch should not be called by the schedule phase');
@@ -87,13 +89,31 @@ export function scheduleContractSuite(
       // never a person — the attribution the whole issue is about.
       const stub = await host.getScope(reader, t, s);
       expect(await stub.invoke('sched/count')).toBe(1);
-      const outbox = (await stub.invoke('sched/read-outbox')) as { type: string; actor: string }[];
+      const outbox = (await stub.invoke('sched/read-outbox')) as {
+        type: string;
+        actor: string;
+        invocation_id: string | null;
+      }[];
       const tick = outbox.find((r) => r.type === 'sched.ticked');
       expect(tick).toBeDefined();
       expect(JSON.parse(tick!.actor)).toEqual({ system: '@test/sched' });
       // #1231: a schedule fires THROUGH invoke, so its emit is stamped with the
       // schedule's own operation — the honest answer to "what ran".
       expect((tick as { operation?: string | null }).operation).toBe('sched/tick');
+
+      // #1525: the runner mints ONE id for the call and carries it two places — the
+      // event this invoke emitted, and the schedule-state row recording the run — so
+      // a reader can join them. A freshness verdict invokes nothing and stays null.
+      expect(tick!.invocation_id).toMatch(ULID_SHAPE);
+      const state = (await stub.invoke('sched/schedule-state')) as {
+        kind: string;
+        schedule_op: string;
+        invocation_id: string | null;
+      }[];
+      const firedRow = state.find((r) => r.kind === 'schedule' && r.schedule_op === 'sched/tick');
+      expect(firedRow?.invocation_id).toBe(tick!.invocation_id);
+      const freshnessRow = state.find((r) => r.kind === 'freshness');
+      expect(freshnessRow?.invocation_id).toBeNull();
     });
 
     it('skips a schedule still inside its cadence window', async () => {
@@ -107,6 +127,7 @@ export function scheduleContractSuite(
         kind: string;
         schedule_op: string;
         last_status: string;
+        invocation_id: string | null;
       }[];
       // THREE rows, and the middle two are the whole of #1288: a freshness row and a
       // schedule row whose keys are byte-identical, coexisting because `kind` leads
@@ -114,10 +135,25 @@ export function scheduleContractSuite(
       // `freshness:sched.ticked` schedule and the evaluator's expectation on
       // `sched.ticked` wrote over each other under one key, and the survivor was
       // whichever phase of the pass ran last.
+      //
+      // #1525: this pass SKIPPED every row (still inside cadence), so none of them
+      // was rewritten — each `invocation_id` is exactly what pass 1 left. The
+      // freshness row never had one to begin with; the two schedule rows fired last
+      // pass and still carry the id that run minted.
       expect(state).toEqual([
-        { kind: 'freshness', schedule_op: 'freshness:sched.ticked', last_status: 'ok' },
-        { kind: 'schedule', schedule_op: 'freshness:sched.ticked', last_status: 'ok' },
-        { kind: 'schedule', schedule_op: 'sched/tick', last_status: 'ok' },
+        { kind: 'freshness', schedule_op: 'freshness:sched.ticked', last_status: 'ok', invocation_id: null },
+        {
+          kind: 'schedule',
+          schedule_op: 'freshness:sched.ticked',
+          last_status: 'ok',
+          invocation_id: expect.stringMatching(ULID_SHAPE),
+        },
+        {
+          kind: 'schedule',
+          schedule_op: 'sched/tick',
+          last_status: 'ok',
+          invocation_id: expect.stringMatching(ULID_SHAPE),
+        },
       ]);
     });
 
@@ -174,15 +210,20 @@ export function scheduleContractSuite(
         kind: string;
         schedule_op: string;
         last_status: string;
+        invocation_id: string | null;
       }[];
       // Every row survived, every key verbatim, and each landed under the kind its key
       // implied — which is how the two families were told apart before the column,
       // so deriving from it is the one backfill that preserves what was recorded.
       // The statuses differ on purpose: a backfill that dropped rows and let the
       // sweep re-create them would read as 'ok' on both.
+      //
+      // #1525: both rows predate `invocation_id` itself, not just `kind` — the dumped
+      // DDL above has neither column. `null` is the honest answer the rebuild's INSERT
+      // leaves behind for a column no source row ever had, same as `kind`'s own gap.
       expect(state).toEqual([
-        { kind: 'freshness', schedule_op: 'freshness:sched.ticked', last_status: 'failed' },
-        { kind: 'schedule', schedule_op: 'sched/tick', last_status: 'ok' },
+        { kind: 'freshness', schedule_op: 'freshness:sched.ticked', last_status: 'failed', invocation_id: null },
+        { kind: 'schedule', schedule_op: 'sched/tick', last_status: 'ok', invocation_id: null },
       ]);
     });
   });

@@ -1177,16 +1177,21 @@ export const scheduleMod: ModuleRegistration = {
       never,
       unknown
     >,
+    // #1525: `invocation_id` selected alongside — a schedule contract assertion joins
+    // this to the same column on `sched/schedule-state` to prove they carry ONE id.
     'sched/read-outbox': ((ctx) =>
-      ctx.sql.query<{ type: string; actor: string; operation: string | null }>(
-        'SELECT type, actor, operation FROM _substrat_outbox ORDER BY id',
+      ctx.sql.query<{ type: string; actor: string; operation: string | null; invocation_id: string | null }>(
+        'SELECT type, actor, operation, invocation_id FROM _substrat_outbox ORDER BY id',
       )) as OperationHandler<never, unknown>,
     // #1288: `kind` is selected, and the order leads with it — two rows may now share
     // a `schedule_op`, so ordering by that alone leaves the pair's order to the query
     // planner and an assertion on the array would be flaky rather than wrong.
+    // #1525: `invocation_id` selected alongside — null for a 'freshness' row (nothing
+    // ran) and for a legacy row predating the column; a fired 'schedule' row carries
+    // the id its own invoke ran under.
     'sched/schedule-state': ((ctx) =>
-      ctx.sql.query<{ kind: string; schedule_op: string; last_status: string }>(
-        `SELECT kind, schedule_op, last_status FROM _substrat_schedule_state
+      ctx.sql.query<{ kind: string; schedule_op: string; last_status: string; invocation_id: string | null }>(
+        `SELECT kind, schedule_op, last_status, invocation_id FROM _substrat_schedule_state
           ORDER BY kind, schedule_op`,
       )) as OperationHandler<never, unknown>,
   },
