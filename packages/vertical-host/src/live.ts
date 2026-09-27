@@ -42,7 +42,7 @@
  * filtered per subscriber against the module's declared `liveTargets`. Subscribing
  * grants nothing.
  */
-import type { Context, Hono } from 'hono';
+import type { Context, Env, Hono } from 'hono';
 import {
   isUpgradeRequest,
   LIVE_MODE_HEADER,
@@ -53,20 +53,19 @@ import {
 /** Where `mountLiveReads` mounts the route unless told otherwise. */
 export const LIVE_PATH = '/api/live';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyContext = Context<any>;
-
 /** Who is subscribing, and to which scope — what `LiveReadSurface.subscribe` takes besides the request. */
 export type LiveSubscriber = Omit<Parameters<LiveReadSurface['subscribe']>[0], 'request'>;
 
-export interface LiveRouteOptions {
+/** Typed over the app's own Hono `Env`, so `c.env` in either callback is the vertical's bindings. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface LiveRouteOptions<E extends Env = any> {
   /** The host's live-read surface, or undefined where it has none (the pure host). */
-  live: (c: AnyContext) => LiveReadSurface<Request, Response> | undefined;
+  live: (c: Context<E>) => LiveReadSurface<Request, Response> | undefined;
   /**
    * The signed-in caller and the scope they are in, or null for nobody. Only called for
    * a WebSocket handshake that passed the Origin check, on a host that has live reads.
    */
-  subscriber: (c: AnyContext) => Promise<LiveSubscriber | null>;
+  subscriber: (c: Context<E>) => Promise<LiveSubscriber | null>;
   /** The route's path. Defaults to `LIVE_PATH` (`/api/live`). */
   path?: string;
 }
@@ -88,8 +87,11 @@ function sameOrigin(req: Request): boolean {
  * Mount the live-read route: the Upgrade gate, the Origin gate, the `501` on a host with
  * no live reads, then the subscription as whoever `subscriber` says is asking.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function mountLiveReads(app: Hono<any, any, any>, options: LiveRouteOptions): void {
+export function mountLiveReads<E extends Env>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app: Hono<E, any, any>,
+  options: LiveRouteOptions<E>,
+): void {
   app.get(options.path ?? LIVE_PATH, async (c) => {
     if (!isUpgradeRequest(c.req.raw)) {
       return c.json({ error: 'live reads are a WebSocket surface' }, 426, {

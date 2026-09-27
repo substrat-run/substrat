@@ -1108,11 +1108,10 @@ app.post('/api/email/inbound', async (c) => {
 // is resolved exactly as `stub` resolves one. What they are then told is the scope's
 // decision, frame by frame, not this route's.
 mountLiveReads(app, {
-  live: (c) => hostFor(c.env as Env).liveReads,
+  live: (c) => hostFor(c.env).liveReads,
   subscriber: async (c) => {
-    const env = c.env as Env;
-    const node = nodeFor(c.req.raw, env);
-    const principal = await principalFor(env, c.req.raw);
+    const node = nodeFor(c.req.raw, c.env);
+    const principal = await principalFor(c.env, c.req.raw);
     return principal ? { ...node, principal } : null;
   },
 });
