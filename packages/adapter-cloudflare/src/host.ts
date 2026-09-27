@@ -7268,9 +7268,10 @@ export class CloudflareScopeHost implements ScopeHost {
    * that is still pending (inside the bound), or armed with this move's instance as its doomed
    * one. Those are exactly the rewinds whose restart discards this OFF, and each of them captured
    * the module ON. The row joins the claim's state and is stamped on the hold object's clock, and
-   * a pending claim's rewind then waits for it to be a full settle old (`rewindHolding`). S0 is
-   * read scope-wide for this, so the join costs no read of its own. A claim created after S0 is
-   * not joined; its rewind's own re-read after the settle finds this OFF in storage instead.
+   * a pending claim's rewind then waits for it to be a full settle old (`rewindHolding`). The
+   * candidates are read twice, in S0 and again after the move (S1), so a claim written while
+   * this move was queued is joined too. Both reads are scope-wide; S1 is taken only by an OFF
+   * that changed the switch.
    *
    * A failed claims read does not stop the move. It is thrown after it, and the caller treats
    * that as a failed move, with the claims kept, which errs toward OFF. A failed join is thrown
@@ -7302,7 +7303,13 @@ export class CloudflareScopeHost implements ScopeHost {
       }
     }
     if (to === 'off' && outcome.changed) {
-      const joins = new Set(scopeClaims.filter((c) => pendingLive(c) || c.doomed === instance).map((c) => c.claimId));
+      // S1, read after the move: a claim written while this move was queued behind the capture
+      // is in S1 only. S0 still counts: a claim pending in S0 may have armed with another
+      // instance by S1, and this move may have landed before that arm.
+      const after = await this.switchHoldsStub().switchHoldClaims(scopeId);
+      const joins = new Set(
+        [...scopeClaims, ...after].filter((c) => pendingLive(c) || c.doomed === instance).map((c) => c.claimId),
+      );
       if (joins.size > 0) this.holdSnapshot = null;
       for (const claimId of joins) await this.switchHoldsStub().switchHoldClaim(scopeId, [moduleId], claimId);
     }

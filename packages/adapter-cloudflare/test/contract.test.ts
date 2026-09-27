@@ -2368,6 +2368,19 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   });
 
   /**
+   * #1839 review: the OFF was queued behind a rewind's capture, and the rewind wrote its claim
+   * while the move ran. S0 predates that claim; the join re-reads after the move and finds it.
+   */
+  it('#1839: an OFF joins a claim written while it was queued: the join re-reads the claims after the move', async () => {
+    const s = await newScope();
+    onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
+    const counting = countingScopes(env.SCOPE);
+    counting.afterMove = () => holdsStub().switchHoldClaim(s, [EARLIER], 'written-while-queued');
+    expect(await deployment(counting.ns).systemSwitchLocal(s, SCHED, 'off')).toMatchObject({ changed: true });
+    expect(await claimsOn(s)).toMatchObject([{ claimId: 'written-while-queued', state: 'pending' }]);
+  });
+
+  /**
    * #1839: the settle argument, per row. A pass that read its snapshot just before the late OFF
    * joined must not act on that snapshot against the rewound storage. The rewind waits until the
    * joined row is a full settle old, on the hold object's clock, so that snapshot is too old by
