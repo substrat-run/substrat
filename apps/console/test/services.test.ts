@@ -4,6 +4,7 @@ import {
   countTrailingPromotes,
   PENDING_STALE_MINUTES,
   pendingCaption,
+  pendingWarns,
   readPending,
   summarizeSystemSwitches,
   sweepLoopRows,
@@ -142,7 +143,7 @@ describe('Services pending platform requests (#1840)', () => {
 
 describe('the pending caption (#1840)', () => {
   it('says none, never zero, with nothing on record', () => {
-    expect(pendingCaption({ kind: 'none' })).toMatch(/no sweep pass on record/);
+    expect(pendingCaption({ kind: 'none' })).toMatch(/no sweep pass on record in the last 14 days/);
   });
   it('always carries the age, and says stale and floor when they hold', () => {
     const plain = pendingCaption({ kind: 'count', count: 2, floor: false, minutesAgo: 7, stale: false });
@@ -171,5 +172,15 @@ describe('the Sweep loops tile rows (#1840)', () => {
   it('still shows at most the tile\'s rows after dropping them', () => {
     const many = Array.from({ length: SWEEP_LOOP_ROWS * 2 }, (_, i) => ({ kind: i % 2 ? ('schedule' as const) : ('platform-request' as const) }));
     expect(sweepLoopRows(many)).toHaveLength(SWEEP_LOOP_ROWS);
+  });
+});
+
+describe('the pending line warns (#1840)', () => {
+  it('when nothing is on record, and when the pass is stale', () => {
+    expect(pendingWarns({ kind: 'none' })).toBe(true);
+    expect(pendingWarns({ kind: 'count', count: 0, floor: false, minutesAgo: 90, stale: true })).toBe(true);
+  });
+  it('not for a fresh pass — the twin', () => {
+    expect(pendingWarns({ kind: 'count', count: 3, floor: true, minutesAgo: 5, stale: false })).toBe(false);
   });
 });

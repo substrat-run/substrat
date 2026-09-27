@@ -5,6 +5,7 @@ import { ApiError, walkAll, type Api } from '../lib/api';
 import {
   countTrailingPromotes,
   pendingCaption,
+  pendingWarns,
   PROMOTE_TRAILING_MINUTES,
   readPending,
   summarizeSystemSwitches,
@@ -250,7 +251,7 @@ export function Services({
                     Failed: gave up terminally in the last {data.windowDays} days
                     {data.capped ? ' — at least this many; the count hit its bound' : ''}.
                   </div>
-                  <div style={pending.kind === 'count' && pending.stale ? { ...caption, color: 'var(--status-warning-fg)' } : caption}>
+                  <div style={pendingWarns(pending) ? { ...caption, color: 'var(--status-warning-fg)' } : caption}>
                     {pendingCaption(pending)}
                   </div>
                 </>
