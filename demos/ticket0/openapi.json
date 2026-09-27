@@ -8327,7 +8327,8 @@
                     }
                   },
                   "turnId": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^\\S+$"
                   }
                 },
                 "required": [
@@ -8646,7 +8647,8 @@
                     "type": "string"
                   },
                   "turnId": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^\\S+$"
                   },
                   "model": {
                     "type": "string"
@@ -8977,7 +8979,8 @@
                     "type": "string"
                   },
                   "turnId": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^\\S+$"
                   },
                   "model": {
                     "type": "string"
@@ -12372,7 +12375,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             }
           },
           {
@@ -12604,7 +12608,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             }
           },
           {

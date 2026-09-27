@@ -126,6 +126,14 @@ export const searchTerm = z
 export const ASSISTANT_ERROR_MAX = 2000;
 
 /**
+ * An assistant turn's id: caller-supplied, the metering ledger's dedupe key, and the
+ * `aiTurn` entity id `ctx.link` writes. The link refuses an empty or whitespace-bearing
+ * id (#1856), so the input parse refuses it first, naming the field (#1870). Not held
+ * to a ULID: the worker sends one, but the seed's turns are keyed by name.
+ */
+export const turnIdSchema = z.string().regex(/^\S+$/, 'a turn id is non-empty, with no whitespace');
+
+/**
  * How many people the desk report names. A desk has staff, not a population, and the
  * per-agent breakdown is a leaderboard rather than a directory — an uncapped group-by
  * inside an aggregate is a page nobody declared, discovered in production.
@@ -1949,7 +1957,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
        * Same transaction, one act. Optional and behaviour-preserving — a human reply
        * that is not sending a draft names no turn.
        */
-      turnId: z.string().optional(),
+      turnId: turnIdSchema.optional(),
     }),
     output: ticket0Entities.message.fields,
     http: { method: 'POST', path: '/conversations/{conversationId}/replies' },
@@ -2765,7 +2773,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     permission: { key: 'conversation:draft', entity: 'conversation', idFrom: 'conversationId' },
     input: z.object({
       conversationId: z.string(),
-      turnId: z.string(),
+      turnId: turnIdSchema,
       model: z.string(),
       body: z.string().min(1),
       inputTokens: z.number().int().nonnegative(),
@@ -2819,7 +2827,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     input: z.object({
       conversationId: z.string(),
       /** The customer message that went unanswered — the turn's id, so a retry finds it. */
-      turnId: z.string(),
+      turnId: turnIdSchema,
       model: z.string(),
       error: z.string().min(1).max(ASSISTANT_ERROR_MAX),
     }),

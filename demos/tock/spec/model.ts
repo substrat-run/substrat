@@ -22,6 +22,17 @@
  */
 import { defineEntities, defineOperations, emitModel, z } from '@substrat-run/contracts';
 
+/**
+ * A source's key, held to one pattern on EVERY input that names a source — not only the
+ * one that declares it. The key is also an entity id `ctx.link` writes (`sourceRef`), and
+ * the link refuses an empty or whitespace-bearing id deep inside the handler (#1856); a
+ * malformed key belongs to the input parse instead, where the refusal names the field
+ * (#1870).
+ */
+export const sourceKeySchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9-]*$/, 'a source key is lower-kebab, starting with a letter');
+
 /** The lifecycle, in one place. `failed` is reachable from any of the first three. */
 export const RUN_STATUSES = ['received', 'profiled', 'mapped', 'counted', 'failed'] as const;
 
@@ -596,7 +607,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     summary: 'Declare a named stream of files',
     permission: 'schema:manage',
     input: z.object({
-      key: z.string().regex(/^[a-z][a-z0-9-]*$/, 'a source key is lower-kebab, starting with a letter'),
+      key: sourceKeySchema,
       title: z.string().min(1),
       expectedCadence: z.string().min(1),
     }),
@@ -629,7 +640,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     summary: 'Declare the fields that tell record kinds apart, and the kinds',
     permission: 'schema:manage',
     input: z.object({
-      sourceKey: z.string(),
+      sourceKey: sourceKeySchema,
       /** Ordered. `["type","event"]` splits twice; `[]` is a stream of one shape. */
       discriminators: z.array(z.string().min(1)).max(4),
       /**
@@ -675,7 +686,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   'tock/list-variants': {
     summary: 'The record kinds declared for a source',
     permission: 'report:read',
-    input: z.object({ sourceKey: z.string() }),
+    input: z.object({ sourceKey: sourceKeySchema }),
     output: z.object({
       discriminators: z.array(z.string()),
       variants: z.array(tockEntities.variant.fields),
@@ -702,7 +713,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     summary: 'Save the next version of a source shape',
     permission: 'schema:manage',
     input: z.object({
-      sourceKey: z.string(),
+      sourceKey: sourceKeySchema,
       /**
        * Which kind this shape describes. Omitted means the ENVELOPE — the fields every
        * record carries, whatever its kind. That default is what keeps a single-shape
@@ -769,7 +780,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     summary: 'Declare a stable shape that counts are built over',
     permission: 'schema:manage',
     input: z.object({
-      sourceKey: z.string(),
+      sourceKey: sourceKeySchema,
       key: z.string().regex(/^[a-z][a-z0-9-]*$/, 'an output key is lower-kebab, starting with a letter'),
       fields: z.record(
         z.string().min(1).max(200),
@@ -794,7 +805,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   'tock/list-output-schemas': {
     summary: 'The stable shapes declared for a source',
     permission: 'report:read',
-    input: z.object({ sourceKey: z.string() }),
+    input: z.object({ sourceKey: sourceKeySchema }),
     output: tockEntities.output_schema.fields,
     paged: { over: { entity: 'output_schema', sortable: ['key', 'version'], filterable: ['source_key', 'key'] } },
     http: { method: 'GET', path: '/sources/{sourceKey}/outputs' },
@@ -815,7 +826,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     summary: 'Map one record kind into one output shape',
     permission: 'schema:manage',
     input: z.object({
-      sourceKey: z.string(),
+      sourceKey: sourceKeySchema,
       variantKey: z.string().default(''),
       outputKey: z.string(),
       rules: z.array(z.object({ from: z.string().min(1), to: z.string().min(1) })),
@@ -835,7 +846,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   'tock/list-mappings': {
     summary: 'How each kind becomes an output shape',
     permission: 'report:read',
-    input: z.object({ sourceKey: z.string() }),
+    input: z.object({ sourceKey: sourceKeySchema }),
     output: tockEntities.mapping.fields,
     paged: { over: { entity: 'mapping', sortable: ['variant_key', 'output_key', 'version'], filterable: ['source_key'] } },
     http: { method: 'GET', path: '/sources/{sourceKey}/mappings' },
@@ -844,7 +855,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   'tock/list-schemas': {
     summary: 'Every version of a source shape',
     permission: 'report:read',
-    input: z.object({ sourceKey: z.string(), variantKey: z.string().optional() }),
+    input: z.object({ sourceKey: sourceKeySchema, variantKey: z.string().optional() }),
     output: tockEntities.schema.fields,
     paged: { over: { entity: 'schema', sortable: ['version'], filterable: ['source_key', 'variant_key'] } },
     http: { method: 'GET', path: '/sources/{sourceKey}/schemas' },
@@ -859,7 +870,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     summary: 'Record a delivered file and open a run over it',
     permission: 'run:manage',
     input: z.object({
-      sourceKey: z.string(),
+      sourceKey: sourceKeySchema,
       filename: z.string().min(1),
       byteSize: z.number().int().positive(),
       /** How the host read it, and which columns carry the instant and the subject. */
@@ -1088,7 +1099,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   'tock/list-runs': {
     summary: 'The runs over a source, newest first',
     permission: 'report:read',
-    input: z.object({ sourceKey: z.string() }),
+    input: z.object({ sourceKey: sourceKeySchema }),
     output: tockEntities.run.fields,
     paged: {
       over: { entity: 'run', sortable: ['received_at', 'period_from'], filterable: ['source_key', 'status'] },
@@ -1154,7 +1165,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   'tock/deviations': {
     summary: 'Where a source declared shape and its data disagree',
     permission: 'report:read',
-    input: z.object({ sourceKey: z.string(), schemaVersion: z.number().int().positive().optional() }),
+    input: z.object({ sourceKey: sourceKeySchema, schemaVersion: z.number().int().positive().optional() }),
     output: z.object({
       sourceKey: z.string(),
       schemaVersion: z.number().int(),
@@ -1190,7 +1201,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     summary: 'When a field first and last arrived, across every run',
     permission: 'report:read',
     input: z.object({
-      sourceKey: z.string(),
+      sourceKey: sourceKeySchema,
       field: z.string().optional(),
       limit: z.number().int().positive().max(FIELD_HISTORY_MAX).optional(),
     }),
@@ -1220,7 +1231,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   'tock/field-coverage': {
     summary: 'When a field started arriving, and how much history predates it',
     permission: 'report:read',
-    input: z.object({ sourceKey: z.string(), field: z.string().min(1) }),
+    input: z.object({ sourceKey: sourceKeySchema, field: z.string().min(1) }),
     output: z.object({
       field: z.string(),
       /** Null when the field has never arrived at all — a declaration with no evidence yet. */
@@ -1280,7 +1291,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     summary: 'Counts for one grain and grouping over a period',
     permission: 'report:read',
     input: z.object({
-      sourceKey: z.string(),
+      sourceKey: sourceKeySchema,
       /** Which stable shape to read. Omitted is the envelope — what a source counts before
        *  any output is declared, and what every run counted before outputs existed. */
       outputKey: z.string().default(''),
