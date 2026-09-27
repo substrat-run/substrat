@@ -272,3 +272,65 @@ describe('determinism', () => {
     );
   });
 });
+
+/**
+ * A path parameter carries the schema of the input field it fills (#1870).
+ *
+ * `mountOperations` writes the path value over that field and then parses the input,
+ * so a pattern the field declares is enforced on the path. The builder used to emit
+ * `{ type: 'string' }` for every path parameter — so on a GET, where there is no body,
+ * the constraint appeared nowhere in the document at all.
+ */
+describe('a path parameter documents the field it fills (#1870)', () => {
+  const sourceKey = z.string().regex(/^[a-z][a-z0-9-]*$/);
+  const paths = (
+    buildOpenApiDocument({ title: 'Test', version: '1.0.0' }, {
+      'source/runs': {
+        summary: 'List runs',
+        input: z.object({ sourceKey }),
+        http: { method: 'GET', path: '/sources/{sourceKey}/runs' },
+      },
+      'source/receive': {
+        summary: 'Receive a run',
+        input: z.object({ sourceKey, filename: z.string() }),
+        http: { method: 'POST', path: '/sources/{sourceKey}/runs' },
+      },
+      'page/at': {
+        summary: 'A page by number',
+        input: z.object({ n: z.number().int() }),
+        http: { method: 'GET', path: '/pages/{n}' },
+      },
+      'page/undeclared': {
+        summary: 'A path parameter no input field names',
+        input: z.object({}),
+        http: { method: 'GET', path: '/things/{thingId}' },
+      },
+    } as never) as Record<string, any>
+  ).paths;
+  const pathSchema = (url: string, verb: string, name: string) =>
+    (paths[url][verb].parameters as Record<string, any>[]).find((p) => p['in'] === 'path' && p['name'] === name)?.[
+      'schema'
+    ];
+
+  it('carries the field pattern on a read, which has no body to carry it', () => {
+    expect(pathSchema('/api/sources/{sourceKey}/runs', 'get', 'sourceKey')).toEqual({
+      type: 'string',
+      pattern: '^[a-z][a-z0-9-]*$',
+    });
+  });
+
+  it('carries it on a write too, beside the body', () => {
+    expect(pathSchema('/api/sources/{sourceKey}/runs', 'post', 'sourceKey')).toEqual({
+      type: 'string',
+      pattern: '^[a-z][a-z0-9-]*$',
+    });
+  });
+
+  it('keeps a plain string for a field that is not one — a path segment is text', () => {
+    expect(pathSchema('/api/pages/{n}', 'get', 'n')).toEqual({ type: 'string' });
+  });
+
+  it('keeps a plain string when no input field names the parameter', () => {
+    expect(pathSchema('/api/things/{thingId}', 'get', 'thingId')).toEqual({ type: 'string' });
+  });
+});

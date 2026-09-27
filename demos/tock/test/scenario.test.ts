@@ -167,6 +167,30 @@ describe('a day of logs becomes a number', () => {
     expect(rows.entries).toHaveLength(4);
   });
 
+  it('a malformed source key is refused at the input parse on every operation that names one (#1870)', async () => {
+    // Before #1870 only `declare-source` held the pattern, so an undeclared malformed key
+    // reached `ctx.link(sourceRef(…))` and was refused there, inside the handler (#1856).
+    const ines = await as('ines');
+    const tomas = await as('tomas');
+    for (const sourceKey of ['', 'Fjord CDN']) {
+      await expect(ines.invoke('tock/save-schema', { sourceKey, fields: SCHEMA_V1 })).rejects.toThrow(
+        /source key is lower-kebab/,
+      );
+      await expect(
+        tomas.invoke('tock/receive-run', {
+          sourceKey,
+          filename: 'x.log',
+          byteSize: 1,
+          contentHash: 'sha256:x',
+          storageKey: 'runs/x.log',
+          periodFrom: '2026-03-14T00:00:00.000Z',
+          periodTo: '2026-03-15T00:00:00.000Z',
+        }),
+      ).rejects.toThrow(/source key is lower-kebab/);
+      await expect(tomas.invoke('tock/list-runs', { sourceKey })).rejects.toThrow(/source key is lower-kebab/);
+    }
+  });
+
   it('5 — Ines declares the shape and Tomas maps and counts', async () => {
     const ines = await as('ines');
     const schema = await ines.invoke<{ version: number }>('tock/save-schema', {
