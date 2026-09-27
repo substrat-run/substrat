@@ -11,8 +11,10 @@ import type {
   RequestRecord,
   RequestVolumeBucket,
   TenantRequestScope,
+  LogPattern,
+  LogPatternLevel,
 } from './observability.js';
-import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, REQUEST_FACET_TOP } from './observability.js';
+import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, REQUEST_FACET_TOP, LOG_PATTERN_TOP } from './observability.js';
 
 /** A telemetry filter: a leaf comparison, or a group of them (the API nests up to 4 deep). */
 type TelemetryFilter =
@@ -218,6 +220,52 @@ function describeInvocation(e: RecentLogEvent): RecentLogEvent {
     // Surfaced as the level it reads as, so the list's own colouring is honest about
     // which rows are failures without the caller having to filter for them.
     level: e.level ?? (isFailedInvocation(e) ? 'error' : 'info'),
+  };
+}
+
+/**
+ * The filters for a tenant's `ctx.log` lines (#1746/#1747). The tenant predicate first and
+ * always, as for the invocation line; everything else is one more equality on a field the
+ * host stamped (`ModuleLogLine`), so a caller's filter can only narrow.
+ */
+function moduleLineFilters(input: {
+  tenantId: string;
+  scopeId?: string;
+  level?: string;
+  search?: string;
+  invocationId?: string;
+  template?: string;
+}): Array<{ key: string; operation: string; type: string; value: string }> {
+  const filters = [
+    { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
+    { key: 'substrat', operation: 'eq', type: 'string', value: 'log' },
+  ];
+  if (input.scopeId) filters.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
+  if (input.invocationId !== undefined) {
+    filters.push({ key: 'invocationId', operation: 'eq', type: 'string', value: input.invocationId });
+  }
+  if (input.template !== undefined) filters.push({ key: 'template', operation: 'eq', type: 'string', value: input.template });
+  if (input.level) filters.push({ key: 'level', operation: 'eq', type: 'string', value: input.level.toLowerCase() });
+  if (input.search) filters.push({ key: 'message', operation: 'includes', type: 'string', value: input.search });
+  return filters;
+}
+
+/**
+ * Give a `ctx.log` line its own message and level (#1746). Like the invocation line it is
+ * pure JSON, so the platform's `$metadata.message` is unset; the line carries its rendered
+ * `message` and its `level`, and those are what the list shows. Anything else passes through.
+ */
+function describeModuleLine(e: RecentLogEvent): RecentLogEvent {
+  const source = ((e.raw as Record<string, unknown>)?.['source'] ?? {}) as Record<string, unknown>;
+  if (source['substrat'] !== 'log') return e;
+  const str = (v: unknown) => (typeof v === 'string' ? v : null);
+  return {
+    ...e,
+    message: str(source['message']) ?? e.message,
+    level: str(source['level']) ?? e.level,
+    invocationId: str(source['invocationId']),
+    // The operation the line was written under, where the stamped line shows its route.
+    trigger: str(source['operation']) ?? e.trigger,
   };
 }
 
@@ -627,6 +675,103 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       return { total, facets, estimated };
     },
 
+    // #1747: `ctx.log` lines grouped by template. ONE `calculations` query grouped by
+    // (template, level) answers all three things a pattern shows — its count, its level
+    // split and its histogram — plus one ungrouped count for the total, so a pattern's
+    // share is of every matching line and not only of the templates that made the list.
+    async tenantLogPatterns(input) {
+      const timeframe = { from: input.from, to: input.to };
+      const filters: TelemetryFilter[] = [
+        { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
+        { key: 'substrat', operation: 'eq', type: 'string', value: 'log' },
+      ];
+      if (input.scopeId) filters.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
+      for (const [key, values] of [['level', input.level], ['operation', input.operation]] as const) {
+        if (!values || values.length === 0) continue;
+        const leaves: TelemetryFilter[] = values.map((v) => ({ key, operation: 'eq', type: 'string', value: v }));
+        filters.push(leaves.length === 1 ? leaves[0]! : { kind: 'group', filterCombination: 'or', filters: leaves });
+      }
+      // A (template, level) row per group: at most four levels per template, so this many
+      // rows always covers the top templates in full.
+      const rowLimit = LOG_PATTERN_TOP * 4;
+      const [totalCalc, grouped] = await Promise.all([
+        queryCalculation(filters, timeframe, { chartType: 'aggregate' }),
+        queryCalculation(filters, timeframe, {
+          groupBys: [
+            { type: 'string', value: 'template' },
+            { type: 'string', value: 'level' },
+          ],
+          granularity: input.buckets,
+          chartType: 'timeseries_and_aggregate',
+          limit: rowLimit,
+          orderBy: { value: 'requests', order: 'desc' },
+        }),
+      ]);
+      let estimated = false;
+      const total = (totalCalc.aggregates ?? []).reduce((n, p) => {
+        estimated ||= sampled(p);
+        return n + countOf(p);
+      }, 0);
+      const levelOfLine = (v: unknown): LogPatternLevel =>
+        v === 'debug' || v === 'warn' || v === 'error' ? v : 'info';
+      const byTemplate = new Map<string, { levels: Record<LogPatternLevel, number>; buckets: Map<number, number> }>();
+      const entry = (template: string) => {
+        let e = byTemplate.get(template);
+        if (!e) {
+          e = { levels: { debug: 0, info: 0, warn: 0, error: 0 }, buckets: new Map() };
+          byTemplate.set(template, e);
+        }
+        return e;
+      };
+      const aggregates = grouped.aggregates ?? [];
+      for (const p of aggregates) {
+        const template = groupValue(p, 'template');
+        // A line with no template is not a `ctx.log` line; it cannot be one pattern.
+        if (typeof template !== 'string' || template === '') continue;
+        entry(template).levels[levelOfLine(groupValue(p, 'level'))] += countOf(p);
+        estimated ||= sampled(p);
+      }
+      const times: number[] = [];
+      for (const point of grouped.series ?? []) {
+        const start = point.time ? Date.parse(point.time) : NaN;
+        if (!Number.isFinite(start)) continue;
+        times.push(start);
+        for (const d of point.data ?? []) {
+          const template = groupValue(d, 'template');
+          if (typeof template !== 'string' || !byTemplate.has(template)) continue;
+          const b = byTemplate.get(template)!.buckets;
+          b.set(start, (b.get(start) ?? 0) + countOf(d));
+        }
+      }
+      const patterns: LogPattern[] = [...byTemplate.entries()]
+        .map(([template, e]) => {
+          const count = e.levels.debug + e.levels.info + e.levels.warn + e.levels.error;
+          const dominant = (['error', 'warn', 'info', 'debug'] as const).reduce((best, l) =>
+            e.levels[l] > e.levels[best] ? l : best,
+          );
+          return {
+            template,
+            count,
+            share: total > 0 ? count / total : 0,
+            levels: e.levels,
+            dominant,
+            buckets: [...e.buckets.entries()]
+              .sort(([a], [b]) => a - b)
+              .map(([t, n]) => ({ start: new Date(t).toISOString(), count: n })),
+          };
+        })
+        .sort((a, b) => b.count - a.count || a.template.localeCompare(b.template))
+        .slice(0, LOG_PATTERN_TOP);
+      return {
+        total,
+        bucketMs: bucketWidth(times, Math.max(1, Math.round((input.to - input.from) / input.buckets))),
+        patterns,
+        // The backend stopped at the row limit, or there were more templates than listed.
+        truncated: aggregates.length >= rowLimit || byTemplate.size > LOG_PATTERN_TOP,
+        estimated,
+      };
+    },
+
     // #1746: the requests themselves. The stamped lines alone — no correlation walk,
     // because a request's own line is the whole record and the Requests view has no use
     // for its siblings until a row is opened (which `tenantLogs` with the invocation id
@@ -1005,6 +1150,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     level?: string;
     search?: string;
     invocationId?: string;
+    /** #1747: only the `ctx.log` lines written from this template. */
+    template?: string;
     hours: number;
     since?: string;
     until?: string;
@@ -1080,6 +1227,21 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // Over-fetched relative to `limit`, because each invocation may pull siblings in
     // phase two and the cap belongs on the merged answer.
     const phaseOneLimit = Math.min(input.limit * 2, 200);
+    // #1746/#1747: the `ctx.log` lines, read DIRECTLY. The host stamped each with its
+    // tenant, scope and invocation, so none of the correlation below is needed to find
+    // their owner — and every filter can go into the query, level and search included,
+    // because these lines carry both as their own fields. They carry no `vertical`, so a
+    // read narrowed by vertical alone (no scope) leaves them out rather than showing a
+    // line from another of the tenant's apps.
+    const moduleLines =
+      input.vertical && !input.scopeId ? Promise.resolve([]) : queryRaw(moduleLineFilters(input), timeframe, input.limit);
+    // A template names `ctx.log` lines only: an invocation line has none.
+    if (input.template !== undefined) {
+      return (await moduleLines)
+        .map((e) => describeModuleLine(projectEvent(e)))
+        .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
+        .slice(0, input.limit);
+    }
     const [stamped, errorLines] = isErrorRead
       ? await Promise.all([
           Promise.all([
@@ -1113,7 +1275,6 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const trusted = invocationIds(stamped);
     const trustedIds = new Set(trusted);
     const candidates = invocationIds(errorLines).filter((id) => !trustedIds.has(id));
-    if (trusted.length === 0 && candidates.length === 0) return [];
 
     // Phase two: everything sharing those invocations. One query per request id — the
     // telemetry API's filters are single-valued equality, the same constraint
@@ -1150,7 +1311,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // would have hidden the stamped line whose request id is the only way to reach the
     // line the caller is actually looking for.
     const byId = new Map<string, Record<string, unknown>>();
-    for (const e of [...stamped, ...sibling.flat()]) {
+    // A `ctx.log` line can arrive twice — directly, and as a sibling of its invocation —
+    // and the event id is what folds the two into one row.
+    for (const e of [...stamped, ...sibling.flat(), ...(await moduleLines)]) {
       const source = (e['source'] ?? {}) as Record<string, unknown>;
       if (source['router'] === 'request') continue;
       const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
@@ -1161,7 +1324,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const search = input.search;
     return [...byId.values()]
       .map((e) => projectEvent(e))
-      .map((e) => describeInvocation(e))
+      .map((e) => describeModuleLine(describeInvocation(e)))
       // A plain comparison is enough only because `describeInvocation` ran first: a stamped
       // line has no level of its own (Cloudflare sets `$metadata.level` for a string log
       // and leaves it unset for a pure JSON one), so without that step every one of them
@@ -1208,8 +1371,10 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     timeframe: { from: number; to: number },
     shape: {
       groupBy?: { type: string; value: string };
+      /** Several group keys at once (#1747's template × level). Wins over `groupBy`. */
+      groupBys?: Array<{ type: string; value: string }>;
       granularity?: number;
-      chartType: 'timeseries' | 'aggregate';
+      chartType: 'timeseries' | 'aggregate' | 'timeseries_and_aggregate';
       limit?: number;
       orderBy?: { value: string; order: 'asc' | 'desc' };
     },
@@ -1226,7 +1391,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           datasets: ['cloudflare-workers'],
           filters,
           calculations: [{ operator: 'count', alias: 'requests' }],
-          ...(shape.groupBy ? { groupBys: [shape.groupBy] } : {}),
+          ...(shape.groupBys ? { groupBys: shape.groupBys } : shape.groupBy ? { groupBys: [shape.groupBy] } : {}),
           ...(shape.limit === undefined ? {} : { limit: shape.limit }),
           ...(shape.orderBy ? { orderBy: shape.orderBy } : {}),
         },

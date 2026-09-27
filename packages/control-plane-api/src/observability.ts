@@ -361,6 +361,39 @@ export interface RequestRecord {
   versionId: string | null;
 }
 
+/** The levels a `ctx.log` line is written at. */
+export type LogPatternLevel = 'debug' | 'info' | 'warn' | 'error';
+
+/** One template and the lines written from it (#1747). */
+export interface LogPattern {
+  /** The call site's template, verbatim — `{name}` marks each placeholder. */
+  template: string;
+  count: number;
+  /** `count` over the window's total, 0–1. */
+  share: number;
+  levels: Record<LogPatternLevel, number>;
+  /** The level most of its lines were written at. */
+  dominant: LogPatternLevel;
+  /** Its lines per bucket, oldest first; a bucket with none is absent. */
+  buckets: { start: string; count: number }[];
+}
+
+/** The pattern read (#1747). */
+export interface LogPatterns {
+  /** `ctx.log` lines matching the filters, all templates. */
+  total: number;
+  bucketMs: number;
+  /** The most frequent templates, most frequent first. */
+  patterns: LogPattern[];
+  /** More templates exist than were grouped; the list is the top of them, not all. */
+  truncated: boolean;
+  /** The backend counted from a sample; the numbers are estimates. */
+  estimated: boolean;
+}
+
+/** How many templates the pattern read lists. */
+export const LOG_PATTERN_TOP = 50;
+
 export interface ObservabilityReader {
   /** Opt-in: tenant metrics honor explicit absolute windows rather than ignoring them. */
   absoluteTenantWindows?: boolean;
@@ -460,11 +493,36 @@ export interface ObservabilityReader {
      * nothing here rather than that tenant's lines. Absent means every call, as before.
      */
     invocationId?: string;
+    /** #1747: only the `ctx.log` lines written from this template — a pattern opened. */
+    template?: string;
     hours: number;
     since?: string;
     until?: string;
     limit: number;
   }): Promise<RecentLogEvent[]>;
+
+  /**
+   * The tenant's `ctx.log` lines grouped by the template they were written from (#1747).
+   * Grouping is by EQUALITY on the recorded template, not by mining free text for similar
+   * lines, so a pattern is exactly the lines one call site wrote. Lines written without
+   * `ctx.log` have no template and are not in any pattern.
+   *
+   * Optional, with the tenant grain's usual reasons: absent must 501, never an empty list,
+   * which reads as "this app logs nothing".
+   */
+  tenantLogPatterns?(input: {
+    tenantId: string;
+    scopeId?: string;
+    /** Epoch milliseconds, inclusive / exclusive — the route resolves the window. */
+    from: number;
+    to: number;
+    /** How many buckets each pattern's mini histogram is cut into. */
+    buckets: number;
+    /** Alternatives: a line matches if its level is any of these. */
+    level?: readonly string[];
+    /** Alternatives: a line matches if it was written under any of these operations. */
+    operation?: readonly string[];
+  }): Promise<LogPatterns>;
 
   /**
    * The request histogram (#1746): per-level counts per bucket over a tenant's stamped
