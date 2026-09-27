@@ -1,4 +1,5 @@
 import type { PlatformRequestBacklog, SweepRunEntry, SystemSwitchRecord, Vertical, VerticalChannel } from '@substrat-run/contracts';
+import { SWEEP_RUN_RETENTION_DAYS } from '@substrat-run/kernel';
 
 // An ordinary in-flight promote must not light up the tile.
 export const PROMOTE_TRAILING_MINUTES = 10;
@@ -60,8 +61,6 @@ export function readPending(pending: PlatformRequestBacklog['pending'] | undefin
   return { kind: 'count', count: pending.count, floor: pending.floor, minutesAgo, stale: minutesAgo > PENDING_STALE_MINUTES };
 }
 
-/** How long the control plane keeps sweep-run rows (the kernel's `SWEEP_RUN_RETENTION_DAYS`). */
-export const SWEEP_RECORD_RETENTION_DAYS = 14;
 
 /** Whether the tile shows its pending line in the warning colour: stale, or nothing known. */
 export function pendingWarns(reading: PendingReading): boolean {
@@ -73,7 +72,7 @@ export function pendingCaption(reading: PendingReading): string {
   if (reading.kind === 'none') {
     // Either no pass has ever run, or none has in the whole retention window — the row
     // would have been pruned. Both mean the same to the reader: nothing is known.
-    return `Pending: no sweep pass on record in the last ${SWEEP_RECORD_RETENTION_DAYS} days, so nothing is known about what is waiting.`;
+    return `Pending: no sweep pass on record in the last ${SWEEP_RUN_RETENTION_DAYS} days, so nothing is known about what is waiting.`;
   }
   const stale = reading.stale ? '; the sweep has not recorded a pass since' : '';
   const floor = reading.floor ? '. At least this many: some scopes could not be drained that pass' : '';
