@@ -1,6 +1,6 @@
 import { runInDurableObject } from 'cloudflare:test';
 import type { ScopeDumpTable } from '@substrat-run/contracts';
-import { SWITCH_HOLDS_NAME } from '../src/host.js';
+import { SWITCH_HOLDS_NAME, type SwitchHoldClaim } from '../src/host.js';
 
 /**
  * #1819: a PITR rewind, as close to the real one as workerd allows.
@@ -91,12 +91,13 @@ export async function landRewind(
 /** The deployment's hold object (`SWITCH_HOLDS_NAME`) in this namespace, typed for the tests. */
 export function holdsStub(ns: DurableObjectNamespace): {
   switchHoldsAll(): Promise<{ scopeId: string; moduleId: string }[]>;
-  switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string, at: string): Promise<void>;
+  switchHoldToken(): Promise<number>;
+  switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string, token: number): Promise<void>;
+  switchHoldYoungestMs(scopeId: string, claimId: string): Promise<number | null>;
+  switchHoldJoin(scopeId: string, moduleId: string, claimIds: string[]): Promise<void>;
   switchHoldArm(scopeId: string, claimId: string, doomed: string | null): Promise<void>;
-  switchHoldClaims(
-    scopeId: string,
-    moduleId: string,
-  ): Promise<{ claimId: string; state: 'pending' | 'armed'; doomed: string | null; heldAt: string }[]>;
+  switchHoldDrop(scopeId: string, claimId: string): Promise<void>;
+  switchHoldClaims(scopeId: string): Promise<SwitchHoldClaim[]>;
   switchHoldRelease(scopeId: string, moduleId: string | null, claimIds: string[] | null): Promise<void>;
 } {
   return ns.get(ns.idFromName(SWITCH_HOLDS_NAME)) as unknown as ReturnType<typeof holdsStub>;

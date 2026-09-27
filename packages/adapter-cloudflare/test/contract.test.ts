@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from 'cloudflare:test';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
 import { armRewind, holdsStub as holdsOf, landRewind, restartNow } from './pitr-emulation.js';
 import {
@@ -51,6 +51,7 @@ import {
 } from '@substrat-run/contract-tests';
 import {
   CloudflareScopeHost,
+  SWITCH_HOLD_EXTRA_WAITS,
   SWITCH_HOLD_PENDING_MAX_MS,
   SWITCH_HOLD_SETTLE_MS,
   SWITCH_HOLD_SNAPSHOT_MS,
@@ -2179,6 +2180,32 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   const holdsStub = () => holdsOf(env.SCOPE);
   const heldOn = async (s: ScopeId) =>
     (await holdsStub().switchHoldsAll()).filter((h) => h.scopeId === s).map((h) => h.moduleId);
+  /** The claims on this scope's SCHED rows. */
+  const claimsOn = async (s: ScopeId) => (await holdsStub().switchHoldClaims(s)).filter((c) => c.moduleId === SCHED);
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  /** A claim written the way a rewind writes one: with a token read just before. */
+  const claim = async (s: ScopeId, moduleIds: string[], claimId: string) =>
+    holdsStub().switchHoldClaim(s, moduleIds, claimId, await holdsStub().switchHoldToken());
+  /**
+   * #1839 review: a rewind whose steps the test places, instead of sleeping a fraction of the
+   * settle. It runs on a counting host and stops at its `read`-th status read of the scope (the
+   * capture is the first, the re-check after the settle the second): `before` that read, or just
+   * `after` it, before it claims what it read. `paused` resolves there, and it goes on at `resume()`.
+   */
+  const gatedRewind = (s: ScopeId, at: 'before' | 'after' = 'before', read = 2) => {
+    const rewinder = countingScopes(env.SCOPE);
+    let reached!: () => void;
+    const paused = new Promise<void>((resolve) => (reached = resolve));
+    let resume!: () => void;
+    const gate = new Promise<void>((resolve) => (resume = resolve));
+    rewinder.aroundStatusRead = async (n, phase) => {
+      if (n !== read || phase !== at) return;
+      reached();
+      await gate;
+    };
+    const rewinding = deployment(rewinder.ns).rewindScopeLocal(s, 'bm', { force: true });
+    return { rewinder, rewinding, paused, resume };
+  };
 
   /** Switch off (or not), then rewind to a bookmark taken before that (the whole issue). */
   const rewoundPastTheSwitch = async (switchOff = true): Promise<ScopeId> => {
@@ -2286,19 +2313,258 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const atBookmark = await host.exportScopeLocal(s);
     await off(s);
     await armRewind(env.SCOPE, s);
-    const rewinding = host.rewindScopeLocal(s, 'bm', { force: true });
-    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS / 3));
+    const r = gatedRewind(s);
+    await r.paused;
     // A repeated OFF inside the settle: the scope holds its grants, but the write is in the
     // pre-rewind storage, and the claim is still pending.
     expect(await off(s)).toMatchObject({ held: true });
     expect(await heldOn(s)).toEqual([SCHED]);
-    await rewinding;
+    r.resume();
+    await r.rewinding;
     await landRewind(env.SCOPE, s, atBookmark);
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
     // The first re-assert AFTER the rewind landed is what clears it.
     await off(s);
     expect(await heldOn(s)).toEqual([]);
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  /**
+   * #1839: an OFF pulled while a rewind settles, on a module that was ON at the capture. Its marker
+   * lands in storage the rewind discards. These rewinds have something to claim (a module an
+   * earlier rewind still holds here, which the capture includes), so they settle; SCHED is ON
+   * at the capture.
+   */
+  const EARLIER = '@test/held-by-an-earlier-rewind';
+  const EARLIER_CLAIM = 'earlier-rewind';
+  const settlingScope = async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await claim(s, [EARLIER], EARLIER_CLAIM);
+    await holdsStub().switchHoldArm(s, EARLIER_CLAIM, null);
+    onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
+    return { s, atBookmark };
+  };
+
+  it('#1839: an OFF during the settle joins the pending claim at once, and after the rewind lands the pass fires nothing', async () => {
+    const { s, atBookmark } = await settlingScope();
+    await armRewind(env.SCOPE, s);
+    const r = gatedRewind(s);
+    await r.paused; // settled, and held before its re-check: the claim is pending
+    expect(await off(s)).toMatchObject({ held: true, changed: true });
+    // Joined by the move itself, while the rewind is still settling: not left to its re-read.
+    expect(await claimsOn(s)).toMatchObject([{ state: 'pending', doomed: null }]);
+    r.resume();
+    await r.rewinding;
+    expect(await claimsOn(s)).toMatchObject([{ state: 'armed', doomed: expect.any(String) }]);
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'on' }]);
+    expect(await pass(s)).toMatchObject({ fired: 0, skipped: 2, failed: 0, errors: [], switchedOff: true });
+    // It joined as the claim's own row, so the first re-assert after landing releases it.
+    await off(s);
+    expect(await claimsOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('#1839: an OFF on the doomed instance joins the armed claim; the first move on the restored storage releases it', async () => {
+    const { s, atBookmark } = await settlingScope();
+    await armRewind(env.SCOPE, s, { holdAbort: true });
+    await host.rewindScopeLocal(s, 'bm', { force: true });
+    // The armed instance still serves: this OFF is written where the restart discards it.
+    expect(await off(s)).toStrictEqual({ held: true, changed: true, permissions: ['sched:tick'] });
+    expect(await claimsOn(s)).toMatchObject([{ state: 'armed', doomed: expect.any(String) }]);
+    await restartNow(env.SCOPE, s);
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    await off(s);
+    expect(await claimsOn(s)).toEqual([]);
+  });
+
+  it('#1839: an OFF the move rule never sees (a reconcile carrying the list, in its own unit) is claimed by the re-read after the settle', async () => {
+    const { s, atBookmark } = await settlingScope();
+    await armRewind(env.SCOPE, s);
+    const r = gatedRewind(s);
+    await r.paused;
+    await reconcile(s, { switchedOff: [SCHED] });
+    expect(await claimsOn(s)).toEqual([]); // no switch move joined it
+    r.resume();
+    await r.rewinding;
+    expect(await claimsOn(s)).toMatchObject([{ state: 'armed' }]);
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  /**
+   * #1839 review: the OFF was queued behind a rewind's capture, and the rewind wrote its claim
+   * while the move ran. S0 predates that claim; the join re-reads after the move and finds it.
+   */
+  it('#1839: an OFF joins a claim written while it was queued: the join re-reads the claims after the move', async () => {
+    const s = await newScope();
+    onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
+    const counting = countingScopes(env.SCOPE);
+    counting.afterMove = () => claim(s, [EARLIER], 'written-while-queued');
+    expect(await deployment(counting.ns).systemSwitchLocal(s, SCHED, 'off')).toMatchObject({ changed: true });
+    expect(await claimsOn(s)).toMatchObject([{ claimId: 'written-while-queued', state: 'pending' }]);
+  });
+
+  /**
+   * #1839 review: a join never recreates a claim with no rows left. Here the claim was dropped
+   * (its rewind refused) between the OFF's claims read and its join; a row created for it would
+   * hold SCHED with no rewind behind it.
+   */
+  it('#1839: an OFF does not join a claim dropped while it moved, so no orphan row holds the module', async () => {
+    const s = await newScope();
+    onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
+    await claim(s, [EARLIER], 'refused-mid-move');
+    const counting = countingScopes(env.SCOPE);
+    counting.afterMove = () => holdsStub().switchHoldDrop(s, 'refused-mid-move');
+    expect(await deployment(counting.ns).systemSwitchLocal(s, SCHED, 'off')).toMatchObject({ changed: true });
+    expect(await holdsStub().switchHoldClaims(s)).toEqual([]);
+  });
+
+  /**
+   * #1839: the settle argument, per row. A pass that read its snapshot just before the late OFF
+   * joined must not act on that snapshot against the rewound storage. The rewind waits until the
+   * joined row is a full settle old, on the hold object's clock, so that snapshot is too old by
+   * then and is read again. Without the wait the rewind arms right after the join.
+   */
+  it('#1839: the rewind waits until the joined row is a settle old, so a pass whose snapshot predates it re-reads', async () => {
+    const { s, atBookmark } = await settlingScope();
+    const sweeper = countingScopes(env.SCOPE);
+    const swept = deployment(sweeper.ns);
+    const bystander = await newScope();
+    await armRewind(env.SCOPE, s);
+    const r = gatedRewind(s);
+    await r.paused;
+    await pass(bystander, swept); // the snapshot, read before the join below
+    expect(sweeper.holdReads).toBe(1);
+    const joinedBy = Date.now();
+    await off(s);
+    r.resume();
+    await r.rewinding;
+    expect(Date.now() - joinedBy).toBeGreaterThanOrEqual(SWITCH_HOLD_SETTLE_MS);
+    expect(r.rewinder.ageReads).toBe(2); // one after the settle, one after the wait it asked for
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s, swept)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(sweeper.holdReads).toBe(2);
+  });
+
+  it('#1839 twin: a rewind with no late OFF asks the age once and does not wait again', async () => {
+    const { s, atBookmark } = await settlingScope();
+    const rewinder = countingScopes(env.SCOPE);
+    await armRewind(env.SCOPE, s);
+    await deployment(rewinder.ns).rewindScopeLocal(s, 'bm', { force: true });
+    expect(rewinder.ageReads).toBe(1);
+    await landRewind(env.SCOPE, s, atBookmark);
+  });
+
+  /**
+   * #1839 review: the re-check after the settle can fail (here the age read). Nothing was asked to
+   * arm yet, so the rewind drops its own claim, keeps any other, and throws.
+   */
+  it("#1839: a failed re-check drops this rewind's claim, arms nothing, and throws", async () => {
+    const { s } = await settlingScope();
+    const rewinder = countingScopes(env.SCOPE);
+    rewinder.failAgeReads = true;
+    await armRewind(env.SCOPE, s);
+    await expect(deployment(rewinder.ns).rewindScopeLocal(s, 'bm', { force: true })).rejects.toThrow(/age read down/);
+    const scope = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as { rewindProbe(): Promise<{ armed: boolean }> };
+    expect(await scope.rewindProbe()).toMatchObject({ armed: false });
+    expect([...new Set((await holdsStub().switchHoldClaims(s)).map((c) => c.claimId))]).toEqual([EARLIER_CLAIM]);
+  });
+
+  /**
+   * #1839 review: past the bound the rewind is REFUSED, not armed with a young row. Nothing was
+   * asked to arm, so the OFFs pulled meanwhile stay in the scope's own storage, and a retry's
+   * capture reads them.
+   */
+  it(
+    '#1839: the wait is bounded: a claim that keeps getting younger is refused after the extra waits, and a retry holds',
+    { timeout: 45_000 },
+    async () => {
+      const { s, atBookmark } = await settlingScope();
+      await armRewind(env.SCOPE, s);
+      const r = gatedRewind(s);
+      await r.paused;
+      const [ours] = (await holdsStub().switchHoldClaims(s)).filter((c) => c.claimId !== EARLIER_CLAIM);
+      // The operator pulls SCHED, then every age read finds another module's OFF joined just
+      // before it: switches pulled again and again through the wait.
+      expect(await off(s)).toMatchObject({ changed: true });
+      let late = 0;
+      r.rewinder.beforeAgeRead = () => holdsStub().switchHoldJoin(s, `@test/late-${late++}`, [ours!.claimId]);
+      r.resume();
+      await expect(r.rewinding).rejects.toThrow(/^rewind refused: schedule switches kept being pulled off/);
+      expect(r.rewinder.ageReads).toBe(1 + SWITCH_HOLD_EXTRA_WAITS);
+      // Nothing armed, this rewind's claim is gone (only the earlier one is left), and SCHED is
+      // still off in the scope's own storage.
+      const scope = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as {
+        rewindProbe(): Promise<{ armed: boolean }>;
+      };
+      expect(await scope.rewindProbe()).toMatchObject({ armed: false });
+      expect([...new Set((await holdsStub().switchHoldClaims(s)).map((c) => c.claimId))]).toEqual([EARLIER_CLAIM]);
+      expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
+      // The retry captures SCHED as off, settles, and the rewound scope is held.
+      expect(await host.rewindScopeLocal(s, 'bm', { force: true })).toEqual({ rewindingTo: 'bm' });
+      await landRewind(env.SCOPE, s, atBookmark);
+      expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'on' }]);
+      expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    },
+  );
+
+  /**
+   * #1839 review (Copilot): the re-check's status read and its claim write are two objects. An
+   * operator's ON can move and release the claim between them; the claim write must not bring the
+   * module back from that stale read. The ON tombstones the module after its move, and a claim
+   * whose token predates the tombstone skips it.
+   */
+  it("#1839: an ON between the re-check's status read and its claim write wins: the stale read claims nothing", async () => {
+    const s = await newScope();
+    onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s); // SCHED off at the capture: claimed, and the rewind settles
+    await armRewind(env.SCOPE, s);
+    const r = gatedRewind(s, 'after'); // held just after the re-check read SCHED off
+    await r.paused;
+    await host.systemSwitchLocal(s, SCHED, 'on'); // moves, then releases the claim
+    expect(await heldOn(s)).toEqual([]);
+    r.resume();
+    await r.rewinding;
+    expect(await heldOn(s)).toEqual([]);
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it('#1839: the same for the capture: an ON between its status read and its claim write is not claimed', async () => {
+    const s = await newScope();
+    onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    const r = gatedRewind(s, 'after', 1); // held just after the capture read SCHED off
+    await r.paused;
+    await host.systemSwitchLocal(s, SCHED, 'on');
+    r.resume();
+    await r.rewinding;
+    expect(await heldOn(s)).toEqual([]);
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it('#1839 twin: the tombstone refuses only a read that predates it, and an OFF after the ON still joins', async () => {
+    const s = await newScope();
+    onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
+    await claim(s, [EARLIER], 'a-rewind');
+    const stale = await holdsStub().switchHoldToken();
+    await host.systemSwitchLocal(s, SCHED, 'on'); // tombstones SCHED
+    await holdsStub().switchHoldClaim(s, [SCHED], 'a-rewind', stale);
+    expect(await claimsOn(s)).toEqual([]);
+    await holdsStub().switchHoldClaim(s, [SCHED], 'a-rewind', await holdsStub().switchHoldToken());
+    expect(await claimsOn(s)).toMatchObject([{ claimId: 'a-rewind' }]);
+    // A newer OFF is a move, and its join is not a read: the tombstone does not stand in its way.
+    await holdsStub().switchHoldRelease(s, SCHED, ['a-rewind']);
+    await host.systemSwitchLocal(s, SCHED, 'on');
+    expect(await off(s)).toMatchObject({ changed: true });
+    expect(await claimsOn(s)).toMatchObject([{ claimId: 'a-rewind', state: 'pending' }]);
   });
 
   it('a move the doomed instance applies releases nothing; after an eviction, the next instance releases', async () => {
@@ -2311,7 +2577,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     // The armed instance is still serving: its write is discarded at the restart.
     expect(await off(s)).toStrictEqual({ held: true, changed: false, permissions: [] });
     expect(await heldOn(s)).toEqual([SCHED]);
-    expect((await holdsStub().switchHoldClaims(s, SCHED))[0]).toMatchObject({ state: 'armed', doomed: expect.any(String) });
+    expect((await claimsOn(s))[0]).toMatchObject({ state: 'armed', doomed: expect.any(String) });
     // It is evicted before its own abort: the next instance is a new id, on restored storage.
     await restartNow(env.SCOPE, s);
     await landRewind(env.SCOPE, s, atBookmark);
@@ -2330,7 +2596,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   it('a claim armed while a move is in flight stays: the release reads the claims before the move', async () => {
     const s = await newScope();
     await off(s);
-    await holdsStub().switchHoldClaim(s, [SCHED], 'arming-now', new Date().toISOString());
+    await claim(s, [SCHED], 'arming-now');
     const counting = countingScopes(env.SCOPE);
     counting.afterMove = () => holdsStub().switchHoldArm(s, 'arming-now', 'an-instance-started-after-this-move');
     expect(await deployment(counting.ns).systemSwitchLocal(s, SCHED, 'off')).toMatchObject({ held: true });
@@ -2353,7 +2619,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await landRewind(env.SCOPE, s, atBookmark); // R1 landed: ON in storage, held
     await armRewind(env.SCOPE, s, { holdAbort: true });
     await host.rewindScopeLocal(s, 'bm-2', { force: true }); // R2 armed on the serving instance
-    expect((await holdsStub().switchHoldClaims(s, SCHED)).length).toBe(2);
+    expect((await claimsOn(s)).length).toBe(2);
     await off(s); // the re-assert lands on R2's doomed instance
     await restartNow(env.SCOPE, s);
     await landRewind(env.SCOPE, s, atBookmark);
@@ -2387,11 +2653,12 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const atBookmark = await host.exportScopeLocal(s);
     await off(s);
     await armRewind(env.SCOPE, s);
-    const rewinding = host.rewindScopeLocal(s, 'bm', { force: true });
-    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS / 3));
+    const r = gatedRewind(s);
+    await r.paused;
     await host.systemSwitchLocal(s, SCHED, 'on');
     expect(await heldOn(s)).toEqual([]);
-    await rewinding;
+    r.resume();
+    await r.rewinding;
     await landRewind(env.SCOPE, s, atBookmark);
     expect(await heldOn(s)).toEqual([]); // arming a released claim does not bring it back
     expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
@@ -2413,7 +2680,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     let open!: () => void;
     await armRewind(env.SCOPE, s, { gate: new Promise<void>((resolve) => (open = resolve)), holdAbort: true });
     const rewinding = scope().rewindToBookmark('bm', { force: true });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await sleep(50);
     expect(await scope().rewindProbe()).toMatchObject({ armed: true });
     open();
     await rewinding;
@@ -2424,12 +2691,14 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const s = await newScope();
     await off(s);
     const stale = new Date(Date.now() - SWITCH_HOLD_PENDING_MAX_MS - 60_000).toISOString();
-    // A rewinding request that died between capture and arm left this one.
-    await holdsStub().switchHoldClaim(s, [SCHED], 'died-mid-rewind', stale);
+    // A rewinding request that died between capture and arm left this one. The hold object
+    // stamps its own clock, so the row is aged in place.
+    await claim(s, [SCHED], 'died-mid-rewind');
+    await restampClaim(s, 'died-mid-rewind', stale);
     await off(s);
     expect(await heldOn(s)).toEqual([]);
     // Twin: a pending claim inside the bound may belong to a rewind about to arm.
-    await holdsStub().switchHoldClaim(s, [SCHED], 'still-rewinding', new Date().toISOString());
+    await claim(s, [SCHED], 'still-rewinding');
     await off(s);
     expect(await heldOn(s)).toEqual([SCHED]);
     await holdsStub().switchHoldRelease(s, null, null);
@@ -2448,10 +2717,10 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/^rewind refused: unknown bookmark/);
     expect(await heldOn(s)).toEqual([]);
     // Twin: an earlier rewind's claim that was already there stays.
-    await holdsStub().switchHoldClaim(s, [SCHED], 'earlier-rewind', new Date().toISOString());
+    await claim(s, [SCHED], 'earlier-rewind');
     await holdsStub().switchHoldArm(s, 'earlier-rewind', null);
     await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/^rewind refused: /);
-    expect((await holdsStub().switchHoldClaims(s, SCHED)).map((c) => c.claimId)).toEqual(['earlier-rewind']);
+    expect((await claimsOn(s)).map((c) => c.claimId)).toEqual(['earlier-rewind']);
     await holdsStub().switchHoldRelease(s, null, null);
   });
 
@@ -2591,7 +2860,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const h = deployment(counting.ns);
     counting.slowNextReadMs = SWITCH_HOLD_SNAPSHOT_MS + 1_000;
     const first = pass(a, h); // its read is still in flight when the next consult comes
-    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SNAPSHOT_MS + 300));
+    await sleep(SWITCH_HOLD_SNAPSHOT_MS + 300);
     await pass(b, h); // too old to join: it sends its own read
     await first;
     expect(counting.holdReads).toBe(2);
@@ -2619,7 +2888,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const counting = countingScopes(env.SCOPE);
     const h = deployment(counting.ns);
     expect(await pass(s, h)).toMatchObject({ fired: 0, switchedOff: true });
-    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SNAPSHOT_MS + 100));
+    await sleep(SWITCH_HOLD_SNAPSHOT_MS + 100);
     counting.failReads = true;
     const r = await pass(s, h);
     expect(r).toMatchObject({ fired: 0, switchedOff: true });
@@ -2683,6 +2952,18 @@ describe('#1819 — the co-located rewind holds, and the CP-full switch releases
   });
 });
 
+/** #1839: set a claim's rows' stamp in place, since the hold object stamps its own clock. */
+async function restampClaim(scopeId: string, claimId: string, heldAt: string): Promise<void> {
+  await runInDurableObject(holdsOf(env.SCOPE) as unknown as DurableObjectStub, (_i, state) => {
+    state.storage.sql.exec(
+      'UPDATE _substrat_switch_holds SET held_at = ? WHERE scope_id = ? AND claim_id = ?',
+      heldAt,
+      scopeId,
+      claimId,
+    );
+  });
+}
+
 /**
  * #1819: the scope namespace as a host sees it, counting what it asks of the hold object and
  * of the scopes, and able to make the hold unreadable. Calls go through arrows on the real
@@ -2692,6 +2973,15 @@ function countingScopes(ns: DurableObjectNamespace) {
   const holdsId = ns.idFromName(SWITCH_HOLDS_NAME);
   const counts = {
     holdReads: 0,
+    /** #1839: how often a rewind asked the hold object for its claim's youngest row. */
+    ageReads: 0,
+    /** #1839: make the rewind's age read throw, to reach its failed re-check. */
+    failAgeReads: false,
+    /** #1839: run before each rewind age read. */
+    beforeAgeRead: null as (() => Promise<void>) | null,
+    /** #1839: how many `systemGrantsStatus` reads went to a scope, and a hook around each (1-based). */
+    statusReads: 0,
+    aroundStatusRead: null as ((n: number, phase: 'before' | 'after') => Promise<void>) | null,
     scopeCalls: 0,
     failReads: false,
     /** Hold one scope's `systemScheduleState` until `until` settles: to place a pass's state read. */
@@ -2716,7 +3006,10 @@ function countingScopes(ns: DurableObjectNamespace) {
                 if (prop === 'systemScheduleState' && gate && id.equals(ns.idFromName(gate.scopeId))) {
                   await gate.until;
                 }
+                const statusRead = prop === 'systemGrantsStatus' ? ++counts.statusReads : 0;
+                if (statusRead && counts.aroundStatusRead) await counts.aroundStatusRead(statusRead, 'before');
                 const answer = await real[prop]!(...args);
+                if (statusRead && counts.aroundStatusRead) await counts.aroundStatusRead(statusRead, 'after');
                 if (prop === 'switchSystemSchedules' && counts.afterMove) await counts.afterMove();
                 return answer;
               },
@@ -2738,7 +3031,14 @@ function countingScopes(ns: DurableObjectNamespace) {
                   if (slow > 0) await new Promise((resolve) => setTimeout(resolve, slow));
                   return real.switchHoldsAll!();
                 }
-              : (...args: unknown[]) => real[prop]!(...args),
+              : async (...args: unknown[]) => {
+                  if (prop === 'switchHoldYoungestMs') {
+                    if (counts.beforeAgeRead) await counts.beforeAgeRead();
+                    counts.ageReads += 1;
+                    if (counts.failAgeReads) throw new Error('age read down');
+                  }
+                  return real[prop]!(...args);
+                },
       },
     );
   const counting = {
