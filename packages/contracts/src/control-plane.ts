@@ -738,10 +738,13 @@ export const platformRequestDrainTotals = z.object({
   done: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
   pending: z.number().int().nonnegative(),
-  /** Active scopes stepped over for a failed migration — their queues are not counted. */
-  skipped: z.number().int().nonnegative(),
+  /**
+   * Active scopes stepped over for a failed migration — their queues are not counted.
+   * Defaulted, like `unreachable`, so a row stored before the two existed still parses.
+   */
+  skipped: z.number().int().nonnegative().default(0),
   /** Active scopes with no reachable deployment — their queues are not counted either. */
-  unreachable: z.number().int().nonnegative(),
+  unreachable: z.number().int().nonnegative().default(0),
 });
 export type PlatformRequestDrainTotalsEntry = z.infer<typeof platformRequestDrainTotals>;
 

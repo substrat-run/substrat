@@ -60,6 +60,15 @@ describe('sweepRunEntry.platformRequests (#1840)', () => {
     expect(sweepRunEntry.safeParse({ ...base, kind: 'platform-request', platformRequests: totals }).success).toBe(false);
   });
 
+  it('reads totals stored before skipped/unreachable existed as zeros', () => {
+    const old = { scopes: 1, drained: 2, done: 1, failed: 0, pending: 1 };
+    expect(sweepRunEntry.parse({ ...base, kind: 'platform-request', platformRequests: old }).platformRequests).toEqual({
+      ...old,
+      skipped: 0,
+      unreachable: 0,
+    });
+  });
+
   it('still parses a row written before the column existed', () => {
     expect(sweepRunEntry.parse({ ...base, kind: 'connector' }).platformRequests).toBeUndefined();
   });
