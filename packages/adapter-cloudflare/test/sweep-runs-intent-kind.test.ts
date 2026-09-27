@@ -41,6 +41,7 @@ const row = (over: Partial<SweepRunRow> & Pick<SweepRunRow, 'kind' | 'unit' | 'o
   request_id: null,
   event_type: null,
   observed_at: null,
+  platform_requests: null,
   at: new Date().toISOString(),
   ...over,
 });
@@ -142,5 +143,53 @@ describe('#1572: a directory DO carrying the (request_id, unit) index', () => {
     expect(counts.kinds).toEqual(['freshness', 'schedule']);
     expect(counts.afterReplay).toBe(2);
     expect(counts.legacyUnit).toBe(1);
+  });
+});
+
+/**
+ * #1840, Durable Object half: `platform_requests` reaches a directory DO whose
+ * `_substrat_sweep_runs` was built WITHOUT it — production, where the table predates the
+ * column. `CREATE TABLE IF NOT EXISTS` never adds a column to an existing table, so only the
+ * constructor's ALTER can. Staged the same way as above: new code over old storage.
+ */
+describe('#1840: a directory DO whose sweep-run table predates platform_requests', () => {
+  beforeAll(async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+  });
+
+  const hasColumn = (state: DurableObjectState) =>
+    state.storage.sql
+      .exec("SELECT name FROM pragma_table_info('_substrat_sweep_runs')")
+      .toArray()
+      .some((c) => (c as { name: string }).name === 'platform_requests');
+
+  it('gains the column on construction, keeps old rows, and is a no-op on the construction after', async () => {
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`sweep-totals-${ulid()}`));
+    const seen = await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec('ALTER TABLE _substrat_sweep_runs DROP COLUMN platform_requests');
+      state.storage.sql.exec(
+        "INSERT INTO _substrat_sweep_runs (id, kind, unit, outcome, at) VALUES ('01JOLDROWAAAAAAAAAAAAAAAAA', 'connector', 'conn-1', 'ok', '2099-01-01T00:00:00.000Z')",
+      );
+      const staged = hasColumn(state); // the negative control: the staging really removed it
+      const constructions: boolean[] = [];
+      let cp!: ControlPlaneDO;
+      for (let construction = 1; construction <= 2; construction += 1) {
+        cp = new ControlPlaneDO(state, env);
+        constructions.push(hasColumn(state));
+      }
+      const totals = { scopes: 1, drained: 2, done: 1, failed: 0, pending: 1, skipped: 0, unreachable: 0 };
+      cp.recordSweepRun(row({ kind: 'platform-request', unit: 'fleet', outcome: 'ok', platform_requests: JSON.stringify(totals) }));
+      return {
+        staged,
+        constructions,
+        old: cp.listSweepRuns({ unit: 'conn-1' })[0]?.platformRequests,
+        written: cp.listSweepRuns({ kind: 'platform-request', unit: 'fleet', limit: 1 })[0]?.platformRequests,
+        totals,
+      };
+    });
+    expect(seen.staged).toBe(false);
+    expect(seen.constructions).toEqual([true, true]);
+    expect(seen.old).toBeNull();
+    expect(seen.written).toEqual(seen.totals);
   });
 });

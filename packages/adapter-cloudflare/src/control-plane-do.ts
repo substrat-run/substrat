@@ -458,6 +458,8 @@ export interface SweepRunRow {
   request_id: string | null;
   event_type: string | null;
   observed_at: string | null;
+  /** #1840: a `platform-request` row's drain totals, as JSON text. NULL on every other kind. */
+  platform_requests: string | null;
   at: string;
 }
 
@@ -1020,6 +1022,9 @@ const DIRECTORY_DDL = `
     -- operation column) and the newest matching evidence. NULL on other kinds.
     event_type TEXT,
     observed_at TEXT,
+    -- #1840 platform-request rows: the drain pass's fleet-wide totals, as JSON. NULL on
+    -- every other kind.
+    platform_requests TEXT,
     at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_unit ON _substrat_sweep_runs (kind, unit, id);
@@ -1422,6 +1427,7 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('_substrat_sweep_runs', 'request_id TEXT');
     this.addColumn('_substrat_sweep_runs', 'event_type TEXT');
     this.addColumn('_substrat_sweep_runs', 'observed_at TEXT');
+    this.addColumn('_substrat_sweep_runs', 'platform_requests TEXT');
     this.ensureSweepRunsIntentKind();
     // builder-plane.md: which tenant owns a vertical (NULL = platform-owned).
     this.addColumn('verticals', 'owner_tenant TEXT');
@@ -4163,8 +4169,8 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec(
       `INSERT OR IGNORE INTO _substrat_sweep_runs
          (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
-          connection_id, error, elapsed_ms, request_id, event_type, observed_at, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          connection_id, error, elapsed_ms, request_id, event_type, observed_at, platform_requests, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       row.id,
       row.kind,
       row.unit,
@@ -4180,6 +4186,7 @@ export class ControlPlaneDO extends DurableObject {
       row.request_id,
       row.event_type,
       row.observed_at,
+      row.platform_requests,
       row.at,
     );
     // Prune-on-write, like ops failures and for the same reason: bounded even on a
@@ -4242,6 +4249,7 @@ export class ControlPlaneDO extends DurableObject {
       elapsedMs: r.elapsed_ms,
       eventType: r.event_type,
       observedAt: r.observed_at,
+      platformRequests: r.platform_requests == null ? null : (JSON.parse(r.platform_requests) as unknown),
       at: r.at,
     })) as SweepRunEntry[];
   }

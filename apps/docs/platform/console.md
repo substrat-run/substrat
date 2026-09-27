@@ -57,7 +57,9 @@ a filter recipe over Fleet.
   (a picker: all, new, regressed, resolved, ignored) and a text box filters the loaded rows by
   operation, code, message or vertical.
 - **Sweeps** — the fleet's sweep record, read over `/sweep-runs`: every connector poll, every
-  schedule fired or skipped and every freshness verdict, newest first. The page narrows by
+  schedule fired or skipped and every freshness verdict, newest first — plus one
+  `platform-request` row per pass (unit `fleet`), the platform-request drain's totals across
+  every app it reached, which is where the Services page reads its pending count from. The page narrows by
   tenant, kind and outcome (pickers) and by unit (exact — `scopeId:operation` or a connection
   id), and a text box filters the loaded rows by unit, operation, event type or error. It is the staff twin of the dashboard's per-app strips — where a
   tenant sees their own connection, staff see the whole fleet's units on one page, so "the

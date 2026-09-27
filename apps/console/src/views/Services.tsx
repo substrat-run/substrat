@@ -2,7 +2,16 @@ import { useEffect, useState } from 'react';
 import type { PlatformRequestBacklog, ScopeId, SweepRunEntry, SystemSwitchRecord } from '@substrat-run/contracts';
 import { Badge, Button, Card } from '../components';
 import { ApiError, walkAll, type Api } from '../lib/api';
-import { countTrailingPromotes, PROMOTE_TRAILING_MINUTES, summarizeSystemSwitches } from '../lib/services';
+import {
+  countTrailingPromotes,
+  pendingCaption,
+  pendingWarns,
+  PROMOTE_TRAILING_MINUTES,
+  readPending,
+  summarizeSystemSwitches,
+  sweepLoopRows,
+  SWEEP_LOOP_ROWS,
+} from '../lib/services';
 
 export interface ServicesProps {
   api: Api;
@@ -63,8 +72,9 @@ export function Services({
   useEffect(() => {
     let live = true;
     void api
-      .listSweepRuns({ limit: 20 })
-      .then((page) => live && setSweeps({ status: 'ready', data: page.entries }))
+      // Over-read: the drain's pass rows are dropped from this tile (it has its own).
+      .listSweepRuns({ limit: SWEEP_LOOP_ROWS * 2 })
+      .then((page) => live && setSweeps({ status: 'ready', data: sweepLoopRows(page.entries) }))
       .catch(() => live && setSweeps({ status: 'unavailable' }));
     return () => {
       live = false;
@@ -157,7 +167,7 @@ export function Services({
       <div style={grid}>
         <Card
           title="Sweep loops"
-          description="The last 20 recorded sweep units, newest first"
+          description={`The last ${SWEEP_LOOP_ROWS} recorded sweep units, newest first`}
           actions={<Button size="sm" variant="ghost" onClick={onOpenSweeps}>View sweeps →</Button>}
         >
           <TileBody
@@ -207,8 +217,8 @@ export function Services({
         </Card>
 
         <Card
-          title="Platform-request failures"
-          description="Deliveries the platform's intent drain gave up on — not a queue depth"
+          title="Platform requests"
+          description="Deliveries the platform's intent drain gave up on, and what it left waiting"
           actions={
             <Button size="sm" variant="ghost" onClick={() => onOpenFailures('intent.')}>
               View failures →
@@ -217,19 +227,36 @@ export function Services({
         >
           <TileBody
             tile={backlog}
-            render={(data) => (
-              <>
-                <div style={number}>
-                  {data.total}
-                  {data.capped ? '+' : ''}
-                </div>
-                <div style={caption}>
-                  gave up terminally in the last {data.windowDays} days
-                  {data.capped ? ' — at least this many; the count hit its bound' : ''}. A still-pending
-                  intent is not counted here — it is not visible fleet-wide at all yet.
-                </div>
-              </>
-            )}
+            render={(data) => {
+              // #1840: as of the sweep's last drain pass, never live — so its age is always shown.
+              const pending = readPending(data.pending, Date.now());
+              return (
+                <>
+                  <div style={{ display: 'flex', gap: 24 }}>
+                    <div>
+                      <div style={number}>
+                        {data.total}
+                        {data.capped ? '+' : ''}
+                      </div>
+                      <div style={caption}>failed</div>
+                    </div>
+                    <div>
+                      <div style={number}>
+                        {pending.kind === 'none' ? '—' : `${pending.count}${pending.floor ? '+' : ''}`}
+                      </div>
+                      <div style={caption}>pending</div>
+                    </div>
+                  </div>
+                  <div style={caption}>
+                    Failed: gave up terminally in the last {data.windowDays} days
+                    {data.capped ? ' — at least this many; the count hit its bound' : ''}.
+                  </div>
+                  <div style={pendingWarns(pending) ? { ...caption, color: 'var(--status-warning-fg)' } : caption}>
+                    {pendingCaption(pending)}
+                  </div>
+                </>
+              );
+            }}
           />
         </Card>
 

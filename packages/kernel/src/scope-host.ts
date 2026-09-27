@@ -28,6 +28,7 @@ import type {
   BindHostnameInput,
   AdminLogEntry,
   OpsFailureEntry,
+  PlatformRequestDrainTotalsEntry,
   SweepRunEntry,
   SweepRunKind,
   SweepRunOutcome,
@@ -3886,6 +3887,8 @@ export interface SweepRunInput {
   connectionId?: string | null;
   error?: string | null;
   elapsedMs?: number | null;
+  /** A `platform-request` row's drain totals (#1840); null on every other kind. */
+  platformRequests?: PlatformRequestDrainTotalsEntry | null;
   /**
    * When the unit was actually swept. A DRAINED batch passes the pass time it
    * carried — the drain runs up to a cron window later, and stamping drain time

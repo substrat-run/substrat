@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { verticalSlug, type SystemSwitchRecord, type VerticalChannel } from '@substrat-run/contracts';
-import { countTrailingPromotes, summarizeSystemSwitches } from '../src/lib/services';
+import {
+  countTrailingPromotes,
+  PENDING_STALE_MINUTES,
+  pendingCaption,
+  pendingWarns,
+  readPending,
+  summarizeSystemSwitches,
+  sweepLoopRows,
+  SWEEP_LOOP_ROWS,
+} from '../src/lib/services';
 
 const now = Date.parse('2026-09-22T12:00:00Z');
 const vertical = (slug: string, servingRef: string | null = 'worker') => ({ slug: verticalSlug.parse(slug), servingRef });
@@ -99,5 +108,79 @@ describe('summarizeSystemSwitches', () => {
       switchRow({ tenantId: 't-2', scopeId: 's-2', moduleId: '@substrat-run/engine-workorder' }),
     ];
     expect(summarizeSystemSwitches(rows)).toEqual({ scopes: 2, tenants: 2 });
+  });
+});
+
+describe('Services pending platform requests (#1840)', () => {
+  const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
+
+  it('no pass on record reads as none — never as 0', () => {
+    expect(readPending(null, now)).toEqual({ kind: 'none' });
+    // A control plane older than the field sends nothing at all: the same fact.
+    expect(readPending(undefined, now)).toEqual({ kind: 'none' });
+  });
+
+  it('a recorded 0 is a count — the positive twin of none', () => {
+    expect(readPending({ count: 0, asOf: at(10), floor: false }, now)).toEqual({
+      kind: 'count',
+      count: 0,
+      floor: false,
+      minutesAgo: 10,
+      stale: false,
+    });
+  });
+
+  it('carries the pass age, and flags it stale past three missed passes', () => {
+    expect(readPending({ count: 3, asOf: at(PENDING_STALE_MINUTES), floor: false }, now)).toMatchObject({ stale: false });
+    expect(readPending({ count: 3, asOf: at(PENDING_STALE_MINUTES + 1), floor: true }, now)).toMatchObject({
+      count: 3,
+      floor: true,
+      minutesAgo: PENDING_STALE_MINUTES + 1,
+      stale: true,
+    });
+  });
+});
+
+describe('the pending caption (#1840)', () => {
+  it('says none, never zero, with nothing on record', () => {
+    expect(pendingCaption({ kind: 'none' })).toMatch(/no sweep pass on record in the last 14 days/);
+  });
+  it('always carries the age, and says stale and floor when they hold', () => {
+    const plain = pendingCaption({ kind: 'count', count: 2, floor: false, minutesAgo: 7, stale: false });
+    expect(plain).toMatch(/7 min ago — not live\.$/);
+    const both = pendingCaption({ kind: 'count', count: 2, floor: true, minutesAgo: 90, stale: true });
+    expect(both).toMatch(/has not recorded a pass since/);
+    expect(both).toMatch(/At least this many/);
+  });
+});
+
+describe('the Sweep loops tile rows (#1840)', () => {
+  it('leaves out the drain pass row, so it is never "last" and never paints the tile', () => {
+    const rows = sweepLoopRows([
+      { kind: 'platform-request' as const, id: 'p' },
+      { kind: 'connector' as const, id: 'c' },
+      { kind: 'schedule' as const, id: 's' },
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(['c', 's']);
+  });
+
+  it('keeps every sweep unit kind — the twin', () => {
+    const kinds = ['connector', 'schedule', 'freshness', 'vertical-events'] as const;
+    expect(sweepLoopRows(kinds.map((kind) => ({ kind }))).map((r) => r.kind)).toEqual([...kinds]);
+  });
+
+  it('still shows at most the tile\'s rows after dropping them', () => {
+    const many = Array.from({ length: SWEEP_LOOP_ROWS * 2 }, (_, i) => ({ kind: i % 2 ? ('schedule' as const) : ('platform-request' as const) }));
+    expect(sweepLoopRows(many)).toHaveLength(SWEEP_LOOP_ROWS);
+  });
+});
+
+describe('the pending line warns (#1840)', () => {
+  it('when nothing is on record, and when the pass is stale', () => {
+    expect(pendingWarns({ kind: 'none' })).toBe(true);
+    expect(pendingWarns({ kind: 'count', count: 0, floor: false, minutesAgo: 90, stale: true })).toBe(true);
+  });
+  it('not for a fresh pass — the twin', () => {
+    expect(pendingWarns({ kind: 'count', count: 3, floor: true, minutesAgo: 5, stale: false })).toBe(false);
   });
 });

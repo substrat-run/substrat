@@ -21,6 +21,7 @@ import type {
   ModuleId,
   OpsFailureEntry,
   SweepRunEntry,
+  SweepRunKind,
   IssueEntry,
   IssueStatus,
   IssueStatusInput,
@@ -193,7 +194,7 @@ export interface AuditLogQuery extends PageQuery {
  *  match, the `reference = <id>` a CI log hands the operator. */
 /** The sweep-record filter (#1232) — mirrors SweepRunFilter, minus the cursor triple PageQuery carries. */
 export interface SweepRunsQuery extends PageQuery {
-  kind?: 'connector' | 'schedule' | 'freshness' | 'vertical-events';
+  kind?: SweepRunKind;
   unit?: string;
   outcome?: 'ok' | 'failed' | 'skipped';
   tenantId?: TenantId;
@@ -737,7 +738,8 @@ export function createApi(actor: string | null, baseUrl = '/api') {
       call<EgressReport>(`/verticals/${encodeURIComponent(slug)}/egress${query({ ...q })}`),
 
     // Platform-request drain backlog, fleet-wide (#1690 §2) — terminal give-ups over a
-    // window, never a queue depth. See `PlatformRequestBacklog`'s own doc.
+    // window, plus the pending count as of the sweep's last drain pass (#1840). See
+    // `PlatformRequestBacklog`'s own doc.
     platformRequestBacklog: () => call<PlatformRequestBacklog>('/platform-requests/backlog'),
   };
 }

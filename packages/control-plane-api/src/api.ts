@@ -1868,10 +1868,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // `/connections/health` — absent from BUILDER_ROUTES and TENANT_ROUTES, so both
   // credentials default-deny it.
   //
-  // This is a count of terminal FAILURES, never a queue depth (see `platformRequestBacklog`'s
+  // `total` is a count of terminal FAILURES, never a queue depth (see `platformRequestBacklog`'s
   // doc): a still-`pending` intent lives in the vertical's own scope DO and nothing here
   // walks the fleet to find it. A `0` means "nothing has given up lately", not "nothing is
   // waiting" — the console tile is worded to keep that distinction, not just this comment.
+  // What IS waiting is `pending` (#1840): the newest `platform-request` sweep row, which the
+  // platform sweep writes once per pass from the fan-out it already pays. As fresh as that
+  // pass, and null — never 0 — when no pass is on record.
   app.get('/platform-requests/backlog', async (c) => {
     const now = new Date();
     const since = new Date(now.getTime() - PLATFORM_REQUEST_BACKLOG_WINDOW_DAYS * 86_400_000).toISOString();
@@ -1889,24 +1892,33 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       SWEEP_RUNS_KIND,
       ...providers.map(connectorDispatchKind),
     ];
-    const counts = await Promise.all(
-      kinds.map(async (kind) => {
-        const found = await admin.listOpsFailures(c.get('actor'), {
-          operation: `intent.${kind}`,
-          since,
-          limit: PLATFORM_REQUEST_BACKLOG_CAP + 1,
-        });
-        return {
-          count: Math.min(found.length, PLATFORM_REQUEST_BACKLOG_CAP),
-          capped: found.length > PLATFORM_REQUEST_BACKLOG_CAP,
-        };
-      }),
-    );
+    // The drain's newest pass is independent of the failure counts, so it rides alongside them.
+    const [counts, [lastPass]] = await Promise.all([
+      Promise.all(
+        kinds.map(async (kind) => {
+          const found = await admin.listOpsFailures(c.get('actor'), {
+            operation: `intent.${kind}`,
+            since,
+            limit: PLATFORM_REQUEST_BACKLOG_CAP + 1,
+          });
+          return {
+            count: Math.min(found.length, PLATFORM_REQUEST_BACKLOG_CAP),
+            capped: found.length > PLATFORM_REQUEST_BACKLOG_CAP,
+          };
+        }),
+      ),
+      admin.listSweepRuns(c.get('actor'), { kind: 'platform-request', unit: 'fleet', limit: 1 }),
+    ]);
     const body: PlatformRequestBacklog = {
       total: counts.reduce((sum, k) => sum + k.count, 0),
       capped: counts.some((k) => k.capped),
       since,
       windowDays: PLATFORM_REQUEST_BACKLOG_WINDOW_DAYS,
+      // A row without totals is not a pass this route can read a count from; it answers
+      // null like no row at all rather than inventing a zero.
+      pending: lastPass?.platformRequests
+        ? { count: lastPass.platformRequests.pending, asOf: lastPass.at, floor: lastPass.outcome !== 'ok' }
+        : null,
     };
     return c.json(body);
   });
