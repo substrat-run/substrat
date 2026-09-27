@@ -927,3 +927,58 @@ describe('cf tenant logs — ctx.log lines', () => {
     expect(sent.some(isModuleQuery)).toBe(false);
   });
 });
+
+/**
+ * One row per request: the runtime's own invocation record is folded into the stamped line
+ * for the same request, and kept only where no stamped line exists.
+ */
+describe('cf tenant logs — the runtime record folds into the stamped row', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** The runtime's record of an invocation, as Workers Logs types it. */
+  const runtime = (requestId: string, id: string, over: Record<string, unknown> = {}) => ({
+    timestamp: 999,
+    $metadata: { id, requestId, type: 'cf-worker-event', service: 'acme-widgets' },
+    $workers: {
+      requestId,
+      eventType: 'fetch',
+      outcome: 'ok',
+      cpuTimeMs: 7,
+      wallTimeMs: 55,
+      event: { request: { method: 'POST', url: 'https://acme.example/api/orders' }, response: { status: 200 } },
+      ...over,
+    },
+  });
+
+  it('shows a request once, with the runtime’s CPU and wall time on the stamped row', async () => {
+    const { reader } = readerOver((f) =>
+      keyed(f, 'substrat') ? [invocation({}, '01EV')] : [invocation({}, '01EV'), runtime('req-01EV', '01RT')],
+    );
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ message: 'POST /api/orders → 200 (42 ms)', cpuTimeMs: 7, wallTimeMs: 55, outcome: 'ok' });
+  });
+
+  it('carries the runtime’s outcome onto the row, so a request it cut short still says so', async () => {
+    const { reader } = readerOver((f) =>
+      keyed(f, 'substrat')
+        ? [invocation({ status: null, threw: true }, '01EV')]
+        : [invocation({ status: null, threw: true }, '01EV'), runtime('req-01EV', '01RT', { outcome: 'exceededCpu', cpuTimeMs: 30_000 })],
+    );
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ outcome: 'exceededCpu', cpuTimeMs: 30_000, level: 'error' });
+  });
+
+  it('never folds a line the vertical wrote, even one that looks like the request', async () => {
+    const own = {
+      timestamp: 1001,
+      source: { message: 'POST /api/orders' },
+      $metadata: { id: '01OWN', requestId: 'req-01EV', message: 'POST /api/orders', service: 'acme-widgets' },
+      $workers: { requestId: 'req-01EV', event: { request: { method: 'POST', url: 'https://acme.example/api/orders' } } },
+    };
+    const { reader } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({}, '01EV')] : [invocation({}, '01EV'), own]));
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    expect(events.map((e) => e.message).sort()).toEqual(['POST /api/orders', 'POST /api/orders → 200 (42 ms)']);
+  });
+});
