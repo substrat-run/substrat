@@ -55,16 +55,16 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
     const tuplesOf = (dump: ScopeDump) => {
       const table = dump.tables.find((tb) => tb.name === '_substrat_tuples');
       expect(table).toBeDefined();
-      const col = (row: unknown[], name: string) => row[table!.columns.indexOf(name)];
-      return { table: table!, col };
+      return table!;
     };
-    /** Every stored tuple for `who`, as whole rows keyed by column — the byte-for-byte view. */
-    const rowsFor = async (scope: ScopeId, who: PrincipalId): Promise<Record<string, unknown>[]> => {
-      const { table, col } = tuplesOf(await host.admin.exportScope(staff, t, scope));
+    /** Every tuple `dump` holds for `who`, as whole rows keyed by column — the byte-for-byte view. */
+    const rowsIn = (dump: ScopeDump, who: PrincipalId): Record<string, unknown>[] => {
+      const table = tuplesOf(dump);
       return table.rows
-        .filter((r) => col(r, 'subject') === `principal:${who}`)
-        .map((r) => Object.fromEntries(table.columns.map((c, i) => [c, r[i]])));
+        .map((r) => Object.fromEntries(table.columns.map((c, i) => [c, r[i]])))
+        .filter((r) => r.subject === `principal:${who}`);
     };
+    const rowsFor = async (scope: ScopeId, who: PrincipalId) => rowsIn(await host.admin.exportScope(staff, t, scope), who);
     const allowed = async (who: PrincipalId, scope: ScopeId): Promise<boolean> => {
       const stub = await host.getScope(who, t, scope);
       const out = await stub.invoke<{ allowed: boolean }>('perm/probe', { permission: PERM_READ });
@@ -78,11 +78,8 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
     };
     /** The planted grants, read back from `scope`, must equal what the dump carried. */
     const expectEntityGrantsKept = async (scope: ScopeId) => {
-      const before = tuplesOf(planted);
       for (const who of [hana, ivan, jack]) {
-        const want = before.table.rows
-          .filter((r) => before.col(r, 'subject') === `principal:${who}`)
-          .map((r) => Object.fromEntries(before.table.columns.map((c, i) => [c, r[i]])));
+        const want = rowsIn(planted, who);
         expect(want).toHaveLength(1);
         expect(await rowsFor(scope, who)).toEqual(want);
         // …and none of them reads the scope node: the grant stayed on its entity.
@@ -109,7 +106,7 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
       // The source's own dump, with three pre-#1856 rows added to its tuples. Every column the
       // table has is written, so the byte-for-byte comparison covers them all.
       const dump = await host.admin.exportScope(staff, t, source);
-      const { table } = tuplesOf(dump);
+      const table = tuplesOf(dump);
       const row = (subject: string, object: string, relation = `granted:${PERM_READ}`) =>
         table.columns.map((c) => (c === 'subject' ? subject : c === 'relation' ? relation : c === 'object' ? object : null));
       planted = {
@@ -132,7 +129,7 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         ),
       };
       // The genuine grant is in the dump, naming the source.
-      expect(tuplesOf(planted).table.rows.map((r) => tuplesOf(planted).col(r, 'object'))).toContain(`scope:${source}`);
+      expect(rowsIn(planted, gina).map((r) => r.object)).toEqual([`scope:${source}`]);
     }, 60_000);
 
     afterAll(async () => {

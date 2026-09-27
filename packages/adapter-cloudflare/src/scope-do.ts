@@ -254,7 +254,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { scopeRepointStatement } from '@substrat-run/kernel';
+import { repointScopeGrants } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -1719,7 +1719,7 @@ export function defineScopeDO(
         // tenant-level grant enforceable here exactly as a scope-level one is, and the
         // projected `_substrat_tenant_tuples` is where this DO holds them. A read-back
         // that disagreed with enforcement would be worse than none. GLOB, not LIKE (#1869):
-        // the checker matches `connection:<id>` exactly, and LIKE would also report `Connection:…`.
+        // case-sensitive, as the checker's match is.
         const rows = [
           ...(this.sql
             .exec(
@@ -4591,13 +4591,17 @@ export function defineScopeDO(
     async importDump(
       tables: ScopeDumpTable[],
       destScopeId?: ScopeId,
-      /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
-       *  the replay re-points the grants, in the same event: a dump from before the switch was
-       *  pulled carries the grants live and no marker. Needs `destScopeId`, the scope restored. */
-      switchOff?: { moduleIds: readonly string[]; at: string },
-      /** The scope the dump was captured FROM (#1869), so the re-point moves exactly its node
-       *  grants. Absent from a caller that predates it: see `scopeRepointStatement`'s fallback. */
-      sourceScopeId?: ScopeId,
+      {
+        switchOff,
+        sourceScopeId,
+      }: {
+        /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
+         *  the replay re-points the grants, in the same event: a dump from before the switch was
+         *  pulled carries the grants live and no marker. Needs `destScopeId`, the scope restored. */
+        switchOff?: { moduleIds: readonly string[]; at: string };
+        /** The scope the dump was captured FROM (#1869), whose grants the re-point moves. */
+        sourceScopeId?: ScopeId;
+      } = {},
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
       //
@@ -4744,17 +4748,14 @@ export function defineScopeDO(
      * `_substrat_tenant_tuples`, which this does not attempt — a cross-tenant restore is a
      * governed copy, not a repair.
      *
-     * Which rows move is `scopeRepointStatement`'s (#1869): exactly `scope:<source>` when the
-     * caller names a source the dump holds, else a case-sensitive `scope:` prefix. It was a
-     * `LIKE 'scope:%'`, which ignores case and so also moved an entity grant typed `Scope`.
+     * Which rows move is `repointScopeGrants`'s (#1869): the dump's source scope, exactly.
      *
      * `UPDATE OR REPLACE` because (subject, relation, object) is the primary key: if the
      * dump already held a tuple for the destination scope, the rewritten row collapses
      * onto it instead of failing the whole restore.
      */
     private rewriteScopeTuples(destScopeId: ScopeId, sourceScopeId?: ScopeId): void {
-      const read = (sql: string, object: string) => this.sql.exec(sql, object).toArray();
-      this.sql.exec(...scopeRepointStatement(read, destScopeId, sourceScopeId));
+      repointScopeGrants(this.switchSql(), destScopeId, sourceScopeId);
     }
 
     /**

@@ -1,7 +1,10 @@
+import type { SwitchSql } from './system-switch.js';
+
 /**
- * The statement a restore, fork or preview carry runs to re-point a dump's scope-level grants
- * at the scope it lands in (#1869). One definition for both adapters' `importDump`, so the DO
- * and the pure host cannot move different rows.
+ * Re-point a dump's scope-level grants at the scope it lands in, the step every restore, fork
+ * and preview carry ends with (#1869). One definition for both adapters' `importDump`, so the
+ * DO and the pure host cannot move different rows. It was a `LIKE 'scope:%'`, which ignores
+ * case and so also moved an entity grant typed `Scope` or `SCOPE`.
  *
  * Scope-level grants are stored as `object = 'scope:<scopeId>'`, naming the scope the dump
  * was captured FROM, so a copy landing anywhere else has to move them. Entity-narrowed
@@ -26,18 +29,15 @@
  * `COLLATE BINARY` is written out because the tuples table's DDL comes from the dump, and a
  * column declared `COLLATE NOCASE` there would make a bare `=` fold case again.
  */
-export function scopeRepointStatement(
-  read: (sql: string, object: string) => readonly unknown[],
-  destScopeId: string,
-  sourceScopeId?: string,
-): [sql: string, ...params: string[]] {
+export function repointScopeGrants(sql: SwitchSql, destScopeId: string, sourceScopeId?: string): void {
   const dest = `scope:${destScopeId}`;
   const source = sourceScopeId === undefined ? undefined : `scope:${sourceScopeId}`;
   const update = 'UPDATE OR REPLACE _substrat_tuples SET object = ? WHERE object <> ? COLLATE BINARY AND';
-  if (source !== undefined && read(SOURCE_PROBE, source).length > 0) {
-    return [`${update} object = ? COLLATE BINARY`, dest, dest, source];
+  if (source !== undefined && sql.all(SOURCE_PROBE, source).length > 0) {
+    sql.run(`${update} object = ? COLLATE BINARY`, dest, dest, source);
+  } else {
+    sql.run(`${update} substr(object, 1, 6) = 'scope:' COLLATE BINARY`, dest, dest);
   }
-  return [`${update} substr(object, 1, 6) = 'scope:' COLLATE BINARY`, dest, dest];
 }
 
 const SOURCE_PROBE = 'SELECT 1 FROM _substrat_tuples WHERE object = ? COLLATE BINARY LIMIT 1';

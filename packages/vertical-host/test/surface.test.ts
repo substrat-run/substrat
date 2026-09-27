@@ -666,7 +666,8 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
       },
     });
     const SOURCE = '01JZ0000000000000000SCP002';
-    for (const extra of [{ sourceScopeId: SOURCE }, {}]) {
+    // The last one is malformed, and refused rather than passed on.
+    for (const [extra, status] of [[{ sourceScopeId: SOURCE }, 200], [{}, 200], [{ sourceScopeId: 'scope:x' }, 400]] as const) {
       const res = await appWith(host).request(
         '/internal/restore',
         {
@@ -676,20 +677,9 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
         },
         ENV,
       );
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(status);
     }
     expect(seen).toEqual([SOURCE, undefined]);
-    // A malformed one is refused rather than passed on.
-    const bad = await appWith(host).request(
-      '/internal/restore',
-      {
-        method: 'POST',
-        headers: authed({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ scopeId: SCOPE, tables: [], sourceScopeId: 'scope:x' }),
-      },
-      ENV,
-    );
-    expect(bad.status).toBe(400);
   });
 
   it('restore skips the role re-projection when no tenantId is given', async () => {

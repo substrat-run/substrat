@@ -52,32 +52,28 @@ const tuplesIn = (tables: ScopeDumpTable[]): unknown[][] =>
   [...(tables.find((t) => t.name === '_substrat_tuples')?.rows ?? [])].sort((a, b) =>
     String(a[0]).localeCompare(String(b[0])),
   );
-/** Row `i` of `dumpFrom(source)`, with its object replaced — the only column a re-point writes. */
-const moved = (source: string, i: number, object: string) => {
-  const row = [...dumpFrom(source)[0]!.rows[i]!];
-  row[2] = object;
-  return row;
-};
+/** Row `i` of `dumpFrom(source)` as planted, and with its object replaced — the only column a re-point writes. */
+const kept = (source: string, i: number): unknown[] => dumpFrom(source)[0]!.rows[i]!;
+const moved = (source: string, i: number, object: string) => kept(source, i).map((v, c) => (c === 2 ? object : v));
 
 describe("the ScopeDO's importDump picks the rows to re-point (#1869)", () => {
   const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, secretBox });
   const source = scopeId.parse(ulid());
-  const kept = (i: number) => dumpFrom(source)[0]!.rows[i]!;
 
   it('source named and held by the dump: only scope:<source> moves; Scope, SCOPE and scope:e-1 stay byte for byte', async () => {
     const dest = scopeId.parse(ulid());
     await host.restoreScopeLocal(dest, dumpFrom(source), { sourceScopeId: source });
     expect(tuplesIn(await host.exportScopeLocal(dest))).toEqual([
       moved(source, 0, `scope:${dest}`),
-      kept(1),
-      kept(2),
-      kept(3),
+      kept(source, 1),
+      kept(source, 2),
+      kept(source, 3),
     ]);
   });
 
   it('source is the destination (a carry onto a new version): nothing moves', async () => {
     await host.restoreScopeLocal(source, dumpFrom(source), { sourceScopeId: source });
-    expect(tuplesIn(await host.exportScopeLocal(source))).toEqual([kept(0), kept(1), kept(2), kept(3)]);
+    expect(tuplesIn(await host.exportScopeLocal(source))).toEqual([kept(source, 0), kept(source, 1), kept(source, 2), kept(source, 3)]);
   });
 
   it('no source named (a platform that predates the field): the case-sensitive prefix, so Scope and SCOPE stay', async () => {
@@ -85,8 +81,8 @@ describe("the ScopeDO's importDump picks the rows to re-point (#1869)", () => {
     await host.restoreScopeLocal(dest, dumpFrom(source));
     expect(tuplesIn(await host.exportScopeLocal(dest))).toEqual([
       moved(source, 0, `scope:${dest}`),
-      kept(1),
-      kept(2),
+      kept(source, 1),
+      kept(source, 2),
       // The documented limit of the fallback: exactly `scope` cannot be told from a node grant.
       moved(source, 3, `scope:${dest}`),
     ]);
@@ -97,8 +93,8 @@ describe("the ScopeDO's importDump picks the rows to re-point (#1869)", () => {
     await host.restoreScopeLocal(dest, dumpFrom(source), { sourceScopeId: dest });
     expect(tuplesIn(await host.exportScopeLocal(dest))).toEqual([
       moved(source, 0, `scope:${dest}`),
-      kept(1),
-      kept(2),
+      kept(source, 1),
+      kept(source, 2),
       moved(source, 3, `scope:${dest}`),
     ]);
   });
@@ -109,16 +105,16 @@ describe("the ScopeDO's importDump picks the rows to re-point (#1869)", () => {
     await host.restoreScopeLocal(dest, dumpFrom(source, nocase), { sourceScopeId: source });
     expect(tuplesIn(await host.exportScopeLocal(dest))).toEqual([
       moved(source, 0, `scope:${dest}`),
-      kept(1),
-      kept(2),
-      kept(3),
+      kept(source, 1),
+      kept(source, 2),
+      kept(source, 3),
     ]);
     // …and with no source, where the fallback compares a prefix.
     const blind = scopeId.parse(ulid());
     await host.restoreScopeLocal(blind, dumpFrom(source, nocase));
     const rows = tuplesIn(await host.exportScopeLocal(blind));
-    expect(rows[1]).toEqual(kept(1));
-    expect(rows[2]).toEqual(kept(2));
+    expect(rows[1]).toEqual(kept(source, 1));
+    expect(rows[2]).toEqual(kept(source, 2));
   });
 });
 
@@ -224,9 +220,8 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
     expect(created.body.error).toBeUndefined();
     expect(created.status).toBe(201);
     const preview = created.body.scopeId;
-    const kept = (i: number) => dumpFrom(prod)[0]!.rows[i]!;
     const forked = tuplesIn(await hostFor('v1').exportScopeLocal(preview));
-    expect(forked).toEqual([moved(prod, 0, `scope:${preview}`), kept(1), kept(2), kept(3)]);
+    expect(forked).toEqual([moved(prod, 0, `scope:${preview}`), kept(prod, 1), kept(prod, 2), kept(prod, 3)]);
 
     const second = await push('pr-7', 'v2');
     expect(second.status).toBe(200);

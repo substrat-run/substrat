@@ -296,24 +296,25 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     // `covers` (§ `subjectsOf`).
     const subjects = await subjectsOf(subject, node, now);
 
+    // The readers' prefix match is a pre-filter (SQL LIKE ignores case), so every row is held
+    // to the prefix exactly here: `Role:admin` must not expand as `role:admin` (#1869).
     const tuplesFor = async (
       subjectRefValue: string,
       prefix: string,
       scoped: boolean,
     ): Promise<PermissionTupleRow[]> =>
-      scoped
+      (scoped
         ? scope
-          ? scope.tuples(subjectRefValue, prefix)
+          ? await scope.tuples(subjectRefValue, prefix)
           : []
-        : reader.tenantTuples(node.tenantId, subjectRefValue, prefix);
+        : await reader.tenantTuples(node.tenantId, subjectRefValue, prefix)
+      ).filter((row) => row.relation.startsWith(prefix));
 
     for (const nodeObj of nodeObjectsOf(node)) {
       for (const s of subjects) {
         // Rule 1 — role expansion.
         for (const row of await tuplesFor(s.ref, 'role:', nodeObj.scoped)) {
-          // `startsWith` because the readers' prefix match is a SQL LIKE, which ignores case
-          // (#1869): `Role:admin` must not expand as `role:admin`.
-          if (row.object !== nodeObj.obj || !row.relation.startsWith('role:') || !live(row, now)) continue;
+          if (row.object !== nodeObj.obj || !live(row, now)) continue;
           const roleKey = row.relation.slice('role:'.length);
           const role = await getRole(roleKey);
           if (role?.permissions.includes(permission)) {

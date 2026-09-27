@@ -12,6 +12,6 @@ Restoring, forking, snapshotting or carrying a scope onto a new version now re-p
 
 A kernel namespace (`principal`, `org`, `tenant`, `scope`, `role`, `connection`, `capability`, `system`, `vertical`, in any case) is now refused as an entity name by `defineEntities` and `emitModel`, and as an entity type in a manifest's `entityRelations`, `attachmentTargets` and `liveTargets`. So a module finds out when it emits its model or registers, not at its first `ctx.link`. A name that only starts with one, such as `scopeItem`, is fine.
 
-The connection-grant read-back (`connectionGrantsInScope`) and role expansion in the permission walk now compare their prefixes case-sensitively, as the rest of the walk does.
+The connection-grant read-back (`connectionGrantsInScope`) now matches `connection:` and `granted:` case-sensitively, and the permission walk holds every tuple its readers return to the requested relation prefix exactly, so a relation spelled `Role:` expands no role.
 
-New exports: `RESERVED_NAMESPACES` and `isKernelNamespace` from `@substrat-run/contracts`, `scopeRepointStatement` from `@substrat-run/kernel`, and `scopeRepointContractSuite` from `@substrat-run/contract-tests`.
+New exports: `RESERVED_NAMESPACES` and `isKernelNamespace` from `@substrat-run/contracts`, `repointScopeGrants` from `@substrat-run/kernel`, and `scopeRepointContractSuite` from `@substrat-run/contract-tests`.

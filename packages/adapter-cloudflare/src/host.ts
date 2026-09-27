@@ -1278,10 +1278,12 @@ interface ScopeStubRpc {
   importDump(
     tables: ScopeDumpTable[],
     destScopeId?: ScopeId,
-    /** The recorded-off modules switched off on `destScopeId` after the replay, in its event (#1742). */
-    switchOff?: { moduleIds: readonly string[]; at: string },
-    /** The scope the dump was captured from (#1869): only its node grants are re-pointed. */
-    sourceScopeId?: ScopeId,
+    opts?: {
+      /** The recorded-off modules switched off on `destScopeId` after the replay, in its event (#1742). */
+      switchOff?: { moduleIds: readonly string[]; at: string };
+      /** The scope the dump was captured from (#1869): only its node grants are re-pointed. */
+      sourceScopeId?: ScopeId;
+    },
   ): Promise<SwitchedOff[]>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
@@ -2390,7 +2392,7 @@ export class CloudflareScopeHost implements ScopeHost {
     destScopeId: ScopeId,
   ): Promise<{ tables: number }> {
     const tables = await this.scopeStub(sourceScopeId).exportDump();
-    await this.scopeStub(destScopeId).importDump(tables, destScopeId, undefined, sourceScopeId);
+    await this.scopeStub(destScopeId).importDump(tables, destScopeId, { sourceScopeId });
     return { tables: tables.length };
   }
 
@@ -2408,12 +2410,10 @@ export class CloudflareScopeHost implements ScopeHost {
      *  `sourceScopeId`, the scope the dump was captured from, narrows the grant re-point to it. */
     opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
-    const switchedOff = await this.scopeStub(scopeId).importDump(
-      tables,
-      scopeId,
-      opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
-      opts?.sourceScopeId,
-    );
+    const switchedOff = await this.scopeStub(scopeId).importDump(tables, scopeId, {
+      switchOff: opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
+      sourceScopeId: opts?.sourceScopeId,
+    });
     return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}) };
   }
 
@@ -3135,7 +3135,7 @@ export class CloudflareScopeHost implements ScopeHost {
       forkedFrom: input.forkedFrom ?? (dump.scopeId as ScopeId),
       forkedAt: input.forkedAt ?? dump.capturedAt,
     });
-    await this.scopeStub(input.scopeId).importDump(dump.tables, input.scopeId, undefined, dump.scopeId as ScopeId);
+    await this.scopeStub(input.scopeId).importDump(dump.tables, input.scopeId, { sourceScopeId: dump.scopeId as ScopeId });
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     await this.recordAdmin(
       actor,
@@ -3161,12 +3161,10 @@ export class CloudflareScopeHost implements ScopeHost {
     // restored in its deployment, which the platform carries the same list to.
     const ownStore = this.cpLess || existing.vertical === null;
     const recordedOff = ownStore ? await this.cp.switchedOffModulesOf(tenantId, scopeId) : [];
-    const switchedOff = await this.scopeStub(scopeId).importDump(
-      dump.tables,
-      scopeId,
-      recordedOff.length ? { moduleIds: recordedOff, at: new Date().toISOString() } : undefined,
-      dump.scopeId as ScopeId,
-    );
+    const switchedOff = await this.scopeStub(scopeId).importDump(dump.tables, scopeId, {
+      switchOff: recordedOff.length ? { moduleIds: recordedOff, at: new Date().toISOString() } : undefined,
+      sourceScopeId: dump.scopeId as ScopeId,
+    });
     await this.recordAdmin(
       actor,
       'restoreScope',

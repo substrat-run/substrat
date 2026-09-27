@@ -476,7 +476,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
-import { scopeRepointStatement } from '@substrat-run/kernel';
+import { repointScopeGrants } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
@@ -3264,12 +3264,10 @@ export class SqliteScopeHost implements ScopeHost {
       // one. Nothing errors — the rows insert fine — but the proof walk never matches them,
       // so `/me` reports a role while every `ctx.check` denies. Entity-level grants
       // (`object = customer:<id>`) are untouched: those ids travel with the dump.
-      // Exactly the dump's source scope moves (#1869, `scopeRepointStatement`): this was a
-      // `LIKE 'scope:%'`, which ignores case and so also moved an entity grant typed `Scope`.
+      // Which rows move is `repointScopeGrants`'s (#1869): the dump's source scope, exactly.
       // `UPDATE OR REPLACE` because (subject, relation, object) is the primary key — a
       // rewritten row collapses onto an existing one rather than failing the restore.
-      const [repoint, ...params] = scopeRepointStatement((q, o) => db.prepare(q).all(o), scopeId, dump.scopeId);
-      db.prepare(repoint).run(...params);
+      repointScopeGrants(switchSqlOf(db), scopeId, dump.scopeId);
       // #1742: inside the replay's transaction, so a failure here rolls the whole load back and
       // the dump's grants never commit without the switch that should cover them.
       afterLoad?.(rt);
@@ -5016,7 +5014,7 @@ export class SqliteScopeHost implements ScopeHost {
     // exactly as a scope-level one is. Reading only the scope's own table would answer
     // "not granted" where the checker answers allow — a read-back that disagrees with
     // enforcement is worse than none, since it is the read an operator would trust. GLOB,
-    // not LIKE (#1869): the checker matches `connection:<id>` exactly, LIKE ignores case.
+    // not LIKE (#1869): case-sensitive, as the checker's match is.
     const rows = [
       ...(this.readDb(rt)
         .prepare(
