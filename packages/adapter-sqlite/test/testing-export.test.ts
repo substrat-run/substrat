@@ -12,11 +12,12 @@
  */
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
+import { DO_SQL_LIMITS } from '@substrat-run/kernel';
 
 describe('the published testing helper resolves through the exports map (#1770)', () => {
   it('via ESM import, by package specifier', async () => {
     const mod = await import('@substrat-run/adapter-sqlite/testing');
-    expect(mod.LIKE_PATTERN_LIMIT).toBe(50);
+    expect(mod.LIKE_PATTERN_LIMIT).toBe(DO_SQL_LIMITS.likePatternBytes);
     expect(typeof mod.liftLimit).toBe('function');
   });
 
@@ -25,7 +26,7 @@ describe('the published testing helper resolves through the exports map (#1770)'
       LIKE_PATTERN_LIMIT: number;
       liftLimit: unknown;
     };
-    expect(mod.LIKE_PATTERN_LIMIT).toBe(50);
+    expect(mod.LIKE_PATTERN_LIMIT).toBe(DO_SQL_LIMITS.likePatternBytes);
     expect(typeof mod.liftLimit).toBe('function');
   });
 });

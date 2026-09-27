@@ -29,8 +29,9 @@
  * somewhere else — the open question the issue that asked for this left for its placement.
  */
 import Database from 'better-sqlite3';
+import { DO_SQL_LIMITS } from '@substrat-run/kernel';
 
-const LIMIT = 50;
+const LIMIT = DO_SQL_LIMITS.likePatternBytes;
 const MESSAGE = 'LIKE or GLOB pattern too complex';
 
 const seen = new WeakSet<Database.Database>();
@@ -87,17 +88,21 @@ export const liftLimit = (db: Database.Database): Database.Database => {
 };
 
 type PatchableMethod = 'prepare' | 'exec' | 'pragma' | 'transaction';
-type PatchTarget = Database.Database & Record<PatchableMethod, (...args: any[]) => any> & { __likePatternLimit?: number };
 
-const DatabasePrototype = Database.prototype as PatchTarget;
-if (!DatabasePrototype.__likePatternLimit) {
-  DatabasePrototype.__likePatternLimit = LIMIT;
+// A monkey-patch over native methods of four different real signatures has no honest
+// type-safe shape, so this is cast once to the one shape every call site here needs,
+// rather than pretending precision with an intersection against `Database.Database`.
+const proto = Database.prototype as unknown as Record<PatchableMethod, (...args: unknown[]) => unknown> & {
+  __likePatternLimit?: number;
+};
+if (!proto.__likePatternLimit) {
+  proto.__likePatternLimit = LIMIT;
   // A connection is patched the first time anything is asked of it: the constructor is a
   // native one that cannot be wrapped from here, and no statement can run before this.
   const methods: PatchableMethod[] = ['prepare', 'exec', 'pragma', 'transaction'];
   for (const method of methods) {
-    const original = DatabasePrototype[method];
-    DatabasePrototype[method] = function patched(this: Database.Database, ...args: unknown[]) {
+    const original = proto[method];
+    proto[method] = function patched(this: Database.Database, ...args: unknown[]) {
       install(this);
       return original.apply(this, args);
     };
