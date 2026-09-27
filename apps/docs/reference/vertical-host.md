@@ -214,13 +214,19 @@ re-reads it through the operation it already calls. Mount it on both hosts:
 import { mountLiveReads } from '@substrat-run/vertical-host';
 
 mountLiveReads(app, {
-  live: (c) => hostFor(c.env).liveReads,            // undefined on the pure host
+  live: (c) => hostFor(c.env).liveReads,             // undefined on the pure host
   subscriber: async (c) => {
-    const who = await login.caller(c.req.raw.headers);  // your own session
-    return who ? { tenantId: who.tenantId, scopeId: who.scopeId, principal: who.principal } : null;
+    const node = nodeFor(c.req.raw, c.env);          // tenant + scope, as the router asserted them
+    const principal = await principalFor(c.env, c.req.raw);  // your own session: the principal only
+    return principal ? { ...node, principal } : null;
   },
 });
 ```
+
+Take the tenant and scope from where the rest of your routes take them, the node the router
+asserted for this request, and only the principal from the session. Never take the scope
+from the session or from anything the client sent: the socket would then subscribe to
+whichever scope the cookie or the query string named.
 
 Register it before `mountOperations`. It decides four things, in this order:
 
@@ -235,6 +241,9 @@ Register it before `mountOperations`. It decides four things, in this order:
    host and port), and answers `403` on any difference, including `Origin: null`. The host is
    not asked and `subscriber` is not called. A WebSocket handshake with no `Origin` did not
    come from a browser page, and goes through.
+   Behind a TLS-terminating proxy on a self-hosted node server, the request's URL is `http`
+   while the page's `Origin` is `https`, so the route answers `403`. That costs only the
+   push: a client that keeps its poll as the floor, as ticket0's does, goes on polling.
 3. **This host can push at all.** The pure host has no `liveReads`, so the route answers
    `501` with `x-substrat-live: poll`. That is the same header the hosted adapter sets on its
    own refusals, so a client that reads it keeps polling whichever end said no. The name is
