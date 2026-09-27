@@ -217,8 +217,13 @@ export function Observability({
               scopeId={scopeId}
               window={panelWindow}
               nonce={nonce}
-              // A pattern opens its lines, in the window the reader is already looking at.
-              onOpenPattern={(tpl) => onNav({ app: scopeId, view: 'logs', tpl, ...(cursor ?? {}) })}
+              // A pattern opens its lines, in the window the reader is already looking at —
+              // and ONLY the template narrows them. A level, search or invocation left over
+              // from an earlier visit to Lines would otherwise quietly cut the pattern's
+              // lines down to a subset, or to none.
+              onOpenPattern={(tpl) =>
+                onNav({ app: scopeId, view: 'logs', tpl, level: undefined, search: undefined, invocationId: undefined, ...(cursor ?? {}) })
+              }
             />
           )}
           {/* Event filters stay mounted on refresh; snapshot panels refresh by remount. */}

@@ -6,6 +6,7 @@ import { api, ApiError, type LogPatterns } from '../src/lib/api';
 import { shareLabel, templateParts } from '../src/lib/patterns';
 import { logChips, parseBarText } from '../src/lib/logs-chips';
 import { tenantLogsQuery } from '../src/lib/logs-query';
+import { mockPatternLines } from '../src/lib/mock-patterns';
 import { sectionOf } from '../src/lib/obs-sections';
 
 /** #1747: the Patterns mode — its template rendering, the chip a pattern becomes, and the read. */
@@ -22,6 +23,16 @@ describe('patterns, pure', () => {
     expect(templateParts('{a.b} and {}')).toEqual([{ text: '{a.b} and {}', slot: false }]);
   });
 
+  it('places the preview’s lines inside the window they are said to be from', () => {
+    const window = { from: Date.parse('2026-09-20T10:00:00Z'), to: Date.parse('2026-09-20T11:00:00Z') };
+    const lines = mockPatternLines('reply to {ticketId} sent by {agent}', window);
+    expect(lines.length).toBeGreaterThan(0);
+    for (const l of lines) {
+      expect(l.timestamp!).toBeGreaterThanOrEqual(window.from);
+      expect(l.timestamp!).toBeLessThan(window.to);
+    }
+  });
+
   it('says a share the way the row does', () => {
     expect(shareLabel(0.5)).toBe('50%');
     expect(shareLabel(0.034)).toBe('3.4%');
@@ -33,6 +44,9 @@ describe('patterns, pure', () => {
     expect(logChips({ tpl: 'reply to {id} sent' }, 'logs')).toContainEqual({ key: 'pattern', value: 'reply to {id} sent', clears: ['tpl'] });
     expect(logChips({ tpl: 'x' }, 'patterns')).toEqual([]);
     expect(tenantLogsQuery({ template: 'reply to {id} sent' }).get('template')).toBe('reply to {id} sent');
+    // An empty template is kept, so the plane refuses it rather than reading the whole log.
+    expect(tenantLogsQuery({ template: '' }).has('template')).toBe(true);
+    expect(tenantLogsQuery({}).has('template')).toBe(false);
     expect(parseBarText('anything', 'patterns')).toMatchObject({ error: expect.stringContaining('Click a pattern') });
     expect(sectionOf('patterns')).toBe('logs');
   });

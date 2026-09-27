@@ -9,10 +9,10 @@ import { shareLabel, templateParts } from '../lib/patterns';
  * was written with — one row per template, with its dominant level, its count, a small
  * histogram and its share. A row opens its lines in the Lines mode.
  *
- * A pattern is exactly the lines one call site wrote, because the template was recorded
- * when the line was written rather than guessed afterwards from similar text. Which is also
- * the mode's one limit, said in its empty state: a line written with `console.log` has no
- * template and is in no pattern.
+ * A pattern is exactly the lines written from one TEMPLATE, because the template was
+ * recorded when the line was written rather than guessed afterwards from similar text. It is
+ * not a call site: two calls that share a template share a pattern. And a line written with
+ * `console.log` has no template and is in no pattern, which the empty state says.
  */
 
 /** How many buckets each row's histogram is cut into. It is drawn 180px wide. */

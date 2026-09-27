@@ -51,15 +51,19 @@ export function mockLogPatterns(window: { from: number; to: number }, buckets: n
   };
 }
 
-/** The lines one pattern opens onto — rendered from its sample fields. */
-export function mockPatternLines(template: string): ObservabilityLogEvent[] {
+/**
+ * The lines one pattern opens onto — rendered from its sample fields, and placed inside the
+ * window the page is showing, newest last-bucket first, so the preview never lists a line
+ * the window could not contain.
+ */
+export function mockPatternLines(template: string, window: { from: number; to: number }): ObservabilityLogEvent[] {
   const found = TEMPLATES.find((t) => t[0] === template);
   if (!found) return [];
   const [, , level, fields, operation] = found;
   const message = template.replace(/\{(\w+)\}/g, (_, k: string) => fields[k] ?? `{${k}}`);
-  const now = Date.now();
+  const step = Math.max(1000, Math.floor((window.to - window.from) / 9));
   return Array.from({ length: 8 }, (_, i) => ({
-    timestamp: now - i * 97_000,
+    timestamp: window.to - (i + 1) * step,
     level,
     message,
     service: 'ticket0',

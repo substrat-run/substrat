@@ -305,7 +305,8 @@ narrowed by vertical alone leaves them out: they carry no vertical to match.
 `calculations` query grouped by (template, level), which gives each template's count, level
 split and a small histogram at once, plus one ungrouped count for the total so a pattern's
 share is of every matching line. Grouping is by equality on the recorded template, not text
-mining, so a pattern is exactly the lines one call site wrote. A line written with
+mining, so a pattern is exactly the lines written from one template — two call sites that
+share a template share a pattern. A line written with
 `console.log` has no template and is in no pattern.
 
 ## 5. What each audience gets, in build order

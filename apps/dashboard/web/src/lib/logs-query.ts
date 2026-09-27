@@ -24,7 +24,9 @@ export function tenantLogsQuery(q: {
   if (q.level) p.set('level', q.level);
   if (q.search) p.set('search', q.search);
   if (q.invocationId !== undefined) p.set('invocationId', q.invocationId);
-  if (q.template) p.set('template', q.template);
+  // Presence, not truthiness, like the invocation id: an EMPTY template is a caller bug
+  // the plane answers with a 400, and dropping it would answer it with the whole log.
+  if (q.template !== undefined) p.set('template', q.template);
   if (q.hours) p.set('hours', String(q.hours));
   if (q.limit) p.set('limit', String(q.limit));
   if (q.since) p.set('since', q.since);

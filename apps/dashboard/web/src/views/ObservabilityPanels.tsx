@@ -94,7 +94,12 @@ export function TenantLogs({
       try {
         const events = DEV_MOCK
           ? template
-            ? mockPatternLines(template)
+            ? mockPatternLines(
+                template,
+                cursor
+                  ? { from: Date.parse(cursor.from), to: Date.parse(cursor.to) }
+                  : { from: Date.now() - hours * 3_600_000, to: Date.now() },
+              )
             : MOCK_LOG_LINES.filter(
               (l) =>
                 (!level || l.level === level) &&
