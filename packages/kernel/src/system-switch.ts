@@ -149,13 +149,28 @@ export function subjectSwitchedOff(db: SwitchSql, subject: string): boolean {
   return Number(row?.off) === 1;
 }
 
+/** How many scopes a tenant-level refusal names before it says "and N more". */
+const NAMED_SCOPES = 5;
+
+const switchedOffMessage = (moduleId: string, where: string, reach: string): string =>
+  `module '${moduleId}' is switched off on ${where} (#1666) — restore it first ` +
+  `(restoreToSystem). A grant is not the lever: ${reach}granting while it is off would hand the ` +
+  `module's system authority back to anything but its schedules.`;
+
 /** The refusal `grantToSystem` throws while the switch is off — one wording, both adapters. */
 export function systemSwitchedOffMessage(moduleId: string, scopeId: string): string {
-  return (
-    `module '${moduleId}' is switched off on scope ${scopeId} (#1666) — restore it first ` +
-    `(restoreToSystem). A grant is not the lever: granting while it is off would hand the ` +
-    `module's system authority back to anything but its schedules.`
-  );
+  return switchedOffMessage(moduleId, `scope ${scopeId}`, '');
+}
+
+/**
+ * The same refusal for a TENANT-level grant (#1743), naming the scopes the directory records
+ * the module off on: a tenant tuple reaches every scope of the tenant, those included.
+ */
+export function tenantSystemSwitchedOffMessage(moduleId: string, scopeIds: readonly string[]): string {
+  const named = scopeIds.slice(0, NAMED_SCOPES).join(', ');
+  const more = scopeIds.length > NAMED_SCOPES ? ` and ${scopeIds.length - NAMED_SCOPES} more` : '';
+  const where = scopeIds.length === 1 ? `scope ${named}` : `scopes ${named}${more}`;
+  return switchedOffMessage(moduleId, where, 'a tenant-level grant reaches every scope of the tenant, so ');
 }
 
 /** What one switch call did in the scope's own storage — `SystemSwitchOutcome`'s shape. */

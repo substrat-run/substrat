@@ -284,6 +284,7 @@ import {
   systemScheduleState,
   systemSwitchedOff,
   systemSwitchedOffMessage,
+  tenantSystemSwitchedOffMessage,
   SYSTEM_SWITCHES_BACKFILL_SQL,
   SYSTEM_SWITCHES_DDL,
   forgetSystemSwitchesOf,
@@ -291,6 +292,7 @@ import {
   recordSystemSwitchedOff,
   recordSystemSwitchedOn,
   restoreSystemSwitchRecord,
+  scopesSwitchedOffFor,
   switchedOffModulesOf,
   inUnitMovesToAudit,
   staleCarryRevertRow,
@@ -6507,8 +6509,14 @@ export class SqliteScopeHost implements ScopeHost {
             write();
           });
         } else {
-          // Tenant-level: a directory write, which no scope's transaction can hold.
-          write();
+          // Tenant-level: a directory write, which no scope's transaction can hold. #1743:
+          // refused while the record holds the module off on any scope (`scopesSwitchedOffFor`);
+          // the record and the tenant tuple share the directory, so this is one transaction.
+          this.directory.transaction(() => {
+            const off = scopesSwitchedOffFor(switchSqlOf(this.directory), grant.node.tenantId, grant.moduleId);
+            if (off.length > 0) throw substratError('conflict', tenantSystemSwitchedOffMessage(grant.moduleId, off));
+            write();
+          })();
         }
         this.recordAdmin(
           actor,

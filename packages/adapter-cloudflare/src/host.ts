@@ -319,6 +319,7 @@ import {
   type PeerGrantsRow,
   type SystemGrantsEntry,
   systemSwitchedOffMessage,
+  tenantSystemSwitchedOffMessage,
   CrossVerticalRegistry,
   importCursorSourceOf,
   exportBreaksOf,
@@ -544,6 +545,13 @@ interface ControlPlaneStub {
     object: string,
     expiresAt: string | null,
   ): Promise<void>;
+  /** #1743: a tenant-level `system:` grant — answers the switched-off scopes; empty = written. */
+  writeTenantSystemGrant(
+    tenantId: string,
+    moduleId: string,
+    relation: string,
+    expiresAt: string | null,
+  ): Promise<string[]>;
   /** All of a tenant's identity links — for identity-link projection (#406). */
   dumpTenantIdentities(
     tenantId: string,
@@ -4674,13 +4682,17 @@ export class CloudflareScopeHost implements ScopeHost {
             throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, grant.node.scopeId));
           }
         } else {
-          await writeGrant(
-            subjectRef({ kind: 'system', id: grant.moduleId }),
-            grant.permission,
-            grant.node,
-            undefined,
-            grant.expiresAt,
+          // #1743: refused while the record holds the module off on any scope — checked and
+          // written in one control-plane call, where the record and the tenant tuple both live.
+          const off = await this.cp.writeTenantSystemGrant(
+            grant.node.tenantId,
+            grant.moduleId,
+            `granted:${grant.permission}`,
+            grant.expiresAt ?? null,
           );
+          if (off.length > 0) {
+            throw substratError('conflict', tenantSystemSwitchedOffMessage(grant.moduleId, off));
+          }
         }
         await this.recordAdmin(
           actor,

@@ -241,6 +241,24 @@ export function switchedOffModulesOf(db: SwitchSql, tenantId: string, scopeId: s
     .map((r) => String(r.module_id));
 }
 
+/**
+ * The scopes of one tenant the record holds a module OFF on — what a tenant-level
+ * `grantToSystem` refuses on (#1743). A tenant tuple has no scope of its own to read a
+ * marker from, and reaches every scope of the tenant, so the directory's record is the only
+ * place the question can be asked in one unit with the write. The adapters run this and the
+ * tenant tuple's write together, on the handle both live on.
+ */
+export function scopesSwitchedOffFor(db: SwitchSql, tenantId: string, moduleId: string): string[] {
+  return db
+    .all(
+      `SELECT scope_id FROM _substrat_system_switches
+        WHERE tenant_id = ? AND module_id = ? AND position = 'off' ORDER BY scope_id`,
+      tenantId,
+      moduleId,
+    )
+    .map((r) => String(r.scope_id));
+}
+
 /** What one switch call writes into the record. */
 export interface SystemSwitchRecordWrite {
   tenantId: string;

@@ -288,6 +288,7 @@ export {
   systemScheduleState,
   systemSwitchedOff,
   systemSwitchedOffMessage,
+  tenantSystemSwitchedOffMessage,
 } from './system-switch.js';
 export type {
   SwitchOutcome,
@@ -307,6 +308,7 @@ export {
   recordSystemSwitchedOff,
   recordSystemSwitchedOn,
   restoreSystemSwitchRecord,
+  scopesSwitchedOffFor,
   switchedOffModulesOf,
   systemSwitchRecordsOf,
   systemSwitchesTableExists,
