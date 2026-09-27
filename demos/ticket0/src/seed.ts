@@ -17,7 +17,7 @@
  */
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { principalId, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid, type Clock, type ScopeHost } from '@substrat-run/kernel';
+import { ulid, type Clock, type ModuleLogSink, type ScopeHost } from '@substrat-run/kernel';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
 import { ASSISTANT_NAME } from './module.js';
 // The module set and the role table live in `provision.ts` — the ONE place both this
@@ -95,8 +95,10 @@ export interface World {
  * visible to the caller: its `liveReads` is `never`, which is how the dev server's
  * live route knows to answer 501 (#938) without a cast.
  */
-export function buildHost(dir: string, clock?: Clock): SqliteScopeHost {
-  const host = new SqliteScopeHost(clock ? { dir, clock } : { dir });
+export function buildHost(dir: string, clock?: Clock, logSink?: ModuleLogSink): SqliteScopeHost {
+  // `logSink` is where the module's `ctx.log` lines go (#1747): the console by default, as
+  // in production, and a collector in a suite that asserts what they say.
+  const host = new SqliteScopeHost({ dir, ...(clock ? { clock } : {}), ...(logSink ? { logSink } : {}) });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

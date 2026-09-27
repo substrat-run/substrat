@@ -871,8 +871,30 @@ function blockedBy(ctx: OperationContext, probe: BlockProbe): BlockRuleRow | und
  * also what lets `harness/inbound.ts` answer Resend a 200 for a mail that will never be
  * accepted instead of asking it to retry forever.
  */
+/**
+ * A model id as a log line may carry it (#1747). `model` is declared as any string, and a
+ * log line is read across every desk that installed the vertical, so only a value SHAPED
+ * like a model id goes out — one token of id characters (`@cf/meta/llama-3.1-8b`,
+ * `openai/gpt-4o-mini`), no spaces, no `@` after the first character, which rules out a
+ * sentence or an address. Anything else is logged as `unrecognised`; the turn row keeps
+ * the value as it came.
+ */
+const MODEL_ID = /^[A-Za-z0-9@][A-Za-z0-9._:/-]{0,99}$/;
+function modelForLog(model: string): string {
+  return MODEL_ID.test(model) ? model : 'unrecognised';
+}
+
 function refuseIfBlocked(ctx: OperationContext, probe: BlockProbe): void {
-  if (blockedBy(ctx, probe)) throw substratError('forbidden', SENDER_BLOCKED, { reason: 'sender-blocked' });
+  const rule = blockedBy(ctx, probe);
+  if (rule) {
+    // The rule's id, never the value it matched: that is an address or a domain, and a
+    // log line is read by more people than the block list is.
+    ctx.log.warn('refused a {sender} blocked by rule {ruleId}', {
+      sender: probe.contactId ? 'known contact' : 'new sender',
+      ruleId: rule.id,
+    });
+    throw substratError('forbidden', SENDER_BLOCKED, { reason: 'sender-blocked' });
+  }
 }
 
 /**
@@ -1253,6 +1275,8 @@ function assignConversation(
   );
   const row = settle(ctx, conversation, next);
   if (assignee) notify(ctx, assignee, 'assigned', conversation.id);
+  if (assignee) ctx.log.info('conversation {conversationId} assigned', { conversationId: row.id });
+  else ctx.log.info('conversation {conversationId} put back unassigned', { conversationId: row.id });
   ctx.emit({
     type: 'ticket0.conversation-assigned',
     schemaVersion: 1,
@@ -3208,7 +3232,9 @@ const operations = {
     if (!conversation.first_public_reply_at) {
       // This reply meets the first-response target. If it meets it late, the breach
       // goes on record now, while the target is still running (#1082).
-      recordIfLate(ctx, conversation, SLA_FIRST_RESPONSE);
+      if (recordIfLate(ctx, conversation, SLA_FIRST_RESPONSE)) {
+        ctx.log.warn('first response on {conversationId} was late', { conversationId: conversation.id });
+      }
       ctx.sql.exec('UPDATE ticket0_conversations SET first_public_reply_at = ? WHERE id = ?', [
         ctx.now(),
         conversation.id,
@@ -3234,6 +3260,8 @@ const operations = {
       );
     }
 
+    // Ids only, as on the event below: the body is erasable, and a log line is not.
+    ctx.log.info('{authorKind} replied on {conversationId}', { authorKind: row.author_kind, conversationId: conversation.id });
     // Ids only: the body is erasable, so it cannot ride an immutable event. The relay
     // comes back for it at send time through `ticket0/read-outbound`.
     ctx.emit(messageEvent(row, 'ticket0.reply-requested'));
@@ -3316,6 +3344,14 @@ const operations = {
         DESK,
       ]);
     }
+    // The one case worth a warning: work was waiting and nobody was in the ring to take it.
+    if (assigned < waiting.length) {
+      ctx.log.warn('round-robin left {waiting} conversations unassigned: nobody is in the ring', {
+        waiting: waiting.length - assigned,
+      });
+    } else if (assigned > 0) {
+      ctx.log.info('round-robin handed out {assigned} conversations', { assigned });
+    }
     return { assigned };
   },
 
@@ -3369,6 +3405,12 @@ const operations = {
         told.add(conversation.id);
         notifyStaff(ctx, conversation, 'escalated');
       }
+    }
+    if (breached > 0) {
+      ctx.log.warn('{breached} service-level targets breached across {conversations} conversations', {
+        breached,
+        conversations: told.size,
+      });
     }
     return { breached };
   },
@@ -3523,6 +3565,7 @@ const operations = {
       // is looked for anyway.
       if (row.assignee) notify(ctx, row.assignee, 'snooze-woke', row.id);
     }
+    if (due.length > 0) ctx.log.info('woke {woke} snoozed conversations', { woke: due.length });
     return { woke: due.length };
   },
 
@@ -3657,6 +3700,9 @@ const operations = {
         piiClass: 'none',
         payload: { id: row.id },
       });
+    }
+    if (abandoned.length > 0) {
+      ctx.log.info('closed {reaped} abandoned conversations', { reaped: abandoned.length });
     }
     return { reaped: abandoned.length };
   },
@@ -4285,6 +4331,17 @@ const operations = {
     // which is exactly the shape this used to tell nobody about.
     if (input.outcome === 'escalated' || input.outcome === 'failed')
       notifyStaff(ctx, conversation, 'escalated');
+    // The outcome is the pattern's point: `drafted` and `answered` are the assistant working,
+    // `escalated` is it handing over, `failed` is it not managing to.
+    const answerLog =
+      input.outcome === 'failed' ? ctx.log.error : input.outcome === 'escalated' ? ctx.log.warn : ctx.log.info;
+    answerLog('assistant turn on {conversationId} {outcome} ({model}, {inputTokens} in / {outputTokens} out)', {
+      conversationId: conversation.id,
+      outcome: input.outcome,
+      model: modelForLog(input.model),
+      inputTokens: input.inputTokens,
+      outputTokens: input.outputTokens,
+    });
     ctx.emit({
       type: 'ticket0.answer-recorded',
       schemaVersion: 1,
@@ -4347,6 +4404,12 @@ const operations = {
       input.turnId,
     ])[0]!;
     notifyStaff(ctx, conversation, 'escalated');
+    // The model, not the error text: that is whatever the provider said, and it can quote
+    // the conversation back.
+    ctx.log.error('assistant could not act on {conversationId} ({model})', {
+      conversationId: conversation.id,
+      model: modelForLog(input.model),
+    });
     ctx.emit({
       type: 'ticket0.assistant-failed',
       schemaVersion: 1,
@@ -4733,7 +4796,12 @@ const operations = {
       'SELECT * FROM ticket0_messages WHERE email_message_id = ?',
       [input.emailMessageId],
     )[0];
-    if (seen) return seen;
+    if (seen) {
+      // A provider redelivering. The conversation id, not the Message-ID: that header
+      // names the sender's host.
+      ctx.log.debug('mail already ingested into {conversationId}', { conversationId: seen.conversation_id });
+      return seen;
+    }
 
     /**
      * The blocklist, and it sits BELOW the idempotency check on purpose (#1088).
@@ -4758,10 +4826,10 @@ const operations = {
         verified_at: ctx.now(),
       });
 
+    const threaded = input.conversationId ? undefined : threadRepliedTo(ctx, contact, input.emailInReplyTo);
     const bound = input.conversationId
       ? conversationOrThrow(ctx, input.conversationId)
-      : (threadRepliedTo(ctx, contact, input.emailInReplyTo) ??
-        openConversation(ctx, contact, 'email', input.subject));
+      : (threaded ?? openConversation(ctx, contact, 'email', input.subject));
     // A reply to a thread the desk has closed is a new thread, for the reason
     // `followUp` gives. The relay is told which conversation the message landed in by
     // the row it gets back, so a threading header pointing at the closed one does not
@@ -4780,6 +4848,17 @@ const operations = {
       bound.state === 'closed'
         ? followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), input.subject)
         : bound;
+    // How the mail found its conversation — the first question when one lands in the
+    // wrong place.
+    const binding =
+      conversation.id !== bound.id
+        ? 'a follow-up to a closed conversation'
+        : input.conversationId
+          ? 'the conversation it named'
+          : threaded
+            ? 'the thread it replied to'
+            : 'a new conversation';
+    ctx.log.info('mail ingested into {conversationId} as {binding}', { conversationId: conversation.id, binding });
 
     const next = step(conversation, 'ticket0/ingest-message');
     const row = writeMessage(ctx, {
@@ -4803,6 +4882,10 @@ const operations = {
     // `ticket0.message-ingested` would have a consumer counting two inbound messages
     // for one mail. The escalation acknowledgement is written the same way.
     if (input.attachments && input.attachments.length > 0) {
+      ctx.log.warn('{count} attachments dropped from mail on {conversationId}: the desk has no file store', {
+        count: input.attachments.length,
+        conversationId: conversation.id,
+      });
       writeMessage(ctx, {
         conversationId: conversation.id,
         authorKind: 'system',
