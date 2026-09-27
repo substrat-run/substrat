@@ -845,6 +845,31 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     expect(ids).not.toContain(onBeside.id);
   });
 
+  it('stops a follower\'s frames the moment they are unfollowed, on the socket already open', async () => {
+    await member('sub-unfollow-agent', 'agent');
+    const follower = await member('sub-unfollowed', 'customer');
+    const followed = await arrival('unfollow@live.example');
+    await grant(follower, 'conversation:read', 'conversation', followed.conversation);
+
+    const followerFeed = await subscribe('sub-unfollowed');
+    const agentFeed = await subscribe('sub-unfollow-agent');
+    const before = await note(followed.conversation, 'Still following.');
+    await settle();
+    expect(followerFeed.frames.map((f) => f.entityId)).toContain(before.id);
+
+    // Unfollowed by the operation the desk uses, while the socket stays open.
+    await (await host().getScope(deskOwner, tenant, desk)).invoke('ticket0/unfollow-conversation', {
+      conversationId: followed.conversation,
+      follower,
+    });
+    const after = await note(followed.conversation, 'Not following any more.');
+    await settle();
+
+    expect(followerFeed.frames.map((f) => f.entityId)).not.toContain(after.id);
+    // The twin, from the same write: the agent still hears it.
+    expect(agentFeed.frames.map((f) => f.entityId)).toContain(after.id);
+  });
+
   /**
    * An assistant turn reaches a subscriber only if that subscriber can already poll it.
    * `ticket0/list-turns` is `conversation:read` on the turn's conversation, which a
