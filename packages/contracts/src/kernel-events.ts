@@ -32,3 +32,17 @@ export function assertModuleEmittableType(type: string): void {
     { errors: [{ path: 'type', message: 'a kernel-authored event type' }] },
   );
 }
+
+/**
+ * The kernel writer's own check, the mirror of the one above: a type the kernel writes must be
+ * in the set, or a new kernel event would be forgeable from `ctx.emit` without anyone noticing
+ * the list was not updated. `internal`, because it is a platform bug, never a caller's.
+ */
+export function assertKernelAuthoredType(type: string): void {
+  if (KERNEL_AUTHORED_EVENT_TYPES.has(type)) return;
+  throw substratError(
+    'internal',
+    `the kernel wrote '${type}', which is not in KERNEL_AUTHORED_EVENT_TYPES — add it there, ` +
+      'or module code can forge it through ctx.emit',
+  );
+}

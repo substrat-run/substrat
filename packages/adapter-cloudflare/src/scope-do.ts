@@ -12,6 +12,7 @@ import {
   objectRef,
   entityObjectRef,
   assertModuleEmittableType,
+  assertKernelAuthoredType,
   toWireFailure,
   type WireFailure,
   grantRefFromProof,
@@ -5217,6 +5218,7 @@ export function defineScopeDO(
         const parsed = domainEventInput.parse(event);
         // #1864: a kernel-authored type is the kernel's to write — module code cannot forge one.
         if (author === 'module') assertModuleEmittableType(parsed.type);
+        else assertKernelAuthoredType(parsed.type); // a new kernel event must join the reserved set
         // #1672: the COMPLETE parsed event — entity id, type and subject as well as payload.
         assertNoSecret('ctx.emit', parsed, minted);
         const full = domainEvent.parse({

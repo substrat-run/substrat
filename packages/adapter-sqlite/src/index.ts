@@ -83,6 +83,7 @@ import {
   objectRef,
   entityObjectRef,
   assertModuleEmittableType,
+  assertKernelAuthoredType,
   grantRefFromProof,
   org as orgSchema,
   orgMembership,
@@ -10385,6 +10386,7 @@ export class SqliteScopeHost implements ScopeHost {
       const input = domainEventInput.parse(event);
       // #1864: a kernel-authored type is the kernel's to write — module code cannot forge one.
       if (author === 'module') assertModuleEmittableType(input.type);
+      else assertKernelAuthoredType(input.type); // a new kernel event must join the reserved set
       // #1672: the COMPLETE parsed event — entity id, type and subject as well as payload.
       assertNoSecret('ctx.emit', input, minted);
       const full = domainEvent.parse({
