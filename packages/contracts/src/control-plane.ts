@@ -861,34 +861,17 @@ export const sweepRunsPayload = z.object({
         .superRefine((e, ctx) => {
           // The identity field follows the kind: a schedule entry names its
           // operation, a freshness entry names its event type — never the other
-          // way around, per the signals vocabulary. And a CONNECTOR entry is
-          // refused outright: this payload is drained from one scope and stamped
-          // with that scope's identity, while a connector row is scope-less by
-          // contract — a scope-batched intent claiming connector kind is not
-          // under-specified, it is structurally wrong.
-          if (e.kind === 'connector') {
+          // way around, per the signals vocabulary. Every OTHER kind is refused
+          // outright: a scope-drained batch is stamped with that one scope's
+          // identity, and 'schedule'/'freshness' are the only kinds that fact is
+          // true of — an allowlist rather than a per-kind refusal, so a kind added
+          // to sweepRunKind later is refused by default instead of silently
+          // passing through (#1851).
+          if (e.kind !== 'schedule' && e.kind !== 'freshness') {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               path: ['kind'],
-              message: 'connector rows are recorded directly by the platform sweep, never through a scope-drained batch',
-            });
-          }
-          // #1705: an edge row is the platform's account of TWO scopes, which is the one
-          // thing a batch drained from one of them cannot be trusted to give.
-          if (e.kind === 'vertical-events') {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ['kind'],
-              message: 'vertical-events rows are recorded directly by the platform sweep, never through a scope-drained batch',
-            });
-          }
-          // #1840: the drain's fleet-wide row is the platform counting every scope's queue.
-          // One scope's batch claiming it would be that scope writing the fleet's number.
-          if (e.kind === 'platform-request') {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ['kind'],
-              message: 'platform-request rows are recorded directly by the platform sweep, never through a scope-drained batch',
+              message: `${e.kind} rows are recorded directly by the platform sweep, never through a scope-drained batch`,
             });
           }
           // …and each kind carries ONLY its own fields: sweepRunEntry documents the
