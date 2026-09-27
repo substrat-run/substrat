@@ -26,6 +26,7 @@ import { agentName, agents, assignableStaff } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
 import { PACE } from '../pace.js';
+import { latestOnly } from '../sequence.js';
 import { Avatar, EventDivider, OwnerPicker, StateBadge, Unassigned, clock } from '../ui.js';
 
 interface Turn {
@@ -88,7 +89,10 @@ export function ConversationView({
    */
   const [staff, setStaff] = useState<Map<string, AgentProfile>>(new Map());
 
+  // A poll and a push can both be reading; only the latest may write (`sequence.ts`).
+  const reads = useRef(latestOnly()).current;
   const load = useCallback(async () => {
+    const isLatest = reads();
     try {
       const [c, m, t, tg, vocab, rating] = await Promise.all([
         api.getConversation({ conversationId: id }),
@@ -100,24 +104,30 @@ export function ConversationView({
         // is most of them — the card is simply absent rather than empty.
         api.getCsat({ conversationId: id }),
       ]);
+      if (!isLatest()) return;
       setConv(c);
-      setWho((await contacts()).get(c.contact_id));
+      const person = (await contacts()).get(c.contact_id);
+      if (!isLatest()) return;
+      setWho(person);
       setMessages(m.entries as MessageWithCitations[]);
       setTurns(t.entries as Turn[]);
       setTags(tg.tags);
       setVocabulary(vocab.tags);
       setCsat(rating.csat);
       // Only a widget conversation has a browser behind it; an email one is not asked.
-      setVisitor(c.channel === 'widget' ? (await api.widgetSession({ conversationId: id })).session : null);
+      const visitor = c.channel === 'widget' ? (await api.widgetSession({ conversationId: id })).session : null;
+      if (!isLatest()) return;
+      setVisitor(visitor);
       // Constraint 2: the cost read is only attempted when the caller holds the key,
       // and a refusal leaves `usage` null — which is what makes the card absent.
       if (caps?.money) {
-        setUsage((await api.usageSummary({ conversationId: id })) as Usage);
+        const usage = (await api.usageSummary({ conversationId: id })) as Usage;
+        if (isLatest()) setUsage(usage);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (isLatest()) setError(e instanceof Error ? e.message : String(e));
     }
-  }, [id, caps?.money]);
+  }, [id, caps?.money, reads]);
 
   useEffect(() => {
     void load();
