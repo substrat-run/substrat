@@ -3,6 +3,8 @@ import type {
   AdminAction,
   AdminLogEntry,
   ChannelName,
+  MigrationDiff,
+  PermissionRegistry,
   ConnectionHealthPage,
   ConnectionHealthState,
   DirectoryBackup,
@@ -678,6 +680,18 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     promotionImpact: (slug: string, channel: ChannelName, versionId: string) =>
       call<{ affected: ExportBreak[]; otherTenants?: number }>(
         `/verticals/${encodeURIComponent(slug)}/channels/${channel}/promote-impact?versionId=${encodeURIComponent(versionId)}`,
+      ),
+    // #1677: the two diffs a promote acknowledges. `registry` is null for a version that declared
+    // none ("cannot diff"), `migrations` null for one that carries no SQL ("not available").
+    versionRegistry: (slug: string, versionId: string) =>
+      call<{ registry: PermissionRegistry | null }>(
+        `/verticals/${encodeURIComponent(slug)}/versions/${encodeURIComponent(versionId)}/registry`,
+      ),
+    versionMigrations: (slug: string, versionId: string, base?: string) =>
+      call<{ migrations: MigrationDiff | null }>(
+        `/verticals/${encodeURIComponent(slug)}/versions/${encodeURIComponent(versionId)}/migrations${
+          base === undefined ? '' : `?base=${encodeURIComponent(base)}`
+        }`,
       ),
     // Pin a scope to a version — what the router dispatches on (orchestration.md §5.4).
     // Refuses a non-admitted version below the seam.
