@@ -45,10 +45,11 @@
  *
  * Every engine, because their surfaces are published and composed by verticals that cannot
  * read the handler; and, by name, the demos bound in the two shapes this rule reads (an inline
- * map, or a named `const` in the same file). The other demos and the scaffold bind in shapes it
- * does not — a bound `const` spread through a cast beside hand-bound entries, a hand-written
- * mapped type — or not at all (manyfold, #1833). Making the join a type rather than a clause a
- * text rule looks for is #1835.
+ * map, or a named `const` in the same file — manyfold joined meridian and shop here in #1833,
+ * once its five mismatched declarations made a real `satisfies` possible). The other demos and
+ * the scaffold bind in shapes it does not — a bound `const` spread through a cast beside
+ * hand-bound entries, a hand-written mapped type — or not at all. Making the join a type rather
+ * than a clause a text rule looks for is #1835.
  *
  * **Out of reach, and known:** a handler whose own TYPE is `any` — `const h: any = …`, or one
  * returned from a function that erases it — satisfies the clause silently, and nothing about
@@ -70,7 +71,11 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', '.wrangler']);
  * cannot quietly take a file out of scope — and each one must still exist and be judged, so a
  * rename cannot either.
  */
-const BOUND_ELSEWHERE = ['demos/meridian/src/module.ts', 'demos/shop/src/module.ts'];
+const BOUND_ELSEWHERE = [
+  'demos/manyfold/src/module.ts',
+  'demos/meridian/src/module.ts',
+  'demos/shop/src/module.ts',
+];
 /**
  * A whole-file opt-out, and it has to give a reason.
  *

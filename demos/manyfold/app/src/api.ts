@@ -3,6 +3,7 @@
 // in `x-site` (localStorage-backed) and is SELECTION, not auth: it says which of the tenant's
 // scopes to run against, and the kernel re-checks your authority there regardless.
 // Every op goes through /api/op/<name>, so the generic transport is exactly as safe.
+import type { Page } from '@substrat-run/contracts';
 
 export class ApiError extends Error {
   status: number;
@@ -28,6 +29,25 @@ export async function op<T>(name: string, input: unknown = {}): Promise<T> {
   const body = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) throw new ApiError((body as { error?: string }).error ?? `${res.status}`, res.status);
   return body;
+}
+
+/**
+ * Walk every page of a paged operation and hand back the whole list.
+ *
+ * The screens this feeds have no pagination UI of their own — they render "all
+ * entries", the same thing they rendered when these operations answered with a
+ * bare array. Walking the cursor here keeps that true now that the wire answers
+ * with a page at a time instead of the whole table.
+ */
+async function walkAll<T>(name: string, input: Record<string, unknown> = {}): Promise<T[]> {
+  const out: T[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await op<Page<T>>(name, cursor ? { ...input, cursor } : input);
+    out.push(...page.entries);
+    if (page.nextCursor === null) return out;
+    cursor = page.nextCursor;
+  }
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -92,7 +112,7 @@ export interface FieldDef { type: string; required?: boolean; index?: boolean; o
 export interface ContentTypeDef { key: string; version: number; title: string; titleField: string; slugField?: string; fields: Record<string, FieldDef> }
 export interface RevisionMeta { rev_no: number; frozen: number; hash: string | null; author: string; created_at: string }
 export interface EntryDetail { entry: { id: string; type_key: string; status: EntryStatus; slug: string | null; draft_rev: number; published_rev: number | null; created_at: string; updated_at: string }; body: Record<string, unknown>; revisions: RevisionMeta[] }
-export interface DeliveryItem { type_key: string; slug: string | null; title: string; hash: string }
+export interface DeliveryItem { entry_id: string; type_key: string; slug: string | null; title: string; hash: string; published_at: string }
 export interface Invite { principal: string; roleKey: string; email: string | null; createdAt: number }
 export interface InvitesResult { roles: string[]; invites: Invite[] }
 export interface CreatedInvite { principal: string; roleKey: string; email: string | null; acceptUrl: string }
@@ -128,11 +148,11 @@ export const api = {
     if (b.can) return { role: roleLabel(b.can) };
     return { role: null };
   },
-  listTypes: () => op<{ def: ContentTypeDef; sql: string }[]>('list-types'),
+  listTypes: () => op<{ types: { def: ContentTypeDef; sql: string }[] }>('list-types').then((r) => r.types),
   saveType: (def: { key: string; title: string; titleField: string; slugField?: string; fields: Record<string, FieldDef> }) => op<ContentTypeDef>('save-type', def),
   deleteType: (key: string) => op<{ deleted: string }>('delete-type', { key }),
-  listEntries: (input: { typeKey?: string; status?: EntryStatus } = {}) => op<EntryListItem[]>('list-entries', input),
-  reviewQueue: () => op<EntryListItem[]>('review-queue'),
+  listEntries: (input: { typeKey?: string; status?: EntryStatus } = {}) => walkAll<EntryListItem>('list-entries', input),
+  reviewQueue: () => walkAll<EntryListItem>('review-queue'),
   getEntry: (entryId: string) => op<EntryDetail>('get-entry', { entryId }),
   createEntry: (typeKey: string, body: Record<string, unknown>) => op<EntryDetail['entry']>('create-entry', { typeKey, body }),
   saveDraft: (entryId: string, body: Record<string, unknown>) => op<EntryDetail['entry']>('save-draft', { entryId, body }),
@@ -144,7 +164,7 @@ export const api = {
   unpublish: (entryId: string) => op('unpublish', { entryId }),
   archive: (entryId: string) => op('archive', { entryId }),
   deliver: (typeKey: string, slug: string) => op<{ type: string; slug: string | null; hash: string; publishedAt: string; body: Record<string, unknown> }>('deliver', { typeKey, slug }),
-  listDelivery: (input: { typeKey?: string } = {}) => op<DeliveryItem[]>('list-delivery', input),
+  listDelivery: (input: { typeKey?: string } = {}) => walkAll<DeliveryItem>('list-delivery', input),
   // Members & invites (worker routes; 404 on the dev server).
   listInvites: () => get<InvitesResult>('/api/invites'),
   createInvite: (email: string | undefined, roleKey: string) => postJson<CreatedInvite>('/api/invites', { email, roleKey }),

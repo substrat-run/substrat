@@ -247,6 +247,34 @@ shipped, so an app keeps showing metrics (which come from the router and have mo
 history) and no logs until its vertical is re-pushed. The empty state says so rather than
 implying silence.
 
+**4.6 The per-request record (#1746).** The stamped line is also where a request's
+*business* facts live, so a reader can facet requests by what they did rather than by path.
+It carries them as additive top-level fields, which Workers Logs indexes like `tenantId`:
+
+| Field | Filled by | `null` / empty means |
+|---|---|---|
+| `level` | derived: 5xx or an escaped throw is `error`; a 4xx, or a 200 carrying a problem code (an MCP tool error answers in-band), is `warn`; else `info` | never null |
+| `operation` | `mountOperations` and the MCP mount, from the name they dispatch to | a custom route, not a mounted operation |
+| `problemCode` | the same mounts, `errorCodeOf` on the throw, before the vertical's own mapping | the call succeeded, or failed with nothing the kernel vocabulary names |
+| `principalKind` | `ScopeStub.subjectKind`, decided by the door that minted the stub: `principal`, `connection`, `system`, `capability`, `vertical` | the stub is the vertical's own and does not say |
+| `eventCount`, `eventTypes`, `entities` | `InvokeOptions.onEmitted`: the rows the operation added to the outbox, read after its commit and **before** the consumer drain | not recorded. `0` and `[]` are a fact: the call emitted nothing |
+| `versionId` | the platform's `SUBSTRAT_VERSION_ID` binding | a local run, or a script pushed before the binding existed |
+
+`entities` and `eventTypes` are distinct values from at most `EMITTED_REPORT_CAP` events,
+in emission order; `eventCount` is the uncapped count. Only the operation's own emits are
+named. Its consumers' follow-on events share the invocation id on the spine but are their
+work, a rolled-back sub-transaction's emits are gone with it, and a failed call or an
+idempotent replay committed nothing, so none of them is reported. The
+`emittedReportContractSuite` holds both adapters to exactly that, across the DO hop too.
+
+The storage decision is deliberately *this line*, not a new store. Analytics Engine would
+have meant a dataset binding on every pushed script and a blob budget that cannot hold a
+list of entity refs, and the Tier-2 lake answers minutes late. Workers Logs is already
+tenant-filterable on this line and aggregates server-side, so facet counts and a level
+histogram can be computed over a whole window instead of from the 40 × 20 sample. The price
+is its 7-day retention. Module code's own log lines inheriting the same fields is a
+separate step (`ctx.log`), and so is the read that aggregates them.
+
 ## 5. What each audience gets, in build order
 
 | # | View | Source | Cost |

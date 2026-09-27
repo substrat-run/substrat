@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX } from '@substrat-run/contracts';
-import { PermissionDenied } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, PermissionDenied, type InvocationRecord } from '@substrat-run/kernel';
 import { mountOperations } from '../src/operations-routes.js';
 import { mcpToolsOf, mcpToolName, MCP_PROTOCOL_VERSIONS } from '../src/mcp.js';
 
@@ -780,5 +780,97 @@ describe('a token minted for another audience is refused before the resolver', (
     expect(res.headers.get('WWW-Authenticate')).toBe(
       `Bearer error="invalid_token", error_description="this token was not issued for ${A}/api/mcp"`,
     );
+  });
+});
+
+/**
+ * #1746, and #1237 on the MCP path: a tool call fills in the same record the HTTP mount
+ * does and stamps the same invocation id, so an assistant's calls are as visible in the
+ * log as a person's. The tool error is answered in-band as a 200, so the code is what
+ * tells the line it failed.
+ */
+describe('the per-request record on a tool call (#1746)', () => {
+  function recordHarness(invoke: (options?: { invocationId?: string; onEmitted?: (r: unknown) => void }) => unknown) {
+    const record: InvocationRecord = {};
+    const seen: (string | undefined)[] = [];
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      const set = (c as unknown as { set: (k: string, v: unknown) => void }).set;
+      set('substratInvocationId', 'inv-1');
+      set(INVOCATION_RECORD_KEY, record);
+      await next();
+    });
+    mountOperations(app, operations, async () => ({
+      subjectKind: 'principal',
+      invoke: async (_n: string, _i: unknown, options?: { invocationId?: string; onEmitted?: (r: unknown) => void }) => {
+        seen.push(options?.invocationId);
+        return invoke(options);
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any);
+    return { app, record, seen };
+  }
+
+  it('records the tool\'s operation and what it emitted, and stamps the invocation id', async () => {
+    const report = { events: [{ type: 'todo.list-created', entity: 'list:1' }], total: 1 };
+    const { app, record, seen } = recordHarness((options) => {
+      options?.onEmitted?.(report);
+      return { ok: true };
+    });
+    await rpc(app, 'tools/call', { name: 'todo_create-list', arguments: { title: 'x' } });
+    expect(seen).toEqual(['inv-1']);
+    expect(record).toEqual({ operation: 'todo/create-list', principalKind: 'principal', emitted: report });
+  });
+
+  it('records the code of a tool error answered in-band', async () => {
+    const { app, record } = recordHarness(() => {
+      throw new PermissionDenied(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        'todo:create' as any,
+      );
+    });
+    await rpc(app, 'tools/call', { name: 'todo_create-list', arguments: { title: 'x' } });
+    expect(record).toMatchObject({ operation: 'todo/create-list', problemCode: 'permission_denied' });
+  });
+
+  it("names only the last tool of a batch, with none of an earlier tool's outcome", async () => {
+    const report = { events: [{ type: 'todo.list-created', entity: 'list:1' }], total: 1 };
+    let first = true;
+    // The first call fails in-band, the second succeeds having emitted nothing: neither the
+    // first's code nor any stale report may reach the line beside the second's name.
+    const failing = recordHarness(() => {
+      if (first) {
+        first = false;
+        throw new PermissionDenied(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          'todo:create' as any,
+        );
+      }
+      return { ok: true };
+    });
+    const batch = (target: Hono) =>
+      target.request('/api/mcp', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify([
+          { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'todo_create-list', arguments: { title: 'a' } } },
+          { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'todo_my-lists', arguments: {} } },
+        ]),
+      });
+    await batch(failing.app);
+    expect(failing.record).toEqual({ operation: 'todo/my-lists', principalKind: 'principal' });
+
+    // And the other way round: an earlier tool's events do not survive into a later one
+    // that reported none.
+    let emitting = true;
+    const second = recordHarness((options) => {
+      if (emitting) {
+        emitting = false;
+        options?.onEmitted?.(report);
+      }
+      return { ok: true };
+    });
+    await batch(second.app);
+    expect(second.record).toEqual({ operation: 'todo/my-lists', principalKind: 'principal' });
   });
 });

@@ -150,6 +150,10 @@ import {
   IMPORT_CURSOR_OF_SQL,
   OUTBOX_MARK_SQL,
   exportedSinceQuery,
+  emittedSinceQuery,
+  emittedReportOf,
+  EMITTED_REPORT_CAP,
+  type EmittedReport,
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
   moveImportCursor,
@@ -1931,6 +1935,11 @@ export function defineScopeDO(
       vertical?: { honoured: boolean };
       /** #1705 PR 2: exported-type rows this commit added. Absent means none. */
       exported?: number;
+      /**
+       * #1746: the events this call itself emitted, when the caller asked (`onEmitted`).
+       * Absent from an older DO, which the coordinator reads as "not recorded".
+       */
+      emitted?: EmittedReport;
     }> {
       if (!failureEnvelope) {
         // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
@@ -2015,6 +2024,11 @@ export function defineScopeDO(
       vertical?: { honoured: boolean };
       /** #1705 PR 2: exported-type rows this commit added. Absent means none. */
       exported?: number;
+      /**
+       * #1746: the events this call itself emitted, when the caller asked (`onEmitted`).
+       * Absent from an older DO, which the coordinator reads as "not recorded".
+       */
+      emitted?: EmittedReport;
     }> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
@@ -2161,6 +2175,13 @@ export function defineScopeDO(
         // that exports something, and never for a read-only session, which commits nothing.
         const exportTypes = impersonation?.mode === 'read-only' ? [] : this.crossVertical.exportTypes();
         const exportMark = exportTypes.length > 0 ? this.outboxMark() : null;
+        // #1746: the same mark, when the caller asked what this call emitted. The callback
+        // itself never runs here — its presence is the request, and the report travels
+        // back in the envelope for the coordinator to deliver.
+        const emittedMark =
+          invokeOptions?.onEmitted !== undefined && impersonation?.mode !== 'read-only'
+            ? (exportMark ?? this.outboxMark())
+            : null;
         let result: unknown;
         let committedVersion: string | null = null;
         // #116: set when this invocation was answered from a recording rather
@@ -2319,6 +2340,13 @@ export function defineScopeDO(
         // own retry backstop, which is what that backstop is for.
         // #1525: still inside the queued body that set it, so these deliveries are this
         // call's own work — the same tail its consumers' emits are stamped in.
+        // #1746: read BEFORE `settleCommitted` drains the consumers, so the rows above the
+        // mark are this operation's own emits. A replay committed nothing.
+        let emitted: EmittedReport | undefined;
+        if (emittedMark !== null && !replayed) {
+          const q = emittedSinceQuery(emittedMark, EMITTED_REPORT_CAP);
+          emitted = emittedReportOf(this.sql.exec(q.sql, ...q.params).toArray());
+        }
         if (!replayed) await this.settleCommitted(tenantId, scopeId, liveSince, this.invocationId);
         // After the tail, so an exported type a consumer emitted in it counts too.
         const exported = exportMark !== null && !replayed ? this.exportedSince(exportTypes, exportMark) : 0;
@@ -2328,6 +2356,7 @@ export function defineScopeDO(
           // #1705 PR 2: the coordinator fires `onExportedEvents` from this. Omitted at 0, so
           // the envelope of a deployment that exports nothing is byte-for-byte what it was.
           ...(exported > 0 ? { exported } : {}),
+          ...(emitted ? { emitted } : {}),
           ...(impersonation ? { impersonation: { honoured: true } } : {}),
           // #1672: the acknowledgement the coordinator's skew check reads — see `invoke`.
           ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),

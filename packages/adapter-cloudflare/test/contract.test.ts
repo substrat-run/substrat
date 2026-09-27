@@ -41,6 +41,7 @@ import {
   entityVersionContractSuite,
   timelineContractSuite,
   concurrencyContractSuite,
+  emittedReportContractSuite,
   idempotencyContractSuite,
   listContractSuite,
   permMod,
@@ -4103,6 +4104,17 @@ concurrencyContractSuite('adapter-cloudflare', async () => {
 // cross the coordinator↔ScopeDO hop — a DO that dropped the key would EXECUTE
 // the operation again, which is the failure the header was sent to prevent.
 idempotencyContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #1746: the per-request record's scope half, across the coordinator↔ScopeDO hop — the report
+// is computed inside the DO and has to come back in the envelope.
+emittedReportContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

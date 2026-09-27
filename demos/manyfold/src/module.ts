@@ -4,10 +4,14 @@ import {
   PROVISION_SIBLING_KIND,
   ARCHIVE_SCOPE_KIND,
   assertTransition,
+  CURSOR_FIELD_SEPARATOR,
   defineLifecycles,
+  mapPage,
   operationInputsOf,
+  pageOverFold,
   substratError,
   type ListPage,
+  type OperationImpl,
   type Page,
   type TimelineEntry,
 } from '@substrat-run/contracts';
@@ -432,10 +436,10 @@ interface EntryListItem {
   updated_at: string;
 }
 
-const listEntriesOp: OperationHandler<z.infer<typeof listEntriesInput> | undefined, EntryListItem[]> = async (
-  ctx,
-  raw,
-) => {
+const listEntriesOp: OperationHandler<
+  (z.infer<typeof listEntriesInput> & ListPage) | undefined,
+  Page<EntryListItem>
+> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.read));
   const input = listEntriesInput.parse(raw ?? {});
   const where: string[] = [];
@@ -448,11 +452,23 @@ const listEntriesOp: OperationHandler<z.infer<typeof listEntriesInput> | undefin
     where.push('status = ?');
     params.push(input.status);
   }
+  // `updated_at` ties across a bulk import/seed, so the SQL breaks ties on `id`
+  // too — the pair `pageOverFold`'s cursor below walks. Newest-first is the
+  // DEFAULT (the declaration's `order: 'desc'`), not the only direction: the
+  // caller's `?order=` is honoured rather than ignored — a walk advertised in
+  // the emitted document and quietly overridden here is a page that lies.
+  const order: 'asc' | 'desc' = raw?.order === 'asc' ? 'asc' : 'desc';
+  const dir = order === 'asc' ? 'ASC' : 'DESC';
   const rows = ctx.sql.query<EntryRow>(
-    `SELECT * FROM manyfold_entry ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at DESC`,
+    `SELECT * FROM manyfold_entry ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at ${dir}, id ${dir}`,
     params,
   );
-  return rows.map((e) => {
+  // Page the ROW first, before the per-entry work below: `loadType`/`currentDraft`
+  // are each their own query, so folding the whole table through them and only
+  // then slicing a page would cost every walked page another full table's worth
+  // of lookups. Slicing first bounds that work to one page's rows.
+  const page = pageOverFold(rows, raw ?? {}, (r) => `${r.updated_at}${CURSOR_FIELD_SEPARATOR}${r.id}`, order);
+  return mapPage(page, (e): EntryListItem => {
     const def = loadType(ctx, e.type_key);
     const rev = currentDraft(ctx, e);
     const body = JSON.parse(rev.body_json) as Record<string, unknown>;
@@ -460,9 +476,9 @@ const listEntriesOp: OperationHandler<z.infer<typeof listEntriesInput> | undefin
   });
 };
 
-const reviewQueueOp: OperationHandler<undefined, EntryListItem[]> = async (ctx) => {
+const reviewQueueOp: OperationHandler<ListPage | undefined, Page<EntryListItem>> = async (ctx, page) => {
   assertAllowed(await ctx.check(MF_PERM.review));
-  return listEntriesOp(ctx, { status: 'in_review' } as never) as never;
+  return listEntriesOp(ctx, { ...page, status: 'in_review' });
 };
 
 interface EntryDetail {
@@ -487,9 +503,9 @@ const getEntryOp: OperationHandler<z.infer<typeof entryIdInput>, EntryDetail> = 
   };
 };
 
-const listTypesOp: OperationHandler<undefined, { def: ContentTypeDef; sql: string }[]> = async (ctx) => {
+const listTypesOp: OperationHandler<undefined, { types: { def: ContentTypeDef; sql: string }[] }> = async (ctx) => {
   assertAllowed(await ctx.check(MF_PERM.read));
-  return loadTypes(ctx).map((def) => ({ def, sql: compileTypeToSql(def) }));
+  return { types: loadTypes(ctx).map((def) => ({ def, sql: compileTypeToSql(def) })) };
 };
 
 // ── Modelling: content types are data, authored by an admin ──────────────────
@@ -610,16 +626,53 @@ const deliverOp: OperationHandler<z.infer<typeof deliverInput>, DeliveryPayload>
   return { type: row.type_key, slug: row.slug, hash: row.hash, publishedAt: row.published_at, body };
 };
 
-const listDeliveryOp: OperationHandler<z.infer<typeof listDeliveryInput> | undefined, { type_key: string; slug: string | null; title: string; hash: string }[]> = async (
-  ctx,
-  raw,
-) => {
+interface DeliveryListItem {
+  entry_id: string;
+  type_key: string;
+  slug: string | null;
+  title: string;
+  hash: string;
+  published_at: string;
+}
+
+const listDeliveryOp: OperationHandler<
+  (z.infer<typeof listDeliveryInput> & ListPage) | undefined,
+  Page<DeliveryListItem>
+> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.read));
   const input = listDeliveryInput.parse(raw ?? {});
+  // `published_at` ties within one operation's transaction (`ctx.now()` does not
+  // move mid-invocation, so a batch of publishes shares an instant), so the SQL
+  // breaks ties on the table's own primary key — the pair `pageOverFold`'s
+  // cursor below walks. Newest-first is the DEFAULT; the caller's `?order=` is
+  // honoured rather than ignored, same as `manyfold/list-entries`.
+  const order: 'asc' | 'desc' = raw?.order === 'asc' ? 'asc' : 'desc';
+  const dir = order === 'asc' ? 'ASC' : 'DESC';
   const rows = input.typeKey
-    ? ctx.sql.query<DeliveryRow>('SELECT * FROM manyfold_delivery WHERE type_key = ? ORDER BY published_at DESC', [input.typeKey])
-    : ctx.sql.query<DeliveryRow>('SELECT * FROM manyfold_delivery ORDER BY published_at DESC');
-  return rows.map((r) => ({ type_key: r.type_key, slug: r.slug, title: r.title, hash: r.hash }));
+    ? ctx.sql.query<DeliveryRow>(
+        `SELECT * FROM manyfold_delivery WHERE type_key = ? ORDER BY published_at ${dir}, entry_id ${dir}`,
+        [input.typeKey],
+      )
+    : ctx.sql.query<DeliveryRow>(`SELECT * FROM manyfold_delivery ORDER BY published_at ${dir}, entry_id ${dir}`);
+  // Page the ROW first — see `listEntriesOp`'s note. Nothing here is a second
+  // query, but there is no reason to reshape rows a page will not return.
+  const page = pageOverFold(
+    rows,
+    raw ?? {},
+    (r) => `${r.published_at}${CURSOR_FIELD_SEPARATOR}${r.entry_id}`,
+    order,
+  );
+  return mapPage(
+    page,
+    (r): DeliveryListItem => ({
+      entry_id: r.entry_id,
+      type_key: r.type_key,
+      slug: r.slug,
+      title: r.title,
+      hash: r.hash,
+      published_at: r.published_at,
+    }),
+  );
 };
 
 /** Self-introspection: who am I in THIS site, and what may I do — the app gates its chrome on this. */
@@ -647,9 +700,11 @@ const whoamiOp: OperationHandler<
 /**
  * #800. This was the fifth hand-rolled copy of the spine read, and the only
  * UNPAGED one — an entry edited fifty times answered with fifty rows because
- * nothing said a number. `readTimeline` pages it, which makes this the one paged
- * read in a vertical that predates #811; the rest of Manyfold's lists are still
- * unbounded, and that is a separate debt rather than something to half-fix here.
+ * nothing said a number. `readTimeline` pages it. It predates #811, and this
+ * operation's own declaration went unfixed alongside it (a hand-spliced
+ * `input`, not a `paged` declaration) until #1833 paged this and every other
+ * growing list Manyfold answers with (`list-types` stays unpaged on purpose —
+ * see its declaration).
  */
 const timelineOp: OperationHandler<
   z.infer<typeof timelineInput> & ListPage,
@@ -661,28 +716,28 @@ const timelineOp: OperationHandler<
 };
 
 const OPERATIONS = {
-  'manyfold/create-entry': createEntryOp as never,
-  'manyfold/save-draft': saveDraftOp as never,
-  'manyfold/restore-revision': restoreRevisionOp as never,
-  'manyfold/submit-for-review': submitForReviewOp as never,
-  'manyfold/approve': approveOp as never,
-  'manyfold/reject': rejectOp as never,
-  'manyfold/publish': publishOp as never,
-  'manyfold/unpublish': unpublishOp as never,
-  'manyfold/archive': archiveOp as never,
-  'manyfold/list-entries': listEntriesOp as never,
-  'manyfold/review-queue': reviewQueueOp as never,
-  'manyfold/get-entry': getEntryOp as never,
-  'manyfold/list-types': listTypesOp as never,
-  'manyfold/save-type': saveTypeOp as never,
-  'manyfold/delete-type': deleteTypeOp as never,
-  'manyfold/request-site': requestSiteOp as never,
-  'manyfold/archive-site': archiveSiteOp as never,
-  'manyfold/deliver': deliverOp as never,
-  'manyfold/list-delivery': listDeliveryOp as never,
-  'manyfold/whoami': whoamiOp as never,
-  'manyfold/timeline': timelineOp as never,
-};
+  'manyfold/create-entry': createEntryOp,
+  'manyfold/save-draft': saveDraftOp,
+  'manyfold/restore-revision': restoreRevisionOp,
+  'manyfold/submit-for-review': submitForReviewOp,
+  'manyfold/approve': approveOp,
+  'manyfold/reject': rejectOp,
+  'manyfold/publish': publishOp,
+  'manyfold/unpublish': unpublishOp,
+  'manyfold/archive': archiveOp,
+  'manyfold/list-entries': listEntriesOp,
+  'manyfold/review-queue': reviewQueueOp,
+  'manyfold/get-entry': getEntryOp,
+  'manyfold/list-types': listTypesOp,
+  'manyfold/save-type': saveTypeOp,
+  'manyfold/delete-type': deleteTypeOp,
+  'manyfold/request-site': requestSiteOp,
+  'manyfold/archive-site': archiveSiteOp,
+  'manyfold/deliver': deliverOp,
+  'manyfold/list-delivery': listDeliveryOp,
+  'manyfold/whoami': whoamiOp,
+  'manyfold/timeline': timelineOp,
+} satisfies OperationImpl<typeof manyfoldOperations, OperationContext>;
 
 /**
  * The entry's editorial lifecycle, declared (#844).

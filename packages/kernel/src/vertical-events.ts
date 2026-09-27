@@ -318,6 +318,34 @@ export function exportedSinceQuery(types: readonly string[], mark: number): { sq
   };
 }
 
+/**
+ * The events an invoke itself emitted, read back after its commit (#1746) — what
+ * `InvokeOptions.onEmitted` reports. Params: (mark, cap).
+ *
+ * Run between the commit and the consumer drain, so only the operation's own rows sit
+ * above the mark: the drain's emits land later and are not counted. `total` is a window
+ * count over the same seek, so one statement answers both the capped list and how long the
+ * uncapped one was.
+ */
+export function emittedSinceQuery(mark: number, cap: number): { sql: string; params: unknown[] } {
+  return {
+    sql:
+      'SELECT type, entity_type, entity_id, COUNT(*) OVER () AS total FROM _substrat_outbox ' +
+      'WHERE rowid > ? ORDER BY rowid LIMIT ?',
+    params: [mark, cap],
+  };
+}
+
+/** The rows `emittedSinceQuery` returns, as the report `onEmitted` receives. */
+export function emittedReportOf(
+  rows: readonly Readonly<Record<string, unknown>>[],
+): { events: { type: string; entity: string }[]; total: number } {
+  return {
+    events: rows.map((r) => ({ type: String(r['type']), entity: `${String(r['entity_type'])}:${String(r['entity_id'])}` })),
+    total: rows.length === 0 ? 0 : Number(rows[0]!['total']),
+  };
+}
+
 /** The consumer's watermark per producer, oldest source first. */
 export const IMPORT_CURSORS_SQL =
   'SELECT source_scope_id, source_vertical, cursor, updated_at FROM _substrat_import_cursors ORDER BY source_scope_id';
