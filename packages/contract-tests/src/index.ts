@@ -11,6 +11,7 @@ export { searchContractSuite } from './search-suite.js';
 export { entityVersionContractSuite } from './entity-version-suite.js';
 export { timelineContractSuite } from './timeline-suite.js';
 export { concurrencyContractSuite } from './concurrency-suite.js';
+export { emittedReportContractSuite } from './emitted-suite.js';
 export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';

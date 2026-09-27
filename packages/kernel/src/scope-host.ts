@@ -143,6 +143,7 @@ import type {
   IssueStatus,
   IssueStatusInput,
   DeclaredMigration,
+  CheckSubject,
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
@@ -690,12 +691,57 @@ export interface InvokeOptions {
    * a caller inventing one can group its own events and nothing else.
    */
   readonly invocationId?: string;
+  /**
+   * Called after the operation COMMITS, with the events it emitted itself (#1746).
+   *
+   * This is the per-request record's "what did it touch" half: the invocation log line
+   * carries the event types and entity refs, so a reader can facet requests by entity
+   * without joining the spine. Only the operation's OWN emits count. Events its
+   * consumers emitted afterwards belong to the same invocation id on the spine, but they
+   * are the consumers' work, and a line that named them would say one request touched
+   * entities its handler never saw.
+   *
+   * Never called for a rolled-back operation, for a read-only session, or for an
+   * idempotent replay: none of them committed an event. An operation that emitted
+   * nothing gets `{ events: [], total: 0 }`, which is a fact, where no call at all
+   * means "not recorded" (an older scope host, or a path that does not report).
+   *
+   * `events` is capped at `EMITTED_REPORT_CAP` in emission order; `total` is the
+   * uncapped count, so a reader can tell a short list from a truncated one.
+   */
+  readonly onEmitted?: (report: EmittedReport) => void;
+}
+
+/** How many of an invocation's own events `onEmitted` names (#1746). `total` is uncapped. */
+export const EMITTED_REPORT_CAP = 20;
+
+/** One event an operation emitted, as `onEmitted` reports it (#1746). */
+export interface EmittedEvent {
+  readonly type: string;
+  /** The entity, as `<entityType>:<entityId>`. */
+  readonly entity: string;
+}
+
+/** What `InvokeOptions.onEmitted` receives (#1746). */
+export interface EmittedReport {
+  readonly events: readonly EmittedEvent[];
+  readonly total: number;
 }
 
 /** The capability stub — the ONLY way code outside the scope reaches it. */
 export interface ScopeStub {
   readonly tenantId: TenantId;
   readonly scopeId: ScopeId;
+  /**
+   * Which KIND of subject this stub acts as (#1746): a principal, a connection, a
+   * schedule (`system`), a capability holder or a peer vertical. The door that minted
+   * the stub decides it, so it is known before any invoke and on the failure path too,
+   * which is what lets the invocation log facet a refused request by who asked.
+   *
+   * Optional because a stub is an interface a vertical may implement or wrap itself. An
+   * absent kind reads as unrecorded, never as a principal.
+   */
+  readonly subjectKind?: CheckSubject['kind'];
   invoke<O = unknown, I = unknown>(
     operation: string,
     input?: I,

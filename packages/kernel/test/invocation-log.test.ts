@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { invocationLog, type InvocationLogLine } from '../src/invocation-log.js';
+import {
+  INVOCATION_RECORD_KEY,
+  invocationLevelOf,
+  invocationLog,
+  type InvocationLogLine,
+  type InvocationRecord,
+} from '../src/invocation-log.js';
 
 /**
  * The middleware's whole output is a `console.log` line, so the suite captures the
@@ -245,5 +251,93 @@ describe('invocationLog', () => {
     } finally {
       cap.restore();
     }
+  });
+
+  // #1746: the per-request record.
+  describe('the per-request record (#1746)', () => {
+    type RecordEnv = Env & { SUBSTRAT_VERSION_ID?: string };
+    const recordApp = (fill: (record: InvocationRecord) => void, status = 200) => {
+      const app = new Hono<{ Bindings: RecordEnv; Variables: { [INVOCATION_RECORD_KEY]: InvocationRecord } }>();
+      app.use('*', invocationLog<RecordEnv>({ routerSecret: (env) => env.ROUTER_SECRET }));
+      app.post('/api/things', (c) => {
+        fill(c.get(INVOCATION_RECORD_KEY));
+        return c.json({}, status as 200);
+      });
+      return app;
+    };
+
+    it('writes what the handler chain filled in, with distinct types and entities', async () => {
+      const cap = capture();
+      try {
+        const app = recordApp((r) => {
+          r.operation = 'things/create';
+          r.principalKind = 'principal';
+          r.emitted = {
+            events: [
+              { type: 'thing.created', entity: 'thing:1' },
+              { type: 'thing.noted', entity: 'thing:1' },
+              { type: 'thing.created', entity: 'thing:2' },
+            ],
+            total: 30,
+          };
+        });
+        await app.request('/api/things', { method: 'POST', headers: routed }, { ...ENV, SUBSTRAT_VERSION_ID: 'v-1' });
+        expect(cap.lines[0]).toMatchObject({
+          level: 'info',
+          operation: 'things/create',
+          problemCode: null,
+          principalKind: 'principal',
+          eventCount: 30,
+          eventTypes: ['thing.created', 'thing.noted'],
+          entities: ['thing:1', 'thing:2'],
+          versionId: 'v-1',
+        });
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('writes null, never a guess, for what nothing filled in', async () => {
+      const cap = capture();
+      try {
+        await recordApp(() => {}).request('/api/things', { method: 'POST', headers: routed }, ENV);
+        expect(cap.lines[0]).toMatchObject({
+          level: 'info',
+          operation: null,
+          problemCode: null,
+          principalKind: null,
+          // Not 0: nobody said the call emitted nothing.
+          eventCount: null,
+          eventTypes: [],
+          entities: [],
+          versionId: null,
+        });
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('files a refused call as a warning, with its code', async () => {
+      const cap = capture();
+      try {
+        const app = recordApp((r) => {
+          r.operation = 'things/create';
+          r.problemCode = 'permission_denied';
+        }, 403);
+        await app.request('/api/things', { method: 'POST', headers: routed }, ENV);
+        expect(cap.lines[0]).toMatchObject({ level: 'warn', status: 403, problemCode: 'permission_denied' });
+      } finally {
+        cap.restore();
+      }
+    });
+  });
+
+  it('derives the level from how the call ended', () => {
+    expect(invocationLevelOf(200, false)).toBe('info');
+    expect(invocationLevelOf(404, false)).toBe('warn');
+    expect(invocationLevelOf(502, false)).toBe('error');
+    expect(invocationLevelOf(null, true)).toBe('error');
+    // An in-band failure — an MCP tool error answers 200.
+    expect(invocationLevelOf(200, false, 'permission_denied')).toBe('warn');
   });
 });

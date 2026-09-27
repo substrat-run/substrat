@@ -56,6 +56,8 @@ export type {
   ScopeStub,
   ScopeStubOptions,
   InvokeOptions,
+  EmittedEvent,
+  EmittedReport,
   SqlMigration,
   SqlValue,
   TenantBlobStore,
@@ -97,6 +99,7 @@ export {
   SWEEP_RUNS_INTENT_INDEX,
   sweepRunsIntentHasKind,
   ISSUE_RETENTION_DAYS,
+  EMITTED_REPORT_CAP,
 } from './scope-host.js';
 export {
   isSecretBoxConfigured,
@@ -527,7 +530,8 @@ export type {
 } from './meters.js';
 
 export { invocationLog } from './invocation-log.js';
-export type { InvocationLogLine, InvocationLogContext } from './invocation-log.js';
+export type { InvocationLogLine, InvocationLogContext, InvocationRecord, InvocationLevel } from './invocation-log.js';
+export { INVOCATION_RECORD_KEY, invocationLevelOf } from './invocation-log.js';
 
 export {
   VERTICAL_EVENTS_DDL,
@@ -537,6 +541,8 @@ export {
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
   OUTBOX_MARK_SQL,
+  emittedSinceQuery,
+  emittedReportOf,
   moveImportCursor,
   importCursorSourceOf,
   exportedSinceQuery,

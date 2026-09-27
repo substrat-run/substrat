@@ -2304,6 +2304,82 @@ export const peerMod: ModuleRegistration = {
   },
 };
 
+// -- #1746: what an invocation emitted ----------------------------------------
+
+export const emittedModManifest = moduleManifest.parse({
+  id: '@test/emitted',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [{ key: 'emitted:use', description: 'the emitted-report fixture permission' }],
+  events: {
+    emits: [
+      { type: 'emitted.touched', schemaVersion: 1 },
+      { type: 'emitted.echoed', schemaVersion: 1 },
+    ],
+    consumes: [{ type: 'emitted.touched', schemaVersion: 1 }],
+  },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'emitted',
+});
+
+/** One `emitted.touched` per id, in order — the rows `onEmitted` should name. */
+const touchAll = (ctx: OperationContext, ids: readonly string[]): void => {
+  for (const id of ids) {
+    ctx.emit({
+      type: 'emitted.touched',
+      schemaVersion: 1,
+      entity: { entityType: 'emitted-thing', entityId: id },
+      piiClass: 'none',
+      payload: {},
+    });
+  }
+};
+
+/**
+ * The module the #1746 suite drives. Its consumer answers every `emitted.touched` with an
+ * `emitted.echoed` in the same invocation, which is what lets the suite show the report
+ * names the operation's own events and none of its consumers'.
+ */
+export const emittedMod: ModuleRegistration = {
+  manifest: emittedModManifest,
+  operations: {
+    'emitted/touch': ((ctx, input: { ids: string[] }) => {
+      touchAll(ctx, input.ids);
+      return { touched: input.ids.length };
+    }) as OperationHandler<never, unknown>,
+    'emitted/read': (() => ({ ok: true })) as OperationHandler<never, unknown>,
+    'emitted/fail': ((ctx, input: { ids: string[] }) => {
+      touchAll(ctx, input.ids);
+      throw new Error('emitted/fail: refused after emitting');
+    }) as OperationHandler<never, unknown>,
+    // A sub-transaction that rolled back takes its emit with it; the outer one commits.
+    'emitted/partial': (async (ctx, input: { kept: string; dropped: string }) => {
+      touchAll(ctx, [input.kept]);
+      try {
+        await ctx.atomic(() => {
+          touchAll(ctx, [input.dropped]);
+          throw new Error('rolled back');
+        });
+      } catch {
+        // The point of the fixture: the dropped emit is gone, the kept one stays.
+      }
+      return { ok: true };
+    }) as OperationHandler<never, unknown>,
+  },
+  consumers: {
+    'emitted.touched': ((ctx, event) => {
+      ctx.emit({
+        type: 'emitted.echoed',
+        schemaVersion: 1,
+        entity: event.entity,
+        piiClass: 'none',
+        payload: {},
+      });
+    }) as ConsumerHandler,
+  },
+};
+
 export const contractTestModules: ModuleRegistration[] = [
   ...contractTestInitialModules,
   lateMod,
@@ -2329,6 +2405,9 @@ export const contractTestModules: ModuleRegistration[] = [
   capMod,
   // #1706: the peer suite's target. Inert for every other suite beyond the peers' seats.
   peerMod,
+  // #1746: the emitted-report suite's module. Its consumer reacts only to its own
+  // `emitted.touched`, so it is inert for every other suite.
+  emittedMod,
 ];
 
 // -- live reads (#938) -------------------------------------------------------

@@ -37,8 +37,9 @@ import {
   nextPageLink,
   PAGE_LINK_HEADER,
   PAGE_TOTAL_HEADER,
+  errorCodeOf,
 } from '@substrat-run/contracts';
-import type { ScopeStub } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, type InvocationRecord, type ScopeStub } from '@substrat-run/kernel';
 import { classifyError } from './errors.js';
 import { mountMcp, type MountMcpOptions } from './mcp.js';
 
@@ -420,8 +421,11 @@ export function mountOperations(
     const guarded = op.concurrency !== undefined;
     const unsafe = method !== 'GET';
 
-    const invoke = async (c: Context) => {
+    const invoke = async (c: Context, record: InvocationRecord | undefined) => {
       const stub = await resolveStub(c);
+      // #1746: who the call runs as, from the door that minted the stub. Set here rather
+      // than after the invoke so a refused call still says who was refused.
+      if (record && stub.subjectKind !== undefined) record.principalKind = stub.subjectKind;
       const fromPath: Record<string, string | undefined> = {};
       for (const p of params) fromPath[p] = c.req.param(p);
 
@@ -504,7 +508,7 @@ export function mountOperations(
       // That is the common path — most events would have gone unstamped while the two
       // guarded kinds looked fine.
       const invokeOptions =
-        guarded || idempotencyKey !== undefined || invocationId !== undefined
+        guarded || idempotencyKey !== undefined || invocationId !== undefined || record !== undefined
           ? {
               ...(ifMatch === undefined ? {} : { ifMatch }),
               ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
@@ -523,6 +527,14 @@ export function mountOperations(
               onIdempotentReplay: () => {
                 replayed = true;
               },
+              // #1746: what the operation emitted, for the invocation log line.
+              ...(record
+                ? {
+                    onEmitted: (report: NonNullable<InvocationRecord['emitted']>) => {
+                      record.emitted = report;
+                    },
+                  }
+                : {}),
             }
           : undefined;
       const result = await stub.invoke(name, payload, invokeOptions);
@@ -567,9 +579,18 @@ export function mountOperations(
     };
 
     const handler = async (c: Context) => {
+      // #1746: the record `invocationLog` handed down, read defensively like the id above.
+      const record = (c as { get?: (k: string) => unknown }).get?.(INVOCATION_RECORD_KEY) as
+        | InvocationRecord
+        | undefined;
+      if (record) record.operation = name;
       try {
-        return await invoke(c);
+        return await invoke(c, record);
       } catch (err) {
+        // Before the vertical's own mapping gets a look, so the code is the kernel's
+        // reading of the failure whatever envelope the vertical answers with.
+        const code = errorCodeOf(err);
+        if (record && code !== undefined) record.problemCode = code;
         const mapped = await options.onError?.(c, err, name);
         if (mapped) return mapped;
         const seen = classifyError(err);

@@ -57,9 +57,16 @@ import {
   LIST_SORT_PARAM,
   mcpEndpointPath,
   mcpResourceOf,
+  errorCodeOf,
 } from '@substrat-run/contracts';
-import type { ScopeStub } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, type InvocationRecord, type ScopeStub } from '@substrat-run/kernel';
 import { classifyError, messageOf, problemResponse } from './errors.js';
+
+/** What `invocationLog` handed this request (#1746, #1237). Both absent without the middleware. */
+interface McpInvocation {
+  record: InvocationRecord | undefined;
+  invocationId: string | undefined;
+}
 
 /**
  * The protocol revisions this server speaks, newest first.
@@ -484,7 +491,12 @@ export function mountMcp(
     return payload;
   };
 
-  const call = async (id: Id, params: Record<string, unknown> | undefined, stub: ScopeStub) => {
+  const call = async (
+    id: Id,
+    params: Record<string, unknown> | undefined,
+    stub: ScopeStub,
+    invocation: McpInvocation,
+  ) => {
     const name = typeof params?.['name'] === 'string' ? (params['name'] as string) : undefined;
     const tool = name ? byName.get(name) : undefined;
     if (!tool) return rpcError(id, -32602, `Unknown tool: ${name ?? '(none)'}`);
@@ -494,10 +506,33 @@ export function mountMcp(
       ? (rawArgs as Record<string, unknown>)
       : {};
 
+    // #1746: a batch may call several tools; the line names the last one, which is the
+    // common case of one call per request stated precisely rather than a list. Everything
+    // the record says about a call is reset with the operation, so the line never pairs
+    // this tool's name with an earlier tool's failure or events.
+    const { record, invocationId } = invocation;
+    if (record) {
+      record.operation = tool.operation;
+      delete record.problemCode;
+      delete record.emitted;
+    }
     try {
-      const result = await stub.invoke(tool.operation, payloadOf(tool, args));
+      const result = await stub.invoke(tool.operation, payloadOf(tool, args), {
+        // #1237: the same stamp the HTTP mount gives an operation's events.
+        ...(invocationId === undefined ? {} : { invocationId }),
+        ...(record
+          ? {
+              onEmitted: (report: NonNullable<InvocationRecord['emitted']>) => {
+                record.emitted = report;
+              },
+            }
+          : {}),
+      });
       return rpcResult(id, toolResult(result));
     } catch (err) {
+      // In-band, so the response is a 200 — the code is what tells the line it failed.
+      const code = errorCodeOf(err);
+      if (record && code !== undefined) record.problemCode = code;
       // Authorization is IN-BAND. A refused permission, a failed parse, a domain
       // error — the agent should read it and choose again, and a JSON-RPC error or
       // an HTTP status would instead look like the session itself is broken. A 401
@@ -511,7 +546,7 @@ export function mountMcp(
     }
   };
 
-  const handle = async (msg: Req, stub: ScopeStub): Promise<object | null> => {
+  const handle = async (msg: Req, stub: ScopeStub, invocation: McpInvocation): Promise<object | null> => {
     const id = msg.id ?? null;
     const isNotification = msg.id === undefined;
     switch (msg.method) {
@@ -545,7 +580,7 @@ export function mountMcp(
         });
       }
       case 'tools/call':
-        return await call(id, msg.params, stub);
+        return await call(id, msg.params, stub, invocation);
       default:
         return isNotification ? null : rpcError(id, -32601, `Method not found: ${msg.method ?? '(none)'}`);
     }
@@ -668,12 +703,20 @@ export function mountMcp(
        * protocol: the resource is the endpoint, not a subset of its verbs.
        */
       const stub = await resolveStub(c);
+      // #1746/#1237: what `invocationLog` handed down, read defensively — a host without it
+      // simply records nothing.
+      const get = (c as { get?: (k: string) => unknown }).get;
+      const invocation: McpInvocation = {
+        record: get?.(INVOCATION_RECORD_KEY) as InvocationRecord | undefined,
+        invocationId: get?.('substratInvocationId') as string | undefined,
+      };
+      if (invocation.record && stub.subjectKind !== undefined) invocation.record.principalKind = stub.subjectKind;
       for (const msg of messages) {
         if (!msg || typeof msg !== 'object') {
           replies.push(rpcError(null, -32600, 'Invalid Request'));
           continue;
         }
-        const reply = await handle(msg, stub);
+        const reply = await handle(msg, stub, invocation);
         if (reply) replies.push(reply);
       }
     } catch (err) {

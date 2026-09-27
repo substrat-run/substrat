@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, substratError, toProblem } from '@substrat-run/contracts';
-import { PermissionDenied } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, PermissionDenied, type InvocationRecord } from '@substrat-run/kernel';
 import { mountOperations } from '../src/operations-routes.js';
 
 const operations = {
@@ -954,5 +954,52 @@ describe('the invocation id (#1237)', () => {
     });
     expect(res.status).toBe(200);
     expect(seen).toEqual([undefined]);
+  });
+});
+
+/**
+ * #1746: the mount fills in the record `invocationLog` hands down — which operation ran,
+ * who it ran as, how it failed and what it emitted — so the line can say it.
+ */
+describe('the per-request record (#1746)', () => {
+  function recordHarness(invoke: (options?: { onEmitted?: (r: unknown) => void }) => Promise<unknown>) {
+    const record: InvocationRecord = {};
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      (c as unknown as { set: (k: string, v: unknown) => void }).set(INVOCATION_RECORD_KEY, record);
+      await next();
+    });
+    mountOperations(
+      app,
+      { 'acme/plain': { input: z.object({}), http: { method: 'POST', path: '/plain' } } },
+      async () =>
+        ({
+          subjectKind: 'capability',
+          invoke: (_n: string, _i: unknown, options?: { onEmitted?: (r: unknown) => void }) => invoke(options),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any,
+    );
+    const call = () =>
+      app.request('/api/plain', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    return { record, call };
+  }
+
+  it('records the operation, the subject kind and what the scope reported it emitted', async () => {
+    const report = { events: [{ type: 'acme.done', entity: 'thing:1' }], total: 1 };
+    const { record, call } = recordHarness(async (options) => {
+      options?.onEmitted?.(report);
+      return { ok: true };
+    });
+    expect((await call()).status).toBe(200);
+    expect(record).toEqual({ operation: 'acme/plain', principalKind: 'capability', emitted: report });
+  });
+
+  it("records a refused call's code, and still who was refused", async () => {
+    const { record, call } = recordHarness(async () => {
+      throw substratError('conflict', 'already done');
+    });
+    expect((await call()).status).toBe(409);
+    expect(record).toMatchObject({ operation: 'acme/plain', principalKind: 'capability', problemCode: 'conflict' });
+    expect(record.emitted).toBeUndefined();
   });
 });
