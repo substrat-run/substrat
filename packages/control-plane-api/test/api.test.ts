@@ -5918,6 +5918,77 @@ describe('control-plane API — observability proxy', () => {
         ).toBe(400);
       });
     });
+
+    // #1746: the request record's three reads — histogram, facets, list. Same grain and the
+    // same forced tenant as the logs; what is new is the shared query they parse.
+    describe('the request reads (#1746)', () => {
+      const requestSeen: Record<string, unknown[]> = { volume: [], facets: [], list: [] };
+      const requestReader = {
+        ...reader,
+        tenantRequestVolume: async (input: unknown) => {
+          requestSeen['volume']!.push(input);
+          return { bucketMs: 120_000, buckets: [], estimated: false };
+        },
+        tenantRequestFacets: async (input: unknown) => {
+          requestSeen['facets']!.push(input);
+          return { total: 0, facets: {}, estimated: false };
+        },
+        tenantRequests: async (input: unknown) => {
+          requestSeen['list']!.push(input);
+          return [];
+        },
+      };
+      const routes = ['tenant-request-volume', 'tenant-request-facets', 'tenant-requests'] as const;
+
+      it('501s on a reader that cannot aggregate', async () => {
+        const app = appWith(reader);
+        for (const r of routes) {
+          expect((await app.request(`/observability/${r}`, { headers: asBuilder })).status).toBe(501);
+        }
+      });
+
+      it('narrows every read to the caller\'s own tenant, whatever the query names', async () => {
+        const app = appWith(requestReader);
+        const someoneElse = tenantId.parse(ulid());
+        for (const r of routes) {
+          expect((await app.request(`/observability/${r}?tenantId=${someoneElse}`, { headers: asBuilder })).status).toBe(200);
+        }
+        for (const seen of Object.values(requestSeen)) {
+          expect(seen.at(-1)).toMatchObject({ tenantId: builderTenant });
+        }
+      });
+
+      it('parses facet filters, a bucket count and the facets asked for', async () => {
+        const app = appWith(requestReader);
+        const q = 'scopeId=01SCOPE&level=warn&level=error&operation=acme%2Fcreate&status=409&hours=3';
+        await app.request(`/observability/tenant-request-volume?${q}&buckets=120`, { headers: asBuilder });
+        const volume = requestSeen['volume']!.at(-1) as { from: number; to: number; where: unknown; buckets: number };
+        expect(volume).toMatchObject({
+          tenantId: builderTenant,
+          scopeId: '01SCOPE',
+          buckets: 120,
+          where: { level: ['warn', 'error'], operation: ['acme/create'], status: ['409'] },
+        });
+        expect(volume.to - volume.from).toBe(3 * 3_600_000);
+        await app.request(`/observability/tenant-request-facets?${q}&facet=operation&facet=level`, { headers: asBuilder });
+        expect(requestSeen['facets']!.at(-1)).toMatchObject({ keys: ['operation', 'level'] });
+      });
+
+      it('refuses a filter or window that could only ever match nothing', async () => {
+        const app = appWith(requestReader);
+        const bad = [
+          'tenant-request-volume?level=fatal',
+          'tenant-request-volume?status=abc',
+          'tenant-request-volume?buckets=5000',
+          'tenant-request-facets?facet=tenantId',
+          'tenant-requests?limit=0',
+          'tenant-requests?hours=100',
+        ];
+        for (const path of bad) {
+          expect((await app.request(`/observability/${path}`, { headers: asBuilder })).status, path).toBe(400);
+        }
+      });
+    });
   });
 });
 

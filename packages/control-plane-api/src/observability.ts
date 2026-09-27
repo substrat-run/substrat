@@ -240,6 +240,127 @@ export interface ConnectorCallsBucket {
   durationP95: number;
 }
 
+/**
+ * The per-request record's facets (#1746) — the stamped invocation line's fields a reader
+ * may count by and filter on. A closed list rather than any key, because each one is a
+ * published field of `InvocationLogLine` and a key that is not one matches nothing, which
+ * a facet panel would render as "no requests of that kind".
+ *
+ * `status` is the one numeric facet; the rest are strings.
+ */
+export const REQUEST_FACET_KEYS = ['level', 'operation', 'principalKind', 'problemCode', 'surface', 'status'] as const;
+export type RequestFacetKey = (typeof REQUEST_FACET_KEYS)[number];
+
+/**
+ * Facet filters: for each key, the values a request may have. Values under one key are
+ * alternatives (OR), keys combine (AND) — the usual facet-panel reading. An absent or empty
+ * key does not filter.
+ */
+export type RequestWhere = Partial<Record<RequestFacetKey, readonly string[]>>;
+
+/**
+ * Which tenant's requests, and which window. `tenantId` is the narrowing, never a filter a
+ * caller may widen — the same contract as `tenantLogs`. `scopeId` and `vertical` narrow
+ * within it. The window is two instants the route has already resolved and checked.
+ */
+export interface TenantRequestScope {
+  tenantId: string;
+  scopeId?: string;
+  vertical?: string;
+  /** Epoch milliseconds, inclusive. */
+  from: number;
+  /** Epoch milliseconds, exclusive. */
+  to: number;
+  where?: RequestWhere;
+}
+
+/** The levels a request is filed under, plus the requests whose line predates `level`. */
+export interface RequestLevelCounts {
+  info: number;
+  warn: number;
+  error: number;
+  /**
+   * Requests whose line carries no `level` — written by a vertical that has not been
+   * re-pushed since #1746. Counted rather than dropped, so the histogram's total still
+   * matches the traffic chart.
+   */
+  unrecorded: number;
+}
+
+/** One time bucket of the request histogram. */
+export interface RequestVolumeBucket extends RequestLevelCounts {
+  /** ISO instant the bucket starts at. */
+  start: string;
+}
+
+/**
+ * The request histogram over a window (#1746): counts per level per bucket, over EVERY
+ * stamped line in the window rather than a sample. Zooming is a narrower window asked for
+ * with the same bucket count, so the bucket shrinks with it.
+ */
+export interface RequestVolume {
+  /** The width the backend bucketed at, in milliseconds. */
+  bucketMs: number;
+  /**
+   * Buckets with at least one request, oldest first. An absent bucket is a bucket with no
+   * requests in it: the read is not paged, so absence cannot mean truncation.
+   */
+  buckets: RequestVolumeBucket[];
+  /**
+   * True when the backend counted from a sample and scaled up. The numbers are then
+   * estimates, which the chart should say.
+   */
+  estimated: boolean;
+}
+
+/** One facet value and how many requests carry it. */
+export interface RequestFacetValue {
+  /** The value as the line carries it; a number for `status`. */
+  value: string | number;
+  count: number;
+}
+
+/**
+ * Facet counts (#1746). Each key is counted with every OTHER filter applied and its own
+ * left out, so a panel shows what choosing another value of that key would give — the
+ * standard facet reading, and the one the design asks for.
+ */
+export interface RequestFacets {
+  /** Requests matching every filter. */
+  total: number;
+  facets: Record<RequestFacetKey, RequestFacetValue[]>;
+  /** As on `RequestVolume`. */
+  estimated: boolean;
+}
+
+/** How many values one facet lists, most frequent first. */
+export const REQUEST_FACET_TOP = 10;
+
+/**
+ * One request, as the Requests view lists it: the stamped invocation line's fields, and
+ * when it was written. `null` is "not recorded", exactly as on the line.
+ */
+export interface RequestRecord {
+  timestamp: number | null;
+  invocationId: string | null;
+  scopeId: string | null;
+  vertical: string | null;
+  surface: string | null;
+  method: string | null;
+  path: string | null;
+  status: number | null;
+  threw: boolean;
+  durationMs: number | null;
+  level: string | null;
+  operation: string | null;
+  problemCode: string | null;
+  principalKind: string | null;
+  eventCount: number | null;
+  eventTypes: string[];
+  entities: string[];
+  versionId: string | null;
+}
+
 export interface ObservabilityReader {
   /** Opt-in: tenant metrics honor explicit absolute windows rather than ignoring them. */
   absoluteTenantWindows?: boolean;
@@ -344,6 +465,29 @@ export interface ObservabilityReader {
     until?: string;
     limit: number;
   }): Promise<RecentLogEvent[]>;
+
+  /**
+   * The request histogram (#1746): per-level counts per bucket over a tenant's stamped
+   * invocation lines, over the whole window. `buckets` is how many the caller wants; the
+   * backend reports the width it actually used.
+   *
+   * Optional, with the tenant grain's usual reasons: a backend without server-side
+   * aggregation cannot answer this honestly, and absent must 501, never an empty
+   * histogram, which reads as "no traffic".
+   */
+  tenantRequestVolume?(input: TenantRequestScope & { buckets: number }): Promise<RequestVolume>;
+
+  /**
+   * Facet counts over the same lines (#1746). `keys` narrows which facets are counted;
+   * absent means all of them. Same optionality as `tenantRequestVolume`.
+   */
+  tenantRequestFacets?(input: TenantRequestScope & { keys?: readonly RequestFacetKey[] }): Promise<RequestFacets>;
+
+  /**
+   * The requests themselves (#1746), newest first — the Requests view's rows. The same
+   * filters, so the list and the counts beside it describe the same set. Same optionality.
+   */
+  tenantRequests?(input: TenantRequestScope & { limit: number }): Promise<RequestRecord[]>;
 
   /**
    * Recent log events, optionally narrowed to a set of services and/or a level.
