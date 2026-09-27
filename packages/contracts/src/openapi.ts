@@ -264,14 +264,31 @@ export function buildOpenApiDocument(
   for (const [name, op] of Object.entries(catalog)) {
     const url = op.http ? `/api${op.http.path}` : `/api/op/${name}`;
     const verb = op.http ? op.http.method.toLowerCase() : 'post';
+    const inputShape = op.input
+      ? (jsonSchema(op.input, 'input') as {
+          properties?: Record<string, Record<string, unknown>>;
+          required?: string[];
+        })
+      : undefined;
     // `{listId}` in the path is a path PARAMETER, and OpenAPI requires it
     // declared or the document is invalid — a renderer will not infer it.
-    const params: Record<string, unknown>[] = [...url.matchAll(/\{(\w+)\}/g)].map((m) => ({
-      name: m[1] as string,
-      in: 'path',
-      required: true,
-      schema: { type: 'string' },
-    }));
+    //
+    // Its schema is the input property it fills (#1870): `mountOperations` writes the
+    // path value over that field and then parses the input, so a `pattern` or
+    // `minLength` the field declares IS enforced on the path — and a document saying
+    // only `string` understates what the route accepts. A path segment is always text,
+    // so a field that is not a plain string keeps `string` rather than advertising a
+    // type the segment cannot carry.
+    const params: Record<string, unknown>[] = [...url.matchAll(/\{(\w+)\}/g)].map((m) => {
+      const name = m[1] as string;
+      const declared = inputShape?.properties?.[name];
+      return {
+        name,
+        in: 'path',
+        required: true,
+        schema: declared?.['type'] === 'string' ? declared : { type: 'string' },
+      };
+    });
     // A paged read advertises the walk itself (#811). Written here rather than by each
     // operation: the convention is the platform's, so restating it twelve times per
     // vertical is twelve chances to state it differently.
@@ -382,12 +399,9 @@ export function buildOpenApiDocument(
     // `c.req.query()`. Mirroring that rule here is what keeps the document and the router
     // describing one surface, which is the whole point of deriving both from the model.
     const takesBody = verb === 'post' || verb === 'put' || verb === 'patch';
-    if (!takesBody && op.input) {
+    if (!takesBody && inputShape) {
       const named = new Set(params.map((p) => p['name'] as string));
-      const shape = jsonSchema(op.input, 'input') as {
-        properties?: Record<string, Record<string, unknown>>;
-        required?: string[];
-      };
+      const shape = inputShape;
       const required = new Set(shape.required ?? []);
       for (const [field, fieldSchema] of Object.entries(shape.properties ?? {})) {
         // Already stated: a path parameter, or one of the paged trio the input restates
