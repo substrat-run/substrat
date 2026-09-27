@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import { principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { LIVE_MODE_HEADER, ulid } from '@substrat-run/kernel';
+import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { LIVE_PATH, mountLiveReads, type LiveSubscriber } from '../src/live.js';
 
@@ -45,7 +45,6 @@ mountLiveReads(answering, { live: answeringLive, subscriber });
 
 beforeEach(() => {
   subscriber.mockClear();
-  subscriber.mockImplementation(async () => who);
   subscribed.mockClear();
   pureLive.mockClear();
   answeringLive.mockClear();
@@ -60,8 +59,7 @@ describe('the live route on the pure host', () => {
   it('answers 501 and says to poll, because this host has no live reads', async () => {
     const res = await pure.fetch(handshake({ origin: ORIGIN }));
     expect(res.status).toBe(501);
-    expect(res.headers.get(LIVE_MODE_HEADER)).toBe('poll');
-    expect(LIVE_MODE_HEADER).toBe('x-substrat-live');
+    expect(res.headers.get('x-substrat-live')).toBe('poll');
     // Asking who is calling on a host that cannot subscribe them would be a wasted login.
     expect(subscriber).not.toHaveBeenCalled();
   });
@@ -69,7 +67,7 @@ describe('the live route on the pure host', () => {
   it('refuses another origin before it asks the host anything, or asks who is calling', async () => {
     const res = await pure.fetch(handshake({ origin: 'http://localhost:9999' }));
     expect(res.status).toBe(403);
-    expect(res.headers.get(LIVE_MODE_HEADER)).toBeNull();
+    expect(res.headers.get('x-substrat-live')).toBeNull();
     expect(pureLive).not.toHaveBeenCalled();
     expect(subscriber).not.toHaveBeenCalled();
   });
@@ -110,7 +108,7 @@ describe("the live route's Origin check", () => {
 
 describe('who is asking', () => {
   it('answers 401 for nobody, and never subscribes a default principal', async () => {
-    subscriber.mockImplementation(async () => null);
+    subscriber.mockResolvedValueOnce(null);
     const res = await answering.fetch(handshake({ origin: ORIGIN }));
     expect(res.status).toBe(401);
     expect(subscriber).toHaveBeenCalledOnce();

@@ -36,7 +36,6 @@
  * grants nothing.
  */
 import type { Context, Hono } from 'hono';
-import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { LIVE_MODE_HEADER, type LiveReadSurface, type LiveRefusal } from '@substrat-run/kernel';
 
 /** Where `mountLiveReads` mounts the route unless told otherwise. */
@@ -46,11 +45,7 @@ export const LIVE_PATH = '/api/live';
 type AnyContext = Context<any>;
 
 /** Who is subscribing, and to which scope — what `LiveReadSurface.subscribe` takes besides the request. */
-export interface LiveSubscriber {
-  tenantId: TenantId;
-  scopeId: ScopeId;
-  principal: PrincipalId;
-}
+export type LiveSubscriber = Omit<Parameters<LiveReadSurface['subscribe']>[0], 'request'>;
 
 export interface LiveRouteOptions {
   /** The host's live-read surface, or undefined where it has none (the pure host). */
@@ -72,7 +67,7 @@ export interface LiveRouteOptions {
  * An opaque origin (`Origin: null`) is refused. A missing `Origin` falls through, because
  * a browser always sends one on a WebSocket handshake.
  */
-export function sameOrigin(req: Request): boolean {
+function sameOrigin(req: Request): boolean {
   const origin = req.headers.get('origin');
   return origin === null || origin === new URL(req.url).origin;
 }
