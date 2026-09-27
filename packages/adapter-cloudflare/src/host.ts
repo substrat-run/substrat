@@ -1051,6 +1051,7 @@ interface ScopeStubRpc {
   systemGrantsStatus(): Promise<SystemGrantsEntry[]>;
   /** #1819: the rewind hold, on the `SWITCH_HOLDS_NAME` object only — see `scope-do.ts`. */
   switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string): Promise<void>;
+  switchHoldJoin(scopeId: string, moduleId: string, claimIds: string[]): Promise<void>;
   switchHoldYoungestMs(scopeId: string, claimId: string): Promise<number | null>;
   switchHoldArm(scopeId: string, claimId: string, doomed: string | null): Promise<void>;
   switchHoldDrop(scopeId: string, claimId: string): Promise<void>;
@@ -7267,7 +7268,8 @@ export class CloudflareScopeHost implements ScopeHost {
    * An OFF that changed the switch JOINS the claims it would not survive (#1839): each claim in S0
    * that is still pending (inside the bound), or armed with this move's instance as its doomed
    * one. Those are exactly the rewinds whose restart discards this OFF, and each of them captured
-   * the module ON. The row joins the claim's state and is stamped on the hold object's clock, and
+   * the module ON. The row takes the claim's state (`switchHoldJoin`, which never recreates a claim
+   * with no rows left) and is stamped on the hold object's clock, and
    * a pending claim's rewind then waits for it to be a full settle old (`rewindHolding`). The
    * candidates are read twice, in S0 and again after the move (S1), so a claim written while
    * this move was queued is joined too. Both reads are scope-wide; S1 is taken only by an OFF
@@ -7310,8 +7312,10 @@ export class CloudflareScopeHost implements ScopeHost {
       const joins = new Set(
         [...scopeClaims, ...after].filter((c) => pendingLive(c) || c.doomed === instance).map((c) => c.claimId),
       );
-      if (joins.size > 0) this.holdSnapshot = null;
-      for (const claimId of joins) await this.switchHoldsStub().switchHoldClaim(scopeId, [moduleId], claimId);
+      if (joins.size > 0) {
+        this.holdSnapshot = null;
+        await this.switchHoldsStub().switchHoldJoin(scopeId, moduleId, [...joins]);
+      }
     }
     return outcome;
   }

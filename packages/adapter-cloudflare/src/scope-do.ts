@@ -3214,29 +3214,48 @@ export function defineScopeDO(
     }
 
     /**
-     * One rewind's claim on these modules. A new claim is `pending` until the rewind has armed; a
-     * module added to an existing claim (#1839) takes that claim's state and doomed instance, so
-     * the release rule reads every row of one claim alike. Each new row is stamped with THIS
-     * object's clock, and `switchHoldYoungestMs` measures against the same clock. A row already
-     * there keeps its stamp.
+     * One rewind's claim on these modules, `pending` until the rewind has armed. Only the rewind
+     * that owns the claim calls this, and only before it arms. Each new row is stamped with THIS
+     * object's clock, and `switchHoldYoungestMs` measures against the same clock (#1839). A row
+     * already there keeps its stamp.
      */
     switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string): void {
       this.switchHoldsTable();
       const at = new Date().toISOString();
       this.ctx.storage.transactionSync(() => {
-        const claim = this.sql
-          .exec('SELECT state, doomed FROM _substrat_switch_holds WHERE scope_id = ? AND claim_id = ? LIMIT 1', scopeId, claimId)
-          .toArray()[0] as { state: string; doomed: string | null } | undefined;
         for (const moduleId of moduleIds) {
           this.sql.exec(
             `INSERT OR IGNORE INTO _substrat_switch_holds (scope_id, module_id, claim_id, state, doomed, held_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, 'pending', NULL, ?)`,
             scopeId,
             moduleId,
             claimId,
-            claim?.state ?? 'pending',
-            claim?.doomed ?? null,
             at,
+          );
+        }
+      });
+    }
+
+    /**
+     * #1839: an OFF joins other rewinds' claims. The row takes its claim's state and doomed instance
+     * from the claim's own rows, in this transaction, so it can never be staler than the claim; it
+     * is stamped with this object's clock. A claim with no rows left is not joined: this cannot tell
+     * a claim its rewind dropped (a refusal) from one an ON emptied, and a row created for a dropped
+     * one would hold the module with no rewind behind it.
+     */
+    switchHoldJoin(scopeId: string, moduleId: string, claimIds: string[]): void {
+      this.switchHoldsTable();
+      const at = new Date().toISOString();
+      this.ctx.storage.transactionSync(() => {
+        for (const claimId of claimIds) {
+          this.sql.exec(
+            `INSERT OR IGNORE INTO _substrat_switch_holds (scope_id, module_id, claim_id, state, doomed, held_at)
+             SELECT scope_id, ?, claim_id, state, doomed, ? FROM _substrat_switch_holds
+              WHERE scope_id = ? AND claim_id = ? LIMIT 1`,
+            moduleId,
+            at,
+            scopeId,
+            claimId,
           );
         }
       });

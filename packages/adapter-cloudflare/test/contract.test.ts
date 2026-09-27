@@ -2381,6 +2381,21 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   });
 
   /**
+   * #1839 review: a join never recreates a claim with no rows left. Here the claim was dropped
+   * (its rewind refused) between the OFF's claims read and its join; a row created for it would
+   * hold SCHED with no rewind behind it.
+   */
+  it('#1839: an OFF does not join a claim dropped while it moved, so no orphan row holds the module', async () => {
+    const s = await newScope();
+    onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
+    await holdsStub().switchHoldClaim(s, [EARLIER], 'refused-mid-move');
+    const counting = countingScopes(env.SCOPE);
+    counting.afterMove = () => holdsStub().switchHoldDrop(s, 'refused-mid-move');
+    expect(await deployment(counting.ns).systemSwitchLocal(s, SCHED, 'off')).toMatchObject({ changed: true });
+    expect(await holdsStub().switchHoldClaims(s)).toEqual([]);
+  });
+
+  /**
    * #1839: the settle argument, per row. A pass that read its snapshot just before the late OFF
    * joined must not act on that snapshot against the rewound storage. The rewind waits until the
    * joined row is a full settle old, on the hold object's clock, so that snapshot is too old by
