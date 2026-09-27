@@ -1,4 +1,4 @@
-import type { Vertical, VerticalChannel } from '@substrat-run/contracts';
+import type { SystemSwitchRecord, Vertical, VerticalChannel } from '@substrat-run/contracts';
 
 // An ordinary in-flight promote must not light up the tile.
 export const PROMOTE_TRAILING_MINUTES = 10;
@@ -24,4 +24,15 @@ export async function countTrailingPromotes(
     }
   }));
   return count;
+}
+
+/** The kill-switch tile's fleet totals (#1690 §2), from a `GET /system-switches` walk. */
+export interface SystemSwitchSummary {
+  scopes: number;
+  tenants: number;
+}
+
+/** One record per (scope, module) held off, so scope/tenant counts are over the distinct ids. */
+export function summarizeSystemSwitches(rows: Pick<SystemSwitchRecord, 'tenantId' | 'scopeId'>[]): SystemSwitchSummary {
+  return { scopes: new Set(rows.map((r) => r.scopeId)).size, tenants: new Set(rows.map((r) => r.tenantId)).size };
 }

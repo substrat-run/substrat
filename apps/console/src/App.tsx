@@ -484,6 +484,10 @@ export function App() {
             setView('failures');
             clearDetail();
           }}
+          onOpenScope={(id) => {
+            setView('scopes');
+            setOpenScope(id);
+          }}
         />
       )}
 

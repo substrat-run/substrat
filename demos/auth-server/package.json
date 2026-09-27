@@ -56,6 +56,7 @@
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",
+    "jose": "^6.2.3",
     "zod": "catalog:"
   },
   "devDependencies": {
@@ -66,7 +67,6 @@
     "@substrat-run/vertical-host": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
     "concurrently": "^9.0.0",
-    "jose": "^6.2.3",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
     "vitest": "catalog:",
