@@ -173,6 +173,61 @@ export function scheduleContractSuite(
     });
 
     /**
+     * #1525's own ALTER, distinct from #1288's REBUILD above: this store already has
+     * `kind` in its key — the shape every scope past #1288 holds today — and is only
+     * missing `invocation_id`, because it predates THIS column. Built from a real
+     * `exportScope` rather than a hand-spelled dump, so `_substrat_tuples` (the system
+     * grant `sched:tick` projects onto) and every other table come back untouched —
+     * the one column under test is the only thing rolled back.
+     *
+     * Proof that the ALTER ran, not asserted separately: `sched/schedule-state`
+     * selects `invocation_id` by name, so a store still missing the column would
+     * throw `no such column` here rather than read one back.
+     */
+    it('ALTERs invocation_id into a store that already has kind, and the next fired schedule records it', async () => {
+      const dump = await host.admin.exportScope(staff, t, s);
+      const rolledBack = {
+        ...dump,
+        tables: dump.tables.map((table) =>
+          table.name === '_substrat_schedule_state'
+            ? {
+                name: table.name,
+                // The exact shape #1288 left behind and #1525 replaced: `kind` already
+                // in the key, no `invocation_id` column at all.
+                ddl:
+                  'CREATE TABLE _substrat_schedule_state (kind TEXT NOT NULL, schedule_op TEXT NOT NULL, ' +
+                  'last_run_at TEXT, last_status TEXT, PRIMARY KEY (kind, schedule_op))',
+                columns: ['kind', 'schedule_op', 'last_run_at', 'last_status'],
+                // Long enough ago to be due the instant this restore lands.
+                rows: [['schedule', 'sched/tick', '2020-01-01T00:00:00.000Z', 'ok']],
+              }
+            : table,
+        ),
+      };
+      await host.restoreScope(staff, t, s, rolledBack);
+
+      const report = await sweep();
+      // Two: `sched/tick` (its row survived, ancient and due) and the #1288 collision
+      // fixture, whose row this restore dropped entirely — absent reads as never-run,
+      // same as any other schedule the code has not seen before.
+      expect(report.schedules!.fired).toBe(2);
+      expect(errorsOfScope(report.errors, s)).toEqual([]);
+
+      const stub = await host.getScope(reader, t, s);
+      const state = (await stub.invoke('sched/schedule-state')) as {
+        kind: string;
+        schedule_op: string;
+        invocation_id: string | null;
+      }[];
+      const firedRow = state.find((r) => r.kind === 'schedule' && r.schedule_op === 'sched/tick');
+      expect(firedRow?.invocation_id).toMatch(ULID_SHAPE);
+      // The freshness evaluator's own row is new too (its old one didn't survive the
+      // restore either) — still null, since it invoked nothing.
+      const freshnessRow = state.find((r) => r.kind === 'freshness');
+      expect(freshnessRow?.invocation_id).toBeNull();
+    });
+
+    /**
      * #1288's migration, on the one legacy shape a test can actually produce: a
      * restore replays the dump's own DDL verbatim, so a dump captured before the
      * column puts the pre-#1288 table back into a live store — exactly what a scope
