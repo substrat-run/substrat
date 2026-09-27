@@ -176,7 +176,8 @@ import {
   type MintedStore,
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
-import { TENANT_SERIES_SCOPE_CAP, type ObservabilityReader } from './observability.js';
+import { TENANT_SERIES_SCOPE_CAP, REQUEST_FACET_KEYS, type ObservabilityReader } from './observability.js';
+import { parseTenantRequestQuery, refineTenantWindow, type QueryReader } from './tenant-request-query.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { namespacesForScript, type DoNamespaceReader } from './do-namespaces.js';
 import type {
@@ -1062,6 +1063,10 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/observability\/tenant-metrics$/, pin: 'query' },
   { method: 'GET', re: /\/observability\/tenant-metrics-series$/, pin: 'query' },
   { method: 'GET', re: /\/observability\/tenant-logs$/, pin: 'query' },
+  // #1746: the request record's histogram, facets and list — same grain, same forced tenant.
+  { method: 'GET', re: /\/observability\/tenant-request-volume$/, pin: 'query' },
+  { method: 'GET', re: /\/observability\/tenant-request-facets$/, pin: 'query' },
+  { method: 'GET', re: /\/observability\/tenant-requests$/, pin: 'query' },
   { method: 'GET', re: /\/hostnames$/, pin: 'query' },
   { method: 'POST', re: /\/hostnames$/, pin: 'body' },
   // The registry + install catalog.
@@ -1306,6 +1311,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/observability\/tenant-metrics$/ },
     { method: 'GET', re: /\/observability\/tenant-metrics-series$/ },
     { method: 'GET', re: /\/observability\/tenant-logs$/ },
+    // #1746: the same lines, counted and listed. Tenant-keyed, so no fleet-wide fallback.
+    { method: 'GET', re: /\/observability\/tenant-request-volume$/ },
+    { method: 'GET', re: /\/observability\/tenant-request-facets$/ },
+    { method: 'GET', re: /\/observability\/tenant-requests$/ },
   ];
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
@@ -5993,30 +6002,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         until: z.string().datetime({ offset: true }).optional(),
         limit: z.coerce.number().int().min(1).max(200).default(100),
       })
-      .superRefine((v, ctx) => {
-        const now = Date.now();
-        const to = v.until ? Date.parse(v.until) : now;
-        const from = v.since ? Date.parse(v.since) : to - v.hours * 3_600_000;
-        // On the resolved bounds rather than on the pair, so a lone `since` in the future
-        // is refused by the same line: with no `until` it is measured against now, and
-        // without this it would reach the backend as a window that cannot contain
-        // anything and come back as an empty page nobody could explain.
-        if (from >= to) {
-          ctx.addIssue({ code: 'custom', path: ['since'], message: 'since must be before until' });
-        }
-        // The SAME ceiling `hours` carries, applied to the window however it was spelled.
-        // Otherwise the pair is a second door onto a read the first one caps at three
-        // days, and the two spellings together would read past what either allows.
-        if (to - from > 72 * 3_600_000) {
-          ctx.addIssue({ code: 'custom', path: ['since'], message: 'the window may not exceed 72 hours' });
-        }
-        // A window ending in the future returns nothing and says nothing about why, which
-        // a reader takes for "my app was quiet". Five minutes of slack, because the
-        // instant is stamped by a browser's clock rather than by ours.
-        if (to > now + 5 * 60_000) {
-          ctx.addIssue({ code: 'custom', path: ['until'], message: 'until may not be more than 5 minutes in the future' });
-        }
-      })
+      // The window rules every tenant-grain read shares (`refineTenantWindow` says why each).
+      .superRefine((v, ctx) => refineTenantWindow(v, ctx))
       .parse({
         tenantId,
         scopeId: c.req.query('scopeId') || undefined,
@@ -6032,6 +6019,53 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         limit: c.req.query('limit'),
       });
     return c.json(await options.observability.tenantLogs(input));
+  });
+
+  // #1746: the per-request record, read at the tenant grain. The three routes take ONE
+  // query — tenant, window, facet filters (`tenant-request-query.ts`) — so the histogram,
+  // the facet counts and the list beside them always describe the same set of requests.
+  // Each 501s when the reader cannot aggregate, never answers an empty set that would read
+  // as "no traffic".
+  const requestQueryOf = (c: Context): QueryReader => ({
+    one: (k) => c.req.query(k),
+    all: (k) => c.req.queries(k) ?? [],
+  });
+  const requestTenantOf = (c: Context): string => {
+    const tenantId = confinedTenant(c.get('principal')) ?? c.req.query('tenantId');
+    if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
+    return tenantId;
+  };
+
+  app.get('/observability/tenant-request-volume', async (c) => {
+    if (!options.observability?.tenantRequestVolume) {
+      return c.json({ error: 'request aggregation is not configured on this control plane' }, 501);
+    }
+    const scope = parseTenantRequestQuery(requestTenantOf(c), requestQueryOf(c));
+    // A bucket COUNT: zooming in keeps it and narrows the window, so the bucket shrinks.
+    // 90 is the design's histogram; the bounds keep a chart drawable and a query cheap.
+    const buckets = z.coerce.number().int().min(10).max(240).default(90).parse(c.req.query('buckets'));
+    return c.json(await options.observability.tenantRequestVolume({ ...scope, buckets }));
+  });
+
+  app.get('/observability/tenant-request-facets', async (c) => {
+    if (!options.observability?.tenantRequestFacets) {
+      return c.json({ error: 'request aggregation is not configured on this control plane' }, 501);
+    }
+    const scope = parseTenantRequestQuery(requestTenantOf(c), requestQueryOf(c));
+    // `facet` repeats; absent means every facet. Each one is a backend query, so a panel
+    // that shows three asks for three.
+    const asked = (c.req.queries('facet') ?? []).filter((k) => k.length > 0);
+    const keys = asked.length === 0 ? undefined : z.array(z.enum(REQUEST_FACET_KEYS)).parse([...new Set(asked)]);
+    return c.json(await options.observability.tenantRequestFacets({ ...scope, ...(keys ? { keys } : {}) }));
+  });
+
+  app.get('/observability/tenant-requests', async (c) => {
+    if (!options.observability?.tenantRequests) {
+      return c.json({ error: 'request aggregation is not configured on this control plane' }, 501);
+    }
+    const scope = parseTenantRequestQuery(requestTenantOf(c), requestQueryOf(c));
+    const limit = z.coerce.number().int().min(1).max(200).default(50).parse(c.req.query('limit'));
+    return c.json(await options.observability.tenantRequests({ ...scope, limit }));
   });
 
   /**

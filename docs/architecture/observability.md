@@ -273,7 +273,25 @@ list of entity refs, and the Tier-2 lake answers minutes late. Workers Logs is a
 tenant-filterable on this line and aggregates server-side, so facet counts and a level
 histogram can be computed over a whole window instead of from the 40 × 20 sample. The price
 is its 7-day retention. Module code's own log lines inheriting the same fields is a
-separate step (`ctx.log`), and so is the read that aggregates them.
+separate step (`ctx.log`).
+
+**The read.** Three tenant-grain routes take one shared query — tenant (forced from the
+principal, as on `/tenant-logs`), window, and facet filters (`level`, `operation`,
+`principalKind`, `problemCode`, `surface`, `status`; repeated values are alternatives) — so
+the histogram, the counts and the list beside them always describe one set of requests:
+
+| Route | Answers | Backend |
+|---|---|---|
+| `/observability/tenant-request-volume` | per-level counts per bucket; `buckets` is a count (default 90) and the width is read back from the answer | one `calculations` query grouped by `level` |
+| `/observability/tenant-request-facets` | the top values of each facet, plus the total | one `calculations` query per facet with every *other* filter applied, and one ungrouped |
+| `/observability/tenant-requests` | the stamped lines as request records, newest first | one `events` query, no correlation walk |
+
+The telemetry API's `granularity` is a bucket **count**, so zooming is the same count over a
+narrower window and the bucket shrinks with it (2 min → 30 s → 1 s). Lines written before
+the fields existed have no `level` and are counted as `unrecorded`, so the histogram's total
+still matches the traffic chart. A count the backend took from a sample comes back with
+`estimated: true`. All three are optional on the seam and 501 when absent, never an empty
+answer that reads as "no traffic".
 
 ## 5. What each audience gets, in build order
 

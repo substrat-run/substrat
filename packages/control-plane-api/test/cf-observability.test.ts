@@ -120,3 +120,184 @@ describe('cf observability serviceMetricsSeries (#1236) — the page ceiling', (
     ]);
   });
 });
+
+/**
+ * #1746: the request reads against a stubbed telemetry endpoint. What is worth pinning
+ * without a real account is the QUERY each one sends — the tenant predicate first and
+ * always, the facet exclusion, the bucket count — and how each answer is folded, because a
+ * wrong fold here is a histogram or a facet panel that is quietly off.
+ */
+describe('cf observability request reads (#1746)', () => {
+  const T = '01JZ0000000000000000TEN001';
+  const from = Date.parse('2026-09-27T10:00:00Z');
+  const to = Date.parse('2026-09-27T13:00:00Z');
+
+  type Body = {
+    view: string;
+    granularity?: number;
+    chartType?: string;
+    parameters: { filters: Array<Record<string, unknown>>; groupBys?: Array<{ value: string }>; limit?: number };
+  };
+
+  /** Stub the telemetry endpoint: `reply` answers each request body; bodies are recorded. */
+  function telemetry(reply: (body: Body) => unknown) {
+    const bodies: Body[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init: { body?: string }) => {
+        const body = JSON.parse(init.body ?? '{}') as Body;
+        bodies.push(body);
+        return new Response(JSON.stringify({ success: true, result: reply(body) }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    );
+    return bodies;
+  }
+
+  const point = (groups: Record<string, unknown>, value: number, sampleInterval = 1) => ({
+    groups: Object.entries(groups).map(([key, v]) => ({ key, value: v })),
+    value,
+    count: value / sampleInterval,
+    interval: 1,
+    sampleInterval,
+  });
+
+  it('asks for a level histogram in the requested bucket count, tenant predicate first', async () => {
+    const bodies = telemetry(() => ({
+      calculations: [
+        {
+          calculation: 'count',
+          aggregates: [],
+          series: [
+            {
+              time: '2026-09-27T10:00:00Z',
+              data: [point({ level: 'info' }, 40), point({ level: 'error' }, 2), point({}, 5)],
+            },
+            { time: '2026-09-27T10:02:00Z', data: [point({ level: 'warn' }, 3)] },
+            // A bucket the backend listed with nothing in it is dropped, not drawn as zero.
+            { time: '2026-09-27T10:04:00Z', data: [] },
+          ],
+        },
+      ],
+    }));
+    const volume = await reader().tenantRequestVolume!({ tenantId: T, scopeId: '01SCOPE', from, to, buckets: 90 });
+    expect(bodies[0]).toMatchObject({ view: 'calculations', granularity: 90, chartType: 'timeseries' });
+    expect(bodies[0]!.parameters.groupBys).toEqual([{ type: 'string', value: 'level' }]);
+    expect(bodies[0]!.parameters.filters.slice(0, 3)).toEqual([
+      { key: 'tenantId', operation: 'eq', type: 'string', value: T },
+      { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
+      { key: 'scopeId', operation: 'eq', type: 'string', value: '01SCOPE' },
+    ]);
+    expect(volume).toEqual({
+      // Read back from the series, not assumed from 3h / 90.
+      bucketMs: 120_000,
+      buckets: [
+        // A line with no `level` predates it — counted, as `unrecorded`.
+        { start: '2026-09-27T10:00:00.000Z', info: 40, warn: 0, error: 2, unrecorded: 5 },
+        { start: '2026-09-27T10:02:00.000Z', info: 0, warn: 3, error: 0, unrecorded: 0 },
+      ],
+      estimated: false,
+    });
+  });
+
+  it('says a sampled count is an estimate', async () => {
+    telemetry(() => ({
+      calculations: [{ aggregates: [], series: [{ time: '2026-09-27T10:00:00Z', data: [point({ level: 'info' }, 400, 10)] }] }],
+    }));
+    const volume = await reader().tenantRequestVolume!({ tenantId: T, from, to, buckets: 90 });
+    expect(volume.estimated).toBe(true);
+    expect(volume.buckets[0]!.info).toBe(400);
+  });
+
+  it("counts each facet with every other filter applied and its own left out", async () => {
+    const bodies = telemetry((body) => {
+      const key = body.parameters.groupBys?.[0]?.value;
+      if (key === undefined) return { calculations: [{ aggregates: [point({}, 12)], series: [] }] };
+      if (key === 'level') {
+        return { calculations: [{ aggregates: [point({ level: 'warn' }, 9), point({ level: 'error' }, 3)], series: [] }] };
+      }
+      if (key === 'operation') {
+        // A request that is not an operation carries no value — not something to filter on.
+        return { calculations: [{ aggregates: [point({ operation: 'acme/create' }, 7), point({}, 5)], series: [] }] };
+      }
+      return { calculations: [] };
+    });
+    const facets = await reader().tenantRequestFacets!({
+      tenantId: T,
+      from,
+      to,
+      where: { level: ['warn', 'error'], operation: ['acme/create'] },
+      keys: ['level', 'operation'],
+    });
+    expect(facets.total).toBe(12);
+    expect(facets.facets.level).toEqual([
+      { value: 'warn', count: 9 },
+      { value: 'error', count: 3 },
+    ]);
+    expect(facets.facets.operation).toEqual([{ value: 'acme/create', count: 7 }]);
+    // Facets not asked for are present and empty, so a caller can index any key.
+    expect(facets.facets.status).toEqual([]);
+
+    const levelFilter = { kind: 'group', filterCombination: 'or', filters: [
+      { key: 'level', operation: 'eq', type: 'string', value: 'warn' },
+      { key: 'level', operation: 'eq', type: 'string', value: 'error' },
+    ] };
+    const operationFilter = { key: 'operation', operation: 'eq', type: 'string', value: 'acme/create' };
+    const byKey = (k: string | undefined) => bodies.find((b) => b.parameters.groupBys?.[0]?.value === k)!;
+    // The total: every filter.
+    expect(bodies.find((b) => !b.parameters.groupBys)!.parameters.filters).toEqual(
+      expect.arrayContaining([levelFilter, operationFilter]),
+    );
+    // The level facet: the operation filter, and NOT its own.
+    expect(byKey('level').parameters.filters).toContainEqual(operationFilter);
+    expect(byKey('level').parameters.filters).not.toContainEqual(levelFilter);
+    // And the other way round.
+    expect(byKey('operation').parameters.filters).toContainEqual(levelFilter);
+    expect(byKey('operation').parameters.filters).not.toContainEqual(operationFilter);
+    // The tenant predicate is on every one of them.
+    for (const b of bodies) {
+      expect(b.parameters.filters[0]).toEqual({ key: 'tenantId', operation: 'eq', type: 'string', value: T });
+    }
+  });
+
+  it('filters status as a number', async () => {
+    const bodies = telemetry(() => ({ calculations: [] }));
+    await reader().tenantRequestFacets!({ tenantId: T, from, to, where: { status: ['409'] }, keys: ['level'] });
+    expect(bodies[0]!.parameters.filters).toContainEqual({ key: 'status', operation: 'eq', type: 'number', value: 409 });
+  });
+
+  it('lists the stamped lines as request records, newest first', async () => {
+    const bodies = telemetry(() => ({
+      events: {
+        events: [
+          { timestamp: 1, source: { substrat: 'invocation', tenantId: T, status: 200, method: 'GET', path: '/a' } },
+          {
+            timestamp: 2,
+            source: {
+              substrat: 'invocation',
+              tenantId: T,
+              invocationId: '01JZ0000000000000000INV001',
+              status: 409,
+              threw: false,
+              level: 'warn',
+              operation: 'acme/create',
+              problemCode: 'conflict',
+              principalKind: 'principal',
+              eventCount: 0,
+              eventTypes: [],
+              entities: [],
+            },
+          },
+        ],
+      },
+    }));
+    const rows = await reader().tenantRequests!({ tenantId: T, from, to, limit: 50 });
+    expect(bodies[0]).toMatchObject({ view: 'events' });
+    expect(rows.map((r) => r.timestamp)).toEqual([2, 1]);
+    expect(rows[0]).toMatchObject({ status: 409, level: 'warn', operation: 'acme/create', problemCode: 'conflict', eventCount: 0 });
+    // An older line: every #1746 field reads as not recorded.
+    expect(rows[1]).toMatchObject({ level: null, operation: null, eventCount: null, eventTypes: [], entities: [] });
+  });
+});

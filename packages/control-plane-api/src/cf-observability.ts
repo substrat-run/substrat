@@ -6,8 +6,129 @@ import type {
   TenantMetricsBucket,
   ConnectorCallsBucket,
   TenantMetricsRow,
+  RequestFacetKey,
+  RequestFacetValue,
+  RequestRecord,
+  RequestVolumeBucket,
+  TenantRequestScope,
 } from './observability.js';
-import { TENANT_METRICS_LIMIT } from './observability.js';
+import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, REQUEST_FACET_TOP } from './observability.js';
+
+/** A telemetry filter: a leaf comparison, or a group of them (the API nests up to 4 deep). */
+type TelemetryFilter =
+  | { key: string; operation: string; type: string; value: string | number | boolean }
+  | { kind: 'group'; filterCombination: 'or' | 'and'; filters: TelemetryFilter[] };
+
+/**
+ * The filters for a tenant's stamped invocation lines (#1746), with the facet filters ANDed
+ * on. `omit` leaves one facet's own filter out, which is how a facet is counted "with every
+ * other filter applied".
+ *
+ * The tenant predicate comes first and is not optional: it is the whole isolation boundary,
+ * exactly as in `queryTenantLogs`. Several values under one key are one OR group, so the
+ * values are compared one by one and never split on a separator.
+ */
+function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): TelemetryFilter[] {
+  const filters: TelemetryFilter[] = [
+    { key: 'tenantId', operation: 'eq', type: 'string', value: scope.tenantId },
+    { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
+  ];
+  if (scope.scopeId) filters.push({ key: 'scopeId', operation: 'eq', type: 'string', value: scope.scopeId });
+  if (scope.vertical) filters.push({ key: 'vertical', operation: 'eq', type: 'string', value: scope.vertical });
+  for (const key of REQUEST_FACET_KEYS) {
+    if (key === omit) continue;
+    const values = scope.where?.[key] ?? [];
+    if (values.length === 0) continue;
+    const leaves: TelemetryFilter[] = values.map((v) =>
+      key === 'status'
+        ? { key, operation: 'eq', type: 'number', value: Number(v) }
+        : { key, operation: 'eq', type: 'string', value: v },
+    );
+    filters.push(leaves.length === 1 ? leaves[0]! : { kind: 'group', filterCombination: 'or', filters: leaves });
+  }
+  return filters;
+}
+
+/** One data point of a `calculations` answer — an aggregate row or a series point. */
+interface CalculationPoint {
+  value?: number;
+  count?: number;
+  sampleInterval?: number;
+  groups?: Array<{ key?: string; value?: unknown }>;
+}
+
+/** A `calculations` answer for one calculation: whole-window aggregates and a series. */
+interface Calculation {
+  aggregates?: CalculationPoint[];
+  series?: Array<{ time?: string; data?: CalculationPoint[] }>;
+}
+
+/**
+ * How many requests a point stands for.
+ *
+ * `value` is the calculation's result, which for `count` is the count already scaled by
+ * the sample rate; `count` is the rows actually read. The first is the answer, the second
+ * only a fallback for a point that carries no value.
+ */
+function countOf(p: CalculationPoint): number {
+  return typeof p.value === 'number' ? p.value : typeof p.count === 'number' ? p.count : 0;
+}
+
+/** True when a point was counted from a sample — the number is then an estimate. */
+function sampled(p: CalculationPoint): boolean {
+  return typeof p.sampleInterval === 'number' && p.sampleInterval > 1;
+}
+
+/** The value of one group key on a point, or `undefined` when the point has none. */
+function groupValue(p: CalculationPoint, key: string): unknown {
+  return p.groups?.find((g) => g.key === key)?.value;
+}
+
+/** A stamped line's `level`, or `unrecorded` for a line written before it existed. */
+function levelOf(v: unknown): 'info' | 'warn' | 'error' | 'unrecorded' {
+  return v === 'info' || v === 'warn' || v === 'error' ? v : 'unrecorded';
+}
+
+/**
+ * The bucket width a series was cut at, from its own timestamps: the smallest gap between
+ * two consecutive buckets. The request asks for a bucket COUNT, and the backend may round
+ * the width it derives from it, so the answer is read back rather than assumed. A series
+ * with fewer than two buckets says nothing about its width; the nominal one stands in.
+ */
+function bucketWidth(times: number[], nominal: number): number {
+  const sorted = [...new Set(times)].sort((a, b) => a - b);
+  let width = Infinity;
+  for (let i = 1; i < sorted.length; i++) width = Math.min(width, sorted[i]! - sorted[i - 1]!);
+  return Number.isFinite(width) && width > 0 ? width : nominal;
+}
+
+/** The stamped line of a raw event, as the Requests view lists it. */
+function requestRecordOf(e: Record<string, unknown>): RequestRecord {
+  const source = (e['source'] ?? {}) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === 'string' ? v : null);
+  const num = (v: unknown) => (typeof v === 'number' ? v : null);
+  const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+  return {
+    timestamp: num(e['timestamp']),
+    invocationId: str(source['invocationId']),
+    scopeId: str(source['scopeId']),
+    vertical: str(source['vertical']),
+    surface: str(source['surface']),
+    method: str(source['method']),
+    path: str(source['path']),
+    status: num(source['status']),
+    threw: source['threw'] === true,
+    durationMs: num(source['durationMs']),
+    level: str(source['level']),
+    operation: str(source['operation']),
+    problemCode: str(source['problemCode']),
+    principalKind: str(source['principalKind']),
+    eventCount: num(source['eventCount']),
+    eventTypes: strings(source['eventTypes']),
+    entities: strings(source['entities']),
+    versionId: str(source['versionId']),
+  };
+}
 
 /**
  * Caps on the tenant-log correlation walk (`queryTenantLogs`).
@@ -420,6 +541,98 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
 
     async tenantLogs(input) {
       return queryTenantLogs(input);
+    },
+
+    // #1746: the request histogram. One `calculations` query, grouped by level and cut
+    // into the asked number of buckets. Every stamped line in the window is counted, not a
+    // sample of them, which is what makes zooming a narrower re-query rather than a crop.
+    async tenantRequestVolume(input) {
+      const timeframe = { from: input.from, to: input.to };
+      const calc = await queryCalculation(requestFilters(input), timeframe, {
+        groupBy: { type: 'string', value: 'level' },
+        granularity: input.buckets,
+        chartType: 'timeseries',
+        // The group-by rows: one per level, plus the lines that carry none.
+        limit: 10,
+      });
+      let estimated = false;
+      const byStart = new Map<number, RequestVolumeBucket>();
+      for (const point of calc.series ?? []) {
+        const start = point.time ? Date.parse(point.time) : NaN;
+        if (!Number.isFinite(start)) continue;
+        const bucket =
+          byStart.get(start) ??
+          { start: new Date(start).toISOString(), info: 0, warn: 0, error: 0, unrecorded: 0 };
+        for (const d of point.data ?? []) {
+          bucket[levelOf(groupValue(d, 'level'))] += countOf(d);
+          estimated ||= sampled(d);
+        }
+        byStart.set(start, bucket);
+      }
+      const starts = [...byStart.keys()].sort((a, b) => a - b);
+      return {
+        bucketMs: bucketWidth(starts, Math.max(1, Math.round((input.to - input.from) / input.buckets))),
+        buckets: starts
+          .map((t) => byStart.get(t)!)
+          .filter((b) => b.info + b.warn + b.error + b.unrecorded > 0),
+        estimated,
+      };
+    },
+
+    // #1746: facet counts. One aggregate query per facet, each with every OTHER filter
+    // applied, plus one ungrouped count for the total. In parallel: they are independent
+    // reads of the same window.
+    async tenantRequestFacets(input) {
+      const timeframe = { from: input.from, to: input.to };
+      const keys = input.keys ?? REQUEST_FACET_KEYS;
+      let estimated = false;
+      const [totalCalc, ...perKey] = await Promise.all([
+        queryCalculation(requestFilters(input), timeframe, { chartType: 'aggregate' }),
+        ...keys.map((key) =>
+          queryCalculation(requestFilters(input, key), timeframe, {
+            groupBy: { type: key === 'status' ? 'number' : 'string', value: key },
+            chartType: 'aggregate',
+            limit: REQUEST_FACET_TOP,
+            // Ordered by the calculation's alias, so the `limit` keeps the most frequent values.
+            orderBy: { value: 'requests', order: 'desc' },
+          }),
+        ),
+      ]);
+      const total = (totalCalc!.aggregates ?? []).reduce((n, p) => {
+        estimated ||= sampled(p);
+        return n + countOf(p);
+      }, 0);
+      const facets = Object.fromEntries(REQUEST_FACET_KEYS.map((k) => [k, [] as RequestFacetValue[]])) as Record<
+        RequestFacetKey,
+        RequestFacetValue[]
+      >;
+      keys.forEach((key, i) => {
+        const values: RequestFacetValue[] = [];
+        for (const p of perKey[i]!.aggregates ?? []) {
+          const value = groupValue(p, key);
+          // A line with no value for this key (an older line, or a route that is not an
+          // operation) is not a value anybody can filter on; it is left out of the list,
+          // and the total above still counts it.
+          if (typeof value !== 'string' && typeof value !== 'number') continue;
+          if (value === '') continue;
+          values.push({ value, count: countOf(p) });
+          estimated ||= sampled(p);
+        }
+        facets[key] = values.sort((a, b) => b.count - a.count).slice(0, REQUEST_FACET_TOP);
+      });
+      return { total, facets, estimated };
+    },
+
+    // #1746: the requests themselves. The stamped lines alone — no correlation walk,
+    // because a request's own line is the whole record and the Requests view has no use
+    // for its siblings until a row is opened (which `tenantLogs` with the invocation id
+    // already answers).
+    async tenantRequests(input) {
+      const events = await queryRaw(requestFilters(input), { from: input.from, to: input.to }, input.limit);
+      return events
+        .sort((a, b) => rawTime(b) - rawTime(a))
+        .slice(0, input.limit)
+        .map(requestRecordOf);
     },
 
     async observedEgress({ services, hours, limit }) {
@@ -979,12 +1192,62 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     return typeof from === 'string' ? from : null;
   }
 
+  /**
+   * One `calculations` query (#1746) — a single `count`, optionally grouped by one key and
+   * cut into a number of time buckets. Returns that calculation's answer.
+   *
+   * `granularity` is a bucket COUNT in this API, not a width, so a zoomed-in window asked
+   * for with the same count comes back with narrower buckets on its own.
+   */
+  async function queryCalculation(
+    filters: TelemetryFilter[],
+    timeframe: { from: number; to: number },
+    shape: {
+      groupBy?: { type: string; value: string };
+      granularity?: number;
+      chartType: 'timeseries' | 'aggregate';
+      limit?: number;
+      orderBy?: { value: string; order: 'asc' | 'desc' };
+    },
+  ): Promise<Calculation> {
+    const res = await authed(
+      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
+      {
+        queryId: 'substrat-tenant-requests',
+        view: 'calculations',
+        timeframe,
+        chartType: shape.chartType,
+        ...(shape.granularity === undefined ? {} : { granularity: shape.granularity }),
+        parameters: {
+          datasets: ['cloudflare-workers'],
+          filters,
+          calculations: [{ operator: 'count', alias: 'requests' }],
+          ...(shape.groupBy ? { groupBys: [shape.groupBy] } : {}),
+          ...(shape.limit === undefined ? {} : { limit: shape.limit }),
+          ...(shape.orderBy ? { orderBy: shape.orderBy } : {}),
+        },
+      },
+    );
+    const json = (await res.json()) as {
+      success?: boolean;
+      errors?: Array<{ message?: string }>;
+      result?: { calculations?: Calculation[] };
+    };
+    if (!res.ok || json.success === false) {
+      const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
+      throw new Error(`Cloudflare telemetry query failed: ${message}`);
+    }
+    // One calculation was asked for, so the first answer is it. An answer with none is an
+    // empty window, not an error: the backend omits a calculation that matched nothing.
+    return json.result?.calculations?.[0] ?? {};
+  }
+
   /** A telemetry `events` query returning the raw events, filters passed through. */
   async function queryRaw(
     // `value` is `string | number | boolean`: every filter was an equality on an id until
     // the error read needed `status = 500` / `status >= 502` (the numeric comparisons) and
-    // `threw = true` (the one boolean).
-    filters: Array<{ key: string; operation: string; type: string; value: string | number | boolean }>,
+    // `threw = true` (the one boolean). A group (#1746) is a facet's alternatives.
+    filters: TelemetryFilter[],
     // The window, already decided by the caller — every phase of one tenant-log read
     // searches the same one, so this takes the instants rather than a duration it would
     // have to re-anchor to a `Date.now()` of its own.

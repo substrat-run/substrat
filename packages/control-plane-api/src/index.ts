@@ -137,8 +137,22 @@ export type {
   RecentLogEvent,
   TenantMetricsBucket,
   ConnectorCallsBucket,
+  RequestFacetKey,
+  RequestWhere,
+  TenantRequestScope,
+  RequestLevelCounts,
+  RequestVolume,
+  RequestVolumeBucket,
+  RequestFacets,
+  RequestFacetValue,
+  RequestRecord,
 } from './observability.js';
-export { TENANT_SERIES_SCOPE_CAP, TENANT_METRICS_LIMIT } from './observability.js';
+export {
+  TENANT_SERIES_SCOPE_CAP,
+  TENANT_METRICS_LIMIT,
+  REQUEST_FACET_KEYS,
+  REQUEST_FACET_TOP,
+} from './observability.js';
 export {
   STORAGE_PAGE_DEFAULT,
   STORAGE_PAGE_MAX,
