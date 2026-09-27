@@ -903,9 +903,21 @@ export function defineScopeDO(
     private lastFailure: { version: string; error: string } | null = null;
     /** Passes of `applyPendingMigrations` that had work to do — see `migrationAttemptsOnInstance`. */
     private migrationRuns = 0;
+    /**
+     * TEST-ONLY (#1860): no production code reads this. An exact `'ping'` is answered
+     * by `setWebSocketAutoResponse` without reaching `webSocketMessage` at all, and
+     * this count is how a test proves that from outside the object — read through
+     * `runInDurableObject` — rather than assuming the runtime's documented behaviour.
+     */
+    private webSocketMessagesHandled = 0;
 
     constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
       super(ctx, env);
+      // #1860: the client's 45s keep-alive (demos/ticket0/app/src/feed.ts) answered at
+      // the runtime level, before this object wakes for it. Without this, every idle
+      // subscriber's ping still reaches `webSocketMessage` and pins the DO in memory —
+      // exactly the hibernation cost `acceptWebSocket` (below) exists to avoid.
+      ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
       this.sql = ctx.storage.sql;
       for (const stmt of splitSqlStatements(KERNEL_DDL)) {
         this.sql.exec(stmt);
@@ -2485,8 +2497,14 @@ export function defineScopeDO(
      * Deliberately NOT a place to let a client narrow or widen what it receives: a
      * filter the client chooses is a filter the client can choose wrongly, and the
      * only filter that matters here is the one it does not control.
+     *
+     * #1860: an exact `'ping'` is now answered by `setWebSocketAutoResponse` in the
+     * constructor, at the runtime level, without waking this object — so this branch no
+     * longer runs for it. Kept as the documented fallback for a client on an older
+     * build, or a hop where the runtime's auto-response is unavailable.
      */
     webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+      this.webSocketMessagesHandled++;
       if (message === 'ping') ws.send('pong');
     }
 
