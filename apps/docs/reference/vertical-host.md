@@ -222,20 +222,24 @@ mountLiveReads(app, {
 });
 ```
 
-Register it before `mountOperations`. It decides three things, in this order:
+Register it before `mountOperations`. It decides four things, in this order:
 
-1. **The page asking is your own.** A browser sends cookies on a WebSocket handshake, and a
+1. **It is a WebSocket handshake.** Anything without `Upgrade: websocket` is `426` with
+   `x-substrat-live: not-an-upgrade`, before anything else is asked. This is what makes the
+   next rule safe: a browser's WebSocket API always sends `Origin`, while a plain cross-site
+   GET carrying a `SameSite=Lax` cookie may not.
+2. **The page asking is your own.** A browser sends cookies on a WebSocket handshake, and a
    WebSocket handshake is not subject to CORS. A `SameSite=Lax` session cookie does not
    help either, because another tenant's subdomain of the platform's domain is the same site.
    So the route compares the `Origin` header with the request's own origin, exactly (scheme,
    host and port), and answers `403` on any difference, including `Origin: null`. The host is
-   not asked and `subscriber` is not called. A request with no `Origin` did not come from a
-   browser page, and goes through.
-2. **This host can push at all.** The pure host has no `liveReads`, so the route answers
+   not asked and `subscriber` is not called. A WebSocket handshake with no `Origin` did not
+   come from a browser page, and goes through.
+3. **This host can push at all.** The pure host has no `liveReads`, so the route answers
    `501` with `x-substrat-live: poll`. That is the same header the hosted adapter sets on its
    own refusals, so a client that reads it keeps polling whichever end said no. The name is
    exported from `@substrat-run/kernel` as `LIVE_MODE_HEADER`, with its values as `LiveRefusal`.
-3. **Who is asking.** Your `subscriber` callback, from your own session. `null` is `401`,
+4. **Who is asking.** Your `subscriber` callback, from your own session. `null` is `401`,
    never a subscription as some default principal.
 
 The route does not decide what a subscriber hears. The scope checks every frame against the

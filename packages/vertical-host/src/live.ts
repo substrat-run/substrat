@@ -23,8 +23,9 @@
  *    itself. A session cookie that is `SameSite=Lax` does not help: a sibling subdomain
  *    of the platform's own domain is the same site, so Lax alone does not keep a page on
  *    another tenant's hostname from opening this socket as whoever is signed in here.
- *    A request with no `Origin` did not come from a browser page, and a bearer client
- *    carries its own credential rather than an ambient one, so it falls through.
+ *    A WebSocket handshake with no `Origin` did not come from a browser page (the
+ *    browser's WebSocket API always sends one), and a bearer client carries its own
+ *    credential rather than an ambient one, so it falls through.
  * 3. **This host can carry a push at all.** Asked rather than assumed, as the contract
  *    documents (`ScopeHost.liveReads`). No surface is `501` with
  *    `x-substrat-live: poll`, the same header the hosted adapter sets on its own

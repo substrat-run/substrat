@@ -138,7 +138,7 @@ describe("the live route's Origin check", () => {
     expect(input.request.headers.get('upgrade')).toBe('websocket');
   });
 
-  it('lets a request with no Origin through, since no browser page sent it', async () => {
+  it('lets a WebSocket handshake with no Origin through, since no browser page sent it', async () => {
     const res = await answering.fetch(handshake({}));
     expect(res.status).toBe(204);
     expect(subscribed).toHaveBeenCalledOnce();
