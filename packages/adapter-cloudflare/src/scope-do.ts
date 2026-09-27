@@ -5382,6 +5382,11 @@ export function defineScopeDO(
             `${entity.entityType}:${entity.entityId}`,
           );
         },
+        /**
+         * Deliberately NOT the #1856 grammar check `grant` and `link` make: a revoke writes
+         * nothing the walk must read back, and a grant stored before that check existed must
+         * stay removable.
+         */
         revoke: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
           assertImpersonationWrites(impersonation, 'ctx.revoke');
           const held = await runCheck(permission, entity);
