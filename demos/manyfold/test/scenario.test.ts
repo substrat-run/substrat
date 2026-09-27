@@ -365,4 +365,54 @@ describe('Manyfold demo scenario — paging under tied timestamps (#1833)', () =
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('list-delivery walks a cursor across entries published under one instant with no dupes or skips (Copilot #4114802626)', async () => {
+    // Same shape as list-entries' tie test, one operation over: the frozen clock
+    // means every publish below shares the same `published_at`, which is exactly
+    // the case an unqualified cursor gets wrong.
+    const clock = manualClock('2026-01-01T00:00:00.000Z');
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-manyfold-tie-'));
+    const host = buildDemoHost(dir, clock.read);
+    try {
+      const w = await seedDemo(host, dir);
+      // maja holds `admin` tenant-wide (author + review + publish everywhere),
+      // so one principal can carry an entry through the whole lifecycle.
+      const majaPadel = await host.getScope(w.maja, w.t1, w.padel);
+
+      const ids: string[] = [];
+      for (let i = 0; i < 7; i++) {
+        const entry = await majaPadel.invoke<EntryRow>('manyfold/create-entry', {
+          typeKey: 'post',
+          body: { title: `Tied delivery ${i}`, slug: `tied-delivery-${i}`, body: 'x', category: 'news' },
+        });
+        await majaPadel.invoke('manyfold/submit-for-review', { entryId: entry.id });
+        await majaPadel.invoke('manyfold/approve', { entryId: entry.id });
+        await majaPadel.invoke('manyfold/publish', { entryId: entry.id });
+        ids.push(entry.id);
+      }
+
+      const first = await majaPadel.invoke<Page<{ entry_id: string; published_at: string }>>('manyfold/list-delivery', {
+        limit: 3,
+      });
+      expect(first.entries).toHaveLength(3);
+      expect(first.entries.every((e) => e.published_at === clock.now())).toBe(true);
+      expect(first.nextCursor).not.toBeNull();
+
+      const seen = [...first.entries];
+      let cursor = first.nextCursor;
+      while (cursor !== null) {
+        const next = await majaPadel.invoke<Page<{ entry_id: string; published_at: string }>>('manyfold/list-delivery', {
+          limit: 3,
+          cursor,
+        });
+        seen.push(...next.entries);
+        cursor = next.nextCursor;
+      }
+      expect(seen).toHaveLength(7);
+      expect(new Set(seen.map((e) => e.entry_id))).toEqual(new Set(ids));
+    } finally {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
