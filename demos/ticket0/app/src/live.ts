@@ -12,11 +12,14 @@
  *   re-reads through the operation it already calls. So a push can make a screen
  *   current sooner and can never show it something the read would not have.
  * - **A poll**, which stays as the floor. While the socket is open it runs at the
- *   screen's `connectedMs` (`PACE` below), which covers whatever the feed does not
- *   announce (a new tag in the vocabulary, the visitor card) and a frame lost to a
- *   dropped connection. With no socket it runs at `everyMs`, exactly as it always did. That covers
- *   the dev server, which answers 501 because its host has no live reads, and a
- *   hostname that cannot carry a WebSocket.
+ *   screen's `connectedMs` (`PACE`, in `pace.ts`), which covers whatever the feed does
+ *   not announce (a new tag in the vocabulary, the visitor card) and a frame lost to a
+ *   dropped connection. With no socket it runs at `everyMs`, exactly as it always did.
+ *   That covers the dev server, which answers 501 because its host has no live reads,
+ *   and a hostname that cannot carry a WebSocket.
+ *
+ * The socket itself, its reconnects and when it gives up are `feed.ts`, which the node
+ * suite drives with a fake socket. This file binds that to the browser and to React.
  *
  * Paced the same way the widget is: nothing at all while the tab is hidden, and an
  * immediate refetch the moment it comes back, which is the gesture that actually
@@ -24,28 +27,9 @@
  * while hidden is dropped for the same reason: coming back re-reads anyway.
  */
 import { useEffect, useRef } from 'react';
+import { createFeed, type FeedListener, type LiveChange, type SocketLike } from './feed.js';
 import { pollPace, type Pace } from './pace.js';
 
-/**
- * The part of a frame this app reads: the kernel's `LiveChange`, cut down to what the
- * screens act on, since the browser bundle does not depend on the kernel.
- */
-export interface LiveChange {
-  kind: 'change';
-  entityType: string;
-  entityId: string;
-}
-
-/** Consecutive connections that never opened before the feed stops trying. */
-const GIVE_UP_AFTER = 3;
-/** Keeps an idle socket from being closed as idle; the scope answers `pong`. */
-const PING_MS = 45_000;
-/**
- * How long the socket outlives its last listener. Moving from the inbox to a
- * conversation unmounts one screen and mounts the next, and without this every
- * navigation would be a reconnect and a re-read.
- */
-const LINGER_MS = 5_000;
 /**
  * One write can announce several entities at once (a conversation and its message), and
  * each frame would otherwise be a full re-read. Frames that arrive this close together
@@ -53,96 +37,31 @@ const LINGER_MS = 5_000;
  */
 const BURST_MS = 50;
 
-type Listener = {
-  frame: (change: LiveChange) => void;
-  /** The feed opened or closed. On open the screen re-reads, to cover the gap. */
-  state: (open: boolean) => void;
-};
-
-/**
- * The one socket every mounted screen shares.
- *
- * Module state rather than a context, because there is exactly one feed per tab and the
- * screens that listen come and go. The socket opens when the first listener arrives and
- * closes when the last one leaves.
- */
-const feed = {
-  listeners: new Set<Listener>(),
-  socket: null as WebSocket | null,
-  open: false,
-  /** Connections in a row that failed before opening. Reset by one that opens. */
-  failures: 0,
-  retry: null as ReturnType<typeof setTimeout> | null,
-  linger: null as ReturnType<typeof setTimeout> | null,
-  ping: null as ReturnType<typeof setInterval> | null,
-};
-
-function setOpen(open: boolean): void {
-  if (feed.open === open) return;
-  feed.open = open;
-  for (const l of feed.listeners) l.state(open);
-}
-
-/** Forget the socket, and tell whoever is still listening that the feed is closed. */
-function teardown(): void {
-  if (feed.ping) clearInterval(feed.ping);
-  feed.ping = null;
-  feed.socket = null;
-  setOpen(false);
-}
-
-function connect(): void {
-  if (feed.socket || feed.retry || feed.listeners.size === 0) return;
-  if (typeof WebSocket === 'undefined' || feed.failures >= GIVE_UP_AFTER) return;
-
-  const url = new URL('/api/live', location.href);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(url);
-  feed.socket = ws;
-  let opened = false;
-
-  ws.onopen = () => {
-    opened = true;
-    feed.failures = 0;
-    feed.ping = setInterval(() => ws.send('ping'), PING_MS);
-    setOpen(true);
-  };
-  ws.onmessage = (event) => {
-    if (event.data === 'pong') return;
-    let change: LiveChange;
-    try {
-      change = JSON.parse(String(event.data)) as LiveChange;
-    } catch {
-      return;
-    }
-    if (change.kind !== 'change') return;
-    for (const l of feed.listeners) l.frame(change);
-  };
-  ws.onclose = () => {
-    teardown();
-    // A socket that never opened is a host saying no: 501 on the dev server, a hop that
-    // cannot carry a WebSocket, a signed-out session. The browser does not say which, so
-    // a few attempts and then the poll alone, for the life of the tab. A socket that did
-    // open and then dropped is a network blip, and is retried with a backoff.
-    if (!opened) feed.failures += 1;
-    if (feed.listeners.size === 0 || feed.failures >= GIVE_UP_AFTER) return;
-    const delay = Math.min(30_000, 1000 * 2 ** feed.failures);
-    feed.retry = setTimeout(() => {
-      feed.retry = null;
-      connect();
-    }, delay);
-  };
-}
-
-function disconnect(): void {
-  if (feed.retry) clearTimeout(feed.retry);
-  feed.retry = null;
-  const ws = feed.socket;
-  if (!ws) return;
-  ws.onclose = null;
-  teardown();
-  ws.close(1000, 'no screen is listening');
-}
+/** The tab's one feed, bound to the browser's socket and clock. */
+export const liveFeed = createFeed({
+  connect: () => {
+    if (typeof WebSocket === 'undefined') return null;
+    const url = new URL('/api/live', location.href);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(url);
+    const socket: SocketLike = {
+      onopen: null,
+      onmessage: null,
+      onclose: null,
+      send: (data) => ws.send(data),
+      close: (code, reason) => ws.close(code, reason),
+    };
+    ws.onopen = () => socket.onopen?.();
+    ws.onmessage = (event) => socket.onmessage?.(event);
+    ws.onclose = () => socket.onclose?.();
+    return socket;
+  },
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (t) => clearTimeout(t),
+  setInterval: (fn, ms) => setInterval(fn, ms),
+  clearInterval: (t) => clearInterval(t),
+});
 
 /**
  * Re-run `reload` when something this screen shows may have changed.
@@ -174,7 +93,7 @@ export function useLiveReload(
     };
     const start = () => {
       stop();
-      const every = pollPace({ everyMs, connectedMs }, feed.open);
+      const every = pollPace({ everyMs, connectedMs }, liveFeed.isOpen());
       if (!document.hidden) timer = setInterval(() => latest.current(), every);
     };
     const onVisible = () => {
@@ -182,7 +101,7 @@ export function useLiveReload(
       start();
     };
 
-    const listener: Listener = {
+    const listener: FeedListener = {
       frame: (change) => {
         if (document.hidden || burst !== null || !filter.current(change)) return;
         burst = setTimeout(() => {
@@ -200,26 +119,16 @@ export function useLiveReload(
         start();
       },
     };
-    feed.listeners.add(listener);
-    if (feed.linger) clearTimeout(feed.linger);
-    feed.linger = null;
-    connect();
+    const unlisten = liveFeed.listen(listener);
     // Joining a feed that is already open fires no `state`: this screen's own first load
-    // is what covers the gap, and `start` reads `feed.open` for the connected pace.
+    // is what covers the gap, and `start` asks the feed for the connected pace.
     start();
     document.addEventListener('visibilitychange', onVisible);
     addEventListener('focus', onVisible);
     return () => {
       stop();
       if (burst !== null) clearTimeout(burst);
-      feed.listeners.delete(listener);
-      // A mount clears the linger, so it only runs out with nobody listening.
-      if (feed.listeners.size === 0) {
-        feed.linger = setTimeout(() => {
-          feed.linger = null;
-          disconnect();
-        }, LINGER_MS);
-      }
+      unlisten();
       document.removeEventListener('visibilitychange', onVisible);
       removeEventListener('focus', onVisible);
     };
