@@ -871,6 +871,19 @@ function blockedBy(ctx: OperationContext, probe: BlockProbe): BlockRuleRow | und
  * also what lets `harness/inbound.ts` answer Resend a 200 for a mail that will never be
  * accepted instead of asking it to retry forever.
  */
+/**
+ * A model id as a log line may carry it (#1747). `model` is declared as any string, and a
+ * log line is read across every desk that installed the vertical, so only a value SHAPED
+ * like a model id goes out — one token of id characters (`@cf/meta/llama-3.1-8b`,
+ * `openai/gpt-4o-mini`), no spaces, no `@` after the first character, which rules out a
+ * sentence or an address. Anything else is logged as `unrecognised`; the turn row keeps
+ * the value as it came.
+ */
+const MODEL_ID = /^[A-Za-z0-9@][A-Za-z0-9._:/-]{0,99}$/;
+function modelForLog(model: string): string {
+  return MODEL_ID.test(model) ? model : 'unrecognised';
+}
+
 function refuseIfBlocked(ctx: OperationContext, probe: BlockProbe): void {
   const rule = blockedBy(ctx, probe);
   if (rule) {
@@ -4325,7 +4338,7 @@ const operations = {
     answerLog('assistant turn on {conversationId} {outcome} ({model}, {inputTokens} in / {outputTokens} out)', {
       conversationId: conversation.id,
       outcome: input.outcome,
-      model: input.model,
+      model: modelForLog(input.model),
       inputTokens: input.inputTokens,
       outputTokens: input.outputTokens,
     });
@@ -4395,7 +4408,7 @@ const operations = {
     // the conversation back.
     ctx.log.error('assistant could not act on {conversationId} ({model})', {
       conversationId: conversation.id,
-      model: input.model,
+      model: modelForLog(input.model),
     });
     ctx.emit({
       type: 'ticket0.assistant-failed',

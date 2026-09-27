@@ -25,7 +25,7 @@ let host: ScopeHost;
 let desk: Desk;
 const lines: ModuleLogLine[] = [];
 
-type Role = 'admin' | 'agent' | 'relay';
+type Role = 'admin' | 'agent' | 'relay' | 'assistant';
 const at = (role: Role): Promise<ScopeStub> => host.getScope(desk[role].principal, desk.tenant, desk.scope);
 
 /** The lines one operation wrote, in order. */
@@ -120,10 +120,61 @@ describe('ticket0 ctx.log (#1747)', () => {
     });
   });
 
+  // The level IS the pattern's colour and the Requests-style filter, so each outcome's is pinned.
+  it.each([
+    ['drafted', 'info'],
+    ['answered', 'info'],
+    ['escalated', 'warn'],
+    ['failed', 'error'],
+  ] as const)('files an assistant turn that was %s at %s', async (outcome, level) => {
+    const assistant = await at('assistant');
+    await assistant.invoke('ticket0/record-answer', {
+      conversationId,
+      turnId: `turn-${outcome}`,
+      model: 'openai/gpt-4o-mini',
+      body: `A draft for ${NAME}`,
+      inputTokens: 120,
+      outputTokens: 40,
+      citedArticleIds: [],
+      outcome,
+    });
+    expect(linesOf('ticket0/record-answer').at(-1)).toMatchObject({
+      level,
+      template: 'assistant turn on {conversationId} {outcome} ({model}, {inputTokens} in / {outputTokens} out)',
+      fields: { conversationId, outcome, model: 'openai/gpt-4o-mini', inputTokens: 120, outputTokens: 40 },
+    });
+  });
+
+  it('logs a model only when it is shaped like a model id', async () => {
+    const assistant = await at('assistant');
+    await assistant.invoke('ticket0/record-answer', {
+      conversationId,
+      turnId: 'turn-odd-model',
+      model: `${NAME} <${EMAIL}>`,
+      body: 'A draft',
+      inputTokens: 1,
+      outputTokens: 1,
+      citedArticleIds: [],
+      outcome: 'drafted',
+    });
+    expect(linesOf('ticket0/record-answer').at(-1)!.fields['model']).toBe('unrecognised');
+  });
+
   it('writes none of the personal data those calls handled, on any line', () => {
     expect(lines.length).toBeGreaterThan(0);
     const text = JSON.stringify(lines);
-    for (const personal of [EMAIL, NAME, SUBJECT, BODY, 'invoice.pdf', 'private-mail.example', 'spam@junk.example', 'junk.example']) {
+    for (const personal of [
+      EMAIL,
+      NAME,
+      SUBJECT,
+      BODY,
+      'invoice.pdf',
+      'private-mail.example',
+      'spam@junk.example',
+      'junk.example',
+      // The blocked mail's own subject and body.
+      'Buy now',
+    ]) {
       expect(text, personal).not.toContain(personal);
     }
   });
