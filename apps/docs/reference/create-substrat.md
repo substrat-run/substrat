@@ -31,6 +31,7 @@ src/worker.ts          the deployable Cloudflare worker
 src/config-do.ts       the per-instance config store (Cloudflare only)
 test/scenario.test.ts  the scenario, including the denials
 test/entities.test.ts  the entity registry held to the tables its migrations create
+test/setup.ts          the 50-byte LIKE/GLOB pattern limit, on by default (vitest setupFiles)
 ```
 
 `src/operations.ts` is where an operation is declared; `src/module.ts` holds only its body.
