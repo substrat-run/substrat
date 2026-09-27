@@ -81,6 +81,27 @@ export interface Feed {
    * when a person is about to look and a connection is worth an attempt.
    */
   wake(): void;
+  /**
+   * The session is over: close the socket and never open another. A signed-out tab
+   * holding a subscription made for the person who was signed in is exactly what must
+   * not outlive the session, and signing back in is a page load, which makes a new feed.
+   */
+  end(): void;
+}
+
+/**
+ * The client's fetch, ending `feed` on the first 401 it sees. Any read answering 401
+ * means the session this feed was opened for is gone, whichever screen noticed first.
+ */
+export function endingOnUnauthorized<F extends (...args: never[]) => Promise<Response>>(
+  fetchImpl: F,
+  feed: Pick<Feed, 'end'>,
+): F {
+  return (async (...args: Parameters<F>) => {
+    const res = await fetchImpl(...args);
+    if (res.status === 401) feed.end();
+    return res;
+  }) as F;
 }
 
 export function createFeed(deps: FeedDeps): Feed {
@@ -94,6 +115,7 @@ export function createFeed(deps: FeedDeps): Feed {
   let retry: Timer | null = null;
   let linger: Timer | null = null;
   let ping: Timer | null = null;
+  let ended = false;
 
   function setOpen(next: boolean): void {
     if (open === next) return;
@@ -126,7 +148,7 @@ export function createFeed(deps: FeedDeps): Feed {
   }
 
   function connect(): void {
-    if (socket || retry || listeners.size === 0) return;
+    if (ended || socket || retry || listeners.size === 0) return;
     const ws = deps.connect();
     if (!ws) return;
     socket = ws;
@@ -155,14 +177,14 @@ export function createFeed(deps: FeedDeps): Feed {
     };
   }
 
-  function disconnect(): void {
+  function disconnect(reason: string): void {
     if (retry) deps.clearTimeout(retry);
     retry = null;
     const ws = socket;
     if (!ws) return;
     ws.onclose = null;
     teardown();
-    ws.close(1000, 'no screen is listening');
+    ws.close(1000, reason);
   }
 
   return {
@@ -177,17 +199,23 @@ export function createFeed(deps: FeedDeps): Feed {
         if (listeners.size === 0) {
           linger = deps.setTimeout(() => {
             linger = null;
-            disconnect();
+            disconnect('no screen is listening');
           }, FEED_TIMING.lingerMs);
         }
       };
     },
     isOpen: () => open,
     wake() {
-      if (socket || !retry) return;
+      if (ended || socket || !retry) return;
       deps.clearTimeout(retry);
       retry = null;
       connect();
+    },
+    end() {
+      ended = true;
+      if (linger) deps.clearTimeout(linger);
+      linger = null;
+      disconnect('the session ended');
     },
   };
 }

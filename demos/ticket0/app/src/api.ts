@@ -8,6 +8,8 @@
  * there is no header to add, only `credentials` to send it.
  */
 import { ApiError, createClient } from './api.generated.js';
+import { endingOnUnauthorized } from './feed.js';
+import { liveFeed } from './live.js';
 
 export { ApiError };
 export type {
@@ -154,7 +156,12 @@ export const auth = {
 };
 
 export const api = createClient({
-  fetch: (input, init) => fetch(input, { credentials: 'same-origin', ...init }),
+  // A 401 on any read ends the live feed (#938): its socket was opened for the session
+  // that just ended, and must not outlive it.
+  fetch: endingOnUnauthorized(
+    (input: RequestInfo | URL, init?: RequestInit) => fetch(input, { credentials: 'same-origin', ...init }),
+    liveFeed,
+  ),
   errorMessage: problemDetail,
 });
 

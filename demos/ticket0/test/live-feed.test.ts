@@ -4,7 +4,13 @@
  * timing that a browser would take minutes to show.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FEED_TIMING, createFeed, type Feed, type SocketLike } from '../app/src/feed.js';
+import {
+  FEED_TIMING,
+  createFeed,
+  endingOnUnauthorized,
+  type Feed,
+  type SocketLike,
+} from '../app/src/feed.js';
 
 class FakeSocket implements SocketLike {
   onopen: (() => void) | null = null;
@@ -120,5 +126,33 @@ describe('the live feed reconnects', () => {
     latest().drop();
     expect(l.state).toHaveBeenLastCalledWith(false);
     expect(feed.isOpen()).toBe(false);
+  });
+});
+
+describe('the live feed ends with the session', () => {
+  it('closes on the first 401 any read gets, tells its listeners, and never opens again', async () => {
+    const l = listener();
+    feed.listen(l);
+    latest().accept();
+    const read = endingOnUnauthorized(async () => new Response(null, { status: 401 }), feed);
+
+    await read();
+    expect(latest().closed).toBe(true);
+    expect(l.state).toHaveBeenLastCalledWith(false);
+    const after = sockets.length;
+    feed.wake();
+    feed.listen(listener());
+    vi.advanceTimersByTime(FEED_TIMING.restMs * 2);
+    expect(sockets.length).toBe(after);
+  });
+
+  it('leaves the feed alone on any other answer', async () => {
+    feed.listen(listener());
+    latest().accept();
+    for (const status of [200, 403, 404, 500]) {
+      await endingOnUnauthorized(async () => new Response(null, { status }), feed)();
+    }
+    expect(latest().closed).toBe(false);
+    expect(feed.isOpen()).toBe(true);
   });
 });
