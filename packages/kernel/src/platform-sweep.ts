@@ -140,7 +140,14 @@ export interface PlatformSweepOptions {
   drainPlatformRequestsFn?: (
     tenantId: TenantId,
     scopeId: ScopeId,
-  ) => Promise<{ drained: number; done: number; failed: number; pending: number }>;
+  ) => Promise<{
+    drained: number;
+    done: number;
+    failed: number;
+    pending: number;
+    /** No deployment could be reached for this scope, so nothing was drained or counted (#1840). */
+    unreachable?: boolean;
+  }>;
   /**
    * Re-run one scope's provision in the vertical's own deployment (#1172).
    *
@@ -826,6 +833,11 @@ export interface PlatformRequestDrainTotals {
    * Their queues are not in the counts above.
    */
   skipped: number;
+  /**
+   * Active scopes whose drain reported it could reach no deployment for them (#1840) — the
+   * drain fn returned `unreachable: true`. Their queues are not in the counts above either.
+   */
+  unreachable: number;
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -880,7 +892,7 @@ export async function runPlatformSweep(
     snapshotsReaped: 0,
     archivedScopesReaped: 0,
     tenantsReaped: 0,
-    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0 },
+    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0 },
     provisionReconcile: null,
     migrations: null,
     schedules: null,
@@ -1023,6 +1035,7 @@ export async function runPlatformSweep(
       }
       try {
         const r = await drain(s.tenantId, s.id);
+        if (r.unreachable) report.platformRequestTotals.unreachable += 1;
         if (r.drained > 0) report.platformRequestTotals.scopes += 1;
         report.platformRequestTotals.drained += r.drained;
         report.platformRequestTotals.done += r.done;

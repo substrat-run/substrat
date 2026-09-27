@@ -592,7 +592,7 @@ describe('runPlatformSweep', () => {
       },
     });
     expect(drained.sort()).toEqual(scopes.map((s) => s.id).sort());
-    expect(report.platformRequestTotals).toEqual({ scopes: 2, drained: 4, done: 2, failed: 0, pending: 2, skipped: 0 });
+    expect(report.platformRequestTotals).toEqual({ scopes: 2, drained: 4, done: 2, failed: 0, pending: 2, skipped: 0, unreachable: 0 });
   });
 
   it('skips the platform-intent phase entirely when no drain fn is supplied', async () => {
@@ -601,7 +601,7 @@ describe('runPlatformSweep', () => {
       fetch: FETCH,
       sweepers: {},
     });
-    expect(report.platformRequestTotals).toEqual({ scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0 });
+    expect(report.platformRequestTotals).toEqual({ scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0 });
   });
 
   it('records a platform-intent drain failure per-scope and steps over it', async () => {
@@ -619,6 +619,30 @@ describe('runPlatformSweep', () => {
     });
     expect(report.errors.some((e) => e.kind === 'platform-request')).toBe(true);
     expect(report.platformRequestTotals.done).toBe(1); // the other scope still drained
+  });
+
+  it('counts a scope whose drain reached no deployment as unreachable (#1840)', async () => {
+    const scopes = [{ id: sid(), tenantId: T }, { id: sid(), tenantId: T }];
+    const report = await runPlatformSweep(fakeHost({ scopes }), {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      drainPlatformRequestsFn: async (_t, s) =>
+        s === scopes[0]!.id
+          ? { drained: 0, done: 0, failed: 0, pending: 0, unreachable: true }
+          : { drained: 1, done: 0, failed: 0, pending: 1 },
+    });
+    expect(report.platformRequestTotals).toMatchObject({ unreachable: 1, pending: 1, skipped: 0 });
+  });
+
+  it('a drain that reached every scope counts none unreachable — the twin (#1840)', async () => {
+    const report = await runPlatformSweep(fakeHost({ scopes: [{ id: sid(), tenantId: T }] }), {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      drainPlatformRequestsFn: async () => ({ drained: 0, done: 0, failed: 0, pending: 0 }),
+    });
+    expect(report.platformRequestTotals.unreachable).toBe(0);
   });
 
   it('skips revoked connections and providers with no sweeper', async () => {

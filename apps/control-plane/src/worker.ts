@@ -1311,8 +1311,9 @@ export async function reconcileOrUnsupported<T>(call: () => Promise<T>): Promise
  * that drained nothing and wrote nothing would leave an older, larger `pending` standing.
  *
  * `failed` when some active scope's queue is missing from the totals — its drain threw
- * (a `platform-request` error), or the phase stepped over it because its migration failed
- * (`skipped`). The count is then a floor, and the reader says so rather than presenting it as the fleet's whole queue.
+ * (a `platform-request` error), the phase stepped over it because its migration failed
+ * (`skipped`), or no deployment could be reached for it (`unreachable`). The count is then
+ * a floor, and the reader says so rather than presenting it as the fleet's whole queue.
  */
 export function platformRequestSweepRun(report: PlatformSweepReport): SweepRunInput {
   const totals = report.platformRequestTotals;
@@ -1320,6 +1321,7 @@ export function platformRequestSweepRun(report: PlatformSweepReport): SweepRunIn
   const gaps: string[] = [];
   if (undrained > 0) gaps.push(`${undrained} scope drain(s) failed`);
   if (totals.skipped > 0) gaps.push(`${totals.skipped} scope(s) skipped for a failed migration`);
+  if (totals.unreachable > 0) gaps.push(`${totals.unreachable} scope(s) had no reachable deployment`);
   return {
     kind: 'platform-request',
     unit: 'fleet',
@@ -1329,14 +1331,20 @@ export function platformRequestSweepRun(report: PlatformSweepReport): SweepRunIn
   };
 }
 
-async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<PlatformDrainReport> {
+async function drainOneScope(
+  env: Env,
+  t: TenantId,
+  s: ScopeId,
+): Promise<PlatformDrainReport & { unreachable?: boolean }> {
   const empty: PlatformDrainReport = { drained: 0, done: 0, failed: 0, pending: 0 };
   const host = hostFor(env);
   const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
   if (!rec?.vertical) return empty;
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
   const client = await resolveVerticalForScope(rec);
-  if (!client) return empty;
+  // #1840: a vertical scope with no deployment to reach may still hold pending intents —
+  // nothing looked, so the fleet count must not read its zeros as "none waiting".
+  if (!client) return { ...empty, unreachable: true };
   // The managed-tenant capability (#412/#444): who may create tenants is the registry's
   // `tenantProvisioner` flag — a staff grant read by admitManager at drain time. The
   // handlers are ALWAYS registered: an ungranted vertical's refusal settles `failed`

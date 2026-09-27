@@ -40,6 +40,7 @@ describe('the scheduled pass records the drain as a platform-request row (#1840)
       failed: expect.any(Number),
       pending: expect.any(Number),
       skipped: expect.any(Number),
+      unreachable: expect.any(Number),
     });
 
     // A second pass writes a second row — an idle pass included, or an older count would
@@ -52,7 +53,7 @@ describe('the scheduled pass records the drain as a platform-request row (#1840)
 });
 
 describe('platformRequestSweepRun (#1840)', () => {
-  const totals = { scopes: 2, drained: 6, done: 3, failed: 1, pending: 2, skipped: 0 };
+  const totals = { scopes: 2, drained: 6, done: 3, failed: 1, pending: 2, skipped: 0, unreachable: 0 };
   const report = (over: Partial<PlatformSweepReport> = {}): PlatformSweepReport =>
     ({ platformRequestTotals: totals, errors: [], migrations: null, ...over }) as PlatformSweepReport;
 
@@ -84,6 +85,12 @@ describe('platformRequestSweepRun (#1840)', () => {
       report({ migrations: { failed: 1 } as PlatformSweepReport['migrations'], platformRequestTotals: { ...totals, skipped: 0 } })
     );
     expect(run.outcome).toBe('ok');
+  });
+
+  it('a scope with no reachable deployment makes the count a floor, and says why', () => {
+    const run = platformRequestSweepRun(report({ platformRequestTotals: { ...totals, unreachable: 2 } }));
+    expect(run.outcome).toBe('failed');
+    expect(run.error).toMatch(/2 scope\(s\) had no reachable deployment/);
   });
 
   it("another phase's error does not — it says nothing about the drain's reach", () => {
