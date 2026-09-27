@@ -165,7 +165,7 @@ describe('entityObjectRef: the write-side check (#1856)', () => {
   });
 
   it('names both halves when both are wrong', () => {
-    expect(refused('a b', '').extensions?.errors?.map((e) => e.path)).toEqual(['entityType', 'entityId']);
+    expect(refused('a b', '')?.extensions?.errors?.map((e) => e.path)).toEqual(['entityType', 'entityId']);
   });
 
   it('refuses nothing the walk could read back and splits to the same ref', () => {

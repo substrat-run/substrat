@@ -422,6 +422,45 @@ export function permissionContractSuite(
           }),
         ).resolves.toEqual({ revoked: true });
       });
+
+      /**
+       * The positive twin of the pin above: a malformed grant that is ALREADY stored is
+       * actually removed by `ctx.revoke`. No write verb can store one any more, so it is
+       * planted the way stored data from before this change would arrive: a restore, which
+       * replays spine rows verbatim.
+       *
+       * Before the revoke, a check that reaches the stored grant throws, because the walk
+       * refuses to parse `item:t 1`. That was also true before #1856, and it is pinned here
+       * to show the stored row is read exactly as it was. After the revoke the same check
+       * denies.
+       */
+      it('ctx.revoke removes a malformed grant restored from before, and the check then denies', async () => {
+        const s3 = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s3, vertical: 'perm-vertical' });
+        await host.admin.activateScope(staff, t1, s3);
+        const backup = await host.admin.exportScope(staff, t1, s3);
+        const tuples = backup.tables.find((t) => t.name === '_substrat_tuples');
+        // Without the table in the export this would plant nothing and pass vacuously.
+        expect(tuples).toBeDefined();
+        const planted = { subject: `principal:${gus}`, relation: `granted:${PERM_USE}`, object: 'item:t 1' };
+        await host.restoreScope(staff, t1, s3, {
+          ...backup,
+          tables: backup.tables.map((t) =>
+            t === tuples
+              ? { ...t, rows: [...t.rows, t.columns.map((c) => (planted as Record<string, unknown>)[c] ?? null)] }
+              : t,
+          ),
+        });
+        const malformed = { entityType: 'item', entityId: 't 1' };
+
+        await expect(probe(gus, s3, PERM_USE, malformed)).rejects.toThrow();
+
+        const stub = await host.getScope(alice, t1, s3);
+        await expect(
+          stub.invoke('perm/unshare', { principal: gus, permission: PERM_USE, entity: malformed }),
+        ).resolves.toEqual({ revoked: true });
+        await expect(probe(gus, s3, PERM_USE, malformed)).resolves.toMatchObject({ allowed: false });
+      });
     });
 
     it('expired grants are dead', async () => {
