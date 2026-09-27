@@ -1,5 +1,5 @@
 ---
-'@substrat-run/contracts': patch
+'@substrat-run/contracts': minor
 '@substrat-run/kernel': patch
 '@substrat-run/adapter-sqlite': patch
 '@substrat-run/adapter-cloudflare': patch
