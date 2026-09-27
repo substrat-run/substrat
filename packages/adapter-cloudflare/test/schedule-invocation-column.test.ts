@@ -13,13 +13,11 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { moduleId, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { scheduleMod } from '@substrat-run/contract-tests';
+import { scheduleMod, ULID_SHAPE } from '@substrat-run/contract-tests';
 import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
 
-// Crockford base32, 26 chars — the shape a minted `ulid()` always has.
-const ULID_SHAPE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const SCHED = moduleId.parse('@test/sched');
 
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));

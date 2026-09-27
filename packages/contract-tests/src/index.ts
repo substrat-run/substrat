@@ -14,7 +14,7 @@ export { concurrencyContractSuite } from './concurrency-suite.js';
 export { emittedReportContractSuite } from './emitted-suite.js';
 export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';
-export { scheduleContractSuite } from './schedule-suite.js';
+export { scheduleContractSuite, ULID_SHAPE } from './schedule-suite.js';
 export { jobRunContractSuite } from './job-run-suite.js';
 export { systemSwitchContractSuite } from './system-switch-suite.js';
 export {

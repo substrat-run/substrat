@@ -6,7 +6,10 @@ import { scheduleMod } from './modules.js';
 
 const SCHED_MODULE = moduleId.parse('@test/sched');
 // Crockford base32, 26 chars — the shape a minted `ulid()` always has (#1525).
-const ULID_SHAPE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+// Exported so a dedicated adapter test proving the same column on a real Durable
+// Object (packages/adapter-cloudflare/test/schedule-invocation-column.test.ts) checks
+// against the identical pattern rather than a second copy of it.
+export const ULID_SHAPE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 // Never called: the sweep runs no connector sweepers here. A throwing stub proves it.
 const noFetch = (() => {
   throw new Error('fetch should not be called by the schedule phase');
@@ -183,6 +186,11 @@ export function scheduleContractSuite(
      * Proof that the ALTER ran, not asserted separately: `sched/schedule-state`
      * selects `invocation_id` by name, so a store still missing the column would
      * throw `no such column` here rather than read one back.
+     *
+     * Also a `restoreScope` — SECOND-to-last rather than last only because the final
+     * test below needs to be the true last one (see its own comment). A test inserted
+     * BETWEEN this one and that one would read this restore's leftovers, not the
+     * scope `beforeAll` provisioned; keep this one immediately before it.
      */
     it('ALTERs invocation_id into a store that already has kind, and the next fired schedule records it', async () => {
       const dump = await host.admin.exportScope(staff, t, s);
