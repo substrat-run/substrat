@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { platformRequestBacklog, sweepRunEntry, sweepRunsPayload } from '../src/index.js';
+import { platformRequestBacklog, sweepRunEntry, sweepRunKind, sweepRunsPayload } from '../src/index.js';
 
 /**
  * #1840 — the platform-intent drain's fleet-wide sweep row. Its `pending` is what the
@@ -29,6 +29,50 @@ describe('sweep runs: the fleet drain row is the platform\'s, never a scope batc
       ],
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+/**
+ * #1851 — the refusal is an ALLOWLIST (schedule, freshness), not a list of the three kinds
+ * known at the time: every other member of sweepRunKind is refused, including one added to
+ * the enum after this test was written, so a sixth kind is refused by default rather than
+ * silently accepted from a scope batch.
+ */
+describe('sweep runs payload: only schedule and freshness entries are accepted (#1851)', () => {
+  const at = '2026-09-27T00:00:00.000Z';
+
+  const entryFor = (kind: string) => {
+    if (kind === 'schedule') return { kind, operation: 'm/tick', outcome: 'ok', at };
+    if (kind === 'freshness') return { kind, eventType: 'm/event', outcome: 'ok', at };
+    return { kind, outcome: 'ok', at };
+  };
+
+  for (const kind of sweepRunKind.options) {
+    if (kind === 'schedule' || kind === 'freshness') continue;
+
+    it(`refuses a scope-drained ${kind} entry`, () => {
+      const parsed = sweepRunsPayload.safeParse({ version: null, entries: [entryFor(kind)] });
+      expect(parsed.success).toBe(false);
+    });
+  }
+
+  it('refuses a mixed batch of one refused kind alongside an otherwise-valid entry — the whole batch is refused', () => {
+    const refused = sweepRunKind.options.find((kind) => kind !== 'schedule' && kind !== 'freshness')!;
+    const parsed = sweepRunsPayload.safeParse({
+      version: null,
+      entries: [entryFor(refused), entryFor('freshness')],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('a schedule-only batch parses', () => {
+    const parsed = sweepRunsPayload.safeParse({ version: null, entries: [entryFor('schedule')] });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('a freshness-only batch parses', () => {
+    const parsed = sweepRunsPayload.safeParse({ version: null, entries: [entryFor('freshness')] });
+    expect(parsed.success).toBe(true);
   });
 });
 
