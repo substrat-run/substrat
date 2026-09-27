@@ -39,7 +39,19 @@ import Database from 'better-sqlite3';
 const LIMIT = 50;
 const MESSAGE = 'LIKE or GLOB pattern too complex';
 
-const seen = new WeakSet<Database.Database>();
+// A repo test file sometimes imports this module from SOURCE (`../src/testing.js`, vitest
+// transforms it on the fly) while a consumer's setupFiles reaches it from the exports map,
+// which resolves the BUILT `dist/testing.js` — two distinct module evaluations, each with its
+// own closure, patching the SAME native `Database.prototype`. Only the first one to run wins
+// the `__likePatternLimit` guard below and becomes the active `prepare`/`exec` patcher; a
+// `seen` WeakSet scoped to this module's own closure would then desync from whichever instance
+// is active — `liftLimit` called on the non-active instance would mark a connection in a
+// WeakSet nobody's `install()` ever reads, and the active instance's own `install()` would
+// re-limit it on the very next `prepare()`. A well-known `Symbol.for` key on the shared
+// prototype object is what makes the two instances agree regardless of which one is active.
+const SEEN = Symbol.for('substrat.adapter-sqlite.testing.seen');
+const protoRegistry = Database.prototype as unknown as { [SEEN]?: WeakSet<Database.Database> };
+const seen = protoRegistry[SEEN] ?? (protoRegistry[SEEN] = new WeakSet<Database.Database>());
 const scratch = new Database(':memory:');
 seen.add(scratch);
 const pristine = {
