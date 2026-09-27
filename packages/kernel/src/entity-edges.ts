@@ -7,6 +7,7 @@ import {
   type EntityRef,
   type Instant,
 } from '@substrat-run/contracts';
+import { liveTupleSql } from './permission-eval.js';
 import type { OperationContext, ScopedSql } from './scope-host.js';
 
 /**
@@ -78,11 +79,10 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
       // whether or not its relation is still declared, so an edge that grants must stay
       // movable. What `from` must be is an edge that exists.
       assertDeclared('ctx.relink', child, to);
-      // The walk's own `live` predicate (permission-eval.ts), as SQL — here and in the CTE.
+      // The walk's own `live` predicate, so "is a parent" means what a check means by it.
       const live = deps.sql.query(
         `SELECT 1 AS live FROM _substrat_tuples
-         WHERE subject = ? AND relation = 'parent' AND object = ?
-           AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+         WHERE subject = ? AND relation = 'parent' AND object = ? AND ${liveTupleSql()}`,
         [c, f, deps.now],
       );
       if (live.length === 0) {
@@ -100,8 +100,7 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
            SELECT ?
            UNION
            SELECT e.object FROM _substrat_tuples e JOIN up ON e.subject = up.ref
-           WHERE e.relation = 'parent' AND e.revoked_at IS NULL
-             AND (e.expires_at IS NULL OR e.expires_at > ?)
+           WHERE e.relation = 'parent' AND ${liveTupleSql('e')}
          )
          SELECT 1 AS hit FROM up WHERE ref = ? LIMIT 1`,
         [t, deps.now, c],
@@ -120,12 +119,13 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
         [deps.now, c, f],
       );
       writeEdge(c, t);
+      const payload = entityRelinkedPayload.parse({ child, from, to }); // strips extra keys
       deps.emit({
         type: ENTITY_RELINKED,
         schemaVersion: 1,
-        entity: { entityType: child.entityType, entityId: child.entityId },
+        entity: payload.child,
         piiClass: 'none',
-        payload: entityRelinkedPayload.parse({ child, from, to }),
+        payload,
       });
     },
   };

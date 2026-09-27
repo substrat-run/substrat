@@ -657,14 +657,6 @@ const linkUndeclared: OperationHandler<undefined, void> = (ctx) => {
 
 type Move = { child: EntityRef; from: EntityRef; to: EntityRef };
 
-const linkEdge: OperationHandler<{ child: EntityRef; parent: EntityRef }, void> = (ctx, input) => {
-  ctx.link(input.child, input.parent);
-};
-
-const moveEdge: OperationHandler<Move, void> = (ctx, input) => {
-  ctx.relink(input.child, input.from, input.to);
-};
-
 /** The move lands, then the operation fails: nothing of it may survive. */
 const moveThenThrow: OperationHandler<Move, void> = (ctx, input) => {
   ctx.relink(input.child, input.from, input.to);
@@ -1179,8 +1171,8 @@ export const testMod: ModuleRegistration = {
     'testmod/relink': relinkItem as OperationHandler<never, unknown>,
     'testmod/link-undeclared': linkUndeclared as OperationHandler<never, unknown>,
     // #1864 — ctx.relink.
-    'testmod/link': linkEdge as OperationHandler<never, unknown>,
-    'testmod/move': moveEdge as OperationHandler<never, unknown>,
+    'testmod/link': linkOp as OperationHandler<never, unknown>,
+    'testmod/move': relinkOp as OperationHandler<never, unknown>,
     'testmod/move-then-throw': moveThenThrow as OperationHandler<never, unknown>,
     'testmod/move-in-caught-atomic': moveInCaughtAtomic as OperationHandler<never, unknown>,
     'testmod/read-edges': readEdges as OperationHandler<never, unknown>,
