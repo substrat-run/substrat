@@ -1,5 +1,21 @@
 # @substrat-run/template-check
 
+## 0.0.40
+
+### Patch Changes
+
+- Updated dependencies [e8d4860]
+- Updated dependencies [9ebacee]
+- Updated dependencies [a3be733]
+  - @substrat-run/contracts@0.125.0
+  - @substrat-run/kernel@0.125.0
+  - @substrat-run/adapter-sqlite@0.125.0
+  - @substrat-run/adapter-cloudflare@0.125.0
+  - @substrat-run/vertical-host@0.125.0
+  - @substrat-run/engine-invoicing@0.11.9
+  - @substrat-run/engine-workorder@0.12.9
+  - @substrat-run/dev-issuer@0.2.7
+
 ## 0.0.39
 
 ### Patch Changes
