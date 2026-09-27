@@ -1095,12 +1095,18 @@ interface ScopeStubRpc {
    *  it always recorded. The reverse skew — a new DO, an old coordinator sending no
    *  kind — hits `kind TEXT NOT NULL` and throws, which is the loud half and is left
    *  loud deliberately: a default here would be the derived-from-the-key guess #1288
-   *  exists to remove. */
+   *  exists to remove.
+   *
+   *  `invocationId` (#1525) is appended for the same positional reason and defaulted
+   *  in the DO, so an old coordinator that sends none records null — honestly, since
+   *  that coordinator minted no id to send. The coordinator passes one only for a
+   *  fired or failed schedule; a freshness verdict invokes nothing, so it has none. */
   recordScheduleRun(
     unit: string,
     at: string,
     status: 'ok' | 'failed' | 'skipped',
     kind: ScheduleStateKind,
+    invocationId?: string | null,
   ): Promise<void>;
   // -- the resumable-run driver's store (#1577). Reads and writes only: every
   //    decision lives in the kernel, which the COORDINATOR drives, so the durable
@@ -3707,10 +3713,14 @@ export class CloudflareScopeHost implements ScopeHost {
         report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
         continue;
       }
+      // #1525: one id for THIS call, minted before the invoke so it is the same id
+      // whether the operation succeeds or throws — an event or a denial the call
+      // produces either way carries it, and so does the row below.
+      const invocationId = ulid();
       let status: 'ok' | 'failed' = 'ok';
       try {
         const scope = await this.getSystemScope(moduleId, tenantId, scopeId);
-        await scope.invoke(schedule.operation, schedule.input);
+        await scope.invoke(schedule.operation, schedule.input, { invocationId });
         report.fired += 1;
       } catch (err) {
         status = 'failed';
@@ -3722,7 +3732,13 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       // #1288: 'schedule', whatever this operation happens to be called — including
       // `freshness:<something>`, which is exactly the row the evaluator no longer eats.
-      await stub.recordScheduleRun(schedule.operation, new Date(now).toISOString(), status, 'schedule');
+      await stub.recordScheduleRun(
+        schedule.operation,
+        new Date(now).toISOString(),
+        status,
+        'schedule',
+        invocationId,
+      );
       report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
     return report;

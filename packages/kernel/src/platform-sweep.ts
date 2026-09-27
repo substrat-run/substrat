@@ -371,6 +371,14 @@ export const SCHEDULE_STATE_DDL = `
     schedule_op TEXT NOT NULL,
     last_run_at TEXT,
     last_status TEXT,
+    -- #1525: the invocation this row's last run happened in, or null. Null is a fact
+    -- here, not a gap: a 'freshness' row never invokes anything (the evaluator only
+    -- records a verdict), a 'schedule' row a pass SKIPPED carries no fresh call to
+    -- attribute and keeps whatever it already held, and a row written before this
+    -- column existed predates the possibility. Only a due schedule's own invoke
+    -- mints one and writes it here, in the same call that stamps it onto whatever
+    -- the operation emits — see runDueSchedules in each adapter.
+    invocation_id TEXT,
     -- The key LEADS with kind, and that is the point of #1288 rather than a tidy-up.
     -- Until it did, the two families were told apart by the spelling of one column:
     -- a freshness key could never LOOK like an operation (an event type has passed
@@ -424,6 +432,9 @@ export const SCHEDULE_STATE_REBUILD = `
     'CREATE TABLE IF NOT EXISTS _substrat_schedule_state',
     'CREATE TABLE _substrat_schedule_state_new',
   )}
+  -- #1525: invocation_id is not in this column list, deliberately — this rebuild runs
+  -- only on a pre-#1288 table, which predates invocation_id too, so there is nothing
+  -- to copy. The new table's default (NULL) is the honest answer for every such row.
   INSERT INTO _substrat_schedule_state_new (kind, schedule_op, last_run_at, last_status)
     SELECT CASE WHEN substr(schedule_op, 1, 10) = 'freshness:' THEN 'freshness' ELSE 'schedule' END,
            schedule_op, last_run_at, last_status

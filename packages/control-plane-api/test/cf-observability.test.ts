@@ -318,3 +318,89 @@ describe('cf observability request reads (#1746)', () => {
     expect(rows[1]).toMatchObject({ level: null, operation: null, eventCount: null, eventTypes: [], entities: [] });
   });
 });
+
+/** #1747: `ctx.log` lines grouped by template — the query, and how its answer is folded. */
+describe('cf observability log patterns (#1747)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const T = '01JZ0000000000000000TEN001';
+  const from = Date.parse('2026-09-27T10:00:00Z');
+  const to = Date.parse('2026-09-27T13:00:00Z');
+  const pt = (groups: Record<string, unknown>, value: number) => ({
+    groups: Object.entries(groups).map(([key, v]) => ({ key, value: v })),
+    value,
+    count: value,
+    interval: 1,
+    sampleInterval: 1,
+  });
+
+  it('groups by template and level in one query, tenant first, and folds counts, levels and buckets', async () => {
+    const bodies: Array<Record<string, any>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: unknown, init: { body?: string }) => {
+        const body = JSON.parse(init.body ?? '{}');
+        bodies.push(body);
+        const grouped = body.parameters.groupBys !== undefined;
+        const result = grouped
+          ? {
+              calculations: [
+                {
+                  aggregates: [
+                    pt({ template: 'reply to {id} bounced', level: 'warn' }, 30),
+                    pt({ template: 'reply to {id} bounced', level: 'error' }, 5),
+                    pt({ template: 'synced {n} rows', level: 'info' }, 50),
+                    // No template: not a ctx.log line, and not a pattern.
+                    pt({ level: 'info' }, 7),
+                  ],
+                  series: [
+                    { time: '2026-09-27T10:00:00Z', data: [pt({ template: 'reply to {id} bounced', level: 'warn' }, 10), pt({ template: 'reply to {id} bounced', level: 'error' }, 5)] },
+                    { time: '2026-09-27T10:06:00Z', data: [pt({ template: 'reply to {id} bounced', level: 'warn' }, 20), pt({ template: 'synced {n} rows', level: 'info' }, 50)] },
+                  ],
+                },
+              ],
+            }
+          : { calculations: [{ aggregates: [pt({}, 100)], series: [] }] };
+        return new Response(JSON.stringify({ success: true, result }), { status: 200 });
+      }),
+    );
+    const out = await reader().tenantLogPatterns!({ tenantId: T, scopeId: '01SCOPE', from, to, buckets: 30, level: ['warn', 'error'] });
+    const grouped = bodies.find((b) => b.parameters.groupBys)!;
+    expect(grouped.parameters.groupBys).toEqual([
+      { type: 'string', value: 'template' },
+      { type: 'string', value: 'level' },
+    ]);
+    expect(grouped.granularity).toBe(30);
+    for (const b of bodies) {
+      expect(b.parameters.filters[0]).toEqual({ key: 'tenantId', operation: 'eq', type: 'string', value: T });
+      expect(b.parameters.filters[1]).toEqual({ key: 'substrat', operation: 'eq', type: 'string', value: 'log' });
+      expect(b.parameters.filters).toContainEqual({ kind: 'group', filterCombination: 'or', filters: [
+        { key: 'level', operation: 'eq', type: 'string', value: 'warn' },
+        { key: 'level', operation: 'eq', type: 'string', value: 'error' },
+      ] });
+    }
+    expect(out.total).toBe(100);
+    expect(out.bucketMs).toBe(6 * 60_000);
+    expect(out.truncated).toBe(false);
+    expect(out.patterns).toEqual([
+      {
+        template: 'synced {n} rows',
+        count: 50,
+        share: 0.5,
+        levels: { debug: 0, info: 50, warn: 0, error: 0 },
+        dominant: 'info',
+        buckets: [{ start: '2026-09-27T10:06:00.000Z', count: 50 }],
+      },
+      {
+        template: 'reply to {id} bounced',
+        count: 35,
+        share: 0.35,
+        levels: { debug: 0, info: 0, warn: 30, error: 5 },
+        dominant: 'warn',
+        buckets: [
+          { start: '2026-09-27T10:00:00.000Z', count: 15 },
+          { start: '2026-09-27T10:06:00.000Z', count: 20 },
+        ],
+      },
+    ]);
+  });
+});

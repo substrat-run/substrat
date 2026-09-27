@@ -3617,22 +3617,29 @@ export function defineScopeDO(
      * `kind` is LAST because this is a positional RPC — see the interface's own note
      * in `host.ts`. An old DO drops a trailing argument; a leading one it binds, and
      * every value after it lands one column to the left, silently.
+     *
+     * `invocationId` (#1525) is appended after `kind` for the same reason and defaulted
+     * to null, so a coordinator that sends none — every freshness verdict, and every
+     * caller predating this argument — records the honest "no call was carried".
      */
     async recordScheduleRun(
       unit: string,
       at: string,
       status: 'ok' | 'failed' | 'skipped',
       kind: ScheduleStateKind,
+      invocationId?: string | null,
     ): Promise<void> {
       this.sql.exec(
-        `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
-           VALUES (?, ?, ?, ?)
+        `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status, invocation_id)
+           VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(kind, schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
-                                                      last_status = excluded.last_status`,
+                                                      last_status = excluded.last_status,
+                                                      invocation_id = excluded.invocation_id`,
         kind,
         unit,
         at,
         status,
+        invocationId ?? null,
       );
     }
 
@@ -4507,6 +4514,11 @@ export function defineScopeDO(
         // #1237: the invocation column on a DO created before it. Nullable, and the
         // null is honestly "none was carried" for every legacy row.
         'ALTER TABLE _substrat_outbox ADD COLUMN invocation_id TEXT',
+        // #1525: the invocation a fired schedule ran in, on a scope DO created before
+        // the column. Nullable, and the null is honestly "no call was carried" for
+        // every legacy row — a past run's id cannot be recovered afterwards, exactly
+        // as the other #1525 columns above argued.
+        'ALTER TABLE _substrat_schedule_state ADD COLUMN invocation_id TEXT',
       ]) {
         try {
           this.sql.exec(alter);

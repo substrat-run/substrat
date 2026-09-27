@@ -4206,10 +4206,14 @@ export class SqliteScopeHost implements ScopeHost {
       }
       // Due — invoke through the system door (a fresh stub per schedule keeps the
       // K-34 authorization accumulator clean, and the door re-checks the scope).
+      // #1525: one id for THIS call, minted before the invoke so it is the same id
+      // whether the operation succeeds or throws — an event or a denial the call
+      // produces either way carries it, and so does the row below.
+      const invocationId = ulid();
       let status: 'ok' | 'failed' = 'ok';
       try {
         const stub = await this.getSystemScope(moduleId, tenantId, scopeId);
-        await stub.invoke(schedule.operation, schedule.input);
+        await stub.invoke(schedule.operation, schedule.input, { invocationId });
         report.fired += 1;
       } catch (err) {
         status = 'failed';
@@ -4224,12 +4228,13 @@ export class SqliteScopeHost implements ScopeHost {
       await rt.actor.turn(() =>
         rt.db
           .prepare(
-            `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
-               VALUES ('schedule', ?, ?, ?)
+            `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status, invocation_id)
+               VALUES ('schedule', ?, ?, ?, ?)
              ON CONFLICT(kind, schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
-                                                          last_status = excluded.last_status`,
+                                                          last_status = excluded.last_status,
+                                                          invocation_id = excluded.invocation_id`,
           )
-          .run(schedule.operation, new Date(now).toISOString(), status),
+          .run(schedule.operation, new Date(now).toISOString(), status, invocationId),
       );
       report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
@@ -10983,6 +10988,14 @@ export class SqliteScopeHost implements ScopeHost {
     // #1288: not an ensureColumn, because `kind` joins the schedule-state PRIMARY KEY
     // and no ALTER can widen a key. Rebuilt instead, from the kernel's statements.
     this.ensureScheduleStateKind(db);
+    // #1525: the invocation a fired schedule ran in, on a scope DB created before the
+    // column. Nullable, and the null is honestly "no call was carried" for every legacy
+    // row — a past run's id cannot be recovered afterwards, exactly as the other #1525
+    // columns above argued. AFTER `ensureScheduleStateKind`, not before: a pre-#1288
+    // table has no `kind` column, and that call's rebuild already recreates the table
+    // from the kernel's (now widened) DDL when it runs — so by the time this ALTER
+    // executes, the table always already has `kind` in its key, never `invocation_id`.
+    this.ensureColumn(db, '_substrat_schedule_state', 'invocation_id', 'invocation_id TEXT');
     // #1237: `readInvocation`'s lookup — WHERE invocation_id = ? ORDER BY id — over an outbox
     // that is never pruned. No index leads with invocation_id, so without this one SQLite
     // walks the PRIMARY KEY from the oldest event until it reaches the call, and reading a
