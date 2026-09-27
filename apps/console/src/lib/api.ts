@@ -38,6 +38,7 @@ import type {
   ImportCursorMove,
   ImportCursorMoved,
   SystemGrantsStatusEntry,
+  SystemSwitchRecord,
   SystemSwitchResult,
   Tenant,
   TenantId,
@@ -248,6 +249,15 @@ export interface OpsFailuresQuery extends PageQuery {
   reference?: string;
   since?: string;
   until?: string;
+}
+
+/** `GET /system-switches` (#1674) — the fleet read of the schedule kill switch. */
+export interface SystemSwitchesQuery extends PageQuery {
+  position?: 'on' | 'off' | 'all';
+  tenantId?: TenantId;
+  scopeId?: ScopeId;
+  moduleId?: ModuleId;
+  vertical?: string;
 }
 
 /** The issues read (#1233). No cursor by design — grouping IS the compression. */
@@ -593,6 +603,12 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // skipped, freshness verdicts. Newest first; 14-day retention.
     listSweepRuns: (q: SweepRunsQuery = {}) =>
       call<Page<SweepRunEntry>>(`/sweep-runs${query({ ...q })}`),
+
+    // The schedule kill-switch fleet read (#1674) — every (tenant, scope, module) the
+    // directory records a switch position for. `position` defaults to `off` server-side:
+    // "what is switched off across the fleet" is the question this read exists to answer.
+    listSystemSwitches: (q: SystemSwitchesQuery = {}) =>
+      call<Page<SystemSwitchRecord>>(`/system-switches${query({ ...q })}`),
 
     // Fleet-wide connection health (#1690) — every tenant's connections with their
     // derived health, refresh-expiry warning, and connector dead letters per provider.

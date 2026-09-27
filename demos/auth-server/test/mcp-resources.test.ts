@@ -414,6 +414,8 @@ describe('what discovery says about resources', () => {
     expect(res.status).toBe(200);
     const doc = (await res.json()) as Record<string, unknown>;
     expect(doc['resource_parameter_supported']).toBe(true);
+    // This runtime serves no token exchange (only the DO does, #1824), so it must not say so.
+    expect(doc['grant_types_supported']).not.toContain('urn:ietf:params:oauth:grant-type:token-exchange');
     // Everything else the plugin said is still there.
     expect(doc['issuer']).toBe(ORIGIN);
     expect(doc['authorization_endpoint']).toBeTruthy();
