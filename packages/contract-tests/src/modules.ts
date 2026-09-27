@@ -2380,6 +2380,55 @@ export const emittedMod: ModuleRegistration = {
   },
 };
 
+// -- #1746/#1747: ctx.log ------------------------------------------------------
+
+export const loggedModManifest = moduleManifest.parse({
+  id: '@test/logged',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [{ key: 'logged:use', description: 'the ctx.log fixture permission' }],
+  events: {
+    emits: [{ type: 'logged.acted', schemaVersion: 1 }],
+    consumes: [{ type: 'logged.acted', schemaVersion: 1 }],
+  },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'logged',
+});
+
+/**
+ * The module the `ctx.log` suite drives. `logged/act` logs, emits, and its consumer logs
+ * again in the same invocation; `logged/fail` logs and then throws, so the suite can show
+ * the line survives the rollback.
+ */
+export const loggedMod: ModuleRegistration = {
+  manifest: loggedModManifest,
+  operations: {
+    'logged/act': ((ctx, input: { ticketId: string }) => {
+      // `tenantId` and `operation` in the fields are the caller's own values: they stay
+      // fields and never replace what the host stamps.
+      ctx.log.info('reply to {ticketId} sent', { ticketId: input.ticketId, tenantId: 'forged', operation: 'forged' });
+      ctx.emit({
+        type: 'logged.acted',
+        schemaVersion: 1,
+        entity: { entityType: 'logged-thing', entityId: input.ticketId },
+        piiClass: 'none',
+        payload: {},
+      });
+      return { ok: true };
+    }) as OperationHandler<never, unknown>,
+    'logged/fail': ((ctx, input: { ticketId: string }) => {
+      ctx.log.error('could not reach {ticketId}', { ticketId: input.ticketId });
+      throw new Error('logged/fail: refused after logging');
+    }) as OperationHandler<never, unknown>,
+  },
+  consumers: {
+    'logged.acted': ((ctx, event) => {
+      ctx.log.warn('saw {type}', { type: event.type });
+    }) as ConsumerHandler,
+  },
+};
+
 export const contractTestModules: ModuleRegistration[] = [
   ...contractTestInitialModules,
   lateMod,
@@ -2408,6 +2457,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // #1746: the emitted-report suite's module. Its consumer reacts only to its own
   // `emitted.touched`, so it is inert for every other suite.
   emittedMod,
+  // #1746/#1747: the ctx.log suite's module. Its consumer reacts only to its own
+  // `logged.acted`, so it is inert for every other suite.
+  loggedMod,
 ];
 
 // -- live reads (#938) -------------------------------------------------------

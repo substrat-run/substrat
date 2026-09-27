@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from 'cloudflare:test';
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
 import { armRewind, holdsStub as holdsOf, landRewind, restartNow } from './pitr-emulation.js';
 import {
@@ -21,7 +21,7 @@ import {
   type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -42,6 +42,7 @@ import {
   timelineContractSuite,
   concurrencyContractSuite,
   emittedReportContractSuite,
+  moduleLogContractSuite,
   idempotencyContractSuite,
   listContractSuite,
   permMod,
@@ -4121,4 +4122,34 @@ emittedReportContractSuite('adapter-cloudflare', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };
+});
+
+// #1746/#1747: ctx.log inside the DO. There is no sink option to reach — workerd builds the
+// DO — so the lines are read where a deployment's log platform reads them: the console.
+moduleLogContractSuite('adapter-cloudflare', async () => {
+  const lines: ModuleLogLine[] = [];
+  const capture = (text: unknown) => {
+    if (typeof text !== 'string' || !text.startsWith('{"substrat":"log"')) return false;
+    lines.push(JSON.parse(text) as ModuleLogLine);
+    return true;
+  };
+  const spies = (['log', 'warn', 'error', 'debug'] as const).map((m) => {
+    const original = console[m].bind(console);
+    return vi.spyOn(console, m).mockImplementation((...args: unknown[]) => {
+      if (!capture(args[0])) original(...args);
+    });
+  });
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    logs: () => lines,
+    cleanup: async () => {
+      for (const s of spies) s.mockRestore();
+      await host.close();
+    },
+  };
 });

@@ -1,3 +1,4 @@
+import type { ModuleLog } from './module-log.js';
 import type {
   ExportReadInput,
   ExportedBatch,
@@ -276,6 +277,20 @@ export interface OperationContext {
    * but only on the pure one can a test reach the transition without waiting for it.
    */
   now(): Instant;
+  /**
+   * The structured logger (#1746, #1747). One line per call, stamped by the host with the
+   * tenant, scope, operation, invocation and who the code ran as, and carrying the
+   * TEMPLATE it was written from, so every line from one call site groups as one pattern:
+   *
+   * ```ts
+   * ctx.log.warn('reply to {ticketId} bounced: {reason}', { ticketId, reason });
+   * ```
+   *
+   * Keep the template a constant and put the values in `fields`; a template built from
+   * values makes every line its own pattern. Not transactional: a line is written even when
+   * the operation later rolls back, and a call never throws (`module-log.ts` says why).
+   */
+  readonly log: ModuleLog;
   /** Envelope is stamped kernel-side (id, occurredAt, tenant, scope, actor); input is validated. */
   emit(event: DomainEventInput): void;
   /**
