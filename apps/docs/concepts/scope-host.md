@@ -322,18 +322,27 @@ A scope's database is a Durable Object's SQLite when deployed and `better-sqlite
 and the Durable Object's build sets four limits far below stock SQLite's. Left alone, a statement
 over one would run in every local test and fail on the first deployed call, so **the node adapter
 enforces the first three of these on `ctx.sql`** and refuses with the Durable Object's own
-message. Your suite sees what production sees for them, and only the fourth can still pass locally
-and fail once deployed. The `LIKE`/`GLOB` pattern limit is **not** enforced by the adapter: node's SQLite allows 50 000 bytes, and this repository's own suites emulate the limit
-with a test preload (`tools/vitest/like-pattern-limit.cjs`) that a vertical's suite does not get.
-Enforcing it in the adapter would replace SQLite's `like()` on every connection, a JavaScript call
-per row and no `LIKE` prefix index for self-hosters. Bound the pattern yourself (below).
+message. Your suite sees what production sees for them, and the fourth needs one line in your
+own test setup to see the same thing. The `LIKE`/`GLOB` pattern limit is **not** enforced by the
+adapter itself: node's SQLite allows 50 000 bytes, and enforcing it there would replace SQLite's
+`like()` on every connection in production — a JavaScript call per row and no `LIKE` prefix index
+for self-hosters. Instead, `@substrat-run/adapter-sqlite/testing` is the same patch as an opt-in
+test-only helper: add it to your `vitest.config.ts`'s `setupFiles` (on by default in a scaffold
+from `npm create substrat`) and your suite refuses a pattern a Durable Object would too:
+
+```ts
+// vitest.config.ts
+export default defineConfig({ test: { setupFiles: ['@substrat-run/adapter-sqlite/testing'] } });
+```
+
+Bound the pattern yourself either way (below) — the helper catches a regression, it does not fix one.
 
 | Limit | Value | The refusal |
 |---|---|---|
 | Terms in one compound `SELECT` (`UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`) | **5** | `too many terms in compound SELECT` |
 | Bound parameters in one statement | **100** | `too many SQL variables at offset N` (`variable number must be between ?1 and ?100` for `?101`) |
 | Statement length | **100 000 bytes** (UTF-8, the whole string) | `statement too long` |
-| `LIKE` / `GLOB` pattern length | **50 bytes** (UTF-8), not adapter-enforced | `LIKE or GLOB pattern too complex` |
+| `LIKE` / `GLOB` pattern length | **50 bytes** (UTF-8), not adapter-enforced — opt in with `@substrat-run/adapter-sqlite/testing` | `LIKE or GLOB pattern too complex` |
 
 These are measured against a real Durable Object, not read from documentation
 (`packages/adapter-cloudflare/test/do-sql-limits.test.ts`), and exported as `DO_SQL_LIMITS`
