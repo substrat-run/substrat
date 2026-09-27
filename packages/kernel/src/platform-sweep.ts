@@ -821,6 +821,11 @@ export interface PlatformRequestDrainTotals {
   failed: number;
   /** Left pending for a later drain (transient failure). */
   pending: number;
+  /**
+   * Active scopes the phase stepped over because their migration failed this pass (#1840).
+   * Their queues are not in the counts above.
+   */
+  skipped: number;
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -875,7 +880,7 @@ export async function runPlatformSweep(
     snapshotsReaped: 0,
     archivedScopesReaped: 0,
     tenantsReaped: 0,
-    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0 },
+    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0 },
     provisionReconcile: null,
     migrations: null,
     schedules: null,
@@ -1012,7 +1017,10 @@ export async function runPlatformSweep(
     const drain = options.drainPlatformRequestsFn;
     const scopes = await host.admin.listScopes(options.actor, { status: 'active' });
     await mapBounded(scopes, concurrency, async (s) => {
-      if (failedThisPass.has(s.id)) return;
+      if (failedThisPass.has(s.id)) {
+        report.platformRequestTotals.skipped += 1;
+        return;
+      }
       try {
         const r = await drain(s.tenantId, s.id);
         if (r.drained > 0) report.platformRequestTotals.scopes += 1;

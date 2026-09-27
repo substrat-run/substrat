@@ -40,12 +40,12 @@ describe('sweepRunEntry.platformRequests (#1840)', () => {
   };
 
   it('carries the totals on a platform-request row', () => {
-    const totals = { scopes: 2, drained: 5, done: 3, failed: 0, pending: 2 };
+    const totals = { scopes: 2, drained: 5, done: 3, failed: 0, pending: 2, skipped: 0 };
     expect(sweepRunEntry.parse({ ...base, kind: 'platform-request', platformRequests: totals }).platformRequests).toEqual(totals);
   });
 
   it('refuses a negative count — the column is parsed, not trusted', () => {
-    const totals = { scopes: 0, drained: 0, done: 0, failed: 0, pending: -1 };
+    const totals = { scopes: 0, drained: 0, done: 0, failed: 0, pending: -1, skipped: 0 };
     expect(sweepRunEntry.safeParse({ ...base, kind: 'platform-request', platformRequests: totals }).success).toBe(false);
   });
 

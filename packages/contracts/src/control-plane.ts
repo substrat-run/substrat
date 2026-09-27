@@ -727,7 +727,8 @@ export type SweepRunOutcome = z.infer<typeof sweepRunOutcome>;
  * (#1840) — the kernel's `PlatformRequestDrainTotals`, as a `platform-request` sweep
  * row carries it. `pending` is what was still pending in those scopes when the pass
  * finished with them: an intent a thrown handler left for the next pass. A scope whose
- * drain could not run at all counts nothing here, so the row says so in its `outcome`.
+ * drain could not run at all counts nothing in those four; `skipped` says how many were
+ * stepped over, and the row's `outcome` says the count is a floor.
  */
 export const platformRequestDrainTotals = z.object({
   /** Active scopes that had at least one intent drained. */
@@ -737,6 +738,8 @@ export const platformRequestDrainTotals = z.object({
   done: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
   pending: z.number().int().nonnegative(),
+  /** Active scopes stepped over for a failed migration — their queues are not counted. */
+  skipped: z.number().int().nonnegative(),
 });
 export type PlatformRequestDrainTotalsEntry = z.infer<typeof platformRequestDrainTotals>;
 

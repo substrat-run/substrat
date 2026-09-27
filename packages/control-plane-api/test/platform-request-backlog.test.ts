@@ -127,7 +127,7 @@ describe('GET /platform-requests/backlog (#1690)', () => {
         unit: 'fleet',
         outcome,
         error: outcome === 'ok' ? null : '1 scope drain(s) failed — their queues are not in these totals',
-        platformRequests: { scopes: 1, drained: pending + 1, done: 1, failed: 0, pending },
+        platformRequests: { scopes: 1, drained: pending + 1, done: 1, failed: 0, pending, skipped: 0 },
         at,
       });
     // Recent enough to outlive the sweep record's retention prune, ascending.

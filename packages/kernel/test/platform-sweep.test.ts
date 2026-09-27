@@ -592,7 +592,7 @@ describe('runPlatformSweep', () => {
       },
     });
     expect(drained.sort()).toEqual(scopes.map((s) => s.id).sort());
-    expect(report.platformRequestTotals).toEqual({ scopes: 2, drained: 4, done: 2, failed: 0, pending: 2 });
+    expect(report.platformRequestTotals).toEqual({ scopes: 2, drained: 4, done: 2, failed: 0, pending: 2, skipped: 0 });
   });
 
   it('skips the platform-intent phase entirely when no drain fn is supplied', async () => {
@@ -601,7 +601,7 @@ describe('runPlatformSweep', () => {
       fetch: FETCH,
       sweepers: {},
     });
-    expect(report.platformRequestTotals).toEqual({ scopes: 0, drained: 0, done: 0, failed: 0, pending: 0 });
+    expect(report.platformRequestTotals).toEqual({ scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0 });
   });
 
   it('records a platform-intent drain failure per-scope and steps over it', async () => {
@@ -882,6 +882,44 @@ describe('runPlatformSweep — migration reconciliation (§5.3, #49)', () => {
     });
     await run(host);
     expect(drained).toEqual([healthy.id]);
+  });
+
+  /**
+   * #1840: the platform-intent drain says how many ACTIVE scopes it stepped over, so the
+   * fleet pending count can say it is a floor. Counted where it steps over them — not from
+   * `migrations.failed`, whose fleet also holds `provisioning` scopes the drain never visits.
+   */
+  describe('the platform-intent drain counts what it stepped over (#1840)', () => {
+    const hostOf = (scopes: Scope[]): ScopeHost => {
+      const base = migHost({
+        frontier: 1,
+        scopes,
+        migrateScope: async () => ({ status: 'failed', failure: { version: '@v/m@0002-broken', error: 'boom' } }),
+      });
+      // The drain lists `status: 'active'` — honour the filter, as a real directory does.
+      return {
+        ...base,
+        admin: {
+          ...base.admin,
+          listScopes: async (_a: unknown, f?: { status?: string | string[] }) =>
+            f?.status ? scopes.filter((s) => [f.status].flat().includes(s.status)) : scopes,
+        },
+      } as unknown as ScopeHost;
+    };
+    const drain = async () => ({ drained: 0, done: 0, failed: 0, pending: 0 });
+
+    it('an active scope whose migration failed is counted as skipped', async () => {
+      const broken = row({ schemaVersion: '0', migrationFailure: failed(1, LONG_AGO) });
+      const report = await run(hostOf([broken, row({ schemaVersion: '1' })]), { drainPlatformRequestsFn: drain });
+      expect(report.platformRequestTotals.skipped).toBe(1);
+    });
+
+    it('a failed PROVISIONING scope is not — the drain never visits it, so nothing is missing', async () => {
+      const provisioning = row({ status: 'provisioning', schemaVersion: '0', migrationFailure: failed(1, LONG_AGO) });
+      const report = await run(hostOf([provisioning, row({ schemaVersion: '1' })]), { drainPlatformRequestsFn: drain });
+      expect(report.migrations?.failed).toBe(1); // the old signal would have read this as a gap
+      expect(report.platformRequestTotals.skipped).toBe(0);
+    });
   });
 
   it('backs off: a freshly-failed scope is deferred until its window elapses', async () => {

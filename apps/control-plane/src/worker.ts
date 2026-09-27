@@ -1311,22 +1311,21 @@ export async function reconcileOrUnsupported<T>(call: () => Promise<T>): Promise
  * that drained nothing and wrote nothing would leave an older, larger `pending` standing.
  *
  * `failed` when some active scope's queue is missing from the totals — its drain threw
- * (a `platform-request` error), or the pass skipped it because its migration failed
- * (`migrations.failed`, the scopes the drain steps over). The count is then a floor, and
- * the reader says so rather than presenting it as the fleet's whole queue.
+ * (a `platform-request` error), or the phase stepped over it because its migration failed
+ * (`skipped`). The count is then a floor, and the reader says so rather than presenting it as the fleet's whole queue.
  */
 export function platformRequestSweepRun(report: PlatformSweepReport): SweepRunInput {
+  const totals = report.platformRequestTotals;
   const undrained = report.errors.filter((e) => e.kind === 'platform-request').length;
-  const migrationFailed = report.migrations?.failed ?? 0;
   const gaps: string[] = [];
   if (undrained > 0) gaps.push(`${undrained} scope drain(s) failed`);
-  if (migrationFailed > 0) gaps.push(`${migrationFailed} scope(s) skipped for a failed migration`);
+  if (totals.skipped > 0) gaps.push(`${totals.skipped} scope(s) skipped for a failed migration`);
   return {
     kind: 'platform-request',
     unit: 'fleet',
     outcome: gaps.length > 0 ? 'failed' : 'ok',
     error: gaps.length > 0 ? `${gaps.join('; ')} — their queues are not in these totals` : null,
-    platformRequests: report.platformRequestTotals,
+    platformRequests: totals,
   };
 }
 
