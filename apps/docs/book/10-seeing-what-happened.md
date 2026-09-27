@@ -65,7 +65,14 @@ tenantId, scopeId, vertical, surface
 method, path          // the path only; the query string is dropped, so no OIDC code is logged
 invocationId          // a ULID minted for this request
 status, threw, durationMs
+level                 // error (5xx or a crash), warn (refused), info
+operation, problemCode, principalKind
+eventCount, eventTypes, entities   // what the operation itself emitted
+versionId             // the pushed version that served it
 ```
+
+That makes the line a record of the request as well as its proof of tenancy, and the
+dashboard's Requests view counts and filters it over the whole window.
 
 Workers Logs indexes JSON fields, so `tenantId` becomes a filter. Reading a tenant's logs takes
 two phases. The first finds that tenant's invocation lines. The second uses Cloudflare's own
@@ -83,6 +90,19 @@ Three details come from getting this wrong once:
   as "no traffic on those routes". `lint:invocation-log` checks the *order*, not just that the
   mount exists. The scaffold template ships with the mount in place.
 - **It is not retroactive.** Only versions pushed after a vertical adopted it write lines.
+
+Inside an operation, write your own lines with `ctx.log` rather than `console.log`:
+
+```ts
+ctx.log.warn('reply to {ticketId} bounced: {reason}', { ticketId, reason });
+```
+
+The host stamps that line with the same tenant, scope, operation and invocation id, and with the
+template it was written from. Every line from that call site shares the template whatever the
+values were. Those two facts are what a log read needs to find a line's tenant without
+correlating it, to filter it by operation like a request, and to group lines into patterns
+exactly rather than by guessing which free-text lines look alike. The dashboard's log reads do
+not use them yet; that is the next step.
 
 ## Traces: opt-in, and narrower than the word suggests
 
