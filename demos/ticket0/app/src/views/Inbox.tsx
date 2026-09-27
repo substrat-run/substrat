@@ -46,7 +46,7 @@ import {
 } from '../api.js';
 import { agentName, agents, assignableStaff } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
-import { useLiveReload } from '../live.js';
+import { PACE, useLiveReload } from '../live.js';
 import { SEARCH_MIN, SEARCH_TOO_LONG_HINT, searchRequestFor, searchTermFits } from '../search.js';
 import { slaMissedLabel } from '../sla.js';
 import { Avatar, Empty, OwnerPicker, Priority, StateBadge, Unassigned, ago } from '../ui.js';
@@ -358,7 +358,7 @@ export function Inbox({
     if (loadingMore) return;
     load();
     loadTags();
-  });
+  }, PACE.inbox);
   useEffect(() => {
     void contacts().then(setPeople);
     void agents().then(setStaff);

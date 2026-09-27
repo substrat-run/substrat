@@ -11,10 +11,10 @@
  *   frame names an entity that changed and carries nothing else, and the screen
  *   re-reads through the operation it already calls. So a push can make a screen
  *   current sooner and can never show it something the read would not have.
- * - **A poll**, which stays as the floor. While the socket is open it slows to
- *   `LIVE_FLOOR_MS`, which covers whatever the feed does not announce (a new tag in
- *   the vocabulary, the visitor card) and a frame lost to a dropped connection. With
- *   no socket it runs at the caller's own pace, exactly as it always did. That covers
+ * - **A poll**, which stays as the floor. While the socket is open it runs at the
+ *   screen's `connectedMs` (`PACE` below), which covers whatever the feed does not
+ *   announce (a new tag in the vocabulary, the visitor card) and a frame lost to a
+ *   dropped connection. With no socket it runs at `everyMs`, exactly as it always did. That covers
  *   the dev server, which answers 501 because its host has no live reads, and a
  *   hostname that cannot carry a WebSocket.
  *
@@ -24,6 +24,9 @@
  * while hidden is dropped for the same reason: coming back re-reads anyway.
  */
 import { useEffect, useRef } from 'react';
+import { PACE, pollPace, type Pace } from './pace.js';
+
+export { PACE } from './pace.js';
 
 /** One frame on the feed: the kernel's `LiveChange`, restated for the browser bundle. */
 export interface LiveChange {
@@ -35,8 +38,6 @@ export interface LiveChange {
   at: string;
 }
 
-/** How often a screen still polls while it is being pushed to. */
-export const LIVE_FLOOR_MS = 60_000;
 /** Consecutive connections that never opened before the feed stops trying. */
 const GIVE_UP_AFTER = 3;
 /** Keeps an idle socket from being closed as idle; the scope answers `pong`. */
@@ -146,11 +147,12 @@ function disconnect(): void {
  */
 export function useLiveReload(
   reload: () => void,
-  everyMs = 10_000,
+  pace: Pace = PACE.inbox,
   hears: (change: LiveChange) => boolean = () => true,
 ): void {
   // Kept in refs so a caller does not have to memoise its callbacks to avoid
   // restarting the timer (or reconnecting) on every render.
+  const { everyMs, connectedMs } = pace;
   const latest = useRef(reload);
   latest.current = reload;
   const filter = useRef(hears);
@@ -165,8 +167,8 @@ export function useLiveReload(
     };
     const start = () => {
       stop();
-      const pace = feed.open ? Math.max(everyMs, LIVE_FLOOR_MS) : everyMs;
-      if (!document.hidden) timer = setInterval(() => latest.current(), pace);
+      const every = pollPace({ everyMs, connectedMs }, feed.open);
+      if (!document.hidden) timer = setInterval(() => latest.current(), every);
     };
     const onVisible = () => {
       if (!document.hidden) latest.current();
@@ -190,7 +192,7 @@ export function useLiveReload(
     feed.linger = null;
     connect();
     // Joining a feed that is already open fires no `state`: this screen's own first load
-    // is what covers the gap, and `start` reads `feed.open` for the slower pace.
+    // is what covers the gap, and `start` reads `feed.open` for the connected pace.
     start();
     document.addEventListener('visibilitychange', onVisible);
     addEventListener('focus', onVisible);
@@ -206,5 +208,5 @@ export function useLiveReload(
       document.removeEventListener('visibilitychange', onVisible);
       removeEventListener('focus', onVisible);
     };
-  }, [everyMs]);
+  }, [everyMs, connectedMs]);
 }

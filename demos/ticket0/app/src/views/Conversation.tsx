@@ -24,7 +24,7 @@ import {
 } from '../api.js';
 import { agentName, agents, assignableStaff } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
-import { useLiveReload } from '../live.js';
+import { PACE, useLiveReload } from '../live.js';
 import { Avatar, EventDivider, OwnerPicker, StateBadge, Unassigned, clock } from '../ui.js';
 
 interface Turn {
@@ -135,7 +135,7 @@ export function ConversationView({
   // count: one extra read is cheaper than a reply that shows up a minute late.
   useLiveReload(
     () => void load(),
-    5000,
+    PACE.conversation,
     (change) => change.entityType !== 'conversation' || change.entityId === id,
   );
 
