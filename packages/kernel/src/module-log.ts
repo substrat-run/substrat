@@ -117,19 +117,20 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-/** A field value as the line carries it: primitives as they are, anything else as text. */
+/**
+ * A field value as the line carries it: primitives as they are, anything else as text.
+ * UNBOUNDED — the caller redacts before it clips (see `moduleLogLine`).
+ */
 function fieldValue(v: unknown): ModuleLogFieldValue {
   if (v === null || typeof v === 'boolean') return v;
   if (typeof v === 'number') return Number.isFinite(v) ? v : String(v);
-  if (typeof v === 'string') return clip(v, MODULE_LOG_LIMITS.value);
+  if (typeof v === 'string') return v;
   if (v === undefined) return null;
-  let text: string;
   try {
-    text = JSON.stringify(v) ?? String(v);
+    return JSON.stringify(v) ?? String(v);
   } catch {
-    text = String(v);
+    return String(v);
   }
-  return clip(text, MODULE_LOG_LIMITS.value);
 }
 
 /**
@@ -166,6 +167,11 @@ export function moduleLogLine(
   given: unknown,
 ): ModuleLogLine {
   const redact = ctx.redact ?? ((t: string) => t);
+  // REDACT FIRST, THEN CLIP — every string, every time. Redaction is an exact match on the
+  // whole secret, so clipping first can cut a secret that straddles a limit down to all but
+  // its last characters, which then no longer matches and is written out. A capability
+  // secret missing one character is a few dozen guesses from the whole one.
+  const full: Record<string, ModuleLogFieldValue> = {};
   const fields: Record<string, ModuleLogFieldValue> = {};
   if (given !== null && typeof given === 'object') {
     let n = 0;
@@ -173,16 +179,20 @@ export function moduleLogLine(
       if (n >= MODULE_LOG_LIMITS.fields) break;
       if (!FIELD_NAME.test(k)) continue;
       const value = fieldValue(v);
-      fields[k] = typeof value === 'string' ? redact(value) : value;
+      full[k] = typeof value === 'string' ? redact(value) : value;
+      fields[k] = typeof full[k] === 'string' ? clip(full[k] as string, MODULE_LOG_LIMITS.value) : full[k]!;
       n += 1;
     }
   }
-  const tpl = redact(clip(typeof template === 'string' ? template : String(template), MODULE_LOG_LIMITS.template));
+  const fullTemplate = redact(typeof template === 'string' ? template : String(template));
+  // Rendered from the redacted, unclipped parts, redacted once more (a secret could be
+  // assembled across a placeholder), and only then bounded.
+  const message = clip(redact(renderTemplate(fullTemplate, full)), MODULE_LOG_LIMITS.message);
   return {
     substrat: 'log',
     level,
-    template: tpl,
-    message: redact(clip(renderTemplate(tpl, fields), MODULE_LOG_LIMITS.message)),
+    template: clip(fullTemplate, MODULE_LOG_LIMITS.template),
+    message,
     fields,
     tenantId: ctx.tenantId,
     scopeId: ctx.scopeId,

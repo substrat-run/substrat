@@ -65,6 +65,20 @@ describe('ctx.log', () => {
     expect(JSON.stringify(lines[0])).not.toContain('sekret');
   });
 
+  it('redacts before it clips, so a secret straddling a limit is never written in part', () => {
+    const secret = 'sbcap_' + 'A'.repeat(43);
+    const redact = (t: string) => redactSecretText(t, [secret]);
+    // The secret starts just inside each limit and would be cut one character short.
+    const field = 'x'.repeat(MODULE_LOG_LIMITS.value - secret.length + 1) + secret + 'y';
+    const template = 't'.repeat(MODULE_LOG_LIMITS.template - secret.length + 1) + secret + '{v}';
+    const line = moduleLogLine({ ...ctx, redact }, 'info', template, { v: field });
+    const text = JSON.stringify(line);
+    // Not the whole secret, and no part a clip could have left behind either.
+    expect(text).not.toContain(secret.slice(0, 12));
+    expect((line.fields['v'] as string).length).toBeLessThanOrEqual(MODULE_LOG_LIMITS.value);
+    expect(line.template.length).toBeLessThanOrEqual(MODULE_LOG_LIMITS.template);
+  });
+
   it('never throws — not for a bad template, bad fields, or a sink that fails', () => {
     const lines: ModuleLogLine[] = [];
     const log = moduleLog(ctx, (l) => lines.push(l));
