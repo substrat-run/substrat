@@ -7266,8 +7266,8 @@ export class CloudflareScopeHost implements ScopeHost {
    * claim would then keep the module off while the directory and the status read both say ON.
    *
    * An OFF that changed the switch JOINS the claims it would not survive (#1839): each claim in S0
-   * that is still pending (inside the bound), or armed with this move's instance as its doomed
-   * one. Those are exactly the rewinds whose restart discards this OFF, and each of them captured
+   * or S1 (below) that is still pending (inside the bound), or armed with this move's instance as
+   * its doomed one. Those are exactly the rewinds whose restart discards this OFF, and each of them captured
    * the module ON. The row takes the claim's state (`switchHoldJoin`, which never recreates a claim
    * with no rows left) and is stamped on the hold object's clock, and
    * a pending claim's rewind then waits for it to be a full settle old (`rewindHolding`). The
