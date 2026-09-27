@@ -13,11 +13,15 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { moduleId, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { scheduleMod, ULID_SHAPE } from '@substrat-run/contract-tests';
+import { scheduleMod } from '@substrat-run/contract-tests';
 import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
 
+// Crockford base32, 26 chars — the shape a minted `ulid()` always has. Declared here
+// rather than imported from `@substrat-run/contract-tests`, which keeps this constant
+// out of that package's published index for the sake of one shared regex.
+const ULID_SHAPE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const SCHED = moduleId.parse('@test/sched');
 
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
@@ -30,15 +34,20 @@ describe('#1525: _substrat_schedule_state ALTERs invocation_id in on a DO create
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
       checker: UNSAFE_allowAllChecker,
     });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const reader = principalId.parse(ulid());
+    // Guards the `finally`'s archive: an assertion above can fail before the scope
+    // exists at all, and archiving one that was never provisioned would throw a
+    // second, unrelated error over the real one.
+    let provisioned = false;
     try {
       host.registerModule(scheduleMod);
-      const staff = platformActorId.parse(ulid());
-      const t = tenantId.parse(ulid());
-      const s = scopeId.parse(ulid());
-      const reader = principalId.parse(ulid());
       await host.admin.createTenant(staff, { id: t, slug: `alter1525-${ulid().toLowerCase()}`, name: 'Alter' });
       await host.admin.grantEntitlement(staff, t, 'sched');
       await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+      provisioned = true;
       await host.admin.activateScope(staff, t, s);
 
       // A fresh `env.SCOPE.get` each time, never a reused reference: `state.abort()`
@@ -97,6 +106,15 @@ describe('#1525: _substrat_schedule_state ALTERs invocation_id in on a DO create
       const firedRow = await readFiredRow();
       expect(firedRow?.invocation_id).toMatch(ULID_SHAPE);
 
+      // Mark the CURRENT instance before evicting it again — proof that what
+      // follows is a genuinely NEW construction, not a no-op retry against the
+      // same live object. `state.abort()` throwing is not itself that proof: a
+      // pool that swallowed it and handed back the same instance would look
+      // identical from the outside.
+      await runInDurableObject(freshStub(), (instance) => {
+        (instance as unknown as { __evictionProbe?: true }).__evictionProbe = true;
+      });
+
       // The SECOND eviction: the next construction re-runs the exact same ALTER
       // against a table that already carries the column — the "duplicate column
       // name" branch `applySpineColumnAdditions` exists to swallow. It must not
@@ -105,17 +123,24 @@ describe('#1525: _substrat_schedule_state ALTERs invocation_id in on a DO create
         state.abort('evicted for #1525 test — second wake');
       }).catch(() => undefined);
 
+      const survivedEviction = await runInDurableObject(
+        freshStub(),
+        (instance) => (instance as unknown as { __evictionProbe?: true }).__evictionProbe,
+      );
+      expect(survivedEviction).toBeUndefined();
+
       await expect(host.getScope(reader, t, s)).resolves.toBeDefined();
       expect((await readFiredRow())?.invocation_id).toBe(firedRow?.invocation_id);
-
-      // Archive before closing: `CONTROL_PLANE` is shared across every test FILE in
-      // this worker (#1591), and `runPlatformSweep` enumerates every ACTIVE scope in
-      // it regardless of which host provisioned one. Left active, this scope's live
-      // `sched:tick` grant would be due again on the next sweep any OTHER suite
-      // runs, inflating counts that assume a closed world — exactly the fired/skipped
-      // totals `schedule-suite.ts` asserts as exact numbers.
-      await host.admin.archiveScope(staff, t, s);
     } finally {
+      // Archive before closing, in `finally` so a failed assertion above still
+      // cleans up: `CONTROL_PLANE` is shared across every test FILE in this worker
+      // (#1591), and `runPlatformSweep` enumerates every ACTIVE scope in it
+      // regardless of which host provisioned one. Left active, this scope's live
+      // `sched:tick` grant would be due again on the next sweep any OTHER suite
+      // runs — including `schedule-suite.ts`'s own — inflating counts asserted as
+      // exact numbers there. Guarded by `provisioned`: archiving a scope that was
+      // never provisioned throws its own error, masking whatever failed above.
+      if (provisioned) await host.admin.archiveScope(staff, t, s);
       await host.close();
     }
   });
