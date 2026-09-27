@@ -170,6 +170,8 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     const baseURL = cfg.PUBLIC_ORIGIN ?? origin;
     const db = drizzle(this.ctx.storage, { schema });
     return buildAuth({
+      // The worker routes the grant here (`routes.ts` → `/__token-exchange`), so discovery says so.
+      servesTokenExchange: true,
       database: drizzleAdapter(db, { provider: 'sqlite', schema }),
       secret: this.authSecret,
       baseURL,

@@ -170,6 +170,14 @@ export interface AuthDeps {
    * runtimes opt in and the tests stay deterministic.
    */
   runInBackground?: (promise: Promise<unknown>) => void;
+  /**
+   * Whether this runtime answers RFC 8693 token exchange at the token endpoint (#1824). The
+   * plugin implements none of it: the worker routes the grant to the Durable Object's
+   * `/__token-exchange`, and the Node dev server mounts nothing (it has no `/internal/configure`,
+   * so no delegation could exist there). Discovery describes the runtime it is served from, so
+   * only the DO sets this, and anything else leaves the grant out of `grant_types_supported`.
+   */
+  servesTokenExchange?: boolean;
 }
 
 /**
@@ -246,7 +254,11 @@ const DISCOVERY_PATH = /\/\.well-known\/(?:openid-configuration|oauth-authorizat
  * `onRequest` response without running any `onResponse`. This wrapper is the one place
  * both runtimes' requests pass through.
  */
-async function advertiseExtensions(request: Request, response: Response): Promise<Response> {
+async function advertiseExtensions(
+  request: Request,
+  response: Response,
+  servesTokenExchange: boolean,
+): Promise<Response> {
   if (request.method !== 'GET' || response.status !== 200) return response;
   if (!DISCOVERY_PATH.test(new URL(request.url).pathname)) return response;
   if (!response.headers.get('content-type')?.includes('json')) return response;
@@ -262,8 +274,10 @@ async function advertiseExtensions(request: Request, response: Response): Promis
   headers.delete('content-length');
   // Token exchange is served beside the plugin (`token-exchange.ts`, dispatched by `routes.ts`),
   // so the plugin's own list cannot know about it.
+  // Only where it is served (`servesTokenExchange`).
   const grants = Array.isArray(document['grant_types_supported']) ? (document['grant_types_supported'] as unknown[]) : [];
-  const grant_types_supported = grants.includes(TOKEN_EXCHANGE_GRANT_TYPE) ? grants : [...grants, TOKEN_EXCHANGE_GRANT_TYPE];
+  const grant_types_supported =
+    !servesTokenExchange || grants.includes(TOKEN_EXCHANGE_GRANT_TYPE) ? grants : [...grants, TOKEN_EXCHANGE_GRANT_TYPE];
   return new Rebuilt(JSON.stringify({ ...document, grant_types_supported, resource_parameter_supported: true }), {
     status: response.status,
     headers,
@@ -275,7 +289,8 @@ export function buildAuth(deps: AuthDeps) {
   const handle = auth.handler;
   // `fetch` is Better Auth's alias for the same function; both are replaced so neither
   // spelling serves a document without the flag.
-  auth.handler = auth.fetch = async (request: Request) => advertiseExtensions(request, await handle(request));
+  auth.handler = auth.fetch = async (request: Request) =>
+    advertiseExtensions(request, await handle(request), deps.servesTokenExchange === true);
   return auth;
 }
 

@@ -498,6 +498,15 @@ describe('token exchange B: the actor asks for a token for the host’s MCP endp
     expect((await stageB(minted)).body['error']).toBe('invalid_grant');
   });
 
+  it('refuses when the actor app has moved to another team since the assertion was minted', async () => {
+    const minted = await assertion();
+    // Same scope, same client, same grant row: only the team changed, which a later
+    // delivery is allowed to do (`syncPlaceRegistrations`).
+    register(TEAM, TEAM_APPS.filter((a) => a.appScopeId !== HELP));
+    register(OTHER_TEAM, [TEAM_APPS[1]!]);
+    expect((await stageB(minted)).body['error']).toBe('invalid_grant');
+  });
+
   it('refuses an assertion addressed to another client, and one presented by the host itself', async () => {
     const minted = await assertion();
     delegate(DESK, [{ actor: HELP, permissions: ['tickets.read'] }, { actor: CRM, permissions: ['tickets.read'] }]);

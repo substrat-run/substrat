@@ -170,13 +170,16 @@ function scopeList(scope: unknown): string[] | null {
   return tokens.length ? [...new Set(tokens)] : null;
 }
 
-/** The platform-registered MCP resources of one app (`resources.ts`). */
-function resourcesOwnedBy(sql: SqlExec, appScopeId: string): string[] {
-  const rows = sql.exec('SELECT identifier, metadata FROM oauth_resource').toArray() as {
-    identifier: string;
-    metadata: unknown;
-  }[];
-  return rows.filter((r) => platformOwnerOf(r.metadata) === appScopeId).map((r) => r.identifier);
+/**
+ * Is `identifier` a platform-registered MCP resource of this app (`resources.ts`)? A point read
+ * on the unique `identifier`, so the token endpoint costs the same however many resources the
+ * issuer holds.
+ */
+function isResourceOf(sql: SqlExec, identifier: string, appScopeId: string): boolean {
+  const row = sql.exec('SELECT metadata FROM oauth_resource WHERE identifier = ?', identifier).toArray()[0] as
+    | { metadata: unknown }
+    | undefined;
+  return row !== undefined && platformOwnerOf(row.metadata) === appScopeId;
 }
 
 /**
@@ -318,7 +321,7 @@ async function assertionFor(
     parties.length > 0
       ? parties.every((p) => p === hostClientId)
       : soleAudience(subject['aud']) === hostClientId ||
-        audiencesOf(subject['aud']).some((a) => resourcesOwnedBy(deps.sql, host.appScopeId).includes(a));
+        audiencesOf(subject['aud']).some((a) => isResourceOf(deps.sql, a, host.appScopeId));
   if (!boundToHost) return refuse('invalid_grant', 'the subject token was not issued to this client');
 
   const actor = registrationOfClient(deps.sql, actorClientId);
@@ -402,6 +405,12 @@ async function accessFor(
   if (!hostNow || hostNow.appScopeId !== delegation.host) {
     return refuse('invalid_grant', 'the app that issued the assertion is no longer bound to it');
   }
+  // And still one team: `syncPlaceRegistrations` lets a later delivery move an app scope to
+  // another tenant, and an assertion minted before the move must not outlive it. Stage A
+  // required the same tenant; this is that check, re-read.
+  if (hostNow.tenantId !== actorNow.tenantId) {
+    return refuse('invalid_grant', 'the delegating app and this client are no longer in one team');
+  }
   // Revocation: the grant as it stands now, not as it stood when the assertion was minted.
   const grant = grantFor(deps.sql, delegation.host, delegation.actor);
   if (!grant) return refuse('invalid_grant', 'the delegation behind this assertion has been revoked');
@@ -417,7 +426,7 @@ async function accessFor(
   if (resources.length > 1) return refuse('invalid_target', 'exactly one resource may be requested');
   const resource = resources[0];
 
-  if (!resourcesOwnedBy(deps.sql, delegation.host).includes(resource)) {
+  if (!isResourceOf(deps.sql, resource, delegation.host)) {
     return refuse('invalid_target', `${resource} is not a resource of the delegating app`);
   }
 
