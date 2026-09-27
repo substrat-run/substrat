@@ -12,6 +12,7 @@ import { Flow } from './Flow';
 import { Pulse } from './Pulse';
 import { EventExplorer, TenantLogs } from './ObservabilityPanels';
 import { RequestsMode } from './RequestsMode';
+import { PatternsMode } from './PatternsMode';
 import { LogStream } from '../components/LogStream';
 import { sectionOf, type ObsSection } from '../lib/obs-sections';
 
@@ -69,7 +70,7 @@ export function Observability({
       from: q.from, to: q.to, hours: q.hours, type: q.type, level: q.level, search: q.search, invocationId: q.invocationId, groupBy: q.groupBy, field: q.field,
       // #1746: the Requests mode's facet filters travel like the other modes' filters, so a
       // tab switch and back finds them where they were.
-      op: q.op, pk: q.pk, code: q.code, lvl: q.lvl, status: q.status, surface: q.surface,
+      op: q.op, pk: q.pk, code: q.code, lvl: q.lvl, status: q.status, surface: q.surface, tpl: q.tpl,
       ...next,
     });
   const [timeError, setTimeError] = useState('');
@@ -97,7 +98,7 @@ export function Observability({
   const app = scopeId ? apps.find((a) => a.app_scope_id === scopeId) : undefined;
   // Which menu child is open (#1767) — derived from the sub-view, never stored beside it.
   const section: ObsSection = sectionOf(view);
-  const logMode = view === 'events' ? 'events' : view === 'requests' ? 'requests' : 'logs';
+  const logMode = view === 'events' ? 'events' : view === 'requests' ? 'requests' : view === 'patterns' ? 'patterns' : 'logs';
   // The app filter narrows or widens the grain and keeps everything else — the window,
   // and the sub-view, which every child can now open in either mode (Logs and Processes
   // ask for an app rather than falling back). A stale invocation filter is dropped: it
@@ -209,6 +210,15 @@ export function Observability({
               onRange={applyWindow}
               // A request opens its own lines, in the window the reader is already looking at.
               onOpenCall={(invocationId) => onNav({ app: scopeId, view: 'logs', invocationId, ...(cursor ?? {}) })}
+            />
+          )}
+          {logMode === 'patterns' && (
+            <PatternsMode
+              scopeId={scopeId}
+              window={panelWindow}
+              nonce={nonce}
+              // A pattern opens its lines, in the window the reader is already looking at.
+              onOpenPattern={(tpl) => onNav({ app: scopeId, view: 'logs', tpl, ...(cursor ?? {}) })}
             />
           )}
           {/* Event filters stay mounted on refresh; snapshot panels refresh by remount. */}

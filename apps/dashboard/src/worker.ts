@@ -4552,6 +4552,8 @@ app.get('/api/apps/:scopeId/observability/logs', async (c) => {
         // Raw, so an empty value reaches the plane and is refused there rather than
         // being read as "no filter" (#1525).
         invocationId: c.req.query('invocationId'),
+        // #1747: one pattern's lines. Raw like the id: an empty one is the plane's 400.
+        template: c.req.query('template'),
         hours: Number.isFinite(hours) ? hours : 24,
         // The chart's time cursor, passed on as the strings they arrived as: the plane
         // is what judges an instant (ISO, ordered, inside the same 72h ceiling `hours`
@@ -4595,6 +4597,26 @@ app.get('/api/apps/:scopeId/observability/requests/:kind', async (c) => {
   const params = REQUEST_READ_KEYS.flatMap((k) => (c.req.queries(k) ?? []).map((v) => [k, v] as const));
   const cp = controlPlaneFor(c.env, node.tenantId);
   return c.json(await cpObservability(() => cp.tenantRequests(kind, appRow.app_scope_id, params)));
+});
+
+/** The query keys the pattern read may pass on (#1747) — as for the request reads above. */
+const LOG_PATTERN_KEYS = ['hours', 'since', 'until', 'level', 'operation', 'buckets'] as const;
+
+/**
+ * ONE app's `ctx.log` lines grouped by template (#1747). The same two narrowings as every
+ * per-app read here: the tenant from the session, the scope from this team's app rows.
+ */
+app.get('/api/apps/:scopeId/observability/log-patterns', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const params = LOG_PATTERN_KEYS.flatMap((k) => (c.req.queries(k) ?? []).map((v) => [k, v] as const));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(await cpObservability(() => cp.tenantLogPatterns(appRow.app_scope_id, params)));
 });
 
 /**

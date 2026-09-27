@@ -23,7 +23,7 @@ export const OBS_SECTIONS: { key: ObsSection; label: string }[] = [
 export const SECTION_VIEWS: Record<ObsSection, readonly string[]> = {
   pulse: ['traffic', 'health', 'schedules'],
   processes: ['flow'],
-  logs: ['logs', 'requests', 'events'],
+  logs: ['logs', 'requests', 'patterns', 'events'],
 };
 
 /** The child a sub-view belongs to. An unknown or absent view is Pulse, the page's default. */

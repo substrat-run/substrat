@@ -45,6 +45,8 @@ export function LogQueryBar({
   const placeholder =
     mode === 'requests'
       ? 'Tick a value in the sidebar or drag across the chart to narrow down'
+      : mode === 'patterns'
+        ? 'Click a pattern to see its lines'
       : mode === 'events'
       ? chips.length
         ? 'Event type…'

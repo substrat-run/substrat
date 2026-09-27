@@ -11,6 +11,8 @@ export function tenantLogsQuery(q: {
   search?: string;
   /** One call's lines (#1525) — narrows within this app, never past it. */
   invocationId?: string;
+  /** #1747: one pattern's lines — a `ctx.log` template, verbatim. */
+  template?: string;
   hours?: number;
   limit?: number;
   /** `since`/`until` are the chart's time cursor — a window ending in the past, which
@@ -22,6 +24,7 @@ export function tenantLogsQuery(q: {
   if (q.level) p.set('level', q.level);
   if (q.search) p.set('search', q.search);
   if (q.invocationId !== undefined) p.set('invocationId', q.invocationId);
+  if (q.template) p.set('template', q.template);
   if (q.hours) p.set('hours', String(q.hours));
   if (q.limit) p.set('limit', String(q.limit));
   if (q.since) p.set('since', q.since);

@@ -92,10 +92,11 @@ describe('the app request reads (#1746)', () => {
           const u = new URL(String(url));
           const path = u.pathname.replace(/^\/api/, '');
           if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
-          if (path.startsWith('/observability/tenant-request')) {
+          if (path.startsWith('/observability/tenant-request') || path === '/observability/tenant-log-patterns' || path === '/observability/tenant-logs') {
             reads.push(u);
             if (u.searchParams.get('hours') === '501') return Response.json({ error: 'not configured' }, { status: 501 });
-            return Response.json({ ok: path });
+            // The log read answers a page of events; the aggregate reads an object.
+            return Response.json(path === '/observability/tenant-logs' ? [] : { ok: path });
           }
           return Response.json({ error: `unexpected ${path}` }, { status: 500 });
         },
@@ -142,5 +143,33 @@ describe('the app request reads (#1746)', () => {
 
   it('passes the plane\'s 501 on as a 501', async () => {
     expect((await read(appScope, 'volume', '?hours=501')).status).toBe(501);
+  });
+
+  // #1747: the pattern read, and one pattern's lines.
+  it('reaches the pattern read with its filters, the tenant and scope pinned', async () => {
+    const res = await app.request(
+      `/api/apps/${appScope}/observability/log-patterns?hours=3&level=debug&level=error&operation=acme%2Freply&buckets=30&tenantId=${tenantId.parse(ulid())}`,
+      { headers: { cookie: 'sb_session=sub-owner' } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const ask = reads.at(-1)!;
+    expect(ask.pathname).toBe('/api/observability/tenant-log-patterns');
+    expect(ask.searchParams.getAll('level')).toEqual(['debug', 'error']);
+    expect(ask.searchParams.get('buckets')).toBe('30');
+    expect(ask.searchParams.getAll('tenantId')).toEqual([tenant]);
+    expect(ask.searchParams.getAll('scopeId')).toEqual([appScope]);
+    expect((await app.request(`/api/apps/${scopeId.parse(ulid())}/observability/log-patterns`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
+  });
+
+  it('passes a template to the log read', async () => {
+    const template = 'reply to {ticketId} bounced';
+    const res = await app.request(
+      `/api/apps/${appScope}/observability/logs?hours=24&template=${encodeURIComponent(template)}`,
+      { headers: { cookie: 'sb_session=sub-owner' } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(reads.at(-1)!.searchParams.get('template')).toBe(template);
   });
 });

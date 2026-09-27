@@ -29,6 +29,9 @@ export function shortId(id: string): string {
 export function logChips(q: ObsQuery, mode: LogMode): LogChip[] {
   // #1746: the Requests mode's filters are its facets, one chip per facet.
   if (mode === 'requests') return requestChips(q);
+  // #1747: Patterns is narrowed by the window alone; its click opens Lines, which is where
+  // the pattern becomes a chip.
+  if (mode === 'patterns') return [];
   if (mode === 'events') {
     const out: LogChip[] = [];
     if (q.type) out.push({ key: 'type', value: q.type, clears: ['type'] });
@@ -40,6 +43,7 @@ export function logChips(q: ObsQuery, mode: LogMode): LogChip[] {
   if (q.level) out.push({ key: 'level', value: q.level, clears: ['level'] });
   if (q.search) out.push({ key: 'message', value: q.search, clears: ['search'] });
   if (q.invocationId) out.push({ key: 'invocation', value: shortId(q.invocationId), clears: ['invocationId'] });
+  if (q.tpl) out.push({ key: 'pattern', value: q.tpl, clears: ['tpl'] });
   return out;
 }
 
@@ -79,6 +83,7 @@ export function parseBarText(text: string, mode: LogMode): { add: Partial<ObsQue
   // would have to guess which facet it meant, and a guess that matched nothing would read
   // as "no such requests".
   if (mode === 'requests') return { error: 'Requests are filtered by ticking a value in the sidebar or dragging across the chart.' };
+  if (mode === 'patterns') return { error: 'Click a pattern to see its lines; the list follows the time range.' };
   const m = /^(level|invocation|type):\s*(.*)$/i.exec(t);
   if (m) {
     const key = m[1]!.toLowerCase();
