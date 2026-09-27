@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MODULE_LOG_LIMITS, moduleLog, moduleLogLine, renderTemplate, type ModuleLogLine } from '../src/module-log.js';
+import { WITHHELD_SECRET, redactSecretText, redactSecrets } from '../src/capability.js';
 
 /** #1746/#1747: the rules `ctx.log` applies to what module code hands it. */
 const ctx = {
@@ -50,6 +51,18 @@ describe('ctx.log', () => {
     const line = moduleLogLine({ ...ctx, redact }, 'info', 'minted {token} (sekret)', { token: 'sekret' });
     expect(JSON.stringify(line)).not.toContain('sekret');
     expect(line.message).toBe('minted [withheld] ([withheld])');
+  });
+
+  it('keeps the line, secret withheld, with the redaction the adapters wire in', () => {
+    // The object redaction parses its serialization back, so it throws on plain text —
+    // which is why a log line needs the string twin. Pinned so nobody swaps them back.
+    expect(() => redactSecrets('minted sekret', ['sekret'])).toThrow();
+    const lines: ModuleLogLine[] = [];
+    const log = moduleLog({ ...ctx, redact: (t) => redactSecretText(t, ['sekret']) }, (l) => lines.push(l));
+    log.info('minted {token}', { token: 'sekret' });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.message).toBe(`minted ${WITHHELD_SECRET}`);
+    expect(JSON.stringify(lines[0])).not.toContain('sekret');
   });
 
   it('never throws — not for a bad template, bad fields, or a sink that fails', () => {

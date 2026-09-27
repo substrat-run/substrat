@@ -97,11 +97,12 @@ Inside an operation, write your own lines with `ctx.log` rather than `console.lo
 ctx.log.warn('reply to {ticketId} bounced: {reason}', { ticketId, reason });
 ```
 
-The host stamps that line with the same tenant, scope, operation and invocation id, so it needs
-no correlation to find its tenant and can be filtered by operation like a request. It also
-carries the template it was written from. Every line from that call site shares the template
-whatever the values were, which is what groups lines into patterns exactly rather than by
-guessing which free-text lines look alike.
+The host stamps that line with the same tenant, scope, operation and invocation id, and with the
+template it was written from. Every line from that call site shares the template whatever the
+values were. Those two facts are what a log read needs to find a line's tenant without
+correlating it, to filter it by operation like a request, and to group lines into patterns
+exactly rather than by guessing which free-text lines look alike. The dashboard's log reads do
+not use them yet; that is the next step.
 
 ## Traces: opt-in, and narrower than the word suggests
 

@@ -226,6 +226,7 @@ import {
   guardSecrets,
   mintBecomeCapability,
   redactSecrets,
+  redactSecretText,
   moduleLog,
   resolveCapabilitySession,
   revokeCapabilityAsPlatform,
@@ -5179,7 +5180,9 @@ export function defineScopeDO(
           operation: operation ?? null,
           invocationId: () => this.invocationId,
           principalKind: systemActor ? 'system' : subject.kind,
-          redact: (text) => redactSecrets(text, minted),
+          // The string-safe redaction: `redactSecrets` parses its serialization back, and a
+          // log's text is not JSON.
+          redact: (text) => redactSecretText(text, minted),
         }),
         emit: (event: DomainEventInput) => {
           assertImpersonationWrites(impersonation, 'ctx.emit');

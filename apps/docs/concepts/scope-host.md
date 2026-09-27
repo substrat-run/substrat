@@ -162,9 +162,10 @@ interface OperationContext {
   scope, operation, invocation id, and whether a person, a connector, a schedule, a shared
   link or another app is running the code), and your code supplies only a **template** and its
   fields: `ctx.log.warn('reply to {ticketId} bounced: {reason}', { ticketId, reason })`.
-  Keep the template a constant. Every line from one call site then shares it, which is what
-  lets the dashboard group lines into patterns and filter them by operation. A template built
-  from values makes each line its own pattern. A call never throws: oversized values are
+  Keep the template a constant. Every line from one call site then shares it, so the lines
+  can be grouped into patterns and filtered by operation — the purpose of the template, which
+  the dashboard's log reads are still to pick up. A template built from values makes each line
+  its own pattern. A call never throws: oversized values are
   trimmed, a non-primitive field is stringified, and a capability secret minted in the same
   call is withheld. It is not transactional, so a line is kept even when the operation later
   rolls back — those are usually the lines you want.

@@ -160,6 +160,7 @@ export {
   persistedText,
   plausibleSessionToken,
   redactSecrets,
+  redactSecretText,
   resolveCapabilitySession,
   revokeCapabilityAsPlatform,
 } from './capability.js';

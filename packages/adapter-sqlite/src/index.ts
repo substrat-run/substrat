@@ -211,6 +211,7 @@ import {
   mintBecomeCapability,
   plausibleSessionToken,
   redactSecrets,
+  redactSecretText,
   moduleLog,
   consoleLogSink,
   type ModuleLogSink,
@@ -10364,7 +10365,9 @@ export class SqliteScopeHost implements ScopeHost {
           invocationId: () => rt.invocationId,
           // A consumer runs under the system override, so it logs as `system`.
           principalKind: overrideActor ? 'system' : subject.kind,
-          redact: (text) => redactSecrets(text, minted),
+          // The string-safe redaction: `redactSecrets` parses its serialization back, and a
+          // log's text is not JSON.
+          redact: (text) => redactSecretText(text, minted),
         },
         this.logSink,
       ),
