@@ -1,8 +1,8 @@
 ---
 '@substrat-run/contracts': minor
 '@substrat-run/kernel': minor
-'@substrat-run/adapter-sqlite': patch
-'@substrat-run/adapter-cloudflare': patch
+'@substrat-run/adapter-sqlite': minor
+'@substrat-run/adapter-cloudflare': minor
 '@substrat-run/contract-tests': patch
 ---
 
@@ -20,4 +20,4 @@ Moving to the parent the entity already has does nothing. An entity with several
 
 **`ctx.link` changed in two ways.** Linking to a parent the entity was moved away from brings that edge back, and records it as one `entity.linked` event on the child (`{ child, parent }`), because access that had stopped resumes. Before, the link was silently ignored, so it granted nothing. A first-time link still emits nothing. An undeclared relation is now refused with `validation_failed` (HTTP 400) and a message starting `ctx.link: undeclared entity relation`, where before it was a plain error.
 
-**`ctx.emit` refuses the event types the kernel writes itself**: `attachment.added`, `attachment.removed`, `capability.minted`, `capability.revoked`, `capability.exercised`, `entity.relinked` and `entity.linked`, with `validation_failed`. Before, an operation could emit any of them and forge a move, a share or an upload that never happened. The kernel still writes them. New exports: `KERNEL_AUTHORED_EVENT_TYPES` and `assertModuleEmittableType` from `@substrat-run/contracts`.
+**`ctx.emit` refuses the event types the kernel writes itself**: `attachment.added`, `attachment.removed`, `capability.minted`, `capability.revoked`, `capability.exercised`, `entity.relinked` and `entity.linked`, with `validation_failed`. Before, an operation could emit any of them and forge a move, a share or an upload that never happened. The kernel still writes them. The kernel's own writer also refuses any type missing from that list, so a new kernel event cannot be left forgeable. New exports: `KERNEL_AUTHORED_EVENT_TYPES`, `assertModuleEmittableType` and `assertKernelAuthoredType` from `@substrat-run/contracts`.
