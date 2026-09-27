@@ -530,7 +530,7 @@ export type PermissionRegistry = z.infer<typeof permissionRegistry>;
  * Only at the push boundary: {@link storedDeployManifest} reads history with the plain
  * {@link permissionRegistry}, so a version stored before the refusal stays readable.
  */
-const pushedPermissionRegistry = permissionRegistry.extend({
+export const pushedPermissionRegistry = permissionRegistry.extend({
   entityGrants: z.array(entityGrantShape.extend({ entityType: declaredEntityType })).default([]),
 });
 

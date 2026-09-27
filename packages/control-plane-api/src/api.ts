@@ -140,6 +140,7 @@ import {
   assertSandboxContract,
   deployManifest,
   storedDeployManifest,
+  pushedPermissionRegistry,
   deploymentRefFor,
   stableDeploymentRefFor,
   nextMigrationTag,
@@ -4820,13 +4821,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       } catch {
         return c.json({ error: 'manifestJson is not valid JSON' }, 400);
       }
-      const checked = storedDeployManifest.safeParse(raw);
-      if (!checked.success) {
-        const issue = checked.error.issues[0]!;
-        return c.json(
-          { error: `manifestJson is not a deploy manifest: ${issue.path.join('.') || '(root)'}: ${issue.message}` },
+      const refuse = (issue: { path: PropertyKey[]; message: string }, under: string[] = []) =>
+        c.json(
+          { error: `manifestJson is not a deploy manifest: ${[...under, ...issue.path].join('.') || '(root)'}: ${issue.message}` },
           400,
         );
+      const checked = storedDeployManifest.safeParse(raw);
+      if (!checked.success) return refuse(checked.error.issues[0]!);
+      // #1869: a registry handed to this route now is NEW, so it answers to the push-time rule on
+      // entity-grant shapes (no kernel namespace as an entity type), as `deployManifest` does.
+      // An absent registry stays accepted, as above.
+      if (checked.data.registry) {
+        const registry = pushedPermissionRegistry.safeParse(checked.data.registry);
+        if (!registry.success) return refuse(registry.error.issues[0]!, ['registry']);
       }
     }
     await admin.publishVersion(c.get('actor'), input);
