@@ -6052,6 +6052,39 @@ export function scopeHostContractSuite(
         expect(await relinked(item('rl2'))).toHaveLength(1);
       });
 
+      /**
+       * Parent edges `ctx.link` could never write today — an undeclared relation, an expiry —
+       * planted the only way the platform can: a restore of an edited dump.
+       */
+      const plant = async (
+        rows: { subject: string; object: string; expires_at?: string; revoked_at?: string }[],
+      ) => {
+        const dump = await host.admin.exportScope(staff, t1, s1);
+        const table = dump.tables.find((t) => t.name === '_substrat_tuples')!;
+        for (const r of rows) {
+          const cells: Record<string, unknown> = { relation: 'parent', ...r };
+          table.rows.push(table.columns.map((c) => cells[c] ?? null));
+        }
+        await host.restoreScope(staff, t1, s1, dump);
+      };
+
+      it('moves out of an edge whose relation is no longer declared — an edge that grants stays movable', async () => {
+        // The walk expands every live parent edge, declared or not, so refusing this move
+        // would trap whatever access the edge carries.
+        await plant([{ subject: 'item:rl-ud', object: 'widget:w9' }]);
+        await move(item('rl-ud'), { entityType: 'widget', entityId: 'w9' }, box('rb1'));
+        expect(await edges(item('rl-ud'))).toEqual([
+          { object: 'box:rb1', revoked: false },
+          { object: 'widget:w9', revoked: true },
+        ]);
+      });
+
+      it('refuses an expired `from` with conflict — it is no longer a parent the walk sees', async () => {
+        await plant([{ subject: 'item:rl-ex', object: 'box:rb1', expires_at: '2000-01-01T00:00:00.000Z' }]);
+        await expectRefusal(move(item('rl-ex'), box('rb1'), box('rb2')), 'conflict', /not a live parent/);
+        expect(await relinked(item('rl-ex'))).toEqual([]);
+      });
+
       it('refuses a `to` that link could not write — and leaves the old edge intact', async () => {
         await link(item('rl3'), box('rb1'));
         await expectRefusal(
