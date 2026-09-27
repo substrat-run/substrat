@@ -62,6 +62,7 @@
     "server": "tsx src/server.ts",
     "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm --dir app dev\"",
     "demo": "pnpm run dev",
+    "drive": "tsx scripts/drive.mjs",
     "cf:dev": "wrangler dev --var ALLOW_DEV_NODE:true",
     "cf:dry-run": "wrangler deploy --dry-run --outdir dist-worker",
     "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts"
