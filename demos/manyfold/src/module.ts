@@ -6,6 +6,7 @@ import {
   assertTransition,
   CURSOR_FIELD_SEPARATOR,
   defineLifecycles,
+  mapPage,
   operationInputsOf,
   pageOverFold,
   substratError,
@@ -457,13 +458,17 @@ const listEntriesOp: OperationHandler<
     `SELECT * FROM manyfold_entry ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at DESC, id DESC`,
     params,
   );
-  const items: EntryListItem[] = rows.map((e) => {
+  // Page the ROW first, before the per-entry work below: `loadType`/`currentDraft`
+  // are each their own query, so folding the whole table through them and only
+  // then slicing a page would cost every walked page another full table's worth
+  // of lookups. Slicing first bounds that work to one page's rows.
+  const page = pageOverFold(rows, raw ?? {}, (r) => `${r.updated_at}${CURSOR_FIELD_SEPARATOR}${r.id}`, 'desc');
+  return mapPage(page, (e): EntryListItem => {
     const def = loadType(ctx, e.type_key);
     const rev = currentDraft(ctx, e);
     const body = JSON.parse(rev.body_json) as Record<string, unknown>;
     return { id: e.id, type_key: e.type_key, status: e.status, slug: e.slug, title: titleOf(def, body, e), updated_at: e.updated_at };
   });
-  return pageOverFold(items, raw ?? {}, (item) => `${item.updated_at}${CURSOR_FIELD_SEPARATOR}${item.id}`, 'desc');
 };
 
 const reviewQueueOp: OperationHandler<ListPage | undefined, Page<EntryListItem>> = async (ctx, page) => {
@@ -639,19 +644,24 @@ const listDeliveryOp: OperationHandler<
         [input.typeKey],
       )
     : ctx.sql.query<DeliveryRow>('SELECT * FROM manyfold_delivery ORDER BY published_at DESC, entry_id DESC');
-  const items: DeliveryListItem[] = rows.map((r) => ({
-    entry_id: r.entry_id,
-    type_key: r.type_key,
-    slug: r.slug,
-    title: r.title,
-    hash: r.hash,
-    published_at: r.published_at,
-  }));
-  return pageOverFold(
-    items,
+  // Page the ROW first — see `listEntriesOp`'s note. Nothing here is a second
+  // query, but there is no reason to reshape rows a page will not return.
+  const page = pageOverFold(
+    rows,
     raw ?? {},
-    (item) => `${item.published_at}${CURSOR_FIELD_SEPARATOR}${item.entry_id}`,
+    (r) => `${r.published_at}${CURSOR_FIELD_SEPARATOR}${r.entry_id}`,
     'desc',
+  );
+  return mapPage(
+    page,
+    (r): DeliveryListItem => ({
+      entry_id: r.entry_id,
+      type_key: r.type_key,
+      slug: r.slug,
+      title: r.title,
+      hash: r.hash,
+      published_at: r.published_at,
+    }),
   );
 };
 

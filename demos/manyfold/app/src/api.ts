@@ -3,6 +3,7 @@
 // in `x-site` (localStorage-backed) and is SELECTION, not auth: it says which of the tenant's
 // scopes to run against, and the kernel re-checks your authority there regardless.
 // Every op goes through /api/op/<name>, so the generic transport is exactly as safe.
+import type { Page } from '@substrat-run/contracts';
 
 export class ApiError extends Error {
   status: number;
@@ -28,12 +29,6 @@ export async function op<T>(name: string, input: unknown = {}): Promise<T> {
   const body = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) throw new ApiError((body as { error?: string }).error ?? `${res.status}`, res.status);
   return body;
-}
-
-/** The envelope a `paged` operation answers with (#1833) — mirrors `Page<T>` in `@substrat-run/contracts`. */
-interface Page<T> {
-  entries: T[];
-  nextCursor: string | null;
 }
 
 /**
