@@ -406,6 +406,38 @@ export function permissionContractSuite(
         );
       });
 
+      /**
+       * A kernel namespace is not an entity type, in any case: some spine SQL matches a
+       * namespace with LIKE, which ignores ASCII case. Refused on both link ends and on
+       * grant, on both adapters.
+       */
+      const RESERVED = ['principal', 'org', 'tenant', 'scope', 'role', 'connection', 'capability', 'system', 'vertical'];
+      const spellings = (name: string) => [name, name.toUpperCase(), name[0]!.toUpperCase() + name.slice(1)];
+
+      it.each(RESERVED)('refuses %s as an entity type in any case, on link and on grant', async (name) => {
+        const stub = await host.getScope(alice, t1, s1);
+        for (const entityType of spellings(name)) {
+          const bad: EntityRef = { entityType, entityId: 't1' };
+          await expectRefusal(link(bad, box('b9')), 'validation_failed', /^ctx\.link: malformed entity ref/);
+          await expectRefusal(link(turn('t1'), bad), 'validation_failed', /^ctx\.link: malformed entity ref/);
+          await expectRefusal(
+            stub.invoke('perm/share', { principal: gus, permission: PERM_USE, entity: bad }),
+            'validation_failed',
+            /^ctx\.grant: malformed entity ref/,
+          );
+        }
+      });
+
+      it('...while a type that only contains one is linked, walked and granted like any other', async () => {
+        const item: EntityRef = { entityType: 'scopeItem', entityId: 'x1' };
+        await link(item, box('b9'));
+        await expect(probe(fern, s1, PERM_READ, item)).resolves.toMatchObject({ allowed: true });
+        await expect(probe(gus, s1, PERM_READ, item)).resolves.toMatchObject({ allowed: false });
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('perm/share', { principal: gus, permission: PERM_USE, entity: item });
+        await expect(probe(gus, s1, PERM_USE, item)).resolves.toMatchObject({ allowed: true });
+      });
+
       it('ctx.revoke does NOT refuse on grammar: it writes nothing to read back, and must stay able to remove an old grant', async () => {
         const stub = await host.getScope(alice, t1, s1);
         await expect(

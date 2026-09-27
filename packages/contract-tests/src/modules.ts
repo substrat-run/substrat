@@ -355,6 +355,8 @@ export const permModManifest = moduleManifest.parse({
     { entityType: 'item', parentType: 'box' },
     { entityType: 'aiTurn', parentType: 'box' },
     { entityType: 'aiTurn', parentType: 'chatThread' },
+    // #1856: a type that only CONTAINS a kernel namespace is an ordinary entity type.
+    { entityType: 'scopeItem', parentType: 'box' },
   ],
   entitlementKey: 'perm',
 });

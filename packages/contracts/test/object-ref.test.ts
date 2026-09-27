@@ -167,3 +167,40 @@ describe('entityObjectRef: the write-side check (#1856)', () => {
     expect(refused('a b', '')?.extensions?.errors?.map((e) => e.path)).toEqual(['entityType', 'entityId']);
   });
 });
+
+/**
+ * A kernel namespace is refused as an entity type in ANY case. The walk compares tuple
+ * strings exactly, but some spine SQL matches a namespace with LIKE, which ignores ASCII
+ * case, so `Scope:x` and `scope:x` are not safely distinct everywhere.
+ */
+describe('entityObjectRef: kernel namespaces are not entity types', () => {
+  const RESERVED = ['principal', 'org', 'tenant', 'scope', 'role', 'connection', 'capability', 'system', 'vertical'];
+  const spellings = (name: string) => [
+    name,
+    name.toUpperCase(),
+    name[0]!.toUpperCase() + name.slice(1),
+    [...name].map((c, i) => (i % 2 ? c.toUpperCase() : c)).join(''),
+  ];
+
+  it.each(RESERVED)('refuses %s in every case, naming the type', (name) => {
+    for (const entityType of spellings(name)) {
+      let err: (Error & { extensions?: { errors?: { path: string; message: string }[] } }) | undefined;
+      try {
+        entityObjectRef({ entityType, entityId: '01J' }, 'ctx.link');
+      } catch (e) {
+        err = e as typeof err;
+      }
+      expect(errorCodeOf(err!), entityType).toBe('validation_failed');
+      expect(err!.extensions?.errors).toEqual([
+        { path: 'entityType', message: expect.stringContaining('kernel namespace') },
+      ]);
+    }
+  });
+
+  it.each(['scopeItem', 'orgUnit', 'Scopes', 'tenants', 'roleAssignment', 'systemNote', 'subscope', 'vertical-slice', 'principal_x'])(
+    'accepts %s, which only contains a kernel namespace',
+    (entityType) => {
+      expect(entityObjectRef({ entityType, entityId: '01J' }, 'ctx.link')).toBe(`${entityType}:01J`);
+    },
+  );
+});

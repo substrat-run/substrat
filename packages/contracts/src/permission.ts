@@ -334,8 +334,10 @@ export type SystemSwitchRecord = z.infer<typeof systemSwitchRecord>;
 //
 // The namespace half admits upper case (#1856): an entity type is a module's own name
 // for a thing, and those are camelCase (`aiTurn`, `widgetSession`). Upper case is the
-// only addition to what it accepted before. The kernel's own namespaces are exact
-// lower-case words, so no camelCase entity type can spell one.
+// only addition to what it accepted before. The walk compares tuple strings exactly, so
+// `Scope:x` is not `scope:x` there; but some spine SQL matches a namespace with LIKE,
+// which ignores ASCII case. So an entity ref is refused at write time when its type IS
+// a kernel namespace in any case (`RESERVED_NAMESPACES`, below).
 //
 // One spelling of each half, so the walk's pattern and the write-side check below
 // cannot drift apart.
@@ -343,6 +345,22 @@ const NAMESPACE = '[A-Za-z0-9_-]+';
 const ID = '[^\\s]+';
 const OBJECT_NAMESPACE = new RegExp(`^${NAMESPACE}$`);
 const OBJECT_ID = new RegExp(`^${ID}$`);
+/**
+ * The namespaces the kernel writes tuples under: the node objects, the role subjects of a
+ * proof, and every `CheckSubject` kind. An entity type spelled as one of these, in any
+ * case, would share its prefix with kernel rows. Lower case here; compared lower-cased.
+ */
+const RESERVED_NAMESPACES: ReadonlySet<string> = new Set([
+  'principal',
+  'org',
+  'tenant',
+  'scope',
+  'role',
+  'connection',
+  'capability',
+  'system',
+  'vertical',
+]);
 export const objectRef = z
   .string()
   .regex(new RegExp(`^${NAMESPACE}:${ID}$`))
@@ -359,6 +377,9 @@ export type ObjectRef = z.infer<typeof objectRef>;
  * splits at its FIRST colon, so `{ entityType: 'a:b', entityId: 'c' }` would read back as
  * `{ a, 'b:c' }`, a different entity. A colon in the id is fine; in the type it is refused.
  *
+ * A type that is a kernel namespace in any case (`scope`, `Scope`, `SCOPE`, …) is refused
+ * as well, for the reason given at `RESERVED_NAMESPACES`.
+ *
  * `EntityRef` itself is deliberately NOT tightened: it types event payloads that are
  * already stored, and a consumer's parse of one must not start failing.
  */
@@ -369,6 +390,11 @@ export function entityObjectRef(entity: EntityRef, verb: string): ObjectRef {
       path: 'entityType',
       message: 'letters, digits, _ and - only (no colon, no whitespace), at least one',
     });
+  } else if (RESERVED_NAMESPACES.has(entity.entityType.toLowerCase())) {
+    errors.push({
+      path: 'entityType',
+      message: `'${entity.entityType}' is a kernel namespace (in any case), not an entity type`,
+    });
   }
   if (typeof entity?.entityId !== 'string' || !OBJECT_ID.test(entity.entityId)) {
     errors.push({ path: 'entityId', message: 'no whitespace, at least one character' });
@@ -377,7 +403,7 @@ export function entityObjectRef(entity: EntityRef, verb: string): ObjectRef {
     throw substratError(
       'validation_failed',
       `${verb}: malformed entity ref ${JSON.stringify(entity)} — the permission graph ` +
-        'stores it as <entityType>:<entityId>, and the evaluator could not read that back',
+        'stores it as <entityType>:<entityId>, and cannot hold this one',
       { errors },
     );
   }
