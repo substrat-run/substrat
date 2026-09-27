@@ -50,15 +50,18 @@ const Database = require('better-sqlite3');
 const LIMIT = 50;
 const MESSAGE = 'LIKE or GLOB pattern too complex';
 
-// A repo test file can reach this module by more than one path — a relative import
-// (`../testing.cjs`) alongside the published subpath (`@substrat-run/adapter-sqlite/testing`,
-// which resolves the SAME file) — and Node's module cache (keyed by resolved real path) is what
-// guarantees a single evaluation either way. This registry sits behind a well-known
-// `Symbol.for` key on the shared `Database.prototype` object regardless, as a second, explicit
-// guarantee that is not depending on module-cache identity: if this file is ever reached through
-// a distinct copy of `better-sqlite3` (a separately installed dependency elsewhere, resolving a
-// DIFFERENT prototype object) `liftLimit` and the connection's own `install()` would otherwise
-// disagree about which connections are lifted with no error at all.
+// Node's module cache does NOT guarantee this file is evaluated once. vitest's own SSR loader
+// "inlines" a workspace file — evaluates a dynamic `import()` of this file in ITS OWN transform
+// pipeline — while `createRequire(...)(...)` bypasses that pipeline and goes through Node's
+// NATIVE `require`; the two keep separate registries, so `import()` and `require()` of the
+// SAME resolved path give two distinct evaluations, each with its own closure (proven in
+// `test/testing-shared-state.test.ts`, which asserts the two `liftLimit` exports differ before
+// trusting anything else). `better-sqlite3` is an external dependency, not something vitest
+// inlines, so both evaluations still resolve the SAME native `Database` class and therefore the
+// SAME `Database.prototype` — a `seen` WeakSet scoped to each evaluation's own closure would
+// desync there: `liftLimit` called on one instance marks a connection nobody else's `install()`
+// ever reads, and whichever instance is active re-limits it on the very next `prepare()`. A
+// well-known `Symbol.for` key on the shared prototype is what makes every evaluation agree.
 const SEEN = Symbol.for('substrat.adapter-sqlite.testing.seen');
 const protoRegistry = Database.prototype;
 const seen = protoRegistry[SEEN] || (protoRegistry[SEEN] = new WeakSet());
