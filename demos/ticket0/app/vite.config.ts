@@ -23,6 +23,12 @@ export default defineConfig({
          * rather than left to a default.
          */
         changeOrigin: false,
+        /**
+         * Carry the live feed's WebSocket upgrade (`/api/live`, #938) to the API too.
+         * Without it the upgrade never reaches the dev server, and the app cannot hear
+         * the 501 that tells it this host has no live reads and to keep polling.
+         */
+        ws: true,
       },
     },
   },

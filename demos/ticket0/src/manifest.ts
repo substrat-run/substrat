@@ -188,9 +188,36 @@ export const ticket0Manifest = moduleManifest.parse({
    * an index over an erasable field is a second copy of it that the erasure would have
    * to know about. Searching conversations is worth doing and worth doing on purpose,
    * in its own change, with that question answered.
+   *
+   * The live reads (#938) are what the inbox and the conversation view hear instead of
+   * waiting for their next poll. The scope checks each frame's key against the
+   * SUBSCRIBER on the event's own entity, so a push reaches exactly who the
+   * equivalent read would have answered. There is one key per entity type, so the
+   * question is which key, and for all three it is `conversation:read`:
+   *
+   * - `message` has to be here, because a customer writing in is a `message` event.
+   *   Declaring `conversation` alone would miss the thing the inbox most wants to hear.
+   *   `aiTurn` is the assistant's draft or failure landing on the conversation view.
+   *   Both are linked to their conversation, so a narrowed grant is meant to reach them
+   *   by walking up to it. For `aiTurn` that walk currently throws on the camelCase type
+   *   (#1856), and a throw is a refusal, so a follower hears a turn at the next poll
+   *   rather than on a push. Staff are unaffected: a scope-wide grant needs no walk.
+   * - `message` can NOT be `conversation:read-own`. Internal notes are `message`
+   *   rows too, and read-own reaches a contact's messages through the parent walk, so a
+   *   customer would be sent `ticket0.note-posted` for a note on their own thread,
+   *   which `my-messages` never shows them. The frame carries no body, but it would
+   *   still say that a note was written, when, and what its id is.
+   * - So staff (scope-wide) hear everything, a follower (narrowed onto one
+   *   conversation, #1086) hears that thread and its messages, and a portal customer
+   *   and the widget's service principal hear nothing and keep polling, as they did.
    */
   ...manifestEntities(ticket0Entities, {
     searchables: [{ entityType: 'kbArticle', fields: ['title', 'body'] }],
+    liveTargets: [
+      { entityType: 'conversation', readPermission: 'conversation:read' },
+      { entityType: 'message', readPermission: 'conversation:read' },
+      { entityType: 'aiTurn', readPermission: 'conversation:read' },
+    ],
   }),
   lists: listsDeclaredBy(ticket0Operations, ticket0Entities),
   /**

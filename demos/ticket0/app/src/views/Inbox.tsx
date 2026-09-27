@@ -47,6 +47,7 @@ import {
 import { agentName, agents, assignableStaff } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
+import { PACE } from '../pace.js';
 import { SEARCH_MIN, SEARCH_TOO_LONG_HINT, searchRequestFor, searchTermFits } from '../search.js';
 import { slaMissedLabel } from '../sla.js';
 import { Avatar, Empty, OwnerPicker, Priority, StateBadge, Unassigned, ago } from '../ui.js';
@@ -355,10 +356,11 @@ export function Inbox({
   useLiveReload(() => {
     // Held off mid-append: a tick bumps the sequence number, and the page in flight
     // was asked for against the read before it — so the click would be swallowed.
-    if (loadingMore) return;
+    // `false` says so, and a pushed refresh is retried once the append has settled.
+    if (loadingMore) return false;
     load();
     loadTags();
-  });
+  }, PACE.inbox);
   useEffect(() => {
     void contacts().then(setPeople);
     void agents().then(setStaff);
