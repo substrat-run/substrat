@@ -82,6 +82,35 @@ describe('the live feed reconnects', () => {
     expect(sockets.length).toBe(before + 1);
   });
 
+  it('rests for a long while after three failed attempts, then tries again', () => {
+    feed.listen(listener());
+    latest().drop();
+    vi.advanceTimersByTime(2_000);
+    latest().drop();
+    vi.advanceTimersByTime(4_000);
+    latest().drop();
+    const before = sockets.length;
+    vi.advanceTimersByTime(FEED_TIMING.restMs - 1);
+    expect(sockets.length).toBe(before);
+    vi.advanceTimersByTime(1);
+    expect(sockets.length).toBe(before + 1);
+  });
+
+  it('tries at once when woken during that rest, and not when it is already connected', () => {
+    feed.listen(listener());
+    for (let i = 0; i < FEED_TIMING.giveUpAfter; i++) {
+      latest().drop();
+      vi.advanceTimersByTime(1000 * 2 ** (i + 1));
+    }
+    const resting = sockets.length;
+    feed.wake();
+    expect(sockets.length).toBe(resting + 1);
+
+    latest().accept();
+    feed.wake();
+    expect(sockets.length).toBe(resting + 1);
+  });
+
   it('tells its listeners when it opens and when it closes', () => {
     const l = listener();
     feed.listen(l);

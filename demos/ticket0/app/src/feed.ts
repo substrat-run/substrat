@@ -45,8 +45,14 @@ export interface FeedListener {
 }
 
 export const FEED_TIMING = {
-  /** Connections in a row that did not hold before the feed stops trying. */
+  /** Connections in a row that did not hold before the feed stops trying for a while. */
   giveUpAfter: 3,
+  /**
+   * How long it stops for. Not for good: a hop that could not carry a socket at 9:00
+   * may be a network that can at 9:05, and a tab stays open all day. Coming back to the
+   * tab tries at once too (`wake`).
+   */
+  restMs: 5 * 60_000,
   /**
    * How long a connection has to stay open to count as a good one. A socket that opens
    * and drops straight away is a failure like one that never opened. Otherwise a hop
@@ -70,6 +76,11 @@ export interface Feed {
   /** Start hearing frames. Opens the socket if nobody was listening. Returns the unlisten. */
   listen(listener: FeedListener): () => void;
   isOpen(): boolean;
+  /**
+   * Try now, if the feed is waiting to try. Called when the tab becomes visible, which is
+   * when a person is about to look and a connection is worth an attempt.
+   */
+  wake(): void;
 }
 
 export function createFeed(deps: FeedDeps): Feed {
@@ -100,11 +111,14 @@ export function createFeed(deps: FeedDeps): Feed {
   }
 
   function scheduleRetry(): void {
-    // A few attempts, then the poll alone. The browser does not say why a handshake
-    // failed (501 on the dev server, a hop that cannot carry a WebSocket, a session
-    // that ended), so there is nothing better to go on than the count.
-    if (listeners.size === 0 || failures >= FEED_TIMING.giveUpAfter) return;
-    const delay = Math.min(FEED_TIMING.maxBackoffMs, 1000 * 2 ** failures);
+    // A few attempts, then a long rest with the poll alone. The browser does not say why
+    // a handshake failed (501 on the dev server, a hop that cannot carry a WebSocket, a
+    // session that ended), so there is nothing better to go on than the count.
+    if (listeners.size === 0) return;
+    const delay =
+      failures >= FEED_TIMING.giveUpAfter
+        ? FEED_TIMING.restMs
+        : Math.min(FEED_TIMING.maxBackoffMs, 1000 * 2 ** failures);
     retry = deps.setTimeout(() => {
       retry = null;
       connect();
@@ -112,7 +126,7 @@ export function createFeed(deps: FeedDeps): Feed {
   }
 
   function connect(): void {
-    if (socket || retry || listeners.size === 0 || failures >= FEED_TIMING.giveUpAfter) return;
+    if (socket || retry || listeners.size === 0) return;
     const ws = deps.connect();
     if (!ws) return;
     socket = ws;
@@ -169,5 +183,11 @@ export function createFeed(deps: FeedDeps): Feed {
       };
     },
     isOpen: () => open,
+    wake() {
+      if (socket || !retry) return;
+      deps.clearTimeout(retry);
+      retry = null;
+      connect();
+    },
   };
 }

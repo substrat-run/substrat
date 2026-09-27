@@ -97,7 +97,10 @@ export function useLiveReload(
       if (!document.hidden) timer = setInterval(() => latest.current(), every);
     };
     const onVisible = () => {
-      if (!document.hidden) latest.current();
+      if (!document.hidden) {
+        latest.current();
+        liveFeed.wake();
+      }
       start();
     };
 
