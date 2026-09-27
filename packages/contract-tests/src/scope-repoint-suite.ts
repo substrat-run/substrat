@@ -50,6 +50,7 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
     const kate = principalId.parse(ulid()); // Role:reader on the scope
     const realConnection = connectionId.parse(ulid());
     const casedConnection = connectionId.parse(ulid());
+    const casedRelation = connectionId.parse(ulid()); // `Granted:` rather than `granted:`
     let planted: ScopeDump;
 
     const tuplesOf = (dump: ScopeDump) => {
@@ -86,6 +87,14 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         expect(await allowed(who, scope)).toBe(false);
       }
     };
+    /** `planted` with its tuples rows (and optionally the table's DDL) rewritten. */
+    const variant = (rows: (rows: unknown[][]) => unknown[][], ddl?: (ddl: string) => string): ScopeDump => ({
+      ...planted,
+      tables: planted.tables.map((tb) =>
+        tb.name === '_substrat_tuples' ? { ...tb, rows: rows(tb.rows), ddl: ddl ? ddl(tb.ddl) : tb.ddl } : tb,
+      ),
+    });
+    const tuplesAt = async (scope: ScopeId) => tuplesOf(await host.admin.exportScope(staff, t, scope)).rows;
     const expectGenuineGrantMoved = async (scope: ScopeId) => {
       const rows = await rowsFor(scope, gina);
       expect(rows.map((r) => r.object)).toEqual([`scope:${scope}`]);
@@ -123,6 +132,7 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
                   row(`principal:${kate}`, `scope:${source}`, 'Role:reader'),
                   row(`connection:${realConnection}`, `scope:${source}`),
                   row(`Connection:${casedConnection}`, `scope:${source}`),
+                  row(`connection:${casedRelation}`, `scope:${source}`, `Granted:${PERM_READ}`),
                 ],
               }
             : tb,
@@ -155,6 +165,58 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
       const reported = (await host.connectionGrantsInScope(t, dest)).map((g) => g.connectionId);
       expect(reported).toContain(realConnection);
       expect(reported).not.toContain(casedConnection);
+      expect(reported).not.toContain(casedRelation);
+    });
+
+    it('a dump declaring the object column COLLATE NOCASE does not make the match fold case again', async () => {
+      const nocase = variant(
+        (rows) => rows,
+        (ddl) => {
+          const out = ddl.replace(/\bobject TEXT NOT NULL\b/, 'object TEXT NOT NULL COLLATE NOCASE');
+          expect(out).not.toBe(ddl);
+          return out;
+        },
+      );
+      const dest = await blank();
+      await host.restoreScope(staff, t, dest, nocase);
+      await expectGenuineGrantMoved(dest);
+      await expectEntityGrantsKept(dest);
+    });
+
+    it('a dump holding grants on a third scope is refused, and the target keeps what it held', async () => {
+      const third = scopeId.parse(ulid());
+      const stray = tuplesOf(planted).columns.map((c) =>
+        c === 'subject' ? `principal:${gina}` : c === 'relation' ? 'role:reader' : c === 'object' ? `scope:${third}` : null,
+      );
+      const mixed = variant((rows) => [...rows, stray]);
+      const dest = await blank();
+      const before = await tuplesAt(dest);
+      await expect(host.restoreScope(staff, t, dest, mixed)).rejects.toThrow(
+        new RegExp(`restore refused: the dump holds grants on 1 scope\\(s\\) other than its source .*scope:${third}`),
+      );
+      expect(await tuplesAt(dest)).toEqual(before);
+      // …and a fork of it, where the platform vouches for the source, the same.
+      await expect(
+        host.importScope(staff, { tenantId: t, scopeId: scopeId.parse(ulid()), vertical: 'repoint-vertical' }, mixed),
+      ).rejects.toThrow(/restore refused: the dump holds grants on 1 scope\(s\)/);
+      // The twin is every other case here: a dump whose `scope:` rows are its source's, or an
+      // entity id that is not a scope id (`scope:e-1`), re-points without complaint.
+    });
+
+    it('a fork of a dump holding no grant on its source moves nothing: the platform vouches, so no fallback', async () => {
+      // A platform-exported dump (a fork, snapshot, preview, carry) whose source holds no
+      // scope-level grant. The fallback would read `scope:e-1` as a node grant and move it.
+      const object = tuplesOf(planted).columns.indexOf('object');
+      const bare = variant((rows) => rows.filter((r) => r[object] !== `scope:${source}`));
+      expect(rowsIn(bare, gina)).toEqual([]);
+      expect(rowsIn(bare, jack)).toHaveLength(1);
+      const fork = scopeId.parse(ulid());
+      await host.importScope(staff, { tenantId: t, scopeId: fork, vertical: 'repoint-vertical' }, bare);
+      await expectEntityGrantsKept(fork);
+      // Twin, the same dump restored by a caller: its provenance names no row, so it falls back.
+      const dest = await blank();
+      await host.restoreScope(staff, t, dest, bare);
+      expect((await rowsFor(dest, jack)).map((r) => r.object)).toEqual([`scope:${dest}`]);
     });
 
     it('a fork (importScope) does the same', async () => {

@@ -254,7 +254,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { repointScopeGrants } from '@substrat-run/kernel';
+import { repointScopeGrants, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4594,6 +4594,7 @@ export function defineScopeDO(
       {
         switchOff,
         sourceScopeId,
+        exact,
       }: {
         /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
          *  the replay re-points the grants, in the same event: a dump from before the switch was
@@ -4601,6 +4602,8 @@ export function defineScopeDO(
         switchOff?: { moduleIds: readonly string[]; at: string };
         /** The scope the dump was captured FROM (#1869), whose grants the re-point moves. */
         sourceScopeId?: ScopeId;
+        /** The platform exported this dump itself, so the re-point never falls back (`RepointSource`). */
+        exact?: boolean;
       } = {},
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
@@ -4675,7 +4678,7 @@ export function defineScopeDO(
         this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
         // Re-point the restored grants at THIS scope (after the spine exists, so a dump
         // that carried no tuples table still finds one here).
-        if (destScopeId) this.rewriteScopeTuples(destScopeId, sourceScopeId);
+        if (destScopeId) this.rewriteScopeTuples(destScopeId, sourceScopeId && { scopeId: sourceScopeId, exact });
         // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
         // the spine and the re-point. A switch that throws rolls the whole restore back, so
         // the dump's grants never commit live without the switch that should cover them.
@@ -4754,8 +4757,8 @@ export function defineScopeDO(
      * dump already held a tuple for the destination scope, the rewritten row collapses
      * onto it instead of failing the whole restore.
      */
-    private rewriteScopeTuples(destScopeId: ScopeId, sourceScopeId?: ScopeId): void {
-      repointScopeGrants(this.switchSql(), destScopeId, sourceScopeId);
+    private rewriteScopeTuples(destScopeId: ScopeId, source?: RepointSource): void {
+      repointScopeGrants(this.switchSql(), destScopeId, source);
     }
 
     /**

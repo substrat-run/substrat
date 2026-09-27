@@ -148,11 +148,12 @@ export interface VerticalScopeHost {
     switchedOff?: ModuleId[];
   }): Promise<void | { switchedOff?: SwitchedOff[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
-   *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move. */
+   *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
+   *  `opts.exact`: the platform exported the dump itself, so the re-point never falls back. */
   restoreScopeLocal(
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
-    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId },
+    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
@@ -389,6 +390,9 @@ const restoreBody = z.object({
   /** #1869: the scope the dump was captured from. Only its node grants are re-pointed at
    *  `scopeId`; a platform that predates the field sends none, and the host falls back. */
   sourceScopeId: scopeIdOf.optional(),
+  /** #1869: the platform exported these tables itself, so `sourceScopeId` is a fact and the
+   *  re-point never falls back. Absent for a dump a caller supplied. */
+  exact: z.boolean().optional(),
   tables: z.array(
     z.object({
       name: z.string(),
@@ -628,6 +632,7 @@ export function mountPlatformSurface<Env extends object>(
     const result = await host.restoreScopeLocal(body.scopeId, body.tables, {
       switchedOff: body.switchedOff,
       sourceScopeId: body.sourceScopeId,
+      exact: body.exact,
     });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });

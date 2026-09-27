@@ -694,6 +694,8 @@ describe('the record is carried into the deployment and its in-unit move audited
   let dir: string;
   let host: SqliteScopeHost;
   const bodies: { verb: string; scopeId: string; switchedOff?: unknown }[] = [];
+  /** #1869: where each restore was told its tables came from. */
+  const restoreSources: { sourceScopeId?: string; exact?: boolean }[] = [];
   /** A move per module the platform sent, plus one the record never switched off. */
   const report = (switchedOff: string[] | undefined) =>
     switchedOff
@@ -711,8 +713,14 @@ describe('the record is carried into the deployment and its in-unit move audited
       bodies.push({ verb: 'provision', scopeId: input.scopeId, switchedOff: input.switchedOff });
       return { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner, ...report(input.switchedOff) };
     },
-    restoreScope: async (_t: string, s: string, _tables: unknown, opts?: { switchedOff?: string[] }) => {
+    restoreScope: async (
+      _t: string,
+      s: string,
+      _tables: unknown,
+      opts?: { switchedOff?: string[]; sourceScopeId?: string; exact?: boolean },
+    ) => {
       bodies.push({ verb: 'restore', scopeId: s, switchedOff: opts?.switchedOff });
+      restoreSources.push({ sourceScopeId: opts?.sourceScopeId, exact: opts?.exact });
       return { tables: 0, ...report(opts?.switchedOff) };
     },
   } as unknown as VerticalClient;
@@ -789,6 +797,19 @@ describe('the record is carried into the deployment and its in-unit move audited
     expect(res.status).toBe(200);
     expect(bodies).toEqual([{ verb: 'restore', scopeId: off, switchedOff: [TICK] }]);
     expect(await reasserts(off)).toEqual(expect.arrayContaining([inUnitRow]));
+    // #1869: a backup is a caller-supplied dump, so its stated origin rides along, never as
+    // `exact`: the deployment may fall back when that origin names none of its rows.
+    const origin = scopeId.parse(ulid());
+    const moved = await app().request(`/tenants/${t}/scopes/${off}/restore`, {
+      method: 'POST',
+      headers: asStaff,
+      body: JSON.stringify({ ...dump, scopeId: origin }),
+    });
+    expect(moved.status).toBe(200);
+    expect(restoreSources.slice(-2)).toEqual([
+      { sourceScopeId: off, exact: false },
+      { sourceScopeId: origin, exact: false },
+    ]);
   });
 });
 

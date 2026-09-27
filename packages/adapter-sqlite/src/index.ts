@@ -3164,7 +3164,8 @@ export class SqliteScopeHost implements ScopeHost {
       forkedFrom: input.forkedFrom ?? (dump.scopeId as ScopeId),
       forkedAt: input.forkedAt ?? dump.capturedAt,
     });
-    await this.loadDump(input.tenantId, input.scopeId, dump);
+    // A fork: its callers (snapshotScope) hand it a dump the platform exported.
+    await this.loadDump(input.tenantId, input.scopeId, { ...dump, exact: true });
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     this.recordAdmin(
       actor,
@@ -3179,8 +3180,9 @@ export class SqliteScopeHost implements ScopeHost {
   private async loadDump(
     tenantId: TenantId,
     scopeId: ScopeId,
-    /** `scopeId` is the scope the dump was captured from: its node grants are re-pointed here. */
-    dump: Pick<ScopeDump, 'scopeId' | 'tables'>,
+    /** `scopeId` is the scope the dump was captured from: its node grants are re-pointed here.
+     *  `exact`: the platform exported it, so the re-point never falls back (`RepointSource`). */
+    dump: Pick<ScopeDump, 'scopeId' | 'tables'> & { exact?: boolean },
     /** Run inside the load's own transaction, after the replay (#1742) — the restore's re-assert
      *  of the switch. It throws to roll the load back. */
     afterLoad?: (rt: ScopeRuntime) => void,
@@ -3267,7 +3269,7 @@ export class SqliteScopeHost implements ScopeHost {
       // Which rows move is `repointScopeGrants`'s (#1869): the dump's source scope, exactly.
       // `UPDATE OR REPLACE` because (subject, relation, object) is the primary key — a
       // rewritten row collapses onto an existing one rather than failing the restore.
-      repointScopeGrants(switchSqlOf(db), scopeId, dump.scopeId);
+      repointScopeGrants(switchSqlOf(db), scopeId, { scopeId: dump.scopeId, exact: dump.exact });
       // #1742: inside the replay's transaction, so a failure here rolls the whole load back and
       // the dump's grants never commit without the switch that should cover them.
       afterLoad?.(rt);

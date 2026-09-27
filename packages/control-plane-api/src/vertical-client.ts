@@ -964,8 +964,9 @@ export class VerticalClient {
     tables: ScopeDumpTable[],
     /** #1742: the recorded-off modules, switched off on THIS scope in the restore's own event.
      *  #1869: `sourceScopeId`, the scope the tables were captured from, so the vertical re-points
-     *  exactly that scope's grants. A vertical that predates the field ignores it. */
-    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId },
+     *  exactly that scope's grants, and `exact` when the platform exported them itself. A
+     *  vertical that predates the fields ignores them. */
+    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
   ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[] }> {
     const { tables: count, switchedOff } = await this.postInternal<{ tables: number; switchedOff?: unknown }>(
       '/internal/restore',
@@ -975,6 +976,7 @@ export class VerticalClient {
         tables,
         ...(opts?.switchedOff ? { switchedOff: opts.switchedOff } : {}),
         ...(opts?.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
+        ...(opts?.exact ? { exact: true } : {}),
       },
       'restore',
     );

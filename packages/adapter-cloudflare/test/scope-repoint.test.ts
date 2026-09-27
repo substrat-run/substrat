@@ -99,6 +99,25 @@ describe("the ScopeDO's importDump picks the rows to re-point (#1869)", () => {
     ]);
   });
 
+  it('exact (platform-exported) with no row on the source: nothing moves, where the fallback would move scope:e-1', async () => {
+    const self = scopeId.parse(ulid());
+    const bare = dumpFrom(self).map((t) => ({ ...t, rows: t.rows.slice(1) }));
+    await host.restoreScopeLocal(self, bare, { sourceScopeId: self, exact: true });
+    expect(tuplesIn(await host.exportScopeLocal(self))).toEqual([kept(self, 1), kept(self, 2), kept(self, 3)]);
+  });
+
+  it('exact, with grants on a third scope: refused, and the target keeps what it held', async () => {
+    const dest = scopeId.parse(ulid());
+    await host.restoreScopeLocal(dest, dumpFrom(source), { sourceScopeId: source, exact: true });
+    const before = tuplesIn(await host.exportScopeLocal(dest));
+    const third = scopeId.parse(ulid());
+    const mixed = dumpFrom(source).map((t) => ({ ...t, rows: [...t.rows, ['principal:lena', 'role:reader', `scope:${third}`, null, null]] }));
+    await expect(host.restoreScopeLocal(dest, mixed, { sourceScopeId: source, exact: true })).rejects.toThrow(
+      new RegExp(`restore refused: the dump holds grants on 1 scope\\(s\\) other than its source .*scope:${third}`),
+    );
+    expect(tuplesIn(await host.exportScopeLocal(dest))).toEqual(before);
+  });
+
   it('a dump that declares the object column COLLATE NOCASE does not make the match fold case again', async () => {
     const dest = scopeId.parse(ulid());
     const nocase = TUPLES_DDL.replace('object TEXT NOT NULL', 'object TEXT NOT NULL COLLATE NOCASE');
@@ -149,8 +168,12 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
     const host = hostOf.get(ref)!;
     return {
       exportScope: (sid: ScopeId) => relay(() => host.exportScopeLocal(sid)),
-      restoreScope: (_t: unknown, sid: ScopeId, tables: ScopeDumpTable[], opts?: { sourceScopeId?: ScopeId }) =>
-        relay(() => host.restoreScopeLocal(sid, tables, { sourceScopeId: opts?.sourceScopeId })),
+      restoreScope: (
+        _t: unknown,
+        sid: ScopeId,
+        tables: ScopeDumpTable[],
+        opts?: { sourceScopeId?: ScopeId; exact?: boolean },
+      ) => relay(() => host.restoreScopeLocal(sid, tables, { sourceScopeId: opts?.sourceScopeId, exact: opts?.exact })),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
     } as unknown as VerticalClient;
   };
@@ -228,5 +251,20 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
     expect(second.body.scopeId).toBe(preview);
     // The carry landed in v2's script, row for row what v1 held.
     expect(tuplesIn(await hostFor('v2').exportScopeLocal(preview))).toEqual(forked);
+  });
+
+  it('a prod holding no grant on itself: the fork and the carry move nothing, scope:e-1 included', async () => {
+    // Both are platform-exported, so the re-point is exact and never falls back.
+    await hostFor('v1').restoreScopeLocal(prod, dumpFrom(prod).map((t) => ({ ...t, rows: t.rows.slice(1) })), {
+      sourceScopeId: prod,
+      exact: true,
+    });
+    const created = await push('pr-8', 'v1');
+    expect(created.status).toBe(201);
+    const preview = created.body.scopeId;
+    const want = [kept(prod, 1), kept(prod, 2), kept(prod, 3)];
+    expect(tuplesIn(await hostFor('v1').exportScopeLocal(preview))).toEqual(want);
+    expect((await push('pr-8', 'v2')).status).toBe(200);
+    expect(tuplesIn(await hostFor('v2').exportScopeLocal(preview))).toEqual(want);
   });
 });

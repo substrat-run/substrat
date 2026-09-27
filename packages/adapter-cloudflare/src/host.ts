@@ -1283,6 +1283,8 @@ interface ScopeStubRpc {
       switchOff?: { moduleIds: readonly string[]; at: string };
       /** The scope the dump was captured from (#1869): only its node grants are re-pointed. */
       sourceScopeId?: ScopeId;
+      /** The platform exported the dump itself: no fallback (`RepointSource.exact`). */
+      exact?: boolean;
     },
   ): Promise<SwitchedOff[]>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
@@ -2392,7 +2394,7 @@ export class CloudflareScopeHost implements ScopeHost {
     destScopeId: ScopeId,
   ): Promise<{ tables: number }> {
     const tables = await this.scopeStub(sourceScopeId).exportDump();
-    await this.scopeStub(destScopeId).importDump(tables, destScopeId, { sourceScopeId });
+    await this.scopeStub(destScopeId).importDump(tables, destScopeId, { sourceScopeId, exact: true });
     return { tables: tables.length };
   }
 
@@ -2407,12 +2409,14 @@ export class CloudflareScopeHost implements ScopeHost {
     tables: ScopeDumpTable[],
     /** #1742: the directory's recorded-off modules, switched off on THIS scope in the replay's
      *  own event — a dump from before a switch was pulled brings its grants back live. #1869:
-     *  `sourceScopeId`, the scope the dump was captured from, narrows the grant re-point to it. */
-    opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId },
+     *  `sourceScopeId`, the scope the dump was captured from, narrows the grant re-point to it;
+     *  `exact` says the platform exported the dump itself, so the re-point never falls back. */
+    opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
     const switchedOff = await this.scopeStub(scopeId).importDump(tables, scopeId, {
       switchOff: opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
       sourceScopeId: opts?.sourceScopeId,
+      exact: opts?.exact,
     });
     return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}) };
   }
@@ -3135,7 +3139,11 @@ export class CloudflareScopeHost implements ScopeHost {
       forkedFrom: input.forkedFrom ?? (dump.scopeId as ScopeId),
       forkedAt: input.forkedAt ?? dump.capturedAt,
     });
-    await this.scopeStub(input.scopeId).importDump(dump.tables, input.scopeId, { sourceScopeId: dump.scopeId as ScopeId });
+    await this.scopeStub(input.scopeId).importDump(dump.tables, input.scopeId, {
+      sourceScopeId: dump.scopeId as ScopeId,
+      // A fork: its callers (snapshotScope) hand it a dump the platform exported.
+      exact: true,
+    });
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     await this.recordAdmin(
       actor,
