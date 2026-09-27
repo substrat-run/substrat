@@ -2432,6 +2432,21 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   });
 
   /**
+   * #1839 review: the re-check after the settle can fail (here the age read). Nothing was asked to
+   * arm yet, so the rewind drops its own claim, keeps any other, and throws.
+   */
+  it("#1839: a failed re-check drops this rewind's claim, arms nothing, and throws", async () => {
+    const { s } = await settlingScope();
+    const rewinder = countingScopes(env.SCOPE);
+    rewinder.failAgeReads = true;
+    await armRewind(env.SCOPE, s);
+    await expect(deployment(rewinder.ns).rewindScopeLocal(s, 'bm', { force: true })).rejects.toThrow(/age read down/);
+    const scope = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as { rewindProbe(): Promise<{ armed: boolean }> };
+    expect(await scope.rewindProbe()).toMatchObject({ armed: false });
+    expect([...new Set((await holdsStub().switchHoldClaims(s)).map((c) => c.claimId))]).toEqual([EARLIER_CLAIM]);
+  });
+
+  /**
    * #1839 review: past the bound the rewind is REFUSED, not armed with a young row. Nothing was
    * asked to arm, so the OFFs pulled meanwhile stay in the scope's own storage, and a retry's
    * capture reads them.
@@ -2880,6 +2895,8 @@ function countingScopes(ns: DurableObjectNamespace) {
     holdReads: 0,
     /** #1839: how often a rewind asked the hold object for its claim's youngest row. */
     ageReads: 0,
+    /** #1839: make the rewind's age read throw, to reach its failed re-check. */
+    failAgeReads: false,
     scopeCalls: 0,
     failReads: false,
     /** Hold one scope's `systemScheduleState` until `until` settles: to place a pass's state read. */
@@ -2927,7 +2944,10 @@ function countingScopes(ns: DurableObjectNamespace) {
                   return real.switchHoldsAll!();
                 }
               : (...args: unknown[]) => {
-                  if (prop === 'switchHoldYoungestMs') counts.ageReads += 1;
+                  if (prop === 'switchHoldYoungestMs') {
+                    counts.ageReads += 1;
+                    if (counts.failAgeReads) throw new Error('age read down');
+                  }
                   return real[prop]!(...args);
                 },
       },
