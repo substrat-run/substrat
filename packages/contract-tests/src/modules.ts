@@ -643,7 +643,11 @@ const addItem: OperationHandler<{ id: string; box: string }, void> = (ctx, input
   ctx.link({ entityType: 'item', entityId: input.id }, { entityType: 'box', entityId: input.box });
 };
 
-const relinkItem: OperationHandler<{ id: string; box: string }, void> = (ctx, input) => {
+/**
+ * Link an item to a box it may already be in — the idempotency case. Not a move: that is
+ * `testmod/move` (#1864).
+ */
+const linkItemAgain: OperationHandler<{ id: string; box: string }, void> = (ctx, input) => {
   ctx.link({ entityType: 'item', entityId: input.id }, { entityType: 'box', entityId: input.box });
 };
 
@@ -1180,7 +1184,7 @@ export const testMod: ModuleRegistration = {
   ],
   operations: {
     'testmod/add': addItem as OperationHandler<never, unknown>,
-    'testmod/relink': relinkItem as OperationHandler<never, unknown>,
+    'testmod/link-again': linkItemAgain as OperationHandler<never, unknown>,
     'testmod/link-undeclared': linkUndeclared as OperationHandler<never, unknown>,
     // #1864 — ctx.relink.
     'testmod/link': linkOp as OperationHandler<never, unknown>,

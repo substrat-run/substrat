@@ -5965,7 +5965,7 @@ export function scopeHostContractSuite(
     it('links declared entity relations, idempotently (K-16)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       await stub.invoke('testmod/add', { id: 'i1', box: 'b1' });
-      await stub.invoke('testmod/relink', { id: 'i1', box: 'b1' }); // no duplicate
+      await stub.invoke('testmod/link-again', { id: 'i1', box: 'b1' }); // no duplicate
       const tuples = await stub.invoke<{ subject: string; relation: string; object: string }[]>(
         'testmod/read-tuples',
       );
