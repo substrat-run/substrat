@@ -1256,7 +1256,10 @@ externalization convention is day one; translations are not).
     composition, in one transaction: the `from` edge is tombstoned (`revoked_at`, which the
     walk already skipped), the `to` edge is written, and one `entity.relinked` spine event
     names both. `ctx.link` now revives a tombstoned edge instead of ignoring it, or linking
-    back to a former parent would silently grant nothing. Like `link`, it checks no
+    back to a former parent would silently grant nothing, and records the revive as one
+    `entity.linked` event. A revive clears the row in place, so the tombstone is not the
+    lasting record; the event log is, and `ctx.emit` refuses every kernel-authored type from
+    module code so that log cannot be forged. Like `link`, it checks no
     permission — the operation checks child, `from` and `to` in its own vocabulary — and it
     refuses a `to` the child would be its own ancestor under; `link` does not refuse a cycle
     yet (#1875). Proofs: there are no issued proofs to invalidate, because a decision is
