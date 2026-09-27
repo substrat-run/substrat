@@ -207,6 +207,7 @@ import {
   capabilityAttachmentWriteRefused,
   capabilityTokenHash,
   createCapabilityVerbs,
+  createEntityEdgeVerbs,
   exchangeCapability as exchangeCapabilitySecret,
   guardSecrets,
   mintBecomeCapability,
@@ -10635,24 +10636,14 @@ export class SqliteScopeHost implements ScopeHost {
         assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
         minted,
       }),
-      link: (child: EntityRef, parent: EntityRef) => {
-        assertImpersonationWrites(impersonation, 'ctx.link');
-        entityObjectRef(child, 'ctx.link'); // #1856: an edge the walk can read back
-        entityObjectRef(parent, 'ctx.link');
-        const allowed = relations.get(child.entityType);
-        if (!allowed?.has(parent.entityType)) {
-          throw new Error(
-            `undeclared entity relation: ${child.entityType} → ${parent.entityType} ` +
-              `(declare it in a module manifest's entityRelations)`,
-          );
-        }
-        rt.db
-          .prepare(
-            `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object)
-             VALUES (?, 'parent', ?)`,
-          )
-          .run(`${child.entityType}:${child.entityId}`, `${parent.entityType}:${parent.entityId}`);
-      },
+      // K-16 / #1864: link and relink, written once in the kernel over the raw spine seam.
+      ...createEntityEdgeVerbs({
+        sql: spineSql(rt.db),
+        relations,
+        now: at,
+        emit: (event) => ctxRef.emit(event),
+        assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+      }),
       // #304: the request-time entitlement read. The pure adapter is single-process, so the
       // directory is local — no projection needed; it reads `_substrat_entitlements` straight,
       // with the same expiry-at-read filter as the gate (#33), and the SAME contract the DO

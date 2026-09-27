@@ -354,6 +354,23 @@ export function impersonationContractSuite(
     // -- read-only ------------------------------------------------------------
 
     describe('a read-only session cannot write, mechanically', () => {
+      /** #1864: a move is a permission-graph write, so it is refused by name like link. */
+      it('refuses ctx.relink by name — and a write session moves the edge', async () => {
+        const item = { entityType: 'item', entityId: 'imp-i1' };
+        const move = { child: item, from: { entityType: 'box', entityId: 'imp-b1' }, to: { entityType: 'box', entityId: 'imp-b2' } };
+        const scope = await freshScope();
+        await (await host.getScope(anna, t1, scope)).invoke('perm/link', { child: item, parent: move.from });
+
+        const readOnly = await host.getImpersonatedScope((await openSession(scope)).id, t1, scope);
+        await expect(readOnly.invoke('perm/relink', move)).rejects.toThrow(
+          /^ctx\.relink is refused under a read-only impersonation session/,
+        );
+        // Still where it was: a second relink from the same parent succeeds.
+        const write = await host.getImpersonatedScope((await openSession(scope, { mode: 'write' })).id, t1, scope);
+        await write.invoke('perm/relink', move);
+        await expect(write.invoke('perm/relink', move)).rejects.toThrow(/not a live parent/);
+      });
+
       it('refuses the effecting verbs by name', async () => {
         const scope = await freshScope();
         const session = await openSession(scope);

@@ -13,8 +13,8 @@ on the domain, so the platform is the only thing on the page. It proves:
   `ctx.grant(principal, 'list:contribute', listRef)` in `src/module.ts`; revoking it is
   `ctx.revoke(…)` with the same three arguments. The grant is **entity-narrowed** (this list,
   not all lists), **delegating** (the caller's own right to that list is re-checked), and
-  **transactional** with the operation. Neither alternative fits: a `ctx.link` edge is permanent,
-  and org membership is a whole org rather than one record — so Todo is the reference against
+  **transactional** with the operation. Neither alternative fits: a `ctx.link` edge can be moved
+  but never removed, and org membership is a whole org rather than one record — so Todo is the reference against
   minting an org per row to get a revoke. Read it before designing any "share this with a
   person" feature.
 - **A 403 wall is not an empty list.** A list you were never shared reaches you neither in the

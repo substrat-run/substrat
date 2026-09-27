@@ -42,7 +42,11 @@ export const testModManifest = moduleManifest.parse({
   events: { emits: [], consumes: [] },
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
   attachmentTargets: [],
-  entityRelations: [{ entityType: 'item', parentType: 'box' }],
+  entityRelations: [
+    { entityType: 'item', parentType: 'box' },
+    // #1864: a self-referential tree, so a move can aim beneath itself.
+    { entityType: 'folder', parentType: 'folder' },
+  ],
   entitlementKey: 'testmod',
 });
 
@@ -357,6 +361,9 @@ export const permModManifest = moduleManifest.parse({
     { entityType: 'aiTurn', parentType: 'chatThread' },
     // #1856: a type that only CONTAINS a kernel namespace is an ordinary entity type.
     { entityType: 'scopeItem', parentType: 'box' },
+    // #1864: a folder tree an item can move into, deep enough to cross the walk's depth.
+    { entityType: 'item', parentType: 'folder' },
+    { entityType: 'folder', parentType: 'folder' },
   ],
   entitlementKey: 'perm',
 });
@@ -644,6 +651,61 @@ const linkUndeclared: OperationHandler<undefined, void> = (ctx) => {
   ctx.link({ entityType: 'box', entityId: 'b1' }, { entityType: 'item', entityId: 'i1' });
 };
 
+// -- #1864: ctx.relink's fixtures ---------------------------------------------
+// Tuples, outbox and atomicity only; whether access follows the move needs the tuple
+// checker, so that half is proven in the permission suite over permMod.
+
+type Move = { child: EntityRef; from: EntityRef; to: EntityRef };
+
+const linkEdge: OperationHandler<{ child: EntityRef; parent: EntityRef }, void> = (ctx, input) => {
+  ctx.link(input.child, input.parent);
+};
+
+const moveEdge: OperationHandler<Move, void> = (ctx, input) => {
+  ctx.relink(input.child, input.from, input.to);
+};
+
+/** The move lands, then the operation fails: nothing of it may survive. */
+const moveThenThrow: OperationHandler<Move, void> = (ctx, input) => {
+  ctx.relink(input.child, input.from, input.to);
+  throw new Error('boom after relink');
+};
+
+/** The move lands inside a sub-transaction that throws and is caught (#770). */
+const moveInCaughtAtomic: OperationHandler<Move, { caught: string }> = async (ctx, input) => {
+  try {
+    await ctx.atomic(() => {
+      ctx.relink(input.child, input.from, input.to);
+      throw new Error('inner boom');
+    });
+  } catch (err) {
+    return { caught: (err as Error).message };
+  }
+  return { caught: '' };
+};
+
+/** Every parent edge of one child, tombstones included, oldest object first. */
+const readEdges: OperationHandler<{ subject: string }, { object: string; revoked: boolean }[]> = (
+  ctx,
+  input,
+) =>
+  ctx.sql
+    .query<{ object: string; revoked_at: string | null }>(
+      `SELECT object, revoked_at FROM _substrat_tuples
+       WHERE subject = ? AND relation = 'parent' ORDER BY object`,
+      [input.subject],
+    )
+    .map((r) => ({ object: r.object, revoked: r.revoked_at !== null }));
+
+const readRelinked: OperationHandler<{ entityId: string }, unknown[]> = (ctx, input) =>
+  ctx.sql
+    .query<{ entity_type: string; payload: string; actor: string; operation: string | null }>(
+      `SELECT entity_type, payload, actor, operation FROM _substrat_outbox
+       WHERE type = 'entity.relinked' AND entity_id = ? ORDER BY id`,
+      [input.entityId],
+    )
+    .map((r) => ({ ...r, payload: JSON.parse(r.payload) }));
+
 /**
  * Run whatever SQL the caller hands over, through the connection module code holds (#1741).
  * The SQL-limits suite drives the same statement through both adapters with these and
@@ -740,6 +802,10 @@ const readNotes: OperationHandler<undefined, { id: string; body: string }[]> = (
 
 const linkOp: OperationHandler<{ child: EntityRef; parent: EntityRef }, void> = (ctx, input) => {
   ctx.link(input.child, input.parent);
+};
+
+const relinkOp: OperationHandler<Move, void> = (ctx, input) => {
+  ctx.relink(input.child, input.from, input.to);
 };
 
 const probeOp: OperationHandler<{ permission: PermissionKey; entity?: EntityRef }, unknown> = (
@@ -1112,6 +1178,13 @@ export const testMod: ModuleRegistration = {
     'testmod/add': addItem as OperationHandler<never, unknown>,
     'testmod/relink': relinkItem as OperationHandler<never, unknown>,
     'testmod/link-undeclared': linkUndeclared as OperationHandler<never, unknown>,
+    // #1864 — ctx.relink.
+    'testmod/link': linkEdge as OperationHandler<never, unknown>,
+    'testmod/move': moveEdge as OperationHandler<never, unknown>,
+    'testmod/move-then-throw': moveThenThrow as OperationHandler<never, unknown>,
+    'testmod/move-in-caught-atomic': moveInCaughtAtomic as OperationHandler<never, unknown>,
+    'testmod/read-edges': readEdges as OperationHandler<never, unknown>,
+    'testmod/read-relinked': readRelinked as OperationHandler<never, unknown>,
     // #1741 — the SQL limits' fixtures.
     'testmod/sql-query': sqlQuery as OperationHandler<never, unknown>,
     'testmod/sql-exec': sqlExec as OperationHandler<never, unknown>,
@@ -1406,6 +1479,7 @@ export const permMod: ModuleRegistration = {
   manifest: permModManifest,
   operations: {
     'perm/link': linkOp as OperationHandler<never, unknown>,
+    'perm/relink': relinkOp as OperationHandler<never, unknown>,
     'perm/probe': probeOp as OperationHandler<never, unknown>,
     'perm/authorized-emit': authorizedEmitOp as OperationHandler<never, unknown>,
     'perm/authorized-read': authorizedReadOp as OperationHandler<never, unknown>,

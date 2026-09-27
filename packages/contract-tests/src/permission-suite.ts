@@ -295,6 +295,87 @@ export function permissionContractSuite(
     });
 
     /**
+     * #1864. `ctx.link` had no inverse, so a "move" added a second parent and a grant above
+     * the old one kept reaching the entity forever. `ctx.relink` replaces the edge: access
+     * follows the move, over the tuple checker, on both adapters.
+     */
+    describe('access follows a relink (#1864)', () => {
+      const ivy: PrincipalId = principalId.parse(ulid()); // a grant on the OLD parent
+      const jon: PrincipalId = principalId.parse(ulid()); // a grant on the NEW parent
+      const kit: PrincipalId = principalId.parse(ulid()); // a grant at the top of a folder chain
+      const lee: PrincipalId = principalId.parse(ulid()); // two levels further down that chain
+      const item = (id: string): EntityRef => ({ entityType: 'item', entityId: id });
+      const box = (id: string): EntityRef => ({ entityType: 'box', entityId: id });
+      const folder = (id: string): EntityRef => ({ entityType: 'folder', entityId: id });
+      const link = async (child: EntityRef, parent: EntityRef) =>
+        (await host.getScope(alice, t1, s1)).invoke('perm/link', { child, parent });
+      const relink = async (child: EntityRef, from: EntityRef, to: EntityRef) =>
+        (await host.getScope(alice, t1, s1)).invoke('perm/relink', { child, from, to });
+      const grantOn = (principal: PrincipalId, entity: EntityRef) =>
+        host.admin.grant(staff, {
+          principalId: principal,
+          permission: PERM_READ,
+          node: { tenantId: t1, scopeId: s1 },
+          entity,
+          grantedBy: alice,
+        });
+
+      beforeAll(async () => {
+        await grantOn(ivy, box('mv-old'));
+        await grantOn(jon, box('mv-new'));
+        // A chain five deep: fd1 ← fd2 ← fd3 ← fd4 ← fd5.
+        for (let i = 2; i <= 5; i++) await link(folder(`fd${i}`), folder(`fd${i - 1}`));
+        await grantOn(kit, folder('fd1'));
+        await grantOn(lee, folder('fd3'));
+      });
+
+      it('the grant above the old parent stops reaching; the one above the new parent starts', async () => {
+        await link(item('mv1'), box('mv-old'));
+        await expect(probe(ivy, s1, PERM_READ, item('mv1'))).resolves.toMatchObject({ allowed: true });
+        await expect(probe(jon, s1, PERM_READ, item('mv1'))).resolves.toMatchObject({ allowed: false });
+
+        await relink(item('mv1'), box('mv-old'), box('mv-new'));
+
+        await expect(probe(ivy, s1, PERM_READ, item('mv1'))).resolves.toMatchObject({ allowed: false });
+        const d = await probe(jon, s1, PERM_READ, item('mv1'));
+        expect(d.allowed).toBe(true);
+        expect(JSON.stringify(d.proof)).toContain('"box:mv-new"');
+        expect(JSON.stringify(d.proof)).not.toContain('"box:mv-old"');
+      });
+
+      it('a refused relink moves nothing: the old grant still reaches', async () => {
+        await link(item('mv2'), box('mv-old'));
+        await expectRefusal(relink(item('mv2'), box('mv-elsewhere'), box('mv-new')), 'conflict');
+        await expectRefusal(
+          relink(item('mv2'), box('mv-old'), { entityType: 'widget', entityId: 'w1' }), // declared nowhere
+          'validation_failed',
+        );
+        await expect(probe(ivy, s1, PERM_READ, item('mv2'))).resolves.toMatchObject({ allowed: true });
+        await expect(probe(jon, s1, PERM_READ, item('mv2'))).resolves.toMatchObject({ allowed: false });
+      });
+
+      it('link after a relink away revives the edge, and the old access returns', async () => {
+        await link(item('mv3'), box('mv-old'));
+        await relink(item('mv3'), box('mv-old'), box('mv-new'));
+        await expect(probe(ivy, s1, PERM_READ, item('mv3'))).resolves.toMatchObject({ allowed: false });
+        await link(item('mv3'), box('mv-old'));
+        await expect(probe(ivy, s1, PERM_READ, item('mv3'))).resolves.toMatchObject({ allowed: true });
+      });
+
+      it('depth follows the new chain: four levels up reaches, five does not', async () => {
+        // item → fd4 → fd3 → fd2 → fd1: fd1 is four edges up.
+        await link(item('mv4'), box('mv-old'));
+        await relink(item('mv4'), box('mv-old'), folder('fd4'));
+        await expect(probe(kit, s1, PERM_READ, item('mv4'))).resolves.toMatchObject({ allowed: true });
+        // item → fd5 → … → fd1: five edges up, past the walk's depth.
+        await relink(item('mv4'), folder('fd4'), folder('fd5'));
+        await expect(probe(kit, s1, PERM_READ, item('mv4'))).resolves.toMatchObject({ allowed: false });
+        // The twin: fd3 is three edges up the new chain, so its grant reaches.
+        await expect(probe(lee, s1, PERM_READ, item('mv4'))).resolves.toMatchObject({ allowed: true });
+      });
+    });
+
+    /**
      * #1856. Module entity types are camelCase by convention, and the walk used to throw
      * on every tuple whose namespace carried an upper-case letter — so `ctx.link` wrote
      * an edge that `ctx.check` could not read back. The write verbs now hold refs to the

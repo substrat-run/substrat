@@ -198,7 +198,7 @@ re-checked, so you cannot share what you cannot see. Both are transactional with
 operation: if it rolls back, so does the share.
 
 This is the primitive for "share this record with a person", and neither alternative is it.
-A `ctx.link` edge is permanent and not revocable at all. Org membership is revocable but
+A `ctx.link` edge can be moved (`ctx.relink`) but never removed, so it is not a revoke. Org membership is revocable but
 coarse — a whole org, not one record — and minting an org per domain row to obtain a revoke
 is a known anti-pattern with an issue number attached to it.
 

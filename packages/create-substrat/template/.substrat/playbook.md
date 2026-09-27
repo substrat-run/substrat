@@ -76,9 +76,9 @@ Every vertical gets this whether or not it uses a single engine:
   an operation narrows a permission it already holds onto one entity, and withdraws it,
   with `ctx.grant(principal, perm, entityRef)` / `ctx.revoke(principal, perm, entityRef)`
   — entity-required, delegating (re-checks the caller's own decision), transactional with
-  the operation. Neither alternative is this: a `ctx.link` edge is permanent (not
-  revocable at all), and org membership is revocable but coarse-grained. Never mint an
-  org per domain row to get a revoke.
+  the operation. Neither alternative is this: a `ctx.link` edge can be moved
+  (`ctx.relink`) but never removed, so it is not a revoke, and org membership is
+  revocable but coarse-grained. Never mint an org per domain row to get a revoke.
 - **Events + audit** — every mutation emits a kernel-stamped event. Origin fields (tenant,
   scope, actor, time) are stamped by the kernel; your code cannot mislabel one.
 - **Migrations** — journaled per module, applied lazily per scope.

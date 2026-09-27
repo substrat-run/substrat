@@ -302,8 +302,9 @@ more than it holds), and transactional with the operation. Every later `ctx.chec
 the grant, so nothing else has to remember who may touch what.
 
 Neither alternative is this, so you can tell a real absence from this one: a `ctx.link`
-edge is **not revocable at all** — it is permanent — and org membership is revocable but
-coarse-grained — a whole org, not one record. Never mint an org per domain row, or a
+edge **can be moved but never removed** (`ctx.relink` replaces one parent with another), so
+it is not a revoke, and org membership is revocable but coarse-grained — a whole org, not
+one record. Never mint an org per domain row, or a
 membership table consulted by hand in every handler, to get a revoke. The two-line
 reference is the [todo demo](https://github.com/substrat-run/substrat/tree/main/demos/todo)
 (`src/module.ts`, `todo/share-list` and `todo/revoke-share`).

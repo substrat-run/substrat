@@ -137,8 +137,8 @@ derivation algebra**:
 1. **Role expansion** — principal has role, role carries permission.
 2. **Tenancy-tree inheritance** — permission at a node flows down to child scopes.
 3. **Entity parent edges** — declared in module manifests (`workorder → facility`) and
-   written at runtime via `ctx.link`; entity-narrowed grants flow along these edges,
-   depth-capped.
+   written at runtime via `ctx.link` and moved via `ctx.relink`; entity-narrowed grants
+   flow along these edges, depth-capped.
 4. **Org/group membership** — grants to an organization reach its members.
 
 No negation, no configurable rewrite rules. Verticals never see or author tuples — roles
@@ -296,12 +296,41 @@ Three guardrails make this non-escalating by construction:
   same as its rows and its events.
 
 Every later `ctx.check` reads the grant, so nothing else in the app has to remember who
-may touch what. Neither alternative is this: a `ctx.link` parent edge is **not revocable
-at all** — it is permanent — and org membership is revocable but coarse-grained (a whole
+may touch what. Neither alternative is this: a `ctx.link` parent edge **can be moved but
+never removed** (see [Moving an entity](#moving-an-entity)), so it is not a revoke, and org
+membership is revocable but coarse-grained (a whole
 org, not one record). The mistake this section exists to prevent is minting an org per domain row — or keeping a
 membership table consulted by hand in every handler — to get a revoke the kernel already
 has. The [todo demo](https://github.com/substrat-run/substrat/tree/main/demos/todo)
 (`src/module.ts`, `todo/share-list` and `todo/revoke-share`) is the two-line reference.
+
+### Moving an entity
+
+A document changes folder; a building changes management company. `ctx.relink(child, from,
+to)` replaces one parent edge with another in a single write, so **access follows the
+move**: a grant above the old parent stops reaching the entity, a grant above the new one
+starts, and no check in between ever sees it with no parent at all.
+
+```ts
+// Neither relink nor link checks a permission: the operation checks all three ends.
+assertAllowed(await ctx.check('docs:move', doc));     // may move this document
+assertAllowed(await ctx.check('folder:write', from)); // may take it out of here
+assertAllowed(await ctx.check('folder:write', to));   // may put it in there
+ctx.relink(doc, from, to);
+```
+
+The kernel holds the shape of the graph, not who may change it:
+
+- `to` must be a declared relation, exactly as for `ctx.link`, or the call is refused with
+  `validation_failed`. So is a `to` that is the entity itself or lies beneath it, which would
+  make it its own ancestor.
+- `from` must be a parent the entity has now, or the call is refused with `conflict`. An
+  entity with several parents keeps the others.
+- Moving to where it already is does nothing.
+- The old edge is kept as a revoked record, not deleted, and the move is one
+  `entity.relinked` event on the entity's timeline (`{ child, from, to }`), stamped with
+  the operation and actor like any event it emits.
+- It is transactional with the operation: if the operation throws, the entity never moved.
 
 ### The screen outlives the grant
 
