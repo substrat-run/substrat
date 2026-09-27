@@ -6000,10 +6000,10 @@ export function scopeHostContractSuite(
         (await stub()).invoke<Edge[]>('testmod/read-edges', {
           subject: `${child.entityType}:${child.entityId}`,
         });
-      const relinked = async (child: EntityRef) =>
+      const relinked = async (child: EntityRef, type?: string) =>
         (await stub()).invoke<
           { entity_type: string; payload: unknown; actor: string; operation: string | null }[]
-        >('testmod/read-relinked', { entityId: child.entityId });
+        >('testmod/read-relinked', { entityId: child.entityId, type });
 
       it('tombstones the old edge, writes the new one, and records ONE entity.relinked', async () => {
         await link(item('rl1'), box('rb1'));
@@ -6110,8 +6110,21 @@ export function scopeHostContractSuite(
 
       it('link revives an edge relink moved away from — INSERT OR IGNORE would have kept it dead', async () => {
         await link(item('rl7'), box('rb1'));
+        // The twin first: a first-time link records nothing, as it never has.
+        expect(await relinked(item('rl7'), 'entity.linked')).toEqual([]);
         await move(item('rl7'), box('rb1'), box('rb2'));
         await link(item('rl7'), box('rb1'));
+        // A revive resumes access a move stopped, so it is recorded: once, on the child.
+        const revives = await relinked(item('rl7'), 'entity.linked');
+        expect(revives).toHaveLength(1);
+        expect(revives[0]).toMatchObject({
+          entity_type: 'item',
+          operation: 'testmod/link',
+          payload: { child: item('rl7'), parent: box('rb1') },
+        });
+        // Linking a live edge again is still a no-op: no second event.
+        await link(item('rl7'), box('rb1'));
+        expect(await relinked(item('rl7'), 'entity.linked')).toHaveLength(1);
         expect(await edges(item('rl7'))).toEqual([
           { object: 'box:rb1', revoked: false },
           { object: 'box:rb2', revoked: false },
@@ -6119,6 +6132,8 @@ export function scopeHostContractSuite(
         // …and a move back onto a tombstone revives it the same way.
         await move(item('rl7'), box('rb2'), box('rb4'));
         await move(item('rl7'), box('rb4'), box('rb2'));
+        // That revive is part of a move, which entity.relinked already records.
+        expect(await relinked(item('rl7'), 'entity.linked')).toHaveLength(1);
         expect(await edges(item('rl7'))).toEqual([
           { object: 'box:rb1', revoked: false },
           { object: 'box:rb2', revoked: false },

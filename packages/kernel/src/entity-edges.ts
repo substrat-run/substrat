@@ -1,5 +1,7 @@
 import {
+  ENTITY_LINKED,
   ENTITY_RELINKED,
+  entityLinkedPayload,
   entityObjectRef,
   entityRelinkedPayload,
   substratError,
@@ -47,17 +49,24 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
   };
 
   /**
-   * Insert the edge, or REVIVE its tombstone. The primary key is (subject, relation,
-   * object), so an edge `relink` moved away from is still a row — and `INSERT OR IGNORE`
-   * would keep it dead while the caller was told it linked.
+   * Write the edge, or REVIVE its tombstone, and say which. The primary key is (subject,
+   * relation, object), so an edge `relink` moved away from is still a row — `INSERT OR
+   * IGNORE` alone would keep it dead while the caller was told it linked. Two statements
+   * rather than an upsert, because an upsert's `changes` cannot tell a revive from an insert.
    */
-  const writeEdge = (child: string, parent: string) => {
-    deps.sql.exec(
-      `INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, 'parent', ?)
-       ON CONFLICT (subject, relation, object) DO UPDATE SET revoked_at = NULL
-       WHERE revoked_at IS NOT NULL`,
+  const writeEdge = (child: string, parent: string): { revived: boolean } => {
+    const revived = deps.sql.exec(
+      `UPDATE _substrat_tuples SET revoked_at = NULL
+       WHERE subject = ? AND relation = 'parent' AND object = ? AND revoked_at IS NOT NULL`,
       [child, parent],
-    );
+    ).changes > 0;
+    if (!revived) {
+      deps.sql.exec(
+        `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, 'parent', ?)`,
+        [child, parent],
+      );
+    }
+    return { revived };
   };
 
   return {
@@ -66,7 +75,17 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
       const c = entityObjectRef(child, 'ctx.link'); // #1856: an edge the walk can read back
       const p = entityObjectRef(parent, 'ctx.link');
       assertDeclared('ctx.link', child, parent);
-      writeEdge(c, p);
+      // A first link records nothing, as it never has. A REVIVE resumes access a relink
+      // stopped, so it is recorded like the move was — the tombstone it clears is gone.
+      if (!writeEdge(c, p).revived) return;
+      const payload = entityLinkedPayload.parse({ child, parent }); // strips extra keys
+      deps.emit({
+        type: ENTITY_LINKED,
+        schemaVersion: 1,
+        entity: payload.child,
+        piiClass: 'none',
+        payload,
+      });
     },
 
     relink(child, from, to) {
@@ -111,8 +130,9 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
           `ctx.relink: ${t} is ${c} or lies beneath it — the move would make ${c} its own ancestor`,
         );
       }
-      // Tombstone (K-21), never DELETE: the old edge is evidence of why an access was once
-      // allowed. The walk skips it from the next check on, in this same transaction.
+      // Tombstone (K-21), never DELETE; the walk skips it from the next check on, in this same
+      // transaction. The lasting record is the event log, not the row: a later `link` back
+      // revives this row in place, and `entity.relinked` / `entity.linked` are what remain.
       deps.sql.exec(
         `UPDATE _substrat_tuples SET revoked_at = ?
          WHERE subject = ? AND relation = 'parent' AND object = ? AND revoked_at IS NULL`,

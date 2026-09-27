@@ -327,9 +327,10 @@ The kernel holds the shape of the graph, not who may change it:
 - `from` must be a parent the entity has now, or the call is refused with `conflict`. An
   entity with several parents keeps the others.
 - Moving to where it already is does nothing.
-- The old edge is kept as a revoked record, not deleted, and the move is one
-  `entity.relinked` event on the entity's timeline (`{ child, from, to }`), stamped with
-  the operation and actor like any event it emits.
+- The move is one `entity.relinked` event on the entity's timeline (`{ child, from, to }`),
+  stamped with the operation and actor like any event it emits. That event is the lasting
+  record: linking back to the old parent later brings the old edge back in place, and records
+  that as an `entity.linked` event.
 - It is transactional with the operation: if the operation throws, the entity never moved.
 
 ### The screen outlives the grant

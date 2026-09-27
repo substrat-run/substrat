@@ -700,12 +700,13 @@ const readEdges: OperationHandler<{ subject: string }, { object: string; revoked
     )
     .map((r) => ({ object: r.object, revoked: r.revoked_at !== null }));
 
-const readRelinked: OperationHandler<{ entityId: string }, unknown[]> = (ctx, input) =>
+/** One entity's kernel edge events — `entity.relinked` unless `type` names another. */
+const readRelinked: OperationHandler<{ entityId: string; type?: string }, unknown[]> = (ctx, input) =>
   ctx.sql
     .query<{ entity_type: string; payload: string; actor: string; operation: string | null }>(
       `SELECT entity_type, payload, actor, operation FROM _substrat_outbox
-       WHERE type = 'entity.relinked' AND entity_id = ? ORDER BY id`,
-      [input.entityId],
+       WHERE type = ? AND entity_id = ? ORDER BY id`,
+      [input.type ?? 'entity.relinked', input.entityId],
     )
     .map((r) => ({ ...r, payload: JSON.parse(r.payload) }));
 
