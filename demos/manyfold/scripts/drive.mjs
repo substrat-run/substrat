@@ -5,16 +5,21 @@
 // comes from the dev issuer's non-interactive door — POST /dev/token {sub} — the same
 // round-trip devLogin resolves for the real login (sharedIssuer: true, #1683). Run with
 // `pnpm --filter @substrat-run/demo-manyfold drive` once `pnpm dev` is up.
+import { DEV_CLIENT_ID } from '@substrat-run/dev-issuer';
 import { PERSONAS } from '../src/personas.js';
 
 const BASE = `http://localhost:${process.env.PORT ?? 8876}`;
 const ISSUER = process.env.OIDC_ISSUER ?? `http://localhost:${process.env.ISSUER_PORT ?? 8879}`;
+// devLogin's clientId — the audience a shared-issuer bearer must carry (#1683) — is
+// `OIDC_CLIENT_ID` if the server was started with it set, else the same DEV_CLIENT_ID
+// default. Minting against the wrong audience is a silent 401, not a mint failure.
+const AUDIENCE = process.env.OIDC_CLIENT_ID ?? DEV_CLIENT_ID;
 
 async function mintToken(sub) {
   const res = await fetch(`${ISSUER}/dev/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sub }),
+    body: JSON.stringify({ sub, audience: AUDIENCE }),
   });
   if (!res.ok) throw new Error(`mint failed for ${sub}: ${res.status} ${await res.text()}`);
   const { access_token } = await res.json();
