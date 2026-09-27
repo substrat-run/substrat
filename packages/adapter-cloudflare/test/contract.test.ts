@@ -4153,3 +4153,58 @@ moduleLogContractSuite('adapter-cloudflare', async () => {
     },
   };
 });
+
+/**
+ * #1856: `grantEntityLocal` writes an entity grant straight into a scope's tuples, as a
+ * worker does for a portal seat. It holds the ref to the same grammar as `ctx.grant`,
+ * and its well-formed twin, a camelCase type, is walked like any other.
+ */
+describe('#1856 — grantEntityLocal refuses a ref the permission graph cannot hold', () => {
+  let host: CloudflareScopeHost;
+  const staff = platformActorId.parse(ulid());
+  const who = principalId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const READ = permissionKey.parse('perm:read');
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(permMod);
+    await host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+    await host.admin.grantEntitlement(staff, t, 'perm');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'perm-vertical' });
+    await host.admin.activateScope(staff, t, s);
+  });
+
+  afterAll(async () => {
+    await host.close();
+  });
+
+  const probe = async (entity: { entityType: string; entityId: string }) =>
+    (await host.getScope(who, t, s)).invoke<{ allowed: boolean }>('perm/probe', { permission: READ, entity });
+
+  it.each([
+    ['a colon in the type', { entityType: 'ai:Turn', entityId: 't1' }],
+    ['a space in the id', { entityType: 'aiTurn', entityId: 't 1' }],
+    ['an empty id', { entityType: 'aiTurn', entityId: '' }],
+    ['a kernel namespace as the type', { entityType: 'Scope', entityId: 't1' }],
+  ])('refuses %s with validation_failed', async (_what, entity) => {
+    const err = await host.grantEntityLocal(s, who, READ, entity).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(errorCodeOf(err)).toBe('validation_failed');
+    expect((err as Error).message).toMatch(/^grantEntityLocal: malformed entity ref/);
+  });
+
+  it('grants a camelCase entity, and the check reads it back', async () => {
+    const entity = { entityType: 'aiTurn', entityId: 't9' };
+    await expect(probe(entity)).resolves.toMatchObject({ allowed: false });
+    await host.grantEntityLocal(s, who, READ, entity);
+    await expect(probe(entity)).resolves.toMatchObject({ allowed: true });
+  });
+});

@@ -438,6 +438,21 @@ export function permissionContractSuite(
         await expect(probe(gus, s1, PERM_USE, item)).resolves.toMatchObject({ allowed: true });
       });
 
+      it('HostAdmin.grantToOrg narrowed onto an entity refuses the same refs; its twin is granted', async () => {
+        const node = { tenantId: t1, scopeId: s1 };
+        for (const bad of [
+          { entityType: 'ai:Turn', entityId: 't1' },
+          { entityType: 'aiTurn', entityId: 't 1' },
+          { entityType: 'Scope', entityId: s1 },
+        ]) {
+          await expectRefusal(host.admin.grantToOrg(staff, acme, PERM_USE, node, bad), 'validation_failed');
+        }
+        // erin reaches acme's grants through membership (rule 4).
+        await expect(probe(erin, s1, PERM_USE, turn('t5'))).resolves.toMatchObject({ allowed: false });
+        await host.admin.grantToOrg(staff, acme, PERM_USE, node, turn('t5'));
+        await expect(probe(erin, s1, PERM_USE, turn('t5'))).resolves.toMatchObject({ allowed: true });
+      });
+
       it('ctx.revoke does NOT refuse on grammar: it writes nothing to read back, and must stay able to remove an old grant', async () => {
         const stub = await host.getScope(alice, t1, s1);
         await expect(
