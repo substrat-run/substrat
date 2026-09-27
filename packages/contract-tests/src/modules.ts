@@ -676,6 +676,17 @@ const moveInCaughtAtomic: OperationHandler<Move, { caught: string }> = async (ct
   return { caught: '' };
 };
 
+/** Emit an event of whatever type the caller names — the forge a reserved type must refuse. */
+const emitType: OperationHandler<{ type: string }, void> = (ctx, input) => {
+  ctx.emit({
+    type: input.type,
+    schemaVersion: 1,
+    entity: { entityType: 'item', entityId: 'forged' },
+    piiClass: 'none',
+    payload: {},
+  });
+};
+
 /** Every parent edge of one child, tombstones included, oldest object first. */
 const readEdges: OperationHandler<{ subject: string }, { object: string; revoked: boolean }[]> = (
   ctx,
@@ -1177,6 +1188,7 @@ export const testMod: ModuleRegistration = {
     'testmod/move-in-caught-atomic': moveInCaughtAtomic as OperationHandler<never, unknown>,
     'testmod/read-edges': readEdges as OperationHandler<never, unknown>,
     'testmod/read-relinked': readRelinked as OperationHandler<never, unknown>,
+    'testmod/emit-type': emitType as OperationHandler<never, unknown>,
     // #1741 — the SQL limits' fixtures.
     'testmod/sql-query': sqlQuery as OperationHandler<never, unknown>,
     'testmod/sql-exec': sqlExec as OperationHandler<never, unknown>,

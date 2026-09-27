@@ -417,6 +417,19 @@ export const entityRelinkedPayload = z.object({
 });
 export type EntityRelinkedPayload = z.infer<typeof entityRelinkedPayload>;
 
+/**
+ * `ctx.link` brought back an edge a relink had tombstoned (#1864) — access that had stopped
+ * resumes, so it is recorded like the move that stopped it. A first-time link emits nothing,
+ * as it never has. Entity: the child.
+ */
+export const ENTITY_LINKED = 'entity.linked';
+
+export const entityLinkedPayload = z.object({
+  child: entityRef,
+  parent: entityRef,
+});
+export type EntityLinkedPayload = z.infer<typeof entityLinkedPayload>;
+
 // 'member' | 'parent' | 'role:staff' | 'granted:workorder:read' …
 export const relationName = z.string().regex(/^[a-z0-9_:-]+$/);
 

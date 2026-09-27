@@ -11,6 +11,7 @@ import {
   instant,
   objectRef,
   entityObjectRef,
+  assertModuleEmittableType,
   toWireFailure,
   type WireFailure,
   grantRefFromProof,
@@ -674,6 +675,20 @@ const KERNEL_DDL = `
  * In-process — the SQLite adapter, a handler in the same isolate — the real class
  * arrives and `errorCodeOf` reads it directly.
  */
+/**
+ * #1864: the kernel's own events (attachments, capability exchanges) written through the
+ * context an operation runs in, WITHOUT `ctx.emit`'s refusal of kernel-authored types. Keyed
+ * by the context object and never exported, so module code — which can reach `ctx` but not
+ * this map — cannot write one. Registered as each context is built.
+ */
+const kernelEmitters = new WeakMap<OperationContext, (event: DomainEventInput) => void>();
+
+function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
+  const write = kernelEmitters.get(ctx);
+  if (!write) throw new Error('kernelEmit: not an operation context this host built');
+  write(event);
+}
+
 function toRpcError(err: unknown): Error {
   if (err instanceof Error) {
     return err.constructor === Error ? err : new Error(err.message);
@@ -2815,7 +2830,7 @@ export function defineScopeDO(
               parsed.createdBy,
               parsed.createdAt,
             );
-            ctx.emit({
+            kernelEmit(ctx, {
               type: ATTACHMENT_ADDED,
               schemaVersion: 1,
               entity: parsed.entity,
@@ -2947,7 +2962,7 @@ export function defineScopeDO(
             );
             assertAllowed(await ctx.check(gate.write, record.entity));
             this.sql.exec('DELETE FROM _substrat_attachments WHERE id = ?', attachmentId);
-            ctx.emit({
+            kernelEmit(ctx, {
               type: ATTACHMENT_REMOVED,
               schemaVersion: 1,
               entity: record.entity,
@@ -3506,7 +3521,7 @@ export function defineScopeDO(
               // pseudo-operation name — the actor is the capability, as on every event it
               // goes on to cause.
               emit: (capability, event) =>
-                this.operationContext(
+                kernelEmit(this.operationContext(
                   principalId.parse(ulid()),
                   tenantId,
                   scopeId,
@@ -3519,7 +3534,7 @@ export function defineScopeDO(
                   capability,
                   [],
                   now,
-                ).emit(event),
+                ), event),
             },
             secret,
             mode,
@@ -5195,6 +5210,65 @@ export function defineScopeDO(
         return checker.covers(subject, role.permissions, { tenantId, scopeId });
       };
 
+      // ctx.emit's writer, and the kernel's own events' (#1864): one path to the outbox, with the
+      // reserved-type refusal applied to module code only. Never handed to module code as-is.
+      const writeEvent = (event: DomainEventInput, author: 'module' | 'kernel'): void => {
+        assertImpersonationWrites(impersonation, 'ctx.emit');
+        const parsed = domainEventInput.parse(event);
+        // #1864: a kernel-authored type is the kernel's to write — module code cannot forge one.
+        if (author === 'module') assertModuleEmittableType(parsed.type);
+        // #1672: the COMPLETE parsed event — entity id, type and subject as well as payload.
+        assertNoSecret('ctx.emit', parsed, minted);
+        const full = domainEvent.parse({
+          ...parsed,
+          // #956: from the operation's instant, not a second reading of the clock.
+          // `ORDER BY id` is how the outbox and every timeline page, so an id whose
+          // timestamp disagreed with its own `occurredAt` sorted the log by a clock
+          // nothing else in the operation used.
+          id: eventId.parse(mintEventId(Date.parse(at))),
+          occurredAt: at,
+          tenantId,
+          scopeId,
+          actor: systemActor ?? derivedActor,
+          ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
+          ...(stamp ? { impersonation: stamp } : {}),
+          // #1231: kernel-stamped like the two above — `domainEventInput.parse`
+          // already stripped anything module code tried to smuggle under this key.
+          ...(operation ? { operation } : {}),
+        });
+        sql.exec(
+          `INSERT INTO _substrat_outbox
+             (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
+              entity_type, entity_id, pii_class, subject_id, authorization,
+              impersonation, operation, version, caused_by, invocation_id, payload)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          full.id,
+          full.type,
+          full.schemaVersion,
+          full.occurredAt,
+          full.tenantId,
+          full.scopeId,
+          JSON.stringify(full.actor),
+          full.entity.entityType,
+          full.entity.entityId,
+          full.piiClass,
+          full.subjectId ?? null,
+          full.authorization ? JSON.stringify(full.authorization) : null,
+          full.impersonation ? JSON.stringify(full.impersonation) : null,
+          full.operation ?? null,
+          // #1242: script configuration, not envelope data — the version is a fact
+          // about the deploy, so it never rides `DomainEvent` for module code to
+          // branch on; it exists for the observability joins the column serves.
+          this.env.SUBSTRAT_VERSION_ID ?? null,
+          // #1237: whatever delivery is in flight, if any — read off the DO the same
+          // way the version is read off its env. A fact about the surrounding
+          // dispatch, never envelope data module code could set or branch on.
+          this.causedBy,
+          // #1237: a fact about the surrounding CALL, like the version above.
+          this.invocationId,
+          full.payload === undefined ? null : JSON.stringify(full.payload),
+        );
+      };
       const ctxRef: OperationContext = {
         tenantId,
         scopeId,
@@ -5216,61 +5290,7 @@ export function defineScopeDO(
           // log's text is not JSON.
           redact: (text) => redactSecretText(text, minted),
         }),
-        emit: (event: DomainEventInput) => {
-          assertImpersonationWrites(impersonation, 'ctx.emit');
-          const parsed = domainEventInput.parse(event);
-          // #1672: the COMPLETE parsed event — entity id, type and subject as well as payload.
-          assertNoSecret('ctx.emit', parsed, minted);
-          const full = domainEvent.parse({
-            ...parsed,
-            // #956: from the operation's instant, not a second reading of the clock.
-            // `ORDER BY id` is how the outbox and every timeline page, so an id whose
-            // timestamp disagreed with its own `occurredAt` sorted the log by a clock
-            // nothing else in the operation used.
-            id: eventId.parse(mintEventId(Date.parse(at))),
-            occurredAt: at,
-            tenantId,
-            scopeId,
-            actor: systemActor ?? derivedActor,
-            ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
-            ...(stamp ? { impersonation: stamp } : {}),
-            // #1231: kernel-stamped like the two above — `domainEventInput.parse`
-            // already stripped anything module code tried to smuggle under this key.
-            ...(operation ? { operation } : {}),
-          });
-          sql.exec(
-            `INSERT INTO _substrat_outbox
-               (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
-                entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, operation, version, caused_by, invocation_id, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            full.id,
-            full.type,
-            full.schemaVersion,
-            full.occurredAt,
-            full.tenantId,
-            full.scopeId,
-            JSON.stringify(full.actor),
-            full.entity.entityType,
-            full.entity.entityId,
-            full.piiClass,
-            full.subjectId ?? null,
-            full.authorization ? JSON.stringify(full.authorization) : null,
-            full.impersonation ? JSON.stringify(full.impersonation) : null,
-            full.operation ?? null,
-            // #1242: script configuration, not envelope data — the version is a fact
-            // about the deploy, so it never rides `DomainEvent` for module code to
-            // branch on; it exists for the observability joins the column serves.
-            this.env.SUBSTRAT_VERSION_ID ?? null,
-            // #1237: whatever delivery is in flight, if any — read off the DO the same
-            // way the version is read off its env. A fact about the surrounding
-            // dispatch, never envelope data module code could set or branch on.
-            this.causedBy,
-            // #1237: a fact about the surrounding CALL, like the version above.
-            this.invocationId,
-            full.payload === undefined ? null : JSON.stringify(full.payload),
-          );
-        },
+        emit: (event: DomainEventInput) => writeEvent(event, 'module'),
         requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
           assertImpersonationWrites(impersonation, 'ctx.requestPlatform');
           const input = platformRequestInput.parse(request);
@@ -5434,7 +5454,7 @@ export function defineScopeDO(
           subject: systemActor ? { kind: 'system', id: systemActor.system as ModuleId } : subject,
           now: at,
           check: runCheck,
-          emit: (event) => ctxRef.emit(event),
+          emit: (event) => writeEvent(event, 'kernel'),
           isOperation: (name) => this.operations.has(name),
           assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
           minted,
@@ -5444,7 +5464,7 @@ export function defineScopeDO(
           sql: doSpineSql(sql),
           relations,
           now: at,
-          emit: (event) => ctxRef.emit(event),
+          emit: (event) => writeEvent(event, 'kernel'),
           assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
         }),
         entitlement: async (key: string): Promise<EntitlementView | null> => {
@@ -5477,6 +5497,7 @@ export function defineScopeDO(
           return sealTo({ keyId: row.key_id, publicKey: row.public_key }, plaintext);
         },
       };
+      kernelEmitters.set(ctxRef, (event) => writeEvent(event, 'kernel'));
       return ctxRef;
     }
 

@@ -19,6 +19,7 @@ import {
   SCOPE_QUERY_ROW_MAX,
   type EntityRef,
   type ErrorCode,
+  KERNEL_AUTHORED_EVENT_TYPES,
   type OrgId,
   type PlatformRequest,
   type PlatformRequestId,
@@ -6020,6 +6021,21 @@ export function scopeHostContractSuite(
           payload: { child: item('rl1'), from: box('rb1'), to: box('rb2') },
         });
         expect(JSON.parse(events[0]!.actor)).toBe(alice); // a principal actor is its bare id
+      });
+
+      it.each([...KERNEL_AUTHORED_EVENT_TYPES])('ctx.emit refuses the kernel-authored type %s', async (type) => {
+        await expectRefusal(
+          (await stub()).invoke('testmod/emit-type', { type }),
+          'validation_failed',
+          /the kernel authors that event type itself/,
+        );
+      });
+
+      it('the twin: an ordinary type still emits — and relink still writes its own event', async () => {
+        await (await stub()).invoke('testmod/emit-type', { type: 'testmod.ordinary' });
+        await link(item('rl-twin'), box('rb1'));
+        await move(item('rl-twin'), box('rb1'), box('rb2'));
+        expect(await relinked(item('rl-twin'))).toHaveLength(1);
       });
 
       it('refuses a `from` that is not a live parent with conflict — and its twin moves', async () => {
