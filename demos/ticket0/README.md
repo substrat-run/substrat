@@ -98,9 +98,13 @@ anything (reaped session, reseeded desk) is thrown away and replaced silently ra
 shown to the visitor as an id.
 
 Replies arrive by **polling** — 1.5s while an answer is outstanding, 10s idle, and not at
-all in a hidden tab. That is a stopgap and `widget.js` says so: the right answer is a
-WebSocket on the scope's own Durable Object, and neither the router nor the DO carries an
-`Upgrade` today, so it is platform work rather than a change to that file.
+all in a hidden tab. That is a stopgap and `widget.js` says so. The inbox and the
+conversation view are pushed to over the desk's live-read WebSocket (`GET /api/live`,
+`harness/live.ts`, #938): a frame names what changed and the screen re-reads it, with the
+poll kept as a slow floor. The widget cannot subscribe yet, because a visitor has no principal
+for the scope to filter frames against, only a session token. A feed narrowed to one
+conversation is platform work (#1853). On the dev server the route answers 501, since the
+node host has no live reads, and every screen polls as before.
 
 The script is served by the dev server from `src/server.ts` with
 `access-control-allow-origin: *` — the script is public, the API behind it is not. A

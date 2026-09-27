@@ -350,11 +350,15 @@
    * wants none at all. So the interval follows the state instead of being one number,
    * and a hidden tab stops entirely and catches up when it comes back.
    *
-   * This is a stopgap and worth naming as one. The right answer is a live connection,
-   * and on this platform that means a WebSocket on the scope's own Durable Object —
-   * the per-scope coordination point that already exists — rather than SSE, which
-   * still needs something to push into it. Neither the router nor the DO carries an
-   * Upgrade today, so that is platform work, not a change to this file.
+   * This is a stopgap and worth naming as one. The desk's inbox is pushed to now, over
+   * the scope's live-read WebSocket (#938), and this panel is not, for a reason that is
+   * about who the visitor is rather than about transport. A live read filters every
+   * frame against the SUBSCRIBER's grants, and a visitor has no principal: every widget
+   * call runs as the desk's one shared widget service, confined to one conversation by
+   * the session token rather than by a grant. Subscribing as that service would hand
+   * each visitor every other visitor's changes. What would let this file subscribe is a
+   * feed narrowed to the one conversation the token names, which is platform work
+   * (#1853). Until then this is the poll.
    */
   var FAST = 1500;
   var IDLE = 10000;

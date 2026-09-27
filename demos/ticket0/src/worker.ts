@@ -105,6 +105,7 @@ import {
 } from '../harness/assistant.js';
 import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { mountKbRefresh } from '../harness/kb-refresh.js';
+import { mountLiveReads } from '../harness/live.js';
 import { senderFor, sweepOutbound } from '../harness/relay.js';
 import { inboundConfigFor, receiveInbound } from '../harness/inbound.js';
 import { mountInvites, recordStaffProfile } from '../harness/invites.js';
@@ -1098,6 +1099,22 @@ app.post('/api/email/inbound', async (c) => {
     console.error('ticket0: inbound mail ingest failed', { scope: node.scopeId, error: errorText(error) });
     return c.json({ error: 'ingest failed' }, 500);
   }
+});
+
+// ── Live reads (#938) ────────────────────────────────────────────────────────
+
+// The change feed the inbox and the conversation view hold open (`harness/live.ts`),
+// registered before `mountApi` so the declared table never sees the path. The caller
+// is resolved exactly as `stub` resolves one. What they are then told is the scope's
+// decision, frame by frame, not this route's.
+mountLiveReads(app, {
+  live: (c) => hostFor(c.env as Env).liveReads,
+  subscriber: async (c) => {
+    const env = c.env as Env;
+    const node = nodeFor(c.req.raw, env);
+    const principal = await principalFor(env, c.req.raw);
+    return principal ? { ...node, principal } : null;
+  },
 });
 
 // ── The declared API, the spec, and the platform contract ────────────────────

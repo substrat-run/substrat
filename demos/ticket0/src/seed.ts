@@ -90,8 +90,12 @@ export interface World {
  * behaviour is a function of `ctx.now()` moving past `snoozed_until`, and a test that
  * waited for the wall clock would either sleep or assert nothing. Omitted — every
  * other caller, including the dev server — the host reads the wall clock.
+ *
+ * Typed as the concrete host rather than the contract so that what it CANNOT do stays
+ * visible to the caller: its `liveReads` is `never`, which is how the dev server's
+ * live route knows to answer 501 (#938) without a cast.
  */
-export function buildHost(dir: string, clock?: Clock): ScopeHost {
+export function buildHost(dir: string, clock?: Clock): SqliteScopeHost {
   const host = new SqliteScopeHost(clock ? { dir, clock } : { dir });
   for (const m of MODULES) host.registerModule(m);
   return host;

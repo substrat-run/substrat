@@ -46,6 +46,7 @@ import { startDemoSites } from '../harness/demo-site.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
 import { confirmationEmail, mountSignupSurface } from '../harness/signups.js';
 import { mountInvites } from '../harness/invites.js';
+import { mountLiveReads } from '../harness/live.js';
 import { devInviteDesk } from '../harness/dev-invites.js';
 
 /**
@@ -115,6 +116,16 @@ async function boot() {
     if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
     return host.getScope(caller.principal, caller.tenantId, caller.scopeId);
   };
+  // The same live route the worker mounts (#938), on a host that has no live reads: it
+  // answers 501, and the screens go on polling exactly as they did before it existed.
+  // Registered before `mountApi`, as the worker registers it.
+  mountLiveReads(app, {
+    live: () => host.liveReads,
+    subscriber: async (c) => {
+      const caller = await login.caller(c.req.raw.headers);
+      return caller ? { tenantId: caller.tenantId, scopeId: caller.scopeId, principal: caller.principal } : null;
+    },
+  });
   // The MCP endpoint's RFC 9728 document, naming the issuer this desk actually verifies
   // against. The WORKER has always passed this (`authorizationServersOf`); the dev server
   // did not, so the local MCP surface answered a 401 that pointed nowhere while the hosted

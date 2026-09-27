@@ -33,11 +33,13 @@
  * roster note reaches the one sweeper DO both files share. One file, one module instance.
  * The third (#1653) is here for the same reason: provisioning a desk twice must leave the
  * state provisioning it once did. So is the fourth (#1648): a snooze pausing the resolution
- * target, read and written by the sweep's own schedules on a Durable Object's SQLite.
+ * target, read and written by the sweep's own schedules on a Durable Object's SQLite. So is
+ * the fifth (#938): the live feed, whose frames come from the scope DO's fan-out.
  */
 import { SELF, env, fetchMock, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  permissionKey,
   principalId,
   scopeId,
   tenantId,
@@ -609,5 +611,254 @@ describe("ticket0 on workerd — a reconcile repairs the desk's places at its id
     expect(second.body()).toMatchObject({ op: 'replace', subs: ['sub-owner'] });
 
     expect((await platform('/internal/delete-scope', { scopeId: desk })).status).toBe(200);
+  });
+});
+
+/**
+ * #938 through the deployed worker: `GET /api/live`, the desk's change feed, reached the
+ * way a browser reaches it (routed, signed in, an upgrade), with the frames arriving from
+ * the scope's real fan-out. What a push must never do is tell someone about a thing they
+ * could not have read by polling, so every negative here has a positive twin driven by the
+ * SAME write, in the same moment:
+ *
+ *   - an internal note on a customer's own thread reaches the agent and not the customer,
+ *     whose read-own reaches that thread's messages through the parent walk, and whose
+ *     `my-messages` would never show them the note;
+ *   - a follower, holding `conversation:read` narrowed onto ONE conversation, hears that
+ *     conversation and not the one beside it;
+ *   - a handshake from another origin is refused before anything is subscribed, and the
+ *     same request from the desk's own origin is not.
+ *
+ * Signed in with a bearer the test signs itself, against a `fetchMock` issuer: the route
+ * resolves a caller exactly as every other `/api` route does, and the bearer path is the
+ * one of those a test can drive without a browser's cookie jar.
+ */
+describe("ticket0 on workerd — the live feed tells a subscriber only what they could read (#938)", () => {
+  const tenant = tenantId.parse(ulid());
+  const desk = scopeId.parse(ulid());
+  const deskOwner = principalId.parse(ulid());
+  const ISSUER = 'https://auth.live.test';
+  const ORIGIN = 'https://desk.ticket0.test';
+  const directory = () => env.AUTH.get(env.AUTH.idFromName(tenant));
+  let signingKey: CryptoKey;
+
+  const b64url = (bytes: ArrayBuffer | Uint8Array): string =>
+    btoa(String.fromCharCode(...new Uint8Array(bytes)))
+      .replaceAll('+', '-')
+      .replaceAll('/', '_')
+      .replace(/=+$/, '');
+  const encodeJson = (value: unknown): string => b64url(new TextEncoder().encode(JSON.stringify(value)));
+
+  /** A bearer the issuer signed for `sub`. */
+  async function bearerFor(sub: string): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
+    const head = `${encodeJson({ alg: 'RS256', kid: 'live-1', typ: 'JWT' })}.${encodeJson({
+      iss: ISSUER,
+      sub,
+      iat: now,
+      exp: now + 300,
+    })}`;
+    const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', signingKey, new TextEncoder().encode(head));
+    return `${head}.${b64url(signature)}`;
+  }
+
+  /** The handshake, as the router forwards a browser's. */
+  function handshake(headers: Record<string, string>): Promise<Response> {
+    return SELF.fetch(`${ORIGIN}/api/live`, {
+      headers: {
+        upgrade: 'websocket',
+        connection: 'Upgrade',
+        'sec-websocket-version': '13',
+        'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        'x-substrat-tenant': tenant,
+        'x-substrat-scope': desk,
+        'x-substrat-router': env.ROUTER_SECRET,
+        ...headers,
+      },
+    });
+  }
+
+  interface Frame {
+    kind: string;
+    type: string;
+    entityType: string;
+    entityId: string;
+  }
+
+  /** A subscriber's open socket, and every frame it has received. */
+  async function subscribe(sub: string): Promise<{ frames: Frame[]; close: () => void }> {
+    const response = await handshake({ origin: ORIGIN, authorization: `Bearer ${await bearerFor(sub)}` });
+    expect(response.status).toBe(101);
+    const ws = response.webSocket!;
+    ws.accept();
+    const frames: Frame[] = [];
+    ws.addEventListener('message', (event) => {
+      const data = String((event as MessageEvent).data);
+      if (data !== 'pong') frames.push(JSON.parse(data) as Frame);
+    });
+    return { frames, close: () => ws.close(1000, 'test over') };
+  }
+
+  /**
+   * Let what the fan-out sent arrive. The fan-out is awaited inside the invoke, but a
+   * socket delivers on a later turn. It is also what gives the negatives their teeth:
+   * "nothing arrived" is asserted after the same wait in which something did arrive for
+   * the positive twin.
+   */
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 100));
+
+  /** Bind `sub` to a new principal in this desk, holding `role`. */
+  async function member(sub: string, role: string): Promise<PrincipalId> {
+    const principal = principalId.parse(ulid());
+    await directory().createInvite(desk, principal, role, null, `hash-${sub}`);
+    expect(await directory().claimInvite(desk, sub, `hash-${sub}`)).toBe(principal);
+    await host().assignScopeRole(desk, principal, role);
+    return principal;
+  }
+
+  let mailed = 0;
+  /** A conversation that arrived by mail from `email`: its id, and its contact's. */
+  async function arrival(email: string): Promise<{ conversation: string; contact: string }> {
+    const services = await env.AUTH.get(env.AUTH.idFromName(tenant)).getScopeConfig(desk);
+    const relay = principalId.parse((JSON.parse(services['ticket0:services']!) as { relay: string }).relay);
+    const message = await (await host().getScope(relay, tenant, desk)).invoke<{ conversation_id: string }>(
+      'ticket0/ingest-message',
+      {
+        conversationId: null,
+        contactEmail: email,
+        contactName: 'Live',
+        subject: 'Is anyone there?',
+        bodyText: 'Asking live.',
+        emailMessageId: `<live-${(mailed += 1)}@mail.example>`,
+      },
+    );
+    const conversation = await (await host().getScope(deskOwner, tenant, desk)).invoke<{ contact_id: string }>(
+      'ticket0/get-conversation',
+      { conversationId: message.conversation_id },
+    );
+    return { conversation: message.conversation_id, contact: conversation.contact_id };
+  }
+
+  const note = async (conversationId: string, body: string) =>
+    (await host().getScope(deskOwner, tenant, desk)).invoke<{ id: string }>('ticket0/post-note', {
+      conversationId,
+      body,
+    });
+
+  beforeAll(async () => {
+    const pair = (await crypto.subtle.generateKey(
+      { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    signingKey = pair.privateKey;
+    const jwk = (await crypto.subtle.exportKey('jwk', pair.publicKey)) as JsonWebKey;
+
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    fetchMock
+      .get(ISSUER)
+      .intercept({ method: 'GET', path: '/.well-known/openid-configuration' })
+      .reply(200, { issuer: ISSUER, jwks_uri: `${ISSUER}/jwks`, authorization_endpoint: `${ISSUER}/authorize` })
+      .persist();
+    fetchMock
+      .get(ISSUER)
+      .intercept({ method: 'GET', path: '/jwks' })
+      .reply(200, { keys: [{ ...jwk, alg: 'RS256', kid: 'live-1', use: 'sig' }] })
+      .persist();
+
+    const install = { tenantId: tenant, scopeId: desk, owner: deskOwner, entitlements };
+    expect((await platform('/internal/provision', install)).status).toBe(201);
+    expect(
+      (
+        await platform('/internal/configure', {
+          tenantId: tenant,
+          scopeId: desk,
+          entries: [
+            {
+              key: 'substrat:auth',
+              value: JSON.stringify({ mode: 'oidc', issuer: ISSUER, clientId: 'desk-client', clientSecret: 'desk-secret' }),
+            },
+          ],
+        })
+      ).status,
+    ).toBe(200);
+    // The owner's first sign-in, inside the window, claims the seat.
+    expect(await directory().resolvePrincipal(desk, 'sub-owner')).toBe(deskOwner);
+  });
+  afterAll(() => fetchMock.deactivate());
+
+  it("sends an agent the note on a customer's thread, and sends the customer nothing", async () => {
+    await member('sub-agent', 'agent');
+    const customer = await member('sub-customer', 'customer');
+    const theirs = await arrival('customer@live.example');
+    // The portal grant exactly as an accepted customer invite makes it: read-own on
+    // their own contact, reaching their conversations through the parent edge.
+    await host().grantEntityLocal(desk, customer, permissionKey.parse('conversation:read-own'), {
+      entityType: 'contact',
+      entityId: theirs.contact,
+    });
+    // The customer really can read this thread by polling. So what they are denied
+    // below is the note, not the conversation.
+    const portal = await host().getScope(customer, tenant, desk);
+    await expect(
+      portal.invoke<Page<unknown>>('ticket0/my-messages', { conversationId: theirs.conversation }),
+    ).resolves.toMatchObject({ entries: [expect.anything()] });
+
+    const agentFeed = await subscribe('sub-agent');
+    const customerFeed = await subscribe('sub-customer');
+    const written = await note(theirs.conversation, 'Customer is on the enterprise plan; loop in billing.');
+    await settle();
+
+    expect(agentFeed.frames).toContainEqual(
+      expect.objectContaining({ kind: 'change', type: 'ticket0.note-posted', entityType: 'message', entityId: written.id }),
+    );
+    expect(customerFeed.frames).toEqual([]);
+    // And the note is exactly what polling keeps from them, which is why the push must.
+    const polled = await portal.invoke<Page<{ id: string }>>('ticket0/my-messages', {
+      conversationId: theirs.conversation,
+    });
+    expect(polled.entries.map((m) => m.id)).not.toContain(written.id);
+
+    agentFeed.close();
+    customerFeed.close();
+  });
+
+  it('sends a follower the conversation they follow, and not the one beside it', async () => {
+    const follower = await member('sub-follower', 'customer');
+    const followed = await arrival('followed@live.example');
+    const beside = await arrival('beside@live.example');
+    await host().grantEntityLocal(desk, follower, permissionKey.parse('conversation:read'), {
+      entityType: 'conversation',
+      entityId: followed.conversation,
+    });
+
+    const feed = await subscribe('sub-follower');
+    const onFollowed = await note(followed.conversation, 'Following along.');
+    const onBeside = await note(beside.conversation, 'Not for the follower.');
+    await settle();
+
+    const ids = feed.frames.map((f) => f.entityId);
+    expect(ids).toContain(onFollowed.id);
+    expect(ids).not.toContain(onBeside.id);
+    feed.close();
+  });
+
+  it("refuses a handshake from another origin, and takes the same one from the desk's own", async () => {
+    const authorization = `Bearer ${await bearerFor('sub-owner')}`;
+    const foreign = await handshake({ origin: 'https://other-tenant.ticket0.test', authorization });
+    expect(foreign.status).toBe(403);
+    expect(foreign.webSocket).toBeNull();
+
+    const own = await handshake({ origin: ORIGIN, authorization });
+    expect(own.status).toBe(101);
+    own.webSocket!.accept();
+    own.webSocket!.close(1000, 'test over');
+  });
+
+  it('refuses a handshake nobody signed in to', async () => {
+    const anonymous = await handshake({ origin: ORIGIN });
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.webSocket).toBeNull();
   });
 });

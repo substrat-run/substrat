@@ -17,6 +17,7 @@ making that trade.
 | `kb-ingest.ts` | Fetches and parses a documentation corpus into citable articles. |
 | `demo-site.ts` | Two fake customer websites, so the widget's calls are genuinely cross-origin. |
 | `invites.ts` | How a second person reaches this desk: mint a principal, grant it a role, hand back a one-time link. Mounted by both hosts, because a flow that exists only in the deployment nobody runs locally cannot be demoed or tested. |
+| `live.ts` | `GET /api/live`, the desk's change feed as a WebSocket (#938), mounted by both hosts. It checks the page is the desk's own (`Origin`) and asks the host whether it has live reads at all (the node host does not, so 501), then subscribes the signed-in caller. It decides nothing about what a subscriber hears: the scope filters every frame against the `liveTargets` in `src/manifest.ts`. |
 | `dev-invites.ts` | The node half of that — a file-backed pending-invite store and the identity link an acceptance makes, standing in for the worker's identity DO. |
 
 Both `assistant.ts` and `kb-ingest.ts` are **connector-shaped**: they run outside the

@@ -130,7 +130,14 @@ export function ConversationView({
   }, []);
 
   // Faster than the inbox: somebody reading one conversation is waiting on this one.
-  useLiveReload(() => void load(), 5000);
+  // A frame about ANOTHER conversation is skipped. A message or an assistant turn names
+  // only its own id, which says nothing about whose thread it is on, so those always
+  // count: one extra read is cheaper than a reply that shows up a minute late.
+  useLiveReload(
+    () => void load(),
+    5000,
+    (change) => change.entityType !== 'conversation' || change.entityId === id,
+  );
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
