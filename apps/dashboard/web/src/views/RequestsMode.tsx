@@ -56,8 +56,6 @@ function failure(e: unknown): { error: string } {
 export function RequestsMode({
   scopeId,
   q,
-  hours,
-  cursor,
   window,
   nonce,
   onFilters,
@@ -66,10 +64,12 @@ export function RequestsMode({
 }: {
   scopeId: string;
   q: ObsQuery;
-  hours: number;
-  /** The page's custom window, when there is one. The reads use it in place of `hours`. */
-  cursor: { from: string; to: string } | null;
-  /** The window the page is showing — the cursor's, or the range's own bounds. */
+  /**
+   * The window the page is showing — the cursor's, or the range's own bounds — and the
+   * window every read asks for, verbatim. Never `hours`: the plane would anchor that to its
+   * own clock, and the histogram draws its bars against THIS window, so a last bucket
+   * ending past `to` would be drawn as a bucket a drag to the right edge cannot reach.
+   */
   window: { from: string; to: string };
   nonce: number;
   onFilters: (patch: Partial<ObsQuery>) => void;
@@ -90,7 +90,7 @@ export function RequestsMode({
     setVolume(null);
     setFacets(null);
     setRows(null);
-    const readWindow = cursor ? { since: cursor.from, until: cursor.to } : { hours };
+    const readWindow = { since: window.from, until: window.to };
     const settle = <T,>(set: (v: Loaded<T>) => void, read: () => Promise<T>) =>
       read().then(
         (v) => live && set(v),
@@ -109,7 +109,7 @@ export function RequestsMode({
       live = false;
     };
     // `whereKey` stands for `where`/`q`'s facet keys; the window is its two instants.
-  }, [scopeId, whereKey, hours, cursor?.from, cursor?.to, window.from, window.to, nonce]);
+  }, [scopeId, whereKey, window.from, window.to, nonce]);
 
   const levelSel = selected(q, 'level');
   return (

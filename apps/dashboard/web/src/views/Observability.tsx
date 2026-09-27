@@ -203,8 +203,6 @@ export function Observability({
             <RequestsMode
               scopeId={scopeId}
               q={q}
-              hours={hours}
-              cursor={cursor}
               window={panelWindow}
               nonce={nonce}
               onFilters={(filters) => navigateQuery({ ...q, ...filters })}

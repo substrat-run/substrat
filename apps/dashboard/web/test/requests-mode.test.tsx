@@ -143,8 +143,6 @@ describe('RequestsMode', () => {
         <RequestsMode
           scopeId="app-a"
           q={{}}
-          hours={3}
-          cursor={null}
           window={window}
           nonce={0}
           onFilters={onFilters}
@@ -166,7 +164,11 @@ describe('RequestsMode', () => {
       const query = spy.mock.calls[0]![1] as URLSearchParams;
       expect(spy.mock.calls[0]![0]).toBe('app-a');
       expect(query.getAll('operation')).toEqual(['acme/assign']);
-      expect(query.get('hours')).toBe('3');
+      // The chart's own window, verbatim — never `hours`, which the plane would anchor to
+      // its own clock while the bars are drawn against this one.
+      expect(query.get('since')).toBe(window.from);
+      expect(query.get('until')).toBe(window.to);
+      expect(query.get('hours')).toBeNull();
     }
     expect((v.mock.calls[0]![1] as URLSearchParams).get('buckets')).toBe('90');
     const text = container.textContent!;
