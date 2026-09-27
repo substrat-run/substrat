@@ -846,6 +846,88 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     feed.close();
   });
 
+  /**
+   * An assistant turn reaches a subscriber only if that subscriber can already poll it.
+   * `ticket0/list-turns` is `conversation:read` on the turn's conversation, which a
+   * follower narrowed onto that conversation holds and a portal customer does not (the
+   * portal has no turns read at all). So each feed is asserted beside that subscriber's
+   * own poll, and the frame must never be the wider of the two.
+   *
+   * Today it is the NARROWER for the follower, and pinned as such: the walk from
+   * `aiTurn:…` up to its conversation throws on the camelCase entity type (#1856), and
+   * the fan-out reads a check that throws as a refusal. So a follower sees the turn at
+   * the next poll rather than on a push. An agent is unaffected, because a scope-wide
+   * grant answers before any walk. When #1856 is fixed, the pinned `[]` below becomes
+   * the turn's id, and the subset assertion beside it still holds.
+   */
+  it("announces an assistant turn to nobody who could not poll it: not the customer, not the thread beside it, and today not the follower (#1856)", async () => {
+    await member('sub-turn-agent', 'agent');
+    const follower = await member('sub-turn-follower', 'customer');
+    const customer = await member('sub-turn-customer', 'customer');
+    const followed = await arrival('turns@live.example');
+    const beside = await arrival('turns-beside@live.example');
+    await host().grantEntityLocal(desk, follower, permissionKey.parse('conversation:read'), {
+      entityType: 'conversation',
+      entityId: followed.conversation,
+    });
+    await host().grantEntityLocal(desk, customer, permissionKey.parse('conversation:read-own'), {
+      entityType: 'contact',
+      entityId: followed.contact,
+    });
+    const services = await directory().getScopeConfig(desk);
+    const widget = principalId.parse((JSON.parse(services['ticket0:services']!) as { widget: string }).widget);
+    // What the worker records when the assistant could not run: a turn, written by the
+    // desk's widget service, on the customer's conversation.
+    const failure = async (conversationId: string) =>
+      (await host().getScope(widget, tenant, desk)).invoke<{ id: string }>('ticket0/record-assistant-failure', {
+        conversationId,
+        turnId: ulid(),
+        model: 'test-model',
+        error: 'no model configured',
+      });
+
+    const agentFeed = await subscribe('sub-turn-agent');
+    const followerFeed = await subscribe('sub-turn-follower');
+    const customerFeed = await subscribe('sub-turn-customer');
+    const onFollowed = await failure(followed.conversation);
+    const onBeside = await failure(beside.conversation);
+    await settle();
+
+    const turnsOf = (feed: { frames: Frame[] }) =>
+      feed.frames.filter((f) => f.entityType === 'aiTurn').map((f) => f.entityId);
+    const poll = async (who: PrincipalId, conversationId: string): Promise<string[] | 'refused'> => {
+      try {
+        const page = await (await host().getScope(who, tenant, desk)).invoke<Page<{ id: string }>>(
+          'ticket0/list-turns',
+          { conversationId },
+        );
+        return page.entries.map((t) => t.id);
+      } catch {
+        return 'refused';
+      }
+    };
+
+    // The customer: no frame, and no poll that would have shown the turn.
+    expect(customerFeed.frames).toEqual([]);
+    expect(await poll(customer, followed.conversation)).toBe('refused');
+
+    // The follower: whatever the feed carries, the poll already shows. The thread beside
+    // is refused by both routes.
+    const followerPolls = await poll(follower, followed.conversation);
+    expect(followerPolls).toContain(onFollowed.id);
+    for (const id of turnsOf(followerFeed)) expect(followerPolls).toContain(id);
+    expect(await poll(follower, beside.conversation)).toBe('refused');
+    expect(turnsOf(followerFeed)).not.toContain(onBeside.id);
+    expect(turnsOf(followerFeed)).toEqual([]); // #1856: becomes [onFollowed.id]
+
+    // The positive twin, from the same two writes: an agent hears both turns.
+    expect(turnsOf(agentFeed)).toEqual([onFollowed.id, onBeside.id]);
+
+    agentFeed.close();
+    followerFeed.close();
+    customerFeed.close();
+  });
+
   it("refuses a handshake from another origin, and takes the same one from the desk's own", async () => {
     const authorization = `Bearer ${await bearerFor('sub-owner')}`;
     const foreign = await handshake({ origin: 'https://other-tenant.ticket0.test', authorization });
