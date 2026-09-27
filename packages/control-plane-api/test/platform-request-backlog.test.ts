@@ -164,6 +164,32 @@ describe('GET /platform-requests/backlog (#1690)', () => {
       const asStaffRows = await app.request('/sweep-runs?kind=platform-request', { headers: asStaff });
       expect(((await asStaffRows.json()) as { entries: unknown[] }).entries.length).toBeGreaterThan(0);
     });
+
+    it('nor in a tenant credential\'s slice — its own tenant pinned, the null-tenant fleet row never matches', async () => {
+      const res = await app.request(`/sweep-runs?tenantId=${acme}&kind=platform-request`, { headers: asTenant });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { entries: unknown[] }).entries).toEqual([]);
+      // …and it cannot drop the pin to read the fleet.
+      expect((await app.request('/sweep-runs?kind=platform-request', { headers: asTenant })).status).toBe(403);
+    });
+
+    it('a newer platform-request row for another unit is not the fleet pass', async () => {
+      const before = (await read()).pending;
+      await host.admin.recordSweepRun({
+        kind: 'platform-request',
+        unit: 'not-fleet',
+        outcome: 'ok',
+        platformRequests: { scopes: 9, drained: 99, done: 0, failed: 0, pending: 99, skipped: 0, unreachable: 0 },
+        at: t(0),
+      });
+      expect((await read()).pending).toEqual(before);
+    });
+
+    // Last: it leaves the newest fleet row without totals.
+    it('a fleet row carrying no totals reads as no pass — null, never an invented 0', async () => {
+      await host.admin.recordSweepRun({ kind: 'platform-request', unit: 'fleet', outcome: 'ok', at: t(0) });
+      expect((await read()).pending).toBeNull();
+    });
   });
 
   describe('counting terminal give-ups', () => {

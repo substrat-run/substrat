@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { platformActorId } from '@substrat-run/contracts';
 import { ulid, type PlatformSweepReport } from '@substrat-run/kernel';
-import worker, { platformRequestSweepRun } from '../src/worker.js';
+import worker, { platformRequestSweepRun, recordPlatformRequestPass } from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
@@ -98,5 +98,26 @@ describe('platformRequestSweepRun (#1840)', () => {
 
   it("another phase's error does not — it says nothing about the drain's reach", () => {
     expect(platformRequestSweepRun(report({ errors: [{ kind: 'sweep', id: 'c1', error: 'boom' }] }), AT).outcome).toBe('ok');
+  });
+});
+
+describe('recordPlatformRequestPass (#1840)', () => {
+  const report = {
+    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0 },
+    errors: [],
+    migrations: null,
+  } as unknown as PlatformSweepReport;
+  const AT = '2026-09-27T12:00:00.000Z';
+
+  it('a recorder that throws does not sink the pass', async () => {
+    const admin = { recordSweepRun: async () => { throw new Error('directory down'); } };
+    await expect(recordPlatformRequestPass(admin, report, AT)).resolves.toBeUndefined();
+  });
+
+  it('a recorder that works is handed the row, awaited — the twin', async () => {
+    const written: unknown[] = [];
+    const admin = { recordSweepRun: async (e: unknown) => { written.push(e); } };
+    await recordPlatformRequestPass(admin, report, AT);
+    expect(written).toEqual([expect.objectContaining({ kind: 'platform-request', unit: 'fleet', at: AT })]);
   });
 });

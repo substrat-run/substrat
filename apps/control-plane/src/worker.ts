@@ -45,6 +45,7 @@ import {
   type AnalyticsEngineDatasetLike,
   type CrossVerticalOptions,
   type PlatformSweepReport,
+  type ScopeHost,
   type SecretBox,
   type SweepRunInput,
 } from '@substrat-run/kernel';
@@ -1335,6 +1336,22 @@ export function platformRequestSweepRun(report: PlatformSweepReport, at: string)
   };
 }
 
+/**
+ * Keep the pass's drain row (#1840). Awaited, so the row lands before the scheduled handler
+ * returns; never throws, so a recorder failure cannot sink the pass it is recording.
+ */
+export async function recordPlatformRequestPass(
+  admin: Pick<ScopeHost['admin'], 'recordSweepRun'>,
+  report: PlatformSweepReport,
+  at: string,
+): Promise<void> {
+  try {
+    await admin.recordSweepRun(platformRequestSweepRun(report, at));
+  } catch {
+    // deliberately swallowed — see above
+  }
+}
+
 async function drainOneScope(
   env: Env,
   t: TenantId,
@@ -1594,11 +1611,8 @@ export default {
     // scope with intents stuck `pending` should leave a trace on every pass, so a
     // drain that silently never converges is visible in the tail instead of invisible.
     const pr = report.platformRequestTotals;
-    // #1840: the same totals, kept. Awaited so the row lands before the handler returns, and
-    // its failure swallowed — a recorder must never sink the pass it is recording.
-    await host.admin
-      .recordSweepRun(platformRequestSweepRun(report, (drainFinishedAt ?? passStartedAt).toISOString()))
-      .catch(() => undefined);
+    // #1840: the same totals, kept.
+    await recordPlatformRequestPass(host.admin, report, (drainFinishedAt ?? passStartedAt).toISOString());
     const al = report.accessLog;
     // #1172: a pass that re-provisioned anything says so, and so does one that tried and
     // failed — a scope that stays behind pass after pass is the shape of a repair that
