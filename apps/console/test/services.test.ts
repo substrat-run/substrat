@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { verticalSlug, type VerticalChannel } from '@substrat-run/contracts';
-import { countTrailingPromotes } from '../src/lib/services';
+import { verticalSlug, type SystemSwitchRecord, type VerticalChannel } from '@substrat-run/contracts';
+import { countTrailingPromotes, summarizeSystemSwitches } from '../src/lib/services';
 
 const now = Date.parse('2026-09-22T12:00:00Z');
 const vertical = (slug: string, servingRef: string | null = 'worker') => ({ slug: verticalSlug.parse(slug), servingRef });
@@ -62,5 +62,42 @@ describe('Services deploy reads', () => {
       throw new Error('offline');
     }, now)).rejects.toThrow('offline');
     expect(await countTrailingPromotes([], async () => { throw new Error('unused'); }, now)).toBe(0);
+  });
+});
+
+/**
+ * The kill-switch tile's fleet totals (#1690 §2). One row per (scope, module) held off —
+ * `GET /system-switches`'s own shape (`systemSwitchRecord`, packages/contracts/src/permission.ts) —
+ * so a scope with two modules off must count once toward `scopes`, and two tenants with one
+ * switch each must count as two.
+ */
+const switchRow = (over: Partial<Pick<SystemSwitchRecord, 'tenantId' | 'scopeId' | 'moduleId'>>) =>
+  ({
+    tenantId: 't-1',
+    scopeId: 's-1',
+    moduleId: '@substrat-run/engine-workorder',
+    vertical: 'callout',
+    position: 'off',
+    actor: '01J00000000000000000000000',
+    reason: 'incident #42',
+    operationId: '01J00000000000000000000001',
+    at: '2026-09-01T12:00:00.000Z',
+    ...over,
+  }) as unknown as SystemSwitchRecord;
+
+describe('summarizeSystemSwitches', () => {
+  it('the zero twin: no rows, no scopes, no tenants', () => {
+    expect(summarizeSystemSwitches([])).toEqual({ scopes: 0, tenants: 0 });
+  });
+
+  it('the non-zero twin: counts distinct scopes and tenants, not rows', () => {
+    const rows = [
+      switchRow({ tenantId: 't-1', scopeId: 's-1', moduleId: '@substrat-run/engine-workorder' }),
+      // Same scope, a second module off — must not double the scope count.
+      switchRow({ tenantId: 't-1', scopeId: 's-1', moduleId: '@substrat-run/engine-invoicing' }),
+      // A different tenant and scope entirely.
+      switchRow({ tenantId: 't-2', scopeId: 's-2', moduleId: '@substrat-run/engine-workorder' }),
+    ];
+    expect(summarizeSystemSwitches(rows)).toEqual({ scopes: 2, tenants: 2 });
   });
 });

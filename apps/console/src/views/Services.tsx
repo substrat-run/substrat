@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import type { PlatformRequestBacklog, SweepRunEntry } from '@substrat-run/contracts';
+import type { PlatformRequestBacklog, ScopeId, SweepRunEntry, SystemSwitchRecord } from '@substrat-run/contracts';
 import { Badge, Button, Card } from '../components';
 import { ApiError, walkAll, type Api } from '../lib/api';
-import { countTrailingPromotes, PROMOTE_TRAILING_MINUTES } from '../lib/services';
+import { countTrailingPromotes, PROMOTE_TRAILING_MINUTES, summarizeSystemSwitches } from '../lib/services';
 
 export interface ServicesProps {
   api: Api;
@@ -12,6 +12,8 @@ export interface ServicesProps {
   onOpenVerticals: () => void;
   /** The Failures jump (#1233's pattern), pre-narrowing its client-side free-text filter. */
   onOpenFailures: (query: string) => void;
+  /** The kill-switch tile's per-row jump (#1690 §2), into the scope's own Schedules card. */
+  onOpenScope: (scopeId: ScopeId) => void;
 }
 
 type Tile<T> =
@@ -39,9 +41,6 @@ function TileBody<T>({ tile, render }: { tile: Tile<T>; render: (data: T) => Rea
  * counts and a link into wherever the detail already lives. Each tile says what "healthy"
  * means for it and the window it covers; a tile that cannot get its data reads
  * "unavailable", never a green zero it did not earn.
- *
- * The schedule kill-switch tile from the issue is deliberately absent: it needs #1674's
- * fleet-wide read, which does not exist yet (see the #1690 comment).
  */
 export function Services({
   api,
@@ -50,6 +49,7 @@ export function Services({
   onOpenObservability,
   onOpenVerticals,
   onOpenFailures,
+  onOpenScope,
 }: ServicesProps) {
   const [sweeps, setSweeps] = useState<Tile<SweepRunEntry[]>>({ status: 'loading' });
   const [connections, setConnections] = useState<
@@ -58,6 +58,7 @@ export function Services({
   const [backlog, setBacklog] = useState<Tile<PlatformRequestBacklog>>({ status: 'loading' });
   const [stuck, setStuck] = useState<Tile<number>>({ status: 'loading' });
   const [metrics, setMetrics] = useState<Tile<{ requests: number; errors: number }>>({ status: 'loading' });
+  const [switches, setSwitches] = useState<Tile<SystemSwitchRecord[]>>({ status: 'loading' });
 
   useEffect(() => {
     let live = true;
@@ -87,6 +88,16 @@ export function Services({
       .platformRequestBacklog()
       .then((data) => live && setBacklog({ status: 'ready', data }))
       .catch(() => live && setBacklog({ status: 'unavailable' }));
+    return () => {
+      live = false;
+    };
+  }, [api]);
+
+  useEffect(() => {
+    let live = true;
+    void walkAll((p) => api.listSystemSwitches(p))
+      .then((rows) => live && setSwitches({ status: 'ready', data: rows }))
+      .catch(() => live && setSwitches({ status: 'unavailable' }));
     return () => {
       live = false;
     };
@@ -219,6 +230,51 @@ export function Services({
                 </div>
               </>
             )}
+          />
+        </Card>
+
+        <Card
+          title="Schedule kill switch"
+          description="Modules a scope's schedules are switched off for, fleet-wide"
+        >
+          <TileBody
+            tile={switches}
+            render={(rows) => {
+              if (rows.length === 0) return <span style={muted}>nothing switched off</span>;
+              const { scopes, tenants } = summarizeSystemSwitches(rows);
+              return (
+                <>
+                  <div style={number}>{rows.length}</div>
+                  <div style={caption}>
+                    module{rows.length === 1 ? '' : 's'} off across {scopes} scope
+                    {scopes === 1 ? '' : 's'}, {tenants} tenant{tenants === 1 ? '' : 's'}
+                  </div>
+                  <ul style={{ listStyle: 'none', margin: '8px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {rows.slice(0, 5).map((r) => (
+                      <li key={r.operationId}>
+                        <button
+                          type="button"
+                          onClick={() => onOpenScope(r.scopeId)}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            padding: 0,
+                            font: 'inherit',
+                            fontSize: 12.5,
+                            color: 'var(--text-link, var(--text-primary))',
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                          }}
+                        >
+                          {r.moduleId} · {r.vertical ?? 'unknown vertical'} · scope {r.scopeId}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {rows.length > 5 ? <div style={caption}>and {rows.length - 5} more</div> : null}
+                </>
+              );
+            }}
           />
         </Card>
 
