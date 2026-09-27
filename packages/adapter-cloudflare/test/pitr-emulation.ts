@@ -91,12 +91,12 @@ export async function landRewind(
 /** The deployment's hold object (`SWITCH_HOLDS_NAME`) in this namespace, typed for the tests. */
 export function holdsStub(ns: DurableObjectNamespace): {
   switchHoldsAll(): Promise<{ scopeId: string; moduleId: string }[]>;
-  switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string, at: string): Promise<void>;
+  switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string): Promise<void>;
+  switchHoldYoungestMs(scopeId: string, claimId: string): Promise<number | null>;
   switchHoldArm(scopeId: string, claimId: string, doomed: string | null): Promise<void>;
   switchHoldClaims(
     scopeId: string,
-    moduleId: string,
-  ): Promise<{ claimId: string; state: 'pending' | 'armed'; doomed: string | null; heldAt: string }[]>;
+  ): Promise<{ claimId: string; moduleId: string; state: 'pending' | 'armed'; doomed: string | null; heldAt: string }[]>;
   switchHoldRelease(scopeId: string, moduleId: string | null, claimIds: string[] | null): Promise<void>;
 } {
   return ns.get(ns.idFromName(SWITCH_HOLDS_NAME)) as unknown as ReturnType<typeof holdsStub>;

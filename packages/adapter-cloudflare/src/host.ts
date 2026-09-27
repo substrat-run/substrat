@@ -1050,11 +1050,12 @@ interface ScopeStubRpc {
    *  stands (#1674) — the kernel's `systemGrantsStatus`, run in the scope's own storage. */
   systemGrantsStatus(): Promise<SystemGrantsEntry[]>;
   /** #1819: the rewind hold, on the `SWITCH_HOLDS_NAME` object only — see `scope-do.ts`. */
-  switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string, at: string): Promise<void>;
+  switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string): Promise<void>;
+  switchHoldYoungestMs(scopeId: string, claimId: string): Promise<number | null>;
   switchHoldArm(scopeId: string, claimId: string, doomed: string | null): Promise<void>;
   switchHoldDrop(scopeId: string, claimId: string): Promise<void>;
   switchHoldsAll(): Promise<{ scopeId: string; moduleId: string }[]>;
-  switchHoldClaims(scopeId: string, moduleId: string): Promise<SwitchHoldClaim[]>;
+  switchHoldClaims(scopeId: string): Promise<SwitchHoldClaim[]>;
   switchHoldRelease(scopeId: string, moduleId: string | null, claimIds: string[] | null): Promise<void>;
   /** #1819: which instance is serving this scope, and whether it armed a rewind. */
   rewindProbe(): Promise<{ instance: string; armed: boolean }>;
@@ -1730,17 +1731,28 @@ export const SWITCH_HOLD_SNAPSHOT_MS = 2_000;
 export const SWITCH_HOLD_SETTLE_MS = SWITCH_HOLD_SNAPSHOT_MS + 1_000;
 
 /**
+ * #1839: how many times a rewind waits again, after its settle, for a row a late OFF added to its
+ * claim to be `SWITCH_HOLD_SETTLE_MS` old. The settle argument above holds per ROW, so a row
+ * added during the settle needs its own full settle before the rewind arms. Each late OFF can
+ * cost up to one more settle; past this many, the rewind arms anyway, so a switch flapping
+ * through the wait cannot hold a rewind forever. See `rewindHolding` for what that leaves.
+ */
+export const SWITCH_HOLD_EXTRA_WAITS = 3;
+
+/**
  * #1819: how long a claim may stay `pending` before a switch move treats it as armed with no
  * doomed instance. A claim is pending from capture until its rewind armed or refused, which is
- * `SWITCH_HOLD_SETTLE_MS` plus one call. One still pending long after that belongs to a rewinding
- * request that died in between, and without this bound its hold could never be released. The
- * age is the hold object's `held_at` against the releasing host's clock: minutes, not seconds.
+ * `SWITCH_HOLD_SETTLE_MS` times at most `1 + SWITCH_HOLD_EXTRA_WAITS`, plus a few calls. One still
+ * pending long after that belongs to a rewinding request that died in between, and without this
+ * bound its hold could never be released. The age is `held_at`, stamped on the hold object's
+ * clock, against the releasing host's clock: minutes, not seconds.
  */
 export const SWITCH_HOLD_PENDING_MAX_MS = 5 * 60_000;
 
 /** #1819: one rewind's claim on one held module, as the hold object stores it. */
 export interface SwitchHoldClaim {
   claimId: string;
+  moduleId: string;
   /** `pending` from capture until the rewind armed; `armed` once it did (or may have). */
   state: 'pending' | 'armed';
   /** The scope instance the rewind armed, whose writes the restart discards; null if none. */
@@ -7171,6 +7183,7 @@ export class CloudflareScopeHost implements ScopeHost {
   // move on the restored storage, after the rewind armed. A move during the settle, or one the
   // doomed instance applied, lands in storage the restart discards, so it releases nothing. A
   // definite refusal drops only that rewind's own claim, so a concurrent rewind keeps its own.
+  // An OFF landing in that same discarded storage joins the claims that would discard it (#1839).
 
   private switchHoldsStub(): ScopeStubRpc {
     return this.scopeNs.get(this.scopeNs.idFromName(SWITCH_HOLDS_NAME)) as unknown as ScopeStubRpc;
@@ -7251,8 +7264,17 @@ export class CloudflareScopeHost implements ScopeHost {
    * the ON itself is discarded by a rewind, the scope comes back as the bookmark had it, and a
    * claim would then keep the module off while the directory and the status read both say ON.
    *
+   * An OFF that changed the switch JOINS the claims it would not survive (#1839): each claim in S0
+   * that is still pending (inside the bound), or armed with this move's instance as its doomed
+   * one. Those are exactly the rewinds whose restart discards this OFF, and each of them captured
+   * the module ON. The row joins the claim's state and is stamped on the hold object's clock, and
+   * a pending claim's rewind then waits for it to be a full settle old (`rewindHolding`). S0 is
+   * read scope-wide for this, so the join costs no read of its own. A claim created after S0 is
+   * not joined; its rewind's own re-read after the settle finds this OFF in storage instead.
+   *
    * A failed claims read does not stop the move. It is thrown after it, and the caller treats
-   * that as a failed move, with the claims kept, which errs toward OFF.
+   * that as a failed move, with the claims kept, which errs toward OFF. A failed join is thrown
+   * the same way.
    */
   private async switchInScope(
     scopeId: ScopeId,
@@ -7260,28 +7282,30 @@ export class CloudflareScopeHost implements ScopeHost {
     to: 'on' | 'off',
     at: string,
   ): Promise<SwitchOutcome> {
-    let before: SwitchHoldClaim[] | undefined;
+    let scopeClaims: SwitchHoldClaim[] | undefined;
     let readError: unknown;
     try {
-      before = await this.switchHoldsStub().switchHoldClaims(scopeId, moduleId);
+      scopeClaims = await this.switchHoldsStub().switchHoldClaims(scopeId);
     } catch (err) {
       readError = err;
     }
     const { instance, ...outcome } = await this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, at);
-    if (readError !== undefined) throw readError;
-    if (outcome.held && before && before.length > 0) {
-      const now = Date.now();
-      const survived =
-        to === 'on'
-          ? before
-          : before.filter(
-              (c) =>
-                (c.state === 'armed' || now - Date.parse(c.heldAt) > SWITCH_HOLD_PENDING_MAX_MS) &&
-                c.doomed !== instance,
-            );
+    if (readError !== undefined || !scopeClaims) throw readError;
+    const now = Date.now();
+    const pendingLive = (c: SwitchHoldClaim) => c.state === 'pending' && now - Date.parse(c.heldAt) <= SWITCH_HOLD_PENDING_MAX_MS;
+    const before = scopeClaims.filter((c) => c.moduleId === moduleId);
+    if (outcome.held && before.length > 0) {
+      const survived = to === 'on' ? before : before.filter((c) => !pendingLive(c) && c.doomed !== instance);
       if (survived.length > 0) {
         this.holdSnapshot = null;
         await this.switchHoldsStub().switchHoldRelease(scopeId, moduleId, survived.map((c) => c.claimId));
+      }
+    }
+    if (to === 'off' && outcome.changed) {
+      const joins = new Set(scopeClaims.filter((c) => pendingLive(c) || c.doomed === instance).map((c) => c.claimId));
+      for (const claimId of joins) {
+        this.holdSnapshot = null;
+        await this.switchHoldsStub().switchHoldClaim(scopeId, [moduleId], claimId);
       }
     }
     return outcome;
@@ -7290,12 +7314,16 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * Rewind one scope, claiming what it has switched off, and what an earlier rewind still holds on
    * it. The OFF modules are read and claimed BEFORE the rewind, while this storage still holds
-   * them, and the rewind then waits
-   * `SWITCH_HOLD_SETTLE_MS`. Its claim is `armed` once the rewind arms, naming the doomed
+   * them, and the rewind then waits until every row of its claim is `SWITCH_HOLD_SETTLE_MS` old
+   * (`settleClaim`). Its claim is `armed` once the rewind arms, naming the doomed
    * instance. Only a DEFINITE refusal drops the claim, and only this rewind's own. Any other throw
    * may come after the DO armed the bookmark, so the claim is armed on what a probe finds: the
    * serving instance if it armed, else none. A probe that fails leaves the claim pending, and
    * `SWITCH_HOLD_PENDING_MAX_MS` bounds that.
+   *
+   * With nothing to claim, the rewind neither claims nor settles. An OFF that lands between that
+   * status read and the arm (a few calls) is then claimed by nobody, which is the #1839 window
+   * with no settle in front of it; see `settleClaim` for the same window after a settle.
    */
   private async rewindHolding(
     scopeId: ScopeId,
@@ -7316,11 +7344,17 @@ export class CloudflareScopeHost implements ScopeHost {
     ];
     if (off.length === 0) return { rewindingTo: (await rewind()).rewindingTo };
     const claimId = ulid();
-    await holds.switchHoldClaim(scopeId, off, claimId, new Date().toISOString());
+    await holds.switchHoldClaim(scopeId, off, claimId);
     this.holdSnapshot = null;
+    try {
+      await this.settleClaim(scopeId, claimId);
+    } catch (err) {
+      // Nothing was asked to arm: this rewind never happens, and what it claimed stays in storage.
+      await holds.switchHoldDrop(scopeId, claimId).catch(() => undefined);
+      throw err;
+    }
     let result: { rewindingTo: string; instance?: string };
     try {
-      await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS));
       result = await rewind();
     } catch (err) {
       if (isRewindRefusal(err)) {
@@ -7335,6 +7369,48 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     await holds.switchHoldArm(scopeId, claimId, result.instance ?? null).catch(() => undefined);
     return { rewindingTo: result.rewindingTo };
+  }
+
+  /**
+   * #1839: wait until every row of this rewind's claim is `SWITCH_HOLD_SETTLE_MS` old. The settle
+   * argument holds per row: a row younger than that when the rewound storage exists can be missed
+   * by a pass whose hold snapshot was read just before it. So after the settle, each round reads
+   * the scope's OFF modules again and claims them (an OFF that landed after the capture, in storage
+   * this rewind discards), then asks the hold object how old the claim's youngest row is. That
+   * includes a row a switch move joined (`switchInScope`). The age is measured on the hold
+   * object's clock, the same one that stamped the row; this host only sleeps the difference.
+   *
+   * Bounded at `SWITCH_HOLD_EXTRA_WAITS` more waits: past that, the rewind arms with a row younger
+   * than the settle, and warns. That row's module can then run once on the rewound storage, in a
+   * pass whose snapshot was read shortly before the row, until that snapshot expires.
+   *
+   * What remains even within the bound: an OFF whose join lands after the last age read and before
+   * the arm (a few calls), or on the doomed instance in the moment between the arm and its restart.
+   * It is claimed, but by a row younger than the settle, with the same exposure as above.
+   */
+  private async settleClaim(scopeId: ScopeId, claimId: string): Promise<void> {
+    const holds = this.switchHoldsStub();
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS));
+    for (let waits = 0; ; waits++) {
+      const off = (await this.systemGrantsStatusLocal(scopeId))
+        .filter((e) => e.schedules === 'off')
+        .map((e) => e.moduleId as string);
+      if (off.length > 0) {
+        await holds.switchHoldClaim(scopeId, off, claimId);
+        this.holdSnapshot = null;
+      }
+      const youngest = await holds.switchHoldYoungestMs(scopeId, claimId);
+      if (youngest === null || youngest >= SWITCH_HOLD_SETTLE_MS) return;
+      if (waits === SWITCH_HOLD_EXTRA_WAITS) {
+        console.warn(
+          `substrat: rewinding scope ${scopeId} with a switch-hold row ${youngest} ms old, ` +
+            `after ${waits} extra waits for it to settle (#1839)`,
+        );
+        return;
+      }
+      // Never longer than one settle, even if the hold object's clock moved back under a restart.
+      await new Promise((resolve) => setTimeout(resolve, Math.min(SWITCH_HOLD_SETTLE_MS, SWITCH_HOLD_SETTLE_MS - youngest)));
+    }
   }
 
   // -- live reads (#938): the door ------------------------------------------

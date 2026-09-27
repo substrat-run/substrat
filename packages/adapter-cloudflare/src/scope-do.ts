@@ -3213,21 +3213,46 @@ export function defineScopeDO(
       this.switchHoldsReady = true;
     }
 
-    /** One rewind's claim on these modules, `pending` until the rewind has armed. */
-    switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string, at: string): void {
+    /**
+     * One rewind's claim on these modules. A new claim is `pending` until the rewind has armed; a
+     * module added to an existing claim (#1839) takes that claim's state and doomed instance, so
+     * the release rule reads every row of one claim alike. Each new row is stamped with THIS
+     * object's clock, and `switchHoldYoungestMs` measures against the same clock. A row already
+     * there keeps its stamp.
+     */
+    switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string): void {
       this.switchHoldsTable();
+      const at = new Date().toISOString();
       this.ctx.storage.transactionSync(() => {
+        const claim = this.sql
+          .exec('SELECT state, doomed FROM _substrat_switch_holds WHERE scope_id = ? AND claim_id = ? LIMIT 1', scopeId, claimId)
+          .toArray()[0] as { state: string; doomed: string | null } | undefined;
         for (const moduleId of moduleIds) {
           this.sql.exec(
             `INSERT OR IGNORE INTO _substrat_switch_holds (scope_id, module_id, claim_id, state, doomed, held_at)
-             VALUES (?, ?, ?, 'pending', NULL, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?)`,
             scopeId,
             moduleId,
             claimId,
+            claim?.state ?? 'pending',
+            claim?.doomed ?? null,
             at,
           );
         }
       });
+    }
+
+    /**
+     * #1839: how long ago, on this object's clock, the youngest row of one claim was stamped; null
+     * once the claim has no rows. The rewind waits on this, so its age and the stamp are read on
+     * one clock and no two clocks are ever compared.
+     */
+    switchHoldYoungestMs(scopeId: string, claimId: string): number | null {
+      this.switchHoldsTable();
+      const row = this.sql
+        .exec('SELECT MAX(held_at) AS youngest FROM _substrat_switch_holds WHERE scope_id = ? AND claim_id = ?', scopeId, claimId)
+        .toArray()[0] as { youngest: string | null } | undefined;
+      return row?.youngest ? Date.now() - Date.parse(row.youngest) : null;
     }
 
     /** The rewind armed (or may have): its claim is `armed`, naming the instance it doomed. */
@@ -3256,21 +3281,20 @@ export function defineScopeDO(
         .map((r) => ({ scopeId: r.scope_id as string, moduleId: r.module_id as string }));
     }
 
-    /** The claims on one held module, for the release rule to read before a switch move. */
+    /**
+     * Every claim row on one scope, for a switch move to read before it moves: the release rule
+     * reads the module's own rows, and an OFF (#1839) the scope's claims it would join.
+     */
     switchHoldClaims(
       scopeId: string,
-      moduleId: string,
-    ): { claimId: string; state: 'pending' | 'armed'; doomed: string | null; heldAt: string }[] {
+    ): { claimId: string; moduleId: string; state: 'pending' | 'armed'; doomed: string | null; heldAt: string }[] {
       this.switchHoldsTable();
       return this.sql
-        .exec(
-          'SELECT claim_id, state, doomed, held_at FROM _substrat_switch_holds WHERE scope_id = ? AND module_id = ?',
-          scopeId,
-          moduleId,
-        )
+        .exec('SELECT claim_id, module_id, state, doomed, held_at FROM _substrat_switch_holds WHERE scope_id = ?', scopeId)
         .toArray()
         .map((r) => ({
           claimId: r.claim_id as string,
+          moduleId: r.module_id as string,
           state: r.state as 'pending' | 'armed',
           doomed: (r.doomed as string | null) ?? null,
           heldAt: r.held_at as string,
