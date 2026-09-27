@@ -81,6 +81,7 @@ import {
   verticalChannel,
   verticalVersion,
   objectRef,
+  entityObjectRef,
   grantRefFromProof,
   org as orgSchema,
   orgMembership,
@@ -5946,7 +5947,7 @@ export class SqliteScopeHost implements ScopeHost {
           node,
           subject,
           `granted:${permission}`,
-          `${entity.entityType}:${entity.entityId}`,
+          entityObjectRef(entity, 'HostAdmin'), // #1856: grant and grantToOrg both land here
           expiresAt,
         );
       } else if (node.scopeId) {
@@ -10575,6 +10576,7 @@ export class SqliteScopeHost implements ScopeHost {
        */
       grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
         assertImpersonationWrites(impersonation, 'ctx.grant');
+        entityObjectRef(entity, 'ctx.grant'); // #1856: a tuple the walk can read back
         const held = await runCheck(permission, entity);
         if (!held.allowed) {
           throw new PermissionDenied(
@@ -10593,7 +10595,11 @@ export class SqliteScopeHost implements ScopeHost {
             `${entity.entityType}:${entity.entityId}`,
           );
       },
-      /** Withdraw a grant this caller could have made. Same guardrails, same reason. */
+      /**
+       * Withdraw a grant this caller could have made. Same guardrails, same reason — but NOT
+       * the #1856 grammar check `grant` and `link` make: a revoke writes nothing the walk
+       * must read back, and a grant stored before that check existed must stay removable.
+       */
       revoke: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
         assertImpersonationWrites(impersonation, 'ctx.revoke');
         const held = await runCheck(permission, entity);
@@ -10631,6 +10637,8 @@ export class SqliteScopeHost implements ScopeHost {
       }),
       link: (child: EntityRef, parent: EntityRef) => {
         assertImpersonationWrites(impersonation, 'ctx.link');
+        entityObjectRef(child, 'ctx.link'); // #1856: an edge the walk can read back
+        entityObjectRef(parent, 'ctx.link');
         const allowed = relations.get(child.entityType);
         if (!allowed?.has(parent.entityType)) {
           throw new Error(

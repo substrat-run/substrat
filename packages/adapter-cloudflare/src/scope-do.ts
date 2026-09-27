@@ -10,6 +10,7 @@ import {
   eventId,
   instant,
   objectRef,
+  entityObjectRef,
   toWireFailure,
   type WireFailure,
   grantRefFromProof,
@@ -5384,6 +5385,7 @@ export function defineScopeDO(
          */
         grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
           assertImpersonationWrites(impersonation, 'ctx.grant');
+          entityObjectRef(entity, 'ctx.grant'); // #1856: a tuple the walk can read back
           const held = await runCheck(permission, entity);
           if (!held.allowed) {
             throw new PermissionDenied(
@@ -5398,6 +5400,11 @@ export function defineScopeDO(
             `${entity.entityType}:${entity.entityId}`,
           );
         },
+        /**
+         * Deliberately NOT the #1856 grammar check `grant` and `link` make: a revoke writes
+         * nothing the walk must read back, and a grant stored before that check existed must
+         * stay removable.
+         */
         revoke: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
           assertImpersonationWrites(impersonation, 'ctx.revoke');
           const held = await runCheck(permission, entity);
@@ -5433,6 +5440,8 @@ export function defineScopeDO(
         }),
         link: (child: EntityRef, parent: EntityRef) => {
           assertImpersonationWrites(impersonation, 'ctx.link');
+          entityObjectRef(child, 'ctx.link'); // #1856: an edge the walk can read back
+          entityObjectRef(parent, 'ctx.link');
           const allowed = relations.get(child.entityType);
           if (!allowed?.has(parent.entityType)) {
             throw new Error(

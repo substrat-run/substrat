@@ -18,7 +18,7 @@ import {
   PERMISSION_KEY_MAX_LENGTH,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import type { ScopeHostFixture } from './scope-host-suite.js';
+import { expectRefusal, type ScopeHostFixture } from './scope-host-suite.js';
 import { permMod, permModManifest } from './modules.js';
 
 const PERM_USE = permissionKey.parse('perm:use');
@@ -294,6 +294,216 @@ export function permissionContractSuite(
       await expect(probe(carol, s1, PERM_READ)).resolves.toMatchObject({ allowed: false });
     });
 
+    /**
+     * #1856. Module entity types are camelCase by convention, and the walk used to throw
+     * on every tuple whose namespace carried an upper-case letter — so `ctx.link` wrote
+     * an edge that `ctx.check` could not read back. The write verbs now hold refs to the
+     * walk's own grammar, so the two cannot part company again.
+     */
+    describe('a camelCase entity type walks like any other (#1856)', () => {
+      const fern: PrincipalId = principalId.parse(ulid()); // grants on the two parents
+      const gus: PrincipalId = principalId.parse(ulid()); // no grant: the twin
+      const turn = (id: string): EntityRef => ({ entityType: 'aiTurn', entityId: id });
+      const box = (id: string): EntityRef => ({ entityType: 'box', entityId: id });
+      const thread = (id: string): EntityRef => ({ entityType: 'chatThread', entityId: id });
+      const link = async (child: EntityRef, parent: EntityRef) =>
+        (await host.getScope(alice, t1, s1)).invoke('perm/link', { child, parent });
+
+      beforeAll(async () => {
+        await link(turn('t1'), box('b9'));
+        await link(turn('t2'), thread('c1'));
+        for (const entity of [box('b9'), thread('c1')]) {
+          await host.admin.grant(staff, {
+            principalId: fern,
+            permission: PERM_READ,
+            node: { tenantId: t1, scopeId: s1 },
+            entity,
+            grantedBy: alice,
+          });
+        }
+      });
+
+      it('a grant on the parent reaches a camelCase child, and the proof shows the edge', async () => {
+        const d = await probe(fern, s1, PERM_READ, turn('t1'));
+        expect(d.allowed).toBe(true);
+        expect(JSON.stringify(d.proof)).toContain('"aiTurn:t1"');
+        expect(JSON.stringify(d.proof)).toContain('"box:b9"');
+      });
+
+      it('...and through a camelCase parent too', async () => {
+        const d = await probe(fern, s1, PERM_READ, turn('t2'));
+        expect(d.allowed).toBe(true);
+        expect(JSON.stringify(d.proof)).toContain('"chatThread:c1"');
+      });
+
+      it('the twin with no grant is DENIED — an answer, not a throw', async () => {
+        await expect(probe(gus, s1, PERM_READ, turn('t1'))).resolves.toMatchObject({ allowed: false });
+        await expect(probe(gus, s1, PERM_READ, turn('t2'))).resolves.toMatchObject({ allowed: false });
+      });
+
+      it('...and the grant reaches its own subtree only', async () => {
+        await link(turn('t3'), box('b10'));
+        await expect(probe(fern, s1, PERM_READ, turn('t3'))).resolves.toMatchObject({ allowed: false });
+      });
+
+      it('ctx.grant narrows onto a camelCase entity, and ctx.revoke withdraws it', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('perm/share', { principal: gus, permission: PERM_USE, entity: turn('t4') });
+        await expect(probe(gus, s1, PERM_USE, turn('t4'))).resolves.toMatchObject({ allowed: true });
+        await stub.invoke('perm/unshare', { principal: gus, permission: PERM_USE, entity: turn('t4') });
+        await expect(probe(gus, s1, PERM_USE, turn('t4'))).resolves.toMatchObject({ allowed: false });
+      });
+
+      /**
+       * Refs the walk could never read back — refused where they are written, with
+       * `validation_failed`, instead of being stored and throwing out of a later check.
+       * Every one was refused by the walk's grammar before #1856 and still is; the only
+       * write-side addition is a colon in the TYPE, which the walk would have parsed as a
+       * different ref (`a:b` + `c` reads back as `a` + `b:c`).
+       */
+      const MALFORMED: [string, EntityRef][] = [
+        ['a space in the type', { entityType: 'ai Turn', entityId: 't1' }],
+        ['a colon in the type', { entityType: 'ai:Turn', entityId: 't1' }],
+        ['a dot in the type', { entityType: 'ai.turn', entityId: 't1' }],
+        ['a non-ASCII type', { entityType: 'aíTurn', entityId: 't1' }],
+        ['an empty type', { entityType: '', entityId: 't1' }],
+        ['an empty id', { entityType: 'aiTurn', entityId: '' }],
+        ['a space in the id', { entityType: 'aiTurn', entityId: 't 1' }],
+        ['a newline in the id', { entityType: 'aiTurn', entityId: 't1\nprincipal:x' }],
+        ['a no-break space in the id', { entityType: 'aiTurn', entityId: 't\u00a01' }],
+      ];
+
+      it.each(MALFORMED)('ctx.link refuses %s, as the child and as the parent', async (_what, bad) => {
+        for (const [child, parent] of [
+          [bad, box('b9')],
+          [turn('t1'), bad],
+        ] as const) {
+          await expectRefusal(link(child, parent), 'validation_failed', /^ctx\.link: malformed entity ref/);
+        }
+      });
+
+      it('ctx.grant refuses the same refs, though the caller holds the key everywhere', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        for (const [, bad] of MALFORMED) {
+          await expectRefusal(
+            stub.invoke('perm/share', { principal: gus, permission: PERM_USE, entity: bad }),
+            'validation_failed',
+            /^ctx\.grant: malformed entity ref/,
+          );
+        }
+      });
+
+      it('HostAdmin.grant narrowed onto an entity refuses a ref the walk could not read back', async () => {
+        await expectRefusal(
+          host.admin.grant(staff, {
+            principalId: gus,
+            permission: PERM_READ,
+            node: { tenantId: t1, scopeId: s1 },
+            entity: { entityType: 'ai:Turn', entityId: 't1' },
+            grantedBy: alice,
+          }),
+          'validation_failed',
+        );
+      });
+
+      /**
+       * A kernel namespace is not an entity type, in any case: some spine SQL matches a
+       * namespace with LIKE, which ignores ASCII case. Refused on both link ends and on
+       * grant, on both adapters.
+       */
+      const RESERVED = ['principal', 'org', 'tenant', 'scope', 'role', 'connection', 'capability', 'system', 'vertical'];
+      const spellings = (name: string) => [name, name.toUpperCase(), name[0]!.toUpperCase() + name.slice(1)];
+
+      it.each(RESERVED)('refuses %s as an entity type in any case, on link and on grant', async (name) => {
+        const stub = await host.getScope(alice, t1, s1);
+        for (const entityType of spellings(name)) {
+          const bad: EntityRef = { entityType, entityId: 't1' };
+          await expectRefusal(link(bad, box('b9')), 'validation_failed', /^ctx\.link: malformed entity ref/);
+          await expectRefusal(link(turn('t1'), bad), 'validation_failed', /^ctx\.link: malformed entity ref/);
+          await expectRefusal(
+            stub.invoke('perm/share', { principal: gus, permission: PERM_USE, entity: bad }),
+            'validation_failed',
+            /^ctx\.grant: malformed entity ref/,
+          );
+        }
+      });
+
+      it('...while a type that only contains one is linked, walked and granted like any other', async () => {
+        const item: EntityRef = { entityType: 'scopeItem', entityId: 'x1' };
+        await link(item, box('b9'));
+        await expect(probe(fern, s1, PERM_READ, item)).resolves.toMatchObject({ allowed: true });
+        await expect(probe(gus, s1, PERM_READ, item)).resolves.toMatchObject({ allowed: false });
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('perm/share', { principal: gus, permission: PERM_USE, entity: item });
+        await expect(probe(gus, s1, PERM_USE, item)).resolves.toMatchObject({ allowed: true });
+      });
+
+      it('HostAdmin.grantToOrg narrowed onto an entity refuses the same refs; its twin is granted', async () => {
+        const node = { tenantId: t1, scopeId: s1 };
+        for (const bad of [
+          { entityType: 'ai:Turn', entityId: 't1' },
+          { entityType: 'aiTurn', entityId: 't 1' },
+          { entityType: 'Scope', entityId: s1 },
+        ]) {
+          await expectRefusal(host.admin.grantToOrg(staff, acme, PERM_USE, node, bad), 'validation_failed');
+        }
+        // erin reaches acme's grants through membership (rule 4).
+        await expect(probe(erin, s1, PERM_USE, turn('t5'))).resolves.toMatchObject({ allowed: false });
+        await host.admin.grantToOrg(staff, acme, PERM_USE, node, turn('t5'));
+        await expect(probe(erin, s1, PERM_USE, turn('t5'))).resolves.toMatchObject({ allowed: true });
+      });
+
+      it('ctx.revoke does NOT refuse on grammar: it writes nothing to read back, and must stay able to remove an old grant', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await expect(
+          stub.invoke('perm/unshare', {
+            principal: gus,
+            permission: PERM_USE,
+            entity: { entityType: 'ai Turn', entityId: 't1' },
+          }),
+        ).resolves.toEqual({ revoked: true });
+      });
+
+      /**
+       * The positive twin of the pin above: a malformed grant that is ALREADY stored is
+       * actually removed by `ctx.revoke`. No write verb can store one any more, so it is
+       * planted the way stored data from before this change would arrive: a restore, which
+       * replays spine rows verbatim.
+       *
+       * Before the revoke, a check that reaches the stored grant throws, because the walk
+       * refuses to parse `item:t 1`. That was also true before #1856, and it is pinned here
+       * to show the stored row is read exactly as it was. After the revoke the same check
+       * denies.
+       */
+      it('ctx.revoke removes a malformed grant restored from before, and the check then denies', async () => {
+        const s3 = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s3, vertical: 'perm-vertical' });
+        await host.admin.activateScope(staff, t1, s3);
+        const backup = await host.admin.exportScope(staff, t1, s3);
+        const tuples = backup.tables.find((t) => t.name === '_substrat_tuples');
+        // Without the table in the export this would plant nothing and pass vacuously.
+        expect(tuples).toBeDefined();
+        const planted = { subject: `principal:${gus}`, relation: `granted:${PERM_USE}`, object: 'item:t 1' };
+        await host.restoreScope(staff, t1, s3, {
+          ...backup,
+          tables: backup.tables.map((t) =>
+            t === tuples
+              ? { ...t, rows: [...t.rows, t.columns.map((c) => (planted as Record<string, unknown>)[c] ?? null)] }
+              : t,
+          ),
+        });
+        const malformed = { entityType: 'item', entityId: 't 1' };
+
+        await expect(probe(gus, s3, PERM_USE, malformed)).rejects.toThrow();
+
+        const stub = await host.getScope(alice, t1, s3);
+        await expect(
+          stub.invoke('perm/unshare', { principal: gus, permission: PERM_USE, entity: malformed }),
+        ).resolves.toEqual({ revoked: true });
+        await expect(probe(gus, s3, PERM_USE, malformed)).resolves.toMatchObject({ allowed: false });
+      });
+    });
+
     it('expired grants are dead', async () => {
       await expect(probe(dave, s1, PERM_READ)).resolves.toMatchObject({ allowed: false });
     });
@@ -333,6 +543,67 @@ export function permissionContractSuite(
       });
       const row = await lastActed();
       expect(JSON.parse(row.authorization!)).toEqual([{ permission: PERM_READ, grant: 'box:b1' }]);
+    });
+
+    /**
+     * #1856: the event envelope records the grant's object in `authorization[].grant`, and
+     * held it to its own copy of the old grammar. An emit authorized by a grant on a
+     * camelCase entity then failed its own `domainEvent` parse, so the operation failed.
+     */
+    describe('an emit authorized through a camelCase entity grant (K-34, #1856)', () => {
+      const hal: PrincipalId = principalId.parse(ulid());
+      const node = { tenantId: t1, scopeId: s1 };
+
+      beforeAll(async () => {
+        await host.admin.grant(staff, {
+          principalId: hal,
+          permission: PERM_READ,
+          node,
+          entity: { entityType: 'aiTurn', entityId: 'ax1' },
+          grantedBy: alice,
+        });
+        await host.admin.grant(staff, {
+          principalId: hal,
+          permission: PERM_READ,
+          node,
+          entity: { entityType: 'chatThread', entityId: 'ct9' },
+          grantedBy: alice,
+        });
+        await (await host.getScope(alice, t1, s1)).invoke('perm/link', {
+          child: { entityType: 'aiTurn', entityId: 'ax2' },
+          parent: { entityType: 'chatThread', entityId: 'ct9' },
+        });
+      });
+
+      it('a grant directly on the entity: the event records aiTurn:ax1', async () => {
+        const stub = await host.getScope(hal, t1, s1);
+        await stub.invoke('perm/authorized-emit', {
+          permission: PERM_READ,
+          entity: { entityType: 'aiTurn', entityId: 'ax1' },
+        });
+        const row = await lastActed();
+        expect(JSON.parse(row.authorization!)).toEqual([{ permission: PERM_READ, grant: 'aiTurn:ax1' }]);
+      });
+
+      it('a grant on a camelCase parent, reached by the walk: the event records chatThread:ct9', async () => {
+        const stub = await host.getScope(hal, t1, s1);
+        await stub.invoke('perm/authorized-emit', {
+          permission: PERM_READ,
+          entity: { entityType: 'aiTurn', entityId: 'ax2' },
+        });
+        const row = await lastActed();
+        expect(JSON.parse(row.authorization!)).toEqual([{ permission: PERM_READ, grant: 'chatThread:ct9' }]);
+      });
+
+      it('the twin: a role-authorized emit on the same entity records no grant', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('perm/authorized-emit', {
+          permission: PERM_USE,
+          entity: { entityType: 'aiTurn', entityId: 'ax1' },
+        });
+        const row = await lastActed();
+        expect(JSON.parse(row.authorization!)).toEqual([{ permission: PERM_USE }]);
+      });
     });
 
     it('records a refused check as a denial, though the operation rolled back (K-35)', async () => {

@@ -10,7 +10,9 @@ import {
   tenantId,
   verticalSlug,
 } from './ids.js';
-import { entityRef } from './events.js';
+import { entityRef, type EntityRef } from './events.js';
+import { substratError, type ValidationIssue } from './errors.js';
+import { OBJECT_ID, OBJECT_NAMESPACE, objectRefString } from './object-ref.js';
 
 // ============================================================================
 // Authored surface — what humans and agents write (design doc §4.1).
@@ -330,11 +332,75 @@ export type SystemSwitchRecord = z.infer<typeof systemSwitchRecord>;
 // need not be ULIDs. The kernel-owned namespaces above ARE all branded ULIDs at their
 // own boundary — `org:` became one in K-22, which is when this comment stopped being
 // aspirational.
-export const objectRef = z
-  .string()
-  .regex(/^[a-z0-9_-]+:[^\s]+$/)
-  .brand<'ObjectRef'>();
+//
+// The grammar lives in `object-ref.ts` (#1856), one spelling shared with the event
+// envelope's `authorization.grant`. The namespace half admits upper case, for camelCase
+// entity types. The walk compares tuple strings exactly, so `Scope:x` is not `scope:x`
+// there; but some spine SQL matches a namespace with LIKE, which ignores ASCII case. So
+// an entity ref is refused at write time when its type IS a kernel namespace in any case
+// (`RESERVED_NAMESPACES`, below).
+/**
+ * The namespaces the kernel writes tuples under: the node objects, the role subjects of a
+ * proof, and every `CheckSubject` kind. An entity type spelled as one of these, in any
+ * case, would share its prefix with kernel rows. Lower case here; compared lower-cased.
+ */
+const RESERVED_NAMESPACES: ReadonlySet<string> = new Set([
+  'principal',
+  'org',
+  'tenant',
+  'scope',
+  'role',
+  'connection',
+  'capability',
+  'system',
+  'vertical',
+]);
+export const objectRef = objectRefString.brand<'ObjectRef'>();
 export type ObjectRef = z.infer<typeof objectRef>;
+
+/**
+ * The tuple object an entity ref is stored as, `<entityType>:<entityId>`, or a
+ * `validation_failed` (`Substrat.validation_failed`) refusal when the walk could not read
+ * it back (#1856). The write verbs that store an `EntityRef` in the permission graph call
+ * it, so a bad ref fails where it is written rather than out of a later `ctx.check`.
+ *
+ * Each half is judged ON ITS OWN, which is stricter than parsing the joined string: that
+ * splits at its FIRST colon, so `{ entityType: 'a:b', entityId: 'c' }` would read back as
+ * `{ a, 'b:c' }`, a different entity. A colon in the id is fine; in the type it is refused.
+ *
+ * A type that is a kernel namespace in any case (`scope`, `Scope`, `SCOPE`, …) is refused
+ * as well, for the reason given at `RESERVED_NAMESPACES`.
+ *
+ * `EntityRef` itself is deliberately NOT tightened: it types event payloads that are
+ * already stored, and a consumer's parse of one must not start failing.
+ */
+export function entityObjectRef(entity: EntityRef, verb: string): ObjectRef {
+  const errors: ValidationIssue[] = [];
+  if (typeof entity?.entityType !== 'string' || !OBJECT_NAMESPACE.test(entity.entityType)) {
+    errors.push({
+      path: 'entityType',
+      message: 'letters, digits, _ and - only (no colon, no whitespace), at least one',
+    });
+  } else if (RESERVED_NAMESPACES.has(entity.entityType.toLowerCase())) {
+    errors.push({
+      path: 'entityType',
+      message: `'${entity.entityType}' is a kernel namespace (in any case), not an entity type`,
+    });
+  }
+  if (typeof entity?.entityId !== 'string' || !OBJECT_ID.test(entity.entityId)) {
+    errors.push({ path: 'entityId', message: 'no whitespace, at least one character' });
+  }
+  if (errors.length > 0) {
+    throw substratError(
+      'validation_failed',
+      `${verb}: malformed entity ref ${JSON.stringify(entity)} — the permission graph ` +
+        'stores it as <entityType>:<entityId>, and cannot hold this one',
+      { errors },
+    );
+  }
+  // Both halves passed, so the joined string matches `objectRef` by construction.
+  return `${entity.entityType}:${entity.entityId}` as ObjectRef;
+}
 
 // 'member' | 'parent' | 'role:staff' | 'granted:workorder:read' …
 export const relationName = z.string().regex(/^[a-z0-9_:-]+$/);

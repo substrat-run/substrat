@@ -198,10 +198,10 @@ export const ticket0Manifest = moduleManifest.parse({
    * - `message` has to be here, because a customer writing in is a `message` event.
    *   Declaring `conversation` alone would miss the thing the inbox most wants to hear.
    *   `aiTurn` is the assistant's draft or failure landing on the conversation view.
-   *   Both are linked to their conversation, so a narrowed grant is meant to reach them
-   *   by walking up to it. For `aiTurn` that walk currently throws on the camelCase type
-   *   (#1856), and a throw is a refusal, so a follower hears a turn at the next poll
-   *   rather than on a push. Staff are unaffected: a scope-wide grant needs no walk.
+   *   Both are linked to their conversation, so a narrowed grant reaches them by
+   *   walking up to it. (For the camelCase `aiTurn` that walk threw until #1856, so a
+   *   follower heard a turn only at the next poll.) Staff need no walk: their grant is
+   *   scope-wide.
    * - `message` can NOT be `conversation:read-own`. Internal notes are `message`
    *   rows too, and read-own reaches a contact's messages through the parent walk, so a
    *   customer would be sent `ticket0.note-posted` for a note on their own thread,

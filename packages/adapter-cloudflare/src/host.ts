@@ -199,6 +199,7 @@ import {
   verticalCaller,
   verticalResolution,
   verticalSlug,
+  entityObjectRef,
   type PeerCoverage,
   type PeerSpec,
   type PeerSwitch,
@@ -4147,7 +4148,7 @@ export class CloudflareScopeHost implements ScopeHost {
           node.scopeId!,
           subject,
           `granted:${permission}`,
-          `${entity.entityType}:${entity.entityId}`,
+          entityObjectRef(entity, 'HostAdmin'), // #1856: grant and grantToOrg both land here
           expiresAt ?? null,
         );
       } else if (node.scopeId) {
@@ -7999,7 +8000,7 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.scopeStub(scopeId).writeTuple(
       `principal:${principal}`,
       `granted:${permission}`,
-      `${entity.entityType}:${entity.entityId}`,
+      entityObjectRef(entity, 'grantEntityLocal'), // #1856
       null,
     );
   }

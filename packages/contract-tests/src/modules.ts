@@ -348,7 +348,16 @@ export const permModManifest = moduleManifest.parse({
   // #473: an attachment target on `item`, gated read=perm:read / write=perm:use — reusing
   // the permission model the suite already sets up, so both adapters exercise attachments.
   attachmentTargets: [{ entityType: 'item', readPermission: 'perm:read', writePermission: 'perm:use' }],
-  entityRelations: [{ entityType: 'item', parentType: 'box' }],
+  // #1856: camelCase entity types, the way a module names them, so the walk is proven
+  // over the spelling `ctx.link` writes — a camelCase child under a lower-case parent,
+  // and a camelCase child under a camelCase parent.
+  entityRelations: [
+    { entityType: 'item', parentType: 'box' },
+    { entityType: 'aiTurn', parentType: 'box' },
+    { entityType: 'aiTurn', parentType: 'chatThread' },
+    // #1856: a type that only CONTAINS a kernel namespace is an ordinary entity type.
+    { entityType: 'scopeItem', parentType: 'box' },
+  ],
   entitlementKey: 'perm',
 });
 

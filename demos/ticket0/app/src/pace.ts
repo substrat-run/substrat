@@ -16,18 +16,16 @@ export interface Pace {
 /**
  * Each screen's pace, in one place so a test can pin it.
  *
- * The conversation view does NOT slow down while connected, and that is a stopgap with
- * a named end. A follower (`conversation:read` narrowed onto one thread) is never pushed
- * an assistant turn today: the scope's permission walk throws on the camelCase `aiTurn`
- * type and the fan-out reads that as a refusal (#1856). At the 60s floor a follower
- * would see a new draft up to a minute late, where the 5s poll showed it within five
- * seconds. So the view keeps its old pace until #1856 lands, and the push there only
- * makes things sooner. The inbox has no such gap, since a list is staff-only and staff
- * hold the key scope-wide, so it takes the floor.
+ * Both screens slow to the floor while connected, because everything either one shows
+ * is pushed to everyone who could poll it. The conversation view used to keep its 5s
+ * pace: a follower (`conversation:read` narrowed onto one thread) was never pushed an
+ * assistant turn, because the permission walk up from the camelCase `aiTurn` type threw
+ * and the fan-out read the throw as a refusal. With #1856 fixed, the walk answers and the
+ * follower hears the turn on the push.
  */
 export const PACE = {
   inbox: { everyMs: 10_000, connectedMs: LIVE_FLOOR_MS },
-  conversation: { everyMs: 5_000, connectedMs: 5_000 },
+  conversation: { everyMs: 5_000, connectedMs: LIVE_FLOOR_MS },
 } as const satisfies Record<string, Pace>;
 
 /**
