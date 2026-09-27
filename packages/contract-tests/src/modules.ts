@@ -1177,18 +1177,63 @@ export const scheduleMod: ModuleRegistration = {
       never,
       unknown
     >,
+    // #1525: `invocation_id` selected alongside — a schedule contract assertion joins
+    // this to the same column on `sched/schedule-state` to prove they carry ONE id.
     'sched/read-outbox': ((ctx) =>
-      ctx.sql.query<{ type: string; actor: string; operation: string | null }>(
-        'SELECT type, actor, operation FROM _substrat_outbox ORDER BY id',
+      ctx.sql.query<{ type: string; actor: string; operation: string | null; invocation_id: string | null }>(
+        'SELECT type, actor, operation, invocation_id FROM _substrat_outbox ORDER BY id',
       )) as OperationHandler<never, unknown>,
     // #1288: `kind` is selected, and the order leads with it — two rows may now share
     // a `schedule_op`, so ordering by that alone leaves the pair's order to the query
     // planner and an assertion on the array would be flaky rather than wrong.
+    // #1525: `invocation_id` selected alongside — null for a 'freshness' row (nothing
+    // ran) and for a legacy row predating the column; a fired 'schedule' row carries
+    // the id its own invoke ran under.
     'sched/schedule-state': ((ctx) =>
-      ctx.sql.query<{ kind: string; schedule_op: string; last_status: string }>(
-        `SELECT kind, schedule_op, last_status FROM _substrat_schedule_state
+      ctx.sql.query<{ kind: string; schedule_op: string; last_status: string; invocation_id: string | null }>(
+        `SELECT kind, schedule_op, last_status, invocation_id FROM _substrat_schedule_state
           ORDER BY kind, schedule_op`,
       )) as OperationHandler<never, unknown>,
+    // #1525: a denied schedule's own denial row, joined by eye against the same column
+    // on `sched/schedule-state` — proving a FAILED run carries the identical id, not
+    // just a fired one.
+    'sched/read-denials': readDenialsOp as OperationHandler<never, unknown>,
+  },
+};
+
+/**
+ * #1525: the failure twin of `scheduleMod` itself — a SEPARATE module so registering
+ * it never changes `scheduleMod`'s own schedule count, which `system-switch-suite.ts`
+ * (its `SCHEDULES` constant) and every `scheduleContractSuite` test above this fixture
+ * already pin exactly. Its one schedule declares the permission it is GIVEN
+ * (`sched-denied:tick`) but the handler checks a DIFFERENT one (`sched-denied:admin`),
+ * so provisioning never grants what the handler needs: due, invoked, and denied, every
+ * pass, forever. `entitlementKey` reuses `scheduleMod`'s own SKU so no suite needs a
+ * second `grantEntitlement` call to use it.
+ */
+export const deniedScheduleModManifest = moduleManifest.parse({
+  id: '@test/sched-denied',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [
+    { key: 'sched-denied:tick', description: 'the only permission this module ever grants' },
+    { key: 'sched-denied:admin', description: 'required by the handler; no schedule declares it' },
+  ],
+  events: { emits: [], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'sched',
+  schedules: [
+    { operation: 'sched-denied/tick', cadence: { everyMinutes: 60 }, permissions: ['sched-denied:tick'] },
+  ],
+});
+
+export const deniedScheduleMod: ModuleRegistration = {
+  manifest: deniedScheduleModManifest,
+  operations: {
+    'sched-denied/tick': (async (ctx) => {
+      assertAllowed(await ctx.check('sched-denied:admin' as PermissionKey));
+    }) as OperationHandler<never, unknown>,
   },
 };
 
@@ -2440,6 +2485,13 @@ export const contractTestModules: ModuleRegistration[] = [
   impersonationEchoMod,
   connectorMod,
   scheduleMod,
+  // #1525: the failed-schedule fixture. A Durable Object bakes its operations in at
+  // define time (this array), so registering it on a coordinator mid-test is not
+  // enough for the CLOUDFLARE adapter to know the operation exists — it has to be
+  // here too, or `stub.invoke('sched-denied/tick', …)` throws `not_found` before
+  // `ctx.check` ever runs, which still counts as a failed schedule but records no
+  // denial. Inert for every other suite — nothing else invokes `sched-denied/tick`.
+  deniedScheduleMod,
   // #1577: the operation a resumable run's steps write through. Inert for every
   // other suite — nothing else reads `job_items`.
   jobsMod,
