@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { moduleId, permissionKey, scopeId, tenantId, verticalSlug } from './ids.js';
-import { envVarSpec, capability, freshnessSpec, scheduleSpec, type ModuleManifest } from './manifest.js';
+import { envVarSpec, capability, declaredEntityType, freshnessSpec, scheduleSpec, type ModuleManifest } from './manifest.js';
 import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
@@ -523,6 +523,16 @@ export const permissionRegistry = z.object({
   imports: z.array(permissionRegistryImport).optional(),
 });
 export type PermissionRegistry = z.infer<typeof permissionRegistry>;
+
+/**
+ * The registry as a PUSH carries it (#1869): an `entityGrants` shape naming a kernel namespace
+ * as its entity type (`scope`, `Scope`, …) is refused, as the module manifest refuses one.
+ * Only at the push boundary: {@link storedDeployManifest} reads history with the plain
+ * {@link permissionRegistry}, so a version stored before the refusal stays readable.
+ */
+const pushedPermissionRegistry = permissionRegistry.extend({
+  entityGrants: z.array(entityGrantShape.extend({ entityType: declaredEntityType })).default([]),
+});
 
 /**
  * A vertical's declared permission surface, as the **single typed source** — the input the
@@ -1049,7 +1059,7 @@ export const deployManifest = z.object({
    *  surface (an explicit empty registry for one that genuinely exposes nothing), so absence is a
    *  parse error at the trust boundary rather than a silent empty surface. `digests.permission` is
    *  its content hash. */
-  registry: permissionRegistry,
+  registry: pushedPermissionRegistry,
   /** Computed by the builder's toolchain; what the promotion checkpoint compares. */
   digests: z.object({
     manifest: z.string().min(1),

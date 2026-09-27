@@ -1,5 +1,5 @@
 import type { DeployAssets, PermissionRegistry, PlatformActorId, TenantId, VersionOrigin } from '@substrat-run/contracts';
-import { LIST_PAGE_MAX, deployManifest, storedDeployManifest, type DeployManifest } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX, storedDeployManifest, type DeployManifest } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import type { TenantNarrowedControlPlane } from './authority.js';
 
@@ -297,7 +297,7 @@ export async function versionRegistryFromHost(
 ): Promise<PermissionRegistry | null> {
   const json = await host.admin.versionManifest(actor, slug, versionId);
   if (!json) return null;
-  return deployManifest.parse(JSON.parse(json)).registry ?? null;
+  return storedDeployManifest.parse(JSON.parse(json)).registry ?? null;
 }
 
 /**

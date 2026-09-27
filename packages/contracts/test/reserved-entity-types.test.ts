@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { defineEntities, emitModel, manifestEntities } from '../src/model.js';
 import { moduleManifest } from '../src/manifest.js';
+import { deployManifest, storedDeployManifest } from '../src/deploy.js';
 import { entityObjectRef, isKernelNamespace, RESERVED_NAMESPACES } from '../src/permission.js';
 
 /**
@@ -69,6 +70,9 @@ describe('kernel namespaces are not entity types (#1869)', () => {
         expect(refused({ entityRelations: [{ entityType: 'item', parentType: name }] })).toContain(says);
         expect(refused({ attachmentTargets: [{ entityType: name, readPermission: 'thing:read' }] })).toContain(says);
         expect(refused({ liveTargets: [{ entityType: name, readPermission: 'thing:read' }] })).toContain(says);
+        expect(refused({ searchables: [{ entityType: name, fields: ['title'] }] })).toContain(says);
+        expect(refused({ lists: [{ entityType: name, sortable: ['title'] }] })).toContain(says);
+        expect(refused({ ui: { entityViews: [{ entityType: name, view: 'V' }] } })).toContain(says);
       }
     }
     // The twin: the same positions with ordinary names parse.
@@ -79,6 +83,28 @@ describe('kernel namespaces are not entity types (#1869)', () => {
       liveTargets: [{ entityType: 'orgUnit', readPermission: 'thing:read' }],
     });
     expect(ok.entityRelations).toEqual([{ entityType: 'item', parentType: 'scopeItem' }]);
+  });
+
+  it('a push refuses one as an entityGrants shape; a stored version holding one stays readable', () => {
+    const pushed = (entityType: string) => ({
+      version: '1.0.0',
+      entry: 'index.js',
+      compatibilityDate: '2026-07-01',
+      registry: { permissions: [], roles: [], entityGrants: [{ entityType, permissions: ['thing:read'] }] },
+      digests: { manifest: 'm', permission: 'p', migration: 'g' },
+    });
+    for (const ns of RESERVED_NAMESPACES) {
+      for (const name of spellings(ns)) {
+        const r = deployManifest.safeParse(pushed(name));
+        expect(r.success).toBe(false);
+        expect(r.error!.issues.map((i) => i.message)).toEqual([
+          `'${name}' is a kernel namespace (in any case), not an entity type`,
+        ]);
+        // History is read with the plain registry: a version stored before the refusal parses.
+        expect(storedDeployManifest.parse(pushed(name)).registry?.entityGrants[0]?.entityType).toBe(name);
+      }
+    }
+    expect(deployManifest.parse(pushed('scopeItem')).registry.entityGrants[0]?.entityType).toBe('scopeItem');
   });
 
   it('a hand-declared relation to an engine entity is refused at registration, where manifestEntities passes it on', () => {

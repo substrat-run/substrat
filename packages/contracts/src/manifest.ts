@@ -206,13 +206,13 @@ export function resolveScopedEnvSpec(
 }
 
 /**
- * An entity type in a manifest position the permission graph reads (#1869): the
- * `entityRelations` edges `ctx.link` writes as `<type>:<id>`, and the targets whose reads
- * are checked per entity. A kernel namespace in any case (`scope`, `Scope`, …) is refused
- * here, so a module finds out when it registers rather than at its first `ctx.link`.
+ * An entity type a module declares (#1869): the `entityRelations` edges `ctx.link` writes as
+ * `<type>:<id>`, the targets whose reads are checked per entity, and every other manifest
+ * position naming one. A kernel namespace in any case (`scope`, `Scope`, …) is refused here,
+ * so a module finds out when it registers rather than at its first `ctx.link`.
  * The same names `entityObjectRef` refuses at write time (`RESERVED_NAMESPACES`).
  */
-const declaredEntityType = z
+export const declaredEntityType = z
   .string()
   .min(1)
   .refine((t) => !isKernelNamespace(t), {
@@ -377,7 +377,7 @@ export const moduleManifest = z.object({
   searchables: z
     .array(
       z.object({
-        entityType: z.string().min(1),
+        entityType: declaredEntityType,
         fields: z.array(z.string().min(1)).min(1),
         table: z.string().min(1).optional(),
         idColumn: z.string().min(1).optional(),
@@ -397,7 +397,7 @@ export const moduleManifest = z.object({
   lists: z
     .array(
       z.object({
-        entityType: z.string().min(1),
+        entityType: declaredEntityType,
         sortable: z.array(z.string().min(1)).min(1),
         filterable: z.array(z.string().min(1)).optional(),
         table: z.string().min(1).optional(),
@@ -426,7 +426,7 @@ export const moduleManifest = z.object({
         .optional(),
       // the EntityRef → view registry: cross-engine rendering without imports
       entityViews: z
-        .array(z.object({ entityType: z.string().min(1), view: z.string().min(1) }))
+        .array(z.object({ entityType: declaredEntityType, view: z.string().min(1) }))
         .optional(),
       widgets: z
         .array(z.object({ slot: z.string().min(1), component: z.string().min(1), permission: permissionKey }))
