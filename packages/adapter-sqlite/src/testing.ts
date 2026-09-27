@@ -29,9 +29,14 @@
  * somewhere else — the open question the issue that asked for this left for its placement.
  */
 import Database from 'better-sqlite3';
-import { DO_SQL_LIMITS } from '@substrat-run/kernel';
 
-const LIMIT = DO_SQL_LIMITS.likePatternBytes;
+// Not imported from `@substrat-run/kernel`'s `DO_SQL_LIMITS.likePatternBytes` (the value this
+// mirrors — `testing-export.test.ts` asserts the two agree): this module is required on the
+// FIRST real SQLite use in every process that has this repo's own preload wired in
+// (`tools/vitest/like-pattern-limit.cjs`), and pulling in the whole kernel package there costs
+// real time across every one of those processes for a single number `sql-limits.cjs` already
+// avoids the same way.
+const LIMIT = 50;
 const MESSAGE = 'LIKE or GLOB pattern too complex';
 
 const seen = new WeakSet<Database.Database>();
