@@ -2,7 +2,15 @@ import { useEffect, useState } from 'react';
 import type { PlatformRequestBacklog, ScopeId, SweepRunEntry, SystemSwitchRecord } from '@substrat-run/contracts';
 import { Badge, Button, Card } from '../components';
 import { ApiError, walkAll, type Api } from '../lib/api';
-import { countTrailingPromotes, pendingCaption, PROMOTE_TRAILING_MINUTES, readPending, summarizeSystemSwitches } from '../lib/services';
+import {
+  countTrailingPromotes,
+  pendingCaption,
+  PROMOTE_TRAILING_MINUTES,
+  readPending,
+  summarizeSystemSwitches,
+  sweepLoopRows,
+  SWEEP_LOOP_ROWS,
+} from '../lib/services';
 
 export interface ServicesProps {
   api: Api;
@@ -63,8 +71,9 @@ export function Services({
   useEffect(() => {
     let live = true;
     void api
-      .listSweepRuns({ limit: 20 })
-      .then((page) => live && setSweeps({ status: 'ready', data: page.entries }))
+      // Over-read: the drain's pass rows are dropped from this tile (it has its own).
+      .listSweepRuns({ limit: SWEEP_LOOP_ROWS * 2 })
+      .then((page) => live && setSweeps({ status: 'ready', data: sweepLoopRows(page.entries) }))
       .catch(() => live && setSweeps({ status: 'unavailable' }));
     return () => {
       live = false;
@@ -157,7 +166,7 @@ export function Services({
       <div style={grid}>
         <Card
           title="Sweep loops"
-          description="The last 20 recorded sweep units, newest first"
+          description={`The last ${SWEEP_LOOP_ROWS} recorded sweep units, newest first`}
           actions={<Button size="sm" variant="ghost" onClick={onOpenSweeps}>View sweeps →</Button>}
         >
           <TileBody

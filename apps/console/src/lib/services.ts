@@ -1,4 +1,4 @@
-import type { PlatformRequestBacklog, SystemSwitchRecord, Vertical, VerticalChannel } from '@substrat-run/contracts';
+import type { PlatformRequestBacklog, SweepRunEntry, SystemSwitchRecord, Vertical, VerticalChannel } from '@substrat-run/contracts';
 
 // An ordinary in-flight promote must not light up the tile.
 export const PROMOTE_TRAILING_MINUTES = 10;
@@ -66,4 +66,17 @@ export function pendingCaption(reading: PendingReading): string {
   const stale = reading.stale ? '; the sweep has not recorded a pass since' : '';
   const floor = reading.floor ? '. At least this many: some scopes could not be drained that pass' : '';
   return `Pending: still waiting as of the last sweep pass, ${reading.minutesAgo} min ago — not live${stale}${floor}.`;
+}
+
+/** How many rows the "Sweep loops" tile shows. */
+export const SWEEP_LOOP_ROWS = 20;
+
+/**
+ * The "Sweep loops" tile's rows (#1840): sweep UNITS only. The `platform-request` row is
+ * the drain's fleet-wide pass summary, written every pass — left in, it would always be
+ * "last", and a floor pass would paint the tile red over units that all swept fine. It has
+ * its own tile (Platform requests).
+ */
+export function sweepLoopRows<T extends Pick<SweepRunEntry, 'kind'>>(rows: T[]): T[] {
+  return rows.filter((r) => r.kind !== 'platform-request').slice(0, SWEEP_LOOP_ROWS);
 }

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { verticalSlug, type SystemSwitchRecord, type VerticalChannel } from '@substrat-run/contracts';
-import { countTrailingPromotes, PENDING_STALE_MINUTES, pendingCaption, readPending, summarizeSystemSwitches } from '../src/lib/services';
+import {
+  countTrailingPromotes,
+  PENDING_STALE_MINUTES,
+  pendingCaption,
+  readPending,
+  summarizeSystemSwitches,
+  sweepLoopRows,
+  SWEEP_LOOP_ROWS,
+} from '../src/lib/services';
 
 const now = Date.parse('2026-09-22T12:00:00Z');
 const vertical = (slug: string, servingRef: string | null = 'worker') => ({ slug: verticalSlug.parse(slug), servingRef });
@@ -142,5 +150,26 @@ describe('the pending caption (#1840)', () => {
     const both = pendingCaption({ kind: 'count', count: 2, floor: true, minutesAgo: 90, stale: true });
     expect(both).toMatch(/has not recorded a pass since/);
     expect(both).toMatch(/At least this many/);
+  });
+});
+
+describe('the Sweep loops tile rows (#1840)', () => {
+  it('leaves out the drain pass row, so it is never "last" and never paints the tile', () => {
+    const rows = sweepLoopRows([
+      { kind: 'platform-request' as const, id: 'p' },
+      { kind: 'connector' as const, id: 'c' },
+      { kind: 'schedule' as const, id: 's' },
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(['c', 's']);
+  });
+
+  it('keeps every sweep unit kind — the twin', () => {
+    const kinds = ['connector', 'schedule', 'freshness', 'vertical-events'] as const;
+    expect(sweepLoopRows(kinds.map((kind) => ({ kind }))).map((r) => r.kind)).toEqual([...kinds]);
+  });
+
+  it('still shows at most the tile\'s rows after dropping them', () => {
+    const many = Array.from({ length: SWEEP_LOOP_ROWS * 2 }, (_, i) => ({ kind: i % 2 ? ('schedule' as const) : ('platform-request' as const) }));
+    expect(sweepLoopRows(many)).toHaveLength(SWEEP_LOOP_ROWS);
   });
 });
