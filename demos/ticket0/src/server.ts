@@ -24,6 +24,7 @@ import type { Context } from 'hono';
 import { platformActorId } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
 import { globalFetch, type ScopeHost } from '@substrat-run/kernel';
+import { mountLiveReads } from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution, type ModelHost } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
@@ -46,7 +47,6 @@ import { startDemoSites } from '../harness/demo-site.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
 import { confirmationEmail, mountSignupSurface } from '../harness/signups.js';
 import { mountInvites } from '../harness/invites.js';
-import { mountLiveReads } from '../harness/live.js';
 import { devInviteDesk } from '../harness/dev-invites.js';
 
 /**

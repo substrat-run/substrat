@@ -67,7 +67,7 @@ import {
   type ScopeStub,
   invocationLog,
 } from '@substrat-run/kernel';
-import { mountPlatformSurface } from '@substrat-run/vertical-host';
+import { mountLiveReads, mountPlatformSurface } from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import {
@@ -105,7 +105,6 @@ import {
 } from '../harness/assistant.js';
 import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { mountKbRefresh } from '../harness/kb-refresh.js';
-import { mountLiveReads } from '../harness/live.js';
 import { senderFor, sweepOutbound } from '../harness/relay.js';
 import { inboundConfigFor, receiveInbound } from '../harness/inbound.js';
 import { mountInvites, recordStaffProfile } from '../harness/invites.js';
@@ -1103,7 +1102,8 @@ app.post('/api/email/inbound', async (c) => {
 
 // ── Live reads (#938) ────────────────────────────────────────────────────────
 
-// The change feed the inbox and the conversation view hold open (`harness/live.ts`),
+// The change feed the inbox and the conversation view hold open (`mountLiveReads` in
+// `@substrat-run/vertical-host`, #1859: the Origin gate and the pure host's 501),
 // registered before `mountApi` so the declared table never sees the path. The caller
 // is resolved exactly as `stub` resolves one. What they are then told is the scope's
 // decision, frame by frame, not this route's.

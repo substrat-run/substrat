@@ -1321,6 +1321,8 @@ export * from './public-surface.js';
 export * from './capability-exchange.js';
 // #1706: calling another vertical of the same tenant, from harness code.
 export * from './peer-client.js';
+// #1859: the live-read route — the Origin gate and the pure host's 501, once.
+export * from './live.js';
 export {
   classifyError,
   isPlatformFault,
