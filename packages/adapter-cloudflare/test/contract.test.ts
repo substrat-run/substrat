@@ -1,6 +1,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { warmControlPlane } from './do-warmup.js';
+import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
+import { armRewind, holdsStub as holdsOf, landRewind, restartNow } from './pitr-emulation.js';
 import {
   connectionId,
   errorCodeOf,
@@ -47,11 +48,19 @@ import {
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
-import { CloudflareScopeHost } from '../src/host.js';
+import {
+  CloudflareScopeHost,
+  SWITCH_HOLD_PENDING_MAX_MS,
+  SWITCH_HOLD_SETTLE_MS,
+  SWITCH_HOLD_SNAPSHOT_MS,
+  SWITCH_HOLDS_NAME,
+} from '../src/host.js';
 
 // Absorb the inter-file DO reload before any suite's first directory call
 // (see do-warmup.ts) — file-level, so it runs before every suite below.
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
+// …and the #1819 hold object every schedule pass over SCOPE reads.
+beforeAll(() => warmSwitchHolds(env.SCOPE));
 
 // The scope-host suite runs against an allow-all checker (it exercises no
 // ctx.check). Runtime module registration is unsupported on CF — the ScopeDO
@@ -2128,6 +2137,618 @@ describe('#1742 — the CP-full seat and restore switch off in their own unit', 
     expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 2, failed: 0 });
   });
 });
+
+/**
+ * #1819 — a PITR rewind to a bookmark from before the kill switch was pulled. The rewound
+ * storage has the module's `system:` grants live and no OFF marker, and nothing re-asserts the
+ * switch until the platform's next reconcile. The rewind now holds the scope's OFF modules on
+ * `SWITCH_HOLDS_NAME`, outside the object it rewinds, and the pass skips a held module.
+ *
+ * The rewind is EMULATED (`pitr-emulation.ts`): workerd has no PITR. The DO's real
+ * `rewindToBookmark` runs, and so does the restart it causes; the rewound bytes are a dump from
+ * before the switch, written into the restarted object with no host code in between.
+ */
+// Every rewind waits `SWITCH_HOLD_SETTLE_MS` before it rewinds, so these outlast vitest's 5 s default.
+describe('#1819 — a PITR rewind to before the switch runs nothing until the switch is back', { timeout: 20_000 }, () => {
+  const SCHED = moduleId.parse('@test/sched');
+  const t = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const READ = permissionKey.parse('perm:read');
+  const roles: RoleDefinition[] = [{ key: 'office-admin', permissions: [READ], source: 'vertical' }];
+
+  /** A deployment's host over `ns` (the scope namespace, or a counting wrapper of it). */
+  const deployment = (ns: DurableObjectNamespace = env.SCOPE) => {
+    const h = new CloudflareScopeHost({ scope: ns, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+    h.registerModule(scheduleMod);
+    return h;
+  };
+  const host = deployment();
+  afterAll(async () => host.close());
+
+  const reconcile = (s: ScopeId, extra: { switchedOff?: ModuleId[] } = {}) =>
+    host.provisionScopeLocal({ tenantId: t, scopeId: s, owner, roles, ownerRoleKey: 'office-admin', ...extra });
+  const newScope = async (): Promise<ScopeId> => {
+    const s = scopeId.parse(ulid());
+    await reconcile(s);
+    return s;
+  };
+  const off = (s: ScopeId) => host.systemSwitchLocal(s, SCHED, 'off');
+  /** A fresh host each pass, the way the sweeper builds one per pass. */
+  const pass = (s: ScopeId, on = deployment()) => on.runDueSchedules(SCHED, t, s);
+  const holdsStub = () => holdsOf(env.SCOPE);
+  const heldOn = async (s: ScopeId) =>
+    (await holdsStub().switchHoldsAll()).filter((h) => h.scopeId === s).map((h) => h.moduleId);
+
+  /** Switch off (or not), then rewind to a bookmark taken before that (the whole issue). */
+  const rewoundPastTheSwitch = async (switchOff = true): Promise<ScopeId> => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    if (switchOff) await off(s);
+    await armRewind(env.SCOPE, s);
+    expect(await host.rewindScopeLocal(s, 'bm-before-switch', { force: true })).toEqual({
+      rewindingTo: 'bm-before-switch',
+    });
+    await landRewind(env.SCOPE, s, atBookmark);
+    // The rewound storage really has the switch undone: this is the state the issue is about.
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'on' }]);
+    return s;
+  };
+
+  it('the next pass after the rewind fires nothing, and neither does any pass before the re-assert', async () => {
+    const s = await rewoundPastTheSwitch();
+    expect(await heldOn(s)).toEqual([SCHED]);
+    for (let i = 0; i < 3; i++) {
+      expect(await pass(s)).toMatchObject({ fired: 0, skipped: 2, failed: 0, errors: [], switchedOff: true });
+    }
+  });
+
+  it('twin: nothing recorded off — the rewind holds nothing, and the next pass fires', async () => {
+    const s = await rewoundPastTheSwitch(false);
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it("the hold is this scope's only: another scope's module still fires while it holds", async () => {
+    const held = await rewoundPastTheSwitch();
+    const other = await newScope();
+    const h = deployment();
+    expect(await pass(held, h)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(await pass(other, h)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it('the hold survives the restart the rewind causes, and a restart of the object holding it', async () => {
+    const s = await rewoundPastTheSwitch(); // `landRewind` waited out the scope's own restart
+    await runInDurableObject(holdsOf(env.SCOPE) as unknown as DurableObjectStub, (_i, state) => {
+      state.abort('restart the hold object');
+    }).catch(() => undefined);
+    expect(await heldOn(s)).toEqual([SCHED]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it("the re-assert clears the hold: OFF is back in the scope's own storage, and still nothing fires", async () => {
+    const s = await rewoundPastTheSwitch();
+    // `/internal/system-switch`'s far end, which the platform's re-assert lands on.
+    expect(await off(s)).toEqual({ held: true, changed: true, permissions: ['sched:tick'] });
+    expect(await heldOn(s)).toEqual([]);
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    // And the lever still works: ON brings the schedules back.
+    await host.systemSwitchLocal(s, SCHED, 'on');
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it("an operator's ON clears the hold: the module fires on the next pass", async () => {
+    const s = await rewoundPastTheSwitch();
+    expect(await host.systemSwitchLocal(s, SCHED, 'on')).toMatchObject({ held: true });
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it('a reconcile carrying the off list leaves no gap, and the re-assert after it clears the hold', async () => {
+    const s = await rewoundPastTheSwitch();
+    await reconcile(s, { switchedOff: [SCHED] });
+    // #1742 still holds: switched off in the reconcile's own unit, so the very next pass is off.
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    // The in-unit move does not release (its answer names no instance); the platform's
+    // re-assert right after the call does.
+    expect(await heldOn(s)).toEqual([SCHED]);
+    await off(s);
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('twin: a reconcile with no list leaves the hold, so the pass still fires nothing', async () => {
+    const s = await rewoundPastTheSwitch();
+    await reconcile(s);
+    expect(await heldOn(s)).toEqual([SCHED]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('a restore carrying the off list leaves no gap, and the re-assert after it clears the hold', async () => {
+    const s = await rewoundPastTheSwitch();
+    await host.restoreScopeLocal(s, await host.exportScopeLocal(s), { switchedOff: [SCHED] });
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(await heldOn(s)).toEqual([SCHED]);
+    await off(s);
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  /**
+   * Copilot review on #1838: a release has to be ordered against the rewind. A switch move that
+   * lands in storage the rewind will discard must not release the hold, or the rewind restores
+   * live grants with nothing holding them.
+   */
+  it('an OFF during the settle releases nothing: after the rewind lands, the next pass still fires nothing', async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    const rewinding = host.rewindScopeLocal(s, 'bm', { force: true });
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS / 3));
+    // A repeated OFF inside the settle: the scope holds its grants, but the write is in the
+    // pre-rewind storage, and the claim is still pending.
+    expect(await off(s)).toMatchObject({ held: true });
+    expect(await heldOn(s)).toEqual([SCHED]);
+    await rewinding;
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    // The first re-assert AFTER the rewind landed is what clears it.
+    await off(s);
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('a move the doomed instance applies releases nothing; after an eviction, the next instance releases', async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s, { holdAbort: true });
+    // The wire answer names no instance.
+    expect(await host.rewindScopeLocal(s, 'bm', { force: true })).toStrictEqual({ rewindingTo: 'bm' });
+    // The armed instance is still serving: its write is discarded at the restart.
+    expect(await off(s)).toStrictEqual({ held: true, changed: false, permissions: [] });
+    expect(await heldOn(s)).toEqual([SCHED]);
+    expect((await holdsStub().switchHoldClaims(s, SCHED))[0]).toMatchObject({ state: 'armed', doomed: expect.any(String) });
+    // It is evicted before its own abort: the next instance is a new id, on restored storage.
+    await restartNow(env.SCOPE, s);
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(await off(s)).toStrictEqual({ held: true, changed: true, permissions: ['sched:tick'] });
+    expect(await heldOn(s)).toEqual([]);
+  });
+
+  /**
+   * Why the claims are read BEFORE the move. Here a move lands while the claim is still pending,
+   * and before its answer is back, the rewind arms on a different instance (the one serving had
+   * been evicted). That move was in storage the rewind discards. Read before the move, the claim
+   * was pending, so it stays. Read after it, the claim would look armed with a doomed instance
+   * that is not the move's, and would be released.
+   */
+  it('a claim armed while a move is in flight stays: the release reads the claims before the move', async () => {
+    const s = await newScope();
+    await off(s);
+    await holdsStub().switchHoldClaim(s, [SCHED], 'arming-now', new Date().toISOString());
+    const counting = countingScopes(env.SCOPE);
+    counting.afterMove = () => holdsStub().switchHoldArm(s, 'arming-now', 'an-instance-started-after-this-move');
+    expect(await deployment(counting.ns).systemSwitchLocal(s, SCHED, 'off')).toMatchObject({ held: true });
+    expect(await heldOn(s)).toEqual([SCHED]);
+    await holdsStub().switchHoldRelease(s, null, null);
+  });
+
+  /**
+   * Re-review on #1838: a LATER rewind can doom the instance a release runs on. After R1 lands,
+   * the module is ON in storage and held, so R2 found nothing off and claimed nothing. A re-assert
+   * OFF then landed on R2's doomed instance, which is not R1's, so it released R1's claim; R2's
+   * restart discarded the OFF, and the pass fired. R2 now also claims what is held on the scope.
+   */
+  it('a second rewind claims what an earlier one still holds, so a re-assert on its doomed instance releases nothing', async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    await host.rewindScopeLocal(s, 'bm-1', { force: true });
+    await landRewind(env.SCOPE, s, atBookmark); // R1 landed: ON in storage, held
+    await armRewind(env.SCOPE, s, { holdAbort: true });
+    await host.rewindScopeLocal(s, 'bm-2', { force: true }); // R2 armed on the serving instance
+    expect((await holdsStub().switchHoldClaims(s, SCHED)).length).toBe(2);
+    await off(s); // the re-assert lands on R2's doomed instance
+    await restartNow(env.SCOPE, s);
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    // The first re-assert after R2 landed clears both.
+    await off(s);
+    expect(await heldOn(s)).toEqual([]);
+  });
+
+  /**
+   * Re-review on #1838: an operator's ON during the settle, or on the doomed instance, is
+   * discarded by the rewind, and it used to leave the claim in place. Nothing then cleared it:
+   * the module stayed off while the directory and the status read said ON. ON now releases
+   * every claim it read, surviving or not.
+   */
+  it("an operator's ON on the doomed instance releases the hold: the module runs once the rewind lands", async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s, { holdAbort: true });
+    await host.rewindScopeLocal(s, 'bm', { force: true });
+    expect(await host.systemSwitchLocal(s, SCHED, 'on')).toMatchObject({ held: true });
+    expect(await heldOn(s)).toEqual([]);
+    await restartNow(env.SCOPE, s);
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  it("an operator's ON during the settle releases the hold too; twin: an OFF there does not (above)", async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    const rewinding = host.rewindScopeLocal(s, 'bm', { force: true });
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS / 3));
+    await host.systemSwitchLocal(s, SCHED, 'on');
+    expect(await heldOn(s)).toEqual([]);
+    await rewinding;
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await heldOn(s)).toEqual([]); // arming a released claim does not bring it back
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  /**
+   * Re-review on #1838: the ambiguous-throw probe can land while the restore call is still in
+   * flight. The DO now counts itself arming from BEFORE that call, so such a probe answers armed,
+   * naming this instance as doomed, rather than "not armed" and a claim that any move releases.
+   */
+  it('a probe while the restore call is in flight answers armed', async () => {
+    const s = await newScope();
+    const scope = () =>
+      env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as {
+        rewindProbe(): Promise<{ instance: string; armed: boolean }>;
+        rewindToBookmark(b: string, o: { force: boolean }): Promise<unknown>;
+      };
+    expect(await scope().rewindProbe()).toMatchObject({ armed: false });
+    let open!: () => void;
+    await armRewind(env.SCOPE, s, { gate: new Promise<void>((resolve) => (open = resolve)), holdAbort: true });
+    const rewinding = scope().rewindToBookmark('bm', { force: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await scope().rewindProbe()).toMatchObject({ armed: true });
+    open();
+    await rewinding;
+    await restartNow(env.SCOPE, s);
+  });
+
+  it('a claim still pending past the bound is released by a move; a fresh pending one is not', async () => {
+    const s = await newScope();
+    await off(s);
+    const stale = new Date(Date.now() - SWITCH_HOLD_PENDING_MAX_MS - 60_000).toISOString();
+    // A rewinding request that died between capture and arm left this one.
+    await holdsStub().switchHoldClaim(s, [SCHED], 'died-mid-rewind', stale);
+    await off(s);
+    expect(await heldOn(s)).toEqual([]);
+    // Twin: a pending claim inside the bound may belong to a rewind about to arm.
+    await holdsStub().switchHoldClaim(s, [SCHED], 'still-rewinding', new Date().toISOString());
+    await off(s);
+    expect(await heldOn(s)).toEqual([SCHED]);
+    await holdsStub().switchHoldRelease(s, null, null);
+  });
+
+  it('deleting the scope releases its holds', async () => {
+    const s = await rewoundPastTheSwitch();
+    await host.deleteScopeLocal(s);
+    expect(await heldOn(s)).toEqual([]);
+  });
+
+  it('a definite refusal releases what it held, and nothing else', async () => {
+    const s = await newScope();
+    await off(s);
+    // Not armed, and no such bookmark: the DO refuses before anything is restored, and says so.
+    await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/^rewind refused: unknown bookmark/);
+    expect(await heldOn(s)).toEqual([]);
+    // Twin: an earlier rewind's claim that was already there stays.
+    await holdsStub().switchHoldClaim(s, [SCHED], 'earlier-rewind', new Date().toISOString());
+    await holdsStub().switchHoldArm(s, 'earlier-rewind', null);
+    await expect(host.rewindScopeLocal(s, 'no-such-bookmark')).rejects.toThrow(/^rewind refused: /);
+    expect((await holdsStub().switchHoldClaims(s, SCHED)).map((c) => c.claimId)).toEqual(['earlier-rewind']);
+    await holdsStub().switchHoldRelease(s, null, null);
+  });
+
+  /**
+   * Copilot review on #1838: two rewinds of one scope at once. A is refused, B succeeds. With one
+   * shared row, A's refusal released the row B relied on, and B's rewind landed with no hold. Each
+   * rewind now owns its claim, and a refusal drops only its own.
+   */
+  it("concurrent rewinds: A's refusal leaves B's claim, and the rewound scope stays held", async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    const [a, b] = await Promise.allSettled([
+      host.rewindScopeLocal(s, 'no-such-bookmark'), // A: definitely refused
+      host.rewindScopeLocal(s, 'bm', { force: true }), // B: armed
+    ]);
+    expect(a.status).toBe('rejected');
+    expect(String((a as PromiseRejectedResult).reason)).toMatch(/rewind refused: unknown bookmark/);
+    expect(b).toMatchObject({ status: 'fulfilled', value: { rewindingTo: 'bm' } });
+    await landRewind(env.SCOPE, s, atBookmark);
+    expect(await heldOn(s)).toEqual([SCHED]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it('an ambiguous throw keeps the hold: the DO may have armed the bookmark', async () => {
+    const s = await newScope();
+    await off(s);
+    // A raw failure with no refusal prefix, after the DO got as far as arming. The host cannot
+    // tell whether the scope will come back rewound, so it keeps the hold.
+    await armRewind(env.SCOPE, s, { throwing: 'Network connection lost.' });
+    await expect(host.rewindScopeLocal(s, 'bm', { force: true })).rejects.toThrow(/Network connection lost/);
+    expect(await heldOn(s)).toEqual([SCHED]);
+    // Inert on a scope that is still off. The operator's ON releases it; an OFF would wait for
+    // the next instance, since the probe found this one arming and named it doomed.
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    await host.systemSwitchLocal(s, SCHED, 'on');
+    expect(await heldOn(s)).toEqual([]);
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  /**
+   * The race the order in `runDueSchedules` closes. One pass reads the hold ONCE and keeps it
+   * for `SWITCH_HOLD_SNAPSHOT_MS`. A pass that read it before the rewind wrote its hold must
+   * not act on that read when it meets the rewound storage. The rewind waits longer than a
+   * snapshot lives, so that snapshot is always too old by then.
+   */
+  it('a pass that read the hold before the rewind re-reads it before acting on the rewound scope', async () => {
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    const bystander = await newScope();
+    await pass(bystander, h); // the snapshot, taken before any hold for `s` exists
+    expect(counting.holdReads).toBe(1);
+    const s = await rewoundPastTheSwitch();
+    expect(await pass(s, h)).toMatchObject({ fired: 0, switchedOff: true });
+    expect(counting.holdReads).toBe(2);
+  });
+
+  /**
+   * The ORDER, pinned (review 6a): the consult comes after the scope's state read. This pass
+   * takes its snapshot before the hold exists, then its state read is held until the rewind has
+   * landed, so that read meets rewound storage. Consulting after it finds the snapshot too old
+   * and re-reads. A consult moved before the state read would use the pre-hold snapshot while it
+   * was still fresh, and fire.
+   */
+  it('a state read that lands after the rewind is judged against a hold read after it', async () => {
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await pass(await newScope(), h); // the snapshot, taken before any hold for `s`
+    expect(counting.holdReads).toBe(1);
+    let open!: () => void;
+    counting.gateStateRead = { scopeId: s, until: new Promise<void>((resolve) => (open = resolve)) };
+    const racing = pass(s, h); // starts now; its state read waits at the gate
+    await armRewind(env.SCOPE, s);
+    await host.rewindScopeLocal(s, 'bm', { force: true });
+    await landRewind(env.SCOPE, s, atBookmark);
+    open();
+    expect(await racing).toMatchObject({ fired: 0, switchedOff: true });
+    expect(counting.holdReads).toBe(2);
+  });
+
+  it('twin, pinning the constants that argument rests on: the rewind outwaits a snapshot', () => {
+    expect(SWITCH_HOLD_SETTLE_MS).toBeGreaterThan(SWITCH_HOLD_SNAPSHOT_MS);
+  });
+
+  /**
+   * The cost on the hot path. A pass reads the hold once, whatever the number of scopes, and
+   * a scope that was never rewound costs no RPC of its own.
+   */
+  it('a pass over many scopes reads the hold once, not once per scope', async () => {
+    const scopes = await Promise.all(Array.from({ length: 10 }, () => newScope()));
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    const started = Date.now();
+    for (const s of scopes) expect(await pass(s, h)).toMatchObject({ fired: 2 });
+    const passMs = Date.now() - started;
+    const readStarted = Date.now();
+    await holdsStub().switchHoldsAll();
+    const readMs = Date.now() - readStarted;
+    // Once per snapshot age: one read, unless this machine took longer than that for the pass.
+    expect(counting.holdReads).toBeGreaterThanOrEqual(1);
+    expect(counting.holdReads).toBeLessThanOrEqual(1 + Math.floor(passMs / SWITCH_HOLD_SNAPSHOT_MS));
+    expect(counting.holdReads).toBeLessThan(scopes.length);
+    expect(counting.scopeCalls).toBeGreaterThanOrEqual(scopes.length * 4);
+    console.log(
+      `#1819 cost: ${scopes.length} scopes, ${counting.scopeCalls} scope RPCs, ${counting.holdReads} hold read; ` +
+        `pass ${passMs} ms, one hold read ${readMs} ms`,
+    );
+  });
+
+  /**
+   * Copilot review on #1838: the sweepers run up to eight scopes at once on one host. Each
+   * consult that finds the snapshot missing used to send its own read; they now join one.
+   */
+  it('concurrent consults on a cold host send exactly one hold read, and report a failure once', async () => {
+    const scopes = await Promise.all(Array.from({ length: 8 }, () => newScope()));
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    const reports = await Promise.all(scopes.map((s) => pass(s, h)));
+    expect(reports.every((r) => r.fired === 2)).toBe(true);
+    expect(counting.holdReads).toBe(1);
+
+    const failing = countingScopes(env.SCOPE);
+    failing.failReads = true;
+    const cold = deployment(failing.ns);
+    const failed = await Promise.all(scopes.map((s) => pass(s, cold)));
+    expect(failing.holdReads).toBe(1);
+    expect(failed.flatMap((r) => r.errors).filter((e) => e.operation === 'switch-hold')).toHaveLength(1);
+  });
+
+  it('a consult does not join a read that went out longer ago than the snapshot age', async () => {
+    const [a, b] = await Promise.all([newScope(), newScope()]);
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    counting.slowNextReadMs = SWITCH_HOLD_SNAPSHOT_MS + 1_000;
+    const first = pass(a, h); // its read is still in flight when the next consult comes
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SNAPSHOT_MS + 300));
+    await pass(b, h); // too old to join: it sends its own read
+    await first;
+    expect(counting.holdReads).toBe(2);
+  });
+
+  /**
+   * A hold object that cannot be read fails OPEN, except for what the pass already knows is
+   * held. Closed would stop every schedule in the deployment over one object; open reopens only
+   * this issue's gap, for a rewind during the outage. The error is reported either way.
+   */
+  it('an unreadable hold fails open, and says so', async () => {
+    const s = await rewoundPastTheSwitch();
+    const counting = countingScopes(env.SCOPE);
+    counting.failReads = true;
+    const r = await pass(s, deployment(counting.ns));
+    expect(r).toMatchObject({ fired: 2, failed: 0 });
+    expect(r.errors).toEqual([
+      { operation: 'switch-hold', error: expect.stringMatching(/unreadable \(holds down\); no earlier read in this pass, so no hold applied/) },
+    ]);
+    await holdsStub().switchHoldRelease(s, null, null);
+  });
+
+  it('twin: a hold this pass already read stays held when a later read fails', async () => {
+    const s = await rewoundPastTheSwitch();
+    const counting = countingScopes(env.SCOPE);
+    const h = deployment(counting.ns);
+    expect(await pass(s, h)).toMatchObject({ fired: 0, switchedOff: true });
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SNAPSHOT_MS + 100));
+    counting.failReads = true;
+    const r = await pass(s, h);
+    expect(r).toMatchObject({ fired: 0, switchedOff: true });
+    expect(r.errors).toEqual([
+      {
+        operation: 'switch-hold',
+        error: expect.stringMatching(/unreadable \(holds down\); the \d+ hold\(s\) from this pass's last good read still applied/),
+      },
+    ]);
+    expect(counting.holdReads).toBe(2);
+  });
+});
+
+/**
+ * #1819 on the CP-full host, for a scope whose store is this host's own: the co-located
+ * rewind (`admin.rewindScope`, `localApply`) holds, and the platform's own lever and
+ * reconcile release it here.
+ */
+describe('#1819 — the co-located rewind holds, and the CP-full switch releases it', { timeout: 20_000 }, () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  host.registerModule(scheduleMod);
+  const t = tenantId.parse(ulid());
+  beforeAll(async () => {
+    await host.admin.createTenant(staff, { id: t, slug: `hold-${t.slice(-10).toLowerCase()}`, name: 'Hold' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+  });
+  afterAll(async () => host.close());
+
+  const node = (s: ScopeId) => ({ tenantId: t, scopeId: s });
+  const rewound = async (): Promise<ScopeId> => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, node(s));
+    await host.admin.activateScope(staff, t, s);
+    const atBookmark = await host.admin.exportScope(staff, t, s);
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: node(s), reason: 'incident' });
+    await armRewind(env.SCOPE, s);
+    await host.admin.rewindScope(staff, t, s, 'bm', { force: true, localApply: true });
+    await landRewind(env.SCOPE, s, atBookmark.tables);
+    return s;
+  };
+
+  it('the next pass fires nothing; the reconcile re-asserts it and the hold is gone', async () => {
+    const s = await rewound();
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+    await host.provisionScope(staff, node(s));
+    const held = (await holdsOf(env.SCOPE).switchHoldsAll()).filter((h) => h.scopeId === s);
+    expect(held).toEqual([]);
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });
+  });
+
+  it("twin: the operator's restore releases it, and the module fires", async () => {
+    const s = await rewound();
+    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: node(s), reason: 'fixed' });
+    expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+});
+
+/**
+ * #1819: the scope namespace as a host sees it, counting what it asks of the hold object and
+ * of the scopes, and able to make the hold unreadable. Calls go through arrows on the real
+ * stub, never `.bind` (workerd stub proxies).
+ */
+function countingScopes(ns: DurableObjectNamespace) {
+  const holdsId = ns.idFromName(SWITCH_HOLDS_NAME);
+  const counts = {
+    holdReads: 0,
+    scopeCalls: 0,
+    failReads: false,
+    /** Hold one scope's `systemScheduleState` until `until` settles: to place a pass's state read. */
+    gateStateRead: null as { scopeId: string; until: Promise<void> } | null,
+    /** Run after a scope's switch move completes, before its answer returns to the host. */
+    afterMove: null as (() => Promise<void>) | null,
+    /** Delay the NEXT hold read by this long, once: a slow read still in flight. */
+    slowNextReadMs: 0,
+  };
+  type Rpc = Record<string, (...a: unknown[]) => unknown>;
+  const counted = (real: Rpc, id: DurableObjectId) =>
+    new Proxy(
+      {},
+      {
+        // Not thenable: an `await` of the stub must not read `then` as an RPC method.
+        get: (_t, prop: string) =>
+          prop === 'then'
+            ? undefined
+            : async (...args: unknown[]) => {
+                counts.scopeCalls += 1;
+                const gate = counts.gateStateRead;
+                if (prop === 'systemScheduleState' && gate && id.equals(ns.idFromName(gate.scopeId))) {
+                  await gate.until;
+                }
+                const answer = await real[prop]!(...args);
+                if (prop === 'switchSystemSchedules' && counts.afterMove) await counts.afterMove();
+                return answer;
+              },
+      },
+    );
+  const holds = (real: Rpc) =>
+    new Proxy(
+      {},
+      {
+        get: (_t, prop: string) =>
+          prop === 'then'
+            ? undefined
+            : prop === 'switchHoldsAll'
+              ? async () => {
+                  counts.holdReads += 1;
+                  if (counts.failReads) throw new Error('holds down');
+                  const slow = counts.slowNextReadMs;
+                  counts.slowNextReadMs = 0;
+                  if (slow > 0) await new Promise((resolve) => setTimeout(resolve, slow));
+                  return real.switchHoldsAll!();
+                }
+              : (...args: unknown[]) => real[prop]!(...args),
+      },
+    );
+  const counting = {
+    idFromName: (name: string) => ns.idFromName(name),
+    get: (id: DurableObjectId) => {
+      const real = ns.get(id) as unknown as Rpc;
+      return id.equals(holdsId) ? holds(real) : counted(real, id);
+    },
+  } as unknown as DurableObjectNamespace;
+  return Object.assign(counts, { ns: counting });
+}
 
 /**
  * #355 regression: `provisionScopeLocal` must apply the bundled modules' migrations

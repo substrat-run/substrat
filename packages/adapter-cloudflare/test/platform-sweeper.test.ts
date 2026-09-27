@@ -4,7 +4,7 @@ import { connectionId, platformActorId, tenantId } from '@substrat-run/contracts
 import { ulid, webCryptoSecretBox, type PlatformSweepReport } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import { PLATFORM_SWEEPER_NAME, type PlatformSweepOutcome } from '../src/platform-sweeper-do.js';
-import { warmControlPlane } from './do-warmup.js';
+import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
 
 /**
  * The TRIGGER path, exercised for real: a workerd Durable Object alarm driving
@@ -56,6 +56,7 @@ describe('definePlatformSweeperDO (workerd alarm → runPlatformSweep)', () => {
 
   beforeAll(async () => {
     await warmControlPlane(env.SWEEP_CONTROL_PLANE); // absorb the inter-file DO reload
+    await warmSwitchHolds(env.SWEEP_SCOPE); // and on the #1819 hold object its passes read
     const admin = host().admin;
     await admin.createTenant(staff, { id: t1, slug: `sweep-${ulid().toLowerCase()}`, name: 'Sweep Trigger AB' });
     await admin.createConnection(staff, {
