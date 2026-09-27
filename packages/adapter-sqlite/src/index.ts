@@ -10954,9 +10954,10 @@ export class SqliteScopeHost implements ScopeHost {
     // #1525: the invocation a fired schedule ran in, on a scope DB created before the
     // column. Nullable, and the null is honestly "no call was carried" for every legacy
     // row — a past run's id cannot be recovered afterwards, exactly as the other #1525
-    // columns above argued. AFTER `ensureScheduleStateKind`: a pre-#1288 table has no
-    // `kind` column yet, and the rebuild it runs already recreates the table from the
-    // kernel's (now widened) DDL — so this only ever ALTERs a table that already has it.
+    // columns above argued. AFTER `ensureScheduleStateKind`, not before: a pre-#1288
+    // table has no `kind` column, and that call's rebuild already recreates the table
+    // from the kernel's (now widened) DDL when it runs — so by the time this ALTER
+    // executes, the table always already has `kind` in its key, never `invocation_id`.
     this.ensureColumn(db, '_substrat_schedule_state', 'invocation_id', 'invocation_id TEXT');
     // #1237: `readInvocation`'s lookup — WHERE invocation_id = ? ORDER BY id — over an outbox
     // that is never pruned. No index leads with invocation_id, so without this one SQLite

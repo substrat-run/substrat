@@ -425,6 +425,9 @@ export const SCHEDULE_STATE_REBUILD = `
     'CREATE TABLE IF NOT EXISTS _substrat_schedule_state',
     'CREATE TABLE _substrat_schedule_state_new',
   )}
+  -- #1525: invocation_id is not in this column list, deliberately — this rebuild runs
+  -- only on a pre-#1288 table, which predates invocation_id too, so there is nothing
+  -- to copy. The new table's default (NULL) is the honest answer for every such row.
   INSERT INTO _substrat_schedule_state_new (kind, schedule_op, last_run_at, last_status)
     SELECT CASE WHEN substr(schedule_op, 1, 10) = 'freshness:' THEN 'freshness' ELSE 'schedule' END,
            schedule_op, last_run_at, last_status
