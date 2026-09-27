@@ -5963,6 +5963,13 @@ describe('control-plane API — observability proxy', () => {
         expect((await app.request(`/observability/tenant-logs?template=${encodeURIComponent(template)}`, { headers: asBuilder })).status).toBe(200);
         expect(seen.logs.at(-1)).toMatchObject({ tenantId: builderTenant, template });
         expect((await app.request(`/observability/tenant-logs?template=${'x'.repeat(501)}`, { headers: asBuilder })).status).toBe(400);
+        // Empty is refused too — never read as "no template", which is the whole log.
+        const before = seen.logs.length;
+        expect((await app.request('/observability/tenant-logs?template=', { headers: asBuilder })).status).toBe(400);
+        expect(seen.logs).toHaveLength(before);
+        // Absent is still no filter.
+        expect((await app.request('/observability/tenant-logs', { headers: asBuilder })).status).toBe(200);
+        expect((seen.logs.at(-1) as { template?: string }).template).toBeUndefined();
       });
     });
 
