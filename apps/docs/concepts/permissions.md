@@ -327,8 +327,10 @@ The kernel holds the shape of the graph, not who may change it:
 - `from` must be a parent the entity has now, or the call is refused with `conflict`. An
   entity with several parents keeps the others.
 - Moving to where it already is does nothing.
-- The move is one `entity.relinked` event on the entity's timeline (`{ child, from, to }`),
-  stamped with the operation and actor like any event it emits. That event is the lasting
+- The move is one `entity.relinked` event (`{ child, from, to }`), stamped with the
+  operation and actor like any event it emits. It goes on the moved entity's timeline
+  **only**: `from` and `to` get no event, so a folder's own history does not show what moved
+  in or out of it. A vertical that wants that emits its own event on the folder. That event is the lasting
   record: linking back to the old parent later brings the old edge back in place, and records
   that as an `entity.linked` event.
 - It is transactional with the operation: if the operation throws, the entity never moved.
