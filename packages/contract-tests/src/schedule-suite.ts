@@ -2,14 +2,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { moduleId, platformActorId, principalId, scopeId, tenantId, type PrincipalId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid, type FetchLike, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { scheduleMod } from './modules.js';
+import { deniedScheduleMod, scheduleMod } from './modules.js';
 
 const SCHED_MODULE = moduleId.parse('@test/sched');
+const DENIED_MODULE = moduleId.parse('@test/sched-denied');
 // Crockford base32, 26 chars — the shape a minted `ulid()` always has (#1525).
-// Exported so a dedicated adapter test proving the same column on a real Durable
-// Object (packages/adapter-cloudflare/test/schedule-invocation-column.test.ts) checks
-// against the identical pattern rather than a second copy of it.
-export const ULID_SHAPE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const ULID_SHAPE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 // Never called: the sweep runs no connector sweepers here. A throwing stub proves it.
 const noFetch = (() => {
   throw new Error('fetch should not be called by the schedule phase');
@@ -46,6 +44,10 @@ export function scheduleContractSuite(
     const s = scopeId.parse(ulid());
     const reader: PrincipalId = principalId.parse(ulid());
     const staff = platformActorId.parse(ulid());
+    // #1525: the ids pass 1 mints, captured so the skip test below can assert they are
+    // UNCHANGED (`toBe`) rather than merely shaped like a ULID — a skip that quietly
+    // re-minted would still pass a shape check.
+    let pass1Ids: { tick: string; collision: string };
 
     const sweep = () =>
       runPlatformSweep(host, {
@@ -117,6 +119,14 @@ export function scheduleContractSuite(
       expect(firedRow?.invocation_id).toBe(tick!.invocation_id);
       const freshnessRow = state.find((r) => r.kind === 'freshness');
       expect(freshnessRow?.invocation_id).toBeNull();
+
+      // #1525: minted PER schedule, not once for the whole pass — a `ulid()` hoisted
+      // above the runner's loop would satisfy every assertion above and still be wrong.
+      const collisionRow = state.find(
+        (r) => r.kind === 'schedule' && r.schedule_op === 'freshness:sched.ticked',
+      );
+      expect(collisionRow?.invocation_id).not.toBe(firedRow!.invocation_id);
+      pass1Ids = { tick: firedRow!.invocation_id!, collision: collisionRow!.invocation_id! };
     });
 
     it('skips a schedule still inside its cadence window', async () => {
@@ -140,22 +150,23 @@ export function scheduleContractSuite(
       // whichever phase of the pass ran last.
       //
       // #1525: this pass SKIPPED every row (still inside cadence), so none of them
-      // was rewritten — each `invocation_id` is exactly what pass 1 left. The
-      // freshness row never had one to begin with; the two schedule rows fired last
-      // pass and still carry the id that run minted.
+      // was rewritten — each `invocation_id` is EXACTLY what pass 1 left, asserted by
+      // `toBe` against the ids that test captured rather than by shape: a skip that
+      // quietly re-minted (or re-used ONE id for both rows) would still look like a
+      // valid ULID here. The freshness row never had one to begin with.
       expect(state).toEqual([
         { kind: 'freshness', schedule_op: 'freshness:sched.ticked', last_status: 'ok', invocation_id: null },
         {
           kind: 'schedule',
           schedule_op: 'freshness:sched.ticked',
           last_status: 'ok',
-          invocation_id: expect.stringMatching(ULID_SHAPE),
+          invocation_id: pass1Ids.collision,
         },
         {
           kind: 'schedule',
           schedule_op: 'sched/tick',
           last_status: 'ok',
-          invocation_id: expect.stringMatching(ULID_SHAPE),
+          invocation_id: pass1Ids.tick,
         },
       ]);
     });
@@ -187,10 +198,12 @@ export function scheduleContractSuite(
      * selects `invocation_id` by name, so a store still missing the column would
      * throw `no such column` here rather than read one back.
      *
-     * Also a `restoreScope` — SECOND-to-last rather than last only because the final
-     * test below needs to be the true last one (see its own comment). A test inserted
-     * BETWEEN this one and that one would read this restore's leftovers, not the
-     * scope `beforeAll` provisioned; keep this one immediately before it.
+     * Also a `restoreScope`, and the LAST test in the file that calls `sweep()` — the
+     * failed-schedule test after it registers a second module and deliberately runs
+     * after every `sweep()`-based assertion above, and the final test below needs to
+     * be the true last one (see its own comment). A test inserted between this one and
+     * either of those would read this restore's leftovers, not the scope `beforeAll`
+     * provisioned.
      */
     it('ALTERs invocation_id into a store that already has kind, and the next fired schedule records it', async () => {
       const dump = await host.admin.exportScope(staff, t, s);
@@ -233,6 +246,50 @@ export function scheduleContractSuite(
       // restore either) — still null, since it invoked nothing.
       const freshnessRow = state.find((r) => r.kind === 'freshness');
       expect(freshnessRow?.invocation_id).toBeNull();
+    });
+
+    /**
+     * The failure twin of "fires a due schedule" above: a FAILED run still records a
+     * row, carrying the same id its own denial does. `deniedScheduleMod` is registered
+     * HERE, not in `beforeAll`, and only after every `sweep()`-based test above this
+     * point has already asserted its exact fired/skipped counts — `runPlatformSweep`
+     * enumerates every module the file has registered against every active scope
+     * (#1591), so joining it earlier would inflate every one of them. `runDueSchedules`
+     * is called directly for the same reason `#1666`'s own suite does: it targets
+     * exactly one (module, scope) pair, no sweep involved.
+     *
+     * `provisionScope` is idempotent and re-projects every registered module's
+     * schedule permissions on re-run (`docs` on the method), which is the seam that
+     * lets a module already-provisioned scope pick up a module registered after it.
+     */
+    it('a failed schedule still records a row, with the same id its own denial carries', async () => {
+      host.registerModule(deniedScheduleMod);
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-vertical' });
+
+      const report = await host.runDueSchedules(DENIED_MODULE, t, s);
+      expect(report.fired).toBe(0);
+      expect(report.failed).toBe(1);
+
+      const stub = await host.getScope(reader, t, s);
+      const state = (await stub.invoke('sched/schedule-state')) as {
+        kind: string;
+        schedule_op: string;
+        last_status: string;
+        invocation_id: string | null;
+      }[];
+      const failedRow = state.find((r) => r.kind === 'schedule' && r.schedule_op === 'sched-denied/tick');
+      expect(failedRow?.last_status).toBe('failed');
+      expect(failedRow?.invocation_id).toMatch(ULID_SHAPE);
+
+      // The row and the denial it caused carry the SAME id — the join the column
+      // exists for, proved on the failure path the way the outbox join proved it on
+      // the success path above.
+      const denials = (await stub.invoke('sched/read-denials')) as {
+        operation: string | null;
+        invocation_id: string | null;
+      }[];
+      const denial = denials.find((d) => d.operation === 'sched-denied/tick');
+      expect(denial?.invocation_id).toBe(failedRow!.invocation_id);
     });
 
     /**

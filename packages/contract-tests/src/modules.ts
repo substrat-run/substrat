@@ -1194,6 +1194,46 @@ export const scheduleMod: ModuleRegistration = {
         `SELECT kind, schedule_op, last_status, invocation_id FROM _substrat_schedule_state
           ORDER BY kind, schedule_op`,
       )) as OperationHandler<never, unknown>,
+    // #1525: a denied schedule's own denial row, joined by eye against the same column
+    // on `sched/schedule-state` — proving a FAILED run carries the identical id, not
+    // just a fired one.
+    'sched/read-denials': readDenialsOp as OperationHandler<never, unknown>,
+  },
+};
+
+/**
+ * #1525: the failure twin of `scheduleMod` itself — a SEPARATE module so registering
+ * it never changes `scheduleMod`'s own schedule count, which `system-switch-suite.ts`
+ * (its `SCHEDULES` constant) and every `scheduleContractSuite` test above this fixture
+ * already pin exactly. Its one schedule declares the permission it is GIVEN
+ * (`sched-denied:tick`) but the handler checks a DIFFERENT one (`sched-denied:admin`),
+ * so provisioning never grants what the handler needs: due, invoked, and denied, every
+ * pass, forever. `entitlementKey` reuses `scheduleMod`'s own SKU so no suite needs a
+ * second `grantEntitlement` call to use it.
+ */
+export const deniedScheduleModManifest = moduleManifest.parse({
+  id: '@test/sched-denied',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [
+    { key: 'sched-denied:tick', description: 'the only permission this module ever grants' },
+    { key: 'sched-denied:admin', description: 'required by the handler; no schedule declares it' },
+  ],
+  events: { emits: [], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'sched',
+  schedules: [
+    { operation: 'sched-denied/tick', cadence: { everyMinutes: 60 }, permissions: ['sched-denied:tick'] },
+  ],
+});
+
+export const deniedScheduleMod: ModuleRegistration = {
+  manifest: deniedScheduleModManifest,
+  operations: {
+    'sched-denied/tick': (async (ctx) => {
+      assertAllowed(await ctx.check('sched-denied:admin' as PermissionKey));
+    }) as OperationHandler<never, unknown>,
   },
 };
 
