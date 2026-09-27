@@ -195,8 +195,9 @@ export const manyfoldOperations = defineOperations(manyfoldEntities, MANYFOLD_PE
     // Handler-composed (#1833): the entry is a projection (title resolved out of
     // the draft body), not the stored row, so `paged.over` has nothing to walk.
     // `updated_at` is caller-visible but NOT unique — several entries can share
-    // an instant — so the cursor is the (updated_at, id) pair the SQL already
-    // orders by, newest first.
+    // an instant — so the cursor is the (updated_at, id) pair, a row-value
+    // comparison the handler pushes into `WHERE` and `manyfold_entry_updated_id`
+    // (migrations.ts #0003) seeks on, rather than a full rescan per page.
     paged: { sortKey: 'updated_at', order: 'desc' },
   },
 
@@ -218,13 +219,15 @@ export const manyfoldOperations = defineOperations(manyfoldEntities, MANYFOLD_PE
   'manyfold/list-types': {
     summary: 'The content types, each with the table it compiles to',
     permission: 'content:read',
-    // Not paged (#1833): `manyfold/save-type` is the only writer, so a scope's
-    // content types are admin-curated vocabulary — a handful by construction,
-    // never a table a tenant fills. The array is nested in an object rather than
-    // returned bare, which is what `assertListsArePaged` leaves alone: the
-    // operation controls how many of these there can ever be, a table read does
-    // not.
-    output: z.object({ types: z.array(z.object({ def: contentTypeDef, sql: z.string() })) }),
+    output: z.object({ key: z.string(), def: contentTypeDef, sql: z.string() }),
+    // Handler-composed (#1833; Copilot review, PR #1843): `save-type` takes any
+    // caller-chosen `key` and enforces no cap, so this grows exactly like every
+    // other list here rather than being bounded by construction — the earlier
+    // `{ types: [...] }` wrapper only hid that from `assertListsArePaged`, it
+    // didn't make the claim true. `key` — the table's own primary key — rides at
+    // the TOP LEVEL purely so `sortKey` has a field to name; `def` stays nested,
+    // since the app reads `t.def` throughout the model builder.
+    paged: { sortKey: 'key' },
   },
 
   'manyfold/save-type': {
@@ -280,7 +283,8 @@ export const manyfoldOperations = defineOperations(manyfoldEntities, MANYFOLD_PE
     // Handler-composed (#1833): grows with every publish, the same unbounded
     // shape as `list-entries`. `published_at` is `ctx.now()` and NOT unique
     // (a batch of publishes inside one operation shares an instant), so the
-    // cursor is the (published_at, entry_id) pair the SQL already orders by —
+    // cursor is the (published_at, entry_id) pair, seeking on
+    // `manyfold_delivery_published_id` (migrations.ts #0003) the same way —
     // `entry_id` is `manyfold_delivery`'s own primary key.
     paged: { sortKey: 'published_at', order: 'desc' },
   },

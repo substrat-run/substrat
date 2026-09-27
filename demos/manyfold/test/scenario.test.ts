@@ -48,7 +48,7 @@ describe('Manyfold demo scenario', () => {
         .prepare("SELECT version FROM _substrat_migrations WHERE module_id = '@substrat-run/demo-manyfold' ORDER BY version")
         .all() as { version: string }[];
       db.close();
-      expect(versions.map((v) => v.version)).toEqual(['0001-init', '0002-content-types']);
+      expect(versions.map((v) => v.version)).toEqual(['0001-init', '0002-content-types', '0003-list-indexes']);
     }
   });
 
@@ -88,11 +88,11 @@ describe('Manyfold demo scenario', () => {
 
   it('1b. modelling: an admin creates a content type; it drives create-entry immediately', async () => {
     const maja = await host.getScope(w.maja, w.t1, w.cafe); // admin@cafe
-    // The four defaults are seeded lazily on first use. Not paged (#1833): the
-    // array is nested under `types` rather than declared `paged`, since a
-    // scope's content types are admin-curated vocabulary the operation itself
-    // bounds.
-    const { types } = await maja.invoke<{ types: { def: { key: string } }[] }>('manyfold/list-types');
+    // The four defaults are seeded lazily on first use. Paged (#1833, Copilot
+    // review PR #1843): `save-type` has no cap, so this is a page envelope like
+    // every other list here, not a bare array.
+    const typesPage = await maja.invoke<Page<{ key: string; def: { key: string } }>>('manyfold/list-types');
+    const types = typesPage.entries;
     expect(types.map((t) => t.def.key).sort()).toEqual(['author', 'page', 'post', 'snippet']);
 
     // Author cannot model — that's an admin act.
@@ -364,5 +364,146 @@ describe('Manyfold demo scenario — paging under tied timestamps (#1833)', () =
       await host.close();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('list-entries walks an ASCENDING cursor across the same tied timestamps, in order, with no dupes or skips (Copilot #4114802647)', async () => {
+    // The descending test above exercises only the declaration's DEFAULT
+    // direction. `order: 'asc'` is the restored branch this whole PR is about —
+    // a regression there (falling back to the hard-coded 'desc') would pass
+    // every other test silently, since 'desc' still answers *something*.
+    const clock = manualClock('2026-01-01T00:00:00.000Z');
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-manyfold-tie-'));
+    const host = buildDemoHost(dir, clock.read);
+    try {
+      const w = await seedDemo(host, dir);
+      const emilPadel = await host.getScope(w.emil, w.t1, w.padel);
+
+      const ids: string[] = [];
+      for (let i = 0; i < 7; i++) {
+        const entry = await emilPadel.invoke<EntryRow>('manyfold/create-entry', {
+          typeKey: 'post',
+          body: { title: `Tied asc ${i}`, slug: `tied-asc-${i}`, body: 'x', category: 'news' },
+        });
+        ids.push(entry.id);
+      }
+      // ULIDs are monotonic with creation, so ascending id order IS creation order.
+      const ascendingIds = [...ids].sort();
+
+      const first = await emilPadel.invoke<Page<{ id: string; updated_at: string }>>('manyfold/list-entries', {
+        limit: 3,
+        order: 'asc',
+      });
+      expect(first.entries).toHaveLength(3);
+      expect(first.entries.every((e) => e.updated_at === clock.now())).toBe(true);
+      expect(first.nextCursor).not.toBeNull();
+
+      // A cursor is only valid for the sort it was issued under (pagination.ts):
+      // `order: 'asc'` has to travel on every follow-up request too.
+      const seen = [...first.entries];
+      let cursor = first.nextCursor;
+      while (cursor !== null) {
+        const next = await emilPadel.invoke<Page<{ id: string; updated_at: string }>>('manyfold/list-entries', {
+          limit: 3,
+          cursor,
+          order: 'asc',
+        });
+        seen.push(...next.entries);
+        cursor = next.nextCursor;
+      }
+      expect(seen).toHaveLength(7);
+      expect(new Set(seen.map((e) => e.id))).toEqual(new Set(ids));
+      // Order asserted, not just membership: ascending id, the tie-break the
+      // declaration's composite cursor walks by.
+      expect(seen.map((e) => e.id)).toEqual(ascendingIds);
+    } finally {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('list-delivery walks a cursor across entries published under one instant with no dupes or skips (Copilot #4114802626)', async () => {
+    // Same shape as list-entries' tie test, one operation over: the frozen clock
+    // means every publish below shares the same `published_at`, which is exactly
+    // the case an unqualified cursor gets wrong.
+    const clock = manualClock('2026-01-01T00:00:00.000Z');
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-manyfold-tie-'));
+    const host = buildDemoHost(dir, clock.read);
+    try {
+      const w = await seedDemo(host, dir);
+      // maja holds `admin` tenant-wide (author + review + publish everywhere),
+      // so one principal can carry an entry through the whole lifecycle.
+      const majaPadel = await host.getScope(w.maja, w.t1, w.padel);
+
+      const ids: string[] = [];
+      for (let i = 0; i < 7; i++) {
+        const entry = await majaPadel.invoke<EntryRow>('manyfold/create-entry', {
+          typeKey: 'post',
+          body: { title: `Tied delivery ${i}`, slug: `tied-delivery-${i}`, body: 'x', category: 'news' },
+        });
+        await majaPadel.invoke('manyfold/submit-for-review', { entryId: entry.id });
+        await majaPadel.invoke('manyfold/approve', { entryId: entry.id });
+        await majaPadel.invoke('manyfold/publish', { entryId: entry.id });
+        ids.push(entry.id);
+      }
+
+      const first = await majaPadel.invoke<Page<{ entry_id: string; published_at: string }>>('manyfold/list-delivery', {
+        limit: 3,
+      });
+      expect(first.entries).toHaveLength(3);
+      expect(first.entries.every((e) => e.published_at === clock.now())).toBe(true);
+      expect(first.nextCursor).not.toBeNull();
+
+      const seen = [...first.entries];
+      let cursor = first.nextCursor;
+      while (cursor !== null) {
+        const next = await majaPadel.invoke<Page<{ entry_id: string; published_at: string }>>('manyfold/list-delivery', {
+          limit: 3,
+          cursor,
+        });
+        seen.push(...next.entries);
+        cursor = next.nextCursor;
+      }
+      expect(seen).toHaveLength(7);
+      expect(new Set(seen.map((e) => e.entry_id))).toEqual(new Set(ids));
+    } finally {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Manyfold demo scenario — CodeRabbit review of PR #1847', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  let w: ManyfoldWorld;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-manyfold-review-'));
+    host = buildDemoHost(dir);
+    w = await seedDemo(host, dir);
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a malformed cursor is refused, not bound into SQL as undefined', async () => {
+    const maja = await host.getScope(w.maja, w.t1, w.cafe);
+    // No separator at all — the shape a hand-typed or truncated cursor takes,
+    // as opposed to one a real `nextCursor` ever produces.
+    await expect(maja.invoke('manyfold/list-entries', { cursor: 'not-a-real-cursor' })).rejects.toThrow(
+      /invalid cursor/,
+    );
+    await expect(maja.invoke('manyfold/list-delivery', { cursor: 'not-a-real-cursor' })).rejects.toThrow(
+      /invalid cursor/,
+    );
+  });
+
+  it("list-types defaults to ASCENDING — the declaration names no order, so PagedCommon's own default applies", async () => {
+    const maja = await host.getScope(w.maja, w.t1, w.padel); // no seeded types beyond the four defaults
+    const page = await maja.invoke<Page<{ key: string }>>('manyfold/list-types', {});
+    const keys = page.entries.map((t) => t.key);
+    expect(keys).toEqual([...keys].sort());
   });
 });

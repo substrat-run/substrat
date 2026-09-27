@@ -148,7 +148,7 @@ export const api = {
     if (b.can) return { role: roleLabel(b.can) };
     return { role: null };
   },
-  listTypes: () => op<{ types: { def: ContentTypeDef; sql: string }[] }>('list-types').then((r) => r.types),
+  listTypes: () => walkAll<{ key: string; def: ContentTypeDef; sql: string }>('list-types'),
   saveType: (def: { key: string; title: string; titleField: string; slugField?: string; fields: Record<string, FieldDef> }) => op<ContentTypeDef>('save-type', def),
   deleteType: (key: string) => op<{ deleted: string }>('delete-type', { key }),
   listEntries: (input: { typeKey?: string; status?: EntryStatus } = {}) => walkAll<EntryListItem>('list-entries', input),

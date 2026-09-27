@@ -6,9 +6,10 @@ import {
   assertTransition,
   CURSOR_FIELD_SEPARATOR,
   defineLifecycles,
+  listLimitOf,
   mapPage,
   operationInputsOf,
-  pageOverFold,
+  pageOf,
   substratError,
   type ListPage,
   type OperationImpl,
@@ -42,6 +43,22 @@ import { manyfoldMigrations } from './migrations.js';
 type ManyfoldConflictReason = 'slug_taken' | 'not_editable' | 'not_restorable' | 'in_use';
 const conflict = (reason: ManyfoldConflictReason, message: string) =>
   substratError('conflict', message, { reason });
+
+/**
+ * Split a composite (X, Y) cursor back into its two SQL params, refusing one
+ * that isn't shaped like one this vertical issued.
+ *
+ * A malformed `cursor` — no separator, or a half missing — otherwise binds
+ * `undefined` as a SQL parameter, which fails inside SQLite's own binding
+ * (an unclassified error, not the validation refusal a bad request deserves).
+ */
+function splitCompositeCursor(cursor: string): [string, string] {
+  const parts = cursor.split(CURSOR_FIELD_SEPARATOR);
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw substratError('validation_failed', `invalid cursor: ${cursor}`);
+  }
+  return [parts[0], parts[1]];
+}
 
 // ============================================================================
 // Manyfold — a multi-scope headless CMS. The vertical owns the content types
@@ -174,11 +191,6 @@ function loadType(ctx: OperationContext, typeKey: string): ContentTypeDef {
   const r = ctx.sql.query<ContentTypeRow>('SELECT * FROM manyfold_content_type WHERE key = ?', [typeKey])[0];
   if (!r) throw substratError('not_found', `unknown content type: ${typeKey}`);
   return rowToDef(r);
-}
-
-function loadTypes(ctx: OperationContext): ContentTypeDef[] {
-  ensureTypes(ctx);
-  return ctx.sql.query<ContentTypeRow>('SELECT * FROM manyfold_content_type ORDER BY created_at').map(rowToDef);
 }
 
 function getEntry(ctx: OperationContext, id: string): EntryRow {
@@ -436,6 +448,16 @@ interface EntryListItem {
   updated_at: string;
 }
 
+/**
+ * The `manyfold/list-entries` query shape (#1833; Copilot review, PR #1843) — built
+ * once, here, so `listEntriesOp` and `test/pagination-plan.test.ts`'s
+ * `EXPLAIN QUERY PLAN` assertion read the exact same SQL. A test that reconstructs
+ * its own copy of the query proves the copy seeks; this proves the real one does.
+ */
+export function listEntriesSql(where: readonly string[], dir: 'ASC' | 'DESC'): string {
+  return `SELECT * FROM manyfold_entry ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at ${dir}, id ${dir} LIMIT ?`;
+}
+
 const listEntriesOp: OperationHandler<
   (z.infer<typeof listEntriesInput> & ListPage) | undefined,
   Page<EntryListItem>
@@ -452,22 +474,26 @@ const listEntriesOp: OperationHandler<
     where.push('status = ?');
     params.push(input.status);
   }
-  // `updated_at` ties across a bulk import/seed, so the SQL breaks ties on `id`
-  // too — the pair `pageOverFold`'s cursor below walks. Newest-first is the
-  // DEFAULT (the declaration's `order: 'desc'`), not the only direction: the
-  // caller's `?order=` is honoured rather than ignored — a walk advertised in
-  // the emitted document and quietly overridden here is a page that lies.
+  // Newest-first is the DEFAULT (the declaration's `order: 'desc'`), not the
+  // only direction: the caller's `?order=` is honoured rather than ignored —
+  // a walk advertised in the emitted document and quietly overridden here is
+  // a page that lies.
   const order: 'asc' | 'desc' = raw?.order === 'asc' ? 'asc' : 'desc';
   const dir = order === 'asc' ? 'ASC' : 'DESC';
-  const rows = ctx.sql.query<EntryRow>(
-    `SELECT * FROM manyfold_entry ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at ${dir}, id ${dir}`,
-    params,
-  );
-  // Page the ROW first, before the per-entry work below: `loadType`/`currentDraft`
-  // are each their own query, so folding the whole table through them and only
-  // then slicing a page would cost every walked page another full table's worth
-  // of lookups. Slicing first bounds that work to one page's rows.
-  const page = pageOverFold(rows, raw ?? {}, (r) => `${r.updated_at}${CURSOR_FIELD_SEPARATOR}${r.id}`, order);
+  const limit = listLimitOf(raw?.limit);
+  // `updated_at` ties across a bulk import/seed, so the cursor is the
+  // (updated_at, id) PAIR — a row-value comparison SQLite can satisfy from the
+  // `manyfold_entry_updated_id` index (migrations.ts #0003), which is what
+  // turns the walk into a seek instead of a rescan of everything already seen.
+  if (raw?.cursor) {
+    const [cUpdatedAt, cId] = splitCompositeCursor(raw.cursor);
+    where.push(order === 'asc' ? '(updated_at, id) > (?, ?)' : '(updated_at, id) < (?, ?)');
+    params.push(cUpdatedAt, cId);
+  }
+  const rows = ctx.sql.query<EntryRow>(listEntriesSql(where, dir), [...params, limit]);
+  // The ROW is paged; the per-entry work below (`loadType`/`currentDraft`,
+  // each its own query) then runs over only the page LIMIT already bounded.
+  const page = pageOf(rows, limit, (r) => `${r.updated_at}${CURSOR_FIELD_SEPARATOR}${r.id}`);
   return mapPage(page, (e): EntryListItem => {
     const def = loadType(ctx, e.type_key);
     const rev = currentDraft(ctx, e);
@@ -503,9 +529,45 @@ const getEntryOp: OperationHandler<z.infer<typeof entryIdInput>, EntryDetail> = 
   };
 };
 
-const listTypesOp: OperationHandler<undefined, { types: { def: ContentTypeDef; sql: string }[] }> = async (ctx) => {
+interface ContentTypeListItem {
+  key: string;
+  def: ContentTypeDef;
+  sql: string;
+}
+
+/**
+ * #1833 (Copilot review, PR #1843): the earlier fix wrapped this in
+ * `{ types: [...] }` on the theory that `save-type` makes it bounded by
+ * construction. It doesn't — `save-type` takes any caller-chosen `key` with no
+ * cap — so it pages like every other growing list here. `key` rides at the top
+ * level (redundant with `def.key`) purely so `paged.sortKey` — a compile-checked
+ * join against a TOP-LEVEL output field — has a unique cursor to name; `def`
+ * stays nested for the app, which reads `t.def` throughout the model builder.
+ */
+const listTypesOp: OperationHandler<ListPage | undefined, Page<ContentTypeListItem>> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.read));
-  return { types: loadTypes(ctx).map((def) => ({ def, sql: compileTypeToSql(def) })) };
+  ensureTypes(ctx);
+  // The declaration names no `order`, so `PagedCommon.order`'s own default
+  // applies — ascending, unlike `list-entries`/`list-delivery`, which declare
+  // `order: 'desc'` and default there instead.
+  const order: 'asc' | 'desc' = raw?.order === 'desc' ? 'desc' : 'asc';
+  const dir = order === 'asc' ? 'ASC' : 'DESC';
+  const limit = listLimitOf(raw?.limit);
+  const where: string[] = [];
+  const params: string[] = [];
+  if (raw?.cursor) {
+    where.push(order === 'asc' ? 'key > ?' : 'key < ?');
+    params.push(raw.cursor);
+  }
+  const rows = ctx.sql.query<ContentTypeRow>(
+    `SELECT * FROM manyfold_content_type ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY key ${dir} LIMIT ?`,
+    [...params, limit],
+  );
+  const page = pageOf(rows, limit, (r) => r.key);
+  return mapPage(page, (r): ContentTypeListItem => {
+    const def = rowToDef(r);
+    return { key: def.key, def, sql: compileTypeToSql(def) };
+  });
 };
 
 // ── Modelling: content types are data, authored by an admin ──────────────────
@@ -635,6 +697,11 @@ interface DeliveryListItem {
   published_at: string;
 }
 
+/** The `manyfold/list-delivery` query shape — see `listEntriesSql`'s doc. */
+export function listDeliverySql(where: readonly string[], dir: 'ASC' | 'DESC'): string {
+  return `SELECT * FROM manyfold_delivery ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY published_at ${dir}, entry_id ${dir} LIMIT ?`;
+}
+
 const listDeliveryOp: OperationHandler<
   (z.infer<typeof listDeliveryInput> & ListPage) | undefined,
   Page<DeliveryListItem>
@@ -642,26 +709,28 @@ const listDeliveryOp: OperationHandler<
   assertAllowed(await ctx.check(MF_PERM.read));
   const input = listDeliveryInput.parse(raw ?? {});
   // `published_at` ties within one operation's transaction (`ctx.now()` does not
-  // move mid-invocation, so a batch of publishes shares an instant), so the SQL
-  // breaks ties on the table's own primary key — the pair `pageOverFold`'s
-  // cursor below walks. Newest-first is the DEFAULT; the caller's `?order=` is
-  // honoured rather than ignored, same as `manyfold/list-entries`.
+  // move mid-invocation, so a batch of publishes shares an instant). Newest-first
+  // is the DEFAULT; the caller's `?order=` is honoured rather than ignored, same
+  // as `manyfold/list-entries`.
   const order: 'asc' | 'desc' = raw?.order === 'asc' ? 'asc' : 'desc';
   const dir = order === 'asc' ? 'ASC' : 'DESC';
-  const rows = input.typeKey
-    ? ctx.sql.query<DeliveryRow>(
-        `SELECT * FROM manyfold_delivery WHERE type_key = ? ORDER BY published_at ${dir}, entry_id ${dir}`,
-        [input.typeKey],
-      )
-    : ctx.sql.query<DeliveryRow>(`SELECT * FROM manyfold_delivery ORDER BY published_at ${dir}, entry_id ${dir}`);
-  // Page the ROW first — see `listEntriesOp`'s note. Nothing here is a second
-  // query, but there is no reason to reshape rows a page will not return.
-  const page = pageOverFold(
-    rows,
-    raw ?? {},
-    (r) => `${r.published_at}${CURSOR_FIELD_SEPARATOR}${r.entry_id}`,
-    order,
-  );
+  const limit = listLimitOf(raw?.limit);
+  const where: string[] = [];
+  const params: string[] = [];
+  if (input.typeKey) {
+    where.push('type_key = ?');
+    params.push(input.typeKey);
+  }
+  // The cursor is the (published_at, entry_id) PAIR — a row-value comparison the
+  // `manyfold_delivery_published_id` index (migrations.ts #0003) seeks on,
+  // rather than a rescan of every row a prior page already answered.
+  if (raw?.cursor) {
+    const [cPublishedAt, cEntryId] = splitCompositeCursor(raw.cursor);
+    where.push(order === 'asc' ? '(published_at, entry_id) > (?, ?)' : '(published_at, entry_id) < (?, ?)');
+    params.push(cPublishedAt, cEntryId);
+  }
+  const rows = ctx.sql.query<DeliveryRow>(listDeliverySql(where, dir), [...params, limit]);
+  const page = pageOf(rows, limit, (r) => `${r.published_at}${CURSOR_FIELD_SEPARATOR}${r.entry_id}`);
   return mapPage(
     page,
     (r): DeliveryListItem => ({

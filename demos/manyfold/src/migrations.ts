@@ -83,4 +83,16 @@ export const manyfoldMigrations = [
       );
     `,
   },
+  {
+    // #1833 (Copilot review, PR #1843): `manyfold/list-entries` and `manyfold/list-delivery`
+    // page with a composite keyset predicate over exactly these column pairs — see the two
+    // operations' declarations. Without an index the predicate is still correct, just a full
+    // table scan per page; these are what makes it a seek instead (`EXPLAIN QUERY PLAN` in
+    // test/pagination-plan.test.ts pins it).
+    version: '0003-list-indexes',
+    sql: `
+      CREATE INDEX manyfold_entry_updated_id ON manyfold_entry(updated_at, id);
+      CREATE INDEX manyfold_delivery_published_id ON manyfold_delivery(published_at, entry_id);
+    `,
+  },
 ];
