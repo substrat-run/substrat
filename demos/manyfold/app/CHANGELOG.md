@@ -1,5 +1,12 @@
 # @substrat-run/demo-manyfold-app
 
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [e8d4860]
+  - @substrat-run/contracts@0.125.0
+
 ## 0.3.1
 
 ### Patch Changes

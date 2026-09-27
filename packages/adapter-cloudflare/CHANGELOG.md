@@ -1,5 +1,27 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.125.0
+
+### Patch Changes
+
+- e8d4860: An entity-narrowed permission check that walks through a camelCase entity type (`aiTurn`, `widgetSession`) now answers instead of throwing (#1856). The tuple grammar `objectRef` accepts an upper-case letter in the namespace half; nothing it accepted before is refused. Edges and grants already stored on a camelCase type (from `ctx.link`, `ctx.grant`, `HostAdmin.grant`, `grantEntityLocal`, or a capability's root) now take effect, where before a check that reached them threw. An event's `authorization[].grant` (K-34) takes the same grammar, so an operation authorized through a grant on a camelCase entity now records that grant and emits. Before, the event failed its own envelope parse and the operation failed. The envelope schema only widens: every value it accepted before still parses.
+
+  `ctx.link`, `ctx.grant`, `ctx.capabilities.mint`, `HostAdmin.grant` and `HostAdmin.grantToOrg` narrowed onto an entity, and `grantEntityLocal` now refuse a malformed entity ref when it is written, with `validation_failed` (error name `Substrat.validation_failed`, HTTP 400). A ref is malformed when its `entityType` is empty or has anything other than letters, digits, `_` and `-` (a colon, whitespace, a dot, non-ASCII), or its `entityId` is empty or has whitespace. An `entityType` that is one of the kernel's namespaces (`principal`, `org`, `tenant`, `scope`, `role`, `connection`, `capability`, `system`, `vertical`) is refused too, in any case; a type that only contains one, such as `scopeItem`, is fine. `ctx.revoke` does not check the grammar, so a grant stored earlier can still be removed. Refs already stored are not rewritten, and every stored ref the walk could read before still reads the same way. New export: `entityObjectRef` from `@substrat-run/contracts`.
+
+- 9ebacee: `mountLiveReads(app, { live, subscriber })` in `@substrat-run/vertical-host` mounts a vertical's live-read route, `GET /api/live` (#1859). A request that is not a WebSocket upgrade gets `426` with `x-substrat-live: not-an-upgrade`. It refuses a handshake whose `Origin` is not the request's own origin with `403`, before the host is asked or `subscriber` is called. A handshake with no `Origin` goes through. On a host with no `liveReads` (the pure SQLite host) it answers `501` with `x-substrat-live: poll`. `subscriber` resolves the caller from the vertical's own session, and `null` is `401`. `path` moves the route. `LIVE_MODE_HEADER`, the `LiveRefusal` type and `isUpgradeRequest` are now exported from `@substrat-run/kernel`; `@substrat-run/adapter-cloudflare` takes them from there, and its own names and values are unchanged.
+- a3be733: A live-reads subscriber's keep-alive ping (#938, `pingMs: 45_000`) is now answered by the
+  runtime's `setWebSocketAutoResponse`, set once per scope Durable Object, instead of waking the
+  object to run `webSocketMessage`. Before this, an idle tab still watching a scope kept its
+  Durable Object warm every 45 seconds for no reason — the ping carries no information the
+  handler acts on, only `pong` back. The `webSocketMessage` `'ping'` branch stays as a documented
+  fallback for an older client build. Not included: the issue's optional client-side "close the
+  socket while the tab is hidden" — that is a `demos/ticket0/app` change and belongs with #1856's
+  work in that area, not this one.
+- Updated dependencies [e8d4860]
+- Updated dependencies [9ebacee]
+  - @substrat-run/contracts@0.125.0
+  - @substrat-run/kernel@0.125.0
+
 ## 0.124.0
 
 ### Minor Changes
@@ -5710,7 +5732,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
