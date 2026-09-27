@@ -10,6 +10,14 @@ export interface ObsQuery {
   invocationId?: string;
   groupBy?: string;
   field?: string;
+  /** #1746: the Requests mode's facet filters, each a comma-separated list of alternatives
+   *  (`lib/requests.ts` owns the mapping to the plane's facet keys). */
+  op?: string;
+  pk?: string;
+  code?: string;
+  lvl?: string;
+  status?: string;
+  surface?: string;
 }
 export const OBS_KEYS = [
   'app',
@@ -23,6 +31,12 @@ export const OBS_KEYS = [
   'invocationId',
   'groupBy',
   'field',
+  'op',
+  'pk',
+  'code',
+  'lvl',
+  'status',
+  'surface',
 ] as const;
 export function readObsQuery(search: string): ObsQuery {
   const p = new URLSearchParams(search);

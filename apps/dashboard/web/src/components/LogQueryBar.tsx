@@ -43,7 +43,9 @@ export function LogQueryBar({
     onQuery({ ...query, ...parsed.add });
   };
   const placeholder =
-    mode === 'events'
+    mode === 'requests'
+      ? 'Tick a value in the sidebar or drag across the chart to narrow down'
+      : mode === 'events'
       ? chips.length
         ? 'Event type…'
         : 'Filter by event type, or click a bucket to narrow down'
@@ -88,7 +90,7 @@ export function LogQueryBar({
             </span>
           ))}
           <input
-            aria-label={mode === 'events' ? 'Filter event type' : 'Search messages'}
+            aria-label={mode === 'events' ? 'Filter event type' : mode === 'requests' ? 'Filter requests' : 'Search messages'}
             value={text}
             placeholder={placeholder}
             onChange={(e) => {

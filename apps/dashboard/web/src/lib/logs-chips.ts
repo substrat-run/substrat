@@ -1,5 +1,6 @@
 import type { ObsQuery } from './observability-query';
 import type { LogMode } from './log-stream';
+import { requestChips } from './requests';
 
 /**
  * The Logs query bar's chips (#1767): every filter the URL carries, as a removable chip.
@@ -26,6 +27,8 @@ export function shortId(id: string): string {
 }
 
 export function logChips(q: ObsQuery, mode: LogMode): LogChip[] {
+  // #1746: the Requests mode's filters are its facets, one chip per facet.
+  if (mode === 'requests') return requestChips(q);
   if (mode === 'events') {
     const out: LogChip[] = [];
     if (q.type) out.push({ key: 'type', value: q.type, clears: ['type'] });
@@ -72,6 +75,10 @@ export function windowLabel(from: string, to: string): string {
 export function parseBarText(text: string, mode: LogMode): { add: Partial<ObsQuery> } | { error: string } | null {
   const t = text.trim();
   if (!t) return null;
+  // #1746: requests are narrowed by their facets, which are exact values — typed text
+  // would have to guess which facet it meant, and a guess that matched nothing would read
+  // as "no such requests".
+  if (mode === 'requests') return { error: 'Requests are filtered by ticking a value in the sidebar or dragging across the chart.' };
   const m = /^(level|invocation|type):\s*(.*)$/i.exec(t);
   if (m) {
     const key = m[1]!.toLowerCase();

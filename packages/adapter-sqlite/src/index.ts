@@ -1201,6 +1201,8 @@ interface SweepRunRow {
   request_id: string | null;
   event_type: string | null;
   observed_at: string | null;
+  /** #1840: a `platform-request` row's drain totals, as JSON text. NULL on every other kind. */
+  platform_requests: string | null;
   at: string;
 }
 
@@ -2013,6 +2015,9 @@ export class SqliteScopeHost implements ScopeHost {
         -- the operation column) and the newest matching evidence. NULL on other kinds.
         event_type TEXT,
         observed_at TEXT,
+        -- #1840 platform-request rows: the drain pass's fleet-wide totals, as JSON.
+        -- NULL on every other kind.
+        platform_requests TEXT,
         at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_unit ON _substrat_sweep_runs (kind, unit, id);
@@ -9686,8 +9691,8 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare(
             `INSERT OR IGNORE INTO _substrat_sweep_runs
                (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
-                connection_id, error, elapsed_ms, request_id, event_type, observed_at, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                connection_id, error, elapsed_ms, request_id, event_type, observed_at, platform_requests, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             ulid(),
@@ -9707,6 +9712,7 @@ export class SqliteScopeHost implements ScopeHost {
             entry.requestId ?? null,
             entry.eventType ?? null,
             entry.observedAt ?? null,
+            entry.platformRequests == null ? null : JSON.stringify(entry.platformRequests),
             entry.at ?? new Date().toISOString(),
           );
         // Prune-on-write, like ops failures and for the same reason: the table stays
@@ -9777,6 +9783,7 @@ export class SqliteScopeHost implements ScopeHost {
             elapsedMs: r.elapsed_ms,
             eventType: r.event_type,
             observedAt: r.observed_at,
+            platformRequests: r.platform_requests == null ? null : (JSON.parse(r.platform_requests) as unknown),
             at: r.at,
           }),
         );
@@ -10123,6 +10130,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, '_substrat_sweep_runs', 'request_id', 'request_id TEXT');
     this.ensureColumn(this.directory, '_substrat_sweep_runs', 'event_type', 'event_type TEXT');
     this.ensureColumn(this.directory, '_substrat_sweep_runs', 'observed_at', 'observed_at TEXT');
+    this.ensureColumn(this.directory, '_substrat_sweep_runs', 'platform_requests', 'platform_requests TEXT');
     this.ensureSweepRunsIntentKind();
     const existing = new Set(
       (this.directory.prepare('PRAGMA table_info(scopes)').all() as { name: string }[]).map(

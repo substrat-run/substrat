@@ -44,7 +44,10 @@ import {
   analyticsEngineConnectorCallRecorder,
   type AnalyticsEngineDatasetLike,
   type CrossVerticalOptions,
+  type PlatformSweepReport,
+  type ScopeHost,
   type SecretBox,
+  type SweepRunInput,
 } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
@@ -1299,14 +1302,105 @@ export async function reconcileOrUnsupported<T>(call: () => Promise<T>): Promise
   }
 }
 
-async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<PlatformDrainReport> {
+/**
+ * The platform-intent drain's durable account of one pass (#1840): ONE `platform-request`
+ * sweep row, unit `fleet`, carrying the pass's totals. It is what lets
+ * `GET /platform-requests/backlog` say how many intents are still waiting without walking
+ * the fleet itself — the sweep already paid that fan-out, and this keeps its answer.
+ *
+ * Written on EVERY pass, idle ones too, because the reader wants the newest row: a pass
+ * that drained nothing and wrote nothing would leave an older, larger `pending` standing.
+ *
+ * `failed` when some active scope's queue is missing from the totals — its drain threw
+ * (a `platform-request` error), the phase stepped over it because its migration failed
+ * (`skipped`), or no deployment could be reached for it (`unreachable`). The count is then
+ * a floor, and the reader says so rather than presenting it as the fleet's whole queue.
+ *
+ * `at` is when the drain phase finished — the moment the totals describe — not when this
+ * row happens to be written.
+ */
+export function platformRequestSweepRun(report: PlatformSweepReport, at: string): SweepRunInput {
+  const totals = report.platformRequestTotals;
+  const undrained = report.errors.filter((e) => e.kind === 'platform-request').length;
+  const gaps: string[] = [];
+  if (undrained > 0) gaps.push(`${undrained} scope drain(s) failed`);
+  if (totals.skipped > 0) gaps.push(`${totals.skipped} scope(s) skipped for a failed migration`);
+  if (totals.unreachable > 0) gaps.push(`${totals.unreachable} scope(s) had no reachable deployment`);
+  return {
+    kind: 'platform-request',
+    unit: 'fleet',
+    outcome: gaps.length > 0 ? 'failed' : 'ok',
+    error: gaps.length > 0 ? `${gaps.join('; ')} — their queues are not in these totals` : null,
+    platformRequests: totals,
+    at,
+  };
+}
+
+/**
+ * Keep the pass's drain row (#1840). Awaited, so the row lands before the scheduled handler
+ * returns; never throws, so a recorder failure cannot sink the pass it is recording.
+ */
+export async function recordPlatformRequestPass(
+  admin: Pick<ScopeHost['admin'], 'recordSweepRun'>,
+  report: PlatformSweepReport,
+  at: string,
+): Promise<void> {
+  try {
+    await admin.recordSweepRun(platformRequestSweepRun(report, at));
+  } catch {
+    // deliberately swallowed — see above
+  }
+}
+
+/**
+ * The drain phase's end, as the drain row is stamped with it (#1840): the time the LAST
+ * scope's drain settled, fulfilled or thrown. `finishedAt(fallback)` hands back `fallback`
+ * (the pass start) when the phase called no drain at all.
+ */
+export function timedDrain<A extends unknown[], R>(
+  drain: (...args: A) => Promise<R>,
+  clock: () => Date = () => new Date(),
+): { drain: (...args: A) => Promise<R>; finishedAt: (fallback: Date) => Date } {
+  let last: Date | undefined;
+  return {
+    drain: async (...args) => {
+      try {
+        return await drain(...args);
+      } finally {
+        const now = clock();
+        if (last === undefined || now > last) last = now;
+      }
+    },
+    finishedAt: (fallback) => last ?? fallback,
+  };
+}
+
+/** What a scope's drain reports when it never reached a queue at all (#1840). */
+export type ScopeDrainReport = PlatformDrainReport & { unreachable?: boolean };
+
+/**
+ * Whether a scope has a queue to drain and a deployment to drain it through (#1840). A scope
+ * with no vertical runs no module code, so it can hold no intents: plain zeros. A vertical
+ * scope with no deployment to reach may still hold them — nothing looked, so it reports
+ * `unreachable` rather than zeros the fleet count would read as "none waiting".
+ */
+export async function drainTarget<R extends { vertical: string | null }, C>(
+  rec: R | null | undefined,
+  resolve: (rec: R) => Promise<C | undefined>,
+): Promise<{ rec: R; vertical: string; client: C } | { report: ScopeDrainReport }> {
   const empty: PlatformDrainReport = { drained: 0, done: 0, failed: 0, pending: 0 };
+  if (!rec?.vertical) return { report: empty };
+  const client = await resolve(rec);
+  if (!client) return { report: { ...empty, unreachable: true } };
+  return { rec, vertical: rec.vertical, client };
+}
+
+async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDrainReport> {
   const host = hostFor(env);
-  const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
-  if (!rec?.vertical) return empty;
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
-  const client = await resolveVerticalForScope(rec);
-  if (!client) return empty;
+  const target = await drainTarget(await host.admin.getScopeRecord(SWEEP_ACTOR, t, s), resolveVerticalForScope);
+  if ('report' in target) return target.report;
+  const { rec, vertical, client } = target;
   // The managed-tenant capability (#412/#444): who may create tenants is the registry's
   // `tenantProvisioner` flag — a staff grant read by admitManager at drain time. The
   // handlers are ALWAYS registered: an ungranted vertical's refusal settles `failed`
@@ -1319,7 +1413,7 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
   };
   return drainScopePlatformRequests(
     client,
-    { tenantId: t, scopeId: s, vertical: rec.vertical, versionId: rec.verticalVersionId ?? null },
+    { tenantId: t, scopeId: s, vertical, versionId: rec.verticalVersionId ?? null },
     {
       [PROVISION_SIBLING_KIND]: provisionSiblingHandler({
         host,
@@ -1445,6 +1539,10 @@ export default {
       ? await failureDigestWatermark({ admin: host.admin, actor: SWEEP_ACTOR, passStartedAt: new Date() })
       : undefined;
     const crossVertical = crossVerticalFor(env, host);
+    // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
+    // when the phase reached no scope at all.
+    const passStartedAt = new Date();
+    const platformDrain = timedDrain((t: TenantId, s: ScopeId) => drainOneScope(env, t, s));
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
       // Sanctioned egress for the connector sweepers below.
@@ -1501,7 +1599,7 @@ export default {
       // intents from the vertical's /internal surface (its DO lives in the vertical's deployment),
       // execute each with platform authority, and settle back. The same `drainOneScope` the router
       // kick calls on demand — the sweep is the reliability backstop, the kick is the latency path.
-      drainPlatformRequestsFn: (t, s) => drainOneScope(env, t, s),
+      drainPlatformRequestsFn: platformDrain.drain,
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is
       // missing whatever that hook mints, and nothing else would ever deliver it.
@@ -1541,6 +1639,8 @@ export default {
     // scope with intents stuck `pending` should leave a trace on every pass, so a
     // drain that silently never converges is visible in the tail instead of invisible.
     const pr = report.platformRequestTotals;
+    // #1840: the same totals, kept.
+    await recordPlatformRequestPass(host.admin, report, platformDrain.finishedAt(passStartedAt).toISOString());
     const al = report.accessLog;
     // #1172: a pass that re-provisioned anything says so, and so does one that tried and
     // failed — a scope that stays behind pass after pass is the shape of a repair that

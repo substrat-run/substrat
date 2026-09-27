@@ -4565,6 +4565,39 @@ app.get('/api/apps/:scopeId/observability/logs', async (c) => {
 });
 
 /**
+ * The query keys a request read may pass to the plane (#1746): the window, the facet
+ * filters, and each read's own knob. An allowlist rather than the whole query string, so
+ * `tenantId` and `scopeId` can only ever come from the session and the resolved app row.
+ * The values go through unread; the plane is what judges them.
+ */
+const REQUEST_READ_KEYS = [
+  'hours', 'since', 'until',
+  'level', 'operation', 'principalKind', 'problemCode', 'surface', 'status',
+  'buckets', 'facet', 'limit',
+] as const;
+
+/**
+ * ONE app's requests (#1746): `volume` is the level histogram, `facets` the facet counts,
+ * `list` the requests themselves. The same two narrowings as the logs route above — the
+ * tenant from the session, the scope from this team's own app rows, so a foreign scope is
+ * a 404.
+ */
+app.get('/api/apps/:scopeId/observability/requests/:kind', async (c) => {
+  const kind = c.req.param('kind');
+  if (kind !== 'volume' && kind !== 'facets' && kind !== 'list') throw new HTTPException(404, { message: 'not found' });
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const params = REQUEST_READ_KEYS.flatMap((k) => (c.req.queries(k) ?? []).map((v) => [k, v] as const));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(await cpObservability(() => cp.tenantRequests(kind, appRow.app_scope_id, params)));
+});
+
+/**
  * A chart window from `?hours=`, in whole hours on [1, 72]. Rounded, not just clamped:
  * the plane's schema is `.int()`, so `?hours=6.5` would be rejected there and the chart
  * would say "not available" for what is really a bad parameter. Only an absent or

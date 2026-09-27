@@ -305,7 +305,8 @@ export type ConnectorDispatchPayload = z.infer<typeof connectorDispatchPayload>;
  * scope to count it is the fan-out the sweep itself already pays for on its own cadence, not
  * something a console page should repeat on every load. So `total` only ever answers "how
  * much has this given up on lately", never "how much is waiting" — a caller that reads it as
- * a backlog depth is reading a claim this number does not make.
+ * a backlog depth is reading a claim this number does not make. "How much is waiting" is
+ * `pending`, which the sweep records as it pays that fan-out (#1840).
  */
 export const platformRequestBacklog = z.object({
   total: z.number().int().nonnegative(),
@@ -316,5 +317,24 @@ export const platformRequestBacklog = z.object({
   // response body never round-trips through) buys this field nothing.
   since: z.string(),
   windowDays: z.number().int().positive(),
+  /**
+   * How many intents were still PENDING when the platform sweep's drain last ran (#1840) —
+   * the queue depth `total` deliberately is not. Read from the newest `platform-request`
+   * sweep row the pass writes, so it is as fresh as that pass and no fresher: this route
+   * never walks the fleet itself. Null = no pass is on record (none has run, or the last
+   * one is older than the sweep record's retention), which is NOT the same fact as zero.
+   */
+  pending: z
+    .object({
+      count: z.number().int().nonnegative(),
+      /** When that pass drained — the staleness a reader must be shown beside `count`. */
+      asOf: z.string(),
+      /**
+       * At least one active scope could not be drained that pass, so its queue is not in
+       * `count`: the number is a floor, the same sense as `capped` above.
+       */
+      floor: z.boolean(),
+    })
+    .nullable(),
 });
 export type PlatformRequestBacklog = z.infer<typeof platformRequestBacklog>;
