@@ -57,6 +57,64 @@
 import { ulid } from './ulid.js';
 import { readRoutedNode, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
+import type { EmittedReport } from './scope-host.js';
+
+/**
+ * The per-request store key the middleware parks its {@link InvocationRecord} under (#1746).
+ * A published name, like `substratInvocationId`: `mountOperations` reads it in another
+ * package, and a vertical's own routes may fill it in too.
+ */
+export const INVOCATION_RECORD_KEY = 'substratInvocationRecord';
+
+/**
+ * What the handler chain learns about a request that the middleware cannot see from
+ * outside it (#1746): which operation ran, who it ran as, how it failed, and what it
+ * touched. The middleware creates one per request, hands it down through the context, and
+ * writes whatever was filled in when the request ends.
+ *
+ * Mutable on purpose. The alternative was reading several context keys back in the
+ * `finally`, which would add a `get` to the structural context below and make every field
+ * a string-keyed lookup; one object handed down and written back is the smaller seam.
+ *
+ * Every field is optional, and an unfilled one is written as `null`: a custom route that
+ * never reaches an operation is still logged, it just has nothing to say about these.
+ */
+export interface InvocationRecord {
+  /** The operation name `mountOperations` dispatched to. */
+  operation?: string;
+  /** The `errorCode` a failed call was classified with, when the kernel's vocabulary names it. */
+  problemCode?: string;
+  /** The kind of subject the stub acted as — `ScopeStub.subjectKind`. */
+  principalKind?: string;
+  /** What the operation itself emitted — `InvokeOptions.onEmitted`. */
+  emitted?: EmittedReport;
+}
+
+/** The level a stamped line is filed under (#1746). See {@link invocationLevelOf}. */
+export type InvocationLevel = 'error' | 'warn' | 'info';
+
+/**
+ * The level of an invocation, from how it ended.
+ *
+ * A stamped line is pure JSON, so the log platform sets no level on it (the reader's
+ * comments in `cf-observability.ts` found this out the hard way). The level histogram
+ * still needs one per request, so the line carries its own: a 5xx or an escaped throw is
+ * an error, a 4xx is a warning (the request was refused, which the caller may need to
+ * hear about, and nothing broke), a success carrying a problem code is a warning too, and
+ * anything else is info.
+ */
+export function invocationLevelOf(
+  status: number | null,
+  threw: boolean,
+  problemCode?: string | null,
+): InvocationLevel {
+  if (threw || status === null || status >= 500) return 'error';
+  if (status >= 400) return 'warn';
+  // A failure answered IN-BAND — an MCP tool error is a 200 carrying `isError` — is still
+  // a refused call, and filing it as info would hide it from the one filter that looks.
+  if (problemCode) return 'warn';
+  return 'info';
+}
 
 /**
  * The middleware's context, taken STRUCTURALLY — kernel depends on no web framework,
@@ -81,7 +139,11 @@ export interface InvocationLogContext<Env = unknown> {
    * not provide it simply gets no invocation id on the scope's events, which reads as
    * unrecorded exactly like every other absent stamp.
    */
-  set?: (key: 'substratInvocationId', value: string) => void;
+  set?: {
+    (key: 'substratInvocationId', value: string): void;
+    /** #1746: the record the handler chain fills in. See {@link InvocationRecord}. */
+    (key: typeof INVOCATION_RECORD_KEY, value: InvocationRecord): void;
+  };
   /** The worker's bindings — read ONLY through the options below, never otherwise. */
   env: Env;
 }
@@ -173,6 +235,56 @@ export interface InvocationLogLine {
   /** The error escaped even `onError` — rare, and the most interesting line on the page. */
   threw: boolean;
   durationMs: number;
+  /*
+   * #1746: the per-request record. Everything below is ADDITIVE to the line above and is
+   * `null` (or empty) when nothing filled it in — a custom route, an older vertical-host,
+   * an older scope host. A reader treats `null` as "not recorded", never as a value.
+   */
+  /** {@link invocationLevelOf}. Always present: it is derived from the two fields above. */
+  level: InvocationLevel;
+  /** The operation that ran. `null` for a route that is not a mounted operation. */
+  operation: string | null;
+  /** The kernel `errorCode` of a failed call, when it has one. */
+  problemCode: string | null;
+  /** Who the call ran as: `principal`, `connection`, `system`, `capability` or `vertical`. */
+  principalKind: string | null;
+  /**
+   * How many events the operation itself emitted. `null` when not recorded, which is
+   * different from `0`: a read emits nothing, and that is a fact about it.
+   */
+  eventCount: number | null;
+  /** The distinct types among those events, in emission order (capped, see `entities`). */
+  eventTypes: string[];
+  /**
+   * The distinct entities those events were about, as `<entityType>:<entityId>`. Taken from
+   * at most `EMITTED_REPORT_CAP` events, so a bulk operation's line names the first few and
+   * `eventCount` says how many there were.
+   */
+  entities: string[];
+  /**
+   * The registry id of the version that served the call — the platform's
+   * `SUBSTRAT_VERSION_ID` binding, the same identity the spine stamps on events. `null`
+   * locally and on a script pushed before the binding existed.
+   */
+  versionId: string | null;
+}
+
+/** Distinct values, first occurrence wins — the order a reader expects to see them in. */
+function distinct(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+/**
+ * The platform's version binding, read straight off the env.
+ *
+ * The one exception to "bindings only through the options": `SUBSTRAT_VERSION_ID` is not
+ * the vertical's binding to name, the platform attaches it to every pushed script, and a
+ * vertical that had to pass it through would be one more line to forget with no way for
+ * it to be wrong. Read defensively — the env is typed `unknown` here.
+ */
+function versionIdOf(env: unknown): string | null {
+  const v = (env as { SUBSTRAT_VERSION_ID?: unknown } | null | undefined)?.SUBSTRAT_VERSION_ID;
+  return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
 /**
@@ -231,6 +343,8 @@ export function invocationLog<Env = unknown>(
     // every other id on the spine.
     const invocationId = ulid();
     c.set?.('substratInvocationId', invocationId);
+    const record: InvocationRecord = {};
+    c.set?.(INVOCATION_RECORD_KEY, record);
     let threw = false;
     try {
       await next();
@@ -247,6 +361,8 @@ export function invocationLog<Env = unknown>(
       // one caller's request under a tenant of their choosing.
       const node = routedNodeOrNull(c, options);
       if (node) {
+        const status = threw ? null : (c.res?.status ?? null);
+        const emitted = record.emitted;
         const line: InvocationLogLine = {
           substrat: 'invocation',
           tenantId: node.tenantId,
@@ -255,10 +371,18 @@ export function invocationLog<Env = unknown>(
           surface: node.surface,
           method: c.req.method,
           path: pathOf(c.req.raw.url),
-          status: threw ? null : (c.res?.status ?? null),
+          status,
           threw,
           durationMs: Date.now() - started,
           invocationId,
+          level: invocationLevelOf(status, threw, record.problemCode),
+          operation: record.operation ?? null,
+          problemCode: record.problemCode ?? null,
+          principalKind: record.principalKind ?? null,
+          eventCount: emitted ? emitted.total : null,
+          eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
+          entities: emitted ? distinct(emitted.events.map((e) => e.entity)) : [],
+          versionId: versionIdOf(c.env),
         };
         console.log(JSON.stringify(line));
       }

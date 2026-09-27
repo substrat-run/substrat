@@ -1013,6 +1013,11 @@ interface ScopeStubRpc {
     vertical?: { honoured: boolean };
     /** #1705 PR 2: exported-type rows the commit added; absent means none (or an older DO). */
     exported?: number;
+    /**
+     * #1746: the events the call itself emitted, when `onEmitted` asked. Advisory, so an
+     * older DO that drops it is safe: the invocation line reads "not recorded".
+     */
+    emitted?: { events: { type: string; entity: string }[]; total: number };
   }>;
   /** Trade a capability secret for a session or a principal (#1672) — the kernel's
    *  `exchangeCapability`, run in this scope's own storage. */
@@ -3756,6 +3761,19 @@ export class CloudflareScopeHost implements ScopeHost {
     return {
       tenantId,
       scopeId,
+      // #1746: the door decided it — the same precedence `asPrincipalId` uses below.
+      subjectKind:
+        principal !== undefined
+          ? 'principal'
+          : connectionId !== undefined
+            ? 'connection'
+            : systemModuleId !== undefined
+              ? 'system'
+              : capabilitySession !== undefined
+                ? 'capability'
+                : verticalCaller !== undefined
+                  ? 'vertical'
+                  : undefined,
       invoke: async <O, I>(
         operation: string,
         input?: I,
@@ -3893,6 +3911,7 @@ export class CloudflareScopeHost implements ScopeHost {
         if ((envelope.exported ?? 0) > 0) options?.onExportedEvents?.(envelope.exported!);
         if (envelope.concurrency) invokeOptions?.onEntityVersion?.(envelope.concurrency.version);
         if (envelope.idempotency?.replayed) invokeOptions?.onIdempotentReplay?.();
+        if (envelope.emitted) invokeOptions?.onEmitted?.(envelope.emitted);
         return envelope.result as O;
       },
     };

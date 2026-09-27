@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX } from '@substrat-run/contracts';
-import { PermissionDenied } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, PermissionDenied, type InvocationRecord } from '@substrat-run/kernel';
 import { mountOperations } from '../src/operations-routes.js';
 import { mcpToolsOf, mcpToolName, MCP_PROTOCOL_VERSIONS } from '../src/mcp.js';
 
@@ -780,5 +780,56 @@ describe('a token minted for another audience is refused before the resolver', (
     expect(res.headers.get('WWW-Authenticate')).toBe(
       `Bearer error="invalid_token", error_description="this token was not issued for ${A}/api/mcp"`,
     );
+  });
+});
+
+/**
+ * #1746, and #1237 on the MCP path: a tool call fills in the same record the HTTP mount
+ * does and stamps the same invocation id, so an assistant's calls are as visible in the
+ * log as a person's. The tool error is answered in-band as a 200, so the code is what
+ * tells the line it failed.
+ */
+describe('the per-request record on a tool call (#1746)', () => {
+  function recordHarness(invoke: (options?: { invocationId?: string; onEmitted?: (r: unknown) => void }) => unknown) {
+    const record: InvocationRecord = {};
+    const seen: (string | undefined)[] = [];
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      const set = (c as unknown as { set: (k: string, v: unknown) => void }).set;
+      set('substratInvocationId', 'inv-1');
+      set(INVOCATION_RECORD_KEY, record);
+      await next();
+    });
+    mountOperations(app, operations, async () => ({
+      subjectKind: 'principal',
+      invoke: async (_n: string, _i: unknown, options?: { invocationId?: string; onEmitted?: (r: unknown) => void }) => {
+        seen.push(options?.invocationId);
+        return invoke(options);
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any);
+    return { app, record, seen };
+  }
+
+  it('records the tool\'s operation and what it emitted, and stamps the invocation id', async () => {
+    const report = { events: [{ type: 'todo.list-created', entity: 'list:1' }], total: 1 };
+    const { app, record, seen } = recordHarness((options) => {
+      options?.onEmitted?.(report);
+      return { ok: true };
+    });
+    await rpc(app, 'tools/call', { name: 'todo_create-list', arguments: { title: 'x' } });
+    expect(seen).toEqual(['inv-1']);
+    expect(record).toEqual({ operation: 'todo/create-list', principalKind: 'principal', emitted: report });
+  });
+
+  it('records the code of a tool error answered in-band', async () => {
+    const { app, record } = recordHarness(() => {
+      throw new PermissionDenied(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        'todo:create' as any,
+      );
+    });
+    await rpc(app, 'tools/call', { name: 'todo_create-list', arguments: { title: 'x' } });
+    expect(record).toMatchObject({ operation: 'todo/create-list', problemCode: 'permission_denied' });
   });
 });

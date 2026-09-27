@@ -405,6 +405,10 @@ import {
   IMPORT_CURSORS_SQL,
   IMPORT_CURSOR_OF_SQL,
   OUTBOX_MARK_SQL,
+  emittedSinceQuery,
+  emittedReportOf,
+  EMITTED_REPORT_CAP,
+  type EmittedReport,
   exportedSinceQuery,
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
@@ -4241,6 +4245,14 @@ export class SqliteScopeHost implements ScopeHost {
     return {
       tenantId,
       scopeId,
+      // #1746: the door decided it. A capability session and a peer door each resolve to
+      // their subject per invoke, but the KIND is fixed when the stub is minted.
+      subjectKind:
+        authority.kind === 'capability-session'
+          ? 'capability'
+          : authority.kind === 'vertical-peer'
+            ? 'vertical'
+            : authority.kind,
       invoke: async <O, I>(
         operation: string,
         input?: I,
@@ -4320,6 +4332,8 @@ export class SqliteScopeHost implements ScopeHost {
         // #116: reported after the task, like the version — a replay is a fact
         // about the response, and the response is not one until it is returned.
         let replayed = false;
+        // #1746: what this call itself emitted, for `onEmitted`. Set only after a commit.
+        let emittedReport: EmittedReport | undefined;
         const invoked = await rt.actor.enqueue(async () => {
           // #1237: the invocation this call belongs to, for the duration of it. Set
           // INSIDE the actor task — the actor serializes invoke and dispatch alike, so
@@ -4331,6 +4345,12 @@ export class SqliteScopeHost implements ScopeHost {
           // and this invoke (`OUTBOX_MARK_SQL` says why rowid and not the id).
           const exportMark =
             exportTypes.length > 0 ? Number((rt.db.prepare(OUTBOX_MARK_SQL).get() as { mark: number }).mark) : null;
+          // #1746: the same mark, taken only when the caller asked what this call emitted. A
+          // read-only session commits nothing, so it has nothing to report and skips the read.
+          const emittedMark =
+            invokeOptions?.onEmitted !== undefined && session?.mode !== 'read-only'
+              ? (exportMark ?? Number((rt.db.prepare(OUTBOX_MARK_SQL).get() as { mark: number }).mark))
+              : null;
           try {
           // #1672: the capability door's session, re-resolved on EVERY invoke and inside the
           // actor task — so nothing can revoke between this read and the transaction below.
@@ -4472,6 +4492,12 @@ export class SqliteScopeHost implements ScopeHost {
               this.recordDenial(rt, subject, operation, err, rt.invocationId, session);
             throw err;
           }
+          // #1746: read BEFORE the drain below, so the rows above the mark are this
+          // operation's own emits and none of its consumers'. A replay committed nothing.
+          if (emittedMark !== null && !replayed) {
+            const q = emittedSinceQuery(emittedMark, EMITTED_REPORT_CAP);
+            emittedReport = emittedReportOf(rt.db.prepare(q.sql).all(...q.params) as Record<string, unknown>[]);
+          }
           // Post-commit, still inside the actor task: drain outbox → consumers,
           // then → executors. Prompt dispatch (K-22 §4.2): the common case
           // completes inside this request, with the outbox as the retry backstop
@@ -4503,6 +4529,7 @@ export class SqliteScopeHost implements ScopeHost {
         if (exported > 0) options?.onExportedEvents?.(exported);
         if (committedVersion !== undefined) invokeOptions?.onEntityVersion?.(committedVersion);
         if (replayed) invokeOptions?.onIdempotentReplay?.();
+        if (emittedReport) invokeOptions?.onEmitted?.(emittedReport);
         return invoked;
       },
     };

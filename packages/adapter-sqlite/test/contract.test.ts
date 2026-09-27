@@ -22,6 +22,7 @@ import {
   entityVersionContractSuite,
   timelineContractSuite,
   concurrencyContractSuite,
+  emittedReportContractSuite,
   idempotencyContractSuite,
   listContractSuite,
   inputParseContractSuite,
@@ -389,6 +390,20 @@ concurrencyContractSuite('adapter-sqlite', async () => {
 // shown to be written after the permission check that guards it.
 idempotencyContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-idem-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1746: the per-request record's scope half — what an invocation itself emitted, and which
+// kind of subject its stub acts as.
+emittedReportContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-emitted-'));
   const host = new SqliteScopeHost({ dir });
   return {
     host,
