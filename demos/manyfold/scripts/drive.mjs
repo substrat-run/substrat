@@ -50,9 +50,10 @@ expect('delivered hash is sha-256', /^[0-9a-f]{64}$/.test(delivered.body.hash ??
 const skip = await op(P.emil, 'cafe', 'create-entry', { typeKey: 'post', body: { title: 'Skip', slug: 'skip-http' } });
 expect('publish-without-approve is 409', (await op(P.emil, 'cafe', 'publish', { entryId: skip.body.id })).status, 409);
 
-// Scope isolation: padel has no delivered content
+// Scope isolation: padel has no delivered content. Paged (#1833): a page
+// envelope, not a bare array.
 const padel = await op(P.emil, 'padel', 'list-delivery', {});
-expect('padel delivery empty', Array.isArray(padel.body) && padel.body.length === 0, true);
+expect('padel delivery empty', Array.isArray(padel.body.entries) && padel.body.entries.length === 0, true);
 
 console.log(`\n${checks.every(Boolean) ? 'ALL PASS' : 'FAILURES'} — ${checks.filter(Boolean).length}/${checks.length}`);
 process.exit(checks.every(Boolean) ? 0 : 1);

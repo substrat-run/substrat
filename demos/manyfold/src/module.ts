@@ -453,16 +453,21 @@ const listEntriesOp: OperationHandler<
     params.push(input.status);
   }
   // `updated_at` ties across a bulk import/seed, so the SQL breaks ties on `id`
-  // too — the pair `pageOverFold`'s cursor below walks.
+  // too — the pair `pageOverFold`'s cursor below walks. Newest-first is the
+  // DEFAULT (the declaration's `order: 'desc'`), not the only direction: the
+  // caller's `?order=` is honoured rather than ignored — a walk advertised in
+  // the emitted document and quietly overridden here is a page that lies.
+  const order: 'asc' | 'desc' = raw?.order === 'asc' ? 'asc' : 'desc';
+  const dir = order === 'asc' ? 'ASC' : 'DESC';
   const rows = ctx.sql.query<EntryRow>(
-    `SELECT * FROM manyfold_entry ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at DESC, id DESC`,
+    `SELECT * FROM manyfold_entry ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at ${dir}, id ${dir}`,
     params,
   );
   // Page the ROW first, before the per-entry work below: `loadType`/`currentDraft`
   // are each their own query, so folding the whole table through them and only
   // then slicing a page would cost every walked page another full table's worth
   // of lookups. Slicing first bounds that work to one page's rows.
-  const page = pageOverFold(rows, raw ?? {}, (r) => `${r.updated_at}${CURSOR_FIELD_SEPARATOR}${r.id}`, 'desc');
+  const page = pageOverFold(rows, raw ?? {}, (r) => `${r.updated_at}${CURSOR_FIELD_SEPARATOR}${r.id}`, order);
   return mapPage(page, (e): EntryListItem => {
     const def = loadType(ctx, e.type_key);
     const rev = currentDraft(ctx, e);
@@ -636,21 +641,26 @@ const listDeliveryOp: OperationHandler<
 > = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.read));
   const input = listDeliveryInput.parse(raw ?? {});
-  // `published_at` ties across a bulk publish, so the SQL breaks ties on the
-  // table's own primary key — the pair `pageOverFold`'s cursor below walks.
+  // `published_at` ties within one operation's transaction (`ctx.now()` does not
+  // move mid-invocation, so a batch of publishes shares an instant), so the SQL
+  // breaks ties on the table's own primary key — the pair `pageOverFold`'s
+  // cursor below walks. Newest-first is the DEFAULT; the caller's `?order=` is
+  // honoured rather than ignored, same as `manyfold/list-entries`.
+  const order: 'asc' | 'desc' = raw?.order === 'asc' ? 'asc' : 'desc';
+  const dir = order === 'asc' ? 'ASC' : 'DESC';
   const rows = input.typeKey
     ? ctx.sql.query<DeliveryRow>(
-        'SELECT * FROM manyfold_delivery WHERE type_key = ? ORDER BY published_at DESC, entry_id DESC',
+        `SELECT * FROM manyfold_delivery WHERE type_key = ? ORDER BY published_at ${dir}, entry_id ${dir}`,
         [input.typeKey],
       )
-    : ctx.sql.query<DeliveryRow>('SELECT * FROM manyfold_delivery ORDER BY published_at DESC, entry_id DESC');
+    : ctx.sql.query<DeliveryRow>(`SELECT * FROM manyfold_delivery ORDER BY published_at ${dir}, entry_id ${dir}`);
   // Page the ROW first — see `listEntriesOp`'s note. Nothing here is a second
   // query, but there is no reason to reshape rows a page will not return.
   const page = pageOverFold(
     rows,
     raw ?? {},
     (r) => `${r.published_at}${CURSOR_FIELD_SEPARATOR}${r.entry_id}`,
-    'desc',
+    order,
   );
   return mapPage(
     page,
@@ -690,9 +700,11 @@ const whoamiOp: OperationHandler<
 /**
  * #800. This was the fifth hand-rolled copy of the spine read, and the only
  * UNPAGED one — an entry edited fifty times answered with fifty rows because
- * nothing said a number. `readTimeline` pages it, which makes this the one paged
- * read in a vertical that predates #811; the rest of Manyfold's lists are still
- * unbounded, and that is a separate debt rather than something to half-fix here.
+ * nothing said a number. `readTimeline` pages it. It predates #811, and this
+ * operation's own declaration went unfixed alongside it (a hand-spliced
+ * `input`, not a `paged` declaration) until #1833 paged this and every other
+ * growing list Manyfold answers with (`list-types` stays unpaged on purpose —
+ * see its declaration).
  */
 const timelineOp: OperationHandler<
   z.infer<typeof timelineInput> & ListPage,

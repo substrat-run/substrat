@@ -278,10 +278,10 @@ export const manyfoldOperations = defineOperations(manyfoldEntities, MANYFOLD_PE
       published_at: z.string(),
     }),
     // Handler-composed (#1833): grows with every publish, the same unbounded
-    // shape as `list-entries`. `published_at` is caller-supplied and NOT unique
-    // (two entries can publish in the same instant), so the cursor is the
-    // (published_at, entry_id) pair the SQL already orders by — `entry_id` is
-    // `manyfold_delivery`'s own primary key.
+    // shape as `list-entries`. `published_at` is `ctx.now()` and NOT unique
+    // (a batch of publishes inside one operation shares an instant), so the
+    // cursor is the (published_at, entry_id) pair the SQL already orders by —
+    // `entry_id` is `manyfold_delivery`'s own primary key.
     paged: { sortKey: 'published_at', order: 'desc' },
   },
 

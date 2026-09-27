@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Page, TimelineEntry } from '@substrat-run/contracts';
-import type { ScopeStub } from '@substrat-run/kernel';
+import { manualClock, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildDemoHost, seedDemo, type ManyfoldWorld, type EntryRow, type EntryStatus } from '../src/index.js';
 
@@ -313,5 +313,56 @@ describe('Manyfold demo scenario', () => {
       'content.published',
       'content.archived',
     ]);
+  });
+});
+
+describe('Manyfold demo scenario — paging under tied timestamps (#1833)', () => {
+  it('list-entries walks a cursor across entries that share one instant with no dupes or skips', async () => {
+    // A frozen clock, not the wall clock: every entry created below shares the
+    // SAME `updated_at`, which is exactly the case an `updated_at`-only cursor
+    // gets wrong (skips or repeats the tied rows) — see the (updated_at, id)
+    // composite cursor `manyfold/list-entries` declares.
+    const clock = manualClock('2026-01-01T00:00:00.000Z');
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-manyfold-tie-'));
+    const host = buildDemoHost(dir, clock.read);
+    try {
+      const w = await seedDemo(host, dir);
+      // padel, not cafe: `seedDemo` seeds cafe with four starting entries
+      // (fresh-instance content), which padel never gets — emil is author@padel.
+      const emilPadel = await host.getScope(w.emil, w.t1, w.padel);
+
+      const ids: string[] = [];
+      for (let i = 0; i < 7; i++) {
+        const entry = await emilPadel.invoke<EntryRow>('manyfold/create-entry', {
+          typeKey: 'post',
+          body: { title: `Tied ${i}`, slug: `tied-${i}`, body: 'x', category: 'news' },
+        });
+        ids.push(entry.id);
+      }
+
+      const first = await emilPadel.invoke<Page<{ id: string; updated_at: string }>>('manyfold/list-entries', {
+        limit: 3,
+      });
+      expect(first.entries).toHaveLength(3);
+      expect(first.entries.every((e) => e.updated_at === clock.now())).toBe(true);
+      expect(first.nextCursor).not.toBeNull();
+
+      const seen = [...first.entries];
+      let cursor = first.nextCursor;
+      while (cursor !== null) {
+        const next = await emilPadel.invoke<Page<{ id: string; updated_at: string }>>('manyfold/list-entries', {
+          limit: 3,
+          cursor,
+        });
+        seen.push(...next.entries);
+        cursor = next.nextCursor;
+      }
+      // Every entry exactly once — the tied `updated_at` is the whole point.
+      expect(seen).toHaveLength(7);
+      expect(new Set(seen.map((e) => e.id))).toEqual(new Set(ids));
+    } finally {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
