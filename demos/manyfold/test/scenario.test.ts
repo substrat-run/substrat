@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Page, TimelineEntry } from '@substrat-run/contracts';
-import type { ScopeStub } from '@substrat-run/kernel';
+import { manualClock, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildDemoHost, seedDemo, type ManyfoldWorld, type EntryRow, type EntryStatus } from '../src/index.js';
 
@@ -88,8 +88,11 @@ describe('Manyfold demo scenario', () => {
 
   it('1b. modelling: an admin creates a content type; it drives create-entry immediately', async () => {
     const maja = await host.getScope(w.maja, w.t1, w.cafe); // admin@cafe
-    // The four defaults are seeded lazily on first use.
-    const types = await maja.invoke<{ def: { key: string } }[]>('manyfold/list-types');
+    // The four defaults are seeded lazily on first use. Not paged (#1833): the
+    // array is nested under `types` rather than declared `paged`, since a
+    // scope's content types are admin-curated vocabulary the operation itself
+    // bounds.
+    const { types } = await maja.invoke<{ types: { def: { key: string } }[] }>('manyfold/list-types');
     expect(types.map((t) => t.def.key).sort()).toEqual(['author', 'page', 'post', 'snippet']);
 
     // Author cannot model — that's an admin act.
@@ -173,7 +176,9 @@ describe('Manyfold demo scenario', () => {
       emilLaw.invoke('manyfold/create-entry', { typeKey: 'page', body: { title: 'X', slug: 'x' } }),
     ).rejects.toThrow(/permission denied/);
     // …but the SAME login CAN read on law (viewer holds content:read) — control.
-    await expect(emilLaw.invoke('manyfold/list-entries', {})).resolves.toBeInstanceOf(Array);
+    // Paged (#1833): a page envelope, not a bare array — see `manyfold/timeline` below.
+    const lawEntries = await emilLaw.invoke<Page<unknown>>('manyfold/list-entries', {});
+    expect(lawEntries.entries).toBeInstanceOf(Array);
 
     // Same person, a scope where she holds no role at all → denied even to read.
     await expect(sofiaPadel.invoke('manyfold/list-entries', {})).rejects.toThrow(/permission denied/);
@@ -273,11 +278,18 @@ describe('Manyfold demo scenario', () => {
   it('8. scope isolation: publishing on cafe left padel and law with no delivered content', async () => {
     const majaPadel = await host.getScope(w.maja, w.t1, w.padel);
     const majaLaw = await host.getScope(w.maja, w.t1, w.law);
-    await expect(majaPadel.invoke<unknown[]>('manyfold/list-delivery', {})).resolves.toEqual([]);
-    await expect(majaLaw.invoke<unknown[]>('manyfold/list-delivery', {})).resolves.toEqual([]);
+    // Paged (#1833): grows with every publish, the same as `manyfold/list-entries`.
+    await expect(majaPadel.invoke<Page<unknown>>('manyfold/list-delivery', {})).resolves.toEqual({
+      entries: [],
+      nextCursor: null,
+    });
+    await expect(majaLaw.invoke<Page<unknown>>('manyfold/list-delivery', {})).resolves.toEqual({
+      entries: [],
+      nextCursor: null,
+    });
     // cafe has delivered content (the post + the page + the snippet).
-    const cafe = await emilCafe.invoke<unknown[]>('manyfold/list-delivery', {});
-    expect(cafe.length).toBeGreaterThanOrEqual(2);
+    const cafe = await emilCafe.invoke<Page<unknown>>('manyfold/list-delivery', {});
+    expect(cafe.entries.length).toBeGreaterThanOrEqual(2);
   });
 
   it('9. archive removes the entry from delivery; every mutation hit the spine', async () => {
@@ -301,5 +313,56 @@ describe('Manyfold demo scenario', () => {
       'content.published',
       'content.archived',
     ]);
+  });
+});
+
+describe('Manyfold demo scenario — paging under tied timestamps (#1833)', () => {
+  it('list-entries walks a cursor across entries that share one instant with no dupes or skips', async () => {
+    // A frozen clock, not the wall clock: every entry created below shares the
+    // SAME `updated_at`, which is exactly the case an `updated_at`-only cursor
+    // gets wrong (skips or repeats the tied rows) — see the (updated_at, id)
+    // composite cursor `manyfold/list-entries` declares.
+    const clock = manualClock('2026-01-01T00:00:00.000Z');
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-manyfold-tie-'));
+    const host = buildDemoHost(dir, clock.read);
+    try {
+      const w = await seedDemo(host, dir);
+      // padel, not cafe: `seedDemo` seeds cafe with four starting entries
+      // (fresh-instance content), which padel never gets — emil is author@padel.
+      const emilPadel = await host.getScope(w.emil, w.t1, w.padel);
+
+      const ids: string[] = [];
+      for (let i = 0; i < 7; i++) {
+        const entry = await emilPadel.invoke<EntryRow>('manyfold/create-entry', {
+          typeKey: 'post',
+          body: { title: `Tied ${i}`, slug: `tied-${i}`, body: 'x', category: 'news' },
+        });
+        ids.push(entry.id);
+      }
+
+      const first = await emilPadel.invoke<Page<{ id: string; updated_at: string }>>('manyfold/list-entries', {
+        limit: 3,
+      });
+      expect(first.entries).toHaveLength(3);
+      expect(first.entries.every((e) => e.updated_at === clock.now())).toBe(true);
+      expect(first.nextCursor).not.toBeNull();
+
+      const seen = [...first.entries];
+      let cursor = first.nextCursor;
+      while (cursor !== null) {
+        const next = await emilPadel.invoke<Page<{ id: string; updated_at: string }>>('manyfold/list-entries', {
+          limit: 3,
+          cursor,
+        });
+        seen.push(...next.entries);
+        cursor = next.nextCursor;
+      }
+      // Every entry exactly once — the tied `updated_at` is the whole point.
+      expect(seen).toHaveLength(7);
+      expect(new Set(seen.map((e) => e.id))).toEqual(new Set(ids));
+    } finally {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
