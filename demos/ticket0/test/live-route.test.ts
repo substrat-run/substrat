@@ -9,6 +9,10 @@
  *
  * Driven against the real host rather than a stub returning `undefined`: what is being
  * held is that THIS host says no, and a stub would only prove the route reads its option.
+ *
+ * The route itself is `mountLiveReads` from `@substrat-run/vertical-host` (#1859), and
+ * its Origin edges, its 401 and its pass-through are held in that package's own suite.
+ * What stays here is ticket0's host answering through it.
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -17,7 +21,7 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { LIVE_PATH, mountLiveReads } from '../harness/live.js';
+import { LIVE_PATH, mountLiveReads } from '@substrat-run/vertical-host';
 import { buildHost } from '../src/seed.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'ticket0-live-'));
@@ -34,17 +38,8 @@ const subscriber = vi.fn(async () => ({
 const app = new Hono();
 mountLiveReads(app, { live: () => host.liveReads, subscriber });
 
-/**
- * The same route over a surface that answers, so a request that gets past the Origin
- * check can be seen reaching the subscription. Only for the Origin cases: what the
- * hosted surface does with a subscriber is the workerd suite's to hold.
- */
-const subscribed = vi.fn(async () => new Response(null, { status: 204 }));
-const answering = new Hono();
-mountLiveReads(answering, { live: () => ({ subscribe: subscribed }), subscriber });
 beforeEach(() => {
   subscriber.mockClear();
-  subscribed.mockClear();
 });
 
 const handshake = (headers: Record<string, string>) =>
@@ -64,33 +59,5 @@ describe('the live route on the node host', () => {
     expect(res.status).toBe(403);
     expect(res.headers.get('x-substrat-live')).toBeNull();
     expect(subscriber).not.toHaveBeenCalled();
-  });
-});
-
-describe("the live route's Origin check", () => {
-  // Each refusal beside the request that differs from it in the Origin alone.
-  it.each([
-    ['an opaque origin', 'null'],
-    ['the same host over another scheme', 'https://localhost:5277'],
-    ['the same host on another port', 'http://localhost:5278'],
-    ['a sibling subdomain', 'http://desk.localhost:5277'],
-  ])('refuses %s', async (_what, origin) => {
-    const res = await answering.fetch(handshake({ origin }));
-    expect(res.status).toBe(403);
-    expect(subscriber).not.toHaveBeenCalled();
-    expect(subscribed).not.toHaveBeenCalled();
-  });
-
-  it("takes the desk's own origin through to the subscription", async () => {
-    const res = await answering.fetch(handshake({ origin: ORIGIN }));
-    expect(res.status).toBe(204);
-    expect(subscriber).toHaveBeenCalledOnce();
-    expect(subscribed).toHaveBeenCalledOnce();
-  });
-
-  it('lets a request with no Origin through, since no browser page sent it', async () => {
-    const res = await answering.fetch(handshake({}));
-    expect(res.status).toBe(204);
-    expect(subscribed).toHaveBeenCalledOnce();
   });
 });

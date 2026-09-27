@@ -204,6 +204,58 @@ so a route cannot be declared outside the middleware guarding it, and the prefli
 advertises exactly the methods the surface registered. `demos/ticket0` is the worked
 reference. Rate limiting is not here yet.
 
+## `mountLiveReads(app, options)`
+
+The route a page holds open to hear that something changed: `GET /api/live`, a WebSocket
+subscription to the scope's change feed. A frame names the entity that changed, and the page
+re-reads it through the operation it already calls. Mount it on both hosts:
+
+```ts
+import { mountLiveReads } from '@substrat-run/vertical-host';
+
+mountLiveReads(app, {
+  live: (c) => hostFor(c.env).liveReads,             // undefined on the pure host
+  subscriber: async (c) => {
+    const node = nodeFor(c.req.raw, c.env);          // tenant + scope, as the router asserted them
+    const principal = await principalFor(c.env, c.req.raw);  // your own session: the principal only
+    return principal ? { ...node, principal } : null;
+  },
+});
+```
+
+Take the tenant and scope from where the rest of your routes take them, the node the router
+asserted for this request, and only the principal from the session. Never take the scope
+from the session or from anything the client sent: the socket would then subscribe to
+whichever scope the cookie or the query string named.
+
+Register it before `mountOperations`. It decides four things, in this order:
+
+1. **It is a WebSocket handshake.** Anything without `Upgrade: websocket` is `426` with
+   `x-substrat-live: not-an-upgrade`, before anything else is asked. This is what makes the
+   next rule safe: a browser's WebSocket API always sends `Origin`, while a plain cross-site
+   GET carrying a `SameSite=Lax` cookie may not.
+2. **The page asking is your own.** A browser sends cookies on a WebSocket handshake, and a
+   WebSocket handshake is not subject to CORS. A `SameSite=Lax` session cookie does not
+   help either, because another tenant's subdomain of the platform's domain is the same site.
+   So the route compares the `Origin` header with the request's own origin, exactly (scheme,
+   host and port), and answers `403` on any difference, including `Origin: null`. The host is
+   not asked and `subscriber` is not called. A WebSocket handshake with no `Origin` did not
+   come from a browser page, and goes through.
+   Behind a TLS-terminating proxy on a self-hosted node server, the request's URL is `http`
+   while the page's `Origin` is `https`, so the route answers `403`. That costs only the
+   push: a client that keeps its poll as the floor, as ticket0's does, goes on polling.
+3. **This host can push at all.** The pure host has no `liveReads`, so the route answers
+   `501` with `x-substrat-live: poll`. That is the same header the hosted adapter sets on its
+   own refusals, so a client that reads it keeps polling whichever end said no. The name is
+   exported from `@substrat-run/kernel` as `LIVE_MODE_HEADER`, with its values as `LiveRefusal`.
+4. **Who is asking.** Your `subscriber` callback, from your own session. `null` is `401`,
+   never a subscription as some default principal.
+
+The route does not decide what a subscriber hears. The scope checks every frame against the
+`liveTargets` read permission your module declares, on that frame's entity, so subscribing
+grants nothing. `path` moves the route; the gate moves with it. `demos/ticket0` is the worked
+reference.
+
 ## `requestConnectUrl(request)`
 
 How a vertical starts a provider consent round **itself** (#1310), for the case the

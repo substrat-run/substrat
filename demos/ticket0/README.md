@@ -100,7 +100,7 @@ shown to the visitor as an id.
 Replies arrive by **polling** — 1.5s while an answer is outstanding, 10s idle, and not at
 all in a hidden tab. That is a stopgap and `widget.js` says so. The inbox and the
 conversation view are pushed to over the desk's live-read WebSocket (`GET /api/live`,
-`harness/live.ts`, #938): a frame names what changed and the screen re-reads it, with the
+`mountLiveReads` from `@substrat-run/vertical-host`, #938): a frame names what changed and the screen re-reads it, with the
 poll kept as a slow floor. The widget cannot subscribe yet, because a visitor has no principal
 for the scope to filter frames against, only a session token. A feed narrowed to one
 conversation is platform work (#1853). On the dev server the route answers 501, since the

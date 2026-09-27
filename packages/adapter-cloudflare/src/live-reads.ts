@@ -42,8 +42,12 @@ export const LIVE_SCOPE_HEADER = 'x-substrat-live-scope';
  * is how somebody reports "live updates are broken" two months later and nobody can
  * establish whether they ever worked on that hostname. One header makes the fallback a
  * fact the client can log, display, and report.
+ *
+ * Defined in the kernel (#1859), because the pure host's `501` names it too and a
+ * vertical's dev server should not import this adapter to spell it. Re-exported here so
+ * `host.ts` and `scope-do.ts` keep reading every wire name from this one file.
  */
-export const LIVE_MODE_HEADER = 'x-substrat-live';
+export { LIVE_MODE_HEADER, type LiveRefusal } from '@substrat-run/kernel';
 
 /**
  * Cloudflare's own per-request marker for orange-to-orange routing.
@@ -62,13 +66,6 @@ export const LIVE_MODE_HEADER = 'x-substrat-live';
  * cheaper than a matrix and correct on the request after the tenant changes their DNS.
  */
 export const O2O_HEADER = 'cf-connecting-o2o';
-
-/** Why a subscription was refused — the value of `LIVE_MODE_HEADER` on a refusal. */
-export type LiveRefusal =
-  /** This connection cannot carry a WebSocket; the client should keep polling. */
-  | 'poll'
-  /** The request was not an upgrade at all — a programming error at the caller. */
-  | 'not-an-upgrade';
 
 /**
  * What a subscribed socket remembers about itself across a hibernation.
@@ -125,12 +122,8 @@ export function readSubscription(attachment: unknown): LiveSubscription | null {
  */
 export const LIVE_FANOUT_LIMIT = 200;
 
-/** Is this request asking to be upgraded to a WebSocket? */
-export function isUpgradeRequest(request: Request): boolean {
-  // Case-insensitive: the header is `Upgrade: websocket` by the RFC, but the token is
-  // compared case-insensitively there too, and browsers are not the only clients.
-  return (request.headers.get('Upgrade') ?? '').toLowerCase() === 'websocket';
-}
+/** Is this request asking to be upgraded to a WebSocket? Defined in the kernel (#1859). */
+export { isUpgradeRequest } from '@substrat-run/kernel';
 
 /**
  * Is this request arriving over an orange-to-orange hop?
