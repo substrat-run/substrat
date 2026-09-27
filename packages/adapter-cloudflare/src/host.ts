@@ -7290,7 +7290,7 @@ export class CloudflareScopeHost implements ScopeHost {
       readError = err;
     }
     const { instance, ...outcome } = await this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, at);
-    if (readError !== undefined || !scopeClaims) throw readError;
+    if (!scopeClaims) throw readError;
     const now = Date.now();
     const pendingLive = (c: SwitchHoldClaim) => c.state === 'pending' && now - Date.parse(c.heldAt) <= SWITCH_HOLD_PENDING_MAX_MS;
     const before = scopeClaims.filter((c) => c.moduleId === moduleId);
@@ -7303,10 +7303,8 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     if (to === 'off' && outcome.changed) {
       const joins = new Set(scopeClaims.filter((c) => pendingLive(c) || c.doomed === instance).map((c) => c.claimId));
-      for (const claimId of joins) {
-        this.holdSnapshot = null;
-        await this.switchHoldsStub().switchHoldClaim(scopeId, [moduleId], claimId);
-      }
+      if (joins.size > 0) this.holdSnapshot = null;
+      for (const claimId of joins) await this.switchHoldsStub().switchHoldClaim(scopeId, [moduleId], claimId);
     }
     return outcome;
   }
@@ -7335,19 +7333,14 @@ export class CloudflareScopeHost implements ScopeHost {
     // held), so the storage alone would give this rewind no claim on it. Then a re-assert that
     // lands on the instance THIS rewind dooms would release the earlier claim, and this
     // rewind's restart would discard the re-assert's write.
-    const [status, held] = await Promise.all([this.systemGrantsStatusLocal(scopeId), holds.switchHoldsAll()]);
-    const off = [
-      ...new Set([
-        ...status.filter((e) => e.schedules === 'off').map((e) => e.moduleId as string),
-        ...held.filter((h) => h.scopeId === scopeId).map((h) => h.moduleId),
-      ]),
-    ];
+    const [offInStorage, held] = await Promise.all([this.offInStorage(scopeId), holds.switchHoldsAll()]);
+    const off = [...new Set([...offInStorage, ...held.filter((h) => h.scopeId === scopeId).map((h) => h.moduleId)])];
     if (off.length === 0) return { rewindingTo: (await rewind()).rewindingTo };
     const claimId = ulid();
     await holds.switchHoldClaim(scopeId, off, claimId);
     this.holdSnapshot = null;
     try {
-      await this.settleClaim(scopeId, claimId);
+      await this.settleClaim(holds, scopeId, claimId);
     } catch (err) {
       // Nothing was asked to arm: this rewind never happens, and what it claimed stays in storage.
       await holds.switchHoldDrop(scopeId, claimId).catch(() => undefined);
@@ -7371,6 +7364,13 @@ export class CloudflareScopeHost implements ScopeHost {
     return { rewindingTo: result.rewindingTo };
   }
 
+  /** The modules this scope's own storage has switched off, as a rewind reads them before it arms. */
+  private async offInStorage(scopeId: ScopeId): Promise<string[]> {
+    return (await this.systemGrantsStatusLocal(scopeId))
+      .filter((e) => e.schedules === 'off')
+      .map((e) => e.moduleId as string);
+  }
+
   /**
    * #1839: wait until every row of this rewind's claim is `SWITCH_HOLD_SETTLE_MS` old. The settle
    * argument holds per row: a row younger than that when the rewound storage exists can be missed
@@ -7388,13 +7388,10 @@ export class CloudflareScopeHost implements ScopeHost {
    * the arm (a few calls), or on the doomed instance in the moment between the arm and its restart.
    * It is claimed, but by a row younger than the settle, with the same exposure as above.
    */
-  private async settleClaim(scopeId: ScopeId, claimId: string): Promise<void> {
-    const holds = this.switchHoldsStub();
+  private async settleClaim(holds: ScopeStubRpc, scopeId: ScopeId, claimId: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS));
     for (let waits = 0; ; waits++) {
-      const off = (await this.systemGrantsStatusLocal(scopeId))
-        .filter((e) => e.schedules === 'off')
-        .map((e) => e.moduleId as string);
+      const off = await this.offInStorage(scopeId);
       if (off.length > 0) {
         await holds.switchHoldClaim(scopeId, off, claimId);
         this.holdSnapshot = null;
@@ -7409,7 +7406,7 @@ export class CloudflareScopeHost implements ScopeHost {
         return;
       }
       // Never longer than one settle, even if the hold object's clock moved back under a restart.
-      await new Promise((resolve) => setTimeout(resolve, Math.min(SWITCH_HOLD_SETTLE_MS, SWITCH_HOLD_SETTLE_MS - youngest)));
+      await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS - Math.max(0, youngest)));
     }
   }
 

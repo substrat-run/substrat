@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from 'cloudflare:test';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
 import { armRewind, holdsStub as holdsOf, landRewind, restartNow } from './pitr-emulation.js';
 import {
@@ -2180,8 +2180,8 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   const heldOn = async (s: ScopeId) =>
     (await holdsStub().switchHoldsAll()).filter((h) => h.scopeId === s).map((h) => h.moduleId);
   /** The claims on this scope's SCHED rows. */
-  const claimsOn = async (s: ScopeId, m: string = SCHED) =>
-    (await holdsStub().switchHoldClaims(s)).filter((c) => c.moduleId === m);
+  const claimsOn = async (s: ScopeId) => (await holdsStub().switchHoldClaims(s)).filter((c) => c.moduleId === SCHED);
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   /** Switch off (or not), then rewind to a bookmark taken before that (the whole issue). */
   const rewoundPastTheSwitch = async (switchOff = true): Promise<ScopeId> => {
@@ -2290,7 +2290,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await off(s);
     await armRewind(env.SCOPE, s);
     const rewinding = host.rewindScopeLocal(s, 'bm', { force: true });
-    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS / 3));
+    await sleep(SWITCH_HOLD_SETTLE_MS / 3);
     // A repeated OFF inside the settle: the scope holds its grants, but the write is in the
     // pre-rewind storage, and the claim is still pending.
     expect(await off(s)).toMatchObject({ held: true });
@@ -2311,14 +2311,15 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * at the capture.
    */
   const EARLIER = '@test/held-by-an-earlier-rewind';
+  const EARLIER_CLAIM = 'earlier-rewind';
   const settlingScope = async () => {
     const s = await newScope();
     const atBookmark = await host.exportScopeLocal(s);
-    await holdsStub().switchHoldClaim(s, [EARLIER], 'earlier-rewind');
-    await holdsStub().switchHoldArm(s, 'earlier-rewind', null);
+    await holdsStub().switchHoldClaim(s, [EARLIER], EARLIER_CLAIM);
+    await holdsStub().switchHoldArm(s, EARLIER_CLAIM, null);
+    onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
     return { s, atBookmark };
   };
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   it('#1839: an OFF during the settle joins the pending claim at once, and after the rewind lands the pass fires nothing', async () => {
     const { s, atBookmark } = await settlingScope();
@@ -2337,7 +2338,6 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await off(s);
     expect(await claimsOn(s)).toEqual([]);
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
-    await holdsStub().switchHoldRelease(s, null, null);
   });
 
   it('#1839: an OFF on the doomed instance joins the armed claim; the first move on the restored storage releases it', async () => {
@@ -2352,7 +2352,6 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
     await off(s);
     expect(await claimsOn(s)).toEqual([]);
-    await holdsStub().switchHoldRelease(s, null, null);
   });
 
   it('#1839: an OFF the move rule never sees (a reconcile carrying the list, in its own unit) is claimed by the re-read after the settle', async () => {
@@ -2366,7 +2365,6 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await claimsOn(s)).toMatchObject([{ state: 'armed' }]);
     await landRewind(env.SCOPE, s, atBookmark);
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
-    await holdsStub().switchHoldRelease(s, null, null);
   });
 
   /**
@@ -2394,7 +2392,6 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await landRewind(env.SCOPE, s, atBookmark);
     expect(await pass(s, swept)).toMatchObject({ fired: 0, switchedOff: true });
     expect(sweeper.holdReads).toBe(2);
-    await holdsStub().switchHoldRelease(s, null, null);
   });
 
   it('#1839 twin: a rewind with no late OFF asks the age once and does not wait again', async () => {
@@ -2404,7 +2401,6 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await deployment(rewinder.ns).rewindScopeLocal(s, 'bm', { force: true });
     expect(rewinder.ageReads).toBe(1);
     await landRewind(env.SCOPE, s, atBookmark);
-    await holdsStub().switchHoldRelease(s, null, null);
   });
 
   it(
@@ -2419,7 +2415,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
         .rewindScopeLocal(s, 'bm', { force: true })
         .finally(() => (armed = true));
       await sleep(100);
-      const [ours] = (await holdsStub().switchHoldClaims(s)).filter((c) => c.claimId !== 'earlier-rewind');
+      const [ours] = (await holdsStub().switchHoldClaims(s)).filter((c) => c.claimId !== EARLIER_CLAIM);
       // A late OFF of another module joins every half second, for as long as the rewind waits.
       for (let i = 0; !armed; i++) {
         await holdsStub().switchHoldClaim(s, [`@test/late-${i}`], ours!.claimId);
@@ -2428,7 +2424,6 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
       await rewinding;
       expect(rewinder.ageReads).toBe(1 + SWITCH_HOLD_EXTRA_WAITS);
       await landRewind(env.SCOPE, s, atBookmark);
-      await holdsStub().switchHoldRelease(s, null, null);
     },
   );
 
@@ -2519,7 +2514,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await off(s);
     await armRewind(env.SCOPE, s);
     const rewinding = host.rewindScopeLocal(s, 'bm', { force: true });
-    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS / 3));
+    await sleep(SWITCH_HOLD_SETTLE_MS / 3);
     await host.systemSwitchLocal(s, SCHED, 'on');
     expect(await heldOn(s)).toEqual([]);
     await rewinding;
@@ -2544,7 +2539,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     let open!: () => void;
     await armRewind(env.SCOPE, s, { gate: new Promise<void>((resolve) => (open = resolve)), holdAbort: true });
     const rewinding = scope().rewindToBookmark('bm', { force: true });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await sleep(50);
     expect(await scope().rewindProbe()).toMatchObject({ armed: true });
     open();
     await rewinding;
@@ -2724,7 +2719,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const h = deployment(counting.ns);
     counting.slowNextReadMs = SWITCH_HOLD_SNAPSHOT_MS + 1_000;
     const first = pass(a, h); // its read is still in flight when the next consult comes
-    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SNAPSHOT_MS + 300));
+    await sleep(SWITCH_HOLD_SNAPSHOT_MS + 300);
     await pass(b, h); // too old to join: it sends its own read
     await first;
     expect(counting.holdReads).toBe(2);
@@ -2752,7 +2747,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const counting = countingScopes(env.SCOPE);
     const h = deployment(counting.ns);
     expect(await pass(s, h)).toMatchObject({ fired: 0, switchedOff: true });
-    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SNAPSHOT_MS + 100));
+    await sleep(SWITCH_HOLD_SNAPSHOT_MS + 100);
     counting.failReads = true;
     const r = await pass(s, h);
     expect(r).toMatchObject({ fired: 0, switchedOff: true });

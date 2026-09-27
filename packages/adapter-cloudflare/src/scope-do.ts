@@ -3251,8 +3251,8 @@ export function defineScopeDO(
       this.switchHoldsTable();
       const row = this.sql
         .exec('SELECT MAX(held_at) AS youngest FROM _substrat_switch_holds WHERE scope_id = ? AND claim_id = ?', scopeId, claimId)
-        .toArray()[0] as { youngest: string | null } | undefined;
-      return row?.youngest ? Date.now() - Date.parse(row.youngest) : null;
+        .toArray()[0] as { youngest: string | null };
+      return row.youngest ? Date.now() - Date.parse(row.youngest) : null;
     }
 
     /** The rewind armed (or may have): its claim is `armed`, naming the instance it doomed. */
