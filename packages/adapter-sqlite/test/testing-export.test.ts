@@ -2,8 +2,9 @@
  * `@substrat-run/adapter-sqlite/testing` resolves through the package's own `exports` map
  * (#1770) — proven the way a CONSUMER reaches it, by package specifier rather than a file path,
  * from both an ESM import (what a vitest `setupFiles` entry does) and a CJS `require` (the shape
- * `tools/vitest/like-pattern-limit.cjs` needs: a `--require` target must be CJS, Node 22
- * `require`s an ES module — the same precedent `sql-limits.cjs` relies on for the kernel's dist).
+ * `tools/vitest/like-pattern-limit.cjs` needs). The subpath resolves `testing.cjs`, plain
+ * hand-written CommonJS that ships uncompiled — Node reads a `.cjs` file as CommonJS either way,
+ * `import`ed or `require`d, so one file answers both.
  *
  * Self-referencing a package by its own name resolves through the SAME `exports` map algorithm
  * an external consumer's resolver runs, so this is not weaker evidence than a separate package
@@ -45,7 +46,7 @@ describe('the published testing helper resolves through the exports map (#1770)'
       expect(entry!.worker, `${subpath}.worker`).toBeNull();
       expect(entry!.browser, `${subpath}.browser`).toBeNull();
     }
-    expect(pkg.exports['./testing']!.default).toBe('./dist/testing.js');
-    expect(pkg.exports['./testing']!.types).toBe('./dist/testing.d.ts');
+    expect(pkg.exports['./testing']!.default).toBe('./testing.cjs');
+    expect(pkg.exports['./testing']!.types).toBe('./testing.d.cts');
   });
 });

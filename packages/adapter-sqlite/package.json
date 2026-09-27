@@ -28,12 +28,14 @@
       "workerd": null,
       "worker": null,
       "browser": null,
-      "types": "./dist/testing.d.ts",
-      "default": "./dist/testing.js"
+      "types": "./testing.d.cts",
+      "default": "./testing.cjs"
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "testing.cjs",
+    "testing.d.cts"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
