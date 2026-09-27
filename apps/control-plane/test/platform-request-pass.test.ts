@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { platformActorId } from '@substrat-run/contracts';
 import { ulid, type PlatformSweepReport } from '@substrat-run/kernel';
-import worker, { platformRequestSweepRun, recordPlatformRequestPass } from '../src/worker.js';
+import worker, { drainTarget, platformRequestSweepRun, recordPlatformRequestPass } from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
@@ -119,5 +119,29 @@ describe('recordPlatformRequestPass (#1840)', () => {
     const admin = { recordSweepRun: async (e: unknown) => { written.push(e); } };
     await recordPlatformRequestPass(admin, report, AT);
     expect(written).toEqual([expect.objectContaining({ kind: 'platform-request', unit: 'fleet', at: AT })]);
+  });
+});
+
+describe('drainTarget (#1840)', () => {
+  const ZERO = { drained: 0, done: 0, failed: 0, pending: 0 };
+
+  it('a vertical scope with no reachable deployment is unreachable — not zeros', async () => {
+    const out = await drainTarget({ vertical: 'acme' }, async () => undefined);
+    expect(out).toEqual({ report: { ...ZERO, unreachable: true } });
+  });
+
+  it('a scope with no vertical holds no intents: plain zeros, and nothing is resolved', async () => {
+    let resolved = 0;
+    const out = await drainTarget({ vertical: null }, async () => {
+      resolved += 1;
+      return 'client';
+    });
+    expect(out).toEqual({ report: ZERO });
+    expect(resolved).toBe(0);
+  });
+
+  it('a reachable one hands back the client to drain through — the twin', async () => {
+    const rec = { vertical: 'acme' };
+    expect(await drainTarget(rec, async () => 'client')).toEqual({ rec, vertical: 'acme', client: 'client' });
   });
 });

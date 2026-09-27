@@ -1352,20 +1352,32 @@ export async function recordPlatformRequestPass(
   }
 }
 
-async function drainOneScope(
-  env: Env,
-  t: TenantId,
-  s: ScopeId,
-): Promise<PlatformDrainReport & { unreachable?: boolean }> {
+/** What a scope's drain reports when it never reached a queue at all (#1840). */
+export type ScopeDrainReport = PlatformDrainReport & { unreachable?: boolean };
+
+/**
+ * Whether a scope has a queue to drain and a deployment to drain it through (#1840). A scope
+ * with no vertical runs no module code, so it can hold no intents: plain zeros. A vertical
+ * scope with no deployment to reach may still hold them — nothing looked, so it reports
+ * `unreachable` rather than zeros the fleet count would read as "none waiting".
+ */
+export async function drainTarget<R extends { vertical: string | null }, C>(
+  rec: R | null | undefined,
+  resolve: (rec: R) => Promise<C | undefined>,
+): Promise<{ rec: R; vertical: string; client: C } | { report: ScopeDrainReport }> {
   const empty: PlatformDrainReport = { drained: 0, done: 0, failed: 0, pending: 0 };
+  if (!rec?.vertical) return { report: empty };
+  const client = await resolve(rec);
+  if (!client) return { report: { ...empty, unreachable: true } };
+  return { rec, vertical: rec.vertical, client };
+}
+
+async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDrainReport> {
   const host = hostFor(env);
-  const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
-  if (!rec?.vertical) return empty;
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
-  const client = await resolveVerticalForScope(rec);
-  // #1840: a vertical scope with no deployment to reach may still hold pending intents —
-  // nothing looked, so the fleet count must not read its zeros as "none waiting".
-  if (!client) return { ...empty, unreachable: true };
+  const target = await drainTarget(await host.admin.getScopeRecord(SWEEP_ACTOR, t, s), resolveVerticalForScope);
+  if ('report' in target) return target.report;
+  const { rec, vertical, client } = target;
   // The managed-tenant capability (#412/#444): who may create tenants is the registry's
   // `tenantProvisioner` flag — a staff grant read by admitManager at drain time. The
   // handlers are ALWAYS registered: an ungranted vertical's refusal settles `failed`
@@ -1378,7 +1390,7 @@ async function drainOneScope(
   };
   return drainScopePlatformRequests(
     client,
-    { tenantId: t, scopeId: s, vertical: rec.vertical, versionId: rec.verticalVersionId ?? null },
+    { tenantId: t, scopeId: s, vertical, versionId: rec.verticalVersionId ?? null },
     {
       [PROVISION_SIBLING_KIND]: provisionSiblingHandler({
         host,
