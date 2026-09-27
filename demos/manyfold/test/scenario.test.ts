@@ -48,7 +48,7 @@ describe('Manyfold demo scenario', () => {
         .prepare("SELECT version FROM _substrat_migrations WHERE module_id = '@substrat-run/demo-manyfold' ORDER BY version")
         .all() as { version: string }[];
       db.close();
-      expect(versions.map((v) => v.version)).toEqual(['0001-init', '0002-content-types']);
+      expect(versions.map((v) => v.version)).toEqual(['0001-init', '0002-content-types', '0003-list-indexes']);
     }
   });
 
