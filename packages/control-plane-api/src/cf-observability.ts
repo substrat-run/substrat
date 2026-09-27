@@ -270,6 +270,84 @@ function describeModuleLine(e: RecentLogEvent): RecentLogEvent {
 }
 
 /**
+ * Is this the RUNTIME's own record of an invocation — the event Cloudflare writes for every
+ * call to a Worker (request, response status, outcome, CPU and wall time) — rather than a
+ * line the Worker's code wrote?
+ *
+ * Identified by the event's own type, and by nothing looser. The fold below HIDES these,
+ * so a false positive would hide a line a vertical wrote on purpose, while a false
+ * negative only leaves a duplicate row. A predicate built from shape — "has a request and
+ * no JSON source" — could match a vertical's plain `console.log`, so it is not used.
+ */
+function isRuntimeRecord(e: Record<string, unknown>): boolean {
+  const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
+  const source = (e['source'] ?? {}) as Record<string, unknown>;
+  return metadata['type'] === 'cf-worker-event' && source['substrat'] === undefined;
+}
+
+/**
+ * Fold the runtime's invocation records into the stamped lines of the same requests.
+ *
+ * Every request a vertical served writes two events that describe it: the runtime's
+ * record and the stamped invocation line (`invocation-log.ts`). The stamped line says
+ * everything the runtime's does — method, path, status — and the tenant, operation,
+ * problem code and what it emitted besides, so the list showed each request twice. Only
+ * the runtime knows the CPU and wall time, so those move onto the stamped row.
+ *
+ * The runtime's `outcome` moves too — `exception`, `exceededCpu` — so a request the runtime
+ * cut short still reads as cut short on its one row.
+ *
+ * A runtime record whose request has no stamped line on the page is kept, defensively. In
+ * the tenant read that cannot currently happen: a request reaches this list only through
+ * its stamped line, and one that left none (it crashed before the middleware wrote it)
+ * names no tenant and was never attributable to anyone's view in the first place.
+ */
+function foldRuntimeRecords(events: Array<Record<string, unknown>>): {
+  kept: Array<Record<string, unknown>>;
+  byRequest: Map<string, Record<string, unknown>>;
+} {
+  const requestOf = (e: Record<string, unknown>): string | null => {
+    const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
+    const workers = (e['$workers'] ?? {}) as Record<string, unknown>;
+    const id = metadata['requestId'] ?? workers['requestId'];
+    return typeof id === 'string' && id !== '' ? id : null;
+  };
+  const stamped = new Set(
+    events
+      .filter((e) => ((e['source'] ?? {}) as Record<string, unknown>)['substrat'] === 'invocation')
+      .map(requestOf)
+      .filter((id): id is string => id !== null),
+  );
+  const kept: Array<Record<string, unknown>> = [];
+  const byRequest = new Map<string, Record<string, unknown>>();
+  for (const e of events) {
+    const request = requestOf(e);
+    if (request !== null && stamped.has(request) && isRuntimeRecord(e)) {
+      byRequest.set(request, e);
+      continue;
+    }
+    kept.push(e);
+  }
+  return { kept, byRequest };
+}
+
+/** A stamped row, carrying the CPU and wall time of the runtime record folded into it. */
+function withRuntimeTimings(e: RecentLogEvent, byRequest: Map<string, Record<string, unknown>>): RecentLogEvent {
+  const source = ((e.raw as Record<string, unknown>)?.['source'] ?? {}) as Record<string, unknown>;
+  if (source['substrat'] !== 'invocation' || e.requestId === null) return e;
+  const runtime = byRequest.get(e.requestId);
+  if (!runtime) return e;
+  const workers = (runtime['$workers'] ?? {}) as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === 'number' ? v : null);
+  return {
+    ...e,
+    cpuTimeMs: num(workers['cpuTimeMs']) ?? e.cpuTimeMs,
+    wallTimeMs: num(workers['wallTimeMs']) ?? e.wallTimeMs,
+    outcome: typeof workers['outcome'] === 'string' ? workers['outcome'] : e.outcome,
+  };
+}
+
+/**
  * One backend event → the seam's neutral `RecentLogEvent`.
  *
  * Shared by the service-grain and tenant-grain readers so a field learned in one is not
@@ -1320,10 +1398,13 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       const id = typeof metadata['id'] === 'string' ? metadata['id'] : JSON.stringify(e);
       byId.set(id, e);
     }
+    // ONE row per request: the runtime's own invocation record is folded into the stamped
+    // line that describes the same request, which says everything it does and more.
+    const runtimeOf = foldRuntimeRecords([...byId.values()]);
     const level = input.level?.toLowerCase();
     const search = input.search;
-    return [...byId.values()]
-      .map((e) => projectEvent(e))
+    return runtimeOf.kept
+      .map((e) => withRuntimeTimings(projectEvent(e), runtimeOf.byRequest))
       .map((e) => describeModuleLine(describeInvocation(e)))
       // A plain comparison is enough only because `describeInvocation` ran first: a stamped
       // line has no level of its own (Cloudflare sets `$metadata.level` for a string log
