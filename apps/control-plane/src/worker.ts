@@ -1352,6 +1352,29 @@ export async function recordPlatformRequestPass(
   }
 }
 
+/**
+ * The drain phase's end, as the drain row is stamped with it (#1840): the time the LAST
+ * scope's drain settled, fulfilled or thrown. `finishedAt(fallback)` hands back `fallback`
+ * (the pass start) when the phase called no drain at all.
+ */
+export function timedDrain<A extends unknown[], R>(
+  drain: (...args: A) => Promise<R>,
+  clock: () => Date = () => new Date(),
+): { drain: (...args: A) => Promise<R>; finishedAt: (fallback: Date) => Date } {
+  let last: Date | undefined;
+  return {
+    drain: async (...args) => {
+      try {
+        return await drain(...args);
+      } finally {
+        const now = clock();
+        if (last === undefined || now > last) last = now;
+      }
+    },
+    finishedAt: (fallback) => last ?? fallback,
+  };
+}
+
 /** What a scope's drain reports when it never reached a queue at all (#1840). */
 export type ScopeDrainReport = PlatformDrainReport & { unreachable?: boolean };
 
@@ -1519,7 +1542,7 @@ export default {
     // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
     // when the phase reached no scope at all.
     const passStartedAt = new Date();
-    let drainFinishedAt: Date | undefined;
+    const platformDrain = timedDrain((t: TenantId, s: ScopeId) => drainOneScope(env, t, s));
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
       // Sanctioned egress for the connector sweepers below.
@@ -1576,14 +1599,7 @@ export default {
       // intents from the vertical's /internal surface (its DO lives in the vertical's deployment),
       // execute each with platform authority, and settle back. The same `drainOneScope` the router
       // kick calls on demand — the sweep is the reliability backstop, the kick is the latency path.
-      drainPlatformRequestsFn: async (t, s) => {
-        try {
-          return await drainOneScope(env, t, s);
-        } finally {
-          // #1840: the last scope's drain to finish is when the phase finished.
-          drainFinishedAt = new Date();
-        }
-      },
+      drainPlatformRequestsFn: platformDrain.drain,
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is
       // missing whatever that hook mints, and nothing else would ever deliver it.
@@ -1624,7 +1640,7 @@ export default {
     // drain that silently never converges is visible in the tail instead of invisible.
     const pr = report.platformRequestTotals;
     // #1840: the same totals, kept.
-    await recordPlatformRequestPass(host.admin, report, (drainFinishedAt ?? passStartedAt).toISOString());
+    await recordPlatformRequestPass(host.admin, report, platformDrain.finishedAt(passStartedAt).toISOString());
     const al = report.accessLog;
     // #1172: a pass that re-provisioned anything says so, and so does one that tried and
     // failed — a scope that stays behind pass after pass is the shape of a repair that

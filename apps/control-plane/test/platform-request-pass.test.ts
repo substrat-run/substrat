@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { platformActorId } from '@substrat-run/contracts';
 import { ulid, type PlatformSweepReport } from '@substrat-run/kernel';
-import worker, { drainTarget, platformRequestSweepRun, recordPlatformRequestPass } from '../src/worker.js';
+import worker, { drainTarget, platformRequestSweepRun, recordPlatformRequestPass, timedDrain } from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
@@ -29,9 +29,11 @@ describe('the scheduled pass records the drain as a platform-request row (#1840)
   it('writes one fleet row carrying the totals, every pass', async () => {
     const before = new Date().toISOString();
     await worker.scheduled({} as ScheduledController, env as never);
+    const after = new Date().toISOString();
     const first = await newest();
     expect(first).toBeDefined();
-    expect(first!.at >= before).toBe(true);
+    // Stamped inside the pass — the drain phase's end, never a time outside it.
+    expect(first!.at >= before && first!.at <= after).toBe(true);
     expect(first).toMatchObject({ kind: 'platform-request', unit: 'fleet', tenantId: null, scopeId: null });
     expect(first!.platformRequests).toEqual({
       scopes: expect.any(Number),
@@ -143,5 +145,37 @@ describe('drainTarget (#1840)', () => {
   it('a reachable one hands back the client to drain through — the twin', async () => {
     const rec = { vertical: 'acme' };
     expect(await drainTarget(rec, async () => 'client')).toEqual({ rec, vertical: 'acme', client: 'client' });
+  });
+});
+
+describe('timedDrain (#1840)', () => {
+  const PASS_START = new Date('2026-09-27T12:00:00.000Z');
+  const ticks = (...iso: string[]) => {
+    const q = iso.map((t) => new Date(t));
+    return () => q.shift()!;
+  };
+
+  it('finishes when the LAST drain settles — a late one, and a thrown one, both count', async () => {
+    const timed = timedDrain(
+      async (fail: boolean) => {
+        if (fail) throw new Error('vertical down');
+        return 'ok';
+      },
+      ticks('2026-09-27T12:00:05.000Z', '2026-09-27T12:00:09.000Z'),
+    );
+    await timed.drain(false);
+    await expect(timed.drain(true)).rejects.toThrow('vertical down'); // still rethrown
+    expect(timed.finishedAt(PASS_START).toISOString()).toBe('2026-09-27T12:00:09.000Z');
+  });
+
+  it('keeps the latest settle when an earlier-stamped one lands last', async () => {
+    const timed = timedDrain(async () => 'ok', ticks('2026-09-27T12:00:09.000Z', '2026-09-27T12:00:05.000Z'));
+    await timed.drain();
+    await timed.drain();
+    expect(timed.finishedAt(PASS_START).toISOString()).toBe('2026-09-27T12:00:09.000Z');
+  });
+
+  it('falls back to the pass start when no drain ran', () => {
+    expect(timedDrain(async () => 'ok').finishedAt(PASS_START)).toBe(PASS_START);
   });
 });
