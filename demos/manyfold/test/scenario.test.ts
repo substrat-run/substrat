@@ -366,6 +366,61 @@ describe('Manyfold demo scenario — paging under tied timestamps (#1833)', () =
     }
   });
 
+  it('list-entries walks an ASCENDING cursor across the same tied timestamps, in order, with no dupes or skips (Copilot #4114802647)', async () => {
+    // The descending test above exercises only the declaration's DEFAULT
+    // direction. `order: 'asc'` is the restored branch this whole PR is about —
+    // a regression there (falling back to the hard-coded 'desc') would pass
+    // every other test silently, since 'desc' still answers *something*.
+    const clock = manualClock('2026-01-01T00:00:00.000Z');
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-manyfold-tie-'));
+    const host = buildDemoHost(dir, clock.read);
+    try {
+      const w = await seedDemo(host, dir);
+      const emilPadel = await host.getScope(w.emil, w.t1, w.padel);
+
+      const ids: string[] = [];
+      for (let i = 0; i < 7; i++) {
+        const entry = await emilPadel.invoke<EntryRow>('manyfold/create-entry', {
+          typeKey: 'post',
+          body: { title: `Tied asc ${i}`, slug: `tied-asc-${i}`, body: 'x', category: 'news' },
+        });
+        ids.push(entry.id);
+      }
+      // ULIDs are monotonic with creation, so ascending id order IS creation order.
+      const ascendingIds = [...ids].sort();
+
+      const first = await emilPadel.invoke<Page<{ id: string; updated_at: string }>>('manyfold/list-entries', {
+        limit: 3,
+        order: 'asc',
+      });
+      expect(first.entries).toHaveLength(3);
+      expect(first.entries.every((e) => e.updated_at === clock.now())).toBe(true);
+      expect(first.nextCursor).not.toBeNull();
+
+      // A cursor is only valid for the sort it was issued under (pagination.ts):
+      // `order: 'asc'` has to travel on every follow-up request too.
+      const seen = [...first.entries];
+      let cursor = first.nextCursor;
+      while (cursor !== null) {
+        const next = await emilPadel.invoke<Page<{ id: string; updated_at: string }>>('manyfold/list-entries', {
+          limit: 3,
+          cursor,
+          order: 'asc',
+        });
+        seen.push(...next.entries);
+        cursor = next.nextCursor;
+      }
+      expect(seen).toHaveLength(7);
+      expect(new Set(seen.map((e) => e.id))).toEqual(new Set(ids));
+      // Order asserted, not just membership: ascending id, the tie-break the
+      // declaration's composite cursor walks by.
+      expect(seen.map((e) => e.id)).toEqual(ascendingIds);
+    } finally {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('list-delivery walks a cursor across entries published under one instant with no dupes or skips (Copilot #4114802626)', async () => {
     // Same shape as list-entries' tie test, one operation over: the frozen clock
     // means every publish below shares the same `published_at`, which is exactly
