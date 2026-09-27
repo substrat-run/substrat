@@ -49,16 +49,18 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
   };
 
   /**
-   * Write the edge, or REVIVE its tombstone, and say which. The primary key is (subject,
-   * relation, object), so an edge `relink` moved away from is still a row — `INSERT OR
-   * IGNORE` alone would keep it dead while the caller was told it linked. Two statements
-   * rather than an upsert, because an upsert's `changes` cannot tell a revive from an insert.
+   * Write the edge, or REVIVE a row that is not live, and say which. The primary key is
+   * (subject, relation, object), so an edge `relink` moved away from is still a row — `INSERT
+   * OR IGNORE` alone would keep it dead while the caller was told it linked. A revive clears
+   * the expiry too, so "linked" always means live: a parent edge carries no expiry any verb
+   * wrote, and one restored from a dump must not quietly keep one. Two statements rather than
+   * an upsert, because an upsert's `changes` cannot tell a revive from an insert.
    */
   const writeEdge = (child: string, parent: string): { revived: boolean } => {
     const revived = deps.sql.exec(
-      `UPDATE _substrat_tuples SET revoked_at = NULL
-       WHERE subject = ? AND relation = 'parent' AND object = ? AND revoked_at IS NOT NULL`,
-      [child, parent],
+      `UPDATE _substrat_tuples SET revoked_at = NULL, expires_at = NULL
+       WHERE subject = ? AND relation = 'parent' AND object = ? AND NOT (${liveTupleSql()})`,
+      [child, parent, deps.now],
     ).changes > 0;
     if (!revived) {
       deps.sql.exec(

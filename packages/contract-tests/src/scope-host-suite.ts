@@ -6085,6 +6085,34 @@ export function scopeHostContractSuite(
         expect(await relinked(item('rl-ex'))).toEqual([]);
       });
 
+      it('a revive is unconditional: link clears an expiry as well as a tombstone', async () => {
+        await plant([
+          // Tombstoned AND expired, the shape a restored dump can hold.
+          {
+            subject: 'item:rl-rv1',
+            object: 'box:rb1',
+            revoked_at: '2001-01-01T00:00:00.000Z',
+            expires_at: '2000-01-01T00:00:00.000Z',
+          },
+          // Expired only: not revoked, and still not a parent the walk sees.
+          { subject: 'item:rl-rv2', object: 'box:rb1', expires_at: '2000-01-01T00:00:00.000Z' },
+        ]);
+        await link(item('rl-rv1'), box('rb1'));
+        await link(item('rl-rv2'), box('rb1'));
+        const table = (await host.admin.exportScope(staff, t1, s1)).tables.find(
+          (t) => t.name === '_substrat_tuples',
+        )!;
+        const col = (name: string) => table.columns.indexOf(name);
+        for (const id of ['rl-rv1', 'rl-rv2']) {
+          const row = table.rows.find((r) => r[col('subject')] === `item:${id}`)!;
+          expect([row[col('revoked_at')], row[col('expires_at')]]).toEqual([null, null]);
+          // Access resumed, so each revive is recorded; the proof that it is live is that a
+          // relink from it now succeeds.
+          expect(await relinked(item(id), 'entity.linked')).toHaveLength(1);
+          await move(item(id), box('rb1'), box('rb2'));
+        }
+      });
+
       it('refuses a `to` that link could not write — and leaves the old edge intact', async () => {
         await link(item('rl3'), box('rb1'));
         await expectRefusal(
