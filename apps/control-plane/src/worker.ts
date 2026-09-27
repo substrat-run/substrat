@@ -1314,8 +1314,11 @@ export async function reconcileOrUnsupported<T>(call: () => Promise<T>): Promise
  * (a `platform-request` error), the phase stepped over it because its migration failed
  * (`skipped`), or no deployment could be reached for it (`unreachable`). The count is then
  * a floor, and the reader says so rather than presenting it as the fleet's whole queue.
+ *
+ * `at` is when the drain phase finished — the moment the totals describe — not when this
+ * row happens to be written.
  */
-export function platformRequestSweepRun(report: PlatformSweepReport): SweepRunInput {
+export function platformRequestSweepRun(report: PlatformSweepReport, at: string): SweepRunInput {
   const totals = report.platformRequestTotals;
   const undrained = report.errors.filter((e) => e.kind === 'platform-request').length;
   const gaps: string[] = [];
@@ -1328,6 +1331,7 @@ export function platformRequestSweepRun(report: PlatformSweepReport): SweepRunIn
     outcome: gaps.length > 0 ? 'failed' : 'ok',
     error: gaps.length > 0 ? `${gaps.join('; ')} — their queues are not in these totals` : null,
     platformRequests: totals,
+    at,
   };
 }
 
@@ -1483,6 +1487,10 @@ export default {
       ? await failureDigestWatermark({ admin: host.admin, actor: SWEEP_ACTOR, passStartedAt: new Date() })
       : undefined;
     const crossVertical = crossVerticalFor(env, host);
+    // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
+    // when the phase reached no scope at all.
+    const passStartedAt = new Date();
+    let drainFinishedAt: Date | undefined;
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
       // Sanctioned egress for the connector sweepers below.
@@ -1539,7 +1547,14 @@ export default {
       // intents from the vertical's /internal surface (its DO lives in the vertical's deployment),
       // execute each with platform authority, and settle back. The same `drainOneScope` the router
       // kick calls on demand — the sweep is the reliability backstop, the kick is the latency path.
-      drainPlatformRequestsFn: (t, s) => drainOneScope(env, t, s),
+      drainPlatformRequestsFn: async (t, s) => {
+        try {
+          return await drainOneScope(env, t, s);
+        } finally {
+          // #1840: the last scope's drain to finish is when the phase finished.
+          drainFinishedAt = new Date();
+        }
+      },
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is
       // missing whatever that hook mints, and nothing else would ever deliver it.
@@ -1581,7 +1596,9 @@ export default {
     const pr = report.platformRequestTotals;
     // #1840: the same totals, kept. Awaited so the row lands before the handler returns, and
     // its failure swallowed — a recorder must never sink the pass it is recording.
-    await host.admin.recordSweepRun(platformRequestSweepRun(report)).catch(() => undefined);
+    await host.admin
+      .recordSweepRun(platformRequestSweepRun(report, (drainFinishedAt ?? passStartedAt).toISOString()))
+      .catch(() => undefined);
     const al = report.accessLog;
     // #1172: a pass that re-provisioned anything says so, and so does one that tried and
     // failed — a scope that stays behind pass after pass is the shape of a repair that

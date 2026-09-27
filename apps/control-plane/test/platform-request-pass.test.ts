@@ -53,28 +53,30 @@ describe('the scheduled pass records the drain as a platform-request row (#1840)
 });
 
 describe('platformRequestSweepRun (#1840)', () => {
+  const AT = '2026-09-27T12:00:00.000Z';
   const totals = { scopes: 2, drained: 6, done: 3, failed: 1, pending: 2, skipped: 0, unreachable: 0 };
   const report = (over: Partial<PlatformSweepReport> = {}): PlatformSweepReport =>
     ({ platformRequestTotals: totals, errors: [], migrations: null, ...over }) as PlatformSweepReport;
 
-  it('a pass that reached every scope is ok, with the totals as they were', () => {
-    expect(platformRequestSweepRun(report())).toEqual({
+  it('a pass that reached every scope is ok, with the totals as they were, stamped with the time it is given', () => {
+    expect(platformRequestSweepRun(report(), AT)).toEqual({
       kind: 'platform-request',
       unit: 'fleet',
       outcome: 'ok',
       error: null,
       platformRequests: totals,
+      at: AT,
     });
   });
 
   it('a scope whose drain threw makes the count a floor', () => {
-    const run = platformRequestSweepRun(report({ errors: [{ kind: 'platform-request', id: 's1', error: 'boom' }] }));
+    const run = platformRequestSweepRun(report({ errors: [{ kind: 'platform-request', id: 's1', error: 'boom' }] }), AT);
     expect(run.outcome).toBe('failed');
     expect(run.error).toMatch(/1 scope drain\(s\) failed/);
   });
 
   it('so does an ACTIVE scope the drain stepped over for a failed migration', () => {
-    const run = platformRequestSweepRun(report({ platformRequestTotals: { ...totals, skipped: 1 } }));
+    const run = platformRequestSweepRun(report({ platformRequestTotals: { ...totals, skipped: 1 } }), AT);
     expect(run.outcome).toBe('failed');
     expect(run.error).toMatch(/1 scope\(s\) skipped for a failed migration/);
   });
@@ -82,18 +84,19 @@ describe('platformRequestSweepRun (#1840)', () => {
   it('a failed PROVISIONING scope does not — the drain never visits one, so nothing is missing', () => {
     // `migrations.failed` counts it; the drain's own `skipped` does not, and only that is read.
     const run = platformRequestSweepRun(
-      report({ migrations: { failed: 1 } as PlatformSweepReport['migrations'], platformRequestTotals: { ...totals, skipped: 0 } })
+      report({ migrations: { failed: 1 } as PlatformSweepReport['migrations'], platformRequestTotals: { ...totals, skipped: 0 } }),
+      AT,
     );
     expect(run.outcome).toBe('ok');
   });
 
   it('a scope with no reachable deployment makes the count a floor, and says why', () => {
-    const run = platformRequestSweepRun(report({ platformRequestTotals: { ...totals, unreachable: 2 } }));
+    const run = platformRequestSweepRun(report({ platformRequestTotals: { ...totals, unreachable: 2 } }), AT);
     expect(run.outcome).toBe('failed');
     expect(run.error).toMatch(/2 scope\(s\) had no reachable deployment/);
   });
 
   it("another phase's error does not — it says nothing about the drain's reach", () => {
-    expect(platformRequestSweepRun(report({ errors: [{ kind: 'sweep', id: 'c1', error: 'boom' }] })).outcome).toBe('ok');
+    expect(platformRequestSweepRun(report({ errors: [{ kind: 'sweep', id: 'c1', error: 'boom' }] }), AT).outcome).toBe('ok');
   });
 });
