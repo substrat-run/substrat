@@ -4,10 +4,13 @@ import {
   PROVISION_SIBLING_KIND,
   ARCHIVE_SCOPE_KIND,
   assertTransition,
+  CURSOR_FIELD_SEPARATOR,
   defineLifecycles,
   operationInputsOf,
+  pageOverFold,
   substratError,
   type ListPage,
+  type OperationImpl,
   type Page,
   type TimelineEntry,
 } from '@substrat-run/contracts';
@@ -432,10 +435,10 @@ interface EntryListItem {
   updated_at: string;
 }
 
-const listEntriesOp: OperationHandler<z.infer<typeof listEntriesInput> | undefined, EntryListItem[]> = async (
-  ctx,
-  raw,
-) => {
+const listEntriesOp: OperationHandler<
+  (z.infer<typeof listEntriesInput> & ListPage) | undefined,
+  Page<EntryListItem>
+> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.read));
   const input = listEntriesInput.parse(raw ?? {});
   const where: string[] = [];
@@ -448,21 +451,24 @@ const listEntriesOp: OperationHandler<z.infer<typeof listEntriesInput> | undefin
     where.push('status = ?');
     params.push(input.status);
   }
+  // `updated_at` ties across a bulk import/seed, so the SQL breaks ties on `id`
+  // too — the pair `pageOverFold`'s cursor below walks.
   const rows = ctx.sql.query<EntryRow>(
-    `SELECT * FROM manyfold_entry ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at DESC`,
+    `SELECT * FROM manyfold_entry ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at DESC, id DESC`,
     params,
   );
-  return rows.map((e) => {
+  const items: EntryListItem[] = rows.map((e) => {
     const def = loadType(ctx, e.type_key);
     const rev = currentDraft(ctx, e);
     const body = JSON.parse(rev.body_json) as Record<string, unknown>;
     return { id: e.id, type_key: e.type_key, status: e.status, slug: e.slug, title: titleOf(def, body, e), updated_at: e.updated_at };
   });
+  return pageOverFold(items, raw ?? {}, (item) => `${item.updated_at}${CURSOR_FIELD_SEPARATOR}${item.id}`, 'desc');
 };
 
-const reviewQueueOp: OperationHandler<undefined, EntryListItem[]> = async (ctx) => {
+const reviewQueueOp: OperationHandler<ListPage | undefined, Page<EntryListItem>> = async (ctx, page) => {
   assertAllowed(await ctx.check(MF_PERM.review));
-  return listEntriesOp(ctx, { status: 'in_review' } as never) as never;
+  return listEntriesOp(ctx, { ...page, status: 'in_review' });
 };
 
 interface EntryDetail {
@@ -487,9 +493,9 @@ const getEntryOp: OperationHandler<z.infer<typeof entryIdInput>, EntryDetail> = 
   };
 };
 
-const listTypesOp: OperationHandler<undefined, { def: ContentTypeDef; sql: string }[]> = async (ctx) => {
+const listTypesOp: OperationHandler<undefined, { types: { def: ContentTypeDef; sql: string }[] }> = async (ctx) => {
   assertAllowed(await ctx.check(MF_PERM.read));
-  return loadTypes(ctx).map((def) => ({ def, sql: compileTypeToSql(def) }));
+  return { types: loadTypes(ctx).map((def) => ({ def, sql: compileTypeToSql(def) })) };
 };
 
 // ── Modelling: content types are data, authored by an admin ──────────────────
@@ -610,16 +616,43 @@ const deliverOp: OperationHandler<z.infer<typeof deliverInput>, DeliveryPayload>
   return { type: row.type_key, slug: row.slug, hash: row.hash, publishedAt: row.published_at, body };
 };
 
-const listDeliveryOp: OperationHandler<z.infer<typeof listDeliveryInput> | undefined, { type_key: string; slug: string | null; title: string; hash: string }[]> = async (
-  ctx,
-  raw,
-) => {
+interface DeliveryListItem {
+  entry_id: string;
+  type_key: string;
+  slug: string | null;
+  title: string;
+  hash: string;
+  published_at: string;
+}
+
+const listDeliveryOp: OperationHandler<
+  (z.infer<typeof listDeliveryInput> & ListPage) | undefined,
+  Page<DeliveryListItem>
+> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.read));
   const input = listDeliveryInput.parse(raw ?? {});
+  // `published_at` ties across a bulk publish, so the SQL breaks ties on the
+  // table's own primary key — the pair `pageOverFold`'s cursor below walks.
   const rows = input.typeKey
-    ? ctx.sql.query<DeliveryRow>('SELECT * FROM manyfold_delivery WHERE type_key = ? ORDER BY published_at DESC', [input.typeKey])
-    : ctx.sql.query<DeliveryRow>('SELECT * FROM manyfold_delivery ORDER BY published_at DESC');
-  return rows.map((r) => ({ type_key: r.type_key, slug: r.slug, title: r.title, hash: r.hash }));
+    ? ctx.sql.query<DeliveryRow>(
+        'SELECT * FROM manyfold_delivery WHERE type_key = ? ORDER BY published_at DESC, entry_id DESC',
+        [input.typeKey],
+      )
+    : ctx.sql.query<DeliveryRow>('SELECT * FROM manyfold_delivery ORDER BY published_at DESC, entry_id DESC');
+  const items: DeliveryListItem[] = rows.map((r) => ({
+    entry_id: r.entry_id,
+    type_key: r.type_key,
+    slug: r.slug,
+    title: r.title,
+    hash: r.hash,
+    published_at: r.published_at,
+  }));
+  return pageOverFold(
+    items,
+    raw ?? {},
+    (item) => `${item.published_at}${CURSOR_FIELD_SEPARATOR}${item.entry_id}`,
+    'desc',
+  );
 };
 
 /** Self-introspection: who am I in THIS site, and what may I do — the app gates its chrome on this. */
@@ -661,28 +694,28 @@ const timelineOp: OperationHandler<
 };
 
 const OPERATIONS = {
-  'manyfold/create-entry': createEntryOp as never,
-  'manyfold/save-draft': saveDraftOp as never,
-  'manyfold/restore-revision': restoreRevisionOp as never,
-  'manyfold/submit-for-review': submitForReviewOp as never,
-  'manyfold/approve': approveOp as never,
-  'manyfold/reject': rejectOp as never,
-  'manyfold/publish': publishOp as never,
-  'manyfold/unpublish': unpublishOp as never,
-  'manyfold/archive': archiveOp as never,
-  'manyfold/list-entries': listEntriesOp as never,
-  'manyfold/review-queue': reviewQueueOp as never,
-  'manyfold/get-entry': getEntryOp as never,
-  'manyfold/list-types': listTypesOp as never,
-  'manyfold/save-type': saveTypeOp as never,
-  'manyfold/delete-type': deleteTypeOp as never,
-  'manyfold/request-site': requestSiteOp as never,
-  'manyfold/archive-site': archiveSiteOp as never,
-  'manyfold/deliver': deliverOp as never,
-  'manyfold/list-delivery': listDeliveryOp as never,
-  'manyfold/whoami': whoamiOp as never,
-  'manyfold/timeline': timelineOp as never,
-};
+  'manyfold/create-entry': createEntryOp,
+  'manyfold/save-draft': saveDraftOp,
+  'manyfold/restore-revision': restoreRevisionOp,
+  'manyfold/submit-for-review': submitForReviewOp,
+  'manyfold/approve': approveOp,
+  'manyfold/reject': rejectOp,
+  'manyfold/publish': publishOp,
+  'manyfold/unpublish': unpublishOp,
+  'manyfold/archive': archiveOp,
+  'manyfold/list-entries': listEntriesOp,
+  'manyfold/review-queue': reviewQueueOp,
+  'manyfold/get-entry': getEntryOp,
+  'manyfold/list-types': listTypesOp,
+  'manyfold/save-type': saveTypeOp,
+  'manyfold/delete-type': deleteTypeOp,
+  'manyfold/request-site': requestSiteOp,
+  'manyfold/archive-site': archiveSiteOp,
+  'manyfold/deliver': deliverOp,
+  'manyfold/list-delivery': listDeliveryOp,
+  'manyfold/whoami': whoamiOp,
+  'manyfold/timeline': timelineOp,
+} satisfies OperationImpl<typeof manyfoldOperations, OperationContext>;
 
 /**
  * The entry's editorial lifecycle, declared (#844).

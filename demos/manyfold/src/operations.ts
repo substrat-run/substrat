@@ -122,20 +122,6 @@ const deliveryPayload = z.object({
   body: z.record(z.string(), z.unknown()),
 });
 
-/**
- * The page fields the timeline read takes BESIDE the entity it names.
- *
- * Declared rather than assumed: the host parses a declared input (#893), and a
- * Zod object drops what it does not name — so a declaration of the entity alone
- * would have silently stripped `limit`/`cursor`/`order` and quietly unpaged the
- * one paged read this vertical has.
- */
-const pageIn = z.object({
-  limit: z.number().int().positive().optional(),
-  cursor: z.string().optional(),
-  order: z.enum(['asc', 'desc']).optional(),
-});
-
 export const manyfoldOperations = defineOperations(manyfoldEntities, MANYFOLD_PERMISSIONS)({
   'manyfold/create-entry': {
     summary: 'Create a draft entry of a content type',
@@ -206,12 +192,20 @@ export const manyfoldOperations = defineOperations(manyfoldEntities, MANYFOLD_PE
     input: listEntriesInput,
     inputOptional: true,
     output: entryListItem,
+    // Handler-composed (#1833): the entry is a projection (title resolved out of
+    // the draft body), not the stored row, so `paged.over` has nothing to walk.
+    // `updated_at` is caller-visible but NOT unique — several entries can share
+    // an instant — so the cursor is the (updated_at, id) pair the SQL already
+    // orders by, newest first.
+    paged: { sortKey: 'updated_at', order: 'desc' },
   },
 
   'manyfold/review-queue': {
     summary: 'Entries waiting for review',
     permission: 'content:review',
     output: entryListItem,
+    // Same list as `list-entries`, filtered to `in_review` — see its cursor note.
+    paged: { sortKey: 'updated_at', order: 'desc' },
   },
 
   'manyfold/get-entry': {
@@ -224,7 +218,13 @@ export const manyfoldOperations = defineOperations(manyfoldEntities, MANYFOLD_PE
   'manyfold/list-types': {
     summary: 'The content types, each with the table it compiles to',
     permission: 'content:read',
-    output: z.object({ def: contentTypeDef, sql: z.string() }),
+    // Not paged (#1833): `manyfold/save-type` is the only writer, so a scope's
+    // content types are admin-curated vocabulary — a handful by construction,
+    // never a table a tenant fills. The array is nested in an object rather than
+    // returned bare, which is what `assertListsArePaged` leaves alone: the
+    // operation controls how many of these there can ever be, a table read does
+    // not.
+    output: z.object({ types: z.array(z.object({ def: contentTypeDef, sql: z.string() })) }),
   },
 
   'manyfold/save-type': {
@@ -270,11 +270,19 @@ export const manyfoldOperations = defineOperations(manyfoldEntities, MANYFOLD_PE
     input: listDeliveryInput,
     inputOptional: true,
     output: z.object({
+      entry_id: z.string(),
       type_key: z.string(),
       slug: z.string().nullable(),
       title: z.string(),
       hash: z.string(),
+      published_at: z.string(),
     }),
+    // Handler-composed (#1833): grows with every publish, the same unbounded
+    // shape as `list-entries`. `published_at` is caller-supplied and NOT unique
+    // (two entries can publish in the same instant), so the cursor is the
+    // (published_at, entry_id) pair the SQL already orders by — `entry_id` is
+    // `manyfold_delivery`'s own primary key.
+    paged: { sortKey: 'published_at', order: 'desc' },
   },
 
   'manyfold/whoami': {
@@ -305,7 +313,12 @@ export const manyfoldOperations = defineOperations(manyfoldEntities, MANYFOLD_PE
   'manyfold/timeline': {
     summary: 'What happened to one entity, newest-first or oldest-first',
     permission: 'content:read',
-    input: timelineInput.extend(pageIn.shape),
+    input: timelineInput,
     output: timelineEntry,
+    // #1833 (the #811 side-step): this used to hand-splice `limit`/`cursor`/
+    // `order` into `input` instead of declaring `paged`, so the platform never
+    // capped it and `assertListsArePaged` never saw it (it isn't a bare array).
+    // `readTimeline` already walks the event id — see the handler.
+    paged: { sortKey: 'id' },
   },
 });
