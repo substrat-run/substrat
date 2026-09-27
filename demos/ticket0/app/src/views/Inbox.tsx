@@ -356,7 +356,8 @@ export function Inbox({
   useLiveReload(() => {
     // Held off mid-append: a tick bumps the sequence number, and the page in flight
     // was asked for against the read before it — so the click would be swallowed.
-    if (loadingMore) return;
+    // `false` says so, and a pushed refresh is retried once the append has settled.
+    if (loadingMore) return false;
     load();
     loadTags();
   }, PACE.inbox);

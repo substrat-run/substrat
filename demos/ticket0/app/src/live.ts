@@ -29,13 +29,7 @@
 import { useEffect, useRef } from 'react';
 import { createFeed, type FeedListener, type LiveChange, type SocketLike } from './feed.js';
 import { pollPace, type Pace } from './pace.js';
-
-/**
- * One write can announce several entities at once (a conversation and its message), and
- * each frame would otherwise be a full re-read. Frames that arrive this close together
- * are one re-read.
- */
-const BURST_MS = 50;
+import { createRefresh } from './refresh.js';
 
 /** The tab's one feed, bound to the browser's socket and clock. */
 export const liveFeed = createFeed({
@@ -69,9 +63,14 @@ export const liveFeed = createFeed({
  * `hears` narrows which frames count. The default is all of them, which suits a list.
  * A screen about one thing passes a filter, since every frame is a re-read. Both
  * triggers call the same `reload`, so a caller writes its read once.
+ *
+ * `reload` returns `false` when it declined to read (the inbox does mid-append). A
+ * refresh a push or a return to the tab asked for then stays pending and is retried,
+ * rather than being dropped while the poll is pushed back a whole interval
+ * (`refresh.ts`).
  */
 export function useLiveReload(
-  reload: () => void,
+  reload: () => boolean | void,
   pace: Pace,
   hears: (change: LiveChange) => boolean = () => true,
 ): void {
@@ -85,7 +84,6 @@ export function useLiveReload(
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
-    let burst: ReturnType<typeof setTimeout> | null = null;
 
     const stop = () => {
       if (timer !== null) clearInterval(timer);
@@ -96,9 +94,16 @@ export function useLiveReload(
       const every = pollPace({ everyMs, connectedMs }, liveFeed.isOpen());
       if (!document.hidden) timer = setInterval(() => latest.current(), every);
     };
+    // A refresh that is done only once a read has run; the poll then counts from it.
+    const refresh = createRefresh({
+      reload: () => latest.current(),
+      afterRead: () => start(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (t) => clearTimeout(t),
+    });
     const onVisible = () => {
       if (!document.hidden) {
-        latest.current();
+        refresh.request();
         liveFeed.wake();
       }
       start();
@@ -106,19 +111,13 @@ export function useLiveReload(
 
     const listener: FeedListener = {
       frame: (change) => {
-        if (document.hidden || burst !== null || !filter.current(change)) return;
-        burst = setTimeout(() => {
-          burst = null;
-          latest.current();
-          // The read just made is as good as a poll, so the next poll counts from it.
-          start();
-        }, BURST_MS);
+        if (!document.hidden && filter.current(change)) refresh.request();
       },
       state: (open) => {
         // Opening re-reads once: anything that changed between this screen's last read
         // and the subscription starting was announced to nobody. Either way the poll's
         // pace follows the feed.
-        if (open && !document.hidden) latest.current();
+        if (open && !document.hidden) refresh.request();
         start();
       },
     };
@@ -130,7 +129,7 @@ export function useLiveReload(
     addEventListener('focus', onVisible);
     return () => {
       stop();
-      if (burst !== null) clearTimeout(burst);
+      refresh.cancel();
       unlisten();
       document.removeEventListener('visibilitychange', onVisible);
       removeEventListener('focus', onVisible);
