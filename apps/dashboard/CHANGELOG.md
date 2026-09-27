@@ -1,5 +1,34 @@
 # @substrat-run/dashboard
 
+## 0.39.0
+
+### Minor Changes
+
+- a469e04: Logs has a Patterns mode (#1747): an app's `ctx.log` lines grouped by the template each was written with. Each row shows the template with its placeholders marked, the level most of its lines were written at, a small histogram over the window, the line count and its share. Clicking a pattern opens its lines in the Lines mode, where the pattern is a removable chip. A pattern is exactly the lines written from one template (two call sites that share a template share a pattern). Lines written with `console.log` have no template, and the empty state says so.
+- df264fa: Logs has a Requests mode (#1746): one row per request, with the operation, who ran it, how long it took, its result and how many events it emitted. Above it is a histogram of requests by level over the whole window. Drag across it to zoom, and the bars re-bucket to the narrower window. Beside it is a facet sidebar for operation, problem code, who, status, surface and level. Each facet's counts are what ticking one of its values would give. Ticked values become chips in the query bar, and a row opens that request's own log lines. The counts come from every request in the window, not the bounded sample the Lines mode reads. Requests served by a version deployed before per-request records began are counted as "not recorded".
+
+### Patch Changes
+
+- Updated dependencies [90d0f02]
+- Updated dependencies [a469e04]
+- Updated dependencies [ee686d2]
+- Updated dependencies [ec342ef]
+- Updated dependencies [02942e0]
+- Updated dependencies [0f5b61c]
+- Updated dependencies [931b8d6]
+- Updated dependencies [558f103]
+- Updated dependencies [45421e8]
+  - @substrat-run/kernel@0.124.0
+  - @substrat-run/adapter-cloudflare@0.124.0
+  - @substrat-run/control-plane-api@0.124.0
+  - @substrat-run/contracts@0.124.0
+  - @substrat-run/connector-fortnox@0.4.26
+  - @substrat-run/demo-callout@0.3.42
+  - @substrat-run/engine-invites@0.9.1
+  - @substrat-run/engine-invoicing@0.11.8
+  - @substrat-run/engine-protocol@0.13.8
+  - @substrat-run/engine-workorder@0.12.8
+
 ## 0.38.0
 
 ### Minor Changes

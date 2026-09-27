@@ -1,5 +1,24 @@
 # @substrat-run/kernel
 
+## 0.124.0
+
+### Minor Changes
+
+- 90d0f02: `ctx.log` — a structured logger for module code (#1746, #1747). `ctx.log.info('reply to {ticketId} sent', { ticketId })` writes one JSON line. The host stamps it with the tenant, scope, operation, invocation id and the kind of subject the code ran as. The line also carries the template it was written from, so every line from one call site shares it. That is what the log patterns and operation filters planned in #1747 will read; this release only writes the lines. Consumers get it too, and their lines say `system` and name no operation. A call never throws: oversized values are trimmed, non-primitive fields are stringified, and a capability secret minted in the same call is withheld. Lines are not transactional, so a rolled-back operation's line is kept. `SqliteScopeHostOptions.logSink` redirects the lines (a test passes a collector); the default, and the Durable Object host, write them to the console. Both adapters pass the new `moduleLogContractSuite`.
+- 02942e0: `GET /platform-requests/backlog` now also reports how many platform requests are still waiting (#1840). Until now it counted only the requests the platform had given up on, because a waiting request lives in its app's own storage and nothing indexed it across the fleet. The platform's scheduled sweep already visits every active app to deliver those requests, so each pass now records what it found as one sweep-run row: a new `platform-request` kind, unit `fleet`, with the pass's totals in a new `platformRequests` field. The route reads the newest of those rows and returns `pending: { count, asOf, floor }`, where `asOf` is when that pass ran. The count is only as fresh as the last pass. `pending` is `null` when no pass is on record, which is a different answer from `0`. `floor` is true when that pass could not reach every app, so the real number may be higher: an app whose drain failed, an app skipped because its migration failed (counted as `skipped` in the totals), or an app with no deployment to reach (`unreachable`). The existing fields are unchanged. An app cannot write this row: a batch of sweep results sent from an app's own storage that claims the `platform-request` kind is refused.
+- 931b8d6: The invocation log line is now a per-request record (#1746). Alongside tenant, scope, status and duration it carries the request's level, the operation that ran, the kernel problem code of a failed call, which kind of subject it ran as, the version that served it, and the event types and entities the operation itself emitted. Every field is additive; an unfilled one is `null`, never a guess.
+
+  Two kernel surfaces make that possible. `ScopeStub.subjectKind` names the kind of subject a stub acts as (`principal`, `connection`, `system`, `capability`, `vertical`), decided by the door that minted it. `InvokeOptions.onEmitted` reports, after a commit, the events the operation emitted — not its consumers', not a rolled-back sub-transaction's, and nothing for a failed call or an idempotent replay. Both adapters pass the new `emittedReportContractSuite`.
+
+  MCP tool calls now fill in the same record and stamp their events with the invocation id, as HTTP operations already did. A vertical picks all of this up by updating its Substrat packages and re-pushing; no code change is needed.
+
+### Patch Changes
+
+- 558f103: `_substrat_schedule_state` now carries an `invocation_id` column (#1525). When a due schedule runs — whether the operation succeeds or is denied — its row records the same id stamped onto the outbox events, deliveries and denials that call produced, so all of them can eventually be read back as one request. A schedule still inside its cadence window, or a switched-off pass, writes no row at all, so it keeps whatever id the schedule's last real run left there (or no row, if it has never fired). Only two cases are actually null: the freshness evaluator's own verdicts, since they never invoke anything, and any row written before this release. An existing scope picks up the column automatically on its next wake; nothing needs to be re-provisioned or re-pushed. Nothing reads the column yet — this is the storage half only, and it does not appear in Workers Logs or the dashboard.
+- Updated dependencies [02942e0]
+- Updated dependencies [45421e8]
+  - @substrat-run/contracts@0.124.0
+
 ## 0.123.0
 
 ### Minor Changes
@@ -5155,7 +5174,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

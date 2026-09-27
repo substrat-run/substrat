@@ -1,5 +1,24 @@
 # @substrat-run/control-plane-api
 
+## 0.124.0
+
+### Minor Changes
+
+- ec342ef: The tenant log read now includes `ctx.log` lines (#1746, #1747). They carry their own tenant, scope and invocation, so they are read directly with every filter applied in the query, and appear once even when their invocation is expanded too. A new `template` filter answers one pattern's lines. `/observability/tenant-log-patterns` groups a tenant's `ctx.log` lines by the template they were written from, giving each template's count, share, level split and a small histogram. Grouping is exact on the recorded template: a pattern is the lines written from one template, and two call sites that share a template share a pattern. The Cloudflare reader answers it with one grouped calculations query plus a total. A reader without it answers 501.
+- 02942e0: `GET /platform-requests/backlog` now also reports how many platform requests are still waiting (#1840). Until now it counted only the requests the platform had given up on, because a waiting request lives in its app's own storage and nothing indexed it across the fleet. The platform's scheduled sweep already visits every active app to deliver those requests, so each pass now records what it found as one sweep-run row: a new `platform-request` kind, unit `fleet`, with the pass's totals in a new `platformRequests` field. The route reads the newest of those rows and returns `pending: { count, asOf, floor }`, where `asOf` is when that pass ran. The count is only as fresh as the last pass. `pending` is `null` when no pass is on record, which is a different answer from `0`. `floor` is true when that pass could not reach every app, so the real number may be higher: an app whose drain failed, an app skipped because its migration failed (counted as `skipped` in the totals), or an app with no deployment to reach (`unreachable`). The existing fields are unchanged. An app cannot write this row: a batch of sweep results sent from an app's own storage that claims the `platform-request` kind is refused.
+- 0f5b61c: Three tenant-grain request reads over the per-request record (#1746). `/observability/tenant-request-volume` gives per-level counts per time bucket over the whole window, `/observability/tenant-request-facets` gives the top values of each facet with every other filter applied, and `/observability/tenant-requests` lists the requests themselves. The facets are level, operation, principal kind, problem code, surface and status. All three take the same tenant, window and facet filters, so the histogram, the counts and the list always describe the same set. They are counted server-side over the whole window, where the old log read expanded at most 40 requests. Cloudflare may still sample a busy window statistically, and a count that was sampled comes back with `estimated: true`, so a caller can say it is approximate. Zooming is a narrower window at the same bucket count. The Cloudflare reader implements them with the telemetry API's calculations view. A reader without them answers 501.
+
+### Patch Changes
+
+- a469e04: `/observability/tenant-logs` refuses an empty `template` with a 400 instead of reading it as no filter and returning the app's whole log (#1747).
+- Updated dependencies [90d0f02]
+- Updated dependencies [02942e0]
+- Updated dependencies [931b8d6]
+- Updated dependencies [558f103]
+- Updated dependencies [45421e8]
+  - @substrat-run/kernel@0.124.0
+  - @substrat-run/contracts@0.124.0
+
 ## 0.123.0
 
 ### Minor Changes

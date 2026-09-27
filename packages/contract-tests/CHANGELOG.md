@@ -1,5 +1,26 @@
 # @substrat-run/contract-tests
 
+## 0.124.0
+
+### Minor Changes
+
+- 90d0f02: `ctx.log` — a structured logger for module code (#1746, #1747). `ctx.log.info('reply to {ticketId} sent', { ticketId })` writes one JSON line. The host stamps it with the tenant, scope, operation, invocation id and the kind of subject the code ran as. The line also carries the template it was written from, so every line from one call site shares it. That is what the log patterns and operation filters planned in #1747 will read; this release only writes the lines. Consumers get it too, and their lines say `system` and name no operation. A call never throws: oversized values are trimmed, non-primitive fields are stringified, and a capability secret minted in the same call is withheld. Lines are not transactional, so a rolled-back operation's line is kept. `SqliteScopeHostOptions.logSink` redirects the lines (a test passes a collector); the default, and the Durable Object host, write them to the console. Both adapters pass the new `moduleLogContractSuite`.
+- 931b8d6: The invocation log line is now a per-request record (#1746). Alongside tenant, scope, status and duration it carries the request's level, the operation that ran, the kernel problem code of a failed call, which kind of subject it ran as, the version that served it, and the event types and entities the operation itself emitted. Every field is additive; an unfilled one is `null`, never a guess.
+
+  Two kernel surfaces make that possible. `ScopeStub.subjectKind` names the kind of subject a stub acts as (`principal`, `connection`, `system`, `capability`, `vertical`), decided by the door that minted it. `InvokeOptions.onEmitted` reports, after a commit, the events the operation emitted — not its consumers', not a rolled-back sub-transaction's, and nothing for a failed call or an idempotent replay. Both adapters pass the new `emittedReportContractSuite`.
+
+  MCP tool calls now fill in the same record and stamp their events with the invocation id, as HTTP operations already did. A vertical picks all of this up by updating its Substrat packages and re-pushing; no code change is needed.
+
+### Patch Changes
+
+- Updated dependencies [90d0f02]
+- Updated dependencies [02942e0]
+- Updated dependencies [931b8d6]
+- Updated dependencies [558f103]
+- Updated dependencies [45421e8]
+  - @substrat-run/kernel@0.124.0
+  - @substrat-run/contracts@0.124.0
+
 ## 0.123.0
 
 ### Minor Changes
@@ -4844,7 +4865,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
