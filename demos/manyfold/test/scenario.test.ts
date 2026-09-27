@@ -88,11 +88,11 @@ describe('Manyfold demo scenario', () => {
 
   it('1b. modelling: an admin creates a content type; it drives create-entry immediately', async () => {
     const maja = await host.getScope(w.maja, w.t1, w.cafe); // admin@cafe
-    // The four defaults are seeded lazily on first use. Not paged (#1833): the
-    // array is nested under `types` rather than declared `paged`, since a
-    // scope's content types are admin-curated vocabulary the operation itself
-    // bounds.
-    const { types } = await maja.invoke<{ types: { def: { key: string } }[] }>('manyfold/list-types');
+    // The four defaults are seeded lazily on first use. Paged (#1833, Copilot
+    // review PR #1843): `save-type` has no cap, so this is a page envelope like
+    // every other list here, not a bare array.
+    const typesPage = await maja.invoke<Page<{ key: string; def: { key: string } }>>('manyfold/list-types');
+    const types = typesPage.entries;
     expect(types.map((t) => t.def.key).sort()).toEqual(['author', 'page', 'post', 'snippet']);
 
     // Author cannot model — that's an admin act.

@@ -177,11 +177,6 @@ function loadType(ctx: OperationContext, typeKey: string): ContentTypeDef {
   return rowToDef(r);
 }
 
-function loadTypes(ctx: OperationContext): ContentTypeDef[] {
-  ensureTypes(ctx);
-  return ctx.sql.query<ContentTypeRow>('SELECT * FROM manyfold_content_type ORDER BY created_at').map(rowToDef);
-}
-
 function getEntry(ctx: OperationContext, id: string): EntryRow {
   const row = ctx.sql.query<EntryRow>('SELECT * FROM manyfold_entry WHERE id = ?', [id])[0];
   if (!row) throw substratError('not_found', `entry not found: ${id}`);
@@ -518,9 +513,42 @@ const getEntryOp: OperationHandler<z.infer<typeof entryIdInput>, EntryDetail> = 
   };
 };
 
-const listTypesOp: OperationHandler<undefined, { types: { def: ContentTypeDef; sql: string }[] }> = async (ctx) => {
+interface ContentTypeListItem {
+  key: string;
+  def: ContentTypeDef;
+  sql: string;
+}
+
+/**
+ * #1833 (Copilot review, PR #1843): the earlier fix wrapped this in
+ * `{ types: [...] }` on the theory that `save-type` makes it bounded by
+ * construction. It doesn't — `save-type` takes any caller-chosen `key` with no
+ * cap — so it pages like every other growing list here. `key` rides at the top
+ * level (redundant with `def.key`) purely so `paged.sortKey` — a compile-checked
+ * join against a TOP-LEVEL output field — has a unique cursor to name; `def`
+ * stays nested for the app, which reads `t.def` throughout the model builder.
+ */
+const listTypesOp: OperationHandler<ListPage | undefined, Page<ContentTypeListItem>> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.read));
-  return { types: loadTypes(ctx).map((def) => ({ def, sql: compileTypeToSql(def) })) };
+  ensureTypes(ctx);
+  const order: 'asc' | 'desc' = raw?.order === 'asc' ? 'asc' : 'desc';
+  const dir = order === 'asc' ? 'ASC' : 'DESC';
+  const limit = listLimitOf(raw?.limit);
+  const where: string[] = [];
+  const params: string[] = [];
+  if (raw?.cursor) {
+    where.push(order === 'asc' ? 'key > ?' : 'key < ?');
+    params.push(raw.cursor);
+  }
+  const rows = ctx.sql.query<ContentTypeRow>(
+    `SELECT * FROM manyfold_content_type ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY key ${dir} LIMIT ?`,
+    [...params, limit],
+  );
+  const page = pageOf(rows, limit, (r) => r.key);
+  return mapPage(page, (r): ContentTypeListItem => {
+    const def = rowToDef(r);
+    return { key: def.key, def, sql: compileTypeToSql(def) };
+  });
 };
 
 // ── Modelling: content types are data, authored by an admin ──────────────────
