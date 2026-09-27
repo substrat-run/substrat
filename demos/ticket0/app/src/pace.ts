@@ -30,7 +30,12 @@ export const PACE = {
   conversation: { everyMs: 5_000, connectedMs: 5_000 },
 } as const satisfies Record<string, Pace>;
 
-/** The interval a screen polls at, given whether the feed is open. */
+/**
+ * The interval a screen polls at, given whether the feed is open.
+ *
+ * Never faster with the feed open than without it: a `connectedMs` below `everyMs` is
+ * read as `everyMs`, so a mistyped pace cannot turn a push into more polling.
+ */
 export function pollPace(pace: Pace, open: boolean): number {
-  return open ? pace.connectedMs : pace.everyMs;
+  return open ? Math.max(pace.everyMs, pace.connectedMs) : pace.everyMs;
 }

@@ -20,4 +20,8 @@ describe('the poll pace behind the live feed', () => {
     expect(pollPace(PACE.inbox, true)).toBe(LIVE_FLOOR_MS);
     expect(pollPace(PACE.inbox, false)).toBe(10_000);
   });
+
+  it('never polls faster with the feed open than without it', () => {
+    expect(pollPace({ everyMs: 10_000, connectedMs: 1_000 }, true)).toBe(10_000);
+  });
 });
