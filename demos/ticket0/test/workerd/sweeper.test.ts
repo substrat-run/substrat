@@ -810,10 +810,12 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     const written = await note(theirs.conversation, 'Customer is on the enterprise plan; loop in billing.');
     await settle();
 
+    // The negative first, so a break that sends the customer the note is reported as
+    // exactly that, rather than hidden behind the agent's assertion failing too.
+    expect(customerFeed.frames).toEqual([]);
     expect(agentFeed.frames).toContainEqual(
       expect.objectContaining({ kind: 'change', type: 'ticket0.note-posted', entityType: 'message', entityId: written.id }),
     );
-    expect(customerFeed.frames).toEqual([]);
     // And the note is exactly what polling keeps from them, which is why the push must.
     const polled = await portal.invoke<Page<{ id: string }>>('ticket0/my-messages', {
       conversationId: theirs.conversation,
