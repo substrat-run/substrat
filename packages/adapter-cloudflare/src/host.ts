@@ -4148,7 +4148,7 @@ export class CloudflareScopeHost implements ScopeHost {
           node.scopeId!,
           subject,
           `granted:${permission}`,
-          entityObjectRef(entity, 'HostAdmin.grant'), // #1856
+          entityObjectRef(entity, 'HostAdmin'), // #1856: grant and grantToOrg both land here
           expiresAt ?? null,
         );
       } else if (node.scopeId) {

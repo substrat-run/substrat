@@ -5947,7 +5947,7 @@ export class SqliteScopeHost implements ScopeHost {
           node,
           subject,
           `granted:${permission}`,
-          entityObjectRef(entity, 'HostAdmin.grant'), // #1856
+          entityObjectRef(entity, 'HostAdmin'), // #1856: grant and grantToOrg both land here
           expiresAt,
         );
       } else if (node.scopeId) {

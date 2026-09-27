@@ -16,10 +16,9 @@ import {
   delegatedReadParams,
   moduleManifest,
   PERMISSION_KEY_MAX_LENGTH,
-  errorCodeOf,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import type { ScopeHostFixture } from './scope-host-suite.js';
+import { expectRefusal, type ScopeHostFixture } from './scope-host-suite.js';
 import { permMod, permModManifest } from './modules.js';
 
 const PERM_USE = permissionKey.parse('perm:use');
@@ -307,11 +306,6 @@ export function permissionContractSuite(
       const turn = (id: string): EntityRef => ({ entityType: 'aiTurn', entityId: id });
       const box = (id: string): EntityRef => ({ entityType: 'box', entityId: id });
       const thread = (id: string): EntityRef => ({ entityType: 'chatThread', entityId: id });
-      const refusal = (p: Promise<unknown>): Promise<Error | undefined> =>
-        p.then(
-          () => undefined,
-          (e: unknown) => e as Error,
-        );
       const link = async (child: EntityRef, parent: EntityRef) =>
         (await host.getScope(alice, t1, s1)).invoke('perm/link', { child, parent });
 
@@ -376,7 +370,7 @@ export function permissionContractSuite(
         ['an empty id', { entityType: 'aiTurn', entityId: '' }],
         ['a space in the id', { entityType: 'aiTurn', entityId: 't 1' }],
         ['a newline in the id', { entityType: 'aiTurn', entityId: 't1\nprincipal:x' }],
-        ['a no-break space in the id', { entityType: 'aiTurn', entityId: 't 1' }],
+        ['a no-break space in the id', { entityType: 'aiTurn', entityId: 't\u00a01' }],
       ];
 
       it.each(MALFORMED)('ctx.link refuses %s, as the child and as the parent', async (_what, bad) => {
@@ -384,23 +378,23 @@ export function permissionContractSuite(
           [bad, box('b9')],
           [turn('t1'), bad],
         ] as const) {
-          const err = await refusal(link(child, parent));
-          expect(errorCodeOf(err)).toBe('validation_failed');
-          expect(err?.message).toMatch(/^ctx\.link: malformed entity ref/);
+          await expectRefusal(link(child, parent), 'validation_failed', /^ctx\.link: malformed entity ref/);
         }
       });
 
       it('ctx.grant refuses the same refs, though the caller holds the key everywhere', async () => {
         const stub = await host.getScope(alice, t1, s1);
         for (const [, bad] of MALFORMED) {
-          const err = await refusal(stub.invoke('perm/share', { principal: gus, permission: PERM_USE, entity: bad }));
-          expect(errorCodeOf(err)).toBe('validation_failed');
-          expect(err?.message).toMatch(/^ctx\.grant: malformed entity ref/);
+          await expectRefusal(
+            stub.invoke('perm/share', { principal: gus, permission: PERM_USE, entity: bad }),
+            'validation_failed',
+            /^ctx\.grant: malformed entity ref/,
+          );
         }
       });
 
       it('HostAdmin.grant narrowed onto an entity refuses a ref the walk could not read back', async () => {
-        const err = await refusal(
+        await expectRefusal(
           host.admin.grant(staff, {
             principalId: gus,
             permission: PERM_READ,
@@ -408,8 +402,8 @@ export function permissionContractSuite(
             entity: { entityType: 'ai:Turn', entityId: 't1' },
             grantedBy: alice,
           }),
+          'validation_failed',
         );
-        expect(errorCodeOf(err)).toBe('validation_failed');
       });
 
       it('ctx.revoke does NOT refuse on grammar: it writes nothing to read back, and must stay able to remove an old grant', async () => {

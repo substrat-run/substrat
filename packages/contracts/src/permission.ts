@@ -332,40 +332,35 @@ export type SystemSwitchRecord = z.infer<typeof systemSwitchRecord>;
 // own boundary — `org:` became one in K-22, which is when this comment stopped being
 // aspirational.
 //
-// The namespace half admits upper case (#1856) because an entity type is a module's
-// own name for a thing, and module names are camelCase by convention (`aiTurn`,
-// `widgetSession`). `ctx.link` wrote those edges while the walk refused to read them
-// back, so an entity-narrowed check that reached one threw instead of answering.
-// Upper case is the ONLY addition: every string this accepted before it still accepts,
-// and every string it refused that has no upper-case letter before the first colon it
-// still refuses. The kernel's own namespaces are exact lower-case words, so none of
-// them can be spelled by a camelCase entity type.
-const OBJECT_NAMESPACE = /^[A-Za-z0-9_-]+$/;
-const OBJECT_ID = /^[^\s]+$/;
+// The namespace half admits upper case (#1856): an entity type is a module's own name
+// for a thing, and those are camelCase (`aiTurn`, `widgetSession`). Upper case is the
+// only addition to what it accepted before. The kernel's own namespaces are exact
+// lower-case words, so no camelCase entity type can spell one.
+//
+// One spelling of each half, so the walk's pattern and the write-side check below
+// cannot drift apart.
+const NAMESPACE = '[A-Za-z0-9_-]+';
+const ID = '[^\\s]+';
+const OBJECT_NAMESPACE = new RegExp(`^${NAMESPACE}$`);
+const OBJECT_ID = new RegExp(`^${ID}$`);
 export const objectRef = z
   .string()
-  .regex(/^[A-Za-z0-9_-]+:[^\s]+$/)
+  .regex(new RegExp(`^${NAMESPACE}:${ID}$`))
   .brand<'ObjectRef'>();
 export type ObjectRef = z.infer<typeof objectRef>;
 
 /**
- * The tuple object an entity ref is stored as — `<entityType>:<entityId>` — refused with
- * `validation_failed` (`Substrat.validation_failed`) when the evaluator could not read it
- * back (#1856).
+ * The tuple object an entity ref is stored as, `<entityType>:<entityId>`, or a
+ * `validation_failed` (`Substrat.validation_failed`) refusal when the walk could not read
+ * it back (#1856). The write verbs that store an `EntityRef` in the permission graph call
+ * it, so a bad ref fails where it is written rather than out of a later `ctx.check`.
  *
- * The write verbs that turn an `EntityRef` into a tuple (`ctx.link`, `ctx.grant`,
- * `ctx.capabilities.mint`, `HostAdmin.grant` narrowed onto an entity) call this, so an
- * edge the walk cannot parse fails loudly where it is written rather than as a ZodError
- * out of some later `ctx.check`.
- *
- * Each half is judged ON ITS OWN, which is stricter than parsing the joined string: the
- * joined string splits at its FIRST colon, so `{ entityType: 'a:b', entityId: 'c' }`
- * would parse as `a:b:c` and then read back as `{ a, 'b:c' }` — a different entity. A
- * colon in the id is fine (it lands after the split); a colon in the type is refused.
+ * Each half is judged ON ITS OWN, which is stricter than parsing the joined string: that
+ * splits at its FIRST colon, so `{ entityType: 'a:b', entityId: 'c' }` would read back as
+ * `{ a, 'b:c' }`, a different entity. A colon in the id is fine; in the type it is refused.
  *
  * `EntityRef` itself is deliberately NOT tightened: it types event payloads that are
- * already stored, and a consumer's parse of one must not start failing. Only the write
- * into the permission graph is held to this grammar.
+ * already stored, and a consumer's parse of one must not start failing.
  */
 export function entityObjectRef(entity: EntityRef, verb: string): ObjectRef {
   const errors: ValidationIssue[] = [];
@@ -386,7 +381,8 @@ export function entityObjectRef(entity: EntityRef, verb: string): ObjectRef {
       { errors },
     );
   }
-  return objectRef.parse(`${entity.entityType}:${entity.entityId}`);
+  // Both halves passed, so the joined string matches `objectRef` by construction.
+  return `${entity.entityType}:${entity.entityId}` as ObjectRef;
 }
 
 // 'member' | 'parent' | 'role:staff' | 'granted:workorder:read' …

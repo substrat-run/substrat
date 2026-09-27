@@ -36,7 +36,7 @@ const CASES: [string, string, boolean, boolean][] = [
   ['colon in the id', 'item:a:b', true, true],
   ['doubled colon (id starts with a colon)', 'item::01J', true, true],
   ['non-ASCII in the id', 'item:é', true, true],
-  ['zero-width space in the id (not \\s)', 'item:a​b', true, true],
+  ['zero-width space in the id (not \\s)', 'item:a\u200bb', true, true],
   ['empty string', '', false, false],
   ['no colon', 'item', false, false],
   ['empty namespace (leading colon)', ':01J', false, false],
@@ -50,31 +50,23 @@ const CASES: [string, string, boolean, boolean][] = [
   ['newline in the id', 'item:01J\nprincipal:x', false, false],
   ['newline before the type', '\nitem:01J', false, false],
   ['carriage return in the id', 'item:01J\r', false, false],
-  ['no-break space in the id', 'item:01 J', false, false],
-  ['line separator in the id', 'item:01 J', false, false],
-  ['ideographic space in the id', 'item:01　J', false, false],
+  ['no-break space in the id', 'item:01\u00a0J', false, false],
+  ['line separator in the id', 'item:01\u2028J', false, false],
+  ['ideographic space in the id', 'item:01\u3000J', false, false],
   ['non-ASCII letter in the type', 'ítem:01J', false, false],
   ['non-ASCII upper case in the type', 'Ítem:01J', false, false],
   ['dot in the type', 'kb.article:01J', false, false],
   ['slash in the type', 'kb/article:01J', false, false],
   ['@ in the type', 'a@b:01J', false, false],
   ['% in the type', 'a%20b:01J', false, false],
-  ['zero-width space in the type', 'ai​Turn:01J', false, false],
-  ['fullwidth colon as separator', 'item：01J', false, false],
+  ['zero-width space in the type', 'ai\u200bTurn:01J', false, false],
+  ['fullwidth colon as separator', 'item\uff1a01J', false, false],
 ];
 
 describe('objectRef (#1856)', () => {
   it.each(CASES)('%s: %j — before %s, after %s', (_label, input, was, is) => {
     expect(before(input)).toBe(was);
     expect(after(input)).toBe(is);
-  });
-
-  it('the table changes a verdict only where the namespace carries an upper-case letter', () => {
-    for (const [label, input, was, is] of CASES) {
-      if (was === is) continue;
-      expect({ label, was, is }).toEqual({ label, was: false, is: true });
-      expect(input.slice(0, input.indexOf(':'))).toMatch(/[A-Z]/);
-    }
   });
 
   /**
@@ -89,7 +81,7 @@ describe('objectRef (#1856)', () => {
    *   namespace is lower-cased, so upper case in the namespace is the only thing added.
    */
   it('over every short string: accepts a superset of before, and adds only upper case in the namespace', () => {
-    const alphabet = ['a', 'Z', '0', '_', '-', ':', ' ', '\t', '\n', ' ', 'é', 'É', '.', '/'];
+    const alphabet = ['a', 'Z', '0', '_', '-', ':', ' ', '\t', '\n', '\u00a0', 'é', 'É', '.', '/'];
     let checked = 0;
     let added = 0;
     const visit = (s: string) => {
@@ -127,9 +119,16 @@ describe('entityObjectRef: the write-side check (#1856)', () => {
     return undefined;
   };
 
-  it('accepts the camelCase type ctx.link already wrote, and returns the tuple object', () => {
-    expect(entityObjectRef({ entityType: 'aiTurn', entityId: '01J' }, 'ctx.link')).toBe('aiTurn:01J');
-    expect(entityObjectRef({ entityType: 'message', entityId: '01J' }, 'ctx.link')).toBe('message:01J');
+  it.each([
+    ['aiTurn', '01J'],
+    ['message', '01J'],
+    ['9item', 'x'],
+    ['_a-b', 'x:y'],
+    ['KB', 'é'],
+  ])('accepts %s / %s and returns the tuple object, which the walk parses', (entityType, entityId) => {
+    const ref = entityObjectRef({ entityType, entityId }, 'ctx.link');
+    expect(ref).toBe(`${entityType}:${entityId}`);
+    expect(objectRef.safeParse(ref).success).toBe(true);
   });
 
   it('accepts a colon in the id, which lands after the split and reads back as the same ref', () => {
@@ -152,7 +151,7 @@ describe('entityObjectRef: the write-side check (#1856)', () => {
     ['empty id', 'item', '', 'entityId'],
     ['space in the id', 'item', '01 J', 'entityId'],
     ['newline in the id', 'item', '01J\nprincipal:x', 'entityId'],
-    ['no-break space in the id', 'item', '01 J', 'entityId'],
+    ['no-break space in the id', 'item', '01\u00a0J', 'entityId'],
     ['a type that is not a string', 42, '01J', 'entityType'],
     ['an id that is not a string', 'item', null, 'entityId'],
   ])('refuses %s with validation_failed naming the field', (_label, type, id, path) => {
@@ -166,18 +165,5 @@ describe('entityObjectRef: the write-side check (#1856)', () => {
 
   it('names both halves when both are wrong', () => {
     expect(refused('a b', '')?.extensions?.errors?.map((e) => e.path)).toEqual(['entityType', 'entityId']);
-  });
-
-  it('refuses nothing the walk could read back and splits to the same ref', () => {
-    // The joined string of every accepted ref parses with the walk's own schema, which is
-    // what `entityObjectRef` returns — so write and read cannot disagree.
-    for (const [type, id] of [
-      ['aiTurn', '01J'],
-      ['9item', 'x'],
-      ['_a-b', 'x:y'],
-      ['KB', 'é'],
-    ]) {
-      expect(objectRef.safeParse(entityObjectRef({ entityType: type!, entityId: id! }, 'ctx.grant')).success).toBe(true);
-    }
   });
 });

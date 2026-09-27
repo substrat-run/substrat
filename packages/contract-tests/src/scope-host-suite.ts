@@ -103,7 +103,7 @@ interface PlatformRequestRow {
  * `conflict`, and an adapter that answered the wrong one would send an operator to a button
  * that is not there. Pass it only for that; a code is the contract everywhere else.
  */
-const expectRefusal = async (
+export const expectRefusal = async (
   p: Promise<unknown>,
   code: ErrorCode,
   message?: RegExp,
