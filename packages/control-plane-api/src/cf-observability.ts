@@ -592,7 +592,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           queryCalculation(requestFilters(input, key), timeframe, {
             groupBy: { type: key === 'status' ? 'number' : 'string', value: key },
             chartType: 'aggregate',
-            limit: REQUEST_FACET_TOP,
+            // Two over the top ten, because the backend applies the limit BEFORE the loop
+            // below drops the rows that are not values: the group of lines with no value
+            // for this key (every line older than #1746 has none) and an empty string.
+            // Either can rank in the top ten and would otherwise take a real value's slot.
+            limit: REQUEST_FACET_TOP + 2,
             // Ordered by the calculation's alias, so the `limit` keeps the most frequent values.
             orderBy: { value: 'requests', order: 'desc' },
           }),

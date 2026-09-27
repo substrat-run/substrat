@@ -262,6 +262,23 @@ describe('cf observability request reads (#1746)', () => {
     }
   });
 
+  it('keeps ten real values when the missing-value group ranks among them', async () => {
+    // The lines with no operation — older ones, or routes that are not operations —
+    // outnumber every value, so the backend ranks them first. The stub truncates at the
+    // asked limit AFTER ranking, the way the backend does.
+    const ranked = [
+      point({}, 1000),
+      point({ operation: '' }, 900),
+      ...Array.from({ length: 10 }, (_, i) => point({ operation: `acme/op-${i}` }, 100 - i)),
+    ];
+    telemetry((body) => ({
+      calculations: [{ aggregates: ranked.slice(0, body.parameters.limit ?? ranked.length), series: [] }],
+    }));
+    const facets = await reader().tenantRequestFacets!({ tenantId: T, from, to, keys: ['operation'] });
+    expect(facets.facets.operation).toHaveLength(10);
+    expect(facets.facets.operation.map((v) => v.value)).not.toContain('');
+  });
+
   it('filters status as a number', async () => {
     const bodies = telemetry(() => ({ calculations: [] }));
     await reader().tenantRequestFacets!({ tenantId: T, from, to, where: { status: ['409'] }, keys: ['level'] });
