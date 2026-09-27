@@ -5,23 +5,24 @@ import type { ObsQuery } from './observability-query';
  * The Logs stream card's modes (#1767) and the Events mode's derivations, kept pure so
  * the card and its tests read the same rules.
  *
- * A mode is still a sub-view in the URL — `?view=logs` is Lines, `?view=events` is
- * Events — so every link written before the card existed lands on the mode it meant.
- * Requests and Patterns are in the design but not here: nothing reads a per-request
- * row or a line template yet (#1746, #1747), and a tab over no data is a dead end.
+ * A mode is still a sub-view in the URL — `?view=logs` is Lines, `?view=requests` is
+ * Requests, `?view=events` is Events — so every link written before the card existed
+ * lands on the mode it meant. Patterns is in the design but not here: nothing records a
+ * line template yet (#1747), and a tab over no data is a dead end.
  */
-export type LogMode = 'logs' | 'events';
+export type LogMode = 'logs' | 'requests' | 'events';
 
 export const LOG_MODES: { value: LogMode; label: string }[] = [
   { value: 'logs', label: 'Lines' },
+  { value: 'requests', label: 'Requests' },
   { value: 'events', label: 'Events' },
 ];
 
 /** The one line at the right of the tab strip: what this mode shows and what a click does. */
 export function modeHint(mode: LogMode): string {
-  return mode === 'events'
-    ? 'Events the app emitted, grouped · click an event type to narrow to it'
-    : 'Click a row for structured fields · any underlined value filters';
+  if (mode === 'events') return 'Events the app emitted, grouped · click an event type to narrow to it';
+  if (mode === 'requests') return 'One row per request · tick a value to filter, drag the chart to zoom';
+  return 'Click a row for structured fields · any underlined value filters';
 }
 
 /**
