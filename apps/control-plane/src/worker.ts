@@ -1318,16 +1318,15 @@ export async function reconcileOrUnsupported<T>(call: () => Promise<T>): Promise
 export function platformRequestSweepRun(report: PlatformSweepReport): SweepRunInput {
   const undrained = report.errors.filter((e) => e.kind === 'platform-request').length;
   const migrationFailed = report.migrations?.failed ?? 0;
-  const gaps = [
-    ...(undrained > 0 ? [`${undrained} scope drain(s) failed`] : []),
-    ...(migrationFailed > 0 ? [`${migrationFailed} scope(s) skipped for a failed migration`] : []),
-  ];
+  const gaps: string[] = [];
+  if (undrained > 0) gaps.push(`${undrained} scope drain(s) failed`);
+  if (migrationFailed > 0) gaps.push(`${migrationFailed} scope(s) skipped for a failed migration`);
   return {
     kind: 'platform-request',
     unit: 'fleet',
     outcome: gaps.length > 0 ? 'failed' : 'ok',
     error: gaps.length > 0 ? `${gaps.join('; ')} — their queues are not in these totals` : null,
-    platformRequests: { ...report.platformRequestTotals },
+    platformRequests: report.platformRequestTotals,
   };
 }
 

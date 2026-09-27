@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { PlatformRequestBacklog, ScopeId, SweepRunEntry, SystemSwitchRecord } from '@substrat-run/contracts';
 import { Badge, Button, Card } from '../components';
 import { ApiError, walkAll, type Api } from '../lib/api';
-import { countTrailingPromotes, PROMOTE_TRAILING_MINUTES, readPending, summarizeSystemSwitches } from '../lib/services';
+import { countTrailingPromotes, pendingCaption, PROMOTE_TRAILING_MINUTES, readPending, summarizeSystemSwitches } from '../lib/services';
 
 export interface ServicesProps {
   api: Api;
@@ -242,11 +242,7 @@ export function Services({
                     {data.capped ? ' — at least this many; the count hit its bound' : ''}.
                   </div>
                   <div style={pending.kind === 'count' && pending.stale ? { ...caption, color: 'var(--status-warning-fg)' } : caption}>
-                    {pending.kind === 'none'
-                      ? 'Pending: no sweep pass on record yet, so nothing is known about what is waiting.'
-                      : `Pending: still waiting as of the last sweep pass, ${pending.minutesAgo} min ago — not live${
-                          pending.stale ? '; the sweep has not recorded a pass since' : ''
-                        }${pending.floor ? '. At least this many: some scopes could not be drained that pass' : ''}.`}
+                    {pendingCaption(pending)}
                   </div>
                 </>
               );

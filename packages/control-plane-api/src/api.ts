@@ -1892,20 +1892,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       SWEEP_RUNS_KIND,
       ...providers.map(connectorDispatchKind),
     ];
-    const counts = await Promise.all(
-      kinds.map(async (kind) => {
-        const found = await admin.listOpsFailures(c.get('actor'), {
-          operation: `intent.${kind}`,
-          since,
-          limit: PLATFORM_REQUEST_BACKLOG_CAP + 1,
-        });
-        return {
-          count: Math.min(found.length, PLATFORM_REQUEST_BACKLOG_CAP),
-          capped: found.length > PLATFORM_REQUEST_BACKLOG_CAP,
-        };
-      }),
-    );
-    const [lastPass] = await admin.listSweepRuns(c.get('actor'), { kind: 'platform-request', unit: 'fleet', limit: 1 });
+    // The drain's newest pass is independent of the failure counts, so it rides alongside them.
+    const [counts, [lastPass]] = await Promise.all([
+      Promise.all(
+        kinds.map(async (kind) => {
+          const found = await admin.listOpsFailures(c.get('actor'), {
+            operation: `intent.${kind}`,
+            since,
+            limit: PLATFORM_REQUEST_BACKLOG_CAP + 1,
+          });
+          return {
+            count: Math.min(found.length, PLATFORM_REQUEST_BACKLOG_CAP),
+            capped: found.length > PLATFORM_REQUEST_BACKLOG_CAP,
+          };
+        }),
+      ),
+      admin.listSweepRuns(c.get('actor'), { kind: 'platform-request', unit: 'fleet', limit: 1 }),
+    ]);
     const body: PlatformRequestBacklog = {
       total: counts.reduce((sum, k) => sum + k.count, 0),
       capped: counts.some((k) => k.capped),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { verticalSlug, type SystemSwitchRecord, type VerticalChannel } from '@substrat-run/contracts';
-import { countTrailingPromotes, PENDING_STALE_MINUTES, readPending, summarizeSystemSwitches } from '../src/lib/services';
+import { countTrailingPromotes, PENDING_STALE_MINUTES, pendingCaption, readPending, summarizeSystemSwitches } from '../src/lib/services';
 
 const now = Date.parse('2026-09-22T12:00:00Z');
 const vertical = (slug: string, servingRef: string | null = 'worker') => ({ slug: verticalSlug.parse(slug), servingRef });
@@ -129,5 +129,18 @@ describe('Services pending platform requests (#1840)', () => {
       minutesAgo: PENDING_STALE_MINUTES + 1,
       stale: true,
     });
+  });
+});
+
+describe('the pending caption (#1840)', () => {
+  it('says none, never zero, with nothing on record', () => {
+    expect(pendingCaption({ kind: 'none' })).toMatch(/no sweep pass on record/);
+  });
+  it('always carries the age, and says stale and floor when they hold', () => {
+    const plain = pendingCaption({ kind: 'count', count: 2, floor: false, minutesAgo: 7, stale: false });
+    expect(plain).toMatch(/7 min ago — not live\.$/);
+    const both = pendingCaption({ kind: 'count', count: 2, floor: true, minutesAgo: 90, stale: true });
+    expect(both).toMatch(/has not recorded a pass since/);
+    expect(both).toMatch(/At least this many/);
   });
 });

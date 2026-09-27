@@ -1,4 +1,4 @@
-import type { SystemSwitchRecord, Vertical, VerticalChannel } from '@substrat-run/contracts';
+import type { PlatformRequestBacklog, SystemSwitchRecord, Vertical, VerticalChannel } from '@substrat-run/contracts';
 
 // An ordinary in-flight promote must not light up the tile.
 export const PROMOTE_TRAILING_MINUTES = 10;
@@ -54,11 +54,16 @@ export type PendingReading =
  * `undefined` as well as `null`: a control plane older than #1840 sends no `pending` at all,
  * and that too is "not on record", never zero.
  */
-export function readPending(
-  pending: { count: number; asOf: string; floor: boolean } | null | undefined,
-  now: number,
-): PendingReading {
+export function readPending(pending: PlatformRequestBacklog['pending'] | undefined, now: number): PendingReading {
   if (!pending) return { kind: 'none' };
   const minutesAgo = Math.max(0, Math.floor((now - Date.parse(pending.asOf)) / 60_000));
   return { kind: 'count', count: pending.count, floor: pending.floor, minutesAgo, stale: minutesAgo > PENDING_STALE_MINUTES };
+}
+
+/** The tile's sentence for a pending reading — always its age, and why it may be low. */
+export function pendingCaption(reading: PendingReading): string {
+  if (reading.kind === 'none') return 'Pending: no sweep pass on record yet, so nothing is known about what is waiting.';
+  const stale = reading.stale ? '; the sweep has not recorded a pass since' : '';
+  const floor = reading.floor ? '. At least this many: some scopes could not be drained that pass' : '';
+  return `Pending: still waiting as of the last sweep pass, ${reading.minutesAgo} min ago — not live${stale}${floor}.`;
 }

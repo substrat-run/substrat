@@ -21,6 +21,7 @@ import type {
   ModuleId,
   OpsFailureEntry,
   SweepRunEntry,
+  SweepRunKind,
   IssueEntry,
   IssueStatus,
   IssueStatusInput,
@@ -193,7 +194,7 @@ export interface AuditLogQuery extends PageQuery {
  *  match, the `reference = <id>` a CI log hands the operator. */
 /** The sweep-record filter (#1232) — mirrors SweepRunFilter, minus the cursor triple PageQuery carries. */
 export interface SweepRunsQuery extends PageQuery {
-  kind?: 'connector' | 'schedule' | 'freshness' | 'vertical-events' | 'platform-request';
+  kind?: SweepRunKind;
   unit?: string;
   outcome?: 'ok' | 'failed' | 'skipped';
   tenantId?: TenantId;

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import type { SweepRunEntry, Tenant, TenantId } from '@substrat-run/contracts';
+import type { SweepRunEntry, SweepRunKind, Tenant, TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, Input, Select, Tag } from '../components';
 import type { Api } from '../lib/api';
 
@@ -41,7 +41,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
   const [error, setError] = useState<string>();
 
   const [tenantFilter, setTenantFilter] = useState('all');
-  const [kindFilter, setKindFilter] = useState<'all' | 'connector' | 'schedule' | 'freshness' | 'vertical-events' | 'platform-request'>('all');
+  const [kindFilter, setKindFilter] = useState<'all' | SweepRunKind>('all');
   const [outcomeFilter, setOutcomeFilter] = useState<'all' | 'ok' | 'failed' | 'skipped'>('all');
   const [unitInput, setUnitInput] = useState('');
   // Server-side narrowing is EXACT match (the unit key) — debounced so typing
