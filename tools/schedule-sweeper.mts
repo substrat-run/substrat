@@ -36,15 +36,40 @@
  * request ever carries an asserted tenant there, so "does this wire a sweeper" is not yet
  * a meaningful question.
  *
- * ## What "wires a sweeper" means, mechanically
+ * ## What "wires a sweeper" means, mechanically — two halves, both required
  *
- * A text check on `src/worker.ts` for `defineScopeSweeperDO` — the same spirit as
- * invocation-log's order check on the same file: loud and source-level rather than an AST
- * walk, because a false positive here is cheap to see and a false negative is a silently
- * dead timer in production. It does not check that the sweeper's roster is ever
- * populated (`noteScope`/`forgetScope` from `onProvision`/delete-scope) — that half is
- * runtime wiring this gate cannot see from source, and is why the issue keeps a
- * production check open rather than asking this gate to close it.
+ * A `grep defineScopeSweeperDO` first cut passed an UNEXPORTED
+ * `const SweeperDO = defineScopeSweeperDO(...)`: workerd resolves a Durable Object class
+ * from the ENTRY MODULE'S EXPORTS, so a call sitting in a local const with no export
+ * binds nothing — the schedules stay exactly as dead as with no call at all, and the
+ * gate would have said otherwise (Copilot review on #1873, finding 4117108901).
+ *
+ * So this checks two things, both load-bearing:
+ *
+ *   1. `src/worker.ts` EXPORTS an identifier bound to `defineScopeSweeperDO(...)` — a
+ *      direct `export const X = defineScopeSweeperDO(…)`, an `export class X extends
+ *      defineScopeSweeperDO(…) {}`, or a plain `const X = defineScopeSweeperDO(…)`
+ *      re-exported by name or alias (`export { X }` / `export { X as Y }` — the alias
+ *      is what workerd actually sees, so it is the alias that has to match the binding).
+ *      Parsed with `@babel/parser` (`sourceType: 'module', plugins: ['typescript']`) —
+ *      not TypeScript's own compiler API: TypeScript 7 exposes no standalone parser
+ *      (see `tools/docs-union-check.mjs`'s header), so Babel's TypeScript parser is the
+ *      one AST tool already in this repo's lockfile for exactly this job.
+ *   2. The vertical's DEPLOY CONFIG binds a Durable Object class under one of those
+ *      exported names — read from whichever vocabulary the vertical uses: a committed
+ *      `wrangler.jsonc`'s `durable_objects.bindings[].class_name` (meridian, manyfold,
+ *      auth-server), or `package.json`'s `substrat.runtimeNeeds.stores[].class` (ticket0,
+ *      the template) — `substrat push` derives the deploy config from the latter, so
+ *      there is no wrangler.jsonc to read for a `runtimeNeeds` vertical at all. An export
+ *      with no binding in EITHER vocabulary compiles, deploys even, and never fires: the
+ *      class exists in the bundle but Cloudflare never instantiates it. Where a class is
+ *      exported but not bound is exactly as dead as where it is bound but not exported —
+ *      this refuses both directions.
+ *
+ * This still does not check that the sweeper's ROSTER is ever populated
+ * (`noteScope`/`forgetScope` from `onProvision`/delete-scope) — that half is runtime
+ * wiring no static check can see, and is why the issue keeps a production check open
+ * rather than asking this gate to close it.
  *
  * Exit codes follow permission-diff's: 0 = fine, 1 = a deployable vertical would ship
  * schedules with nothing to run them, 2 = the tool could not do its job (never a silent
@@ -53,6 +78,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { parse as parseTypeScript } from '@babel/parser';
+import type * as BabelTypes from '@babel/types';
 import { syncTemplate } from './template-sync.mjs';
 
 // Structural shapes only — deliberately not imported from the kernel or contracts, the
@@ -80,10 +107,10 @@ const TEMPLATE = 'packages/create-substrat/template';
 /**
  * The template has no committed package.json (`npm create substrat` writes one from a
  * string literal in `packages/create-substrat/index.js`), so its declared permissions
- * entry cannot be read off disk the way every other vertical's can. That literal always
- * points here — it is the one place a scaffolded project's `substrat.permissions` comes
- * from — so it is named directly, the same way invocation-log hardcodes the template's
- * inclusion instead of deriving it from a `substrat.slug` that does not exist yet either.
+ * entry — and its declared store bindings — cannot be read off disk the way every other
+ * vertical's can. Both literals live in that one file, so both are named directly here,
+ * the same way invocation-log hardcodes the template's inclusion instead of deriving it
+ * from a `substrat.slug` that does not exist yet either.
  *
  * The template is also not a workspace member (#797, deliberately: its job is to prove an
  * npm install with no workspace links), so `@substrat-run/*` does not resolve from its raw
@@ -92,6 +119,8 @@ const TEMPLATE = 'packages/create-substrat/template';
  * this file makes first. This tool makes the identical call before importing.
  */
 const TEMPLATE_PERMISSIONS_ENTRY = 'src/provision.ts';
+/** The `substrat.runtimeNeeds.stores` literal `packages/create-substrat/index.js` writes. */
+const TEMPLATE_STORE_CLASSES = ['ScopeDO', 'SweeperDO', 'ConfigDO'];
 
 /** Exit 2: the tool cannot do its job. Always names the remedy. */
 function cannot(message: string): never {
@@ -99,33 +128,187 @@ function cannot(message: string): never {
   process.exit(2);
 }
 
-/** The mount we require on the deployed worker entry — text, not an AST. */
-export const WIRES_SWEEPER = /defineScopeSweeperDO\s*[<(]/;
-
 export interface ScheduleRef {
   moduleId: string;
   operation: string;
 }
 
+const DEFINE_SWEEPER = 'defineScopeSweeperDO';
+
+/** Is this expression a call to (an import of) `defineScopeSweeperDO`, however named? */
+function isDefineSweeperCall(node: BabelTypes.Node | null | undefined, importedLocalNames: Set<string>): boolean {
+  if (!node || node.type !== 'CallExpression') return false;
+  const callee = node.callee;
+  if (callee.type === 'Identifier') return importedLocalNames.has(callee.name) || callee.name === DEFINE_SWEEPER;
+  // A namespace-imported call (`adapter.defineScopeSweeperDO(...)`) — cheap to allow, no
+  // vertical in the repo writes it this way today, but it costs nothing to recognise.
+  if (callee.type === 'MemberExpression' && !callee.computed && callee.property.type === 'Identifier') {
+    return callee.property.name === DEFINE_SWEEPER;
+  }
+  return false;
+}
+
+/**
+ * Every name `src/worker.ts` EXPORTS that is bound to a `defineScopeSweeperDO(...)` call —
+ * the identifiers workerd can actually resolve a Durable Object class from. A call sitting
+ * in a local `const` with no export binds nothing (the finding this predicate exists to
+ * catch), so an unexported sweeper contributes nothing to this list.
+ *
+ * Three forms, same three the CLI accepts: `export const X = defineScopeSweeperDO(…)`,
+ * `export class X extends defineScopeSweeperDO(…) {}`, and a plain `const X = …` (or
+ * `class X extends …`) re-exported later in the file via `export { X }` / `export { X as
+ * Y }` — the alias `Y`, not the local name `X`, is what a binding must name, because that
+ * is the identifier workerd's module system actually sees. Same-file only: a sweeper class
+ * DEFINED in another module and merely re-exported here (`export { X } from './other.js'`)
+ * is out of scope, the way `ConfigDO`'s re-export in the reference workers already is for
+ * a human reader — this tool does not follow re-export sources across files.
+ */
+export function parseExportedSweeperNames(source: string): string[] {
+  const ast = parseTypeScript(source, { sourceType: 'module', plugins: ['typescript'], errorRecovery: true });
+  const importedLocalNames = new Set<string>();
+  const sweeperLocals = new Set<string>();
+  const exportedNames = new Set<string>();
+
+  for (const stmt of ast.program.body) {
+    if (stmt.type === 'ImportDeclaration') {
+      for (const spec of stmt.specifiers) {
+        if (spec.type === 'ImportSpecifier') {
+          const imported = spec.imported.type === 'Identifier' ? spec.imported.name : spec.imported.value;
+          if (imported === DEFINE_SWEEPER) importedLocalNames.add(spec.local.name);
+        }
+      }
+    }
+  }
+
+  function scanDeclaration(decl: BabelTypes.Node | null | undefined, directlyExported: boolean): void {
+    if (!decl) return;
+    if (decl.type === 'VariableDeclaration') {
+      for (const d of decl.declarations) {
+        if (d.id.type === 'Identifier' && isDefineSweeperCall(d.init, importedLocalNames)) {
+          sweeperLocals.add(d.id.name);
+          if (directlyExported) exportedNames.add(d.id.name);
+        }
+      }
+    } else if (decl.type === 'ClassDeclaration') {
+      if (decl.id && isDefineSweeperCall(decl.superClass, importedLocalNames)) {
+        sweeperLocals.add(decl.id.name);
+        if (directlyExported) exportedNames.add(decl.id.name);
+      }
+    }
+  }
+
+  for (const stmt of ast.program.body) {
+    if (stmt.type === 'VariableDeclaration' || stmt.type === 'ClassDeclaration') {
+      scanDeclaration(stmt, false);
+    } else if (stmt.type === 'ExportNamedDeclaration') {
+      if (stmt.declaration) {
+        scanDeclaration(stmt.declaration, true);
+      } else if (!stmt.source && stmt.specifiers) {
+        for (const spec of stmt.specifiers) {
+          if (spec.type === 'ExportSpecifier' && spec.local.type === 'Identifier' && sweeperLocals.has(spec.local.name)) {
+            const exported = spec.exported.type === 'Identifier' ? spec.exported.name : spec.exported.value;
+            exportedNames.add(exported);
+          }
+        }
+      }
+    }
+  }
+  return [...exportedNames];
+}
+
+/**
+ * `class_name`s a committed `wrangler.jsonc` binds as a Durable Object — JSONC-tolerant
+ * (block/line comments blanked, same string-aware scan `tools/wrangler-config-check.mjs`
+ * uses, so a `//` inside a quoted value is never mistaken for a comment), trailing commas
+ * stripped, then `JSON.parse`d. Returns `[]` for a config with no `durable_objects` block
+ * rather than treating that as a parse failure — plenty of wrangler configs bind none.
+ */
+export function parseWranglerBindingClasses(text: string): string[] {
+  let stripped = '';
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      stripped += text.slice(i, j + 1);
+      i = j + 1;
+    } else if (ch === '/' && next === '/') {
+      const end = text.indexOf('\n', i);
+      const stop = end === -1 ? text.length : end;
+      stripped += ' '.repeat(stop - i);
+      i = stop;
+    } else if (ch === '/' && next === '*') {
+      const end = text.indexOf('*/', i + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      stripped += text.slice(i, stop).replace(/[^\n]/g, ' ');
+      i = stop;
+    } else {
+      stripped += ch;
+      i += 1;
+    }
+  }
+  // Wrangler (and JSONC generally) tolerates a trailing comma before `}`/`]`; JSON.parse
+  // does not. Repeated because stripping one can expose another one level up.
+  let noTrailingCommas = stripped;
+  let prev: string;
+  do {
+    prev = noTrailingCommas;
+    noTrailingCommas = noTrailingCommas.replace(/,(\s*[}\]])/g, '$1');
+  } while (noTrailingCommas !== prev);
+
+  let parsed: { durable_objects?: { bindings?: { class_name?: string }[] } };
+  try {
+    parsed = JSON.parse(noTrailingCommas);
+  } catch (e) {
+    throw new Error(`could not parse wrangler config as JSONC: ${(e as Error).message}`);
+  }
+  return (parsed.durable_objects?.bindings ?? []).map((b) => b.class_name).filter((c): c is string => Boolean(c));
+}
+
+export interface SweeperWiring {
+  /** Names `src/worker.ts` exports that resolve to a `defineScopeSweeperDO(...)` call. */
+  exportedNames: string[];
+  /** `class_name`/`class` values the deploy config (either vocabulary) actually binds. */
+  boundClassNames: string[];
+}
+
 /**
  * The offense in one vertical, or `null` when it is fine — the pure predicate under the
- * CLI's file discovery and dynamic import, so it can be unit-tested without a build.
- * No schedules declared means no sweeper is owed, whatever the worker source says.
+ * CLI's file discovery, parsing and dynamic import, so it can be unit-tested without a
+ * build. No schedules declared means no sweeper is owed, whatever the wiring looks like.
  */
-export function offense(schedules: ScheduleRef[], workerSource: string): string | null {
+export function offense(schedules: ScheduleRef[], wiring: SweeperWiring): string | null {
   if (schedules.length === 0) return null;
-  if (WIRES_SWEEPER.test(workerSource)) return null;
   const named = schedules.map((s) => `${s.moduleId} → ${s.operation}`).join(', ');
-  return (
-    `declares schedules with no sweeper to run them (${named}). On a pushed deploy the ` +
-    `control plane's own cron reaches no module — a CP-less vertical brings its own timer. ` +
-    `Wire \`defineScopeSweeperDO\` (see demos/ticket0/src/worker.ts).`
-  );
+  if (wiring.exportedNames.length === 0) {
+    return (
+      `declares schedules with no sweeper to run them (${named}). On a pushed deploy the ` +
+      `control plane's own cron reaches no module — a CP-less vertical brings its own timer. ` +
+      `Wire an EXPORTED \`defineScopeSweeperDO\` (see demos/ticket0/src/worker.ts) — a call ` +
+      `sitting in an unexported const binds nothing, because workerd resolves a Durable ` +
+      `Object class from the entry module's exports.`
+    );
+  }
+  const bound = wiring.exportedNames.filter((n) => wiring.boundClassNames.includes(n));
+  if (bound.length === 0) {
+    return (
+      `exports a sweeper (${wiring.exportedNames.join(', ')}) for schedules it declares (${named}), ` +
+      `but no deploy config binds it as a Durable Object class — checked wrangler.jsonc's ` +
+      `durable_objects.bindings and package.json's substrat.runtimeNeeds.stores, and neither ` +
+      `names ${wiring.exportedNames.join(' or ')}. The class exists in the bundle but ` +
+      `Cloudflare never instantiates it, so its alarm never runs.`
+    );
+  }
+  return null;
 }
 
 interface Deployable {
   dir: string;
   permissionsEntry: string;
+  /** `substrat.runtimeNeeds.stores[].class` values, or `[]` for a vertical using wrangler.jsonc. */
+  storeClasses: string[];
 }
 
 /** Every directory that declares a vertical slug and ships a worker entry, plus the template. */
@@ -138,7 +321,13 @@ export function deployables(): Deployable[] {
       if (!statSync(dir).isDirectory()) continue;
       const manifestPath = join(dir, 'package.json');
       if (!existsSync(manifestPath) || !existsSync(join(dir, 'src', 'worker.ts'))) continue;
-      let pkg: { substrat?: { slug?: string; permissions?: string } };
+      let pkg: {
+        substrat?: {
+          slug?: string;
+          permissions?: string;
+          runtimeNeeds?: { stores?: { class?: string }[] };
+        };
+      };
       try {
         pkg = JSON.parse(readFileSync(manifestPath, 'utf8'));
       } catch {
@@ -155,7 +344,10 @@ export function deployables(): Deployable[] {
             `  Remedy: add \`"substrat": { "permissions": "src/provision.ts" }\`. See demos/ticket0.`,
         );
       }
-      found.push({ dir, permissionsEntry });
+      const storeClasses = (pkg.substrat.runtimeNeeds?.stores ?? [])
+        .map((s) => s.class)
+        .filter((c): c is string => Boolean(c));
+      found.push({ dir, permissionsEntry, storeClasses });
     }
   }
   if (existsSync(join(TEMPLATE, 'src', 'worker.ts'))) {
@@ -163,7 +355,7 @@ export function deployables(): Deployable[] {
     // (syncTemplate's own failure mode) is exit 2 before any offense is collected —
     // the same "cannot do its job" distinction every other early exit in this file draws.
     const checkDir = syncTemplate();
-    found.push({ dir: checkDir, permissionsEntry: TEMPLATE_PERMISSIONS_ENTRY });
+    found.push({ dir: checkDir, permissionsEntry: TEMPLATE_PERMISSIONS_ENTRY, storeClasses: TEMPLATE_STORE_CLASSES });
   }
   return found;
 }
@@ -171,19 +363,36 @@ export function deployables(): Deployable[] {
 async function main() {
   // The predicate has to be able to tell its own cases apart, or a green run means
   // nothing. Same guard `invocation-log.mjs`'s SELF_TEST carries, for the same reason.
-  const SELF_TEST: [ScheduleRef[], string, boolean][] = [
-    [
-      [{ moduleId: 'm', operation: 'm/op' }],
-      'export const SweeperDO = defineScopeSweeperDO<Env>({\n  intervalMs: 120_000,\n});',
-      false,
-    ],
-    [[{ moduleId: 'm', operation: 'm/op' }], 'export const ScopeDO = defineScopeDO(MODULES, {});', true],
-    [[], 'export const ScopeDO = defineScopeDO(MODULES, {});', false], // no schedules, no sweeper owed
+  const SELF_TEST: [ScheduleRef[], SweeperWiring, boolean][] = [
+    [[{ moduleId: 'm', operation: 'm/op' }], { exportedNames: ['SweeperDO'], boundClassNames: ['SweeperDO'] }, false],
+    [[{ moduleId: 'm', operation: 'm/op' }], { exportedNames: [], boundClassNames: [] }, true], // no export at all
+    [[{ moduleId: 'm', operation: 'm/op' }], { exportedNames: ['SweeperDO'], boundClassNames: ['ScopeDO'] }, true], // exported, unbound
+    [[], { exportedNames: [], boundClassNames: [] }, false], // no schedules, nothing owed
   ];
-  const drift = SELF_TEST.filter(([schedules, src, shouldOffend]) => Boolean(offense(schedules, src)) !== shouldOffend);
+  const drift = SELF_TEST.filter(([schedules, wiring, shouldOffend]) => Boolean(offense(schedules, wiring)) !== shouldOffend);
   if (drift.length > 0) {
     console.error('schedule-sweeper: the predicate no longer tells its own cases apart:');
-    for (const [schedules, src] of drift) console.error(`  ${JSON.stringify({ schedules, src })} -> ${offense(schedules, src)}`);
+    for (const [schedules, wiring] of drift) console.error(`  ${JSON.stringify({ schedules, wiring })} -> ${offense(schedules, wiring)}`);
+    process.exit(2);
+  }
+  // The parser has an identical self-check obligation: it decides EXPORTED, which is the
+  // whole fix, so its own drift would silently undo the fix it exists to make.
+  const PARSE_SELF_TEST: [string, string[]][] = [
+    ["import { defineScopeSweeperDO } from 'x';\nexport const SweeperDO = defineScopeSweeperDO<Env>({});\n", ['SweeperDO']],
+    ["import { defineScopeSweeperDO } from 'x';\nconst SweeperDO = defineScopeSweeperDO({});\n", []], // unexported
+    [
+      "import { defineScopeSweeperDO } from 'x';\nconst Foo = defineScopeSweeperDO({});\nexport { Foo as SweeperDO };\n",
+      ['SweeperDO'],
+    ], // aliased re-export — the ALIAS is the name that must match a binding
+    ['export const ScopeDO = defineScopeDO(MODULES, {});\n', []], // unrelated export, not a sweeper
+  ];
+  const parseDrift = PARSE_SELF_TEST.filter(([src, want]) => {
+    const got = parseExportedSweeperNames(src).sort();
+    return JSON.stringify(got) !== JSON.stringify([...want].sort());
+  });
+  if (parseDrift.length > 0) {
+    console.error('schedule-sweeper: the export parser no longer tells its own cases apart:');
+    for (const [src] of parseDrift) console.error(`  ${JSON.stringify(src)} -> ${JSON.stringify(parseExportedSweeperNames(src))}`);
     process.exit(2);
   }
 
@@ -195,7 +404,7 @@ async function main() {
 
   const offenders: string[] = [];
   let checked = 0;
-  for (const { dir, permissionsEntry } of dirs) {
+  for (const { dir, permissionsEntry, storeClasses } of dirs) {
     checked++;
     const entryPath = join(dir, permissionsEntry);
     if (!existsSync(entryPath)) {
@@ -226,8 +435,19 @@ async function main() {
     }
 
     const workerPath = join(dir, 'src', 'worker.ts');
-    const worker = readFileSync(workerPath, 'utf8');
-    const why = offense(schedules, worker);
+    const exportedNames = parseExportedSweeperNames(readFileSync(workerPath, 'utf8'));
+
+    const wranglerPath = join(dir, 'wrangler.jsonc');
+    let boundClassNames = [...storeClasses];
+    if (existsSync(wranglerPath)) {
+      try {
+        boundClassNames = boundClassNames.concat(parseWranglerBindingClasses(readFileSync(wranglerPath, 'utf8')));
+      } catch (e) {
+        cannot(`${wranglerPath}: ${(e as Error).message}`);
+      }
+    }
+
+    const why = offense(schedules, { exportedNames, boundClassNames });
     if (why) offenders.push(`${workerPath}: ${why}`);
   }
 
