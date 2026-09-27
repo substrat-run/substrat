@@ -706,14 +706,39 @@ export type IssueEntry = z.infer<typeof issueEntry>;
  * construction, because nothing is lost and nothing throws, so this row is where a person
  * first sees it. An idle pass writes nothing, or the strip would be one green row per edge
  * per tick.
+ *
+ * `platform-request` (#1840) is the platform-intent drain's account of one WHOLE pass:
+ * `unit` is the constant `fleet`, because the pass's totals are a fleet-wide sum and
+ * that is the only granularity the number has. Unlike every other kind it is written on
+ * every pass, idle ones included — its reader wants "how many were still pending as of
+ * the last pass", and an idle pass that wrote nothing would leave an older, larger number
+ * standing as the answer.
  */
-export const sweepRunKind = z.enum(['connector', 'schedule', 'freshness', 'vertical-events']);
+export const sweepRunKind = z.enum(['connector', 'schedule', 'freshness', 'vertical-events', 'platform-request']);
 export type SweepRunKind = z.infer<typeof sweepRunKind>;
 /** `skipped` is a first-class outcome: "swept, nothing to do" and "bound but no
  *  sweeper registered" are the facts a freshness view needs most, and the ones
  *  nothing recorded before this table existed. */
 export const sweepRunOutcome = z.enum(['ok', 'failed', 'skipped']);
 export type SweepRunOutcome = z.infer<typeof sweepRunOutcome>;
+
+/**
+ * One pass of the platform-intent drain, summed over every active scope it reached
+ * (#1840) — the kernel's `PlatformRequestDrainTotals`, as a `platform-request` sweep
+ * row carries it. `pending` is what was still pending in those scopes when the pass
+ * finished with them: an intent a thrown handler left for the next pass. A scope whose
+ * drain could not run at all counts nothing here, so the row says so in its `outcome`.
+ */
+export const platformRequestDrainTotals = z.object({
+  /** Active scopes that had at least one intent drained. */
+  scopes: z.number().int().nonnegative(),
+  /** Intents seen across all scopes. */
+  drained: z.number().int().nonnegative(),
+  done: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+});
+export type PlatformRequestDrainTotalsEntry = z.infer<typeof platformRequestDrainTotals>;
 
 /**
  * One unit outcome of one platform sweep pass (#1232) — the durable answer to
@@ -761,6 +786,12 @@ export const sweepRunEntry = z.object({
   connectionId: z.string().nullable(),
   error: z.string().nullable(),
   elapsedMs: z.number().int().nonnegative().nullable(),
+  /**
+   * The drain pass's totals (#1840), on a `platform-request` row; null on every other
+   * kind. Optional as well as nullable only so a row built before the column existed
+   * still parses — both adapters always read it back, as null where it is absent.
+   */
+  platformRequests: platformRequestDrainTotals.nullable().optional(),
   at: instant,
 });
 export type SweepRunEntry = z.infer<typeof sweepRunEntry>;
@@ -841,6 +872,15 @@ export const sweepRunsPayload = z.object({
               code: z.ZodIssueCode.custom,
               path: ['kind'],
               message: 'vertical-events rows are recorded directly by the platform sweep, never through a scope-drained batch',
+            });
+          }
+          // #1840: the drain's fleet-wide row is the platform counting every scope's queue.
+          // One scope's batch claiming it would be that scope writing the fleet's number.
+          if (e.kind === 'platform-request') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['kind'],
+              message: 'platform-request rows are recorded directly by the platform sweep, never through a scope-drained batch',
             });
           }
           // …and each kind carries ONLY its own fields: sweepRunEntry documents the

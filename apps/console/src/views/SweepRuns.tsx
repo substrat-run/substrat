@@ -41,7 +41,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
   const [error, setError] = useState<string>();
 
   const [tenantFilter, setTenantFilter] = useState('all');
-  const [kindFilter, setKindFilter] = useState<'all' | 'connector' | 'schedule' | 'freshness' | 'vertical-events'>('all');
+  const [kindFilter, setKindFilter] = useState<'all' | 'connector' | 'schedule' | 'freshness' | 'vertical-events' | 'platform-request'>('all');
   const [outcomeFilter, setOutcomeFilter] = useState<'all' | 'ok' | 'failed' | 'skipped'>('all');
   const [unitInput, setUnitInput] = useState('');
   // Server-side narrowing is EXACT match (the unit key) — debounced so typing
@@ -141,6 +141,8 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
             { value: 'freshness', label: 'Freshness' },
             // #1705: one cross-vertical edge per row — delivered, or paused / unresolved with why.
             { value: 'vertical-events', label: 'Cross-app events' },
+            // #1840: one row per pass — the platform-intent drain's fleet-wide totals.
+            { value: 'platform-request', label: 'Platform requests' },
           ]}
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value as typeof kindFilter)}
@@ -247,6 +249,12 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
                           {e.version && <span>version {e.version}</span>}
                           {e.observedAt && <span>evidence {e.observedAt.slice(0, 19).replace('T', ' ')}</span>}
                           {e.elapsedMs !== null && <span>{e.elapsedMs}ms</span>}
+                          {e.platformRequests && (
+                            <span>
+                              drained {e.platformRequests.drained} · done {e.platformRequests.done} · failed{' '}
+                              {e.platformRequests.failed} · pending {e.platformRequests.pending} · {e.platformRequests.scopes} scopes
+                            </span>
+                          )}
                         </div>
                       </div>
                     </td>

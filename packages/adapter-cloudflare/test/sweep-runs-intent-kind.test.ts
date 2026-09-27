@@ -41,6 +41,7 @@ const row = (over: Partial<SweepRunRow> & Pick<SweepRunRow, 'kind' | 'unit' | 'o
   request_id: null,
   event_type: null,
   observed_at: null,
+  platform_requests: null,
   at: new Date().toISOString(),
   ...over,
 });

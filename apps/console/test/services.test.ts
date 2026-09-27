@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { verticalSlug, type SystemSwitchRecord, type VerticalChannel } from '@substrat-run/contracts';
-import { countTrailingPromotes, summarizeSystemSwitches } from '../src/lib/services';
+import { countTrailingPromotes, PENDING_STALE_MINUTES, readPending, summarizeSystemSwitches } from '../src/lib/services';
 
 const now = Date.parse('2026-09-22T12:00:00Z');
 const vertical = (slug: string, servingRef: string | null = 'worker') => ({ slug: verticalSlug.parse(slug), servingRef });
@@ -99,5 +99,35 @@ describe('summarizeSystemSwitches', () => {
       switchRow({ tenantId: 't-2', scopeId: 's-2', moduleId: '@substrat-run/engine-workorder' }),
     ];
     expect(summarizeSystemSwitches(rows)).toEqual({ scopes: 2, tenants: 2 });
+  });
+});
+
+describe('Services pending platform requests (#1840)', () => {
+  const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
+
+  it('no pass on record reads as none — never as 0', () => {
+    expect(readPending(null, now)).toEqual({ kind: 'none' });
+    // A control plane older than the field sends nothing at all: the same fact.
+    expect(readPending(undefined, now)).toEqual({ kind: 'none' });
+  });
+
+  it('a recorded 0 is a count — the positive twin of none', () => {
+    expect(readPending({ count: 0, asOf: at(10), floor: false }, now)).toEqual({
+      kind: 'count',
+      count: 0,
+      floor: false,
+      minutesAgo: 10,
+      stale: false,
+    });
+  });
+
+  it('carries the pass age, and flags it stale past three missed passes', () => {
+    expect(readPending({ count: 3, asOf: at(PENDING_STALE_MINUTES), floor: false }, now)).toMatchObject({ stale: false });
+    expect(readPending({ count: 3, asOf: at(PENDING_STALE_MINUTES + 1), floor: true }, now)).toMatchObject({
+      count: 3,
+      floor: true,
+      minutesAgo: PENDING_STALE_MINUTES + 1,
+      stale: true,
+    });
   });
 });

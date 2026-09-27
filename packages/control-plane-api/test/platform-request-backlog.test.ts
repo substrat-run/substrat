@@ -110,6 +110,62 @@ describe('GET /platform-requests/backlog (#1690)', () => {
     expect(Date.parse(body.since)).toBeLessThan(Date.now());
   });
 
+  it('pending is null — not 0 — before any sweep pass is on record (#1840)', async () => {
+    expect((await read()).pending).toBeNull();
+  });
+
+  /**
+   * #1840 — the waiting half. The route never walks the fleet: it reads the newest
+   * `platform-request` sweep row, which the platform sweep writes once per pass. Every
+   * row here is written through the host exactly as the worker writes it, so this
+   * reads what the producer produces rather than a hand-built body.
+   */
+  describe('pending, as of the last drain pass (#1840)', () => {
+    const pass = (pending: number, at: string, outcome: 'ok' | 'failed' = 'ok') =>
+      host.admin.recordSweepRun({
+        kind: 'platform-request',
+        unit: 'fleet',
+        outcome,
+        error: outcome === 'ok' ? null : '1 scope drain(s) failed — their queues are not in these totals',
+        platformRequests: { scopes: 1, drained: pending + 1, done: 1, failed: 0, pending },
+        at,
+      });
+    // Recent enough to outlive the sweep record's retention prune, ascending.
+    const t = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+
+    it("reads the NEWEST pass's pending, with that pass's time", async () => {
+      const older = t(30);
+      const newer = t(15);
+      await pass(5, older);
+      await pass(2, newer);
+      expect((await read()).pending).toEqual({ count: 2, asOf: newer, floor: false });
+    });
+
+    it('a newer row of another kind is not a pass — the count stays the drain row\'s', async () => {
+      await host.admin.recordSweepRun({ kind: 'connector', unit: 'c1', outcome: 'ok', connectionId: 'c1', at: t(1) });
+      expect((await read()).pending?.count).toBe(2);
+    });
+
+    it('a pass that drained zero reads 0 — the positive twin of null', async () => {
+      await pass(0, t(10));
+      expect((await read()).pending).toMatchObject({ count: 0, floor: false });
+    });
+
+    it('a pass that missed some scope says the count is a floor', async () => {
+      await pass(4, t(5), 'failed');
+      expect((await read()).pending).toMatchObject({ count: 4, floor: true });
+    });
+
+    it('the fleet row is not in a builder\'s slice of the sweep record — staff only', async () => {
+      const asBuilderRows = await app.request('/sweep-runs?kind=platform-request', { headers: asBuilder });
+      expect(asBuilderRows.status).toBe(200);
+      expect(((await asBuilderRows.json()) as { entries: unknown[] }).entries).toEqual([]);
+      // …while staff reading the same query sees it, so the empty page is the confinement.
+      const asStaffRows = await app.request('/sweep-runs?kind=platform-request', { headers: asStaff });
+      expect(((await asStaffRows.json()) as { entries: unknown[] }).entries.length).toBeGreaterThan(0);
+    });
+  });
+
   describe('counting terminal give-ups', () => {
     beforeAll(async () => {
       await gaveUp('provision-sibling');

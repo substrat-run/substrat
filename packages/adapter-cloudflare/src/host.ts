@@ -6862,6 +6862,7 @@ export class CloudflareScopeHost implements ScopeHost {
           request_id: entry.requestId ?? null,
           event_type: entry.eventType ?? null,
           observed_at: entry.observedAt ?? null,
+          platform_requests: entry.platformRequests == null ? null : JSON.stringify(entry.platformRequests),
           at: entry.at ?? new Date().toISOString(),
         });
       },

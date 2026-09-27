@@ -44,7 +44,9 @@ import {
   analyticsEngineConnectorCallRecorder,
   type AnalyticsEngineDatasetLike,
   type CrossVerticalOptions,
+  type PlatformSweepReport,
   type SecretBox,
+  type SweepRunInput,
 } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
@@ -1299,6 +1301,36 @@ export async function reconcileOrUnsupported<T>(call: () => Promise<T>): Promise
   }
 }
 
+/**
+ * The platform-intent drain's durable account of one pass (#1840): ONE `platform-request`
+ * sweep row, unit `fleet`, carrying the pass's totals. It is what lets
+ * `GET /platform-requests/backlog` say how many intents are still waiting without walking
+ * the fleet itself — the sweep already paid that fan-out, and this keeps its answer.
+ *
+ * Written on EVERY pass, idle ones too, because the reader wants the newest row: a pass
+ * that drained nothing and wrote nothing would leave an older, larger `pending` standing.
+ *
+ * `failed` when some active scope's queue is missing from the totals — its drain threw
+ * (a `platform-request` error), or the pass skipped it because its migration failed
+ * (`migrations.failed`, the scopes the drain steps over). The count is then a floor, and
+ * the reader says so rather than presenting it as the fleet's whole queue.
+ */
+export function platformRequestSweepRun(report: PlatformSweepReport): SweepRunInput {
+  const undrained = report.errors.filter((e) => e.kind === 'platform-request').length;
+  const migrationFailed = report.migrations?.failed ?? 0;
+  const gaps = [
+    ...(undrained > 0 ? [`${undrained} scope drain(s) failed`] : []),
+    ...(migrationFailed > 0 ? [`${migrationFailed} scope(s) skipped for a failed migration`] : []),
+  ];
+  return {
+    kind: 'platform-request',
+    unit: 'fleet',
+    outcome: gaps.length > 0 ? 'failed' : 'ok',
+    error: gaps.length > 0 ? `${gaps.join('; ')} — their queues are not in these totals` : null,
+    platformRequests: { ...report.platformRequestTotals },
+  };
+}
+
 async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<PlatformDrainReport> {
   const empty: PlatformDrainReport = { drained: 0, done: 0, failed: 0, pending: 0 };
   const host = hostFor(env);
@@ -1541,6 +1573,9 @@ export default {
     // scope with intents stuck `pending` should leave a trace on every pass, so a
     // drain that silently never converges is visible in the tail instead of invisible.
     const pr = report.platformRequestTotals;
+    // #1840: the same totals, kept. Awaited so the row lands before the handler returns, and
+    // its failure swallowed — a recorder must never sink the pass it is recording.
+    await host.admin.recordSweepRun(platformRequestSweepRun(report)).catch(() => undefined);
     const al = report.accessLog;
     // #1172: a pass that re-provisioned anything says so, and so does one that tried and
     // failed — a scope that stays behind pass after pass is the shape of a repair that
