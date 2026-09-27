@@ -177,7 +177,7 @@ import {
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import { TENANT_SERIES_SCOPE_CAP, REQUEST_FACET_KEYS, type ObservabilityReader } from './observability.js';
-import { parseTenantRequestQuery, refineTenantWindow, type QueryReader } from './tenant-request-query.js';
+import { parseTenantRequestQuery, parseTenantWindowQuery, refineTenantWindow, type QueryReader } from './tenant-request-query.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { namespacesForScript, type DoNamespaceReader } from './do-namespaces.js';
 import type {
@@ -1067,6 +1067,8 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/observability\/tenant-request-volume$/, pin: 'query' },
   { method: 'GET', re: /\/observability\/tenant-request-facets$/, pin: 'query' },
   { method: 'GET', re: /\/observability\/tenant-requests$/, pin: 'query' },
+  // #1747: the tenant's `ctx.log` lines grouped by template — same grain, same forced tenant.
+  { method: 'GET', re: /\/observability\/tenant-log-patterns$/, pin: 'query' },
   { method: 'GET', re: /\/hostnames$/, pin: 'query' },
   { method: 'POST', re: /\/hostnames$/, pin: 'body' },
   // The registry + install catalog.
@@ -1315,6 +1317,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/observability\/tenant-request-volume$/ },
     { method: 'GET', re: /\/observability\/tenant-request-facets$/ },
     { method: 'GET', re: /\/observability\/tenant-requests$/ },
+    // #1747: the same tenant's `ctx.log` lines, grouped by template.
+    { method: 'GET', re: /\/observability\/tenant-log-patterns$/ },
   ];
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
@@ -6007,6 +6011,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // 0–7, so `Z000…` is not a ULID however it looks. The contracts package exports
         // no generic ULID schema to reuse — each id brands its own private copy.
         invocationId: z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/, 'invocationId must be a ULID').optional(),
+        // #1747: one pattern's lines — a `ctx.log` template, verbatim. The line bounds a
+        // template at 500 characters, so a longer one can match nothing and is refused.
+        template: z.string().min(1).max(500).optional(),
         hours: z.coerce.number().int().min(1).max(72).default(24),
         // The chart's time cursor (#1447): a window that ENDS in the past, which `hours`
         // cannot spell — it always ends at now.
@@ -6025,6 +6032,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // Raw, not `|| undefined`: an EMPTY id is a caller bug, and folding it into
         // "absent" would answer it with the tenant's whole log.
         invocationId: c.req.query('invocationId'),
+        template: c.req.query('template') || undefined,
         hours: c.req.query('hours'),
         since: c.req.query('since') || undefined,
         until: c.req.query('until') || undefined,
@@ -6069,6 +6077,37 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const asked = (c.req.queries('facet') ?? []).filter((k) => k.length > 0);
     const keys = asked.length === 0 ? undefined : z.array(z.enum(REQUEST_FACET_KEYS)).parse([...new Set(asked)]);
     return c.json(await options.observability.tenantRequestFacets({ ...scope, ...(keys ? { keys } : {}) }));
+  });
+
+  // #1747: the tenant's `ctx.log` lines grouped by the template they were written from.
+  app.get('/observability/tenant-log-patterns', async (c) => {
+    if (!options.observability?.tenantLogPatterns) {
+      return c.json({ error: 'log patterns are not configured on this control plane' }, 501);
+    }
+    const scope = parseTenantWindowQuery(requestTenantOf(c), requestQueryOf(c));
+    const narrow = z
+      .object({
+        // Each pattern's mini histogram. Few buckets: it is drawn 180px wide.
+        buckets: z.coerce.number().int().min(10).max(120).default(30),
+        level: z.array(z.enum(['debug', 'info', 'warn', 'error'])).max(4),
+        operation: z.array(z.string().min(1).max(200)).max(20),
+      })
+      .parse({
+        buckets: c.req.query('buckets'),
+        level: [...new Set((c.req.queries('level') ?? []).filter((v) => v.length > 0))],
+        operation: [...new Set((c.req.queries('operation') ?? []).filter((v) => v.length > 0))],
+      });
+    return c.json(
+      await options.observability.tenantLogPatterns({
+        tenantId: scope.tenantId,
+        ...(scope.scopeId ? { scopeId: scope.scopeId } : {}),
+        from: scope.from,
+        to: scope.to,
+        buckets: narrow.buckets,
+        ...(narrow.level.length ? { level: narrow.level } : {}),
+        ...(narrow.operation.length ? { operation: narrow.operation } : {}),
+      }),
+    );
   });
 
   app.get('/observability/tenant-requests', async (c) => {

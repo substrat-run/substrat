@@ -75,6 +75,29 @@ export interface QueryReader {
  * session's own, or staff's explicit one) and is never read from the query here.
  */
 export function parseTenantRequestQuery(tenantId: string, q: QueryReader, now: number = Date.now()): TenantRequestScope {
+  const base = parseTenantWindowQuery(tenantId, q, now);
+  const where: RequestWhere = {};
+  for (const key of REQUEST_FACET_KEYS) {
+    // Repeated keys are the alternatives (`level=warn&level=error`); an empty one is no filter.
+    const values = q.all(key).filter((v) => v.length > 0);
+    if (values.length === 0) continue;
+    where[key] = z
+      .array(facetValue[key])
+      .max(REQUEST_WHERE_VALUES_MAX)
+      .parse([...new Set(values)]);
+  }
+  return { ...base, ...(Object.keys(where).length > 0 ? { where } : {}) };
+}
+
+/**
+ * The tenant, the narrowing within it and the resolved window — the half every tenant-grain
+ * aggregate read shares (#1746 requests, #1747 log patterns).
+ */
+export function parseTenantWindowQuery(
+  tenantId: string,
+  q: QueryReader,
+  now: number = Date.now(),
+): Omit<TenantRequestScope, 'where'> {
   const base = z
     .object({
       tenantId: tenantIdSchema,
@@ -95,16 +118,6 @@ export function parseTenantRequestQuery(tenantId: string, q: QueryReader, now: n
       since: q.one('since') || undefined,
       until: q.one('until') || undefined,
     });
-  const where: RequestWhere = {};
-  for (const key of REQUEST_FACET_KEYS) {
-    // Repeated keys are the alternatives (`level=warn&level=error`); an empty one is no filter.
-    const values = q.all(key).filter((v) => v.length > 0);
-    if (values.length === 0) continue;
-    where[key] = z
-      .array(facetValue[key])
-      .max(REQUEST_WHERE_VALUES_MAX)
-      .parse([...new Set(values)]);
-  }
   const { from, to } = resolveTenantWindow(base, now);
   return {
     tenantId: base.tenantId,
@@ -112,6 +125,5 @@ export function parseTenantRequestQuery(tenantId: string, q: QueryReader, now: n
     ...(base.vertical ? { vertical: base.vertical } : {}),
     from,
     to,
-    ...(Object.keys(where).length > 0 ? { where } : {}),
   };
 }

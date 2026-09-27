@@ -5919,6 +5919,53 @@ describe('control-plane API — observability proxy', () => {
       });
     });
 
+    // #1747: the tenant's `ctx.log` lines by template, and one template's lines.
+    describe('log patterns (#1747)', () => {
+      const seen: { patterns: unknown[]; logs: unknown[] } = { patterns: [], logs: [] };
+      const patternReader = {
+        ...reader,
+        tenantLogPatterns: async (input: unknown) => {
+          seen.patterns.push(input);
+          return { total: 0, bucketMs: 360_000, patterns: [], truncated: false, estimated: false };
+        },
+        tenantLogs: async (input: unknown) => {
+          seen.logs.push(input);
+          return [];
+        },
+      };
+
+      it('501s on a reader that cannot group, and forces the caller\'s tenant', async () => {
+        expect((await appWith(reader).request('/observability/tenant-log-patterns', { headers: asBuilder })).status).toBe(501);
+        const app = appWith(patternReader);
+        const other = tenantId.parse(ulid());
+        expect((await app.request(`/observability/tenant-log-patterns?tenantId=${other}`, { headers: asBuilder })).status).toBe(200);
+        expect(seen.patterns.at(-1)).toMatchObject({ tenantId: builderTenant, buckets: 30 });
+      });
+
+      it('takes levels (debug included) and operations as alternatives, and a bucket count', async () => {
+        const app = appWith(patternReader);
+        const res = await app.request(
+          '/observability/tenant-log-patterns?scopeId=01SCOPE&level=debug&level=error&operation=acme%2Freply&buckets=60&hours=3',
+          { headers: asBuilder },
+        );
+        expect(res.status).toBe(200);
+        const input = seen.patterns.at(-1) as { from: number; to: number };
+        expect(input).toMatchObject({ scopeId: '01SCOPE', level: ['debug', 'error'], operation: ['acme/reply'], buckets: 60 });
+        expect(input.to - input.from).toBe(3 * 3_600_000);
+        for (const bad of ['level=fatal', 'buckets=500', 'hours=100']) {
+          expect((await app.request(`/observability/tenant-log-patterns?${bad}`, { headers: asBuilder })).status, bad).toBe(400);
+        }
+      });
+
+      it('passes a template to the log read, and refuses one no line could carry', async () => {
+        const app = appWith(patternReader);
+        const template = 'reply to {ticketId} bounced';
+        expect((await app.request(`/observability/tenant-logs?template=${encodeURIComponent(template)}`, { headers: asBuilder })).status).toBe(200);
+        expect(seen.logs.at(-1)).toMatchObject({ tenantId: builderTenant, template });
+        expect((await app.request(`/observability/tenant-logs?template=${'x'.repeat(501)}`, { headers: asBuilder })).status).toBe(400);
+      });
+    });
+
     // #1746: the request record's three reads — histogram, facets, list. Same grain and the
     // same forced tenant as the logs; what is new is the shared query they parse.
     describe('the request reads (#1746)', () => {

@@ -146,12 +146,16 @@ export type {
   RequestFacets,
   RequestFacetValue,
   RequestRecord,
+  LogPattern,
+  LogPatterns,
+  LogPatternLevel,
 } from './observability.js';
 export {
   TENANT_SERIES_SCOPE_CAP,
   TENANT_METRICS_LIMIT,
   REQUEST_FACET_KEYS,
   REQUEST_FACET_TOP,
+  LOG_PATTERN_TOP,
 } from './observability.js';
 export {
   STORAGE_PAGE_DEFAULT,

@@ -293,6 +293,21 @@ still matches the traffic chart. A count the backend took from a sample comes ba
 `estimated: true`. All three are optional on the seam and 501 when absent, never an empty
 answer that reads as "no traffic".
 
+**4.7 Module log lines and patterns (#1746, #1747).** Module code logs through `ctx.log`
+(`module-log.ts`): one JSON line with `substrat: 'log'`, stamped by the host with the tenant,
+scope, operation, invocation id and subject kind, and carrying the template it was written
+from. The tenant-log read takes these lines **directly** — they carry their own tenant, so
+there is nothing to correlate — with every filter in the query, and folds them into the same
+page as the stamped lines by event id. A `template` filter answers one pattern's lines. A read
+narrowed by vertical alone leaves them out: they carry no vertical to match.
+
+`/observability/tenant-log-patterns` groups the same lines by template. It is one
+`calculations` query grouped by (template, level), which gives each template's count, level
+split and a small histogram at once, plus one ungrouped count for the total so a pattern's
+share is of every matching line. Grouping is by equality on the recorded template, not text
+mining, so a pattern is exactly the lines one call site wrote. A line written with
+`console.log` has no template and is in no pattern.
+
 ## 5. What each audience gets, in build order
 
 | # | View | Source | Cost |

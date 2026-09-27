@@ -752,10 +752,13 @@ describe('cf tenant logs — filtered to one invocation', () => {
   it('sends the id as an equality beside the tenant’s, on the field the stamped line carries', async () => {
     const { reader, sent } = readerOver(() => []);
     await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 10 });
-    expect(sent).toHaveLength(1);
-    expect(keyed(sent[0]!, 'invocationId')).toEqual({ key: 'invocationId', operation: 'eq', type: 'string', value: A1 });
-    expect(keyed(sent[0]!, 'tenantId')).toMatchObject({ value: OURS });
-    expect(keyed(sent[0]!, 'substrat')).toMatchObject({ value: 'invocation' });
+    // Two queries (#1746): the stamped lines, and the `ctx.log` lines read directly. Both
+    // carry the id beside the tenant, so neither can reach another tenant's call.
+    expect(sent.map((f) => keyed(f, 'substrat')?.['value']).sort()).toEqual(['invocation', 'log']);
+    for (const f of sent) {
+      expect(keyed(f, 'invocationId')).toEqual({ key: 'invocationId', operation: 'eq', type: 'string', value: A1 });
+      expect(keyed(f, 'tenantId')).toMatchObject({ value: OURS });
+    }
   });
 
   it('narrows to that one call, though the tenant has others', async () => {
@@ -858,5 +861,69 @@ describe('absolute tenant metrics', () => {
     expect(sent[0]).toContain("blob2 = 'scope-a'");
     expect(sent[1]).toContain("blob2 IN ('scope-a')");
     expect(sent[1]).toContain("INTERVAL '15' MINUTE");
+  });
+});
+
+/**
+ * #1746/#1747: `ctx.log` lines. The host stamped each with its tenant, scope, invocation and
+ * template, so they are read DIRECTLY — no correlation — and every filter goes into the query.
+ */
+describe('cf tenant logs — ctx.log lines', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const moduleLine = (over: Record<string, unknown> = {}, id = '01ML') => ({
+    timestamp: 2000,
+    source: {
+      substrat: 'log',
+      level: 'warn',
+      template: 'reply to {ticketId} bounced',
+      message: 'reply to t1 bounced',
+      fields: { ticketId: 't1' },
+      tenantId: '01TENANT',
+      scopeId: '01SCOPE',
+      operation: 'acme/reply',
+      invocationId: '01INV',
+      principalKind: 'principal',
+      ...over,
+    },
+    $metadata: { id, requestId: 'req-do', service: 'acme-widgets' },
+  });
+  const isModuleQuery = (f: Array<Record<string, unknown>>) => keyed(f, 'substrat')?.['value'] === 'log';
+
+  it('reads them with every filter in the query, tenant first, and shows their own message and level', async () => {
+    const { reader, sent } = readerOver((f) => (isModuleQuery(f) ? [moduleLine()] : []));
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', scopeId: '01SCOPE', level: 'warn', search: 'bounced', hours: 24, limit: 10 });
+    const q = sent.find(isModuleQuery)!;
+    expect(q[0]).toEqual({ key: 'tenantId', operation: 'eq', type: 'string', value: '01TENANT' });
+    expect(keyed(q, 'scopeId')).toMatchObject({ value: '01SCOPE' });
+    expect(keyed(q, 'level')).toMatchObject({ value: 'warn' });
+    expect(keyed(q, 'message')).toMatchObject({ operation: 'includes', value: 'bounced' });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ message: 'reply to t1 bounced', level: 'warn', invocationId: '01INV', trigger: 'acme/reply' });
+  });
+
+  it('shows a line once when it also arrives as a sibling of its invocation', async () => {
+    const { reader } = readerOver((f) => {
+      if (isModuleQuery(f)) return [moduleLine()];
+      if (keyed(f, 'substrat')) return [invocation({}, '01EV')];
+      // Phase two: the stamped line's request carries the same `ctx.log` line again.
+      return [invocation({}, '01EV'), moduleLine()];
+    });
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    expect(events.filter((e) => e.message === 'reply to t1 bounced')).toHaveLength(1);
+  });
+
+  it('answers a template read with that template’s lines only, and no correlation', async () => {
+    const { reader, sent } = readerOver((f) => (isModuleQuery(f) ? [moduleLine()] : [invocation()]));
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', template: 'reply to {ticketId} bounced', hours: 24, limit: 10 });
+    expect(sent).toHaveLength(1);
+    expect(keyed(sent[0]!, 'template')).toMatchObject({ value: 'reply to {ticketId} bounced' });
+    expect(events.map((e) => e.message)).toEqual(['reply to t1 bounced']);
+  });
+
+  it('leaves them out of a read narrowed by vertical alone, which they carry nothing to match', async () => {
+    const { reader, sent } = readerOver(() => []);
+    await reader.tenantLogs!({ tenantId: '01TENANT', vertical: 'acme/widgets', hours: 24, limit: 10 });
+    expect(sent.some(isModuleQuery)).toBe(false);
   });
 });
