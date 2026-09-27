@@ -12,6 +12,7 @@ import {
 } from './ids.js';
 import { entityRef, type EntityRef } from './events.js';
 import { substratError, type ValidationIssue } from './errors.js';
+import { OBJECT_ID, OBJECT_NAMESPACE, objectRefString } from './object-ref.js';
 
 // ============================================================================
 // Authored surface — what humans and agents write (design doc §4.1).
@@ -332,19 +333,12 @@ export type SystemSwitchRecord = z.infer<typeof systemSwitchRecord>;
 // own boundary — `org:` became one in K-22, which is when this comment stopped being
 // aspirational.
 //
-// The namespace half admits upper case (#1856): an entity type is a module's own name
-// for a thing, and those are camelCase (`aiTurn`, `widgetSession`). Upper case is the
-// only addition to what it accepted before. The walk compares tuple strings exactly, so
-// `Scope:x` is not `scope:x` there; but some spine SQL matches a namespace with LIKE,
-// which ignores ASCII case. So an entity ref is refused at write time when its type IS
-// a kernel namespace in any case (`RESERVED_NAMESPACES`, below).
-//
-// One spelling of each half, so the walk's pattern and the write-side check below
-// cannot drift apart.
-const NAMESPACE = '[A-Za-z0-9_-]+';
-const ID = '[^\\s]+';
-const OBJECT_NAMESPACE = new RegExp(`^${NAMESPACE}$`);
-const OBJECT_ID = new RegExp(`^${ID}$`);
+// The grammar lives in `object-ref.ts` (#1856), one spelling shared with the event
+// envelope's `authorization.grant`. The namespace half admits upper case, for camelCase
+// entity types. The walk compares tuple strings exactly, so `Scope:x` is not `scope:x`
+// there; but some spine SQL matches a namespace with LIKE, which ignores ASCII case. So
+// an entity ref is refused at write time when its type IS a kernel namespace in any case
+// (`RESERVED_NAMESPACES`, below).
 /**
  * The namespaces the kernel writes tuples under: the node objects, the role subjects of a
  * proof, and every `CheckSubject` kind. An entity type spelled as one of these, in any
@@ -361,10 +355,7 @@ const RESERVED_NAMESPACES: ReadonlySet<string> = new Set([
   'system',
   'vertical',
 ]);
-export const objectRef = z
-  .string()
-  .regex(new RegExp(`^${NAMESPACE}:${ID}$`))
-  .brand<'ObjectRef'>();
+export const objectRef = objectRefString.brand<'ObjectRef'>();
 export type ObjectRef = z.infer<typeof objectRef>;
 
 /**

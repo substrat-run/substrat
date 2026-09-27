@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import { entityObjectRef, objectRef } from '../src/permission.js';
 import { errorCodeOf } from '../src/errors.js';
+import { eventAuthorization } from '../src/events.js';
 
 /** `objectRef` as it stood on main before #1856 — the "before" column. */
 const BEFORE = /^[a-z0-9_-]+:[^\s]+$/;
@@ -203,4 +204,19 @@ describe('entityObjectRef: kernel namespaces are not entity types', () => {
       expect(entityObjectRef({ entityType, entityId: '01J' }, 'ctx.link')).toBe(`${entityType}:01J`);
     },
   );
+});
+
+/**
+ * The event envelope's `authorization[].grant` records a grant's tuple object, so it is
+ * held to exactly the grammar the walk parses with (#1856). Every row of the table above
+ * gives the same verdict through both.
+ */
+describe('eventAuthorization.grant takes the same grammar as objectRef (#1856)', () => {
+  it.each(CASES)('%s: %j', (_label, input, _was, is) => {
+    expect(eventAuthorization.safeParse({ permission: 'perm:read', grant: input }).success).toBe(is);
+  });
+
+  it('a grant stays optional: a role-authorized entry has none', () => {
+    expect(eventAuthorization.safeParse({ permission: 'perm:read' }).success).toBe(true);
+  });
 });

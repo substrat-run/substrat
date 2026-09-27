@@ -545,6 +545,67 @@ export function permissionContractSuite(
       expect(JSON.parse(row.authorization!)).toEqual([{ permission: PERM_READ, grant: 'box:b1' }]);
     });
 
+    /**
+     * #1856: the event envelope records the grant's object in `authorization[].grant`, and
+     * held it to its own copy of the old grammar. An emit authorized by a grant on a
+     * camelCase entity then failed its own `domainEvent` parse, so the operation failed.
+     */
+    describe('an emit authorized through a camelCase entity grant (K-34, #1856)', () => {
+      const hal: PrincipalId = principalId.parse(ulid());
+      const node = { tenantId: t1, scopeId: s1 };
+
+      beforeAll(async () => {
+        await host.admin.grant(staff, {
+          principalId: hal,
+          permission: PERM_READ,
+          node,
+          entity: { entityType: 'aiTurn', entityId: 'ax1' },
+          grantedBy: alice,
+        });
+        await host.admin.grant(staff, {
+          principalId: hal,
+          permission: PERM_READ,
+          node,
+          entity: { entityType: 'chatThread', entityId: 'ct9' },
+          grantedBy: alice,
+        });
+        await (await host.getScope(alice, t1, s1)).invoke('perm/link', {
+          child: { entityType: 'aiTurn', entityId: 'ax2' },
+          parent: { entityType: 'chatThread', entityId: 'ct9' },
+        });
+      });
+
+      it('a grant directly on the entity: the event records aiTurn:ax1', async () => {
+        const stub = await host.getScope(hal, t1, s1);
+        await stub.invoke('perm/authorized-emit', {
+          permission: PERM_READ,
+          entity: { entityType: 'aiTurn', entityId: 'ax1' },
+        });
+        const row = await lastActed();
+        expect(JSON.parse(row.authorization!)).toEqual([{ permission: PERM_READ, grant: 'aiTurn:ax1' }]);
+      });
+
+      it('a grant on a camelCase parent, reached by the walk: the event records chatThread:ct9', async () => {
+        const stub = await host.getScope(hal, t1, s1);
+        await stub.invoke('perm/authorized-emit', {
+          permission: PERM_READ,
+          entity: { entityType: 'aiTurn', entityId: 'ax2' },
+        });
+        const row = await lastActed();
+        expect(JSON.parse(row.authorization!)).toEqual([{ permission: PERM_READ, grant: 'chatThread:ct9' }]);
+      });
+
+      it('the twin: a role-authorized emit on the same entity records no grant', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('perm/authorized-emit', {
+          permission: PERM_USE,
+          entity: { entityType: 'aiTurn', entityId: 'ax1' },
+        });
+        const row = await lastActed();
+        expect(JSON.parse(row.authorization!)).toEqual([{ permission: PERM_USE }]);
+      });
+    });
+
     it('records a refused check as a denial, though the operation rolled back (K-35)', async () => {
       // bob's `tech` role at s1 holds perm:read, never perm:use.
       const stub = await host.getScope(bob, t1, s1);

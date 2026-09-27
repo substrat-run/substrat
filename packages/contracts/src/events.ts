@@ -15,6 +15,7 @@ import {
   type ModuleId,
 } from './ids.js';
 import { impersonationStamp } from './impersonation.js';
+import { objectRefString } from './object-ref.js';
 
 // Opaque ref — the kernel owns no entities (D-1); attachment contracts bind here.
 export const entityRef = z.object({
@@ -81,13 +82,13 @@ export type Actor = z.infer<typeof actor>;
  * suppress it. The full proof chain is deliberately NOT persisted — `explain` re-derives
  * chains on demand; what re-derivation cannot recover, once tuples have since changed, is
  * which permission and grant were consulted at write time. That pointer is what is kept.
+ *
+ * `grant` is held to the tuple-ref grammar the walk parses with, from the same spelling
+ * (#1856): a grant on a camelCase entity (`aiTurn:01J…`) is recorded like any other.
  */
 export const eventAuthorization = z.object({
   permission: permissionKey,
-  grant: z
-    .string()
-    .regex(/^[a-z0-9_-]+:[^\s]+$/)
-    .optional(),
+  grant: objectRefString.optional(),
 });
 export type EventAuthorization = z.infer<typeof eventAuthorization>;
 
