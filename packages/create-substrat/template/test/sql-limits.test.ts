@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vitest';
 // setupFiles is ever removed, or setup.ts stops importing the helper, this suite must fail
 // loudly rather than quietly accept a pattern deployed production would refuse.
 describe('the 50-byte LIKE/GLOB pattern limit is on by default', () => {
-  it('test/setup.ts ran — the marker it sets is present', () => {
-    expect(globalThis.__substratLikeLimitSetup).toBe(true);
+  it('test/setup.ts ran — the marker it derived from the real helper is present', () => {
+    expect(globalThis.__substratLikeLimitSetup).toBe(50);
   });
 
   it('a 51-byte pattern is refused, the same message a Durable Object gives', () => {
