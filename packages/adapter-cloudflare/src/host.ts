@@ -7440,9 +7440,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * What remains: an OFF whose join lands after the last age read and before the arm (a few calls),
    * or on the doomed instance in the moment between the arm and its restart. It is claimed, but by
    * a row younger than the settle: that module can run once, in a pass whose hold snapshot was read
-   * in the `SWITCH_HOLD_SNAPSHOT_MS` before the row, until that snapshot expires. If an ON has
-   * emptied the claim by then, the OFF has no claim to join (`switchHoldJoin`), and in that same
-   * moment it is not held at all. An OFF before the last re-read is claimed by the re-read.
+   * in the `SWITCH_HOLD_SNAPSHOT_MS` before the row, until that snapshot expires. If the claim has
+   * no rows by then, the OFF has nothing to join (`switchHoldJoin`), and in that same moment it is
+   * not held at all. That happens when an ON emptied the claim, and also when a tombstone refused
+   * every module the capture read, so the capture wrote no rows. An OFF before the last re-read is
+   * claimed by the re-read.
    */
   private async settleClaim(holds: ScopeStubRpc, scopeId: ScopeId, claimId: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS));
