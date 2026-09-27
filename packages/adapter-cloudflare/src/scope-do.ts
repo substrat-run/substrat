@@ -3210,7 +3210,71 @@ export function defineScopeDO(
            PRIMARY KEY (scope_id, module_id, claim_id)
          )`,
       );
+      // #1839: the ON tombstones, and the one counter that orders them against a rewind's reads.
+      // This object's storage is never rewound, so the counter only ever goes up.
+      this.sql.exec(
+        `CREATE TABLE IF NOT EXISTS _substrat_switch_hold_ons (
+           scope_id TEXT NOT NULL,
+           module_id TEXT NOT NULL,
+           seq INTEGER NOT NULL,
+           PRIMARY KEY (scope_id, module_id)
+         )`,
+      );
+      this.sql.exec(
+        `CREATE TABLE IF NOT EXISTS _substrat_switch_hold_seq (
+           id INTEGER PRIMARY KEY CHECK (id = 1),
+           seq INTEGER NOT NULL
+         )`,
+      );
       this.switchHoldsReady = true;
+    }
+
+    /**
+     * #1839: where the ON counter stands now. A rewind reads this BEFORE it reads the scope's status,
+     * and hands it to `switchHoldClaim`: an ON tombstoned after it may have moved after that read.
+     */
+    switchHoldToken(): number {
+      this.switchHoldsTable();
+      const row = this.sql.exec('SELECT seq FROM _substrat_switch_hold_seq WHERE id = 1').toArray()[0] as
+        | { seq: number }
+        | undefined;
+      return row?.seq ?? 0;
+    }
+
+    /**
+     * #1839: an operator's ON has moved: release the claims it read before the move (S0) on this
+     * module, and tombstone the module with the next count, in one transaction. Called only AFTER the
+     * move, so a rewind whose token predates the tombstone may have read the switch before the ON;
+     * `switchHoldClaim` then refuses that stale read's row. A row it inserted before this ran is
+     * either one of the S0 claims (released here) or a claim created after S0, which is left alone.
+     */
+    switchHoldOn(scopeId: string, moduleId: string, claimIds: string[]): void {
+      this.switchHoldsTable();
+      this.ctx.storage.transactionSync(() => {
+        const seq = (
+          this.sql
+            .exec(
+              `INSERT INTO _substrat_switch_hold_seq (id, seq) VALUES (1, 1)
+               ON CONFLICT (id) DO UPDATE SET seq = seq + 1 RETURNING seq`,
+            )
+            .toArray()[0] as { seq: number }
+        ).seq;
+        this.sql.exec(
+          `INSERT INTO _substrat_switch_hold_ons (scope_id, module_id, seq) VALUES (?, ?, ?)
+           ON CONFLICT (scope_id, module_id) DO UPDATE SET seq = excluded.seq`,
+          scopeId,
+          moduleId,
+          seq,
+        );
+        for (const claimId of claimIds) {
+          this.sql.exec(
+            'DELETE FROM _substrat_switch_holds WHERE scope_id = ? AND module_id = ? AND claim_id = ?',
+            scopeId,
+            moduleId,
+            claimId,
+          );
+        }
+      });
     }
 
     /**
@@ -3218,19 +3282,29 @@ export function defineScopeDO(
      * that owns the claim calls this, and only before it arms. Each new row is stamped with THIS
      * object's clock, and `switchHoldYoungestMs` measures against the same clock (#1839). A row
      * already there keeps its stamp.
+     *
+     * `token` is `switchHoldToken` as the rewind read it before the status read these modules came
+     * from. A module tombstoned by an ON after that is skipped: the read may predate the ON, and
+     * the ON is the operator's newer word (#1839).
      */
-    switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string): void {
+    switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string, token: number): void {
       this.switchHoldsTable();
       const at = new Date().toISOString();
       this.ctx.storage.transactionSync(() => {
         for (const moduleId of moduleIds) {
           this.sql.exec(
             `INSERT OR IGNORE INTO _substrat_switch_holds (scope_id, module_id, claim_id, state, doomed, held_at)
-             VALUES (?, ?, ?, 'pending', NULL, ?)`,
+             SELECT ?, ?, ?, 'pending', NULL, ?
+              WHERE NOT EXISTS (
+                SELECT 1 FROM _substrat_switch_hold_ons WHERE scope_id = ? AND module_id = ? AND seq > ?
+              )`,
             scopeId,
             moduleId,
             claimId,
             at,
+            scopeId,
+            moduleId,
+            token,
           );
         }
       });
@@ -3326,6 +3400,7 @@ export function defineScopeDO(
       this.ctx.storage.transactionSync(() => {
         if (moduleId === null || claimIds === null) {
           this.sql.exec('DELETE FROM _substrat_switch_holds WHERE scope_id = ?', scopeId);
+          this.sql.exec('DELETE FROM _substrat_switch_hold_ons WHERE scope_id = ?', scopeId);
           return;
         }
         for (const claimId of claimIds) {
