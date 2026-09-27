@@ -14,7 +14,7 @@
  * `liveReads?: never`, so there is no shared behaviour for a contract suite to assert.
  * The reasoning is on `ScopeHost.liveReads`, beside the `clock?: never` precedent.
  */
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   permissionKey,
@@ -419,5 +419,76 @@ describe('live reads: the door (#938)', () => {
     expect(response.status).toBe(101);
     response.webSocket?.accept();
     response.webSocket?.close(1000, 'test over');
+  });
+});
+
+describe('live reads: the ping keep-alive (#1860)', () => {
+  let host: CloudflareScopeHost;
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({
+      scope: env.LIVE_SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+  });
+
+  afterAll(async () => host.close());
+
+  /**
+   * The DO's own count of `webSocketMessage` calls, read from inside its isolate —
+   * `runInDurableObject` is what the suite elsewhere uses to reach a DO's private state
+   * (contract.test.ts), and it is the only way to tell "answered by the runtime" apart
+   * from "answered by the handler" when both send the same `'pong'` byte on the wire.
+   */
+  const handledCount = (): Promise<number> =>
+    runInDurableObject(
+      env.LIVE_SCOPE.get(env.LIVE_SCOPE.idFromName(s)),
+      (instance) => (instance as unknown as { webSocketMessagesHandled: number }).webSocketMessagesHandled,
+    );
+
+  it('answers a ping with pong via the runtime auto-response, without waking webSocketMessage', async () => {
+    const before = await handledCount();
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: s,
+      principal: insider,
+      request: upgrade(),
+    });
+    expect(response.status).toBe(101);
+    const ws = response.webSocket!;
+    ws.accept();
+    const pong = new Promise<void>((resolve) => {
+      ws.addEventListener('message', (event) => {
+        if (String((event as MessageEvent).data) === 'pong') resolve();
+      });
+    });
+    ws.send('ping');
+    await pong;
+    // The load-bearing assertion: the count did not move. A pong on the wire alone
+    // would also be true of the `webSocketMessage` fallback below — it is the SAME
+    // count staying flat that proves the runtime intercepted it first.
+    expect(await handledCount()).toBe(before);
+    ws.close(1000, 'test over');
+  });
+
+  it('still reaches webSocketMessage for a non-ping message — the twin', async () => {
+    // The positive control for the test above: if this count never moved either, the
+    // ping test would be vacuous — proving nothing reaches the handler, not that PING
+    // specifically is intercepted before it.
+    const before = await handledCount();
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: s,
+      principal: insider,
+      request: upgrade(),
+    });
+    expect(response.status).toBe(101);
+    const ws = response.webSocket!;
+    ws.accept();
+    ws.send('not-a-ping');
+    await settle();
+    expect(await handledCount()).toBe(before + 1);
+    ws.close(1000, 'test over');
   });
 });
