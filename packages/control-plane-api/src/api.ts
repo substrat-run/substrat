@@ -2335,9 +2335,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     tenantId: TenantId,
     scopeId: ScopeId,
     tables: Parameters<VerticalClient['restoreScope']>[2],
+    /** #1869: the scope `tables` were captured from — `scopeId` itself unless the copy moves. */
+    sourceScopeId: ScopeId,
   ): ReturnType<VerticalClient['restoreScope']> => {
     return retryTransient(async () =>
-      dest.restoreScope(tenantId, scopeId, tables, await switchCarryFor(admin, actor, { tenantId, scopeId })),
+      dest.restoreScope(tenantId, scopeId, tables, {
+        ...(await switchCarryFor(admin, actor, { tenantId, scopeId })),
+        sourceScopeId,
+      }),
     );
   };
 
@@ -2385,7 +2390,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const dump = await source.exportScope(scopeId);
     // #1742: the recorded OFF positions ride the restore, applied in the replay's own event.
-    const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump);
+    const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, scopeId);
     // Data landed — only now flip routing and move the version pointer.
     await admin
       .setScopeServingRef(actor, tenantId, scopeId, serving.ref, { acknowledge: opts.acknowledge })
@@ -2550,7 +2555,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw new ControlPlaneError(501, 'rebind-vertical needs dispatch resolution for both ends');
     }
     const dump = await source.exportScope(scopeId);
-    const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump); // #1742, as adopt
+    const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, scopeId); // #1742, as adopt
     // Data landed on the target script — only now flip routing and cross the pointer.
     // `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited. No
     // extra snapshot here (adopt-serving's precedent): the source script's copy is the
@@ -2643,7 +2648,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const dump = await retryTransient(() => source.exportScope(scope.id));
     // #1742: the recorded OFF positions ride the restore, as on adopt and rebind.
-    const restored = await restoreCarryingSwitches(actor, dest, scope.tenantId, scope.id, dump);
+    const restored = await restoreCarryingSwitches(actor, dest, scope.tenantId, scope.id, dump, scope.id);
     return { from, to, tables: restored.tables, switchedOff: restored.switchedOff };
   };
 
@@ -4094,7 +4099,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const vertical = await verticalForScope(c, scope);
       // #1742: the recorded OFF positions ride the restore, so the deployment switches them
       // off in the replay's own event — its own sweeper cannot land in between.
-      const restored = vertical ? await restoreCarryingSwitches(actor, vertical, tenantId, scopeId, tables) : undefined;
+      const restored = vertical
+        ? await restoreCarryingSwitches(actor, vertical, tenantId, scopeId, tables, origin.scopeId)
+        : undefined;
       // #1674: a backup from before a module was switched off brings it back on; the
       // directory's record puts it back off now, not at the next reconcile. Where the
       // deployment already did (#1742), this finds it done and audits what it reported.
@@ -6843,7 +6850,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // there; restore re-projects the vertical's roles from the dump's tuples). A one-shot
       // DO storage blip heals on the in-request retry WITHOUT burning a CI attempt (which
       // pushes a fresh version per try) — #559 (2).
-      await restoreOrRecord(() => target.restoreScope(tenantId, previewId, tables));
+      await restoreOrRecord(() => target.restoreScope(tenantId, previewId, tables, { sourceScopeId: source.id }));
     } else {
       // A clean-room preview (#509 (b)): an EMPTY scope, no source to export. No `forkedFrom`
       // — the reap sweep and `deleteSnapshot` reap it by `kind === 'preview'` instead. The

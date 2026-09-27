@@ -476,6 +476,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
+import { scopeRepointStatement } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
@@ -3163,7 +3164,7 @@ export class SqliteScopeHost implements ScopeHost {
       forkedFrom: input.forkedFrom ?? (dump.scopeId as ScopeId),
       forkedAt: input.forkedAt ?? dump.capturedAt,
     });
-    await this.loadDump(input.tenantId, input.scopeId, dump.tables);
+    await this.loadDump(input.tenantId, input.scopeId, dump);
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     this.recordAdmin(
       actor,
@@ -3178,7 +3179,8 @@ export class SqliteScopeHost implements ScopeHost {
   private async loadDump(
     tenantId: TenantId,
     scopeId: ScopeId,
-    tables: ScopeDumpTable[],
+    /** `scopeId` is the scope the dump was captured from: its node grants are re-pointed here. */
+    dump: Pick<ScopeDump, 'scopeId' | 'tables'>,
     /** Run inside the load's own transaction, after the replay (#1742) — the restore's re-assert
      *  of the switch. It throws to roll the load back. */
     afterLoad?: (rt: ScopeRuntime) => void,
@@ -3262,12 +3264,12 @@ export class SqliteScopeHost implements ScopeHost {
       // one. Nothing errors — the rows insert fine — but the proof walk never matches them,
       // so `/me` reports a role while every `ctx.check` denies. Entity-level grants
       // (`object = customer:<id>`) are untouched: those ids travel with the dump.
+      // Exactly the dump's source scope moves (#1869, `scopeRepointStatement`): this was a
+      // `LIKE 'scope:%'`, which ignores case and so also moved an entity grant typed `Scope`.
       // `UPDATE OR REPLACE` because (subject, relation, object) is the primary key — a
       // rewritten row collapses onto an existing one rather than failing the restore.
-      db.prepare(
-        `UPDATE OR REPLACE _substrat_tuples SET object = ?
-          WHERE object LIKE 'scope:%' AND object <> ?`,
-      ).run(`scope:${scopeId}`, `scope:${scopeId}`);
+      const [repoint, ...params] = scopeRepointStatement((q, o) => db.prepare(q).all(o), scopeId, dump.scopeId);
+      db.prepare(repoint).run(...params);
       // #1742: inside the replay's transaction, so a failure here rolls the whole load back and
       // the dump's grants never commit without the switch that should cover them.
       afterLoad?.(rt);
@@ -3276,7 +3278,7 @@ export class SqliteScopeHost implements ScopeHost {
     // load was a SAVEPOINT inside it, and that invoke's rollback undid the restore after
     // this verb had audited it.
     await rt.actor.turn(() => {
-      load(tables);
+      load(dump.tables);
       // The frontier came in with the dump — refresh the cached applied-migration set so
       // a later bind/migrate builds on the loaded state, not the previous one.
       rt.appliedMigrations.clear();
@@ -3303,7 +3305,7 @@ export class SqliteScopeHost implements ScopeHost {
     // provision's seat does — no schedule pass can run in between.
     // The re-assert's audit rows are written only once the load has committed.
     const rows: Record<string, unknown>[] = [];
-    await this.loadDump(tenantId, scopeId, dump.tables, (rt) =>
+    await this.loadDump(tenantId, scopeId, dump, (rt) =>
       this.reassertSwitchesInTurn(rt, actor, tenantId, scopeId, undefined, (after) => rows.push(after)),
     );
     for (const after of rows) this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, after);
@@ -5013,19 +5015,20 @@ export class SqliteScopeHost implements ScopeHost {
     // a tenant-level grant (`grantToConnection` with `scopeId: null`) is enforced here
     // exactly as a scope-level one is. Reading only the scope's own table would answer
     // "not granted" where the checker answers allow — a read-back that disagrees with
-    // enforcement is worse than none, since it is the read an operator would trust.
+    // enforcement is worse than none, since it is the read an operator would trust. GLOB,
+    // not LIKE (#1869): the checker matches `connection:<id>` exactly, LIKE ignores case.
     const rows = [
       ...(this.readDb(rt)
         .prepare(
           `SELECT subject, relation, expires_at FROM _substrat_tuples
-           WHERE subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+           WHERE subject GLOB 'connection:*' AND relation GLOB 'granted:*'
              AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
         )
         .all(now) as TupleReadRow[]),
       ...(this.directory
         .prepare(
           `SELECT subject, relation, expires_at FROM _substrat_tenant_tuples
-           WHERE tenant_id = ? AND subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+           WHERE tenant_id = ? AND subject GLOB 'connection:*' AND relation GLOB 'granted:*'
              AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
         )
         .all(tenantId, now) as TupleReadRow[]),

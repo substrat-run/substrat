@@ -22,6 +22,31 @@ export const OBJECT_NAMESPACE = new RegExp(`^${NAMESPACE}$`);
 export const OBJECT_ID = new RegExp(`^${ID}$`);
 
 /**
+ * The namespaces the kernel writes tuples under: the node objects, the role subjects of a
+ * proof, and every `CheckSubject` kind. An entity type spelled as one of these, in any
+ * case, would share its prefix with kernel rows. Lower case here; compared lower-cased.
+ *
+ * Here rather than in `permission.ts` so the manifest and model schemas can refuse the same
+ * names (#1869) without importing the permission module.
+ */
+export const RESERVED_NAMESPACES: ReadonlySet<string> = new Set([
+  'principal',
+  'org',
+  'tenant',
+  'scope',
+  'role',
+  'connection',
+  'capability',
+  'system',
+  'vertical',
+]);
+
+/** Whether `name` is a kernel namespace in any case: `scope`, `Scope` and `SCOPE` all are. */
+export function isKernelNamespace(name: string): boolean {
+  return RESERVED_NAMESPACES.has(name.toLowerCase());
+}
+
+/**
  * A tuple end, unbranded: for a schema that records one (an event's `authorization.grant`)
  * without making every producer of it hold the `ObjectRef` brand.
  */

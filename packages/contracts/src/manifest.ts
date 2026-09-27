@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { moduleId, permissionKey, verticalSlug } from './ids.js';
 import { eventType } from './events.js';
 import { peerSpec } from './peer.js';
+import { isKernelNamespace } from './object-ref.js';
 
 // The manifest is what makes a module self-describing — to agents now, to
 // strangers buying it later (§5.6 of the plan, §7.1 of the design doc).
@@ -204,6 +205,20 @@ export function resolveScopedEnvSpec(
   return { values, missingRequired };
 }
 
+/**
+ * An entity type in a manifest position the permission graph reads (#1869): the
+ * `entityRelations` edges `ctx.link` writes as `<type>:<id>`, and the targets whose reads
+ * are checked per entity. A kernel namespace in any case (`scope`, `Scope`, …) is refused
+ * here, so a module finds out when it registers rather than at its first `ctx.link`.
+ * The same names `entityObjectRef` refuses at write time (`RESERVED_NAMESPACES`).
+ */
+const declaredEntityType = z
+  .string()
+  .min(1)
+  .refine((t) => !isKernelNamespace(t), {
+    error: (iss) => `'${String(iss.input)}' is a kernel namespace (in any case), not an entity type`,
+  });
+
 export const moduleManifest = z.object({
   id: moduleId, // '@substrat-run/engine-workorder'
   version: semverVersion,
@@ -229,7 +244,7 @@ export const moduleManifest = z.object({
   // per-entity — entity-narrowed grants resolve through the same evaluator as ctx.check).
   attachmentTargets: z.array(
     z.object({
-      entityType: z.string().min(1),
+      entityType: declaredEntityType,
       readPermission: permissionKey, // attachment access checks the owning entity's key
       // The mutation gate (upload/remove). Optional + additive (D-28): absent, mutations
       // check `readPermission` — the pre-#473 declarations keep parsing and get the
@@ -256,7 +271,7 @@ export const moduleManifest = z.object({
   liveTargets: z
     .array(
       z.object({
-        entityType: z.string().min(1),
+        entityType: declaredEntityType,
         // Deliberately the same shape and the same word as `attachmentTargets` above:
         // both are "the owning entity's read key", resolved per entity. A separate
         // field rather than a reuse of that one, because the two answer different
@@ -272,8 +287,8 @@ export const moduleManifest = z.object({
   entityRelations: z
     .array(
       z.object({
-        entityType: z.string().min(1), // 'workorder'
-        parentType: z.string().min(1), // 'facility'
+        entityType: declaredEntityType, // 'workorder'
+        parentType: declaredEntityType, // 'facility'
       }),
     )
     .optional(),

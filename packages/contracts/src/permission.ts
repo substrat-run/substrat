@@ -12,7 +12,7 @@ import {
 } from './ids.js';
 import { entityRef, type EntityRef } from './events.js';
 import { substratError, type ValidationIssue } from './errors.js';
-import { OBJECT_ID, OBJECT_NAMESPACE, objectRefString } from './object-ref.js';
+import { OBJECT_ID, OBJECT_NAMESPACE, isKernelNamespace, objectRefString } from './object-ref.js';
 
 // ============================================================================
 // Authored surface — what humans and agents write (design doc §4.1).
@@ -336,25 +336,11 @@ export type SystemSwitchRecord = z.infer<typeof systemSwitchRecord>;
 // The grammar lives in `object-ref.ts` (#1856), one spelling shared with the event
 // envelope's `authorization.grant`. The namespace half admits upper case, for camelCase
 // entity types. The walk compares tuple strings exactly, so `Scope:x` is not `scope:x`
-// there; but some spine SQL matches a namespace with LIKE, which ignores ASCII case. So
-// an entity ref is refused at write time when its type IS a kernel namespace in any case
-// (`RESERVED_NAMESPACES`, below).
-/**
- * The namespaces the kernel writes tuples under: the node objects, the role subjects of a
- * proof, and every `CheckSubject` kind. An entity type spelled as one of these, in any
- * case, would share its prefix with kernel rows. Lower case here; compared lower-cased.
- */
-const RESERVED_NAMESPACES: ReadonlySet<string> = new Set([
-  'principal',
-  'org',
-  'tenant',
-  'scope',
-  'role',
-  'connection',
-  'capability',
-  'system',
-  'vertical',
-]);
+// there. An entity ref is still refused at write time when its type IS a kernel namespace
+// in any case (`RESERVED_NAMESPACES`, in `object-ref.ts`), and so is a model or manifest
+// that declares one as an entity type (#1869): SQLite's LIKE ignores ASCII case, and spine
+// SQL used it to find kernel rows until #1869 made those matches exact.
+export { RESERVED_NAMESPACES, isKernelNamespace } from './object-ref.js';
 export const objectRef = objectRefString.brand<'ObjectRef'>();
 export type ObjectRef = z.infer<typeof objectRef>;
 
@@ -381,7 +367,7 @@ export function entityObjectRef(entity: EntityRef, verb: string): ObjectRef {
       path: 'entityType',
       message: 'letters, digits, _ and - only (no colon, no whitespace), at least one',
     });
-  } else if (RESERVED_NAMESPACES.has(entity.entityType.toLowerCase())) {
+  } else if (isKernelNamespace(entity.entityType)) {
     errors.push({
       path: 'entityType',
       message: `'${entity.entityType}' is a kernel namespace (in any case), not an entity type`,

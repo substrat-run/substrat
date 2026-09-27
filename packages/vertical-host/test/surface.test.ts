@@ -657,6 +657,41 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect(host.calls).toContain('projectRolesLocal');
   });
 
+  it("restore hands the host the dump's source scope, and nothing when the platform sends none (#1869)", async () => {
+    const seen: unknown[] = [];
+    const host = fakeHost({
+      restoreScopeLocal: async (_s, _t, opts) => {
+        seen.push(opts?.sourceScopeId);
+        return { tables: 0 };
+      },
+    });
+    const SOURCE = '01JZ0000000000000000SCP002';
+    for (const extra of [{ sourceScopeId: SOURCE }, {}]) {
+      const res = await appWith(host).request(
+        '/internal/restore',
+        {
+          method: 'POST',
+          headers: authed({ 'content-type': 'application/json' }),
+          body: JSON.stringify({ scopeId: SCOPE, tables: [], ...extra }),
+        },
+        ENV,
+      );
+      expect(res.status).toBe(200);
+    }
+    expect(seen).toEqual([SOURCE, undefined]);
+    // A malformed one is refused rather than passed on.
+    const bad = await appWith(host).request(
+      '/internal/restore',
+      {
+        method: 'POST',
+        headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ scopeId: SCOPE, tables: [], sourceScopeId: 'scope:x' }),
+      },
+      ENV,
+    );
+    expect(bad.status).toBe(400);
+  });
+
   it('restore skips the role re-projection when no tenantId is given', async () => {
     const host = fakeHost();
     await appWith(host).request(

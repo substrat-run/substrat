@@ -254,6 +254,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
+import { scopeRepointStatement } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -1717,12 +1718,13 @@ export function defineScopeDO(
         // BOTH stores, because a scope check consults both: rule 2 inheritance makes a
         // tenant-level grant enforceable here exactly as a scope-level one is, and the
         // projected `_substrat_tenant_tuples` is where this DO holds them. A read-back
-        // that disagreed with enforcement would be worse than none.
+        // that disagreed with enforcement would be worse than none. GLOB, not LIKE (#1869):
+        // the checker matches `connection:<id>` exactly, and LIKE would also report `Connection:…`.
         const rows = [
           ...(this.sql
             .exec(
               `SELECT subject, relation, expires_at FROM _substrat_tuples
-               WHERE subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+               WHERE subject GLOB 'connection:*' AND relation GLOB 'granted:*'
                  AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
               now,
             )
@@ -1730,7 +1732,7 @@ export function defineScopeDO(
           ...(this.sql
             .exec(
               `SELECT subject, relation, expires_at FROM _substrat_tenant_tuples
-               WHERE subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+               WHERE subject GLOB 'connection:*' AND relation GLOB 'granted:*'
                  AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
               now,
             )
@@ -4593,6 +4595,9 @@ export function defineScopeDO(
        *  the replay re-points the grants, in the same event: a dump from before the switch was
        *  pulled carries the grants live and no marker. Needs `destScopeId`, the scope restored. */
       switchOff?: { moduleIds: readonly string[]; at: string },
+      /** The scope the dump was captured FROM (#1869), so the re-point moves exactly its node
+       *  grants. Absent from a caller that predates it: see `scopeRepointStatement`'s fallback. */
+      sourceScopeId?: ScopeId,
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
       //
@@ -4666,7 +4671,7 @@ export function defineScopeDO(
         this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
         // Re-point the restored grants at THIS scope (after the spine exists, so a dump
         // that carried no tuples table still finds one here).
-        if (destScopeId) this.rewriteScopeTuples(destScopeId);
+        if (destScopeId) this.rewriteScopeTuples(destScopeId, sourceScopeId);
         // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
         // the spine and the re-point. A switch that throws rolls the whole restore back, so
         // the dump's grants never commit live without the switch that should cover them.
@@ -4739,18 +4744,17 @@ export function defineScopeDO(
      * `_substrat_tenant_tuples`, which this does not attempt — a cross-tenant restore is a
      * governed copy, not a repair.
      *
+     * Which rows move is `scopeRepointStatement`'s (#1869): exactly `scope:<source>` when the
+     * caller names a source the dump holds, else a case-sensitive `scope:` prefix. It was a
+     * `LIKE 'scope:%'`, which ignores case and so also moved an entity grant typed `Scope`.
+     *
      * `UPDATE OR REPLACE` because (subject, relation, object) is the primary key: if the
      * dump already held a tuple for the destination scope, the rewritten row collapses
      * onto it instead of failing the whole restore.
      */
-    private rewriteScopeTuples(destScopeId: ScopeId): void {
-      this.sql.exec(
-        `UPDATE OR REPLACE _substrat_tuples
-            SET object = ?
-          WHERE object LIKE 'scope:%' AND object <> ?`,
-        `scope:${destScopeId}`,
-        `scope:${destScopeId}`,
-      );
+    private rewriteScopeTuples(destScopeId: ScopeId, sourceScopeId?: ScopeId): void {
+      const read = (sql: string, object: string) => this.sql.exec(sql, object).toArray();
+      this.sql.exec(...scopeRepointStatement(read, destScopeId, sourceScopeId));
     }
 
     /**

@@ -147,11 +147,12 @@ export interface VerticalScopeHost {
      */
     switchedOff?: ModuleId[];
   }): Promise<void | { switchedOff?: SwitchedOff[] }>;
-  /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event. */
+  /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
+   *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move. */
   restoreScopeLocal(
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
-    opts?: { switchedOff?: ModuleId[] },
+    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
@@ -385,6 +386,9 @@ const restoreBody = z.object({
   scopeId: scopeIdOf,
   /** #1742: as on the reconcile — applied to `scopeId`, in the restore's own event. */
   switchedOff: z.array(moduleIdOf).optional(),
+  /** #1869: the scope the dump was captured from. Only its node grants are re-pointed at
+   *  `scopeId`; a platform that predates the field sends none, and the host falls back. */
+  sourceScopeId: scopeIdOf.optional(),
   tables: z.array(
     z.object({
       name: z.string(),
@@ -621,7 +625,10 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/restore', async (c) => {
     const body = restoreBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
-    const result = await host.restoreScopeLocal(body.scopeId, body.tables, { switchedOff: body.switchedOff });
+    const result = await host.restoreScopeLocal(body.scopeId, body.tables, {
+      switchedOff: body.switchedOff,
+      sourceScopeId: body.sourceScopeId,
+    });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
   });
