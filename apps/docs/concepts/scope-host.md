@@ -336,6 +336,8 @@ export default defineConfig({ test: { setupFiles: ['@substrat-run/adapter-sqlite
 ```
 
 Bound the pattern yourself either way (below) — the helper catches a regression, it does not fix one.
+If your own suite typechecks against the subpath, it needs `@types/better-sqlite3` as a
+(dev)dependency too — the scaffold from `npm create substrat` already carries it.
 
 | Limit | Value | The refusal |
 |---|---|---|

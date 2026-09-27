@@ -1,7 +1,11 @@
 // Hand-written declarations for testing.cjs (#1770 review) — that file is plain, uncompiled
 // CommonJS on purpose (see its own header), so nothing emits this. `.d.cts` is the extension
 // TypeScript's Node16/NodeNext resolution matches against a `.cjs` implementation file.
-import type Database from 'better-sqlite3';
+// `better-sqlite3`'s own types are `export =`, so a `.d.cts` (CommonJS-implied) file imports it
+// the CommonJS way rather than `import type … from`. A consumer typechecking against this
+// subpath needs `@types/better-sqlite3` itself as a (dev)dependency for `Database.Database` to
+// resolve — the scaffold from `npm create substrat` already carries it.
+import Database = require('better-sqlite3');
 
 /** The limit this module enforces — a Durable Object's own `SQLITE_LIMIT_LIKE_PATTERN_LENGTH`. */
 export const LIKE_PATTERN_LIMIT: number;
