@@ -60,6 +60,7 @@ src/config-do.ts       per-instance config store (Cloudflare only)  ← harness
 test/scenario.test.ts  the scenario — including the denials
 test/entities.test.ts  the registry, held to the tables it migrates
 test/setup.ts          the 50-byte LIKE/GLOB pattern limit, on by default (vitest setupFiles)
+test/sql-limits.test.ts  proves the setupFiles wiring itself — goes red if setup.ts stops running
 ```
 
 **A new route is an `http` declaration on its operation, never a handler in an
