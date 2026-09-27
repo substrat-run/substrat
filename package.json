@@ -22,6 +22,8 @@
     "lint:module-inputs": "node tools/module-inputs.mjs",
     "lint:skills": "node tools/skill-paths.mjs",
     "lint:permissions": "tsx tools/permission-diff.mts",
+    "lint:schedule-sweeper": "tsx tools/schedule-sweeper.mts",
+    "test:schedule-sweeper": "tsx --test tools/schedule-sweeper.test.mts",
     "lint:model": "tsx tools/model-diff.mts",
     "lint:export-schemas": "tsx tools/export-schema-diff.mts",
     "test:export-schemas": "tsx --test tools/export-schema-diff.test.mts",
