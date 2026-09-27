@@ -168,6 +168,13 @@ export type { PlatformRuntime } from './platform-runtime.js';
 export { createCfDoNamespaceReader, namespacesForScript } from './do-namespaces.js';
 export type { DoNamespaceReader, DoNamespaceRecord, CfDoNamespaceOptions } from './do-namespaces.js';
 export { createCfObservabilityReader } from './cf-observability.js';
+// #1877: the aggregate seam under ObservabilityReader, and the store its cache keeps
+// closed blocks in (a Durable Object's SQL in production).
+export { cachedSource, memoryCubeStore, grainFor, blockMsFor, CLOSE_LAG_MS } from './aggregate-source.js';
+export type { AggregateSource, Cube, CubeQuery, CubeStore, StoredBlock, RequestCubeRow, PatternCubeRow } from './aggregate-source.js';
+export { aggregateReads } from './aggregate-reads.js';
+export { sqlCubeStore, CUBE_RETENTION_MS } from './cube-store-sql.js';
+export type { SqlExecLike } from './cube-store-sql.js';
 export type { CfObservabilityOptions } from './cf-observability.js';
 export type {
   ScopeBackup,

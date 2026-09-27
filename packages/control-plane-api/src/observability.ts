@@ -267,6 +267,14 @@ export interface TenantRequestScope {
   tenantId: string;
   scopeId?: string;
   vertical?: string;
+  /**
+   * #1877: the deployed scripts this tenant's app (or apps) are served from, resolved by
+   * the route from the directory. Every read is scoped to them — which is both the scan
+   * boundary (a query reads one script's lines, not the account's) and a trust boundary
+   * (a line counts only if the app's own script wrote it). An empty list answers nothing;
+   * absent, a reader falls back to the tenant filter alone.
+   */
+  services?: readonly string[];
   /** Epoch milliseconds, inclusive. */
   from: number;
   /** Epoch milliseconds, exclusive. */
@@ -495,6 +503,8 @@ export interface ObservabilityReader {
     invocationId?: string;
     /** #1747: only the `ctx.log` lines written from this template — a pattern opened. */
     template?: string;
+    /** #1877: the app's deployed scripts — see `TenantRequestScope.services`. */
+    services?: readonly string[];
     hours: number;
     since?: string;
     until?: string;
@@ -523,6 +533,8 @@ export interface ObservabilityReader {
     level?: readonly string[];
     /** Alternatives: a line matches if it was written under any of these operations. */
     operation?: readonly string[];
+    /** #1877: the app's deployed scripts — see `TenantRequestScope.services`. */
+    services?: readonly string[];
   }): Promise<LogPatterns>;
 
   /**

@@ -114,7 +114,9 @@
 			{ "name": "SCOPE", "class_name": "ScopeDO" },
 			// #1705 PR 2: one per producer scope, the global bound on the router's
 			// cross-vertical kick. It holds a start time and a dirty bit, nothing else.
-			{ "name": "CROSS_VERTICAL_KICK", "class_name": "CrossVerticalKickDO" }
+			{ "name": "CROSS_VERTICAL_KICK", "class_name": "CrossVerticalKickDO" },
+			// #1877: closed blocks of log counts, one object per deployed script.
+			{ "name": "OBS_CACHE", "class_name": "ObservabilityCacheDO" }
 		]
 	},
 	"migrations": [
@@ -126,6 +128,11 @@
 			// #1705 PR 2. Removing the class later needs a `deleted_classes` migration.
 			"tag": "v2",
 			"new_sqlite_classes": ["CrossVerticalKickDO"]
+		},
+		{
+			// #1877: the log-count cache.
+			"tag": "v3",
+			"new_sqlite_classes": ["ObservabilityCacheDO"]
 		}
 	],
 	// Pushed verticals are reached through the WfP dispatch namespace, not static
@@ -278,12 +285,14 @@
 				"bindings": [
 					{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
 					{ "name": "SCOPE", "class_name": "ScopeDO" },
-					{ "name": "CROSS_VERTICAL_KICK", "class_name": "CrossVerticalKickDO" }
+					{ "name": "CROSS_VERTICAL_KICK", "class_name": "CrossVerticalKickDO" },
+					{ "name": "OBS_CACHE", "class_name": "ObservabilityCacheDO" }
 				]
 			},
 			"migrations": [
 				{ "tag": "v1", "new_sqlite_classes": ["ControlPlaneDO", "ScopeDO"] },
-				{ "tag": "v2", "new_sqlite_classes": ["CrossVerticalKickDO"] }
+				{ "tag": "v2", "new_sqlite_classes": ["CrossVerticalKickDO"] },
+				{ "tag": "v3", "new_sqlite_classes": ["ObservabilityCacheDO"] }
 			],
 			// Own dispatch namespace — a test control plane must never push verticals
 			// into prod's `substrat-verticals`. Create: wrangler dispatch-namespace create substrat-verticals-test

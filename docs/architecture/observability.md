@@ -280,18 +280,43 @@ principal, as on `/tenant-logs`), window, and facet filters (`level`, `operation
 `principalKind`, `problemCode`, `surface`, `status`; repeated values are alternatives) — so
 the histogram, the counts and the list beside them always describe one set of requests:
 
-| Route | Answers | Backend |
-|---|---|---|
-| `/observability/tenant-request-volume` | per-level counts per bucket; `buckets` is a count (default 90) and the width is read back from the answer | one `calculations` query grouped by `level` |
-| `/observability/tenant-request-facets` | the top values of each facet, plus the total | one `calculations` query per facet with every *other* filter applied, and one ungrouped |
-| `/observability/tenant-requests` | the stamped lines as request records, newest first | one `events` query, no correlation walk |
+| Route | Answers |
+|---|---|
+| `/observability/tenant-request-volume` | per-level counts per bar; `buckets` is a count (default 90), and the width comes back in the answer |
+| `/observability/tenant-request-facets` | the top values of each facet, each counted with every *other* filter applied, plus the total |
+| `/observability/tenant-requests` | the stamped lines as request records, newest first |
 
-The telemetry API's `granularity` is a bucket **count**, so zooming is the same count over a
-narrower window and the bucket shrinks with it (2 min → 30 s → 1 s). Lines written before
-the fields existed have no `level` and are counted as `unrecorded`, so the histogram's total
-still matches the traffic chart. A count the backend took from a sample comes back with
-`estimated: true`. All three are optional on the seam and 501 when absent, never an empty
-answer that reads as "no traffic".
+Lines written before the fields existed have no `level` and are counted as `unrecorded`, so the
+histogram's total still matches the traffic chart. A count the backend took from a sample comes
+back with `estimated: true`. All three are optional on the seam and 501 when absent, never an
+empty answer that reads as "no traffic".
+
+**How the counts are taken (#1877).** The first version aggregated raw log events at view time —
+one `calculations` query per read, filtered on fields inside our own JSON. On production, at
+demo volume, the grouped time series timed out after 30 s (a gateway 504), and a Lines page took
+5 s: every read scanned the whole account's logs, on every view and every click, against one
+account-wide quota. So the reads are now computed from **cubes**, behind the unchanged routes:
+
+- **Every read is scoped to the app's own scripts** (`$metadata.service`), resolved by the route
+  from the directory: the serving script (#286), or the bound version's deployment for a
+  legacy scope. That is the scan boundary, and a trust boundary — a line counts only if the
+  app's script wrote it.
+- An `AggregateSource` (`aggregate-source.ts`) answers **counts for one script and one span,
+  grouped by tenant and every facet, cut into a grain** (10 s, 1 min, 5 min or 1 h, following the
+  window). The histogram, the facets and the patterns are computed from those cubes by
+  `aggregateReads` (`aggregate-reads.ts`) — once, whatever the source — and the caller's
+  tenant is applied before anything else, since a cube holds every tenant of its script.
+- **Logs never change**, so a closed span's counts are final. `cachedSource` splits a query into
+  blocks of twelve grains; a block that closed more than five minutes ago (Workers Logs ingests
+  late) is counted once and kept — in `ObservabilityCacheDO`, one object per script, via
+  `sqlCubeStore` — and only the open span is read live. Grouping by tenant is what makes that
+  pay: the first viewer of a block counts it for every tenant on the script.
+- A telemetry timeout reaches the caller as a 504 saying so, and a throttle as a 503.
+- The contract suite (`aggregate-reads.test.ts`) runs the same cases over the source answering
+  directly and through the cache, so a new source cannot change what the numbers mean.
+
+If cold windows prove too slow even per block, an Analytics Engine source (the router writing
+the record's fields into its per-request datapoint) is the next implementation of the same seam.
 
 **4.7 Module log lines and patterns (#1746, #1747).** Module code logs through `ctx.log`
 (`module-log.ts`): one JSON line with `substrat: 'log'`, stamped by the host with the tenant,
@@ -301,10 +326,10 @@ there is nothing to correlate — with every filter in the query, and folds them
 page as the stamped lines by event id. A `template` filter answers one pattern's lines. A read
 narrowed by vertical alone leaves them out: they carry no vertical to match.
 
-`/observability/tenant-log-patterns` groups the same lines by template. It is one
-`calculations` query grouped by (template, level), which gives each template's count, level
-split and a small histogram at once, plus one ungrouped count for the total so a pattern's
-share is of every matching line. Grouping is by equality on the recorded template, not text
+`/observability/tenant-log-patterns` groups the same lines by template, from the pattern cube
+(template, level and operation per grain, the same source and cache as the request counts),
+giving each template's count, level split and a small histogram, and its share of every
+matching line. Grouping is by equality on the recorded template, not text
 mining, so a pattern is exactly the lines written from one template — two call sites that
 share a template share a pattern. A line written with
 `console.log` has no template and is in no pattern.

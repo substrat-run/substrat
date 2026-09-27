@@ -177,7 +177,7 @@ import {
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import { TENANT_SERIES_SCOPE_CAP, REQUEST_FACET_KEYS, type ObservabilityReader } from './observability.js';
-import { parseTenantRequestQuery, parseTenantWindowQuery, refineTenantWindow, type QueryReader } from './tenant-request-query.js';
+import { parseTenantRequestQuery, parseTenantWindowQuery, refineTenantWindow, servicesOfScopes, type QueryReader } from './tenant-request-query.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { namespacesForScript, type DoNamespaceReader } from './do-namespaces.js';
 import type {
@@ -6040,7 +6040,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         until: c.req.query('until') || undefined,
         limit: c.req.query('limit'),
       });
-    return c.json(await options.observability.tenantLogs(input));
+    // #1877: scoped to the app's own scripts — the scan and trust boundary.
+    const services = await appServices(c.get('actor'), input.tenantId, input.scopeId, input.vertical);
+    return c.json(await options.observability.tenantLogs({ ...input, services }));
   });
 
   // #1746: the per-request record, read at the tenant grain. The three routes take ONE
@@ -6058,6 +6060,29 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return tenantId;
   };
 
+  /**
+   * #1877: the deployed scripts a tenant's app — or, with no scope named, its apps — are
+   * served from. Every tenant log read is scoped to these: a query then reads one script's
+   * lines instead of the whole account's, and a line counts only if the app's own script
+   * wrote it.
+   *
+   * From the directory, never from the caller, and within the tenant: a scope id that is
+   * not this tenant's resolves no script, and a read over no script answers nothing. The
+   * serving script when the scope has one (#286); otherwise the bound version's own
+   * deployment, which is where a legacy scope's traffic lands.
+   */
+  const appServices = async (
+    actor: PlatformActorId,
+    tenantId: string,
+    scopeId?: string,
+    vertical?: string,
+  ): Promise<string[]> =>
+    servicesOfScopes(
+      await admin.listScopes(actor, { tenantId: tenantIdSchema.parse(tenantId) }),
+      { scopeId, vertical },
+      (slug) => admin.listVersions(actor, slug),
+    );
+
   app.get('/observability/tenant-request-volume', async (c) => {
     if (!options.observability?.tenantRequestVolume) {
       return c.json({ error: 'request aggregation is not configured on this control plane' }, 501);
@@ -6066,7 +6091,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A bucket COUNT: zooming in keeps it and narrows the window, so the bucket shrinks.
     // 90 is the design's histogram; the bounds keep a chart drawable and a query cheap.
     const buckets = z.coerce.number().int().min(10).max(240).default(90).parse(c.req.query('buckets'));
-    return c.json(await options.observability.tenantRequestVolume({ ...scope, buckets }));
+    const services = await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
+    return c.json(await options.observability.tenantRequestVolume({ ...scope, services, buckets }));
   });
 
   app.get('/observability/tenant-request-facets', async (c) => {
@@ -6078,7 +6104,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // that shows three asks for three.
     const asked = (c.req.queries('facet') ?? []).filter((k) => k.length > 0);
     const keys = asked.length === 0 ? undefined : z.array(z.enum(REQUEST_FACET_KEYS)).parse([...new Set(asked)]);
-    return c.json(await options.observability.tenantRequestFacets({ ...scope, ...(keys ? { keys } : {}) }));
+    const services = await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
+    return c.json(await options.observability.tenantRequestFacets({ ...scope, services, ...(keys ? { keys } : {}) }));
   });
 
   // #1747: the tenant's `ctx.log` lines grouped by the template they were written from.
@@ -6108,6 +6135,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         buckets: narrow.buckets,
         ...(narrow.level.length ? { level: narrow.level } : {}),
         ...(narrow.operation.length ? { operation: narrow.operation } : {}),
+        services: await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical),
       }),
     );
   });
@@ -6118,7 +6146,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const scope = parseTenantRequestQuery(requestTenantOf(c), requestQueryOf(c));
     const limit = z.coerce.number().int().min(1).max(200).default(50).parse(c.req.query('limit'));
-    return c.json(await options.observability.tenantRequests({ ...scope, limit }));
+    const services = await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
+    return c.json(await options.observability.tenantRequests({ ...scope, services, limit }));
   });
 
   /**

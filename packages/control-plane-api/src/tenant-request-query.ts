@@ -127,3 +127,31 @@ export function parseTenantWindowQuery(
     to,
   };
 }
+
+/**
+ * #1877: which deployed scripts serve a tenant's app — or, with no scope named, its apps.
+ * The serving script when a scope has one (#286), otherwise the bound version's own
+ * deployment, where a legacy scope's traffic lands. Only the tenant's own scopes are
+ * given, so a foreign scope id matches none and resolves no script.
+ */
+export async function servicesOfScopes(
+  scopes: ReadonlyArray<{ id: string; vertical: string | null; verticalVersionId: string | null; servingRef?: string | null | undefined }>,
+  narrow: { scopeId?: string | undefined; vertical?: string | undefined },
+  versionsOf: (vertical: string) => Promise<ReadonlyArray<{ id: string; deploymentRef: string | null }>>,
+): Promise<string[]> {
+  const services = new Set<string>();
+  const cache = new Map<string, Promise<ReadonlyArray<{ id: string; deploymentRef: string | null }>>>();
+  for (const s of scopes) {
+    if (narrow.scopeId && s.id !== narrow.scopeId) continue;
+    if (narrow.vertical && s.vertical !== narrow.vertical) continue;
+    if (s.servingRef) {
+      services.add(s.servingRef);
+      continue;
+    }
+    if (!s.vertical || !s.verticalVersionId) continue;
+    if (!cache.has(s.vertical)) cache.set(s.vertical, versionsOf(s.vertical).catch(() => []));
+    const ref = (await cache.get(s.vertical)!).find((v) => v.id === s.verticalVersionId)?.deploymentRef;
+    if (ref) services.add(ref);
+  }
+  return [...services];
+}

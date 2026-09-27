@@ -17,6 +17,7 @@
  * then `wrangler deploy`; needs Workers Paid for DO SQLite + a D1 for the roster).
  */
 import { Hono } from 'hono';
+import { ObservabilityCacheDO, durableCubeStore } from './obs-cache-do.js';
 import {
   parsePlatformBaseDomains,
   platformActorId,
@@ -207,6 +208,7 @@ export async function kickCrossVertical(
   }
 }
 export { ControlPlaneDO };
+export { ObservabilityCacheDO };
 
 interface Env extends StaffAuthEnv, ConnectorEnv {
   SCOPE: DurableObjectNamespace;
@@ -336,6 +338,11 @@ interface Env extends StaffAuthEnv, ConnectorEnv {
    * and the scheduled sweep delivers them: never a pass per flagged response.
    */
   CROSS_VERTICAL_KICK?: DurableObjectNamespace;
+  /**
+   * #1877: where closed blocks of log counts are kept — one object per deployed script.
+   * Absent, every aggregate read counts its span live (and a long window can time out).
+   */
+  OBS_CACHE?: DurableObjectNamespace<ObservabilityCacheDO>;
   /**
    * Days a reap's stored copy (`scopes/…` in SCOPE_BACKUPS, #493) is kept before the
    * sweep drops it (#557). UNSET keeps every copy forever — the platform never deletes
@@ -637,6 +644,8 @@ function observabilityFor(env: Env) {
   return createCfObservabilityReader({
     accountId: env.CF_ACCOUNT_ID,
     apiToken: env.CF_API_TOKEN,
+    // #1877: each closed block of an app's script is counted once and kept here.
+    ...(env.OBS_CACHE ? { cubeStore: durableCubeStore(env.OBS_CACHE) } : {}),
     // Per-environment and never defaulted — see `ROUTER_ANALYTICS_DATASET`. Absent ⇒ the
     // reader exposes no `tenantMetrics` and the route 501s, which is the honest answer;
     // the alternative was TEST quietly charting production's traffic as a tenant's own.

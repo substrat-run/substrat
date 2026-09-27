@@ -1,4 +1,7 @@
 import { resolveObservabilityWindow, observabilityBucketMinutes } from './observability-window.js';
+import { ControlPlaneError } from './client.js';
+import { cachedSource, type AggregateSource, type CubeQuery, type CubeStore } from './aggregate-source.js';
+import { aggregateReads } from './aggregate-reads.js';
 import type {
   ObservabilityReader,
   ObservedEgressRow,
@@ -7,14 +10,10 @@ import type {
   ConnectorCallsBucket,
   TenantMetricsRow,
   RequestFacetKey,
-  RequestFacetValue,
   RequestRecord,
-  RequestVolumeBucket,
   TenantRequestScope,
-  LogPattern,
-  LogPatternLevel,
 } from './observability.js';
-import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, REQUEST_FACET_TOP, LOG_PATTERN_TOP } from './observability.js';
+import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS } from './observability.js';
 
 /** A telemetry filter: a leaf comparison, or a group of them (the API nests up to 4 deep). */
 type TelemetryFilter =
@@ -34,6 +33,7 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
   const filters: TelemetryFilter[] = [
     { key: 'tenantId', operation: 'eq', type: 'string', value: scope.tenantId },
     { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
+    ...serviceFilter(scope.services),
   ];
   if (scope.scopeId) filters.push({ key: 'scopeId', operation: 'eq', type: 'string', value: scope.scopeId });
   if (scope.vertical) filters.push({ key: 'vertical', operation: 'eq', type: 'string', value: scope.vertical });
@@ -49,6 +49,47 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
     filters.push(leaves.length === 1 ? leaves[0]! : { kind: 'group', filterCombination: 'or', filters: leaves });
   }
   return filters;
+}
+
+/**
+ * #1877: the app's own scripts, as a filter — `$metadata.service`, the field Workers Logs
+ * indexes every event by. It is the scan boundary: without it a tenant read searched every
+ * script in the account for a field inside our own JSON. And it is a trust boundary: a
+ * line counts only if the app's script wrote it, not any script that claims the tenant.
+ *
+ * Absent means the caller did not resolve the scripts, and the read falls back to the
+ * tenant filter alone. An EMPTY list is different — it names no script, so it matches no
+ * line — and is spelled as a filter that cannot match rather than as no filter at all.
+ */
+function serviceFilter(services: readonly string[] | undefined): TelemetryFilter[] {
+  if (services === undefined) return [];
+  if (services.length === 0) return [{ key: '$metadata.service', operation: 'eq', type: 'string', value: '\u0000none' }];
+  const leaves: TelemetryFilter[] = services.map((s) => ({ key: '$metadata.service', operation: 'eq', type: 'string', value: s }));
+  return leaves.length === 1 ? leaves : [{ kind: 'group', filterCombination: 'or', filters: leaves }];
+}
+
+/**
+ * A telemetry answer that is not a success, as the caller should hear it (#1877).
+ *
+ * Read as TEXT first: a gateway timeout arrives as `error code: 504`, not JSON, and
+ * parsing it first turned a timeout into a JSON syntax error behind a blanket 500. A
+ * timeout is a 504 and a throttle a 503, each saying what happened, so the dashboard
+ * can tell "the log store is slow" from "this is broken".
+ */
+function telemetryFailure(status: number, body: string): ControlPlaneError {
+  let detail = body.trim().slice(0, 200);
+  try {
+    const json = JSON.parse(body) as { errors?: Array<{ message?: string }> };
+    const messages = json.errors?.map((e) => e.message).filter(Boolean).join('; ');
+    if (messages) detail = messages;
+  } catch {
+    // Not JSON — the gateway's own page. The status says enough.
+  }
+  if (status === 504 || status === 524 || status === 408) {
+    return new ControlPlaneError(504, 'the log store timed out answering this query — try a shorter window');
+  }
+  if (status === 429) return new ControlPlaneError(503, 'the log store is busy — try again shortly');
+  return new ControlPlaneError(502, `the log store refused the query (HTTP ${status})${detail ? `: ${detail}` : ''}`);
 }
 
 /** One data point of a `calculations` answer — an aggregate row or a series point. */
@@ -79,29 +120,6 @@ function countOf(p: CalculationPoint): number {
 /** True when a point was counted from a sample — the number is then an estimate. */
 function sampled(p: CalculationPoint): boolean {
   return typeof p.sampleInterval === 'number' && p.sampleInterval > 1;
-}
-
-/** The value of one group key on a point, or `undefined` when the point has none. */
-function groupValue(p: CalculationPoint, key: string): unknown {
-  return p.groups?.find((g) => g.key === key)?.value;
-}
-
-/** A stamped line's `level`, or `unrecorded` for a line written before it existed. */
-function levelOf(v: unknown): 'info' | 'warn' | 'error' | 'unrecorded' {
-  return v === 'info' || v === 'warn' || v === 'error' ? v : 'unrecorded';
-}
-
-/**
- * The bucket width a series was cut at, from its own timestamps: the smallest gap between
- * two consecutive buckets. The request asks for a bucket COUNT, and the backend may round
- * the width it derives from it, so the answer is read back rather than assumed. A series
- * with fewer than two buckets says nothing about its width; the nominal one stands in.
- */
-function bucketWidth(times: number[], nominal: number): number {
-  const sorted = [...new Set(times)].sort((a, b) => a - b);
-  let width = Infinity;
-  for (let i = 1; i < sorted.length; i++) width = Math.min(width, sorted[i]! - sorted[i - 1]!);
-  return Number.isFinite(width) && width > 0 ? width : nominal;
 }
 
 /** The stamped line of a raw event, as the Requests view lists it. */
@@ -144,6 +162,16 @@ function requestRecordOf(e: Record<string, unknown>): RequestRecord {
  */
 const MAX_CORRELATED_INVOCATIONS = 40;
 const MAX_LINES_PER_INVOCATION = 20;
+
+/**
+ * #1877: the groups one telemetry answer carries, and how many pages of them a span may
+ * take. Past the cap a span is refused rather than cached in part.
+ */
+const GROUP_PAGE = 2000;
+const GROUP_PAGE_CAP = 20;
+
+/** A value as text, or null. */
+const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null);
 
 /**
  * A 501 is an honest refusal, not a failure: the route exists to say "this version does
@@ -391,6 +419,12 @@ function projectEvent(e: Record<string, unknown>): RecentLogEvent {
 export interface CfObservabilityOptions {
   accountId: string;
   /**
+   * #1877: where closed blocks of counts are kept. With one, every closed block of an
+   * app's script is counted once and read from here after; without one (a test, a dev
+   * control plane), every read counts its span live.
+   */
+  cubeStore?: CubeStore;
+  /**
    * A Cloudflare API token with Account Analytics read (the GraphQL invocations
    * dataset) and Workers Observability read (the telemetry query API). Deliberately
    * the same env slot as the WfP token in practice — one platform credential whose
@@ -497,6 +531,115 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       },
       body: JSON.stringify(body),
     });
+
+  /**
+   * #1877: the telemetry half of the aggregate seam — ONE script's lines over one span,
+   * grouped by tenant and every facet, cut into the grain. Every tenant the script served
+   * is in the answer, which is what lets the cache fill one block for all of them.
+   */
+  const telemetry: AggregateSource = {
+    async requests(q) {
+      const { rows, estimated } = await countGrouped(q, 'invocation', [
+        { type: 'string', value: 'tenantId' },
+        { type: 'string', value: 'scopeId' },
+        { type: 'string', value: 'level' },
+        { type: 'string', value: 'operation' },
+        { type: 'string', value: 'problemCode' },
+        { type: 'string', value: 'principalKind' },
+        { type: 'string', value: 'surface' },
+        { type: 'number', value: 'status' },
+      ]);
+      return {
+        estimated,
+        rows: rows.flatMap(({ bucket, groups, count }) => {
+          const tenantId = str(groups.get('tenantId'));
+          if (tenantId === null) return [];
+          const status = groups.get('status');
+          return [{
+            bucket,
+            tenantId,
+            scopeId: str(groups.get('scopeId')),
+            level: str(groups.get('level')),
+            operation: str(groups.get('operation')),
+            problemCode: str(groups.get('problemCode')),
+            principalKind: str(groups.get('principalKind')),
+            surface: str(groups.get('surface')),
+            status: typeof status === 'number' ? status : typeof status === 'string' && status !== '' ? Number(status) : null,
+            count,
+          }];
+        }),
+      };
+    },
+    async patterns(q) {
+      const { rows, estimated } = await countGrouped(q, 'log', [
+        { type: 'string', value: 'tenantId' },
+        { type: 'string', value: 'scopeId' },
+        { type: 'string', value: 'template' },
+        { type: 'string', value: 'level' },
+        { type: 'string', value: 'operation' },
+      ]);
+      return {
+        estimated,
+        rows: rows.flatMap(({ bucket, groups, count }) => {
+          const tenantId = str(groups.get('tenantId'));
+          const template = str(groups.get('template'));
+          if (tenantId === null || template === null || template === '') return [];
+          return [{ bucket, tenantId, scopeId: str(groups.get('scopeId')), template, level: str(groups.get('level')), operation: str(groups.get('operation')), count }];
+        }),
+      };
+    },
+  };
+  const source: AggregateSource = opts.cubeStore ? cachedSource(telemetry, opts.cubeStore) : telemetry;
+
+  /**
+   * One script's lines of one kind over a span, counted per grain bucket and grouped by
+   * `groupBys`. Pages through the groups when one answer cannot hold them all; a span
+   * whose groups outrun the page cap is refused rather than answered in part, since a
+   * partial cube would be cached as if it were whole.
+   */
+  async function countGrouped(
+    q: CubeQuery,
+    kind: 'invocation' | 'log',
+    groupBys: Array<{ type: string; value: string }>,
+  ): Promise<{ rows: Array<{ bucket: number; groups: Map<string, unknown>; count: number }>; estimated: boolean }> {
+    const filters: TelemetryFilter[] = [
+      { key: '$metadata.service', operation: 'eq', type: 'string', value: q.service },
+      { key: 'substrat', operation: 'eq', type: 'string', value: kind },
+    ];
+    const buckets = Math.max(1, Math.round((q.to - q.from) / q.grainMs));
+    const rows: Array<{ bucket: number; groups: Map<string, unknown>; count: number }> = [];
+    let estimated = false;
+    for (let page = 0; ; page++) {
+      if (page >= GROUP_PAGE_CAP) {
+        throw new ControlPlaneError(503, 'too many distinct series to count in one span — try a shorter window');
+      }
+      const calc = await queryCalculation(filters, { from: q.from, to: q.to }, {
+        groupBys,
+        granularity: buckets,
+        chartType: 'timeseries',
+        limit: GROUP_PAGE,
+        ...(page > 0 ? { offsetBy: page * GROUP_PAGE } : {}),
+      });
+      const groupsSeen = new Set<string>();
+      for (const point of calc.series ?? []) {
+        const at = point.time ? Date.parse(point.time) : NaN;
+        if (!Number.isFinite(at)) continue;
+        // Floored to the grain: the backend cuts its buckets from the span's start, which
+        // is aligned, so this only absorbs a stray millisecond.
+        const bucket = Math.floor(at / q.grainMs) * q.grainMs;
+        for (const d of point.data ?? []) {
+          const count = countOf(d);
+          if (count === 0) continue;
+          estimated ||= sampled(d);
+          const groups = new Map((d.groups ?? []).map((g) => [g.key ?? '', g.value]));
+          groupsSeen.add(JSON.stringify([...groups.entries()]));
+          rows.push({ bucket, groups, count });
+        }
+      }
+      if (groupsSeen.size < GROUP_PAGE) break;
+    }
+    return { rows, estimated };
+  }
 
   return {
     absoluteTenantWindows: true,
@@ -669,186 +812,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       return queryTenantLogs(input);
     },
 
-    // #1746: the request histogram. One `calculations` query, grouped by level and cut
-    // into the asked number of buckets. Every stamped line in the window is counted, not a
-    // sample of them, which is what makes zooming a narrower re-query rather than a crop.
-    async tenantRequestVolume(input) {
-      const timeframe = { from: input.from, to: input.to };
-      const calc = await queryCalculation(requestFilters(input), timeframe, {
-        groupBy: { type: 'string', value: 'level' },
-        granularity: input.buckets,
-        chartType: 'timeseries',
-        // The group-by rows: one per level, plus the lines that carry none.
-        limit: 10,
-      });
-      let estimated = false;
-      const byStart = new Map<number, RequestVolumeBucket>();
-      for (const point of calc.series ?? []) {
-        const start = point.time ? Date.parse(point.time) : NaN;
-        if (!Number.isFinite(start)) continue;
-        const bucket =
-          byStart.get(start) ??
-          { start: new Date(start).toISOString(), info: 0, warn: 0, error: 0, unrecorded: 0 };
-        for (const d of point.data ?? []) {
-          bucket[levelOf(groupValue(d, 'level'))] += countOf(d);
-          estimated ||= sampled(d);
-        }
-        byStart.set(start, bucket);
-      }
-      const starts = [...byStart.keys()].sort((a, b) => a - b);
-      return {
-        bucketMs: bucketWidth(starts, Math.max(1, Math.round((input.to - input.from) / input.buckets))),
-        buckets: starts
-          .map((t) => byStart.get(t)!)
-          .filter((b) => b.info + b.warn + b.error + b.unrecorded > 0),
-        estimated,
-      };
-    },
-
-    // #1746: facet counts. One aggregate query per facet, each with every OTHER filter
-    // applied, plus one ungrouped count for the total. In parallel: they are independent
-    // reads of the same window.
-    async tenantRequestFacets(input) {
-      const timeframe = { from: input.from, to: input.to };
-      const keys = input.keys ?? REQUEST_FACET_KEYS;
-      let estimated = false;
-      const [totalCalc, ...perKey] = await Promise.all([
-        queryCalculation(requestFilters(input), timeframe, { chartType: 'aggregate' }),
-        ...keys.map((key) =>
-          queryCalculation(requestFilters(input, key), timeframe, {
-            groupBy: { type: key === 'status' ? 'number' : 'string', value: key },
-            chartType: 'aggregate',
-            // Two over the top ten, because the backend applies the limit BEFORE the loop
-            // below drops the rows that are not values: the group of lines with no value
-            // for this key (every line older than #1746 has none) and an empty string.
-            // Either can rank in the top ten and would otherwise take a real value's slot.
-            limit: REQUEST_FACET_TOP + 2,
-            // Ordered by the calculation's alias, so the `limit` keeps the most frequent values.
-            orderBy: { value: 'requests', order: 'desc' },
-          }),
-        ),
-      ]);
-      const total = (totalCalc!.aggregates ?? []).reduce((n, p) => {
-        estimated ||= sampled(p);
-        return n + countOf(p);
-      }, 0);
-      const facets = Object.fromEntries(REQUEST_FACET_KEYS.map((k) => [k, [] as RequestFacetValue[]])) as Record<
-        RequestFacetKey,
-        RequestFacetValue[]
-      >;
-      keys.forEach((key, i) => {
-        const values: RequestFacetValue[] = [];
-        for (const p of perKey[i]!.aggregates ?? []) {
-          const value = groupValue(p, key);
-          // A line with no value for this key (an older line, or a route that is not an
-          // operation) is not a value anybody can filter on; it is left out of the list,
-          // and the total above still counts it.
-          if (typeof value !== 'string' && typeof value !== 'number') continue;
-          if (value === '') continue;
-          values.push({ value, count: countOf(p) });
-          estimated ||= sampled(p);
-        }
-        facets[key] = values.sort((a, b) => b.count - a.count).slice(0, REQUEST_FACET_TOP);
-      });
-      return { total, facets, estimated };
-    },
-
-    // #1747: `ctx.log` lines grouped by template. ONE `calculations` query grouped by
-    // (template, level) answers all three things a pattern shows — its count, its level
-    // split and its histogram — plus one ungrouped count for the total, so a pattern's
-    // share is of every matching line and not only of the templates that made the list.
-    async tenantLogPatterns(input) {
-      const timeframe = { from: input.from, to: input.to };
-      const filters: TelemetryFilter[] = [
-        { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
-        { key: 'substrat', operation: 'eq', type: 'string', value: 'log' },
-      ];
-      if (input.scopeId) filters.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
-      for (const [key, values] of [['level', input.level], ['operation', input.operation]] as const) {
-        if (!values || values.length === 0) continue;
-        const leaves: TelemetryFilter[] = values.map((v) => ({ key, operation: 'eq', type: 'string', value: v }));
-        filters.push(leaves.length === 1 ? leaves[0]! : { kind: 'group', filterCombination: 'or', filters: leaves });
-      }
-      // A (template, level) row per group: at most four levels per template, so this many
-      // rows always covers the top templates in full.
-      const rowLimit = LOG_PATTERN_TOP * 4;
-      const [totalCalc, grouped] = await Promise.all([
-        queryCalculation(filters, timeframe, { chartType: 'aggregate' }),
-        queryCalculation(filters, timeframe, {
-          groupBys: [
-            { type: 'string', value: 'template' },
-            { type: 'string', value: 'level' },
-          ],
-          granularity: input.buckets,
-          chartType: 'timeseries_and_aggregate',
-          limit: rowLimit,
-          orderBy: { value: 'requests', order: 'desc' },
-        }),
-      ]);
-      let estimated = false;
-      const total = (totalCalc.aggregates ?? []).reduce((n, p) => {
-        estimated ||= sampled(p);
-        return n + countOf(p);
-      }, 0);
-      const levelOfLine = (v: unknown): LogPatternLevel =>
-        v === 'debug' || v === 'warn' || v === 'error' ? v : 'info';
-      const byTemplate = new Map<string, { levels: Record<LogPatternLevel, number>; buckets: Map<number, number> }>();
-      const entry = (template: string) => {
-        let e = byTemplate.get(template);
-        if (!e) {
-          e = { levels: { debug: 0, info: 0, warn: 0, error: 0 }, buckets: new Map() };
-          byTemplate.set(template, e);
-        }
-        return e;
-      };
-      const aggregates = grouped.aggregates ?? [];
-      for (const p of aggregates) {
-        const template = groupValue(p, 'template');
-        // A line with no template is not a `ctx.log` line; it cannot be one pattern.
-        if (typeof template !== 'string' || template === '') continue;
-        entry(template).levels[levelOfLine(groupValue(p, 'level'))] += countOf(p);
-        estimated ||= sampled(p);
-      }
-      const times: number[] = [];
-      for (const point of grouped.series ?? []) {
-        const start = point.time ? Date.parse(point.time) : NaN;
-        if (!Number.isFinite(start)) continue;
-        times.push(start);
-        for (const d of point.data ?? []) {
-          const template = groupValue(d, 'template');
-          if (typeof template !== 'string' || !byTemplate.has(template)) continue;
-          const b = byTemplate.get(template)!.buckets;
-          b.set(start, (b.get(start) ?? 0) + countOf(d));
-        }
-      }
-      const patterns: LogPattern[] = [...byTemplate.entries()]
-        .map(([template, e]) => {
-          const count = e.levels.debug + e.levels.info + e.levels.warn + e.levels.error;
-          const dominant = (['error', 'warn', 'info', 'debug'] as const).reduce((best, l) =>
-            e.levels[l] > e.levels[best] ? l : best,
-          );
-          return {
-            template,
-            count,
-            share: total > 0 ? count / total : 0,
-            levels: e.levels,
-            dominant,
-            buckets: [...e.buckets.entries()]
-              .sort(([a], [b]) => a - b)
-              .map(([t, n]) => ({ start: new Date(t).toISOString(), count: n })),
-          };
-        })
-        .sort((a, b) => b.count - a.count || a.template.localeCompare(b.template))
-        .slice(0, LOG_PATTERN_TOP);
-      return {
-        total,
-        bucketMs: bucketWidth(times, Math.max(1, Math.round((input.to - input.from) / input.buckets))),
-        patterns,
-        // The backend stopped at the row limit, or there were more templates than listed.
-        truncated: aggregates.length >= rowLimit || byTemplate.size > LOG_PATTERN_TOP,
-        estimated,
-      };
-    },
+    // #1746/#1877: the request histogram, facet counts and log patterns — computed once,
+    // from cubes, by `aggregateReads` over the (cached) telemetry source.
+    ...aggregateReads(source),
 
     // #1746: the requests themselves. The stamped lines alone — no correlation walk,
     // because a request's own line is the whole record and the Requests view has no use
@@ -1230,6 +1196,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     invocationId?: string;
     /** #1747: only the `ctx.log` lines written from this template. */
     template?: string;
+    /** #1877: the app's scripts — see `TenantRequestScope.services`. */
+    services?: readonly string[];
     hours: number;
     since?: string;
     until?: string;
@@ -1246,9 +1214,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       from: input.since ? Date.parse(input.since) : to - input.hours * 3_600_000,
       to,
     };
-    const base = [
+    const base: TelemetryFilter[] = [
       { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
       { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
+      // #1877: the app's own scripts — the scan boundary and the trust boundary.
+      ...serviceFilter(input.services),
     ];
     if (input.scopeId) base.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
     if (input.vertical) base.push({ key: 'vertical', operation: 'eq', type: 'string', value: input.vertical });
@@ -1312,7 +1282,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // read narrowed by vertical alone (no scope) leaves them out rather than showing a
     // line from another of the tenant's apps.
     const moduleLines =
-      input.vertical && !input.scopeId ? Promise.resolve([]) : queryRaw(moduleLineFilters(input), timeframe, input.limit);
+      input.vertical && !input.scopeId
+        ? Promise.resolve([])
+        : queryRaw([...moduleLineFilters(input), ...serviceFilter(input.services)], timeframe, input.limit);
     // A template names `ctx.log` lines only: an invocation line has none.
     if (input.template !== undefined) {
       return (await moduleLines)
@@ -1343,7 +1315,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
             // escape just because its query was listed first.
           ]).then((pages) => pages.flat().sort((a, b) => rawTime(b) - rawTime(a))),
           queryRaw(
-            [{ key: '$metadata.level', operation: 'eq', type: 'string', value: 'error' }],
+            // #1877: scoped to the app's scripts too, where known — it was account-wide,
+            // and `ownsInvocation` below still admits nothing without a stamped line.
+            [{ key: '$metadata.level', operation: 'eq', type: 'string', value: 'error' }, ...serviceFilter(input.services)],
             timeframe,
             phaseOneLimit,
           ),
@@ -1371,7 +1345,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const sibling = await Promise.all(
       requestIds.map(async (id) => {
         const events = await queryRaw(
-          [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }],
+          [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }, ...serviceFilter(input.services)],
           timeframe,
           linesPerInvocation,
         );
@@ -1457,6 +1431,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       granularity?: number;
       chartType: 'timeseries' | 'aggregate' | 'timeseries_and_aggregate';
       limit?: number;
+      /** #1877: the page of groups to answer, when one answer cannot hold them all. */
+      offsetBy?: number;
       orderBy?: { value: string; order: 'asc' | 'desc' };
     },
   ): Promise<Calculation> {
@@ -1468,6 +1444,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         timeframe,
         chartType: shape.chartType,
         ...(shape.granularity === undefined ? {} : { granularity: shape.granularity }),
+        ...(shape.offsetBy === undefined ? {} : { offsetBy: shape.offsetBy }),
         parameters: {
           datasets: ['cloudflare-workers'],
           filters,
@@ -1478,15 +1455,14 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         },
       },
     );
-    const json = (await res.json()) as {
+    const text = await res.text();
+    if (!res.ok) throw telemetryFailure(res.status, text);
+    const json = JSON.parse(text) as {
       success?: boolean;
       errors?: Array<{ message?: string }>;
       result?: { calculations?: Calculation[] };
     };
-    if (!res.ok || json.success === false) {
-      const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
-      throw new Error(`Cloudflare telemetry query failed: ${message}`);
-    }
+    if (json.success === false) throw telemetryFailure(502, text);
     // One calculation was asked for, so the first answer is it. An answer with none is an
     // empty window, not an error: the backend omits a calculation that matched nothing.
     return json.result?.calculations?.[0] ?? {};
@@ -1514,15 +1490,14 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         limit,
       },
     );
-    const json = (await res.json()) as {
+    const text = await res.text();
+    if (!res.ok) throw telemetryFailure(res.status, text);
+    const json = JSON.parse(text) as {
       success?: boolean;
       errors?: Array<{ message?: string }>;
       result?: { events?: { events?: unknown[] } | unknown[] };
     };
-    if (!res.ok || json.success === false) {
-      const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
-      throw new Error(`Cloudflare telemetry query failed: ${message}`);
-    }
+    if (json.success === false) throw telemetryFailure(502, text);
     const outer = json.result?.events;
     return (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<Record<string, unknown>>;
   }
