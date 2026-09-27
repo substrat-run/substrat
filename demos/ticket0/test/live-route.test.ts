@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { LIVE_PATH, mountLiveReads, type LiveSubscriber } from '../harness/live.js';
+import { LIVE_PATH, mountLiveReads } from '../harness/live.js';
 import { buildHost } from '../src/seed.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'ticket0-live-'));
@@ -25,17 +25,15 @@ const host = buildHost(dir);
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const ORIGIN = 'http://localhost:5277';
-const signedIn: LiveSubscriber = {
-  tenantId: tenantId.parse(ulid()),
-  scopeId: scopeId.parse(ulid()),
-  principal: principalId.parse(ulid()),
-};
-
-function app(who: LiveSubscriber | null) {
-  const a = new Hono();
-  mountLiveReads(a, { live: () => host.liveReads, subscriber: async () => who });
-  return a;
-}
+const app = new Hono();
+mountLiveReads(app, {
+  live: () => host.liveReads,
+  subscriber: async () => ({
+    tenantId: tenantId.parse(ulid()),
+    scopeId: scopeId.parse(ulid()),
+    principal: principalId.parse(ulid()),
+  }),
+});
 
 const handshake = (headers: Record<string, string>) =>
   new Request(`${ORIGIN}${LIVE_PATH}`, {
@@ -44,13 +42,13 @@ const handshake = (headers: Record<string, string>) =>
 
 describe('the live route on the node host', () => {
   it('answers 501 and says to poll, because this host has no live reads', async () => {
-    const res = await app(signedIn).fetch(handshake({ origin: ORIGIN }));
+    const res = await app.fetch(handshake({ origin: ORIGIN }));
     expect(res.status).toBe(501);
     expect(res.headers.get('x-substrat-live')).toBe('poll');
   });
 
   it('refuses another origin before it asks the host anything', async () => {
-    const res = await app(signedIn).fetch(handshake({ origin: 'http://localhost:9999' }));
+    const res = await app.fetch(handshake({ origin: 'http://localhost:9999' }));
     expect(res.status).toBe(403);
     expect(res.headers.get('x-substrat-live')).toBeNull();
   });

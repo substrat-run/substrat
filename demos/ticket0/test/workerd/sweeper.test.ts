@@ -37,7 +37,7 @@
  * the fifth (#938): the live feed, whose frames come from the scope DO's fan-out.
  */
 import { SELF, env, fetchMock, runInDurableObject } from 'cloudflare:test';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   permissionKey,
   principalId,
@@ -47,7 +47,7 @@ import {
   type PrincipalId,
   type ScopeId,
 } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { ulid, type LiveChange } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
   SCOPE_SWEEPER_NAME,
@@ -678,25 +678,25 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     });
   }
 
-  interface Frame {
-    kind: string;
-    type: string;
-    entityType: string;
-    entityId: string;
-  }
+  /** Every socket a test opened, closed after it whether or not its assertions passed. */
+  const open: WebSocket[] = [];
+  afterEach(() => {
+    for (const ws of open.splice(0)) ws.close(1000, 'test over');
+  });
 
   /** A subscriber's open socket, and every frame it has received. */
-  async function subscribe(sub: string): Promise<{ frames: Frame[]; close: () => void }> {
+  async function subscribe(sub: string): Promise<{ frames: LiveChange[] }> {
     const response = await handshake({ origin: ORIGIN, authorization: `Bearer ${await bearerFor(sub)}` });
     expect(response.status).toBe(101);
     const ws = response.webSocket!;
     ws.accept();
-    const frames: Frame[] = [];
+    open.push(ws);
+    const frames: LiveChange[] = [];
     ws.addEventListener('message', (event) => {
       const data = String((event as MessageEvent).data);
-      if (data !== 'pong') frames.push(JSON.parse(data) as Frame);
+      if (data !== 'pong') frames.push(JSON.parse(data) as LiveChange);
     });
-    return { frames, close: () => ws.close(1000, 'test over') };
+    return { frames };
   }
 
   /**
@@ -716,12 +716,21 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     return principal;
   }
 
+  /** The desk's service accounts, as the worker's provision hook recorded them. */
+  async function services(): Promise<{ relay: PrincipalId; widget: PrincipalId }> {
+    const config = await directory().getScopeConfig(desk);
+    const recorded = JSON.parse(config['ticket0:services']!) as { relay: string; widget: string };
+    return { relay: principalId.parse(recorded.relay), widget: principalId.parse(recorded.widget) };
+  }
+
+  /** An entity-narrowed grant, as `ctx.grant` or an accepted portal invite writes one. */
+  const grant = (who: PrincipalId, key: string, entityType: string, entityId: string) =>
+    host().grantEntityLocal(desk, who, permissionKey.parse(key), { entityType, entityId });
+
   let mailed = 0;
   /** A conversation that arrived by mail from `email`: its id, and its contact's. */
   async function arrival(email: string): Promise<{ conversation: string; contact: string }> {
-    const services = await env.AUTH.get(env.AUTH.idFromName(tenant)).getScopeConfig(desk);
-    const relay = principalId.parse((JSON.parse(services['ticket0:services']!) as { relay: string }).relay);
-    const message = await (await host().getScope(relay, tenant, desk)).invoke<{ conversation_id: string }>(
+    const message = await (await host().getScope((await services()).relay, tenant, desk)).invoke<{ conversation_id: string }>(
       'ticket0/ingest-message',
       {
         conversationId: null,
@@ -794,10 +803,7 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     const theirs = await arrival('customer@live.example');
     // The portal grant exactly as an accepted customer invite makes it: read-own on
     // their own contact, reaching their conversations through the parent edge.
-    await host().grantEntityLocal(desk, customer, permissionKey.parse('conversation:read-own'), {
-      entityType: 'contact',
-      entityId: theirs.contact,
-    });
+    await grant(customer, 'conversation:read-own', 'contact', theirs.contact);
     // The customer really can read this thread by polling. So what they are denied
     // below is the note, not the conversation.
     const portal = await host().getScope(customer, tenant, desk);
@@ -821,19 +827,13 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
       conversationId: theirs.conversation,
     });
     expect(polled.entries.map((m) => m.id)).not.toContain(written.id);
-
-    agentFeed.close();
-    customerFeed.close();
   });
 
   it('sends a follower the conversation they follow, and not the one beside it', async () => {
     const follower = await member('sub-follower', 'customer');
     const followed = await arrival('followed@live.example');
     const beside = await arrival('beside@live.example');
-    await host().grantEntityLocal(desk, follower, permissionKey.parse('conversation:read'), {
-      entityType: 'conversation',
-      entityId: followed.conversation,
-    });
+    await grant(follower, 'conversation:read', 'conversation', followed.conversation);
 
     const feed = await subscribe('sub-follower');
     const onFollowed = await note(followed.conversation, 'Following along.');
@@ -843,7 +843,6 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     const ids = feed.frames.map((f) => f.entityId);
     expect(ids).toContain(onFollowed.id);
     expect(ids).not.toContain(onBeside.id);
-    feed.close();
   });
 
   /**
@@ -866,16 +865,9 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     const customer = await member('sub-turn-customer', 'customer');
     const followed = await arrival('turns@live.example');
     const beside = await arrival('turns-beside@live.example');
-    await host().grantEntityLocal(desk, follower, permissionKey.parse('conversation:read'), {
-      entityType: 'conversation',
-      entityId: followed.conversation,
-    });
-    await host().grantEntityLocal(desk, customer, permissionKey.parse('conversation:read-own'), {
-      entityType: 'contact',
-      entityId: followed.contact,
-    });
-    const services = await directory().getScopeConfig(desk);
-    const widget = principalId.parse((JSON.parse(services['ticket0:services']!) as { widget: string }).widget);
+    await grant(follower, 'conversation:read', 'conversation', followed.conversation);
+    await grant(customer, 'conversation:read-own', 'contact', followed.contact);
+    const { widget } = await services();
     // What the worker records when the assistant could not run: a turn, written by the
     // desk's widget service, on the customer's conversation.
     const failure = async (conversationId: string) =>
@@ -893,7 +885,7 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     const onBeside = await failure(beside.conversation);
     await settle();
 
-    const turnsOf = (feed: { frames: Frame[] }) =>
+    const turnsOf = (feed: { frames: LiveChange[] }) =>
       feed.frames.filter((f) => f.entityType === 'aiTurn').map((f) => f.entityId);
     const poll = async (who: PrincipalId, conversationId: string): Promise<string[] | 'refused'> => {
       try {
@@ -922,10 +914,6 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
 
     // The positive twin, from the same two writes: an agent hears both turns.
     expect(turnsOf(agentFeed)).toEqual([onFollowed.id, onBeside.id]);
-
-    agentFeed.close();
-    followerFeed.close();
-    customerFeed.close();
   });
 
   it("refuses a handshake from another origin, and takes the same one from the desk's own", async () => {
@@ -937,7 +925,7 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     const own = await handshake({ origin: ORIGIN, authorization });
     expect(own.status).toBe(101);
     own.webSocket!.accept();
-    own.webSocket!.close(1000, 'test over');
+    open.push(own.webSocket!);
   });
 
   it('refuses a handshake nobody signed in to', async () => {

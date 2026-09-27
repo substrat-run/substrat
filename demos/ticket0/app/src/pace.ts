@@ -32,5 +32,5 @@ export const PACE = {
 
 /** The interval a screen polls at, given whether the feed is open. */
 export function pollPace(pace: Pace, open: boolean): number {
-  return open ? Math.max(pace.everyMs, pace.connectedMs) : pace.everyMs;
+  return open ? pace.connectedMs : pace.everyMs;
 }

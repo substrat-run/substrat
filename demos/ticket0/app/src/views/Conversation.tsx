@@ -24,7 +24,8 @@ import {
 } from '../api.js';
 import { agentName, agents, assignableStaff } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
-import { PACE, useLiveReload } from '../live.js';
+import { useLiveReload } from '../live.js';
+import { PACE } from '../pace.js';
 import { Avatar, EventDivider, OwnerPicker, StateBadge, Unassigned, clock } from '../ui.js';
 
 interface Turn {

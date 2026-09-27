@@ -40,6 +40,9 @@ export const LIVE_PATH = '/api/live';
  */
 const LIVE_MODE_HEADER = 'x-substrat-live';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyContext = Context<any>;
+
 export interface LiveSubscriber {
   tenantId: TenantId;
   scopeId: ScopeId;
@@ -48,11 +51,9 @@ export interface LiveSubscriber {
 
 export interface LiveRouteOptions {
   /** The host's live-read surface, or undefined where it has none (the pure host). */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  live: (c: Context<any>) => LiveReadSurface<Request, Response> | undefined;
+  live: (c: AnyContext) => LiveReadSurface<Request, Response> | undefined;
   /** The signed-in caller and the desk they are in, or null for nobody. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  subscriber: (c: Context<any>) => Promise<LiveSubscriber | null>;
+  subscriber: (c: AnyContext) => Promise<LiveSubscriber | null>;
 }
 
 /**

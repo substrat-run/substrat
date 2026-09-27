@@ -24,18 +24,16 @@
  * while hidden is dropped for the same reason: coming back re-reads anyway.
  */
 import { useEffect, useRef } from 'react';
-import { PACE, pollPace, type Pace } from './pace.js';
+import { pollPace, type Pace } from './pace.js';
 
-export { PACE } from './pace.js';
-
-/** One frame on the feed: the kernel's `LiveChange`, restated for the browser bundle. */
+/**
+ * The part of a frame this app reads: the kernel's `LiveChange`, cut down to what the
+ * screens act on, since the browser bundle does not depend on the kernel.
+ */
 export interface LiveChange {
   kind: 'change';
-  id: string;
-  type: string;
   entityType: string;
   entityId: string;
-  at: string;
 }
 
 /** Consecutive connections that never opened before the feed stops trying. */
@@ -48,6 +46,12 @@ const PING_MS = 45_000;
  * navigation would be a reconnect and a re-read.
  */
 const LINGER_MS = 5_000;
+/**
+ * One write can announce several entities at once (a conversation and its message), and
+ * each frame would otherwise be a full re-read. Frames that arrive this close together
+ * are one re-read.
+ */
+const BURST_MS = 50;
 
 type Listener = {
   frame: (change: LiveChange) => void;
@@ -79,6 +83,14 @@ function setOpen(open: boolean): void {
   for (const l of feed.listeners) l.state(open);
 }
 
+/** Forget the socket, and tell whoever is still listening that the feed is closed. */
+function teardown(): void {
+  if (feed.ping) clearInterval(feed.ping);
+  feed.ping = null;
+  feed.socket = null;
+  setOpen(false);
+}
+
 function connect(): void {
   if (feed.socket || feed.retry || feed.listeners.size === 0) return;
   if (typeof WebSocket === 'undefined' || feed.failures >= GIVE_UP_AFTER) return;
@@ -107,10 +119,7 @@ function connect(): void {
     for (const l of feed.listeners) l.frame(change);
   };
   ws.onclose = () => {
-    if (feed.ping) clearInterval(feed.ping);
-    feed.ping = null;
-    feed.socket = null;
-    setOpen(false);
+    teardown();
     // A socket that never opened is a host saying no: 501 on the dev server, a hop that
     // cannot carry a WebSocket, a signed-out session. The browser does not say which, so
     // a few attempts and then the poll alone, for the life of the tab. A socket that did
@@ -131,10 +140,7 @@ function disconnect(): void {
   const ws = feed.socket;
   if (!ws) return;
   ws.onclose = null;
-  if (feed.ping) clearInterval(feed.ping);
-  feed.ping = null;
-  feed.socket = null;
-  feed.open = false;
+  teardown();
   ws.close(1000, 'no screen is listening');
 }
 
@@ -147,7 +153,7 @@ function disconnect(): void {
  */
 export function useLiveReload(
   reload: () => void,
-  pace: Pace = PACE.inbox,
+  pace: Pace,
   hears: (change: LiveChange) => boolean = () => true,
 ): void {
   // Kept in refs so a caller does not have to memoise its callbacks to avoid
@@ -160,6 +166,7 @@ export function useLiveReload(
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
+    let burst: ReturnType<typeof setTimeout> | null = null;
 
     const stop = () => {
       if (timer !== null) clearInterval(timer);
@@ -177,7 +184,13 @@ export function useLiveReload(
 
     const listener: Listener = {
       frame: (change) => {
-        if (!document.hidden && filter.current(change)) latest.current();
+        if (document.hidden || burst !== null || !filter.current(change)) return;
+        burst = setTimeout(() => {
+          burst = null;
+          latest.current();
+          // The read just made is as good as a poll, so the next poll counts from it.
+          start();
+        }, BURST_MS);
       },
       state: (open) => {
         // Opening re-reads once: anything that changed between this screen's last read
@@ -198,11 +211,13 @@ export function useLiveReload(
     addEventListener('focus', onVisible);
     return () => {
       stop();
+      if (burst !== null) clearTimeout(burst);
       feed.listeners.delete(listener);
-      if (feed.listeners.size === 0 && !feed.linger) {
+      // A mount clears the linger, so it only runs out with nobody listening.
+      if (feed.listeners.size === 0) {
         feed.linger = setTimeout(() => {
           feed.linger = null;
-          if (feed.listeners.size === 0) disconnect();
+          disconnect();
         }, LINGER_MS);
       }
       document.removeEventListener('visibilitychange', onVisible);
