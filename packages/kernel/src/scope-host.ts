@@ -227,9 +227,11 @@ export type SqlValue = string | number | bigint | Uint8Array | null;
  *   list of unknown length as ONE JSON array and read it with `json_each`;
  * - **100 000 bytes** of statement, UTF-8, the whole string;
  * - **50 bytes** of `LIKE`/`GLOB` pattern, UTF-8 — NOT enforced by an adapter: node's SQLite
- *   allows 50 000, and only this repository's suites emulate the limit
- *   (`tools/vitest/like-pattern-limit.cjs`). Doing it in the adapter would replace `like()` on
- *   every connection: a JavaScript call per row, and no `LIKE` prefix index for self-hosters.
+ *   allows 50 000, and it can only be emulated by a test preload
+ *   (`tools/vitest/like-pattern-limit.cjs` here; `@substrat-run/adapter-sqlite/testing` is the
+ *   same patch, published, opt-in for a vertical's own suite, #1770). Doing it in the adapter
+ *   would replace `like()` on every connection: a JavaScript call per row, and no `LIKE` prefix
+ *   index for self-hosters.
  *
  * Only module-facing SQL is judged; see `guardSqlLimits`.
  */

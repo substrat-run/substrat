@@ -23,10 +23,19 @@
       "browser": null,
       "types": "./dist/vertical-broker.d.ts",
       "default": "./dist/vertical-broker.js"
+    },
+    "./testing": {
+      "workerd": null,
+      "worker": null,
+      "browser": null,
+      "types": "./testing.d.cts",
+      "default": "./testing.cjs"
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "testing.cjs",
+    "testing.d.cts"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

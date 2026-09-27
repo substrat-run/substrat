@@ -12,7 +12,9 @@
  * what a Durable Object sees. The pattern limit cannot: a pattern is often built at run time,
  * and judging it exactly means replacing `like()` on every connection, a JavaScript call per
  * row that also switches off SQLite's `LIKE` prefix index optimisation. That cost is fine in a
- * test preload and not in an adapter self-hosters run, so it stays a preload's job.
+ * test preload and not in an adapter self-hosters run, so it stays a preload's job — published
+ * as `@substrat-run/adapter-sqlite/testing` (#1770), on by default in the scaffold, so a
+ * vertical opts in the same way for the one limit the adapter itself cannot judge.
  *
  * The values are MEASURED, not read from documentation:
  * `packages/adapter-cloudflare/test/do-sql-limits.test.ts` drives a real Durable Object's

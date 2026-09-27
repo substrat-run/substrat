@@ -1,97 +1,30 @@
 /**
- * A node SQLite that refuses what a Durable Object refuses: a LIKE or GLOB pattern
- * longer than 50 bytes (#1655).
+ * The repo's own preload for the LIKE/GLOB pattern limit (#1655) — a thin re-export of the
+ * published helper, `@substrat-run/adapter-sqlite/testing` (#1770).
  *
- * workerd's SQLite sets `SQLITE_LIMIT_LIKE_PATTERN_LENGTH` to 50. Stock SQLite allows
- * 50000, and `better-sqlite3` exposes no `sqlite3_limit` to the JS side, so every node
- * suite ran a 92-byte GLOB happily while the hosted scope failed
- * `LIKE or GLOB pattern too complex` on every call (#1646).
+ * `packages/adapter-sqlite/testing.cjs` is plain, hand-written CommonJS — never compiled — so
+ * requiring it here needs no build of `packages/adapter-sqlite` at all, only `pnpm install`
+ * (an earlier version compiled it from TypeScript into `dist/testing.js`, and requiring a BUILT
+ * artifact eagerly crashed every process this preload is `--require`d into that never builds
+ * that package: several of `tools/ci-scope.mjs`'s shard slices, and `apps/social-relay`
+ * concretely — it opens its own, unrelated `better-sqlite3` connections with no workspace
+ * dependency on `@substrat-run/adapter-sqlite`, so its shard never built it at all).
  *
- * The one hook a connection does give is `db.function()`, and SQLite documents that
- * an application-defined `like()` / `glob()` REPLACES the built-in one the operators
- * call. So this installs both: refuse a pattern over the limit with the message the
- * Durable Object gives, otherwise hand the very same arguments to a pristine built-in
- * on a scratch connection, so the matching semantics stay SQLite's own.
- *
- * `--require`d (or a vitest `setupFiles` entry), it patches `Database.prototype`, so it
- * reaches a connection however it was opened and whichever module opened it.
+ * Eager and unconditional, same as `packages/adapter-sqlite/testing.cjs`'s own patch, and
+ * deliberately NOT lazy: a lazy trampoline here would need the same careful "capture what a
+ * later preload wrapped, hand it back after loading" dance that file's patch itself needs
+ * against `sql-limits.cjs` (`--require`d right after this file, wrapping `prepare`/`exec` a
+ * second time on top of whatever this one installs) — real complexity, for `require`ing a
+ * roughly 4ms native addon load that is going to happen in this same process the moment
+ * anything opens a `better-sqlite3` connection regardless. Requiring it eagerly, in `--require`
+ * order, is also exactly how two preloads that each patch the same prototype methods are
+ * SUPPOSED to compose: whichever loads second captures whatever the first already installed as
+ * its own delegate, with no restoring or re-patching needed by either side.
  */
 'use strict';
 
-const { createRequire } = require('node:module');
 const { join } = require('node:path');
 
-const LIMIT = 50;
-const MESSAGE = 'LIKE or GLOB pattern too complex';
+const impl = require(join(__dirname, '..', '..', 'packages', 'adapter-sqlite', 'testing.cjs'));
 
-/** better-sqlite3 as the adapter resolves it — the package that holds the connection class. */
-const resolveDatabase = () => {
-  const from = createRequire(join(__dirname, '..', '..', 'packages', 'adapter-sqlite', 'package.json'));
-  return from('better-sqlite3');
-};
-
-const Database = resolveDatabase();
-
-const seen = new WeakSet();
-const scratch = new Database(':memory:');
-seen.add(scratch);
-const pristine = {
-  like: scratch.prepare('SELECT like(?, ?) AS r').pluck(),
-  like3: scratch.prepare('SELECT like(?, ?, ?) AS r').pluck(),
-  glob: scratch.prepare('SELECT glob(?, ?) AS r').pluck(),
-};
-
-const tooLong = (pattern) => typeof pattern === 'string' && Buffer.byteLength(pattern, 'utf8') > LIMIT;
-
-const register = (db, limited) => {
-  const guard = (pattern) => {
-    if (limited && tooLong(pattern)) throw new Error(MESSAGE);
-  };
-  // Two registrations, not one `varargs`: SQLite keys a function on its name AND arity, so a
-  // call with any other number of arguments still fails "wrong number of arguments" as it does
-  // on a real connection, instead of being answered by a callback that ignores the extras.
-  db.function('like', { deterministic: true }, (pattern, value) => {
-    guard(pattern);
-    return pristine.like.get(pattern, value);
-  });
-  db.function('like', { deterministic: true }, (pattern, value, escape) => {
-    guard(pattern);
-    return pristine.like3.get(pattern, value, escape);
-  });
-  db.function('glob', { deterministic: true }, (pattern, value) => {
-    guard(pattern);
-    return pristine.glob.get(pattern, value);
-  });
-};
-
-const install = (db) => {
-  if (seen.has(db)) return;
-  seen.add(db);
-  register(db, true);
-};
-
-/**
- * Take the limit off one connection — for a test whose ORACLE is a pattern a Durable Object
- * would refuse (a split guard compared with the whole pattern it replaced). Say so where it
- * is called: a suite that lifts the limit is a suite that no longer sees what production sees.
- */
-const liftLimit = (db) => {
-  seen.add(db);
-  register(db, false);
-  return db;
-};
-
-if (!Database.prototype.__likePatternLimit) {
-  Database.prototype.__likePatternLimit = LIMIT;
-  // A connection is patched the first time anything is asked of it: the constructor is
-  // a native one that cannot be wrapped from here, and no statement can run before this.
-  for (const method of ['prepare', 'exec', 'pragma', 'transaction']) {
-    const original = Database.prototype[method];
-    Database.prototype[method] = function patched(...args) {
-      install(this);
-      return original.apply(this, args);
-    };
-  }
-}
-
-module.exports = { LIMIT, liftLimit };
+module.exports = { LIMIT: impl.LIKE_PATTERN_LIMIT, liftLimit: impl.liftLimit };
