@@ -1,4 +1,4 @@
-import { isRewindRefusal } from './rewind-refusal.js';
+import { isRewindRefusal, REWIND_REFUSED } from './rewind-refusal.js';
 import {
   delegatedReadParams,
   fromWireFailure,
@@ -1734,8 +1734,8 @@ export const SWITCH_HOLD_SETTLE_MS = SWITCH_HOLD_SNAPSHOT_MS + 1_000;
  * #1839: how many times a rewind waits again, after its settle, for a row a late OFF added to its
  * claim to be `SWITCH_HOLD_SETTLE_MS` old. The settle argument above holds per ROW, so a row
  * added during the settle needs its own full settle before the rewind arms. Each late OFF can
- * cost up to one more settle; past this many, the rewind arms anyway, so a switch flapping
- * through the wait cannot hold a rewind forever. See `rewindHolding` for what that leaves.
+ * cost up to one more settle; past this many, the rewind is REFUSED rather than armed with a young
+ * row, so a switch flapping through the wait cannot hold a rewind forever. See `settleClaim`.
  */
 export const SWITCH_HOLD_EXTRA_WAITS = 3;
 
@@ -7380,13 +7380,16 @@ export class CloudflareScopeHost implements ScopeHost {
    * includes a row a switch move joined (`switchInScope`). The age is measured on the hold
    * object's clock, the same one that stamped the row; this host only sleeps the difference.
    *
-   * Bounded at `SWITCH_HOLD_EXTRA_WAITS` more waits: past that, the rewind arms with a row younger
-   * than the settle, and warns. That row's module can then run once on the rewound storage, in a
-   * pass whose snapshot was read shortly before the row, until that snapshot expires.
+   * Bounded at `SWITCH_HOLD_EXTRA_WAITS` more waits: past that, the rewind is REFUSED, with the
+   * refusal prefix. Nothing was asked to arm, so `rewindHolding` drops only this claim, and every
+   * OFF pulled meanwhile stays in the scope's own storage. The owner retries, and the retry's
+   * capture reads them all. Arming instead would leave a row younger than the settle, whose module
+   * a pass with a snapshot read shortly before that row could run once on the rewound storage.
    *
-   * What remains even within the bound: an OFF whose join lands after the last age read and before
-   * the arm (a few calls), or on the doomed instance in the moment between the arm and its restart.
-   * It is claimed, but by a row younger than the settle, with the same exposure as above.
+   * What remains: an OFF whose join lands after the last age read and before the arm (a few calls),
+   * or on the doomed instance in the moment between the arm and its restart. It is claimed, but by
+   * a row younger than the settle: that module can run once, in a pass whose hold snapshot was read
+   * in the `SWITCH_HOLD_SNAPSHOT_MS` before the row, until that snapshot expires.
    */
   private async settleClaim(holds: ScopeStubRpc, scopeId: ScopeId, claimId: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS));
@@ -7399,11 +7402,10 @@ export class CloudflareScopeHost implements ScopeHost {
       const youngest = await holds.switchHoldYoungestMs(scopeId, claimId);
       if (youngest === null || youngest >= SWITCH_HOLD_SETTLE_MS) return;
       if (waits === SWITCH_HOLD_EXTRA_WAITS) {
-        console.warn(
-          `substrat: rewinding scope ${scopeId} with a switch-hold row ${youngest} ms old, ` +
-            `after ${waits} extra waits for it to settle (#1839)`,
+        throw new Error(
+          `${REWIND_REFUSED}schedule switches kept being pulled off while this rewind waited for them to ` +
+            `settle (${waits} extra waits); nothing was rewound, and those switches stay off. Retry the rewind`,
         );
-        return;
       }
       // Never longer than one settle, even if the hold object's clock moved back under a restart.
       await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS - Math.max(0, youngest)));

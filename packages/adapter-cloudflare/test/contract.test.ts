@@ -2403,27 +2403,45 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await landRewind(env.SCOPE, s, atBookmark);
   });
 
+  /**
+   * #1839 review: past the bound the rewind is REFUSED, not armed with a young row. Nothing was
+   * asked to arm, so the OFFs pulled meanwhile stay in the scope's own storage, and a retry's
+   * capture reads them.
+   */
   it(
-    '#1839: the wait is bounded: a claim that keeps getting younger arms after the extra waits run out',
-    { timeout: 30_000 },
+    '#1839: the wait is bounded: a claim that keeps getting younger is refused after the extra waits, and a retry holds',
+    { timeout: 45_000 },
     async () => {
       const { s, atBookmark } = await settlingScope();
       const rewinder = countingScopes(env.SCOPE);
       await armRewind(env.SCOPE, s);
-      let armed = false;
+      let done = false;
       const rewinding = deployment(rewinder.ns)
         .rewindScopeLocal(s, 'bm', { force: true })
-        .finally(() => (armed = true));
-      await sleep(100);
+        .finally(() => (done = true));
+      await sleep(SWITCH_HOLD_SETTLE_MS / 3);
       const [ours] = (await holdsStub().switchHoldClaims(s)).filter((c) => c.claimId !== EARLIER_CLAIM);
-      // A late OFF of another module joins every half second, for as long as the rewind waits.
-      for (let i = 0; !armed; i++) {
+      // The operator pulls SCHED, then late OFFs of other modules keep joining, every half second.
+      expect(await off(s)).toMatchObject({ changed: true });
+      for (let i = 0; !done; i++) {
         await holdsStub().switchHoldClaim(s, [`@test/late-${i}`], ours!.claimId);
         await sleep(500);
       }
-      await rewinding;
+      await expect(rewinding).rejects.toThrow(/^rewind refused: schedule switches kept being pulled off/);
       expect(rewinder.ageReads).toBe(1 + SWITCH_HOLD_EXTRA_WAITS);
+      // Nothing armed, this rewind's claim is gone (only the earlier one is left), and SCHED is
+      // still off in the scope's own storage.
+      const scope = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as {
+        rewindProbe(): Promise<{ armed: boolean }>;
+      };
+      expect(await scope.rewindProbe()).toMatchObject({ armed: false });
+      expect([...new Set((await holdsStub().switchHoldClaims(s)).map((c) => c.claimId))]).toEqual([EARLIER_CLAIM]);
+      expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
+      // The retry captures SCHED as off, settles, and the rewound scope is held.
+      expect(await host.rewindScopeLocal(s, 'bm', { force: true })).toEqual({ rewindingTo: 'bm' });
       await landRewind(env.SCOPE, s, atBookmark);
+      expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'on' }]);
+      expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
     },
   );
 
