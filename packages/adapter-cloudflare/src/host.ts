@@ -7278,6 +7278,10 @@ export class CloudflareScopeHost implements ScopeHost {
    * A failed claims read does not stop the move. It is thrown after it, and the caller treats
    * that as a failed move, with the claims kept, which errs toward OFF. A failed join is thrown
    * the same way.
+   *
+   * An OFF then an ON of one module, milliseconds apart, can interleave so the ON's release reads
+   * its claims before the OFF's join lands. The joined row then holds the module the operator just
+   * turned ON, until the next surviving move of that switch releases it (another ON does).
    */
   private async switchInScope(
     scopeId: ScopeId,
@@ -7331,8 +7335,9 @@ export class CloudflareScopeHost implements ScopeHost {
    * `SWITCH_HOLD_PENDING_MAX_MS` bounds that.
    *
    * With nothing to claim, the rewind neither claims nor settles. An OFF that lands between that
-   * status read and the arm (a few calls) is then claimed by nobody, which is the #1839 window
-   * with no settle in front of it; see `settleClaim` for the same window after a settle.
+   * status read and the arm (a few calls) is then NOT held at all: the rewound scope runs that
+   * module until the next reconcile re-asserts the switch, #1819's gap for those milliseconds.
+   * Closing it would make every rewind claim and settle, 3 s on each, to cover a few calls.
    */
   private async rewindHolding(
     scopeId: ScopeId,
@@ -7400,7 +7405,9 @@ export class CloudflareScopeHost implements ScopeHost {
    * What remains: an OFF whose join lands after the last age read and before the arm (a few calls),
    * or on the doomed instance in the moment between the arm and its restart. It is claimed, but by
    * a row younger than the settle: that module can run once, in a pass whose hold snapshot was read
-   * in the `SWITCH_HOLD_SNAPSHOT_MS` before the row, until that snapshot expires.
+   * in the `SWITCH_HOLD_SNAPSHOT_MS` before the row, until that snapshot expires. If an ON has
+   * emptied the claim by then, the OFF has no claim to join (`switchHoldJoin`), and in that same
+   * moment it is not held at all. An OFF before the last re-read is claimed by the re-read.
    */
   private async settleClaim(holds: ScopeStubRpc, scopeId: ScopeId, claimId: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS));
