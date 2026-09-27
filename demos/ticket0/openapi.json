@@ -8327,7 +8327,8 @@
                     }
                   },
                   "turnId": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^\\S+$"
                   }
                 },
                 "required": [
@@ -8646,7 +8647,8 @@
                     "type": "string"
                   },
                   "turnId": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^\\S+$"
                   },
                   "model": {
                     "type": "string"
@@ -8977,7 +8979,8 @@
                     "type": "string"
                   },
                   "turnId": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^\\S+$"
                   },
                   "model": {
                     "type": "string"

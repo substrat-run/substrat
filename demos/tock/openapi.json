@@ -567,7 +567,8 @@
                 "type": "object",
                 "properties": {
                   "sourceKey": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
                   },
                   "discriminators": {
                     "maxItems": 4,
@@ -1570,7 +1571,8 @@
                 "type": "object",
                 "properties": {
                   "sourceKey": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
                   },
                   "variantKey": {
                     "default": "",
@@ -2028,7 +2030,8 @@
                 "type": "object",
                 "properties": {
                   "sourceKey": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
                   },
                   "key": {
                     "type": "string",
@@ -2607,7 +2610,8 @@
                 "type": "object",
                 "properties": {
                   "sourceKey": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
                   },
                   "filename": {
                     "type": "string",
@@ -3069,7 +3073,8 @@
                 "type": "object",
                 "properties": {
                   "sourceKey": {
-                    "type": "string"
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
                   },
                   "variantKey": {
                     "default": "",

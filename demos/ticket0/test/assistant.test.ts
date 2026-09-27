@@ -1094,6 +1094,38 @@ describe('answering a customer', () => {
     expect(again).toMatchObject({ outcome: 'failed', model: 'offline/extractive' });
   });
 
+  it('a turn id that is empty or carries whitespace is refused at the input parse, naming the field (#1870)', async () => {
+    const { widget, started } = await posted(world.substrat, 'Does a bad turn id get anywhere?');
+    const assistant = await at(world.substrat, 'assistant');
+    for (const turnId of ['', 'two words']) {
+      // Refused before the handler runs, rather than by `ctx.link` deep inside it (#1856).
+      await expect(
+        assistant.invoke('ticket0/record-answer', {
+          conversationId: started.conversationId,
+          turnId,
+          model: 'test/fake',
+          body: 'An answer',
+          inputTokens: 1,
+          outputTokens: 1,
+          citedArticleIds: [],
+          outcome: 'drafted',
+        }),
+      ).rejects.toThrow(/turn id is non-empty/);
+      await expect(
+        widget.invoke('ticket0/record-assistant-failure', {
+          conversationId: started.conversationId,
+          turnId,
+          model: 'test/none',
+          error: 'the model did not answer',
+        }),
+      ).rejects.toThrow(/turn id is non-empty/);
+    }
+    const turns = (await (await at(world.substrat, 'agent')).invoke('ticket0/list-turns', {
+      conversationId: started.conversationId,
+    })) as Page<unknown>;
+    expect(turns.entries).toHaveLength(0);
+  });
+
   it('the failures roll up for the admin, beside the model the host would run', async () => {
     const admin = await at(world.substrat, 'admin');
     const health = (await admin.invoke('ticket0/assistant-health', {})) as {
