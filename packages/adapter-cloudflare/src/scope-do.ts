@@ -904,10 +904,10 @@ export function defineScopeDO(
     /** Passes of `applyPendingMigrations` that had work to do — see `migrationAttemptsOnInstance`. */
     private migrationRuns = 0;
     /**
-     * #1860: every call the runtime makes to `webSocketMessage`. An exact `'ping'` is
-     * answered by `setWebSocketAutoResponse` without reaching this handler at all, so
-     * this count is the proof — read from a test via `runInDurableObject` — that a
-     * ping/pong round-trip left it untouched while an ordinary message still bumps it.
+     * TEST-ONLY (#1860): no production code reads this. An exact `'ping'` is answered
+     * by `setWebSocketAutoResponse` without reaching `webSocketMessage` at all, and
+     * this count is how a test proves that from outside the object — read through
+     * `runInDurableObject` — rather than assuming the runtime's documented behaviour.
      */
     private webSocketMessagesHandled = 0;
 
