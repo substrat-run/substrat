@@ -226,6 +226,8 @@ import {
   guardSecrets,
   mintBecomeCapability,
   redactSecrets,
+  redactSecretText,
+  moduleLog,
   resolveCapabilitySession,
   revokeCapabilityAsPlatform,
   domainEventOf,
@@ -5169,6 +5171,19 @@ export function defineScopeDO(
         principal: capabilityId ? (capabilityId as unknown as PrincipalId) : principal,
         sql: guardSecrets(doScopedSql(sql), minted),
         now: () => at,
+        // #1746/#1747: the host stamps who and where; module code supplies only the template
+        // and its fields. A consumer runs under the system override, so it logs as `system`.
+        // The invocation id is read per call, as the DO holds it for the queued body's length.
+        log: moduleLog({
+          tenantId,
+          scopeId,
+          operation: operation ?? null,
+          invocationId: () => this.invocationId,
+          principalKind: systemActor ? 'system' : subject.kind,
+          // The string-safe redaction: `redactSecrets` parses its serialization back, and a
+          // log's text is not JSON.
+          redact: (text) => redactSecretText(text, minted),
+        }),
         emit: (event: DomainEventInput) => {
           assertImpersonationWrites(impersonation, 'ctx.emit');
           const parsed = domainEventInput.parse(event);

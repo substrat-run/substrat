@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { UNSAFE_allowAllChecker, manualClock, webCryptoSecretBox } from '@substrat-run/kernel';
+import { UNSAFE_allowAllChecker, manualClock, webCryptoSecretBox, type ModuleLogLine } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   grantExpiryContractSuite,
@@ -23,6 +23,7 @@ import {
   timelineContractSuite,
   concurrencyContractSuite,
   emittedReportContractSuite,
+  moduleLogContractSuite,
   idempotencyContractSuite,
   listContractSuite,
   inputParseContractSuite,
@@ -407,6 +408,22 @@ emittedReportContractSuite('adapter-sqlite', async () => {
   const host = new SqliteScopeHost({ dir });
   return {
     host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1746/#1747: ctx.log — what the host stamps on a module's line. The sink is the host
+// option a deployment leaves at its console default.
+moduleLogContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-log-'));
+  const lines: ModuleLogLine[] = [];
+  const host = new SqliteScopeHost({ dir, logSink: (line) => lines.push(line) });
+  return {
+    host,
+    logs: () => lines,
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

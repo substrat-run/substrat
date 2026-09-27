@@ -160,6 +160,7 @@ export {
   persistedText,
   plausibleSessionToken,
   redactSecrets,
+  redactSecretText,
   resolveCapabilitySession,
   revokeCapabilityAsPlatform,
 } from './capability.js';
@@ -529,6 +530,22 @@ export type {
   MeterTenantInput,
 } from './meters.js';
 
+export {
+  moduleLog,
+  moduleLogLine,
+  renderTemplate,
+  consoleLogSink,
+  MODULE_LOG_LIMITS,
+} from './module-log.js';
+export type {
+  ModuleLog,
+  ModuleLogLine,
+  ModuleLogLevel,
+  ModuleLogFields,
+  ModuleLogFieldValue,
+  ModuleLogSink,
+  ModuleLogContext,
+} from './module-log.js';
 export { invocationLog } from './invocation-log.js';
 export type { InvocationLogLine, InvocationLogContext, InvocationRecord, InvocationLevel } from './invocation-log.js';
 export { INVOCATION_RECORD_KEY, invocationLevelOf } from './invocation-log.js';

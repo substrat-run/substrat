@@ -356,6 +356,20 @@ export function redactSecrets<T>(value: T, secrets: readonly string[]): T {
 }
 
 /**
+ * `text` with every minted secret replaced by `WITHHELD_SECRET` — the string twin of
+ * `redactSecrets`, for a value that is text rather than a record (#1746: `ctx.log`).
+ *
+ * Not `redactSecrets(text)`: that one works on the serialization and parses it back, and a
+ * bare string's serialization is the string itself, so the parse throws on any text that is
+ * not JSON — which, in a log line, is all of it.
+ */
+export function redactSecretText(text: string, secrets: readonly string[]): string {
+  let out = text;
+  for (const s of secrets) if (s.length > 0) out = out.split(s).join(WITHHELD_SECRET);
+  return out;
+}
+
+/**
  * The tripwire (see above): refuse a write whose COMPLETE record, as it would persist,
  * carries a secret this invocation minted. Thrown from `ctx.emit` (the whole parsed event),
  * `ctx.requestPlatform` (the whole parsed request) and `ctx.sql` (the statement and every

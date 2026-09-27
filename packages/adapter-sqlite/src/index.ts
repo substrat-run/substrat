@@ -211,6 +211,10 @@ import {
   mintBecomeCapability,
   plausibleSessionToken,
   redactSecrets,
+  redactSecretText,
+  moduleLog,
+  consoleLogSink,
+  type ModuleLogSink,
   resolveCapabilitySession,
   revokeCapabilityAsPlatform,
   assertReadOnlyQuery,
@@ -627,6 +631,11 @@ export interface SqliteScopeHostOptions {
    * admin-log entry) are untouched and stay on the real clock.
    */
   clock?: Clock;
+  /**
+   * #1746: where `ctx.log` lines go. Defaults to the console, one JSON line per call, which
+   * is what a deployment's log platform indexes. A test passes a collector.
+   */
+  logSink?: ModuleLogSink;
   /**
    * The version REGISTRY id of the vertical version this host runs (#1242) — stamped
    * into the outbox `version` column at emit, the signals dimension (#1231) that joins
@@ -1440,6 +1449,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly connectorCalls: ConnectorCallRecorder;
   private readonly clock: Clock;
   private readonly versionId: string | null;
+  /** #1746: where `ctx.log` lines go — the console unless a caller (a test) says otherwise. */
+  private readonly logSink: ModuleLogSink;
   // The mint for event ids (#956) is NOT here: it lives on `ScopeRuntime`, one per
   // scope, seeded from that scope's persisted maximum (#1335). Its own monotonic
   // floor, because the timestamp it stamps comes from `this.clock` — a scripted
@@ -1452,6 +1463,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
+    this.logSink = options.logSink ?? consoleLogSink;
     this.dir = options.dir;
     mkdirSync(this.dir, { recursive: true });
     this.directory = new Database(join(this.dir, '_directory.sqlite'));
@@ -10350,6 +10362,23 @@ export class SqliteScopeHost implements ScopeHost {
       principal,
       sql: guardSecrets(guardSqlLimits(scopedSql(rt.db, true)), minted),
       now: () => at,
+      // #1746/#1747: the host stamps who and where; module code supplies only the template
+      // and its fields. The invocation id is read per call — it is set for the duration of
+      // the actor task this context runs in.
+      log: moduleLog(
+        {
+          tenantId: rt.tenantId,
+          scopeId: rt.scopeId,
+          operation: operation ?? null,
+          invocationId: () => rt.invocationId,
+          // A consumer runs under the system override, so it logs as `system`.
+          principalKind: overrideActor ? 'system' : subject.kind,
+          // The string-safe redaction: `redactSecrets` parses its serialization back, and a
+          // log's text is not JSON.
+          redact: (text) => redactSecretText(text, minted),
+        },
+        this.logSink,
+      ),
       emit: (event: DomainEventInput) => {
         assertImpersonationWrites(impersonation, 'ctx.emit');
         const input = domainEventInput.parse(event);
