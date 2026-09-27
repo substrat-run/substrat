@@ -102,6 +102,7 @@ export {
   ISSUE_RETENTION_DAYS,
   EMITTED_REPORT_CAP,
   LIVE_MODE_HEADER,
+  isUpgradeRequest,
 } from './scope-host.js';
 export {
   isSecretBoxConfigured,

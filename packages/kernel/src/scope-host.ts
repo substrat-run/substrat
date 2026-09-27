@@ -4898,6 +4898,20 @@ export type LiveRefusal =
   | 'not-an-upgrade';
 
 /**
+ * Is this request asking to be upgraded to a WebSocket?
+ *
+ * Here beside `LIVE_MODE_HEADER` because a vertical's live route asks it first, before
+ * anything else it decides: only a WebSocket handshake is a live read, and a browser
+ * always sends `Origin` on one, so everything past this check can trust that a missing
+ * `Origin` did not come from a browser page. A plain GET with a cookie on it cannot.
+ */
+export function isUpgradeRequest(request: LiveUpgradeRequest): boolean {
+  // Case-insensitive: the header is `Upgrade: websocket` by the RFC, but the token is
+  // compared case-insensitively there too, and browsers are not the only clients.
+  return (request.headers.get('Upgrade') ?? '').toLowerCase() === 'websocket';
+}
+
+/**
  * The only thing this surface needs of an incoming request: its headers.
  *
  * Narrow on purpose. A live-read door reads `Upgrade` to know what is being asked for

@@ -73,6 +73,41 @@ describe('the live route on the pure host', () => {
   });
 });
 
+/** A plain request to the route: no `Upgrade`, only what the caller names. */
+const plain = (headers: Record<string, string>, method = 'GET') =>
+  new Request(`${ORIGIN}${LIVE_PATH}`, { method, headers });
+
+describe("the live route's Upgrade check", () => {
+  // Only a WebSocket handshake reaches the Origin gate. A browser's WebSocket API always
+  // sends Origin, so letting a missing Origin through is safe there and nowhere else: a
+  // cross-site top-level GET carrying a Lax cookie may have none.
+  it.each([
+    ['no Upgrade and no Origin', plain({})],
+    ['no Upgrade from the app\'s own origin', plain({ origin: ORIGIN })],
+    ['a HEAD with no Upgrade', plain({}, 'HEAD')],
+    ['an Upgrade to something else', plain({ upgrade: 'h2c', connection: 'Upgrade' })],
+  ])('answers 426 to %s, before the host or the login is asked', async (_what, req) => {
+    const res = await answering.fetch(req);
+    expect(res.status).toBe(426);
+    expect(res.headers.get('x-substrat-live')).toBe('not-an-upgrade');
+    expect(answeringLive).not.toHaveBeenCalled();
+    expect(subscriber).not.toHaveBeenCalled();
+    expect(subscribed).not.toHaveBeenCalled();
+  });
+
+  it('refuses a plain request on the pure host too, rather than telling it to poll', async () => {
+    const res = await pure.fetch(plain({}));
+    expect(res.status).toBe(426);
+    expect(pureLive).not.toHaveBeenCalled();
+  });
+
+  it('reads the Upgrade token case-insensitively, as the RFC does', async () => {
+    const res = await answering.fetch(handshake({ origin: ORIGIN, upgrade: 'WebSocket' }));
+    expect(res.status).toBe(204);
+    expect(subscribed).toHaveBeenCalledOnce();
+  });
+});
+
 describe("the live route's Origin check", () => {
   // Each refusal beside the request that differs from it in the Origin alone.
   it.each([
@@ -81,6 +116,10 @@ describe("the live route's Origin check", () => {
     ['the same host on another port', 'http://localhost:5278'],
     ['a sibling subdomain', 'http://desk.localhost:5277'],
     ['a trailing slash', `${ORIGIN}/`],
+    // Fails closed on case: a browser serializes the origin lowercased, so a mismatch
+    // here is not a browser page this app served.
+    ['an uppercase scheme', 'HTTP://localhost:5277'],
+    ['an uppercase host', 'http://LOCALHOST:5277'],
   ])('refuses %s, before the host or the login is asked', async (_what, origin) => {
     const res = await answering.fetch(handshake({ origin }));
     expect(res.status).toBe(403);

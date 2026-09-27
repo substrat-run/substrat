@@ -122,12 +122,8 @@ export function readSubscription(attachment: unknown): LiveSubscription | null {
  */
 export const LIVE_FANOUT_LIMIT = 200;
 
-/** Is this request asking to be upgraded to a WebSocket? */
-export function isUpgradeRequest(request: Request): boolean {
-  // Case-insensitive: the header is `Upgrade: websocket` by the RFC, but the token is
-  // compared case-insensitively there too, and browsers are not the only clients.
-  return (request.headers.get('Upgrade') ?? '').toLowerCase() === 'websocket';
-}
+/** Is this request asking to be upgraded to a WebSocket? Defined in the kernel (#1859). */
+export { isUpgradeRequest } from '@substrat-run/kernel';
 
 /**
  * Is this request arriving over an orange-to-orange hop?
