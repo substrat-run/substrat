@@ -37,6 +37,7 @@ import {
   substratError,
   operationConcurrencyOf,
   operationInputsOf,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -1330,24 +1331,24 @@ const availabilityOp: OperationHandler<
  * the way workorder's always has.
  */
 const OPERATIONS = {
-    'booking/create-resource': createResourceOp as OperationHandler<never, unknown>,
-    'booking/set-resource-active': setResourceActiveOp as OperationHandler<never, unknown>,
-    'booking/list-resources': listResourcesOp as OperationHandler<never, unknown>,
-    'booking/hold': holdOp as OperationHandler<never, unknown>,
-    'booking/confirm': confirmOp as OperationHandler<never, unknown>,
-    'booking/expire': expireOp as OperationHandler<never, unknown>,
-    'booking/join': joinOp as OperationHandler<never, unknown>,
-    'booking/leave': leaveOp as OperationHandler<never, unknown>,
-    'booking/cancel': cancelOp as OperationHandler<never, unknown>,
-    'booking/move': moveOp as OperationHandler<never, unknown>,
-    'booking/open': openOp as OperationHandler<never, unknown>,
-    'booking/start': startOp as OperationHandler<never, unknown>,
-    'booking/complete': completeOp as OperationHandler<never, unknown>,
-    'booking/no-show': noShowOp as OperationHandler<never, unknown>,
-    'booking/get': getOp as OperationHandler<never, unknown>,
-    'booking/list': listOp as OperationHandler<never, unknown>,
-  'booking/availability': availabilityOp as OperationHandler<never, unknown>,
-};
+  'booking/create-resource': createResourceOp,
+  'booking/set-resource-active': setResourceActiveOp,
+  'booking/list-resources': listResourcesOp,
+  'booking/hold': holdOp,
+  'booking/confirm': confirmOp,
+  'booking/expire': expireOp,
+  'booking/join': joinOp,
+  'booking/leave': leaveOp,
+  'booking/cancel': cancelOp,
+  'booking/move': moveOp,
+  'booking/open': openOp,
+  'booking/start': startOp,
+  'booking/complete': completeOp,
+  'booking/no-show': noShowOp,
+  'booking/get': getOp,
+  'booking/list': listOp,
+  'booking/availability': availabilityOp,
+} satisfies OperationImpl<typeof bookingOperations, OperationContext>;
 
 export const bookingModule: ModuleRegistration = {
   manifest: bookingManifest,

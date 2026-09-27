@@ -27,6 +27,7 @@ import {
   type ListPage,
   type Page,
   substratError,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -1003,16 +1004,16 @@ export const absenceModule: ModuleRegistration = {
   // rather than in the handlers that remembered (#953).
   operationInputs: operationInputsOf(absenceOperations),
   operations: {
-    'absence/configure-leave-type': configureLeaveTypeOp as OperationHandler<never, unknown>,
-    'absence/list-leave-types': listLeaveTypesOp as OperationHandler<never, unknown>,
-    'absence/record-entry': recordEntryOp as OperationHandler<never, unknown>,
-    'absence/request': requestOp as OperationHandler<never, unknown>,
-    'absence/decide': decideOp as OperationHandler<never, unknown>,
-    'absence/cancel': cancelOp as OperationHandler<never, unknown>,
-    'absence/expire-stale': expireStaleOp as OperationHandler<never, unknown>,
-    'absence/balance': balanceOp as OperationHandler<never, unknown>,
-    'absence/availability': availabilityOp as OperationHandler<never, unknown>,
-    'absence/list-requests': listRequestsOp as OperationHandler<never, unknown>,
-    'absence/list-entries': listEntriesOp as OperationHandler<never, unknown>,
-  },
+    'absence/configure-leave-type': configureLeaveTypeOp,
+    'absence/list-leave-types': listLeaveTypesOp,
+    'absence/record-entry': recordEntryOp,
+    'absence/request': requestOp,
+    'absence/decide': decideOp,
+    'absence/cancel': cancelOp,
+    'absence/expire-stale': expireStaleOp,
+    'absence/balance': balanceOp,
+    'absence/availability': availabilityOp,
+    'absence/list-requests': listRequestsOp,
+    'absence/list-entries': listEntriesOp,
+  } satisfies OperationImpl<typeof absenceOperations, OperationContext>,
 };

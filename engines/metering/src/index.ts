@@ -29,6 +29,7 @@ import {
   type ListPage,
   type Page,
   substratError,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -868,13 +869,13 @@ export const meteringModule: ModuleRegistration = {
   // Parse, don't trust: the HOST applies the declared schemas, on every path in.
   operationInputs: operationInputsOf(meteringOperations),
   operations: {
-    'metering/configure-meter': configureMeterOp as OperationHandler<never, unknown>,
-    'metering/list-meters': listMetersOp as OperationHandler<never, unknown>,
-    'metering/record': recordOp as OperationHandler<never, unknown>,
-    'metering/total': totalOp as OperationHandler<never, unknown>,
-    'metering/list-entries': listEntriesOp as OperationHandler<never, unknown>,
-    'metering/close-period': closePeriodOp as OperationHandler<never, unknown>,
-    'metering/list-periods': listPeriodsOp as OperationHandler<never, unknown>,
-    'metering/period-lines': periodLinesOp as OperationHandler<never, unknown>,
-  },
+    'metering/configure-meter': configureMeterOp,
+    'metering/list-meters': listMetersOp,
+    'metering/record': recordOp,
+    'metering/total': totalOp,
+    'metering/list-entries': listEntriesOp,
+    'metering/close-period': closePeriodOp,
+    'metering/list-periods': listPeriodsOp,
+    'metering/period-lines': periodLinesOp,
+  } satisfies OperationImpl<typeof meteringOperations, OperationContext>,
 };

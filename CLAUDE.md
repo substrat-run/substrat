@@ -545,7 +545,12 @@ hand-written map is refused as well as a missing one — it reads as coverage wh
 what someone remembered to type — and so is a registration this text rule cannot read, rather
 than being skipped. `demos`, `engines` and the scaffold template, which are the modules built
 from a declared surface; `apps/dashboard` binds its operations by hand and declares none, so
-there is nothing to derive. A file opts out with `module-inputs-allow: <reason>`),
+there is nothing to derive. A file opts out with `module-inputs-allow: <reason>`. The same
+gate holds the OUTPUT half for `engines/` (#959): an engine's handler map is written
+`{ … } satisfies OperationImpl<typeof ops, OperationContext>`, with no cast on any entry,
+bound to the same declaration `operationInputsOf` parses with. That clause is the only thing
+tying a handler's return to its declared output, and no test can see it deleted — nor an entry
+cast `as never` or `as any`, which pass the `satisfies` silently — so the lint refuses all three),
 `lint:skills` (`tools/skill-paths.mjs`: a repo-rooted path a skill cites in code — a bare
 `demos/todo/src/module.ts`, or the `tools/…` inside a command — exists, spelled the way the
 tree spells it. `.claude/skills/*` and `plugin/substrat/skills/*` are both read; a

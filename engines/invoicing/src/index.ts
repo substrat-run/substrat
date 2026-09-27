@@ -37,6 +37,7 @@ import {
   type EntityRow,
   type Money,
   substratError,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 import type { PageParams } from '@substrat-run/kernel';
 
@@ -767,10 +768,10 @@ const exportOp: OperationHandler<{ underlagId: string; currency?: string }, Unde
 };
 
 const OPERATIONS = {
-  'invoicing/list': listOp as never,
-  'invoicing/get': getOp as never,
-  'invoicing/export': exportOp as never,
-};
+  'invoicing/list': listOp,
+  'invoicing/get': getOp,
+  'invoicing/export': exportOp,
+} satisfies OperationImpl<typeof invoicingOperations, OperationContext>;
 
 /**
  * The underlag's state machine, declared (#844).
