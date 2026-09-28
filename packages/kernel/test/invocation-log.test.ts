@@ -6,6 +6,8 @@ import {
   invocationLog,
   type InvocationLogLine,
   type InvocationRecord,
+  invocationStampOf,
+  withInvocationLog,
 } from '../src/invocation-log.js';
 
 /**
@@ -339,5 +341,84 @@ describe('invocationLog', () => {
     expect(invocationLevelOf(null, true)).toBe('error');
     // An in-band failure — an MCP tool error answers 200.
     expect(invocationLevelOf(200, false, 'permission_denied')).toBe('warn');
+  });
+
+  // #1893: the platform stamps the request itself, by wrapping the deployed entry.
+  describe('withInvocationLog — the platform’s stamp (#1893)', () => {
+    const options = { routerSecret: (env: Env) => env.ROUTER_SECRET };
+    const request = (path = '/api/things', init: RequestInit = {}) =>
+      new Request(`https://acme.example${path}`, { ...init, headers: { ...routed, ...(init.headers as Record<string, string> | undefined) } });
+
+    it('stamps a worker that mounts nothing, whatever it is written in', async () => {
+      const cap = capture();
+      try {
+        const worker = withInvocationLog<Env>({ fetch: async () => new Response('ok', { status: 201 }) }, options);
+        const res = await worker.fetch!(request(), ENV, {});
+        expect(res.status).toBe(201);
+        expect(cap.lines).toHaveLength(1);
+        expect(cap.lines[0]).toMatchObject({ substrat: 'invocation', tenantId: TENANT, scopeId: SCOPE, status: 201, threw: false, level: 'info', path: '/api/things' });
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('writes ONE line when the vertical also mounts the middleware — and hands the chain the platform’s stamp', async () => {
+      const cap = capture();
+      try {
+        let seen: InvocationRecord | undefined;
+        const app = new Hono<{ Bindings: Env; Variables: { [INVOCATION_RECORD_KEY]: InvocationRecord } }>();
+        app.use('*', invocationLog<Env>(options));
+        app.post('/api/things', (c) => {
+          seen = c.get(INVOCATION_RECORD_KEY);
+          seen.operation = 'things/create';
+          return c.json({}, 201);
+        });
+        const req = request('/api/things', { method: 'POST' });
+        await withInvocationLog<Env>(app as never, options).fetch!(req, ENV, {});
+        expect(cap.lines).toHaveLength(1);
+        // The record the route filled is the one the platform's line was written from.
+        expect(seen).toBe(invocationStampOf(req)!.record);
+        expect(cap.lines[0]).toMatchObject({ operation: 'things/create', status: 201, invocationId: invocationStampOf(req)!.invocationId });
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('records a throw as an error and re-throws it untouched', async () => {
+      const cap = capture();
+      try {
+        const boom = new Error('boom');
+        const worker = withInvocationLog<Env>({ fetch: async () => { throw boom; } }, options);
+        await expect(worker.fetch!(request(), ENV, {})).rejects.toBe(boom);
+        expect(cap.lines[0]).toMatchObject({ status: null, threw: true, level: 'error' });
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('writes nothing for a request the router did not sign', async () => {
+      const cap = capture();
+      try {
+        const worker = withInvocationLog<Env>({ fetch: async () => new Response('ok') }, options);
+        await worker.fetch!(new Request('https://acme.example/x', { headers: { 'x-substrat-tenant': TENANT } }), ENV, {});
+        expect(cap.lines).toEqual([]);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('passes the other handlers through, bound to the worker, and leaves a worker with no fetch alone', async () => {
+      const worker = {
+        marker: 'me',
+        fetch: async () => new Response('ok'),
+        scheduled(this: { marker: string }) {
+          return this.marker;
+        },
+      };
+      const wrapped = withInvocationLog<Env>(worker as never, options);
+      expect((wrapped['scheduled'] as () => string)()).toBe('me');
+      const noFetch = { queue: () => 1 };
+      expect(withInvocationLog<Env>(noFetch as never, options)).toBe(noFetch);
+    });
   });
 });

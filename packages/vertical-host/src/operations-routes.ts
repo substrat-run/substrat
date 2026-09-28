@@ -39,7 +39,7 @@ import {
   PAGE_TOTAL_HEADER,
   errorCodeOf,
 } from '@substrat-run/contracts';
-import { INVOCATION_RECORD_KEY, type InvocationRecord, type ScopeStub } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord, type ScopeStub } from '@substrat-run/kernel';
 import { classifyError } from './errors.js';
 import { mountMcp, type MountMcpOptions } from './mcp.js';
 
@@ -492,9 +492,10 @@ export function mountOperations(
       // refuses a vertical that mounts it below only part of its surface). Read
       // defensively: a host that somehow lacks it emits events with no invocation id,
       // which reads as unrecorded rather than failing the call.
-      const invocationId = (c as { get?: (k: string) => unknown }).get?.('substratInvocationId') as
-        | string
-        | undefined;
+      // #1893: or the platform's stamp, when the worker mounts no middleware to put it there.
+      const invocationId =
+        ((c as { get?: (k: string) => unknown }).get?.('substratInvocationId') as string | undefined) ??
+        invocationStampOf(c.req.raw)?.invocationId;
       let version: string | null | undefined;
       let replayed = false;
       // Options are supplied when ANY of the three concerns applies: `concurrency` is an
@@ -580,9 +581,10 @@ export function mountOperations(
 
     const handler = async (c: Context) => {
       // #1746: the record `invocationLog` handed down, read defensively like the id above.
-      const record = (c as { get?: (k: string) => unknown }).get?.(INVOCATION_RECORD_KEY) as
-        | InvocationRecord
-        | undefined;
+      // #1893: or the platform's stamp, when the worker mounts no middleware to put it there.
+      const record =
+        ((c as { get?: (k: string) => unknown }).get?.(INVOCATION_RECORD_KEY) as InvocationRecord | undefined) ??
+        invocationStampOf(c.req.raw)?.record;
       if (record) record.operation = name;
       try {
         return await invoke(c, record);

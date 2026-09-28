@@ -150,3 +150,24 @@ describe('readRoutedNode', () => {
     ).toThrow(/not signed by a known router/);
   });
 });
+
+describe('ROUTED_ID agrees with the contracts id schemas (#1893)', () => {
+  it('accepts and refuses exactly what tenantId and scopeId do', async () => {
+    const { ROUTED_ID } = await import('../src/routed-node.js');
+    const { tenantId, scopeId } = await import('@substrat-run/contracts');
+    const samples = [
+      '01JZ0000000000000000TEN001',
+      '01KYW29NGFS4WRPST5R69YJBBN',
+      '01jz0000000000000000ten001', // lowercase
+      '01JZ0000000000000000TEN00', // 25
+      '01JZ0000000000000000TEN0012', // 27
+      '01JZ0000000000000000TENI01', // I is not Crockford
+      '01JZ0000000000000000TENU01', // U is not Crockford
+      '',
+    ];
+    for (const s of samples) {
+      expect(ROUTED_ID.test(s), s).toBe(tenantId.safeParse(s).success);
+      expect(ROUTED_ID.test(s), s).toBe(scopeId.safeParse(s).success);
+    }
+  });
+});

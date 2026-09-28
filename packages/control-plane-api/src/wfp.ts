@@ -1,5 +1,6 @@
 import { assetHash, PLATFORM_WORKER_FIRST_PREFIXES } from '@substrat-run/contracts';
 import { DeployUploadError, nextMigrationTag } from './deploy.js';
+import { withPlatformEntry } from './platform-entry.js';
 import type {
   AssetUpload,
   DeployVerticalFn,
@@ -246,7 +247,10 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
     .filter(([, text]) => text)
     .map(([name, text]) => ({ type: 'secret_text', name, text: text as string }));
 
-  return async (deploymentRef, bundle, inPlace) => {
+  return async (deploymentRef, declared, inPlace) => {
+    // #1893: the platform's entry goes in front of the vertical's, so every request the
+    // script serves is stamped whether or not the vertical mounted `invocationLog`.
+    const bundle = withPlatformEntry(declared);
     // The model runtime needs BOTH halves: the platform willing to grant it at all
     // (`bindAi`, a fleet kill-switch) and THIS version having declared it
     // (`substrat.usesModels`). A vertical that never asked never holds the capability,

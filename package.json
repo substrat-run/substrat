@@ -60,6 +60,7 @@
     "lint:agent-rules": "tsx tools/agent-rules-emit.mts",
     "lint:launch": "tsx tools/launch-emit.mts",
     "lint:pins": "tsx tools/pins-emit.mts",
+    "lint:platform-entry": "tsx tools/platform-entry-emit.mts",
     "lint:decisions": "node tools/decisions.mjs",
     "lint:plugin": "tsx tools/plugin-emit.mts",
     "lint:connector-grants": "tsx tools/connector-grants.mts",
@@ -78,6 +79,7 @@
     "@babel/types": "^7.29.7",
     "@changesets/cli": "^2.31.0",
     "concurrently": "^9.0.0",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
     "wrangler": "catalog:"

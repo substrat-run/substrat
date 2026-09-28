@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, substratError, toProblem } from '@substrat-run/contracts';
-import { INVOCATION_RECORD_KEY, PermissionDenied, type InvocationRecord } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, PermissionDenied, invocationStampOf, withInvocationLog, type InvocationRecord } from '@substrat-run/kernel';
 import { mountOperations } from '../src/operations-routes.js';
 
 const operations = {
@@ -1001,5 +1001,38 @@ describe('the per-request record (#1746)', () => {
     expect((await call()).status).toBe(409);
     expect(record).toMatchObject({ operation: 'acme/plain', principalKind: 'capability', problemCode: 'conflict' });
     expect(record.emitted).toBeUndefined();
+  });
+});
+
+/**
+ * #1893: a worker that mounts no middleware at all, stamped by the platform's entry. The
+ * mount finds the stamp through the registry, so the platform's line still names the
+ * operation, and the events carry the stamp's invocation id.
+ */
+describe('the platform’s stamp, with no middleware mounted (#1893)', () => {
+  it('fills the stamp the platform started and passes its invocation id on', async () => {
+    const seen: Array<string | undefined> = [];
+    const app = new Hono();
+    mountOperations(
+      app,
+      { 'acme/plain': { input: z.object({}), http: { method: 'POST', path: '/plain' } } },
+      async () =>
+        ({
+          subjectKind: 'principal',
+          invoke: async (_n: string, _i: unknown, options?: { invocationId?: string; onEmitted?: (r: unknown) => void }) => {
+            seen.push(options?.invocationId);
+            options?.onEmitted?.({ events: [], total: 0 });
+            return { ok: true };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any,
+    );
+    const req = new Request('https://acme.example/api/plain', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    const worker = withInvocationLog(app as never);
+    const res = await worker.fetch!(req, {}, {});
+    expect(res.status).toBe(200);
+    const stamp = invocationStampOf(req)!;
+    expect(stamp.record).toEqual({ operation: 'acme/plain', principalKind: 'principal', emitted: { events: [], total: 0 } });
+    expect(seen).toEqual([stamp.invocationId]);
   });
 });

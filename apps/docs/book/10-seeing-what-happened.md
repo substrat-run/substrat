@@ -50,13 +50,22 @@ vertical. So the router knows the tenant and cannot label the vertical's log lin
 and the vertical's log lines, unlabelled, belong to nobody in particular. A tenant's
 Observability page would be either empty or someone else's.
 
-So the vertical writes the line itself. One middleware, mounted first:
+So a line carrying the tenant is written from inside the vertical's script, and the platform
+puts it there. At upload, the control plane adds its own entry module in front of the
+vertical's. That module wraps the vertical's default export with the kernel's
+`withInvocationLog`, so every request the script serves is stamped whether or not its author
+thought about logging. A vertical may also mount the same thing as middleware, first on its app,
+and the scaffold does:
 
 ```ts
 app.use('*', invocationLog({ routerSecret: (env) => env.ROUTER_SECRET }));
 ```
 
-It writes one JSON line per request to Workers Logs, in a `finally`, so logging can never fail
+Doing both is safe. The middleware finds the platform's stamp on the request and steps aside, so
+the request is still one line, and what the operation route learns about the request lands on
+that line.
+
+The stamp writes one JSON line per request to Workers Logs, in a `finally`, so logging can never fail
 the request:
 
 ```
@@ -85,11 +94,16 @@ Three details come from getting this wrong once:
   would put text the forger chose onto another tenant's dashboard. So `routerSecret` is
   required: without it every assertion fails verification and **nothing is written**. From the
   outside that looks the same as no traffic, which is why a bare `invocationLog()` is refused.
-- **It must be the first registration.** Hono composes handlers in registration order, so a
+- **When you mount it, it must be the first registration.** Hono composes handlers in registration order, so a
   mount below some routes logs part of the surface and stays silent for the rest, which reads
   as "no traffic on those routes". `lint:invocation-log` checks the *order*, not just that the
   mount exists. The scaffold template ships with the mount in place.
-- **It is not retroactive.** Only versions pushed after a vertical adopted it write lines.
+- **It is not retroactive.** A request that has already been served was never stamped, so there
+  is nothing to backfill. An older *version*, though, is re-uploaded through the same entry when
+  it is promoted or backed out to, so from then on it writes lines too.
+- **A bundle whose older kernel writes the line itself is left alone.** That kernel predates the
+  shared stamp and would not step aside, so wrapping it would log every request twice. Pushing
+  on a current kernel moves it over.
 
 Inside an operation, write your own lines with `ctx.log` rather than `console.log`:
 

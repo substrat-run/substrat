@@ -308,6 +308,92 @@ function pathOf(url: string): string {
 }
 
 /**
+ * #1893: one request's stamp — the id minted for it and the record the handler chain fills
+ * in — shared by whichever layer started it.
+ */
+export interface InvocationStamp {
+  invocationId: string;
+  record: InvocationRecord;
+}
+
+/**
+ * The registry of stamps, keyed by the incoming `Request`, on `globalThis` under a GLOBAL
+ * symbol. Global rather than module state, because two copies of this code meet in one
+ * request: the platform's entry (`withInvocationLog`, prebuilt into the upload) and the
+ * kernel the vertical bundled — different module instances, one `Symbol.for`. Weak, so a
+ * finished request's stamp goes with its `Request`.
+ */
+const STAMPS = Symbol.for('substrat.invocation-stamp');
+
+function stamps(): WeakMap<object, InvocationStamp> {
+  const g = globalThis as unknown as Record<symbol, WeakMap<object, InvocationStamp> | undefined>;
+  return (g[STAMPS] ??= new WeakMap());
+}
+
+/**
+ * The stamp a request already carries, if a layer outside this one started it (#1893).
+ * `vertical-host` reads the record through this when the Hono context has none, which is
+ * the case when the platform's entry stamped the request and the vertical mounts nothing.
+ */
+export function invocationStampOf(request: object): InvocationStamp | undefined {
+  return stamps().get(request);
+}
+
+function beginStamp(request: object): InvocationStamp {
+  const stamp: InvocationStamp = { invocationId: ulid(), record: {} };
+  stamps().set(request, stamp);
+  return stamp;
+}
+
+/** What a finished request looked like, for the line. */
+interface Finished<Env> {
+  request: { method: string; url: string; headers: HeaderReader };
+  env: Env;
+  status: number | null;
+  threw: boolean;
+  started: number;
+}
+
+/**
+ * Write the line for a finished request — the one place it is written, whichever layer
+ * started the stamp.
+ *
+ * No VERIFIED tenant ⇒ no line, and the three ways that happens are all silence here: no
+ * assertion at all (an un-routed call), an assertion this worker cannot verify or that is
+ * not the router's (`RouterAssertionError`), and — defensively — anything else the read
+ * throws. Writing a line for any of them would be filing one caller's request under a
+ * tenant of their choosing.
+ */
+function writeInvocationLine<Env>(stamp: InvocationStamp, done: Finished<Env>, options: InvocationLogOptions<Env>): void {
+  const node = routedNodeOrNull(done.request.headers, done.env, options);
+  if (!node) return;
+  const { record, invocationId } = stamp;
+  const emitted = record.emitted;
+  const line: InvocationLogLine = {
+    substrat: 'invocation',
+    tenantId: node.tenantId,
+    scopeId: node.scopeId,
+    vertical: node.verticalSlug,
+    surface: node.surface,
+    method: done.request.method,
+    path: pathOf(done.request.url),
+    status: done.status,
+    threw: done.threw,
+    durationMs: Date.now() - done.started,
+    invocationId,
+    level: invocationLevelOf(done.status, done.threw, record.problemCode),
+    operation: record.operation ?? null,
+    problemCode: record.problemCode ?? null,
+    principalKind: record.principalKind ?? null,
+    eventCount: emitted ? emitted.total : null,
+    eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
+    entities: emitted ? distinct(emitted.events.map((e) => e.entity)) : [],
+    versionId: versionIdOf(done.env),
+  };
+  console.log(JSON.stringify(line));
+}
+
+/**
  * Mount as the FIRST middleware on a vertical's app, with the same two answers the
  * vertical gives `readRoutedNode` in its own `nodeFor`:
  *
@@ -323,11 +409,14 @@ function pathOf(url: string): string {
  * ```
  *
  * First, because Hono composes handlers in registration order and stops at the one that
- * returns a response — middleware registered after a route does not wrap that route. A
- * vertical that mounts this below its own routes gets a log for some of its surface and
- * silence for the rest, which is worse than none, because the silence reads as no
- * traffic. `pnpm lint:invocation-log` refuses that arrangement rather than trusting
- * anyone to remember it.
+ * returns a response — middleware registered after a route does not wrap that route.
+ *
+ * **Since #1893 the platform stamps every deployed request itself**, by wrapping the
+ * uploaded entry with `withInvocationLog`. A vertical that still mounts this middleware
+ * then finds the request already stamped and steps aside — it hands the platform's stamp
+ * to the handler chain through the context, as it always did, and writes no second line.
+ * Mounted where no platform entry runs (a dev server behind a dev router), it stamps as
+ * before.
  *
  * Nothing here can fail a request: the line is written in a `finally`, and a throw from
  * the handler is re-thrown untouched for `onError` to map as it always did.
@@ -336,15 +425,22 @@ export function invocationLog<Env = unknown>(
   options: InvocationLogOptions<Env> = {},
 ): (c: InvocationLogContext<Env>, next: () => Promise<void>) => Promise<void> {
   return async (c, next) => {
+    // Stamped already by the platform's entry: pass the stamp down, write nothing.
+    const existing = invocationStampOf(c.req.raw);
+    if (existing) {
+      c.set?.('substratInvocationId', existing.invocationId);
+      c.set?.(INVOCATION_RECORD_KEY, existing.record);
+      await next();
+      return;
+    }
     // Host code, so a real clock is correct here — `ctx.now()` is the module-code rule,
     // and this middleware runs outside any operation's transaction.
     const started = Date.now();
     // Minted per request, before anything can emit. A ULID so it sorts by time like
     // every other id on the spine.
-    const invocationId = ulid();
-    c.set?.('substratInvocationId', invocationId);
-    const record: InvocationRecord = {};
-    c.set?.(INVOCATION_RECORD_KEY, record);
+    const stamp = beginStamp(c.req.raw);
+    c.set?.('substratInvocationId', stamp.invocationId);
+    c.set?.(INVOCATION_RECORD_KEY, stamp.record);
     let threw = false;
     try {
       await next();
@@ -354,40 +450,82 @@ export function invocationLog<Env = unknown>(
       // the caller, and swallowing here would turn a fault into a silent 200.
       throw e;
     } finally {
-      // No VERIFIED tenant ⇒ no line, and the three ways that happens are all silence
-      // here: no assertion at all (an un-routed call), an assertion this worker cannot
-      // verify or that is not the router's (`RouterAssertionError`), and — defensively —
-      // anything else the read throws. Writing a line for any of them would be filing
-      // one caller's request under a tenant of their choosing.
-      const node = routedNodeOrNull(c, options);
-      if (node) {
-        const status = threw ? null : (c.res?.status ?? null);
-        const emitted = record.emitted;
-        const line: InvocationLogLine = {
-          substrat: 'invocation',
-          tenantId: node.tenantId,
-          scopeId: node.scopeId,
-          vertical: node.verticalSlug,
-          surface: node.surface,
-          method: c.req.method,
-          path: pathOf(c.req.raw.url),
-          status,
-          threw,
-          durationMs: Date.now() - started,
-          invocationId,
-          level: invocationLevelOf(status, threw, record.problemCode),
-          operation: record.operation ?? null,
-          problemCode: record.problemCode ?? null,
-          principalKind: record.principalKind ?? null,
-          eventCount: emitted ? emitted.total : null,
-          eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
-          entities: emitted ? distinct(emitted.events.map((e) => e.entity)) : [],
-          versionId: versionIdOf(c.env),
-        };
-        console.log(JSON.stringify(line));
-      }
+      writeInvocationLine(
+        stamp,
+        { request: { method: c.req.method, url: c.req.raw.url, headers: c.req.raw.headers }, env: c.env, status: threw ? null : (c.res?.status ?? null), threw, started },
+        options,
+      );
     }
   };
+}
+
+/** The request a module worker's `fetch` receives, as far as the stamp reads it. */
+export interface IncomingRequest {
+  method: string;
+  url: string;
+  headers: HeaderReader;
+}
+
+/**
+ * The module-worker shape `withInvocationLog` wraps: a default export with handlers. Typed
+ * structurally — kernel compiles with no DOM and no workers types — so a Hono app, a plain
+ * `{ fetch }` object and anything else with the method all fit.
+ */
+export interface ModuleWorker<Env = unknown> {
+  fetch?: (request: IncomingRequest, env: Env, ctx: unknown) => { status: number } | Promise<{ status: number }>;
+  [handler: string]: unknown;
+}
+
+/** The handlers a module worker may export besides `fetch`, passed through untouched. */
+const OTHER_HANDLERS = ['scheduled', 'queue', 'email', 'tail', 'trace', 'alarm', 'test'] as const;
+
+/**
+ * The platform's half of the stamp (#1893): wrap a module worker's `fetch` so every request
+ * it serves is stamped, whatever framework the worker is written in and whether or not it
+ * mounts the middleware.
+ *
+ * The control plane builds this into the entry it uploads in front of every vertical's
+ * bundle (`platform-entry.generated.ts`), which is what makes the stamp the platform's
+ * rather than a line each vertical has to remember. A request the vertical's own
+ * middleware already stamped — possible only if something wrapped this one — is passed
+ * straight through. The other handlers (`scheduled`, `queue`, …) are passed through
+ * untouched, bound to the worker, since a stamp is about a routed request.
+ *
+ * Nothing here can fail a request: the line is written in a `finally`, and a throw is
+ * re-thrown untouched.
+ */
+export function withInvocationLog<Env = unknown>(
+  worker: ModuleWorker<Env>,
+  options: InvocationLogOptions<Env> = {},
+): ModuleWorker<Env> {
+  // The platform wraps whatever a bundle's default export is (#1893): a class entrypoint or
+  // no default at all has no `fetch` to stamp, and is handed back untouched.
+  const inner = (worker as ModuleWorker<Env> | undefined)?.fetch;
+  if (typeof inner !== 'function') return worker;
+  const wrapped: ModuleWorker<Env> = {
+    async fetch(request: IncomingRequest, env: Env, ctx: unknown): Promise<{ status: number }> {
+      if (invocationStampOf(request)) return inner.call(worker, request, env, ctx);
+      const started = Date.now();
+      const stamp = beginStamp(request);
+      let status: number | null = null;
+      let threw = false;
+      try {
+        const response = await inner.call(worker, request, env, ctx);
+        status = response.status;
+        return response;
+      } catch (e) {
+        threw = true;
+        throw e;
+      } finally {
+        writeInvocationLine(stamp, { request, env, status, threw, started }, options);
+      }
+    },
+  };
+  for (const name of OTHER_HANDLERS) {
+    const h = worker[name];
+    if (typeof h === 'function') wrapped[name] = (h as (...a: unknown[]) => unknown).bind(worker);
+  }
+  return wrapped;
 }
 
 /**
@@ -399,14 +537,11 @@ export function invocationLog<Env = unknown>(
  * would replace the vertical's real answer with a logging failure. So the loudness is
  * swallowed HERE and only here, and the request is unaffected either way.
  */
-function routedNodeOrNull<Env>(
-  c: InvocationLogContext<Env>,
-  options: InvocationLogOptions<Env>,
-) {
+function routedNodeOrNull<Env>(headers: HeaderReader, env: Env, options: InvocationLogOptions<Env>) {
   try {
-    return readRoutedNode(c.req.raw.headers, {
-      expectedSecret: options.routerSecret?.(c.env),
-      allowUnsigned: options.allowUnsigned?.(c.env) ?? false,
+    return readRoutedNode(headers, {
+      expectedSecret: options.routerSecret?.(env),
+      allowUnsigned: options.allowUnsigned?.(env) ?? false,
     });
   } catch (e) {
     // `RouterAssertionError` is the expected shape — a bad, missing or unverifiable
