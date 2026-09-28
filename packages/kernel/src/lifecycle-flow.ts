@@ -77,6 +77,8 @@ interface EntityWalk {
   finishedAt: string | null;
   /** Invocations that already moved this entity by inference — one move per call. */
   inferredIn: Set<string>;
+  /** Invocations already counted on a self-transition of this entity — one per call. */
+  loopedIn: Set<string>;
 }
 
 /**
@@ -218,12 +220,32 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
     }
   };
 
+  /**
+   * A declared self-transition (`on: { op: <the same state> }`): counted on its edge, but the
+   * stay does not end — the entity never left, so it is neither an entry nor a dwell sample.
+   * Once per call per entity, like an inferred move, since a call may emit several events.
+   */
+  const loop = (walk: EntityWalk, op: string, row: EventRow, isInferred: boolean) => {
+    const call = row.invocation_id;
+    if (call !== null && walk.loopedIn.has(call)) return;
+    if (call !== null) walk.loopedIn.add(call);
+    if (!inWindow(row.occurred_at)) return;
+    if (isInferred) inferred += 1;
+    const s = walk.stay.state;
+    const edge = edges.get(edgeKey(s, s, op))!;
+    edge.count += 1;
+    const kind = actorKindOf(row.actor);
+    edge.actors[kind] = (edge.actors[kind] ?? 0) + 1;
+  };
+
   const step = (walk: EntityWalk, row: EventRow) => {
     const op = row.operation;
     const payloadState = payloadStateOf(row);
     if (payloadState !== null) {
       const from = walk.stay.state;
-      if (payloadState !== from) {
+      if (payloadState === from) {
+        if (op !== null && targetOf(from, op) === from) loop(walk, op, row, false);
+      } else {
         if (op !== null && targetOf(from, op) === payloadState) {
           move(walk, payloadState, op, row.occurred_at, true, actorKindOf(row.actor));
         } else if (op !== null && hasEdge(from, payloadState)) {
@@ -249,6 +271,8 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
         inferred += inWindow(row.occurred_at) ? 1 : 0;
         if (call !== null) walk.inferredIn.add(call);
         move(walk, target, op, row.occurred_at, true, actorKindOf(row.actor));
+      } else if (target !== undefined && target === walk.stay.state) {
+        loop(walk, op, row, true);
       } else if (target === undefined && edgeOps.has(op) && !(states[walk.stay.state]?.allow ?? []).includes(op)) {
         unexplained += inWindow(row.occurred_at) ? 1 : 0;
       }
@@ -271,6 +295,7 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
       lastAt: row.occurred_at,
       finishedAt: null,
       inferredIn: new Set(),
+      loopedIn: new Set(),
     };
     if (first !== lifecycle.initial) {
       // Found mid-life (created before the outbox recorded it, or by a path that emitted

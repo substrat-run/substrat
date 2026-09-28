@@ -69,7 +69,11 @@ export interface ProcessLayout {
   pairs: LaidPair[];
 }
 
-export const pairId = (from: string, to: string) => `${from}>${to}`;
+/**
+ * A pair's id: a JSON tuple, because state names are any string — joined with a separator,
+ * `a>b → c` and `a → b>c` would be one id.
+ */
+export const pairId = (from: string, to: string) => JSON.stringify([from, to]);
 
 /** The machine's forward edges: every declared move, minus the ones that go back (DFS from the initial state). */
 function forwardEdges(lc: EmittedLifecycle): Map<string, string[]> {
@@ -172,13 +176,12 @@ export function processLayout(lc: EmittedLifecycle, flow: LifecycleFlowResult | 
   const maxRow = Math.max(0, ...rows);
   // The arcs along the centre line need the room between it and the states beside it:
   // count them first, and open each gap by as many arc lanes as will run through it.
-  const drawnPairs = new Set<string>();
-  for (const [from, def] of Object.entries(lc.states)) for (const to of Object.values(def.on ?? {})) drawnPairs.add(pairId(from, to));
-  for (const e of flow?.edges ?? []) drawnPairs.add(pairId(e.from, e.to));
+  const drawnPairs = new Map<string, [string, string]>();
+  for (const [from, def] of Object.entries(lc.states)) for (const to of Object.values(def.on ?? {})) drawnPairs.set(pairId(from, to), [from, to]);
+  for (const e of flow?.edges ?? []) drawnPairs.set(pairId(e.from, e.to), [e.from, e.to]);
   let skips = 0;
   let returns = 0;
-  for (const id of drawnPairs) {
-    const [from, to] = id.split('>') as [string, string];
+  for (const [from, to] of drawnPairs.values()) {
     if (!column.has(from) || !column.has(to) || from === to || row.get(from) !== 0 || row.get(to) !== 0) continue;
     const d = column.get(to)! - column.get(from)!;
     if (d > 1) skips++;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { EmittedLifecycle, LifecycleFlowResult } from '@substrat-run/contracts';
-import { formatDuration, funnelRows, processLayout } from '../web/src/lib/process-layout.js';
+import { formatDuration, funnelRows, pairId, processLayout } from '../web/src/lib/process-layout.js';
 
 /**
  * The process map's computed layout (#1744). The design hand-places one machine; these
@@ -92,8 +92,8 @@ describe('processLayout', () => {
         { from: 'resolved', to: 'open', count: 1 },
       ]),
     );
-    expect(l.pairs.find((x) => x.id === 'closed>open')).toMatchObject({ declared: false, undeclared: 2 });
-    expect(l.pairs.find((x) => x.id === 'resolved>open')).toMatchObject({ declared: true, count: 4, seenLate: 3 });
+    expect(l.pairs.find((x) => x.id === pairId('closed', 'open'))).toMatchObject({ declared: false, undeclared: 2 });
+    expect(l.pairs.find((x) => x.id === pairId('resolved', 'open'))).toMatchObject({ declared: true, count: 4, seenLate: 3 });
   });
 
   it('stacks states that share a column, and still places one the initial state cannot reach', () => {
@@ -130,6 +130,21 @@ describe('processLayout', () => {
         const b = boxes[j]!;
         expect(Math.abs(a.x - b.x) < (a.w + b.w) / 2 && Math.abs(a.y - b.y) < 18, `${l.pairs[i]!.id} vs ${l.pairs[j]!.id}`).toBe(false);
       }
+  });
+
+  it('keeps two pairs apart whatever characters the state names carry', () => {
+    // Joined with a separator, `a>b → c` and `a → b>c` would be one pair.
+    const lc: EmittedLifecycle = {
+      field: 'state',
+      initial: 'a',
+      states: { a: { on: { 'o/x': 'b>c' } }, 'a>b': { on: { 'o/y': 'c' } }, 'b>c': { terminal: true }, c: { terminal: true } },
+    };
+    const l = processLayout(lc, flow([{ from: 'a', to: 'b>c', count: 3 }, { from: 'a>b', to: 'c', count: 4 }]));
+    expect(l.pairs.map((p) => [p.from, p.to, p.count]).sort()).toEqual([
+      ['a', 'b>c', 3],
+      ['a>b', 'c', 4],
+    ]);
+    expect(new Set(l.pairs.map((p) => p.id)).size).toBe(2);
   });
 
   it('is the same map every time for the same model', () => {

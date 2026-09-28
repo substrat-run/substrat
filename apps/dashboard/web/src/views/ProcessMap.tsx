@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { Button, Select, Tabs } from '@substrat-run/ui';
 import { api, type AppRow, type LifecycleFlowResult, type ProcessMapView, type ProcessPeriod } from '../lib/api';
 import { card } from '../components/ui';
@@ -259,8 +259,8 @@ function Diagram({
         viewBox={`0 0 ${layout.width} ${layout.height}`}
         width="100%"
         style={{ display: 'block', minWidth: Math.min(layout.width, 640), maxWidth: layout.width * 1.15 }}
-        role="img"
-        aria-label="Process map"
+        role="group"
+        aria-label="Process map: select a state or a move to see its details"
       >
         <defs>
           {(['idle', 'on', 'warn'] as const).map((k) => (
@@ -287,16 +287,36 @@ function Diagram({
   );
 }
 
+/**
+ * What makes an SVG group a control: focusable, announced as a button with its own label,
+ * and pressed with Enter or Space as well as a click — a `<g>` gets none of that for free.
+ */
+function selectable(label: string, selected: boolean, onSelect: () => void) {
+  return {
+    role: 'button',
+    tabIndex: 0,
+    'aria-label': label,
+    'aria-pressed': selected,
+    onClick: onSelect,
+    onKeyDown: (ev: KeyboardEvent<SVGGElement>) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        onSelect();
+      }
+    },
+    style: { cursor: 'pointer' },
+  } as const;
+}
+
 function Edge({ pair, selected, onSelect }: { pair: LaidPair; selected: boolean; onSelect: () => void }) {
   const warn = !pair.declared;
   const stroke = selected ? 'var(--brand-400)' : warn ? 'var(--status-warning-fg)' : pair.untaken ? 'var(--border-strong)' : 'var(--text-tertiary)';
   const label = String(pair.count === 0 && !pair.untaken ? '·' : num(pair.count));
   const w = 12 + label.length * 7;
+  const describe = `${pair.from} → ${pair.to}: ${num(pair.count)} moves${pair.untaken ? ' (declared, never taken)' : ''}${pair.undeclared ? ` · ${num(pair.undeclared)} not in the model` : ''}${pair.seenLate ? ` · ${num(pair.seenLate)} seen late` : ''}`;
   return (
-    <g onClick={onSelect} style={{ cursor: 'pointer' }}>
-      <title>
-        {`${pair.from} → ${pair.to}: ${num(pair.count)} moves${pair.untaken ? ' (declared, never taken)' : ''}${pair.undeclared ? ` · ${num(pair.undeclared)} not in the model` : ''}${pair.seenLate ? ` · ${num(pair.seenLate)} seen late` : ''}`}
-      </title>
+    <g {...selectable(describe, selected, onSelect)}>
+      <title>{describe}</title>
       <path d={pair.d} fill="none" stroke="transparent" strokeWidth={14} />
       <path
         d={pair.d}
@@ -343,9 +363,10 @@ function StateNode({
       ? `lifecycle ${formatDuration(lifecycleMs)}`
       : 'terminal'
     : `${num(flow?.entered ?? 0)} entered`;
+  const describe = `${laid.state}: ${num(flow?.current ?? 0)} now${dwell ? ` · median ${formatDuration(dwell.medianMs)}, p90 ${formatDuration(dwell.p90Ms)} over ${num(dwell.samples)} stays` : ''}`;
   return (
-    <g onClick={onSelect} style={{ cursor: 'pointer' }}>
-      <title>{`${laid.state}: ${num(flow?.current ?? 0)} now${dwell ? ` · median ${formatDuration(dwell.medianMs)}, p90 ${formatDuration(dwell.p90Ms)} over ${num(dwell.samples)} stays` : ''}`}</title>
+    <g {...selectable(describe, selected, onSelect)}>
+      <title>{describe}</title>
       <rect
         x={x}
         y={y}
