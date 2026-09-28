@@ -37,6 +37,7 @@ mountPlatformSurface(app, {
   onConfigure:  (env, b) => identityDo(env, b).putConfig(b.scopeId, b.entries),
   ownerSeat:      (env, r) => identityDo(env, r).ownerSeat(r.scopeId),
   mintOwnerClaim: (env, r, i) => mintOwnerClaimLink(identityDo(env, r), r.scopeId, i.origin),
+  transferOwner:  (env, r, i) => identityDo(env, r).transferOwner(r.scopeId, i.from, i.to),
 });
 
 export default app;
@@ -48,10 +49,10 @@ export default app;
   `delete-scope`, `tables`, `tables/:table`, `query`, `platform-requests`,
   `platform-requests/settle`) — pure delegations to the scope host, owned entirely here.
 - **Flavored routes** — `provision` (`onProvision`), `reconcile` (`resolveOwner`),
-  `configure` (`onConfigure`), `owner-seat` (`ownerSeat`) and `owner-claim`
-  (`mintOwnerClaim`). The platform keeps the secret gate, body parse, and response
-  envelope; you supply only the hook. Omit `resolveOwner` / `onConfigure` / `ownerSeat` /
-  `mintOwnerClaim` and that route answers `501`.
+  `configure` (`onConfigure`), `owner-seat` (`ownerSeat`), `owner-claim`
+  (`mintOwnerClaim`) and `owner-transfer` (`transferOwner`). The platform keeps the secret
+  gate, body parse, and response envelope; you supply only the hook. Omit `resolveOwner` /
+  `onConfigure` / `ownerSeat` / `mintOwnerClaim` / `transferOwner` and that route answers `501`.
 - **The gate** — one `/internal/*` middleware runs `assertPlatformCall`; an unset secret
   fails closed (`403`).
 - **The error envelope** — registered last, so mounting the surface installs it.

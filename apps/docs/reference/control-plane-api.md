@@ -69,6 +69,14 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   scope is bound to no vertical (with the diagnosis) or the bound vertical keeps no owner
   seat — both callbacks are optional in [`vertical-host`](/reference/vertical-host), and the
   vertical's own status is forwarded unchanged.
+  A third, `POST …/owner-transfer` with `{ from, to }`, hands the owner seat to another member
+  of the instance. It is **staff-only**: a tenant credential or a builder is refused `403`.
+  The vertical moves its owner of record, seats `to` in the owner role and then revokes
+  `from`'s. It refuses with `409`, changing nothing, when the seat is still unclaimed, `from`
+  is not the owner of record, or no login is bound to `to`. Every attempt writes two
+  `transferOwner` rows to the admin log, paired by the `operationId` the route answers with:
+  an `intent` before the vertical is asked, then `applied`, `refused` or `failed`. A `failed`
+  hand-over may have stopped part-way, and sending the same request again completes it.
 - **Verticals** — `/verticals` (+ `versions`, `versions/:id/admit`|`reject`, `channels`,
   `channels/:c/promote`, `deploy`, `instances`, `listing`, `publish-request`,
   `install-block`): the registry, admission, promotion, and the deploy path. A staff or
