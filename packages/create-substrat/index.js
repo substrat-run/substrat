@@ -39,7 +39,7 @@ const TEMPLATE = join(HERE, 'template');
 const SUBSTRAT = '^0.126.0';
 const ENGINE_WORKORDER = '^0.12.10';
 const ENGINE_INVOICING = '^0.11.10';
-const BOUNDARY_LINT = '^0.5.0';
+const BOUNDARY_LINT = '^0.6.0';
 const DEV_ISSUER = '^0.2.8';
 
 const DOCS = 'https://substrat.net';
