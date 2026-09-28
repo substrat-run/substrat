@@ -2814,6 +2814,17 @@ export function scopeHostContractSuite(
           ).rejects.toThrow(/listed twice/);
         });
 
+        // A column listed twice is the same shape one level down: the row insert names it twice,
+        // and which of the two cells lands is SQLite's choice, not the dump's. Case-folded, as
+        // SQLite resolves column names that way too (#1883 review).
+        it('refuses a column listed twice in one table, including differing only in case', async () => {
+          await expect(
+            importForged([
+              { name: 'marker', ddl: 'CREATE TABLE marker (id TEXT, note TEXT)', columns: ['id', 'note', 'ID'], rows: [] },
+            ]),
+          ).rejects.toThrow(/column "ID" in table "marker" is listed twice/);
+        });
+
         // Non-vacuous: proves the checks do not simply reject everything, and that a
         // `;` inside a string literal is not read as a statement boundary — a DEFAULT
         // of `'a;b'` is legal SQL, and a `split(';')` would refuse it.
