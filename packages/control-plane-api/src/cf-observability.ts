@@ -667,43 +667,17 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
    * tenant's counts are exact and a busy one's are estimates, reweighted by
    * `_sample_interval` and flagged `estimated`. A family is not written into the datapoint; it
    * is a function of the vertical slug (blob1), so the rows of every vertical the tenant runs
-   * come back and the ones of other families are dropped here.
+   * come back and the ones of other families are dropped here. Because the answer is the
+   * same for every family, one query serves them all: a tenant-wide read asks once per family
+   * at the same instant, and those calls share one in-flight query (`tenantRequestAnswer`)
+   * instead of scanning the tenant N times.
    *
    * Refuses a query with no tenant rather than reading every tenant's datapoints: this source
    * is never cached, so it has no reason to.
    */
   async function routerRequestCube(dataset: string, q: CubeQuery): Promise<{ rows: RequestCubeRow[]; estimated: boolean }> {
     if (!q.tenantId) throw new Error('observability: the router request cube is read per tenant, and this query named none');
-    const grainSeconds = Math.max(1, Math.round(q.grainMs / 1000));
-    const sql = `
-      SELECT
-        blob1 AS vertical,
-        blob2 AS scopeId,
-        blob3 AS surface,
-        double2 AS status,
-        blob6 AS operation,
-        blob7 AS problemCode,
-        blob8 AS principalKind,
-        blob9 AS level,
-        toStartOfInterval(timestamp, INTERVAL '${grainSeconds}' SECOND) AS bucket,
-        sum(_sample_interval) AS requests,
-        max(_sample_interval) AS maxInterval
-      FROM ${aeDataset(dataset)}
-      WHERE index1 = ${aeLiteral(q.tenantId)}
-        AND timestamp >= toDateTime(${Math.floor(q.from / 1000)})
-        AND timestamp < toDateTime(${Math.ceil(q.to / 1000)})
-      GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, bucket
-      ORDER BY bucket ASC
-      LIMIT ${REQUEST_CUBE_ROW_LIMIT}
-      FORMAT JSON`;
-    const answer = await analyticsEngineSql(sql);
-    if (answer.length >= REQUEST_CUBE_ROW_LIMIT) {
-      // A saturated page is a prefix of the window, which facet counts would present as the
-      // whole of it. Refused, like the metrics series.
-      throw new Error(
-        `Cloudflare Analytics Engine request cube saturated at ${REQUEST_CUBE_ROW_LIMIT} rows: the counts would be partial`,
-      );
-    }
+    const answer = await tenantRequestAnswer(dataset, q.tenantId, q);
     let estimated = false;
     const rows = answer.flatMap((r): RequestCubeRow[] => {
       if (stableDeploymentRefFor(String(r['vertical'] ?? '')) !== q.service) return [];
@@ -728,6 +702,54 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       ];
     });
     return { rows, estimated };
+  }
+
+  /**
+   * One tenant's request datapoints over a window, grouped per grain — the part of the
+   * router cube every family shares. Concurrent calls for the same (tenant, window, grain)
+   * share one query; the entry is dropped once it settles, so nothing is cached past the
+   * read that asked.
+   */
+  const inFlight = new Map<string, Promise<Array<Record<string, unknown>>>>();
+  function tenantRequestAnswer(dataset: string, tenantId: string, q: CubeQuery): Promise<Array<Record<string, unknown>>> {
+    const grainSeconds = Math.max(1, Math.round(q.grainMs / 1000));
+    const key = `${dataset}\u0000${tenantId}\u0000${q.from}\u0000${q.to}\u0000${grainSeconds}`;
+    const pending = inFlight.get(key);
+    if (pending) return pending;
+    const sql = `
+      SELECT
+        blob1 AS vertical,
+        blob2 AS scopeId,
+        blob3 AS surface,
+        double2 AS status,
+        blob6 AS operation,
+        blob7 AS problemCode,
+        blob8 AS principalKind,
+        blob9 AS level,
+        toStartOfInterval(timestamp, INTERVAL '${grainSeconds}' SECOND) AS bucket,
+        sum(_sample_interval) AS requests,
+        max(_sample_interval) AS maxInterval
+      FROM ${aeDataset(dataset)}
+      WHERE index1 = ${aeLiteral(tenantId)}
+        AND timestamp >= toDateTime(${Math.floor(q.from / 1000)})
+        AND timestamp < toDateTime(${Math.ceil(q.to / 1000)})
+      GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, bucket
+      ORDER BY bucket ASC
+      LIMIT ${REQUEST_CUBE_ROW_LIMIT}
+      FORMAT JSON`;
+    const query = (async () => {
+      const answer = await analyticsEngineSql(sql);
+      if (answer.length >= REQUEST_CUBE_ROW_LIMIT) {
+        // A saturated page is a prefix of the window, which facet counts would present as the
+        // whole of it. Refused, like the metrics series.
+        throw new Error(
+          `Cloudflare Analytics Engine request cube saturated at ${REQUEST_CUBE_ROW_LIMIT} rows: the counts would be partial`,
+        );
+      }
+      return answer;
+    })().finally(() => inFlight.delete(key));
+    inFlight.set(key, query);
+    return query;
   }
 
   /**

@@ -82,6 +82,26 @@ describe('the router request cube (#1904)', () => {
     expect(f.facets.status).toEqual(expect.arrayContaining([{ value: 409, count: 3 }]));
   });
 
+  it('asks Analytics Engine once for a tenant-wide read, however many families the tenant runs', async () => {
+    // The datapoint names no family, so every family's answer is the same tenant scan; one
+    // query per family would scan the tenant N times.
+    const { sqls } = stub(() => [
+      aeRow({ requests: '3' }),
+      aeRow({ vertical: 'other-app', requests: '4' }),
+      aeRow({ vertical: 'third-app', requests: '5' }),
+    ]);
+    const from = since + 60 * 60_000;
+    const r = reader({ requestsFromRouterSince: SINCE });
+    const q = { tenantId: T, services: ['acme-widgets', 'other-app', 'third-app'], from, to: from + 60 * 60_000 };
+    const f = await r.tenantRequestFacets!(q);
+    expect(sqls).toHaveLength(1);
+    // Each family's rows counted once — the shared answer is partitioned, not repeated.
+    expect(f.total).toBe(12);
+    // Nothing outlives the read: the next one asks again.
+    await r.tenantRequestFacets!(q);
+    expect(sqls).toHaveLength(2);
+  });
+
   it('reads the part of a window before the cut-over from the telemetry cube', async () => {
     const { sqls, telemetry } = stub(() => [aeRow({ bucket: '2026-09-28 12:30:00', requests: '5' })]);
     const v = await reader({ requestsFromRouterSince: SINCE }).tenantRequestVolume!({
