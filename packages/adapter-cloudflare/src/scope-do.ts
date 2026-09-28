@@ -4645,7 +4645,8 @@ export function defineScopeDO(
       // cycles, and self-referencing rows within a single table.
       // A dump written before indexes were excluded may still carry them; skipped
       // rather than failing a restore over data about to be recomputed.
-      const replayable = tables.filter((t) => !isSearchIndexTable(t.name));
+      // Matched without case, as SQLite resolves a table name (#1883 review).
+      const replayable = tables.filter((t) => !isSearchIndexTable(t.name.toLowerCase()));
       // The dump is untrusted input (#1143). `SqlStorage.exec` runs every statement
       // in the string it is given, so a `ddl` with anything appended to its CREATE
       // TABLE executed that too — with entirely plain identifiers, which is why no
@@ -4667,7 +4668,7 @@ export function defineScopeDO(
         // shadow table directly is an error, and `sqlite_master` order would reach one
         // before its virtual table.
         for (const { name } of existing) {
-          if (isSearchIndexTable(name)) continue;
+          if (isSearchIndexTable(name.toLowerCase())) continue;
           this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
         }
         // A vertical's tables take the dump's own DDL. The spine never does (#1883): a dump

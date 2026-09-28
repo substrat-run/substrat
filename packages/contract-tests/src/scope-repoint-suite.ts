@@ -486,6 +486,18 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         expect(restored.ddl).toBe(tuplesOf(planted).ddl);
       });
 
+      it('a search-index name in other case is skipped like the index itself, never replayed as a table', async () => {
+        // The derived search index is rebuilt, never loaded, and is recognised the way SQLite
+        // resolves a name. `_SUBSTRAT_SEARCH_evil` is that index's namespace, not a vertical's.
+        const evil = { name: '_SUBSTRAT_SEARCH_evil', ddl: 'CREATE TABLE _SUBSTRAT_SEARCH_evil (id TEXT)', columns: ['id'], rows: [['x']] };
+        const dest = await blank();
+        await host.restoreScope(staff, t, dest, { ...planted, tables: [...planted.tables, evil] });
+        const names = (await everything(dest)).map((tb) => tb.name.toLowerCase());
+        expect(names).not.toContain('_substrat_search_evil');
+        // Twin: the rest of the dump landed.
+        await expectGenuineGrantMoved(dest);
+      });
+
       it('two grants whose objects differ only in case stay two rows through that restore', async () => {
         const dest = await blank();
         // Under the dump's NOCASE these are one key, and the load would fail on the second.

@@ -3243,12 +3243,13 @@ export class SqliteScopeHost implements ScopeHost {
       // shadow table directly is an error, and dropping them in `sqlite_master` order
       // would reach one before its virtual table.
       for (const { name } of existing) {
-        if (isSearchIndexTable(name)) continue;
+        if (isSearchIndexTable(name.toLowerCase())) continue;
         db.exec(`DROP TABLE IF EXISTS "${name}"`);
       }
       // A dump written before indexes were excluded may still carry them; skip those
       // too rather than failing a restore over data that is about to be recomputed.
-      const replayable = dumped.filter((t) => !isSearchIndexTable(t.name));
+      // Matched without case, as SQLite resolves a table name (#1883 review).
+      const replayable = dumped.filter((t) => !isSearchIndexTable(t.name.toLowerCase()));
       // The dump is untrusted input (#1143): its names reach SQL as identifiers, and
       // `db.exec` would run every statement its `ddl` contains, not just the CREATE
       // TABLE. Judged as a whole before any of it executes — a check interleaved with
