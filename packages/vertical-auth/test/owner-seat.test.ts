@@ -13,6 +13,7 @@ import {
   mintOwnerClaim,
   claimOwner,
   transferOwner,
+  completeOwnerTransfer,
 } from '../src/owner-seat.js';
 import type { RegistrySql } from '../src/site-registry.js';
 
@@ -228,11 +229,36 @@ describe('owner transfer', () => {
     expect(resolvePrincipal(sql, SCOPE, 'sub-successor', T0 + 2 * MIN)).toBe(SUCCESSOR);
   });
 
-  it('a repeat answers `already` and writes nothing — the retry the platform flow relies on', () => {
+  it('a repeat while open answers `already`; once closed, `done` — both write nothing', () => {
     claimedWithMember();
     expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR).outcome).toBe('transferred');
+    // The platform's flow failed after the record moved: its retry is `already`, and it finishes.
     expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'already', owner: SUCCESSOR });
+    expect(completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR)).toBe(true);
+    // Closed: a repeat is `done`, which the flow answers without seating or revoking anyone.
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'done', owner: SUCCESSOR });
+    expect(completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR)).toBe(false); // already closed
     expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
+  });
+
+  it('a record naming `to` is NOT a retry for any other `from` — open or closed (review MAJOR)', () => {
+    claimedWithMember();
+    const OTHER = '01PRINCIPALOTHERHOLDER';
+    transferOwner(sql, SCOPE, OWNER, SUCCESSOR);
+    // Open: only OWNER → SUCCESSOR is `already`.
+    expect(transferOwner(sql, SCOPE, OTHER, SUCCESSOR)).toEqual({ outcome: 'refused', owner: SUCCESSOR, reason: 'not-owner' });
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR).outcome).toBe('already');
+    completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR);
+    // Closed: likewise.
+    expect(transferOwner(sql, SCOPE, OTHER, SUCCESSOR)).toMatchObject({ outcome: 'refused', reason: 'not-owner' });
+    // Closing names the hand-over too: another pair cannot close it.
+    const s2 = '01SCOPESECOND';
+    recordOwnerSeat(sql, s2, OWNER, T0);
+    resolvePrincipal(sql, s2, 'sub-installer-2', T0 + MIN);
+    bindMember(SUCCESSOR, 'sub-successor', s2);
+    transferOwner(sql, s2, OWNER, SUCCESSOR);
+    expect(completeOwnerTransfer(sql, s2, OTHER, SUCCESSOR)).toBe(false);
+    expect(transferOwner(sql, s2, OWNER, SUCCESSOR).outcome).toBe('already');
   });
 
   it('refuses a `from` that is not the current record — and a hand-over onward from the new owner works', () => {

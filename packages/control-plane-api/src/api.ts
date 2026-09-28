@@ -3374,7 +3374,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await admin.recordOwnerTransfer(actor, {
       ...base,
       phase: 'applied',
-      recordMoved: moved.recordMoved,
+      outcome: moved.outcome,
       fromRevoked: moved.fromRevoked,
     });
     return c.json({ operationId, ...moved });

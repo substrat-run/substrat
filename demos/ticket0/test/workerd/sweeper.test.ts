@@ -1041,7 +1041,7 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
 
     const res = await transfer(s, A, B);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ scopeId: s, from: A, owner: B, recordMoved: true, fromRevoked: true });
+    expect(await res.json()).toEqual({ scopeId: s, from: A, owner: B, outcome: 'transferred', fromRevoked: true });
     expect(await directory().getOwnerOfRecord(s)).toBe(B);
     expect((await directory().ownerSeat(s)).state).toBe('claimed'); // a claimed seat stays claimed
     expect(await ownerSeats(s)).toEqual([B]);
@@ -1090,7 +1090,7 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     expect((await transfer(s, A, B)).status).toBe(200);
     const again = await transfer(s, A, B);
     expect(again.status).toBe(200);
-    expect(await again.json()).toMatchObject({ owner: B, recordMoved: false, fromRevoked: false });
+    expect(await again.json()).toMatchObject({ owner: B, outcome: 'done', fromRevoked: false });
     expect(await ownerSeats(s)).toEqual([B]);
     expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
   });

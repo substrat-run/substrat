@@ -1526,33 +1526,37 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
 });
 
 /**
- * The owner hand-over (#1665). Three writes in two Durable Objects with no transaction across
- * them, so what these pin is the ORDER (record, then seat `to`, then revoke `from`), that every
- * refusal is decided before anything is written, and that a failure between any two steps
- * leaves one owner of record, at least one live owner seat, and a state the same request
- * completes on retry.
+ * The owner hand-over (#1665). Four writes in two Durable Objects with no transaction across
+ * them, so what these pin is the ORDER (record, seat `to`, revoke `from`, close), that every
+ * refusal is decided before anything is written, that a failure at any step leaves one owner of
+ * record, at least one live owner seat, and a state the same request completes on retry, and
+ * that once closed, a repeat writes nothing.
  *
  * The directory and the host share one in-memory model here, so the assertions read the
- * scope's state rather than which mocks were called.
+ * scope's state rather than which mocks were called. The directory's rules are vertical-auth
+ * owner-seat.ts `transferOwner` / `completeOwnerTransfer`, in the same order.
  */
 describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
   const A = '01JZ0000000000000000PRNAAA';
   const B = '01JZ0000000000000000PRNBBB';
+  const C = '01JZ0000000000000000PRNCCC';
   const STRANGER = '01JZ0000000000000000PRNZZZ';
   const REF = { tenantId: TENANT, scopeId: SCOPE };
+  type Step = 'record' | 'assign' | 'revoke' | 'complete';
 
-  /** One scope's owner state: the record, who is bound (a member), who holds the owner role. */
-  function world(init: { record?: string | null; claimed?: boolean; members?: string[] } = {}) {
+  /** One scope's owner state: the record, the last hand-over, members, owner-role holders. */
+  function world(init: { record?: string | null; claimed?: boolean; members?: string[]; seats?: string[] } = {}) {
     const w = {
       record: init.record === undefined ? A : init.record,
+      last: null as null | { from: string; to: string; state: 'pending' | 'done' },
       claimed: init.claimed ?? true,
-      members: new Set(init.members ?? [A, B]),
-      seats: new Set([A]),
+      members: new Set(init.members ?? [A, B, C]),
+      seats: new Set(init.seats ?? [A]),
       steps: [] as string[],
       /** Throw on the named step, once — the failure "between" steps. */
-      failOn: null as null | 'record' | 'assign' | 'revoke',
+      failOn: null as null | Step,
     };
-    const failIf = (step: 'record' | 'assign' | 'revoke') => {
+    const failIf = (step: Step) => {
       if (w.failOn === step) {
         w.failOn = null;
         throw new Error(`injected failure at ${step}`);
@@ -1561,14 +1565,24 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     const transferOwner = async (_env: Env, _ref: unknown, { from, to }: { from: string; to: string }) => {
       w.steps.push('record');
       failIf('record');
-      // The directory's rules (vertical-auth owner-seat.ts `transferOwner`), in the same order.
       if (w.record === null) return { outcome: 'refused', owner: null, reason: 'unknown' } as const;
       if (!w.claimed) return { outcome: 'refused', owner: w.record, reason: 'unclaimed' } as const;
       if (!w.members.has(to)) return { outcome: 'refused', owner: w.record, reason: 'not-member' } as const;
-      if (w.record === to) return { outcome: 'already', owner: to } as const;
+      if (w.record === to) {
+        if (w.last?.from === from && w.last.to === to) {
+          return { outcome: w.last.state === 'pending' ? 'already' : 'done', owner: to } as const;
+        }
+        return { outcome: 'refused', owner: w.record, reason: 'not-owner' } as const;
+      }
       if (w.record !== from) return { outcome: 'refused', owner: w.record, reason: 'not-owner' } as const;
       w.record = to;
+      w.last = { from, to, state: 'pending' };
       return { outcome: 'transferred', owner: to } as const;
+    };
+    const completeOwnerTransfer = async (_env: Env, _ref: unknown, { from, to }: { from: string; to: string }) => {
+      w.steps.push('complete');
+      failIf('complete');
+      if (w.last?.state === 'pending' && w.last.from === from && w.last.to === to) w.last.state = 'done';
     };
     const host = fakeHost({
       assignScopeRole: async (_s, principal, roleKey) => {
@@ -1584,6 +1598,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     });
     const app = appWith(host, {
       transferOwner: transferOwner as never,
+      completeOwnerTransfer,
       resolveOwner: async () => w.record as never,
     });
     const send = (body: unknown) =>
@@ -1592,27 +1607,51 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
         { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) },
         ENV,
       );
-    return { w, host, app, send };
+    const state = () => ({ record: w.record, seats: [...w.seats].sort(), last: w.last });
+    return { w, host, app, send, state };
   }
 
-  it('moves the record, seats `to`, then revokes `from` — in that order', async () => {
-    const { w, send } = world();
+  it('moves the record, seats `to`, revokes `from`, then closes the hand-over — in that order', async () => {
+    const { w, send, state } = world();
     const res = await send({ ...REF, from: A, to: B });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, recordMoved: true, fromRevoked: true });
-    expect(w.steps).toEqual(['record', `assign ${B} admin`, `revoke ${A} admin`]);
-    expect(w.record).toBe(B);
-    expect([...w.seats]).toEqual([B]);
+    expect(await res.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, outcome: 'transferred', fromRevoked: true });
+    expect(w.steps).toEqual(['record', `assign ${B} admin`, `revoke ${A} admin`, 'complete']);
+    expect(state()).toEqual({ record: B, seats: [B], last: { from: A, to: B, state: 'done' } });
   });
 
-  it('a repeat of a finished hand-over is a 200 that changes nothing', async () => {
-    const { w, send } = world();
+  it('a repeat of a finished hand-over is a 200 that seats and revokes nothing', async () => {
+    const { w, send, state } = world();
     await send({ ...REF, from: A, to: B });
+    // Since then the scope decided to give A the owner role back. A stale resend must not undo it.
+    w.seats.add(A);
+    w.steps = [];
     const again = await send({ ...REF, from: A, to: B });
     expect(again.status).toBe(200);
-    expect(await again.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, recordMoved: false, fromRevoked: false });
-    expect(w.record).toBe(B);
-    expect([...w.seats]).toEqual([B]);
+    expect(await again.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, outcome: 'done', fromRevoked: false });
+    expect(w.steps).toEqual(['record']);
+    expect(state().seats).toEqual([A, B].sort());
+  });
+
+  it("refuses a `from` other than the one the record was handed from — and revokes nobody (review MAJOR)", async () => {
+    // Record = B after A → B, and C also holds the owner role. `{ from: C, to: B }` finds the
+    // record naming `to`, but it is not the hand-over the record came from, so it is no retry.
+    const { w, send, state } = world({ seats: [A, C] });
+    expect((await send({ ...REF, from: A, to: B })).status).toBe(200);
+    w.steps = [];
+    const res = await send({ ...REF, from: C, to: B });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not owned by `from`/);
+    expect(w.steps).toEqual(['record']);
+    expect(state().seats).toEqual([B, C].sort()); // C still holds its seat
+    // Also while the A → B hand-over is still OPEN: only its own retry is `already`.
+    const open = world({ seats: [A, C] });
+    open.w.failOn = 'revoke';
+    expect((await open.send({ ...REF, from: A, to: B })).ok).toBe(false);
+    open.w.steps = [];
+    expect((await open.send({ ...REF, from: C, to: B })).status).toBe(409);
+    expect(open.w.steps).toEqual(['record']);
+    expect(open.state().seats).toEqual([A, B, C].sort());
   });
 
   it.each([
@@ -1621,13 +1660,13 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     ['a `to` no subject is bound to', { members: [A] }, /no member bound to `to`/],
     ['a scope with no owner of record', { record: null }, /no owner of record/],
   ])('refuses %s with 409, and no seat moves', async (_label, init, message) => {
-    const { w, send } = world(init);
-    const before = { record: w.record, seats: [...w.seats] };
+    const { w, send, state } = world(init);
+    const before = state();
     const res = await send({ ...REF, from: A, to: B });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toMatch(message);
     expect(w.steps).toEqual(['record']); // decided at the record, before any seat write
-    expect({ record: w.record, seats: [...w.seats] }).toEqual(before);
+    expect(state()).toEqual(before);
   });
 
   it('refuses a malformed body before the directory is reached', async () => {
@@ -1646,7 +1685,10 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
 
   it('a hook answering an owner other than `to` stops before any seat moves', async () => {
     const { w, host } = world();
-    const app = appWith(host, { transferOwner: async () => ({ outcome: 'transferred', owner: STRANGER }) as never });
+    const app = appWith(host, {
+      transferOwner: async () => ({ outcome: 'transferred', owner: STRANGER }) as never,
+      completeOwnerTransfer: async () => undefined,
+    });
     const res = await app.request(
       '/internal/owner-transfer',
       { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, from: A, to: B }) },
@@ -1657,37 +1699,26 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     expect([...w.seats]).toEqual([A]);
   });
 
-  it('a failure AT the record moves nothing, and the retry completes', async () => {
-    const { w, send } = world();
-    w.failOn = 'record';
-    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false); // the envelope's status, never a 2xx
-    expect({ record: w.record, seats: [...w.seats] }).toEqual({ record: A, seats: [A] });
-    expect((await send({ ...REF, from: A, to: B })).status).toBe(200);
-    expect({ record: w.record, seats: [...w.seats] }).toEqual({ record: B, seats: [B] });
-  });
-
-  it('a failure between the record and the seat leaves the record on `to`, `from` still seated — and the retry completes', async () => {
-    const { w, send } = world();
-    w.failOn = 'assign';
-    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false); // the envelope's status, never a 2xx
-    // One owner of record (the new one), and the scope was never without a live owner seat.
-    expect({ record: w.record, seats: [...w.seats] }).toEqual({ record: B, seats: [A] });
-    const retry = await send({ ...REF, from: A, to: B });
-    expect(retry.status).toBe(200);
-    expect(await retry.json()).toMatchObject({ recordMoved: false, fromRevoked: true });
-    expect({ record: w.record, seats: [...w.seats] }).toEqual({ record: B, seats: [B] });
-  });
-
-  it('a failure between the seat and the revoke leaves both seated with the record on `to` — and the retry completes', async () => {
-    const { w, send } = world();
-    w.failOn = 'revoke';
-    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false); // the envelope's status, never a 2xx
-    expect({ record: w.record, seats: [...w.seats].sort() }).toEqual({ record: B, seats: [A, B].sort() });
-    const retry = await send({ ...REF, from: A, to: B });
-    expect(retry.status).toBe(200);
-    expect(await retry.json()).toMatchObject({ recordMoved: false, fromRevoked: true });
-    expect({ record: w.record, seats: [...w.seats] }).toEqual({ record: B, seats: [B] });
-  });
+  it.each([
+    // [the step that fails, the state it leaves, the retry's outcome and fromRevoked]
+    ['record', { record: A, seats: [A], last: null }, 'transferred', true],
+    ['assign', { record: B, seats: [A], last: { from: A, to: B, state: 'pending' } }, 'already', true],
+    ['revoke', { record: B, seats: [A, B].sort(), last: { from: A, to: B, state: 'pending' } }, 'already', true],
+    ['complete', { record: B, seats: [B], last: { from: A, to: B, state: 'pending' } }, 'already', false],
+  ] as const)(
+    'a failure at the %s step leaves one owner of record and a live owner seat — and the retry completes',
+    async (step, left, outcome, fromRevoked) => {
+      const { w, send, state } = world();
+      w.failOn = step;
+      expect((await send({ ...REF, from: A, to: B })).ok).toBe(false); // the envelope's status, never a 2xx
+      expect(state()).toEqual(left);
+      expect(state().seats.length).toBeGreaterThan(0);
+      const retry = await send({ ...REF, from: A, to: B });
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toMatchObject({ outcome, fromRevoked });
+      expect(state()).toEqual({ record: B, seats: [B], last: { from: A, to: B, state: 'done' } });
+    },
+  );
 
   it('after a hand-over, a reconcile re-sources the NEW owner — never the one it replaced', async () => {
     const { host, app, send } = world();
@@ -1705,16 +1736,16 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     expect(provisioned).toEqual([B]);
   });
 
-  it('501s without the hook, and without the host verbs — before the record is touched', async () => {
+  it('501s without either hook, and without the host verbs — before the record is touched', async () => {
     const REQ = { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, from: A, to: B }) };
-    expect((await appWith(fakeHost()).request('/internal/owner-transfer', REQ, ENV)).status).toBe(501);
     const touched: unknown[] = [];
-    const oldHost = appWith(fakeHost(), {
-      transferOwner: async () => {
-        touched.push(1);
-        return { outcome: 'transferred', owner: B } as never;
-      },
-    });
+    const begin = async () => {
+      touched.push(1);
+      return { outcome: 'transferred', owner: B } as never;
+    };
+    expect((await appWith(fakeHost()).request('/internal/owner-transfer', REQ, ENV)).status).toBe(501);
+    expect((await appWith(fakeHost(), { transferOwner: begin }).request('/internal/owner-transfer', REQ, ENV)).status).toBe(501);
+    const oldHost = appWith(fakeHost(), { transferOwner: begin, completeOwnerTransfer: async () => undefined });
     const res = await oldHost.request('/internal/owner-transfer', REQ, ENV);
     expect(res.status).toBe(501);
     expect(((await res.json()) as { error: string }).error).toMatch(/redeploy/);

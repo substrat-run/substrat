@@ -37,6 +37,7 @@ mountPlatformSurface(app, {
   ownerSeat,       // the owner seat's state, for the dashboard (omit ⇒ 501)
   mintOwnerClaim,  // a short-lived owner-claim link (omit ⇒ 501)
   transferOwner,   // hand the owner of record to another member (omit ⇒ 501)
+  completeOwnerTransfer, // close that hand-over once seated and revoked (required with it)
   onDeleteScope,   // e.g. drop the scope from a sweep roster (optional)
 });
 
@@ -74,9 +75,11 @@ export default app;
   `mintOwnerClaim` / `transferOwner` and that route answers `501`. The two owner-seat routes are how the
   dashboard sees whether anyone has claimed an instance, and mints the claim link that
   binds its owner once the first-sign-in window has closed (see
-  [vertical-auth](/reference/vertical-auth)). `owner-transfer` is the hand-over. Your hook
-  moves the owner of record; the package then seats `to` in `ownerRoleKey` and revokes
-  `from`'s, in that order, so the scope always has a live owner seat. A reconcile's lockout
+  [vertical-auth](/reference/vertical-auth)). `owner-transfer` is the hand-over. Your
+  `transferOwner` hook moves the owner of record; the package then seats `to` in
+  `ownerRoleKey`, revokes `from`'s, and calls `completeOwnerTransfer`, in that order, so the
+  scope always has a live owner seat. Sending the same hand-over again finishes one a failure
+  left open, and once it is closed, answers `done` and changes nothing. A reconcile's lockout
   repair re-seats whoever the record names, so after a hand-over it brings back the new owner,
   never the old one.
 - **The gate** — one `/internal/*` middleware runs the platform-secret check; an unset

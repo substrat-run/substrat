@@ -251,6 +251,8 @@ mountPlatformSurface(app, {
   // The owner hand-over: moves the owner of record a reconcile re-seats (omit ⇒ 501)
   transferOwner: (env, ref, input) =>
     identityDo(env, ref).transferOwner(ref.scopeId, input.from, input.to),
+  completeOwnerTransfer: (env, ref, input) =>
+    identityDo(env, ref).completeOwnerTransfer(ref.scopeId, input.from, input.to),
 });
 ```
 

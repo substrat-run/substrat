@@ -27,6 +27,7 @@ import {
   unbindSubject as unbindSubjectRow,
   subjectsOf as subjectsOfRows,
   transferOwner as transferOwnerRow,
+  completeOwnerTransfer as completeOwnerTransferRow,
   type OwnerSeat,
   type OwnerTransfer,
 } from './owner-seat.js';
@@ -247,6 +248,11 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     return transferOwnerRow(this.registrySql, scopeId, from, to);
   }
 
+  /** Close the hand-over `from → to` once the platform has seated and revoked around it (#1665). */
+  async completeOwnerTransfer(scopeId: string, from: string, to: string): Promise<boolean> {
+    return completeOwnerTransferRow(this.registrySql, scopeId, from, to);
+  }
+
   /**
    * Is this scope awaiting first-run setup? True while its owner seat is unclaimed — whether or
    * not a plain first sign-in can still claim it (`ownerSeat` says which). The worker uses this
@@ -417,6 +423,7 @@ export type IdentityStub = {
   setPendingOwner(scopeId: string, principal: string): Promise<void>;
   getOwnerOfRecord(scopeId: string): Promise<string | null>;
   transferOwner(scopeId: string, from: string, to: string): Promise<OwnerTransfer>;
+  completeOwnerTransfer(scopeId: string, from: string, to: string): Promise<boolean>;
   needsSetup(scopeId: string): Promise<boolean>;
   ownerSeat(scopeId: string): Promise<OwnerSeat>;
   resolvePrincipal(scopeId: string, sub: string): Promise<string | null>;

@@ -99,7 +99,7 @@ describe('the owner hand-over route (#1665)', () => {
 
   beforeEach(() => {
     asked = [];
-    answer = async () => ({ scopeId: 'unused', from: A, owner: B, recordMoved: true, fromRevoked: true });
+    answer = async () => ({ scopeId: 'unused', from: A, owner: B, outcome: 'transferred', fromRevoked: true });
   });
 
   afterAll(async () => {
@@ -109,16 +109,16 @@ describe('the owner hand-over route (#1665)', () => {
 
   it('staff hands the seat over; the vertical is asked once, and both rows name from, to and the actor', async () => {
     const s = await newScope();
-    answer = async () => ({ scopeId: s, from: A, owner: B, recordMoved: true, fromRevoked: true });
+    answer = async () => ({ scopeId: s, from: A, owner: B, outcome: 'transferred', fromRevoked: true });
     const res = await send(route(s), asStaff);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { operationId: string };
-    expect(body).toEqual({ operationId: expect.any(String), scopeId: s, from: A, owner: B, recordMoved: true, fromRevoked: true });
+    expect(body).toEqual({ operationId: expect.any(String), scopeId: s, from: A, owner: B, outcome: 'transferred', fromRevoked: true });
     expect(asked).toEqual([{ tenantId: t, scopeId: s, from: A, to: B }]);
     const base = { actor: staff, operationId: body.operationId, from: A, to: B };
     expect(await rows(s)).toEqual([
       { ...base, phase: 'intent' },
-      { ...base, phase: 'applied', recordMoved: true, fromRevoked: true },
+      { ...base, phase: 'applied', outcome: 'transferred', fromRevoked: true },
     ]);
   });
 
@@ -188,7 +188,7 @@ describe('the owner hand-over route (#1665)', () => {
     const failed = await send(route(s), asStaff);
     expect(failed.status).toBe(500);
     const first = ((await failed.json()) as { operationId: string }).operationId;
-    answer = async () => ({ scopeId: s, from: A, owner: B, recordMoved: false, fromRevoked: true });
+    answer = async () => ({ scopeId: s, from: A, owner: B, outcome: 'already', fromRevoked: true });
     const retry = await send(route(s), asStaff);
     expect(retry.status).toBe(200);
     const second = ((await retry.json()) as { operationId: string }).operationId;
@@ -259,11 +259,12 @@ describe('the owner hand-over, end to end through the vertical surface (#1665)',
       transferOwner: async (_env, _ref, { from, to }) => {
         if (!world.claimed) return { outcome: 'refused', owner: world.record as never, reason: 'unclaimed' };
         if (!world.members.has(to)) return { outcome: 'refused', owner: world.record as never, reason: 'not-member' };
-        if (world.record === to) return { outcome: 'already', owner: to };
+        if (world.record === to) return { outcome: 'refused', owner: to, reason: 'not-owner' };
         if (world.record !== from) return { outcome: 'refused', owner: world.record as never, reason: 'not-owner' };
         world.record = to;
         return { outcome: 'transferred', owner: to };
       },
+      completeOwnerTransfer: async () => undefined,
     });
     const client = new VerticalClient({
       fetch: ((url: string, init?: RequestInit) =>
@@ -302,7 +303,7 @@ describe('the owner hand-over, end to end through the vertical surface (#1665)',
       scopeId: s,
       from: A,
       owner: B,
-      recordMoved: true,
+      outcome: 'transferred',
       fromRevoked: true,
     });
     expect({ record: world.record, seats: [...world.seats] }).toEqual({ record: B, seats: [B] });

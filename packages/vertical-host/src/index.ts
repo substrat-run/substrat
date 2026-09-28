@@ -618,6 +618,16 @@ export interface PlatformSurfaceDeps<Env> {
     input: { from: PrincipalId; to: PrincipalId },
   ) => Promise<z.input<typeof ownerTransferRecord>>;
   /**
+   * Close the hand-over `from → to` once `/internal/owner-transfer` has seated and revoked around
+   * it (#1665), so a repeat reads `done` and moves nothing. IdentityDO `completeOwnerTransfer`
+   * is the reference. Required with `transferOwner`: the route answers 501 without both.
+   */
+  completeOwnerTransfer?: (
+    env: Env,
+    ref: { tenantId: TenantId; scopeId: ScopeId },
+    input: { from: PrincipalId; to: PrincipalId },
+  ) => Promise<unknown>;
+  /**
    * Vertical-specific delete-scope side effect — e.g. drop the scope from a deployment
    * sweep roster (#461) so its alarm never wakes a reaped scope. Runs after the host has
    * wiped the scope's storage. Optional.
@@ -1328,28 +1338,28 @@ export function mountPlatformSurface<Env extends object>(
     return c.json(ownerClaimLink.parse(link), 201);
   });
 
-  // The owner HAND-OVER (#1665), on the platform's instruction, which audits it. Three writes in
+  // The owner HAND-OVER (#1665), on the platform's instruction, which audits it. Four writes in
   // two Durable Objects, with no transaction spanning them, so the ORDER is the contract:
   //
-  //   1. the record: the identity directory moves `owner_of_record` from→to. Every refusal is
-  //      decided here, before anything is written (unclaimed seat, stale `from`, `to` not a
-  //      member), and a record already naming `to` answers `already`;
+  //   1. the record: the identity directory moves `owner_of_record` from→to and opens the
+  //      hand-over. Every refusal is decided here, before anything is written;
   //   2. the seat: `to` is granted the owner role at scope level;
-  //   3. the revoke: `from`'s owner role is tombstoned.
+  //   3. the revoke: `from`'s owner role is tombstoned;
+  //   4. the close: the directory marks this hand-over done.
   //
   // `to` is seated before `from` is revoked, so the scope never has zero live owner seats. The
   // record moves FIRST so that a failure part-way never leaves an extra seat that nothing
   // recorded. Stopped after 1: the record names `to` while `from` still holds the seat, and a
   // lockout repair in that window re-seats `to`, the owner the caller asked for. Stopped after
-  // 2: both are seated and the record names `to`. Each step is idempotent, and a repeat reads
-  // `already` at step 1, so re-sending the same hand-over completes it; the failure answers
-  // non-2xx and the platform's audit shows the attempt unfinished. There is always exactly one
-  // owner of record.
+  // 2 or 3: both may be seated, the record names `to`. Re-sending the same hand-over reads
+  // `already` at step 1 and runs 2–4 again, which are idempotent; after step 4 it reads `done`
+  // and writes NOTHING, so a stale retry cannot re-seat or revoke over what the scope decided
+  // since. There is always exactly one owner of record.
   //
-  // `from` loses the owner ROLE only: its login stays bound and any other grant it holds stays,
-  // so a former owner who should keep working is re-invited or re-granted like any member.
+  // `from` loses the owner ROLE at scope level only: its login stays bound and any other grant
+  // it holds stays, so a former owner who should keep working is re-invited or re-granted.
   app.post('/internal/owner-transfer', async (c) => {
-    if (!deps.transferOwner) {
+    if (!deps.transferOwner || !deps.completeOwnerTransfer) {
       throw new HTTPException(501, { message: 'this vertical keeps no owner seat' });
     }
     const host = deps.hostFor(c.env);
@@ -1358,7 +1368,8 @@ export function mountPlatformSurface<Env extends object>(
     }
     const body = ownerTransferBody.parse(await c.req.json());
     const ref = { tenantId: body.tenantId, scopeId: body.scopeId };
-    const record = ownerTransferRecord.parse(await deps.transferOwner(c.env, ref, { from: body.from, to: body.to }));
+    const pair = { from: body.from, to: body.to };
+    const record = ownerTransferRecord.parse(await deps.transferOwner(c.env, ref, pair));
     if (record.outcome === 'refused') {
       throw new HTTPException(409, { message: `scope ${body.scopeId} ${ownerTransferRefusal[record.reason]}` });
     }
@@ -1366,15 +1377,12 @@ export function mountPlatformSurface<Env extends object>(
       // A hook answering success for a principal nobody asked for: stop before any seat moves.
       throw new HTTPException(500, { message: 'the owner-transfer hook answered a different owner than `to`' });
     }
+    const answer = { scopeId: body.scopeId, from: body.from, owner: body.to, outcome: record.outcome };
+    if (record.outcome === 'done') return c.json({ ...answer, fromRevoked: false } satisfies OwnerTransferResult);
     await host.assignScopeRole(body.scopeId, body.to, deps.ownerRoleKey);
     const fromRevoked = await host.revokeScopeRole(body.scopeId, body.from, deps.ownerRoleKey);
-    return c.json({
-      scopeId: body.scopeId,
-      from: body.from,
-      owner: body.to,
-      recordMoved: record.outcome === 'transferred',
-      fromRevoked,
-    } satisfies OwnerTransferResult);
+    await deps.completeOwnerTransfer(c.env, ref, pair);
+    return c.json({ ...answer, fromRevoked } satisfies OwnerTransferResult);
   });
 
   // ── The guaranteed error envelope — the whole point (#510). Without this, Hono answers

@@ -380,13 +380,15 @@ export const ownerTransferInput = ownerTransferPair.strict().refine(...distinctO
 
 /**
  * What the vertical's identity directory answered to the record half of a hand-over (#1665).
- * `transferred` moved `owner_of_record`; `already` found it naming `to`, which is a retry of a
- * hand-over that got at least that far. `refused` wrote nothing: the scope has no owner here
- * (`unknown`), the seat is still unclaimed, `from` is not the current record, or no subject in
- * the scope is bound to `to`.
+ * `transferred` moved `owner_of_record` and opened the hand-over; `already` found this same
+ * `from → to` still open (a retry, which the flow finishes); `done` found it finished (a repeat,
+ * which seats and revokes nothing). `refused` wrote nothing: the scope has no owner here
+ * (`unknown`), the seat is still unclaimed, `from` is not the owner this record was handed from,
+ * or no subject in the scope is bound to `to`.
  */
+export const ownerTransferOutcome = z.enum(['transferred', 'already', 'done']);
 export const ownerTransferRecord = z.discriminatedUnion('outcome', [
-  z.object({ outcome: z.enum(['transferred', 'already']), owner: principalId }),
+  z.object({ outcome: ownerTransferOutcome, owner: principalId }),
   z.object({
     outcome: z.literal('refused'),
     owner: principalId.nullable(),
@@ -397,15 +399,16 @@ export type OwnerTransferRecord = z.infer<typeof ownerTransferRecord>;
 
 /**
  * A completed hand-over (#1665), as `/internal/owner-transfer` answers it. `owner` is the new
- * owner of record. `recordMoved` is false on a retry that found the record already moved, and
- * `fromRevoked` is false when `from` held no live owner seat to take back. Neither is an error:
- * both are how a repeat of the same hand-over reads.
+ * owner of record. `outcome` is the directory's: `transferred` (this call moved it), `already`
+ * (this call finished one a failure had left open) or `done` (it was finished before, and this
+ * call changed nothing). `fromRevoked` is false when `from` held no live scope-level owner seat
+ * to take back — on a `done`, always.
  */
 export const ownerTransferResult = z.object({
   scopeId: scopeId,
   from: principalId,
   owner: principalId,
-  recordMoved: z.boolean(),
+  outcome: ownerTransferOutcome,
   fromRevoked: z.boolean(),
 });
 export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
@@ -419,7 +422,7 @@ const ownerTransferAuditRow = <T extends z.ZodRawShape>(phase: T) =>
   z.object({ ...phase, tenantId, scopeId, operationId: z.string().min(1), from: principalId, to: principalId }).strict();
 export const ownerTransferAudit = z.discriminatedUnion('phase', [
   ownerTransferAuditRow({ phase: z.literal('intent') }),
-  ownerTransferAuditRow({ phase: z.literal('applied'), recordMoved: z.boolean(), fromRevoked: z.boolean() }),
+  ownerTransferAuditRow({ phase: z.literal('applied'), outcome: ownerTransferOutcome, fromRevoked: z.boolean() }),
   ownerTransferAuditRow({ phase: z.enum(['refused', 'failed']), error: z.string().max(2000) }),
 ]);
 export type OwnerTransferAudit = z.infer<typeof ownerTransferAudit>;

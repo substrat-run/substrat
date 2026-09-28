@@ -59,6 +59,11 @@ export const OWNER_SEAT_DDL: readonly string[] = [
   // One outstanding claim link per scope — the hash of its token and when it stops working.
   // Minting again replaces it, so a leaked link is retired by minting a fresh one.
   `CREATE TABLE IF NOT EXISTS owner_claim (scope_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, expires_at INTEGER NOT NULL)`,
+  // The last owner hand-over (#1665): who handed to whom, and whether the platform's flow has
+  // finished seating and revoking around it (`pending` → `done`). What tells a retry of THAT
+  // hand-over, which must finish it, from any other request that merely finds the record naming
+  // `to`, which must not revoke anybody.
+  `CREATE TABLE IF NOT EXISTS owner_transfer (scope_id TEXT PRIMARY KEY, prev_principal TEXT NOT NULL, principal TEXT NOT NULL, state TEXT NOT NULL)`,
 ];
 
 /**
@@ -123,8 +128,9 @@ export function ownerOfRecord(sql: RegistrySql, scopeId: string): string | null 
 
 /**
  * What `transferOwner` did — the contracts' `ownerTransferRecord`, which the platform parses it
- * with. `transferred` moved the record; `already` found it naming `to` (a repeat, which is what
- * makes the platform's flow safe to retry). `refused` wrote nothing, and `reason` says why.
+ * with. `transferred` moved the record and opened the hand-over; `already` found THIS hand-over
+ * still open (a retry, which the platform's flow finishes); `done` found it finished (a repeat,
+ * which changes nothing). `refused` wrote nothing, and `reason` says why.
  */
 export type OwnerTransfer = z.input<typeof ownerTransferRecord>;
 
@@ -134,9 +140,12 @@ export type OwnerTransfer = z.input<typeof ownerTransferRecord>;
  * reconcile's lockout repair re-seats (#1659), so without this a hand-over left it naming the
  * ORIGINAL owner, and revoking the successor later brought that owner back.
  *
- * It moves the record and nothing else. Seating `to` in the owner's role and revoking `from`
- * are the scope host's writes, in another Durable Object; the platform's flow runs them around
- * this, in the order vertical-host's `/internal/owner-transfer` spells out.
+ * It moves the record and opens the hand-over (`owner_transfer`, `pending`). Seating `to` in the
+ * owner's role and revoking `from` are the scope host's writes, in another Durable Object; the
+ * platform's flow runs them after this, then closes the hand-over with `completeOwnerTransfer`.
+ * A record already naming `to` is `already` or `done` ONLY for this same `from → to`: the record
+ * says who owns the scope now, not who handed it over, and answering a different `from` as a
+ * retry would have the flow revoke that principal's owner role on nobody's hand-over.
  *
  * Refuses, writing nothing, when:
  * - the scope has no owner of record here (`unknown`);
@@ -145,7 +154,8 @@ export type OwnerTransfer = z.input<typeof ownerTransferRecord>;
  *   to, so moving the record under it would leave a claim link that seats a stranger as a
  *   principal that is no longer the owner. Claim the seat first. A claimed seat stays claimed:
  *   this never writes `pending_owner` or `owner_claim`.
- * - `from` is not the current record (`not-owner`) — a caller working from a stale view;
+ * - `from` is not the current record (`not-owner`) — a caller working from a stale view, or one
+ *   naming a `from` other than the one this scope's record was handed over from;
  * - `to` is not a member: no subject in this scope is bound to it (`not-member`). The owner
  *   must be someone who can sign in as that principal. A record naming a principal nobody can
  *   become would hand the scope to no one, and the lockout repair would re-seat no one usable.
@@ -159,10 +169,44 @@ export function transferOwner(sql: RegistrySql, scopeId: string, from: string, t
   if (from === to) return { outcome: 'refused', owner, reason: 'same-principal' };
   if (needsSetup(sql, scopeId)) return { outcome: 'refused', owner, reason: 'unclaimed' };
   if (!isBound(sql, scopeId, to)) return { outcome: 'refused', owner, reason: 'not-member' };
-  if (owner === to) return { outcome: 'already', owner };
+  const last = lastTransfer(sql, scopeId);
+  if (owner === to) {
+    if (last?.prev_principal === from && last.principal === to) {
+      return { outcome: last.state === 'pending' ? 'already' : 'done', owner };
+    }
+    return { outcome: 'refused', owner, reason: 'not-owner' };
+  }
   if (owner !== from) return { outcome: 'refused', owner, reason: 'not-owner' };
   sql.exec('UPDATE owner_of_record SET principal = ? WHERE scope_id = ? AND principal = ?', to, scopeId, from);
+  sql.exec(
+    `INSERT OR REPLACE INTO owner_transfer (scope_id, prev_principal, principal, state) VALUES (?, ?, ?, 'pending')`,
+    scopeId,
+    from,
+    to,
+  );
   return { outcome: 'transferred', owner: to };
+}
+
+/**
+ * Close the hand-over `from → to` (#1665) once the platform's flow has seated `to` and revoked
+ * `from`: from then on a repeat of it answers `done` and the flow seats and revokes nothing, so
+ * a stale retry cannot undo what the scope decided since. True when this call closed it; false
+ * when it was already closed or is not the open hand-over.
+ */
+export function completeOwnerTransfer(sql: RegistrySql, scopeId: string, from: string, to: string): boolean {
+  const last = lastTransfer(sql, scopeId);
+  if (last?.state !== 'pending' || last.prev_principal !== from || last.principal !== to) return false;
+  sql.exec(`UPDATE owner_transfer SET state = 'done' WHERE scope_id = ?`, scopeId);
+  return true;
+}
+
+function lastTransfer(
+  sql: RegistrySql,
+  scopeId: string,
+): { prev_principal: string; principal: string; state: 'pending' | 'done' } | undefined {
+  return [...sql.exec('SELECT prev_principal, principal, state FROM owner_transfer WHERE scope_id = ?', scopeId)][0] as
+    | { prev_principal: string; principal: string; state: 'pending' | 'done' }
+    | undefined;
 }
 
 /** Is some subject in this scope bound to `principal` — can anybody sign in as it? */
