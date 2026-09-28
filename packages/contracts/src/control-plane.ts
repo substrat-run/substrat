@@ -404,7 +404,10 @@ export type OwnerTransferRecord = z.infer<typeof ownerTransferRecord>;
  * owner of record. `outcome` is the directory's: `transferred` (this call moved it), `already`
  * (this call finished one a failure had left open) or `done` (it was finished before, and this
  * call changed nothing). `fromRevoked` is false when `from` held no live scope-level owner seat
- * to take back — on a `done`, always.
+ * to take back — on a `done`, always. It says nothing about the TENANT level: a role `from` holds
+ * there (projected into the scope) is not the vertical's to revoke, so `false` can mean `from`
+ * still acts as owner through it. Take that one back on the platform (the tenant's role
+ * assignments) if the hand-over is meant to remove them.
  */
 export const ownerTransferResult = z.object({
   scopeId: scopeId,

@@ -79,7 +79,9 @@ export default app;
   `transferOwner` hook moves the owner of record; the package then seats `to` in
   `ownerRoleKey`, revokes `from`'s, and calls `completeOwnerTransfer`, in that order, so the
   scope always has a live owner seat. Sending the same hand-over again finishes one a failure
-  left open, and once it is closed, answers `done` and changes nothing. A reconcile's lockout
+  left open, and once it is closed, answers `done` and changes nothing. Only the scope-level
+  seat is revoked: `fromRevoked: false` can mean `from` still holds the role at the tenant
+  level, which the platform, not the vertical, takes back. A reconcile's lockout
   repair re-seats whoever the record names, so after a hand-over it brings back the new owner,
   never the old one.
 - **The gate** — one `/internal/*` middleware runs the platform-secret check; an unset

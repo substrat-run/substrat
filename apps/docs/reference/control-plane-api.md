@@ -79,6 +79,9 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   `transferOwner` rows to the admin log, paired by the `operationId` the route answers with:
   an `intent` before the vertical is asked, then `applied`, `refused` or `failed`. A `failed`
   hand-over may have stopped part-way, and sending the same request again completes it.
+  The answer's `fromRevoked` is about the instance's own owner seat only. `false` means `from`
+  held none there; if `from` holds the owner role at the tenant level, that grant is untouched
+  and still applies, and it is taken back through the tenant's role assignments.
 - **Verticals** — `/verticals` (+ `versions`, `versions/:id/admit`|`reject`, `channels`,
   `channels/:c/promote`, `deploy`, `instances`, `listing`, `publish-request`,
   `install-block`): the registry, admission, promotion, and the deploy path. A staff or
