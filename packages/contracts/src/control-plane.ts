@@ -423,12 +423,15 @@ export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
  * `intent`, then `applied`, `refused` (the vertical's 409) or `failed`, paired by `operationId`.
  * No `id`, `at` or actor: the adapter stamps the first two and the request supplies the third.
  */
+/** How much of the vertical's error text a `refused`/`failed` row keeps: the append-only log is
+ *  no place for a vertical's whole response, and the caller got that in full already. */
+export const OWNER_TRANSFER_AUDIT_ERROR_MAX = 300;
 const ownerTransferAuditRow = <T extends z.ZodRawShape>(phase: T) =>
   z.object({ ...phase, tenantId, scopeId, operationId: z.string().min(1), from: principalId, to: principalId }).strict();
 export const ownerTransferAudit = z.discriminatedUnion('phase', [
   ownerTransferAuditRow({ phase: z.literal('intent') }),
   ownerTransferAuditRow({ phase: z.literal('applied'), outcome: ownerTransferOutcome, fromRevoked: z.boolean() }),
-  ownerTransferAuditRow({ phase: z.enum(['refused', 'failed']), error: z.string().max(2000) }),
+  ownerTransferAuditRow({ phase: z.enum(['refused', 'failed']), error: z.string().max(OWNER_TRANSFER_AUDIT_ERROR_MAX) }),
 ]);
 export type OwnerTransferAudit = z.infer<typeof ownerTransferAudit>;
 

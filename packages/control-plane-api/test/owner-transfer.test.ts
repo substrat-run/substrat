@@ -201,6 +201,19 @@ describe('the owner hand-over route (#1665)', () => {
     ]);
   });
 
+  it("keeps only the first 300 characters of the vertical's error in the row; the caller gets it whole", async () => {
+    const s = await newScope();
+    const long = `stopped: ${'x'.repeat(1000)}`;
+    answer = async () => {
+      throw new ControlPlaneError(502, long);
+    };
+    const res = await send(route(s), asStaff);
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toBe(long);
+    const failed = (await rows(s)).find((r) => r.phase === 'failed') as { error: string };
+    expect(failed.error).toBe(long.slice(0, 300));
+  });
+
   it('a hand-over the log cannot take the intent row of never reaches the vertical', async () => {
     const s = await newScope();
     const original = host.admin.recordOwnerTransfer;

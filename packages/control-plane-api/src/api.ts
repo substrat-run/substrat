@@ -7,6 +7,7 @@ import {
   RESERVED_LABEL_SEPARATOR,
   adminAction,
   ownerTransferInput,
+  OWNER_TRANSFER_AUDIT_ERROR_MAX,
   ASSET_PART_PREFIX,
   assetHash,
   channelName,
@@ -3362,7 +3363,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       moved = await vertical.transferOwner({ tenantId, scopeId, ...body });
     } catch (e) {
       const refused = e instanceof ControlPlaneError && e.status === 409;
-      const error = (e instanceof Error ? e.message : String(e)).slice(0, 2000);
+      const error = (e instanceof Error ? e.message : String(e)).slice(0, OWNER_TRANSFER_AUDIT_ERROR_MAX);
       await admin
         .recordOwnerTransfer(actor, { ...base, phase: refused ? 'refused' : 'failed', error })
         .catch(() => undefined);
