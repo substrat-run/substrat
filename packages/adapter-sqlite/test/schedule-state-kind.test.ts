@@ -9,10 +9,11 @@ import { SqliteScopeHost } from '../src/index.js';
 
 /**
  * #1288's migration on the path production actually takes: a scope that already
- * exists, woken by code that now wants `kind` in the key. The shared contract suite
- * proves the same backfill through a RESTORE, which is the one legacy shape both
- * adapters can be handed; this is the one only the pure adapter can stage, because
- * only here can a test reach into the store and put the old table back.
+ * exists, woken by code that now wants `kind` in the key. A restore no longer reaches
+ * this rebuild (#1883: it builds the spine from KERNEL_DDL and derives `kind` for a
+ * legacy dump's rows itself), so a wake over the old table is the only path to it —
+ * staged here by reaching into the store, and on a Durable Object by
+ * `adapter-cloudflare/test/schedule-invocation-column.test.ts`.
  *
  * Three wakes, not one: the rebuild is create-copy-drop-rename and its detection is
  * a read of `sqlite_master.sql`, so "it ran" and "it ran once" are different facts —

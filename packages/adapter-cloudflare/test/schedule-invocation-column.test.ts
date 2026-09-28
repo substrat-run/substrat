@@ -1,7 +1,7 @@
 /**
- * #1525's ALTER on a real Durable Object, run twice — not the #1288 REBUILD the
- * shared schedule contract suite proves through a restore, and not the single ALTER
- * that suite's export/restore trick can reach either: a restore never forces a LIVE
+ * #1525's ALTER on a real Durable Object, run twice — not the #1288 REBUILD (the
+ * second describe below), and not the single ALTER a restore could once reach
+ * either (since #1883 a restore builds the spine from KERNEL_DDL): a restore never forces a LIVE
  * DO to be reconstructed, so it can show the column arriving once but never show the
  * same `ALTER TABLE ... ADD COLUMN invocation_id` meeting a table that already has
  * it. `applySpineColumnAdditions` runs unconditionally in the DO's constructor, on

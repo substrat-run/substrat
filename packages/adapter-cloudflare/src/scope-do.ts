@@ -4501,10 +4501,10 @@ export function defineScopeDO(
      */
     /**
      * The additive spine-column migrations. KERNEL_DDL is all IF NOT EXISTS, so a
-     * scope DO created before a column keeps the old shape — and so does a table a
-     * DUMP replay just recreated from legacy DDL, which is why `importDump` re-runs
-     * this after the replay: without it, the next INSERT naming the column fails in
-     * this very instance. Attempt-and-tolerate: DO SQLite restricts PRAGMA, so there
+     * scope DO created before a column keeps the old shape until this runs on its next
+     * wake. `importDump` runs it too, after rebuilding the spine from KERNEL_DDL, where
+     * every ALTER is a duplicate: a restore never brings a legacy spine table (#1883), so
+     * this is the constructor's pass repeated, not a repair. Attempt-and-tolerate: DO SQLite restricts PRAGMA, so there
      * is no column probe, and a duplicate is the steady state after the first cold
      * start (same argument as ControlPlaneDO.addColumn).
      */

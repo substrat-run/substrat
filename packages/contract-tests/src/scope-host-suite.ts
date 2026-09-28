@@ -2649,10 +2649,10 @@ export function scopeHostContractSuite(
         const dump = await host.admin.exportScope(staff, t1, s1);
         // Doctor the dump into one captured before the `operation` column existed:
         // the DDL loses the column and every row loses that cell — exactly what a
-        // dump exported by an older platform carries. The replay's DDL is
-        // authoritative, and KERNEL_DDL's IF NOT EXISTS cannot widen a table the
-        // dump brought, so without the post-replay re-run of the additive
-        // migrations the emit below fails with `no such column: operation`.
+        // dump exported by an older platform carries. The restore builds the outbox
+        // from the kernel's DDL, not the dump's (#1883), and inserts the rows by
+        // column name, so the missing cell reads NULL and the emit below still has
+        // its column.
         const doctored = dump.tables.map((t) => {
           if (t.name !== '_substrat_outbox') return t;
           const idx = t.columns.indexOf('operation');

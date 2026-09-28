@@ -10971,10 +10971,9 @@ export class SqliteScopeHost implements ScopeHost {
   /**
    * The additive spine-column migrations, shared by `runtime()` and the dump replay.
    * KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before a column keeps the
-   * old shape — and so does a table a DUMP replay just recreated from legacy DDL,
-   * which is why `loadDump` re-runs this after its replay: `runtime()` already ran
-   * for that scope, and without the re-run the very next emit in this process fails
-   * with `no such column`.
+   * old shape until this runs on its next wake. `loadDump` runs it too, after rebuilding
+   * the spine from KERNEL_DDL, where it finds nothing to add: a restore never brings a
+   * legacy spine table (#1883), so there it is `runtime()`'s pass repeated, not a repair.
    */
   private ensureSpineColumns(db: Database.Database): void {
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the
