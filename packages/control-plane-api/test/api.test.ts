@@ -748,6 +748,7 @@ describe('control-plane API', () => {
       eventEffects: async () => ({ root: null, count: 0 }),
       invocationEvents: async () => ({ events: [], truncated: false }),
       deadLetters: async () => ({ entries: [], nextCursor: null }),
+      lifecycleFlow: async () => ({ observation: { events: 0 } }),
     } as unknown as VerticalClient;
     const delegated = createControlPlaneApi({
       host,
@@ -773,6 +774,21 @@ describe('control-plane API', () => {
       { method: 'eventEffects', path: (s) => `/tenants/${t1}/scopes/${s}/effects?eventId=${ev}&maxNodes=3` },
       { method: 'invocationEvents', path: (s) => `/tenants/${t1}/scopes/${s}/invocation?invocationId=${ev}&limit=3` },
       { method: 'deadLetters', path: (s) => `/tenants/${t1}/scopes/${s}/dead-letters?limit=3&cursor=${ev}` },
+      {
+        // The declaration and `stuckLimit` are what the row must NOT carry.
+        method: 'lifecycleFlow',
+        path: (s) => `/tenants/${t1}/scopes/${s}/lifecycle-flow`,
+        init: {
+          method: 'POST',
+          body: JSON.stringify({
+            entityType: 'widget',
+            lifecycle: { field: 'state', initial: 'a', states: { a: { on: { 'w/go': 'b' } }, b: { terminal: true } } },
+            since: '2026-09-01T00:00:00.000Z',
+            until: '2026-09-08T00:00:00.000Z',
+            stuckLimit: 3,
+          }),
+        },
+      },
     ];
     for (const r of reads) {
       const co = await app.request(r.path(sC), { headers: auth, ...r.init });

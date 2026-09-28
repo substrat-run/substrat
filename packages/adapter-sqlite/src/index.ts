@@ -468,6 +468,7 @@ import {
   assertRedrainWindow,
   readInvocation,
   readDeadLetters,
+  readLifecycleFlow,
   domainEventOf,
   readUndrainedOutbox,
   undrainedEventsOf,
@@ -7861,6 +7862,13 @@ export class SqliteScopeHost implements ScopeHost {
         const page = readDeadLetters({ sql: scopedSql(db) }, { limit: input.limit, cursor: input.cursor });
         this.recordAccess(actor, 'deadLetters', { tenantId, scopeId }, null, page.entries.length);
         return page;
+      },
+      lifecycleFlow: async (actor, tenantId, scopeId, input) => {
+        // #1744: one entity's lifecycle replayed over the outbox, for the process map.
+        const db = this.scopeReadDbFor(tenantId, scopeId);
+        const flow = readLifecycleFlow({ sql: scopedSql(db) }, input);
+        this.recordAccess(actor, 'lifecycleFlow', { tenantId, scopeId }, delegatedReadParams.lifecycleFlow(input), flow.observation.events);
+        return flow;
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const db = this.scopeReadDbFor(tenantId, scopeId);

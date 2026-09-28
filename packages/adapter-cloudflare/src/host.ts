@@ -115,6 +115,8 @@ import {
   type InvocationEvents,
   type DeadLettersInput,
   type DeadLetter,
+  type LifecycleFlowInput,
+  type LifecycleFlowResult,
   type CauseChain,
   type EventFacetInput,
   type EventFacetResult,
@@ -1343,6 +1345,7 @@ interface ScopeStubRpc {
   eventEffects(input: EventEffectsInput): Promise<EffectsTree>;
   invocationEvents(input: InvocationEventsInput): Promise<InvocationEvents>;
   deadLetters(input: DeadLettersInput): Promise<Page<DeadLetter>>;
+  lifecycleFlow(input: LifecycleFlowInput): Promise<LifecycleFlowResult>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string; instance?: string }>;
 }
@@ -2485,6 +2488,11 @@ export class CloudflareScopeHost implements ScopeHost {
   /** Every delivery that gave up (#1525) on this host's own scope — the vertical-host read. */
   async deadLettersLocal(scopeId: ScopeId, input: DeadLettersInput): Promise<Page<DeadLetter>> {
     return this.scopeStub(scopeId).deadLetters(input);
+  }
+
+  /** One entity's lifecycle replayed (#1744) on this host's own scope — the vertical-host read. */
+  async lifecycleFlowLocal(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult> {
+    return this.scopeStub(scopeId).lifecycleFlow(input);
   }
 
   /** One event's causal chain (#1237) on this host's own scope — the vertical-host read. */
@@ -5988,6 +5996,18 @@ export class CloudflareScopeHost implements ScopeHost {
         const page = await this.scopeStub(scopeId).deadLetters(input);
         await this.recordAccess(actor, 'deadLetters', { tenantId, scopeId }, null, page.entries.length);
         return page;
+      },
+      lifecycleFlow: async (actor, tenantId, scopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult> => {
+        await this.scopeRecordForRead(tenantId, scopeId);
+        const flow = await this.scopeStub(scopeId).lifecycleFlow(input);
+        await this.recordAccess(
+          actor,
+          'lifecycleFlow',
+          { tenantId, scopeId },
+          delegatedReadParams.lifecycleFlow(input),
+          flow.observation.events,
+        );
+        return flow;
       },
       readScopeTable: async (
         actor,

@@ -497,6 +497,18 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
     never,
     unknown
   >,
+  // -- #1744: a lifecycle move, on an entity type no other case writes ---------
+  // The replay reads every event of one type, so its own type keeps the wiring
+  // assertion independent of whatever else the suite has emitted by then.
+  'test/move': ((ctx, input: { entityId: string; state?: string }) => {
+    ctx.emit({
+      type: 'test.moved',
+      schemaVersion: 1,
+      entity: { entityType: 'test-lifecycle', entityId: input.entityId },
+      piiClass: 'none',
+      payload: input.state === undefined ? { id: input.entityId } : { id: input.entityId, state: input.state },
+    });
+  }) as OperationHandler<never, unknown>,
   // -- #901: an entity's version is the last event's ULID ---------------------
   // The read under test. Takes the ref rather than fixing one, so the suite can
   // ask about an entity nothing has ever emitted about and get the absence.

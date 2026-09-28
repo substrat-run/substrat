@@ -24,6 +24,8 @@ import type {
   EffectsTree,
   InvocationEvents,
   DeadLetter,
+  LifecycleFlowInput,
+  LifecycleFlowResult,
   PermissionDenial,
   MigrationDiff,
   PermissionRegistry,
@@ -2121,6 +2123,14 @@ export class TenantNarrowedControlPlane {
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/query`, {
       method: 'POST',
       body: JSON.stringify({ sql }),
+    });
+  }
+
+  /** One entity's declared lifecycle replayed over the scope's outbox (#1744) — the process map. */
+  lifecycleFlow(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/lifecycle-flow`, {
+      method: 'POST',
+      body: JSON.stringify(input),
     });
   }
 }

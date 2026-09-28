@@ -68,6 +68,7 @@ import {
   eventEffectsInput,
   invocationEventsInput,
   deadLettersInput,
+  lifecycleFlowInput,
   type EntityHistoryInput,
   type EventFacetInput,
   type EventCauseInput,
@@ -77,6 +78,8 @@ import {
   type InvocationEvents,
   type DeadLettersInput,
   type DeadLetter,
+  type LifecycleFlowInput,
+  type LifecycleFlowResult,
   type CauseChain,
   type EventFacetResult,
   type HistoryEntry,
@@ -197,6 +200,7 @@ export interface VerticalScopeHost {
   eventEffectsLocal(scopeId: ScopeId, input: EventEffectsInput): Promise<EffectsTree>;
   invocationEventsLocal(scopeId: ScopeId, input: InvocationEventsInput): Promise<InvocationEvents>;
   deadLettersLocal(scopeId: ScopeId, input: DeadLettersInput): Promise<Page<DeadLetter>>;
+  lifecycleFlowLocal(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult>;
   rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
@@ -872,6 +876,13 @@ export function mountPlatformSurface<Env extends object>(
   // The SQL console (#219): one read-only statement, enforced in the DO (textual gate + a
   // transaction that always rolls back). The gate's refusal is the CALLER's mistake — 400,
   // relayed verbatim by the platform — not this worker's fault.
+  // #1744: one entity's declared lifecycle, replayed over a scope THIS vertical holds —
+  // the process map's data. POST, because the declaration travels in the body.
+  app.post('/internal/lifecycle-flow', async (c) => {
+    const { scopeId, ...input } = lifecycleFlowInput.extend({ scopeId: scopeIdOf }).parse(await c.req.json());
+    return c.json(await deps.hostFor(c.env).lifecycleFlowLocal(scopeId, input));
+  });
+
   app.post('/internal/query', async (c) => {
     const body = queryScopeInput.extend({ scopeId: scopeIdOf }).parse(await c.req.json());
     try {

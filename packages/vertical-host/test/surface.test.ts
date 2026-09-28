@@ -58,6 +58,7 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
       note('invocationEventsLocal', { events: [input], truncated: false }) as never,
     deadLettersLocal: async (_s: unknown, input?: unknown) =>
       note('deadLettersLocal', { entries: [input], nextCursor: null }) as never,
+    lifecycleFlowLocal: async (_s: unknown, input?: unknown) => note('lifecycleFlowLocal', { echoed: input }) as never,
     rewindScopeLocal: async () => note('rewindScopeLocal', { rewindingTo: 'bm' }),
     introspectScopeTables: async () => note('introspectScopeTables', []),
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),
@@ -601,6 +602,43 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     // The fake echoes the parsed input: `limit` arrived as a number, the cursor whole.
     expect(await res.json()).toEqual({ entries: [{ limit: 5, cursor }], nextCursor: null });
     expect(host.calls).toContain('deadLettersLocal');
+  });
+
+  // #1744: the lifecycle replay. POST — the declaration is the body — and parsed here, so a
+  // window that is not an instant, or a machine bigger than any declared, never reaches it.
+  const FLOW = {
+    entityType: 'conversation',
+    lifecycle: { field: 'state', initial: 'new', states: { new: { on: { 'desk/open': 'open' } }, open: { terminal: true } } },
+    since: '2026-09-01T00:00:00Z',
+    until: '2026-09-08T00:00:00Z',
+  };
+  const postFlow = (host: VerticalScopeHost, body: unknown) =>
+    appWith(host).request(
+      '/internal/lifecycle-flow',
+      { method: 'POST', headers: { ...authed(), 'content-type': 'application/json' }, body: JSON.stringify(body) },
+      ENV,
+    );
+
+  it('passes a lifecycle replay through to the host', async () => {
+    const host = fakeHost();
+    const res = await postFlow(host, { scopeId: SCOPE, ...FLOW });
+    expect(res.status).toBe(200);
+    // The scope id is the route's; only the replay's own input reaches the host.
+    expect(await res.json()).toEqual({ echoed: FLOW });
+    expect(host.calls).toContain('lifecycleFlowLocal');
+  });
+
+  it('refuses a malformed lifecycle replay rather than running it', async () => {
+    const host = fakeHost();
+    const huge = Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`s${i}`, {}]));
+    for (const body of [
+      { scopeId: SCOPE, ...FLOW, since: 'last tuesday' },
+      { scopeId: SCOPE, ...FLOW, lifecycle: { ...FLOW.lifecycle, states: huge } },
+      { ...FLOW },
+    ]) {
+      expect((await postFlow(host, body)).status).toBe(400);
+    }
+    expect(host.calls).not.toContain('lifecycleFlowLocal');
   });
 
   it('refuses a malformed dead-letter page rather than widening it', async () => {

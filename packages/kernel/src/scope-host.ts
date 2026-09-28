@@ -136,6 +136,8 @@ import type {
   InvocationEvents,
   DeadLettersInput,
   DeadLetter,
+  LifecycleFlowInput,
+  LifecycleFlowResult,
   CauseChain,
   EventFacetResult,
   HistoryEntry,
@@ -2790,6 +2792,20 @@ export interface HostAdmin {
     scopeId: ScopeId,
     input: DeadLettersInput,
   ): Promise<Page<DeadLetter>>;
+
+  /**
+   * One entity's declared lifecycle, replayed over the scope's outbox (#1744) —
+   * `readLifecycleFlow`, hoisted. Edge counts, instances per state, time-in-state, the
+   * longest-stuck instances and the funnel, for the process map. The caller passes the
+   * declaration (the running version's `model.json` lifecycle); the scope holds no model.
+   * Reads only the lifecycle field of unclassified payloads; logged like every read here.
+   */
+  lifecycleFlow(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: LifecycleFlowInput,
+  ): Promise<LifecycleFlowResult>;
 
   /**
    * One read-only SQL statement against the scope's database — the console the two

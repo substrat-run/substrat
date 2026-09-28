@@ -1895,6 +1895,36 @@ export function scopeHostContractSuite(
       expect(page.entries.some((d) => d.consumer === 'executor:flaky-effector')).toBe(false);
     });
 
+    it('replays a declared lifecycle over the outbox through the platform verb (#1744)', async () => {
+      // `readLifecycleFlow`'s own suite pins the replay over a hand-built outbox; this
+      // proves the wiring — real emits, on both adapters, read back through `lifecycleFlow`.
+      const stub = await host.getScope(alice, t1, s1);
+      const since = new Date(Date.now() - 60_000).toISOString();
+      await stub.invoke('test/move', { entityId: 'l1', state: 'draft' });
+      await stub.invoke('test/move', { entityId: 'l1', state: 'live' });
+      // No state in the payload: the declared edge says where it went.
+      await stub.invoke('test/move', { entityId: 'l1' });
+      const flow = await host.admin.lifecycleFlow(staff, t1, s1, {
+        entityType: 'test-lifecycle',
+        lifecycle: {
+          field: 'state',
+          initial: 'draft',
+          states: {
+            draft: { on: { 'test/move': 'live' } },
+            live: { on: { 'test/move': 'done' } },
+            done: { terminal: true },
+          },
+        },
+        since,
+        until: new Date(Date.now() + 60_000).toISOString(),
+      });
+      expect(flow.edges.find((e) => e.from === 'draft' && e.to === 'live')!.count).toBe(1);
+      expect(flow.edges.find((e) => e.from === 'live' && e.to === 'done')!.count).toBe(1);
+      expect(flow.states.find((s) => s.state === 'done')!.current).toBe(1);
+      expect(flow.observation).toMatchObject({ entities: 1, events: 3, inferred: 1, complete: true });
+      expect(flow.totals.finished).toBe(1);
+    });
+
     // -- scope data introspection: the §5.4 admin-query RPC --------------------
     //
     // A read-only window into a scope's OWN database (the console/dashboard Data

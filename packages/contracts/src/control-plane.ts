@@ -36,6 +36,7 @@ import {
   type ReadScopeTableInput,
 } from './introspection.js';
 import type { DenialFilter } from './denial.js';
+import type { LifecycleFlowInput } from './lifecycle-flow.js';
 import { errorCode } from './errors.js';
 import { platformRequestFailureOrigin } from './platform-request.js';
 
@@ -486,6 +487,7 @@ export const delegatedReadMethod = z.enum([
   'eventEffects',
   'invocationEvents',
   'deadLetters',
+  'lifecycleFlow',
 ]);
 export type DelegatedReadMethod = z.infer<typeof delegatedReadMethod>;
 
@@ -502,6 +504,7 @@ export interface DelegatedReadInput {
   eventEffects: EventEffectsInput;
   invocationEvents: InvocationEventsInput;
   deadLetters: DeadLettersInput;
+  lifecycleFlow: LifecycleFlowInput;
 }
 
 /**
@@ -550,6 +553,9 @@ export const delegatedReadParams: {
   // A page of the scope's dead letters names no subject, so there is nothing to log
   // beyond the method — the page itself is left out, as every other read leaves it.
   deadLetters: () => null,
+  // The entity and the window — not the declaration, which is the caller's copy of the
+  // running model and would crowd everything else out of the 500-char cut the adapters make.
+  lifecycleFlow: (i) => ({ entityType: i.entityType, since: i.since, until: i.until }),
 };
 
 /**
