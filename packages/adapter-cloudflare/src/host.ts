@@ -1174,6 +1174,7 @@ interface ScopeStubRpc {
   ): Promise<SwitchedOff[]>;
   /** Tombstone a scope tuple by exact (subject, relation, object). Idempotent. */
   revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
+  hasEffectiveRoleGrantFor(tenantId: string, subject: string): Promise<boolean>;
   /** Attachment surface, metadata half (#473) — see the ScopeDO methods of the same names.
    *  `connectionId` (#476) gates as a connection instead of `principal` when set. */
   attachmentAdd(
@@ -7995,6 +7996,15 @@ export class CloudflareScopeHost implements ScopeHost {
    * On a CP-less host this records no admin-log row (there is no control plane to hold
    * one), so the row's `revoked_at` is the only evidence, and a re-assign replaces it.
    */
+  /**
+   * Does `principal` hold a role this scope can expand (#1665) — scope-level or projected from
+   * the tenant, for a role the vertical still defines? What an owner hand-over asks of its
+   * successor before anything moves: a member whose role was taken back is not one to hand to.
+   */
+  async hasScopeRoleLocal(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId): Promise<boolean> {
+    return this.scopeStub(scopeId).hasEffectiveRoleGrantFor(tenantId, `principal:${principal}`);
+  }
+
   async revokeScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean> {
     return this.scopeStub(scopeId).revokeTuple(
       `principal:${principal}`,

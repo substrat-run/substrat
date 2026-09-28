@@ -334,6 +334,8 @@ export interface VerticalScopeHost {
    */
   assignScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<void>;
   revokeScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean>;
+  /** Does `principal` hold a role the scope can expand? The hand-over's check on `to` (#1665). */
+  hasScopeRoleLocal?(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId): Promise<boolean>;
 }
 
 /**
@@ -449,7 +451,7 @@ const ownerTransferRefusal: Record<Extract<OwnerTransferRecord, { outcome: 'refu
   'same-principal': 'cannot be handed to the principal that already owns it',
   unclaimed: 'has an unclaimed owner seat — claim it first, then hand it over',
   'not-owner': 'is not owned by `from` — the owner of record is someone else',
-  'not-member': 'has no member bound to `to` — the new owner must be someone who can sign in to it',
+  'not-member': 'has no member `to` — the new owner must be someone who can sign in to it and still holds a role in it',
   'in-flight': 'has another hand-over in flight — resend that one to finish it first',
 };
 
@@ -1351,7 +1353,8 @@ export function mountPlatformSurface<Env extends object>(
   // two Durable Objects, with no transaction spanning them, so the ORDER is the contract:
   //
   //   1. the record: the identity directory moves `owner_of_record` from→to and opens the
-  //      hand-over. Every refusal is decided here, before anything is written;
+  //      hand-over. Every refusal is decided here or in the role read just before it, before
+  //      anything is written;
   //   2. the seat: `to` is granted the owner role at scope level;
   //   3. the revoke: `from`'s owner role is tombstoned;
   //   4. the close: the directory marks this hand-over done.
@@ -1372,12 +1375,18 @@ export function mountPlatformSurface<Env extends object>(
       throw new HTTPException(501, { message: 'this vertical keeps no owner seat' });
     }
     const host = deps.hostFor(c.env);
-    if (!host.assignScopeRole || !host.revokeScopeRole) {
+    if (!host.assignScopeRole || !host.revokeScopeRole || !host.hasScopeRoleLocal) {
       return c.json({ error: 'this deployment cannot seat a new owner (#1665) — redeploy it. Nothing was moved.' }, 501);
     }
     const body = ownerTransferBody.parse(await c.req.json());
     const ref = { tenantId: body.tenantId, scopeId: body.scopeId };
     const pair = { from: body.from, to: body.to };
+    // A bound login is not enough: `to` must still hold a role here. A member removed by
+    // revoking their role keeps the binding, and handing them the scope would seat someone
+    // the scope already let go. Read before step 1, so a refusal writes nothing.
+    if (!(await host.hasScopeRoleLocal(body.tenantId, body.scopeId, body.to))) {
+      throw new HTTPException(409, { message: `scope ${body.scopeId} ${ownerTransferRefusal['not-member']}` });
+    }
     const record = ownerTransferRecord.parse(await deps.transferOwner(c.env, ref, pair));
     if (record.outcome === 'refused') {
       const open = record.inFlight ? ` (${record.inFlight.from} → ${record.inFlight.to})` : '';

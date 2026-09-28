@@ -1022,13 +1022,19 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     for (const { who, role } of live) expect(await host().revokeScopeRole(s, principalId.parse(who), role)).toBe(true);
   }
 
+  /** B made a member the way an invite does: the role granted, then the invite accepted. */
+  async function member(s: ScopeId, who: PrincipalId): Promise<void> {
+    await host().assignScopeRole(s, who, 'agent');
+    await directory().createInvite(s, who, 'agent', null, `hash-${s}-${who}`);
+    expect(await directory().claimInvite(s, `sub-${who}-${s}`, `hash-${s}-${who}`)).toBe(who);
+  }
+
   /** A desk A installed and signed in to, with B a member by an accepted invite. */
   async function installed(): Promise<ScopeId> {
     const s = scopeId.parse(ulid());
     expect((await platform('/internal/provision', { tenantId: tenant, scopeId: s, owner: A, entitlements })).status).toBe(201);
     expect(await directory().resolvePrincipal(s, `sub-a-${s}`)).toBe(A);
-    await directory().createInvite(s, B, 'agent', null, `hash-${s}`);
-    expect(await directory().claimInvite(s, `sub-b-${s}`, `hash-${s}`)).toBe(B);
+    await member(s, B);
     return s;
   }
   const reconcile = (s: ScopeId) => platform('/internal/reconcile', { tenantId: tenant, scopeId: s, entitlements });
@@ -1108,11 +1114,24 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
   });
 
+  it('refuses a member whose role was taken back (still signed in), and hands to them once it is back', async () => {
+    const s = await installed();
+    expect(await host().revokeScopeRole(s, B, 'agent')).toBe(true); // removed, binding kept
+    const res = await transfer(s, A, B);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/no member `to`/);
+    expect(await directory().getOwnerOfRecord(s)).toBe(A);
+    expect(await ownerSeats(s)).toEqual([A]);
+    await host().assignScopeRole(s, B, 'agent'); // the twin: a member again
+    expect((await transfer(s, A, B)).status).toBe(200);
+    expect(await ownerSeats(s)).toEqual([B]);
+    expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+
   it('refuses an unclaimed seat, and leaves it claimable by the owner it was minted for', async () => {
     const s = scopeId.parse(ulid());
     expect((await platform('/internal/provision', { tenantId: tenant, scopeId: s, owner: A, entitlements })).status).toBe(201);
-    await directory().createInvite(s, B, 'agent', null, `hash-${s}`);
-    expect(await directory().claimInvite(s, `sub-b-${s}`, `hash-${s}`)).toBe(B);
+    await member(s, B);
     const res = await transfer(s, A, B);
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toMatch(/claim it first/);

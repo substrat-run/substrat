@@ -73,7 +73,8 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   of the instance. It is **staff-only**: a tenant credential or a builder is refused `403`.
   The vertical moves its owner of record, seats `to` in the owner role, revokes `from`'s,
   and closes the hand-over. A repeat after that answers `outcome: 'done'` and changes nothing. It refuses with `409`, changing nothing, when the seat is still unclaimed, `from`
-  is not the owner of record, no login is bound to `to`, or another hand-over on the same
+  is not the owner of record, `to` is not a member (no login bound to it, or no role left
+  in the instance), or another hand-over on the same
   instance is still unfinished (resend that one first). Every attempt writes two
   `transferOwner` rows to the admin log, paired by the `operationId` the route answers with:
   an `intent` before the vertical is asked, then `applied`, `refused` or `failed`. A `failed`

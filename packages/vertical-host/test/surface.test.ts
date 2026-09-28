@@ -1545,13 +1545,17 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
   type Step = 'record' | 'assign' | 'revoke' | 'complete';
 
   /** One scope's owner state: the record, the last hand-over, members, owner-role holders. */
-  function world(init: { record?: string | null; claimed?: boolean; members?: string[]; seats?: string[] } = {}) {
+  function world(
+    init: { record?: string | null; claimed?: boolean; members?: string[]; seats?: string[]; roles?: string[] } = {},
+  ) {
     const w = {
       record: init.record === undefined ? A : init.record,
       last: null as null | { from: string; to: string; state: 'pending' | 'done' },
       claimed: init.claimed ?? true,
       members: new Set(init.members ?? [A, B, C]),
       seats: new Set(init.seats ?? [A]),
+      /** Who holds SOME live role in the scope (a member role), besides the owner seats. */
+      roles: new Set(init.roles ?? [A, B, C]),
       steps: [] as string[],
       /** Throw on the named step, once — the failure "between" steps. */
       failOn: null as null | Step,
@@ -1598,6 +1602,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
         failIf('revoke');
         return w.seats.delete(principal);
       },
+      hasScopeRoleLocal: async (_t, _s, principal) => w.roles.has(principal) || w.seats.has(principal),
     });
     const app = appWith(host, {
       transferOwner: transferOwner as never,
@@ -1684,7 +1689,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
   it.each([
     ['a `from` that is not the owner of record', { record: STRANGER }, /not owned by `from`/],
     ['an unclaimed seat', { claimed: false }, /claim it first/],
-    ['a `to` no subject is bound to', { members: [A] }, /no member bound to `to`/],
+    ['a `to` no subject is bound to', { members: [A] }, /no member `to`/],
     ['a scope with no owner of record', { record: null }, /no owner of record/],
   ])('refuses %s with 409, and no seat moves', async (_label, init, message) => {
     const { w, send, state } = world(init);
@@ -1694,6 +1699,20 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     expect(((await res.json()) as { error: string }).error).toMatch(message);
     expect(w.steps).toEqual(['record']); // decided at the record, before any seat write
     expect(state()).toEqual(before);
+  });
+
+  it('refuses a `to` still bound but whose role was taken back — before the directory is asked', async () => {
+    const { w, send, state } = world({ roles: [A] }); // B signs in, but holds no role any more
+    const before = state();
+    const res = await send({ ...REF, from: A, to: B });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/no member `to`/);
+    expect(w.steps).toEqual([]);
+    expect(state()).toEqual(before);
+    // The twin: give B a role back, and the same request goes through.
+    w.roles.add(B);
+    expect((await send({ ...REF, from: A, to: B })).status).toBe(200);
+    expect(state().record).toBe(B);
   });
 
   it('refuses a malformed body before the directory is reached', async () => {
