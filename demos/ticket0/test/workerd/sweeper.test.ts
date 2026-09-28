@@ -1067,6 +1067,19 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
   });
 
+  it('after A hands to B, a re-provision (the install re-run) repairs a lockout with B, not A', async () => {
+    const s = await installed();
+    expect((await transfer(s, A, B)).status).toBe(200);
+    await revokeEveryRole(s);
+    // The platform re-sends `/internal/provision` with the owner it minted at install: A.
+    const res = await platform('/internal/provision', { tenantId: tenant, scopeId: s, owner: A, entitlements });
+    expect(res.status).toBe(201);
+    expect(await ownerSeats(s)).toEqual([B]);
+    expect(await canAdmin(B, s)).toBe(true);
+    expect(await canAdmin(A, s)).toBe(false);
+    expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+
   it('the twin: a hand-over by hand leaves the record on A, so the same lockout brings A back', async () => {
     const s = await installed();
     await host().assignScopeRole(s, B, 'desk-admin'); // B seated first, as #1659 advises

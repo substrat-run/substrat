@@ -1203,10 +1203,18 @@ export function mountPlatformSurface<Env extends object>(
   // control plane already owns the directory row + entitlements. Idempotent.
   app.post('/internal/provision', async (c) => {
     const body = provisionBody.parse(await c.req.json());
+    // The owner the seat (and its lockout repair) is for: the vertical's owner of record once it
+    // has one (#1665). The platform re-sends the principal it minted at install on every re-run,
+    // and after a hand-over that is the PREVIOUS owner. `body.owner` stays the first install's
+    // owner, and what `onProvision` records a seat for, which it keeps first-write-wins.
+    const recorded = deps.resolveOwner
+      ? await deps.resolveOwner(c.env, { tenantId: body.tenantId, scopeId: body.scopeId })
+      : null;
+    const owner = recorded ?? body.owner;
     const provisioned = await deps.hostFor(c.env).provisionScopeLocal({
       tenantId: body.tenantId,
       scopeId: body.scopeId,
-      owner: body.owner,
+      owner,
       roles: deps.roles,
       ownerRoleKey: deps.ownerRoleKey,
       entitlements: body.entitlements,
@@ -1220,7 +1228,7 @@ export function mountPlatformSurface<Env extends object>(
       {
         tenantId: body.tenantId,
         scopeId: body.scopeId,
-        owner: body.owner,
+        owner,
         ...switchedOffAnswer(provisioned?.switchedOff),
       },
       201,

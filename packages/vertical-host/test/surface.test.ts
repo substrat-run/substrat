@@ -1763,6 +1763,41 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     expect(provisioned).toEqual([B]);
   });
 
+  it('after a hand-over, a re-PROVISION seats the new owner, not the one the platform minted', async () => {
+    const { host, app, send } = world();
+    const seated: unknown[] = [];
+    host.provisionScopeLocal = async (input) => {
+      seated.push(input.owner);
+    };
+    const provision = () =>
+      app.request(
+        '/internal/provision',
+        { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, owner: A }) },
+        ENV,
+      );
+    expect((await provision()).status).toBe(201); // the install: the record names A
+    await send({ ...REF, from: A, to: B });
+    const again = await provision(); // the platform re-runs it with the principal it minted: A
+    expect(again.status).toBe(201);
+    expect(((await again.json()) as { owner: string }).owner).toBe(B);
+    expect(seated).toEqual([A, B]);
+  });
+
+  it('…and its twin: a scope with no owner of record yet seats the owner the platform sent', async () => {
+    const { host, app } = world({ record: null });
+    const seated: unknown[] = [];
+    host.provisionScopeLocal = async (input) => {
+      seated.push(input.owner);
+    };
+    const res = await app.request(
+      '/internal/provision',
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, owner: A }) },
+      ENV,
+    );
+    expect(res.status).toBe(201);
+    expect(seated).toEqual([A]);
+  });
+
   it('501s without either hook, and without the host verbs — before the record is touched', async () => {
     const REQ = { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, from: A, to: B }) };
     const touched: unknown[] = [];
