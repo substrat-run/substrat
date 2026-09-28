@@ -28,6 +28,7 @@ import type {
   ProjectedIdentityLink,
   OwnerSeat,
   OwnerClaimLink,
+  OwnerTransferResult,
   QueryScopeInput,
   ReadScopeTableInput,
   EntityHistoryInput,
@@ -62,6 +63,7 @@ import {
   mintedPreviewClient,
   ownerSeat,
   ownerClaimLink,
+  ownerTransferResult,
   previewClientClaim,
   retiredPreviewClients,
   peerGrantsEntry,
@@ -488,6 +490,21 @@ export class VerticalClient {
    */
   async mintOwnerClaim(input: { tenantId: TenantId; scopeId: ScopeId; origin: string }): Promise<OwnerClaimLink> {
     return ownerClaimLink.parse(await this.postInternal<unknown>('/internal/owner-claim', input, 'owner-claim'));
+  }
+
+  /**
+   * Hand the scope's owner seat from `from` to `to` (#1665). The vertical moves its owner of
+   * record, seats `to` and revokes `from`, in that order (vertical-host's route spells out why).
+   * A refusal (409: unclaimed seat, stale `from`, `to` not a member) wrote nothing. Any other
+   * failure may have stopped part-way, and the same call completes it. Parsed on arrival.
+   */
+  async transferOwner(input: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    from: PrincipalId;
+    to: PrincipalId;
+  }): Promise<OwnerTransferResult> {
+    return ownerTransferResult.parse(await this.postInternal<unknown>('/internal/owner-transfer', input, 'owner-transfer'));
   }
 
   /**

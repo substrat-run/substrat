@@ -187,6 +187,11 @@ export const adminAction = z.enum([
   // append-only, so a credential written here could never be removed.
   'mintCapability',
   'revokeCapability',
+  // #1665 — an owner hand-over: the scope's owner of record moved from one principal to
+  // another, the new one seated in the owner role and the old one's taken back. The row names
+  // both principals and, like every row, the actor from the request. Written intent-first then
+  // outcome, like the schedule switch, since the move happens in the vertical's own deployment.
+  'transferOwner',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 
@@ -402,6 +407,30 @@ export const ownerTransferResult = z.object({
   fromRevoked: z.boolean(),
 });
 export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
+
+/**
+ * One row of an owner hand-over's audit (#1665), as the control plane reports it to
+ * `HostAdmin.recordOwnerTransfer`. Written twice per attempt, paired by `operationId`: an
+ * `intent` before the vertical is reached, then what came of it: `applied` (with what moved),
+ * `refused` (the vertical's 409: nothing was written) or `failed` (anything else, where the
+ * hand-over may have stopped part-way and a repeat completes it).
+ *
+ * No `id`, no `at` and no actor: the adapter stamps the first two and the request supplies the
+ * third, as for every admin row, so a caller can neither backdate one nor name someone else.
+ */
+const ownerTransferAuditBase = { tenantId, scopeId, operationId: z.string().min(1), from: principalId, to: principalId };
+export const ownerTransferAudit = z.discriminatedUnion('phase', [
+  z.object({ phase: z.literal('intent') }).extend(ownerTransferAuditBase).strict(),
+  z
+    .object({ phase: z.literal('applied'), recordMoved: z.boolean(), fromRevoked: z.boolean() })
+    .extend(ownerTransferAuditBase)
+    .strict(),
+  z
+    .object({ phase: z.enum(['refused', 'failed']), error: z.string().max(2000) })
+    .extend(ownerTransferAuditBase)
+    .strict(),
+]);
+export type OwnerTransferAudit = z.infer<typeof ownerTransferAudit>;
 
 /**
  * How an identity pool relates to tenants (K-23) — the fact that decides whether the
