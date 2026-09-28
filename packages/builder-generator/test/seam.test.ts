@@ -44,7 +44,7 @@ function stubModel(): MockLanguageModelV3 {
 							},
 							{
 								type: 'finish' as const,
-								finishReason: 'tool-calls' as const,
+								finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
 								usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
 							},
 						]
@@ -55,7 +55,7 @@ function stubModel(): MockLanguageModelV3 {
 							{ type: 'text-end' as const, id: '0' },
 							{
 								type: 'finish' as const,
-								finishReason: 'stop' as const,
+								finishReason: { unified: 'stop' as const, raw: 'stop' },
 								usage: { inputTokens: 20, outputTokens: 7, totalTokens: 27 },
 							},
 						];
@@ -139,7 +139,7 @@ describe('the generator seam (§5.2)', () => {
 						},
 						{
 							type: 'finish' as const,
-							finishReason: 'stop' as const,
+							finishReason: { unified: 'stop' as const, raw: 'stop' },
 							usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
 						},
 					],
