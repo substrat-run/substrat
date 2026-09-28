@@ -37,8 +37,12 @@
 import { substratError } from '@substrat-run/contracts';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 
-/** The platform spine's table prefix — the same one `isSystemTable` groups on. */
-const SPINE_PREFIX = '_substrat';
+/**
+ * The platform spine's table prefix — the same one `isSystemTable` groups on, and the one a
+ * restore builds from the kernel's DDL (`isSpineTable`, #1883). Compared lowercased: SQLite
+ * matches table names without regard to case, so `_SUBSTRAT_TUPLES` is the tuples table.
+ */
+export const SPINE_PREFIX = '_substrat';
 
 interface Token {
   /** The identifier text, unquoted; dotted names joined with `.`. */

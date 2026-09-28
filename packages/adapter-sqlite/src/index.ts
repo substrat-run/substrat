@@ -481,7 +481,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
-import { repointScopeGrants } from '@substrat-run/kernel';
+import { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
@@ -507,6 +507,34 @@ function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
   if (!write) throw new Error('kernelEmit: not an operation context this host built');
   write(event);
 }
+
+/**
+ * The spine tables a Durable Object's scope builds and this adapter's scope does not (#1883):
+ * the roles, tenant-level tuples, entitlements, identity links and connection keys a node
+ * scope keeps in its DIRECTORY, and the DO's own `_substrat_meta` and PITR bookmarks. A DO's
+ * dump restored here skips them rather than refusing: every one is a projection the directory
+ * already holds, or a record only a DO has a use for. Any OTHER spine table this kernel does
+ * not build is still refused. The list is the difference between the two `KERNEL_DDL`s, and
+ * `pnpm lint:spine-ddl` holds it to that, so a table added on one side cannot slip past.
+ */
+export const DO_SCOPE_ONLY_SPINE_TABLES: ReadonlySet<string> = new Set([
+  '_substrat_connection_keys',
+  '_substrat_entitlements',
+  '_substrat_identity_links',
+  '_substrat_meta',
+  '_substrat_migration_bookmarks',
+  '_substrat_roles',
+  '_substrat_tenant_tuples',
+]);
+
+/**
+ * The columns of spine table `name` as this scope's kernel built it, or `undefined` when it
+ * built no such table — what a restore judges a dump's spine tables against (#1883).
+ */
+const spineColumnsOf = (db: Database.Database, name: string): string[] | undefined => {
+  const cols = db.prepare(`SELECT name FROM pragma_table_info(?)`).all(name) as { name: string }[];
+  return cols.length === 0 ? undefined : cols.map((c) => c.name);
+};
 
 /** The kernel's schedule-switch SQL (#1666), over one scope's database handle. */
 const switchSqlOf = (db: Database.Database): SwitchSql => ({
@@ -3226,8 +3254,9 @@ export class SqliteScopeHost implements ScopeHost {
       // rows are gone and the new ones are in. It also covers what a topological sort
       // cannot express: FK cycles, and self-referencing rows within one table.
       db.pragma('defer_foreign_keys = ON');
-      // Drop the current schema — the dump's schema is authoritative. Only real
-      // tables (never `sqlite_*` internals, which are auto-managed and un-droppable).
+      // Drop the current schema: a vertical's tables are rebuilt from the dump's DDL, the
+      // spine from KERNEL_DDL (below). Only real tables (never `sqlite_*` internals, which
+      // are auto-managed and un-droppable).
       const existing = db
         .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
         .all() as { name: string }[];
@@ -3235,35 +3264,43 @@ export class SqliteScopeHost implements ScopeHost {
       // shadow table directly is an error, and dropping them in `sqlite_master` order
       // would reach one before its virtual table.
       for (const { name } of existing) {
-        if (isSearchIndexTable(name)) continue;
+        if (isSearchIndexTable(name.toLowerCase())) continue;
         db.exec(`DROP TABLE IF EXISTS "${name}"`);
       }
       // A dump written before indexes were excluded may still carry them; skip those
       // too rather than failing a restore over data that is about to be recomputed.
-      const replayable = dumped.filter((t) => !isSearchIndexTable(t.name));
+      // Matched without case, as SQLite resolves a table name (#1883 review).
+      const replayable = dumped.filter((t) => !isSearchIndexTable(t.name.toLowerCase()));
       // The dump is untrusted input (#1143): its names reach SQL as identifiers, and
       // `db.exec` would run every statement its `ddl` contains, not just the CREATE
       // TABLE. Judged as a whole before any of it executes — a check interleaved with
       // the replay has already let the earlier tables happen.
       assertReplayableDump(replayable);
-      for (const t of replayable) db.prepare(t.ddl).run();
-      for (const t of replayable) {
+      // A vertical's tables take the dump's own DDL. The spine never does (#1883): its tables
+      // come from KERNEL_DDL, which also fills in any the dump omits (#321) — e.g.
+      // `_substrat_migrations`, which the frontier refresh below reads — and the dump
+      // contributes only rows, by column name (`dumpRowsInsert`). Otherwise a dump could
+      // declare a column the checker compares on as COLLATE NOCASE. The column pass follows,
+      // for the one outbox index KERNEL_DDL leaves to it.
+      // A Durable Object's dump carries spine tables this adapter keeps in its directory, or does
+      // not keep at all; they are skipped by name, and any other unknown spine table is refused.
+      const loadable = replayable.filter((t) => !DO_SCOPE_ONLY_SPINE_TABLES.has(t.name.toLowerCase()));
+      for (const t of loadable) if (!isSpineTable(t.name)) db.prepare(t.ddl).run();
+      db.exec(KERNEL_DDL);
+      this.ensureSpineColumns(db);
+      const columnsOf = (name: string) => spineColumnsOf(db, name);
+      assertSpineTablesBuilt(loadable.map((t) => t.name), columnsOf);
+      // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
+      // untyped column the checker never reads.
+      for (const t of loadable) {
+        if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) db.exec(alter);
+      }
+      for (const t of loadable) {
+        const insert = dumpRowsInsert(t, columnsOf);
         if (t.rows.length === 0) continue;
-        const cols = t.columns.map((c) => `"${c}"`).join(', ');
-        const placeholders = t.columns.map(() => '?').join(', ');
-        const stmt = db.prepare(`INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`);
+        const stmt = db.prepare(insert);
         for (const row of t.rows) stmt.run(...(row as unknown[]));
       }
-      // Re-assert the per-scope kernel spine (#321): a partial dump (or one from a world
-      // that stores some `_substrat_*` tables elsewhere) may omit spine tables this scope
-      // must have — e.g. `_substrat_migrations`, which the frontier refresh below reads.
-      // KERNEL_DDL is all IF NOT EXISTS, so it fills only the gaps and never disturbs a
-      // table the dump carried.
-      db.exec(KERNEL_DDL);
-      // …and the additive columns, for the same reason: a dump captured before a
-      // column existed replays DDL WITHOUT it, and IF NOT EXISTS cannot widen a
-      // table the dump did bring.
-      this.ensureSpineColumns(db);
       // Rebuild the derived search indexes over the rows just loaded (#827). The DDL
       // drops and recreates, so this also repairs an index the dump left stale, and
       // the triggers it recreates are what keep the restored scope in step from here.
@@ -3286,9 +3323,10 @@ export class SqliteScopeHost implements ScopeHost {
       // so `/me` reports a role while every `ctx.check` denies. Entity-level grants
       // (`object = customer:<id>`) are untouched: those ids travel with the dump.
       // Which rows move is `repointScopeGrants`'s (#1869): the dump's source scope, exactly.
-      // `UPDATE OR REPLACE` because (subject, relation, object) is the primary key — a
-      // rewritten row collapses onto an existing one rather than failing the restore.
-      repointScopeGrants(switchSqlOf(db), scopeId, { scopeId: dump.scopeId, exact: dump.exact });
+      // (subject, relation, object) is the primary key, so a moved row can meet one the dump
+      // already holds here; which one survives is that function's rule too (#1882), judged
+      // at this host's clock as the checker judges expiry.
+      repointScopeGrants(switchSqlOf(db), scopeId, { scopeId: dump.scopeId, exact: dump.exact }, this.clock());
       // #1742: inside the replay's transaction, so a failure here rolls the whole load back and
       // the dump's grants never commit without the switch that should cover them.
       afterLoad?.(rt);
@@ -9964,8 +10002,10 @@ export class SqliteScopeHost implements ScopeHost {
    * has to attempt-and-tolerate instead — see its `ensureDirectoryColumns`).
    */
   private ensureColumn(db: Database.Database, table: string, column: string, ddl: string): void {
+    // Without case, as SQLite resolves a column name: a restore may have added this column
+    // already, untyped and spelled as a newer kernel's dump spelled it (#1883).
     const existing = (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some(
-      (c) => c.name === column,
+      (c) => c.name.toLowerCase() === column.toLowerCase(),
     );
     if (!existing) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   }
@@ -10979,12 +11019,15 @@ export class SqliteScopeHost implements ScopeHost {
   /**
    * The additive spine-column migrations, shared by `runtime()` and the dump replay.
    * KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before a column keeps the
-   * old shape — and so does a table a DUMP replay just recreated from legacy DDL,
-   * which is why `loadDump` re-runs this after its replay: `runtime()` already ran
-   * for that scope, and without the re-run the very next emit in this process fails
-   * with `no such column`.
+   * old shape until this runs on its next wake. `loadDump` runs it too, after rebuilding
+   * the spine from KERNEL_DDL: there it adds no column, since a restore never brings a
+   * legacy spine table (#1883), but it also creates `_substrat_outbox_invocation`, which
+   * KERNEL_DDL deliberately does not and the restore's DROP of the outbox took with it.
    */
   private ensureSpineColumns(db: Database.Database): void {
+    // Every column here is nullable with no DEFAULT (`attempts` is grandfathered): a restore may
+    // have added it bare already, and then `ensureColumn` finds it and adds nothing (#1883).
+    // `lint:spine-ddl` refuses one that is not.
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the
     // old shape — ALTER the tombstone in.
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');

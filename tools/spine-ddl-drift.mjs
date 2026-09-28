@@ -487,6 +487,59 @@ export function scopeTableColumns(table) {
   return cols;
 }
 
+/**
+ * #1883: a node restore skips, by name, the spine tables a Durable Object's scope builds and a
+ * node scope does not (`DO_SCOPE_ONLY_SPINE_TABLES` in adapter-sqlite), and refuses any other
+ * spine table it does not build. The list is only right while it IS that difference, so it is
+ * read from source here and held to the tables this check just found on one side only. The
+ * other direction must stay empty: a node dump restored onto a DO has nothing to skip.
+ */
+function skipListDrift(sqliteSrc, nodeOnly, doOnly) {
+  const decl = sqliteSrc.match(/export const DO_SCOPE_ONLY_SPINE_TABLES[^=]*= new Set\(\[([\s\S]*?)\]\);/);
+  if (!decl) return [`scope: cannot find DO_SCOPE_ONLY_SPINE_TABLES in ${SQLITE}`];
+  const listed = quoted(decl[1]).sort();
+  const out = [];
+  const missing = doOnly.filter((t) => !listed.includes(t));
+  const extra = listed.filter((t) => !doOnly.includes(t));
+  if (missing.length > 0 || extra.length > 0) {
+    out.push(
+      `scope: DO_SCOPE_ONLY_SPINE_TABLES (${SQLITE}) must be exactly the spine tables the ScopeDO builds ` +
+        `and the node scope does not; ` +
+        (missing.length > 0 ? `missing ${missing.join(', ')}` : '') +
+        (missing.length > 0 && extra.length > 0 ? '; ' : '') +
+        (extra.length > 0 ? `lists ${extra.join(', ')}, which is not one of them` : ''),
+    );
+  }
+  if (nodeOnly.length > 0) {
+    out.push(
+      `scope: the node scope builds ${nodeOnly.join(', ')} and the ScopeDO does not, so a node dump ` +
+        `restored onto a DO would be refused. Build it on both sides.`,
+    );
+  }
+  return out;
+}
+
+/**
+ * #1883: every column a scope's spine ALTERs in must be nullable, with no DEFAULT. A restore of
+ * a newer kernel's dump adds a column this kernel does not know as a bare, untyped column; when
+ * a later kernel then ALTERs the same column in for real, the ALTER meets the bare one and is
+ * skipped as a duplicate. So the later kernel only ever gets what a bare column gives it: NULL
+ * for the rows it did not write, and no constraint. A NOT NULL or a DEFAULT on an additive
+ * column would be a promise that path does not keep. `attempts` (#100) predates the rule and is
+ * grandfathered: its DEFAULT 0 reads as "terminal", which is also what a NULL there reads as.
+ */
+const ADDITIVE_RULE_GRANDFATHERED = new Set(['_substrat_deliveries.attempts']);
+function additiveRuleBreaks(side, additions) {
+  return additions
+    .filter(({ table, ddl }) => /\bNOT\s+NULL\b|\bDEFAULT\b/i.test(ddl))
+    .filter(({ table, ddl }) => !ADDITIVE_RULE_GRANDFATHERED.has(`${table}.${ddl.trim().split(/\s+/)[0]}`))
+    .map(
+      ({ table, ddl }) =>
+        `scope/${table}: the additive column \`${ddl}\` (${side.label}) is NOT NULL or has a DEFAULT. ` +
+        'An additive spine column must be nullable with no DEFAULT, since a restore may have added it bare first.',
+    );
+}
+
 function main() {
   const fragments = kernelFragments();
   const sources = new Map();
@@ -545,13 +598,19 @@ function main() {
         );
       }
     }
+    const onlyA = [...a.tables.keys()].filter((t) => !b.tables.has(t)).sort();
+    const onlyB = [...b.tables.keys()].filter((t) => !a.tables.has(t)).sort();
     for (const [only, side, other] of [
-      [[...a.tables.keys()].filter((t) => !b.tables.has(t)).sort(), sideA, sideB],
-      [[...b.tables.keys()].filter((t) => !a.tables.has(t)).sort(), sideB, sideA],
+      [onlyA, sideA, sideB],
+      [onlyB, sideB, sideA],
     ]) {
       for (const table of only) {
         notes.push(`${pair.name}/${table}: built by ${side.label}, not by ${other.label}`);
       }
+    }
+    if (pair.name === 'scope') {
+      failures.push(...skipListDrift(sources.get(SQLITE), onlyA, onlyB));
+      for (const side of pair.sides) failures.push(...additiveRuleBreaks(side, sideSchemas.get(side).additions));
     }
   }
 

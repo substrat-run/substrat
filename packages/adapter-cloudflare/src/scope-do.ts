@@ -260,7 +260,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { repointScopeGrants, type RepointSource } from '@substrat-run/kernel';
+import { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4504,8 +4504,9 @@ export function defineScopeDO(
 
     /**
      * Load a dump into this (freshly-provisioned) scope — the write half of the fork
-     * (host.ts importScope). Drop-then-replay: the dump's schema is authoritative, so
-     * the provisioning schema is wiped and rebuilt from the dump verbatim.
+     * (host.ts importScope). Drop-then-replay: the provisioning schema is wiped and rebuilt,
+     * a vertical's tables from the dump's DDL and the `_substrat_*` spine from KERNEL_DDL
+     * (#1883), then the dump's rows go back in.
      *
      * `destScopeId` is the scope being written INTO. A dump carries scope-level tuples
      * naming the scope it was captured from, so restoring one anywhere else needs them
@@ -4516,14 +4517,18 @@ export function defineScopeDO(
      */
     /**
      * The additive spine-column migrations. KERNEL_DDL is all IF NOT EXISTS, so a
-     * scope DO created before a column keeps the old shape — and so does a table a
-     * DUMP replay just recreated from legacy DDL, which is why `importDump` re-runs
-     * this after the replay: without it, the next INSERT naming the column fails in
-     * this very instance. Attempt-and-tolerate: DO SQLite restricts PRAGMA, so there
+     * scope DO created before a column keeps the old shape until this runs on its next
+     * wake. `importDump` runs it too, after rebuilding the spine from KERNEL_DDL: there every
+     * ALTER is a duplicate, since a restore never brings a legacy spine table (#1883), but the
+     * pass also creates `_substrat_outbox_invocation`, which KERNEL_DDL deliberately does not
+     * and the restore's DROP of the outbox took with it. Attempt-and-tolerate: DO SQLite restricts PRAGMA, so there
      * is no column probe, and a duplicate is the steady state after the first cold
      * start (same argument as ControlPlaneDO.addColumn).
      */
     private applySpineColumnAdditions(): void {
+      // Every column here is nullable with no DEFAULT (`attempts` is grandfathered): a restore may
+      // have added it bare already, and then this ALTER is skipped as a duplicate (#1883).
+      // `lint:spine-ddl` refuses one that is not.
       for (const alter of [
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
         // Executor retry state (#100). The defaults read as "terminal", which is
@@ -4659,7 +4664,8 @@ export function defineScopeDO(
       // cycles, and self-referencing rows within a single table.
       // A dump written before indexes were excluded may still carry them; skipped
       // rather than failing a restore over data about to be recomputed.
-      const replayable = tables.filter((t) => !isSearchIndexTable(t.name));
+      // Matched without case, as SQLite resolves a table name (#1883 review).
+      const replayable = tables.filter((t) => !isSearchIndexTable(t.name.toLowerCase()));
       // The dump is untrusted input (#1143). `SqlStorage.exec` runs every statement
       // in the string it is given, so a `ddl` with anything appended to its CREATE
       // TABLE executed that too — with entirely plain identifiers, which is why no
@@ -4681,41 +4687,46 @@ export function defineScopeDO(
         // shadow table directly is an error, and `sqlite_master` order would reach one
         // before its virtual table.
         for (const { name } of existing) {
-          if (isSearchIndexTable(name)) continue;
+          if (isSearchIndexTable(name.toLowerCase())) continue;
           this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
         }
-        for (const t of replayable) this.sql.exec(t.ddl);
+        // A vertical's tables take the dump's own DDL. The spine never does (#1883): a dump
+        // that declared a column the checker compares on as COLLATE NOCASE would otherwise
+        // decide how this DO's permission checks match. Every `_substrat_*` table is built
+        // from KERNEL_DDL instead, and the dump contributes only rows, by column name
+        // (`spineRowsInsert`), a missing column taking the kernel's default.
+        for (const t of replayable) if (!isSpineTable(t.name)) this.sql.exec(t.ddl);
+        // KERNEL_DDL also builds what the dump did not carry (#321). A dump captured from a
+        // WORLD that stores some `_substrat_*` tables ELSEWHERE carries only a subset — an
+        // `@substrat-run/adapter-sqlite` scope file keeps `_substrat_roles` /
+        // `_substrat_tenant_tuples` in its DIRECTORY database, so its per-scope dump omits
+        // them, and without them the very next permission check would raise a bare `no such
+        // table: _substrat_roles`. Roles land empty here and are re-projected by the
+        // restore's repair leg (host.projectRolesLocal) — the spine's job is only to exist so
+        // the checker can read it. The column pass follows, for the one outbox index KERNEL_DDL
+        // leaves to it.
+        for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
+        this.applySpineColumnAdditions();
+        const columnsOf = (name: string) => this.spineColumnsOf(name);
+        assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
+        // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
+        // untyped column the checker never reads.
         for (const t of replayable) {
-          if (t.rows.length === 0) continue;
-          const cols = t.columns.map((c) => `"${c}"`).join(', ');
-          const placeholders = t.columns.map(() => '?').join(', ');
-          const insert = `INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`;
+          if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
+        }
+        for (const t of replayable) {
+          const insert = dumpRowsInsert(t, columnsOf);
           for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
         }
-        // Re-assert the kernel spine (#321). A dump captured from a WORLD that stores some
-        // `_substrat_*` tables ELSEWHERE carries only a subset — an `@substrat-run/adapter-
-        // sqlite` scope file, for instance, keeps `_substrat_roles`/`_substrat_tenant_tuples`
-        // in its DIRECTORY database, so its per-scope dump omits them. Replaying such a dump
-        // verbatim would leave this DO missing those spine tables, and the very next
-        // permission check would raise a bare `no such table: _substrat_roles`. KERNEL_DDL is
-        // all IF NOT EXISTS, so this recreates only what the dump did not carry (empty), and
-        // never disturbs a table the dump DID bring. Roles land empty here and are re-projected
-        // by the restore's repair leg (host.projectRolesLocal) — the spine's job is only to
-        // exist so the checker can read it.
-        for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
-        // …and the additive columns, for the same reason KERNEL_DDL is re-asserted: a
-        // dump captured before a column existed replays DDL WITHOUT it, and IF NOT
-        // EXISTS cannot widen a table the dump did bring. Without this, the next emit
-        // in this instance fails with `no such column` until a cold start re-runs the
-        // constructor's pass.
-        this.applySpineColumnAdditions();
         // #1738: a dump's `provisioned_for` names the scope (and tenant) it was captured from,
         // not this one. Dropped, so a restore never carries a receipt over; the repair
         // projection that follows writes this scope's own.
         this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
         // Re-point the restored grants at THIS scope (after the spine exists, so a dump
         // that carried no tuples table still finds one here).
-        if (destScopeId) this.rewriteScopeTuples(destScopeId, sourceScopeId && { scopeId: sourceScopeId, exact });
+        if (destScopeId) {
+          this.rewriteScopeTuples(destScopeId, sourceScopeId && { scopeId: sourceScopeId, exact }, new Date().toISOString());
+        }
         // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
         // the spine and the re-point. A switch that throws rolls the whole restore back, so
         // the dump's grants never commit live without the switch that should cover them.
@@ -4790,12 +4801,25 @@ export function defineScopeDO(
      *
      * Which rows move is `repointScopeGrants`'s (#1869): the dump's source scope, exactly.
      *
-     * `UPDATE OR REPLACE` because (subject, relation, object) is the primary key: if the
-     * dump already held a tuple for the destination scope, the rewritten row collapses
-     * onto it instead of failing the whole restore.
+     * (subject, relation, object) is the primary key, so a moved row can meet one the dump
+     * already holds for the destination scope. Which survives is that function's rule too
+     * (#1882), with expiry judged at `now`, as this DO's checker judges it.
      */
-    private rewriteScopeTuples(destScopeId: ScopeId, source?: RepointSource): void {
-      repointScopeGrants(this.switchSql(), destScopeId, source);
+    private rewriteScopeTuples(destScopeId: ScopeId, source: RepointSource | undefined, now: string): void {
+      repointScopeGrants(this.switchSql(), destScopeId, source, now);
+    }
+
+    /**
+     * The columns of spine table `name` as KERNEL_DDL built it here, or `undefined` when it built
+     * no such table — what `spineRowsInsert` judges a dump's columns against (#1883). Read off an
+     * empty `SELECT`, because DO SQLite restricts PRAGMA. The name is matched without case, as
+     * SQLite resolves a table name: a dump's `_Substrat_tuples` is the kernel's tuples table.
+     */
+    private spineColumnsOf(name: string): string[] | undefined {
+      const built = this.sql
+        .exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE`, name)
+        .toArray();
+      return built.length === 0 ? undefined : this.sql.exec(`SELECT * FROM "${name}" LIMIT 0`).columnNames;
     }
 
     /**

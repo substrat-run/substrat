@@ -21,7 +21,7 @@ import {
   type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type SwitchSql } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -1989,43 +1989,75 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
   });
 
   /**
-   * #1742 review: the switch runs inside the replay's own transaction. A dump whose
-   * `_substrat_tuples` refuses the OFF marker (a CHECK) makes the switch throw part-way
-   * through a restore. That must roll the whole restore back rather than commit the dump's
-   * live grants with no switch over them. Outside the transaction, the replay committed
-   * first and the throw came after it.
+   * #1742 review: the switch runs inside the replay's own transaction. A switch that throws
+   * part-way through a restore must roll the whole restore back rather than commit the dump's
+   * live grants with no switch over them. Outside the transaction, the replay committed first
+   * and the throw came after it.
+   *
+   * A dump cannot make the switch throw any more: it used to carry a CHECK on
+   * `_substrat_tuples`, and since #1883 that table is built from KERNEL_DDL. So the fault is
+   * injected at the switch's own write instead: this scope's DO instance refuses the OFF
+   * marker for as long as `refuseMarker`'s undo has not run.
    */
-  const refusingMarker = (dump: Awaited<ReturnType<CloudflareScopeHost['exportScopeLocal']>>) =>
-    dump.map((tbl) =>
-      tbl.name === '_substrat_tuples'
-        ? { ...tbl, ddl: tbl.ddl.replace(/\)\s*$/, ", CHECK (relation <> 'switch:off'))") }
-        : tbl,
-    );
+  const refuseMarker = async (s: ScopeId): Promise<() => Promise<void>> => {
+    const stub = () => env.SCOPE.get(env.SCOPE.idFromName(s));
+    await runInDurableObject(stub(), (instance) => {
+      const target = instance as unknown as { switchSql(): SwitchSql };
+      const real = target.switchSql.bind(target);
+      target.switchSql = () => {
+        const sql = real();
+        return {
+          all: sql.all,
+          run: (q, ...params) => {
+            if (params.includes('switch:off')) throw new Error('the OFF marker was refused (test fault)');
+            sql.run(q, ...params);
+          },
+        };
+      };
+    });
+    return () =>
+      runInDurableObject(stub(), (instance) => {
+        delete (instance as unknown as { switchSql?: unknown }).switchSql;
+      });
+  };
 
   it('a switch that fails inside a restore rolls the whole restore back: the scope stays off', async () => {
     const s = await newScope();
-    const before = refusingMarker(await host.exportScopeLocal(s));
+    const before = await host.exportScopeLocal(s);
     await off(s);
-    await expect(host.restoreScopeLocal(s, before, { switchedOff: [SCHED] })).rejects.toThrow(/CHECK constraint failed/);
+    const undo = await refuseMarker(s);
+    try {
+      await expect(host.restoreScopeLocal(s, before, { switchedOff: [SCHED] })).rejects.toThrow(
+        /the OFF marker was refused \(test fault\)/,
+      );
+    } finally {
+      await undo();
+    }
     // Nothing of the dump landed: the marker the scope had is still live.
     expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
   });
 
-  it('twin: the same dump with nothing to switch restores, and fires', async () => {
+  it('twin: under the same fault, a restore with nothing to switch lands, and fires', async () => {
     const s = await newScope();
-    const before = refusingMarker(await host.exportScopeLocal(s));
+    const before = await host.exportScopeLocal(s);
     await off(s);
-    expect(await host.restoreScopeLocal(s, before)).toEqual({ tables: before.length });
+    const undo = await refuseMarker(s);
+    try {
+      expect(await host.restoreScopeLocal(s, before)).toEqual({ tables: before.length });
+    } finally {
+      await undo();
+    }
     expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
   });
 
   /**
-   * #1742 review round 2: the spine re-assert now runs inside the replay's `storage.transaction`,
-   * and for a dump from before #1288 it rebuilds `_substrat_schedule_state` in a nested
-   * `transactionSync`. This proves workerd allows that nesting: an old dump restores, its
-   * schedule state gains `kind` with its row carried, and the switch in the same transaction
-   * holds.
+   * #1742 review round 2: the spine re-assert runs inside the replay's `storage.transaction`. A
+   * dump from before #1288 used to be replayed as the old table and rebuilt there in a nested
+   * `transactionSync`. Since #1883 the table is built from KERNEL_DDL and each row's `kind` is
+   * derived as it goes in, so no rebuild runs (the wake-time rebuild has its own test in
+   * `schedule-invocation-column.test.ts`). This holds the rest: an old dump restores, its row
+   * is carried with `kind`, and the switch in the same transaction holds.
    */
   const pre1288 = (dump: Awaited<ReturnType<CloudflareScopeHost['exportScopeLocal']>>) =>
     dump.map((tbl) =>
@@ -2042,7 +2074,7 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
   const scheduleState = async (s: ScopeId) =>
     (await (await host.getScope(owner, t, s)).invoke('sched/schedule-state')) as { kind: string; schedule_op: string }[];
 
-  it('a pre-#1288 dump restores inside the transaction: the nested rebuild runs, and the switch holds', async () => {
+  it('a pre-#1288 dump restores inside the transaction: its row gets kind, and the switch holds', async () => {
     const s = await newScope();
     const old = pre1288(await host.exportScopeLocal(s));
     expect(old.some((tbl) => tbl.name === '_substrat_schedule_state')).toBe(true);
