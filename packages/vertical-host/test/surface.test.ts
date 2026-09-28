@@ -1568,6 +1568,9 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
       if (w.record === null) return { outcome: 'refused', owner: null, reason: 'unknown' } as const;
       if (!w.claimed) return { outcome: 'refused', owner: w.record, reason: 'unclaimed' } as const;
       if (!w.members.has(to)) return { outcome: 'refused', owner: w.record, reason: 'not-member' } as const;
+      if (w.last?.state === 'pending' && (w.last.from !== from || w.last.to !== to)) {
+        return { outcome: 'refused', owner: w.record, reason: 'in-flight', inFlight: { from: w.last.from, to: w.last.to } } as const;
+      }
       if (w.record === to) {
         if (w.last?.from === from && w.last.to === to) {
           return { outcome: w.last.state === 'pending' ? 'already' : 'done', owner: to } as const;
@@ -1652,6 +1655,30 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     expect((await open.send({ ...REF, from: C, to: B })).status).toBe(409);
     expect(open.w.steps).toEqual(['record']);
     expect(open.state().seats).toEqual([A, B, C].sort());
+  });
+
+  it('refuses a hand-over chained onto one still open, and takes it once that one is finished', async () => {
+    const { w, send, state } = world();
+    w.failOn = 'revoke'; // A → B stops with both seated, the hand-over open
+    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false);
+    w.steps = [];
+    const chained = await send({ ...REF, from: B, to: C });
+    expect(chained.status).toBe(409);
+    expect(((await chained.json()) as { error: string }).error).toMatch(new RegExp(`in flight.*${A} → ${B}`));
+    expect(w.steps).toEqual(['record']);
+    expect(state().seats).toEqual([A, B].sort());
+    // The open one first, then the chained one: each revokes exactly its own `from`.
+    expect((await send({ ...REF, from: A, to: B })).status).toBe(200);
+    expect((await send({ ...REF, from: B, to: C })).status).toBe(200);
+    expect(state()).toEqual({ record: C, seats: [C], last: { from: B, to: C, state: 'done' } });
+  });
+
+  it('two hand-overs racing from one owner: one wins, the other is refused, and one owner is seated', async () => {
+    const { send, state } = world();
+    const [toB, toC] = await Promise.all([send({ ...REF, from: A, to: B }), send({ ...REF, from: A, to: C })]);
+    expect([toB.status, toC.status].sort()).toEqual([200, 409]);
+    const winner = toB.status === 200 ? B : C;
+    expect(state()).toEqual({ record: winner, seats: [winner], last: { from: A, to: winner, state: 'done' } });
   });
 
   it.each([

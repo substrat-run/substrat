@@ -156,6 +156,9 @@ export type OwnerTransfer = z.input<typeof ownerTransferRecord>;
  *   this never writes `pending_owner` or `owner_claim`.
  * - `from` is not the current record (`not-owner`) — a caller working from a stale view, or one
  *   naming a `from` other than the one this scope's record was handed over from;
+ * - ANOTHER hand-over is still open (`in-flight`): its seat and revoke have not both run, and
+ *   starting a second on top would let the two flows revoke across each other. Re-sending the
+ *   open one finishes it; `inFlight` names it.
  * - `to` is not a member: no subject in this scope is bound to it (`not-member`). The owner
  *   must be someone who can sign in as that principal. A record naming a principal nobody can
  *   become would hand the scope to no one, and the lockout repair would re-seat no one usable.
@@ -170,6 +173,10 @@ export function transferOwner(sql: RegistrySql, scopeId: string, from: string, t
   if (needsSetup(sql, scopeId)) return { outcome: 'refused', owner, reason: 'unclaimed' };
   if (!isBound(sql, scopeId, to)) return { outcome: 'refused', owner, reason: 'not-member' };
   const last = lastTransfer(sql, scopeId);
+  if (last?.state === 'pending' && (last.prev_principal !== from || last.principal !== to)) {
+    const inFlight = { from: last.prev_principal, to: last.principal };
+    return { outcome: 'refused', owner, reason: 'in-flight', inFlight };
+  }
   if (owner === to) {
     if (last?.prev_principal === from && last.principal === to) {
       return { outcome: last.state === 'pending' ? 'already' : 'done', owner };

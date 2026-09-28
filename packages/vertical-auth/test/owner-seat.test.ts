@@ -245,8 +245,8 @@ describe('owner transfer', () => {
     claimedWithMember();
     const OTHER = '01PRINCIPALOTHERHOLDER';
     transferOwner(sql, SCOPE, OWNER, SUCCESSOR);
-    // Open: only OWNER → SUCCESSOR is `already`.
-    expect(transferOwner(sql, SCOPE, OTHER, SUCCESSOR)).toEqual({ outcome: 'refused', owner: SUCCESSOR, reason: 'not-owner' });
+    // Open: only OWNER → SUCCESSOR is `already`; any other pair is refused while it is.
+    expect(transferOwner(sql, SCOPE, OTHER, SUCCESSOR)).toMatchObject({ outcome: 'refused', reason: 'in-flight' });
     expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR).outcome).toBe('already');
     completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR);
     // Closed: likewise.
@@ -261,6 +261,33 @@ describe('owner transfer', () => {
     expect(transferOwner(sql, s2, OWNER, SUCCESSOR).outcome).toBe('already');
   });
 
+  it('refuses a second hand-over while one is open, naming it — and takes it once that one is closed', () => {
+    claimedWithMember();
+    const THIRD = '01PRINCIPALTHIRDMEMBER';
+    bindMember(THIRD, 'sub-third');
+    transferOwner(sql, SCOPE, OWNER, SUCCESSOR); // open: seat and revoke not yet run
+    const inFlight = { outcome: 'refused', owner: SUCCESSOR, reason: 'in-flight', inFlight: { from: OWNER, to: SUCCESSOR } };
+    // Chained on top of it (the new owner handing on), and a competing one from the same owner.
+    expect(transferOwner(sql, SCOPE, SUCCESSOR, THIRD)).toEqual(inFlight);
+    expect(transferOwner(sql, SCOPE, OWNER, THIRD)).toEqual(inFlight);
+    expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
+    completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR);
+    expect(transferOwner(sql, SCOPE, SUCCESSOR, THIRD).outcome).toBe('transferred');
+  });
+
+  it('a stale resend after a later hand-over is refused, not replayed', () => {
+    claimedWithMember();
+    const THIRD = '01PRINCIPALTHIRDMEMBER';
+    bindMember(THIRD, 'sub-third');
+    transferOwner(sql, SCOPE, OWNER, SUCCESSOR);
+    completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR);
+    transferOwner(sql, SCOPE, SUCCESSOR, THIRD);
+    completeOwnerTransfer(sql, SCOPE, SUCCESSOR, THIRD);
+    // The first request arrives again (a retry queued somewhere): the scope has moved on.
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'refused', owner: THIRD, reason: 'not-owner' });
+    expect(ownerOfRecord(sql, SCOPE)).toBe(THIRD);
+  });
+
   it('refuses a `from` that is not the current record — and a hand-over onward from the new owner works', () => {
     claimedWithMember();
     bindMember('01PRINCIPALTHIRD', 'sub-third');
@@ -272,6 +299,7 @@ describe('owner transfer', () => {
     });
     expect(ownerOfRecord(sql, SCOPE)).toBe(OWNER);
     transferOwner(sql, SCOPE, OWNER, SUCCESSOR);
+    completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR);
     // The ORIGINAL owner is no longer the record, so it cannot hand the scope on.
     expect(transferOwner(sql, SCOPE, OWNER, '01PRINCIPALTHIRD')).toMatchObject({ outcome: 'refused', reason: 'not-owner' });
     expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);

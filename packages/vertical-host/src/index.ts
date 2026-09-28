@@ -450,6 +450,7 @@ const ownerTransferRefusal: Record<Extract<OwnerTransferRecord, { outcome: 'refu
   unclaimed: 'has an unclaimed owner seat — claim it first, then hand it over',
   'not-owner': 'is not owned by `from` — the owner of record is someone else',
   'not-member': 'has no member bound to `to` — the new owner must be someone who can sign in to it',
+  'in-flight': 'has another hand-over in flight — resend that one to finish it first',
 };
 
 const settleBody = z.object({
@@ -1371,7 +1372,8 @@ export function mountPlatformSurface<Env extends object>(
     const pair = { from: body.from, to: body.to };
     const record = ownerTransferRecord.parse(await deps.transferOwner(c.env, ref, pair));
     if (record.outcome === 'refused') {
-      throw new HTTPException(409, { message: `scope ${body.scopeId} ${ownerTransferRefusal[record.reason]}` });
+      const open = record.inFlight ? ` (${record.inFlight.from} → ${record.inFlight.to})` : '';
+      throw new HTTPException(409, { message: `scope ${body.scopeId} ${ownerTransferRefusal[record.reason]}${open}` });
     }
     if (record.owner !== body.to) {
       // A hook answering success for a principal nobody asked for: stop before any seat moves.

@@ -182,6 +182,7 @@ including the two OIDC ones where Better Auth stays dormant:
   is not the current record, or no subject in the scope is bound to `to`. It never re-opens
   a claimed seat. A record already naming `to` counts as a retry only for the same `from`:
   `already` while the hand-over is open, `done` once `completeOwnerTransfer` has closed it.
+  While one is open, any other hand-over on the scope is refused as `in-flight`.
   Wire both as vertical-host's hooks of the same names, which seat and revoke between them.
 - `createInvite` / `listInvites` / `revokeInvite` / `claimInvite` — member invites, the
   post-setup join path. An invite pre-mints a member principal, grants it a role at scope
