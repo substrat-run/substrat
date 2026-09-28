@@ -133,6 +133,16 @@ jobs:
       # widened a role must show it in the PR diff, not in a console nobody opens.
       # Needs the build above: it imports the engines' manifests.
       - run: pnpm lint:permissions --check
+      # A deployable vertical that declares schedules wires `defineScopeSweeperDO`, or
+      # those schedules never fire on a pushed deploy (#1646): the control plane's own
+      # cron iterates only its own module-less host's schedules, so a CP-less vertical
+      # has to bring its own timer. This loads the SAME module registrations
+      # lint:permissions does — a text rule cannot see a composed engine's schedules
+      # (meridian's only schedule is engine-absence's, never named in meridian's own
+      # source) — and refuses a worker entry with no sweeper wired. Needs the build
+      # above, same reason lint:permissions does.
+      - run: pnpm test:schedule-sweeper
+      - run: pnpm lint:schedule-sweeper
       # The API-surface checkpoint (design/api-surface.md §2.4): re-emit each
       # opted-in vertical's OpenAPI document from its operation catalog and fail
       # on drift — a surface change must appear in the PR diff.

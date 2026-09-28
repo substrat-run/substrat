@@ -557,6 +557,20 @@ tree spells it. `.claude/skills/*` and `plugin/substrat/skills/*` are both read;
 placeholder such as `demos/<name>/…` is held to the part written before it. No allowlist
 and no opt-out: a skill pointing at a removed file is teaching something removed, which is
 how `new-vertical` sent agents to two files that did not exist, #982),
+`lint:schedule-sweeper` (`tools/schedule-sweeper.mts`, #1646: a deployable vertical that
+declares recurring work (`manifest.schedules`) wires `defineScopeSweeperDO` in its
+`src/worker.ts`, or those schedules never fire on a pushed deploy — the control plane's
+own cron iterates only its own module-less host's registered schedules, so a
+control-plane-less vertical has to bring its own timer (`docs/architecture/scheduler.md`
+§3.3). Loads the same `MODULES` `lint:permissions` does, rather than grepping declared
+text, because a composed ENGINE can contribute a schedule the vertical's own source never
+names — meridian's only schedule is `engine-absence`'s `absence/expire-stale`, reached
+only by being in its `MODULES` array, and a text rule would call it clean. Needs the build,
+same reason `lint:permissions` does; the scaffold template is materialized through
+`tools/template-sync.mjs` first, since it is not a workspace member. This gate does not
+prove a schedule actually fires in production — only that the wiring a hosted deploy
+needs is present in source — so #1646 keeps its own production check open after this
+merges),
 `lint:tests`, `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
 the `CONNECTORS` registration behind it are the two ends of one connector — this checks
 both directions and the standing grants the door must carry, see the connector rule
