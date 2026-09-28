@@ -51,21 +51,45 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
   return filters;
 }
 
+/** A lowercased ULID, as it ends a per-version script name (`deploymentRefFor`). */
+const SCRIPT_ULID = '[0-9a-hjkmnp-tv-z]{26}';
+
 /**
- * #1877: the app's own scripts, as a filter — `$metadata.service`, the field Workers Logs
- * indexes every event by. It is the scan boundary: without it a tenant read searched every
- * script in the account for a field inside our own JSON. And it is a trust boundary: a
- * line counts only if the app's script wrote it, not any script that claims the tenant.
+ * #1877: one vertical's script FAMILY, as a filter on `$metadata.service` — the field
+ * Workers Logs indexes every event by. The stem itself is the serving script; `<stem>-<ulid>`
+ * is a per-version script (previews, legacy scopes); `<stem>-eu` / `-us` a jurisdictional one
+ * (K-30).
  *
- * Absent means the caller did not resolve the scripts, and the read falls back to the
- * tenant filter alone. An EMPTY list is different — it names no script, so it matches no
- * line — and is spelled as a filter that cannot match rather than as no filter at all.
+ * Two leaves, both required: `starts_with` is the one the store can narrow a scan on, and the
+ * anchored regex is what makes it exact — another vertical whose stem merely begins with this
+ * one (`ticket0` and `ticket0-crm`) is not in the family.
+ */
+function familyFilter(stem: string): TelemetryFilter {
+  const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    kind: 'group',
+    filterCombination: 'and',
+    filters: [
+      { key: '$metadata.service', operation: 'starts_with', type: 'string', value: stem },
+      { key: '$metadata.service', operation: 'regex', type: 'string', value: `^${escaped}(-${SCRIPT_ULID})?(-(eu|us))?$` },
+    ],
+  };
+}
+
+/**
+ * #1877: the app's script families, as a filter — the scan boundary (without it a tenant
+ * read searched every script in the account for a field inside our own JSON) and a trust
+ * boundary (a line counts only if one of the vertical's own scripts wrote it).
+ *
+ * Absent means the caller did not resolve them, and the read falls back to the tenant filter
+ * alone. An EMPTY list is different — it names no script, so it matches no line — and is
+ * spelled as a filter that cannot match rather than as no filter at all.
  */
 function serviceFilter(services: readonly string[] | undefined): TelemetryFilter[] {
   if (services === undefined) return [];
   if (services.length === 0) return [{ key: '$metadata.service', operation: 'eq', type: 'string', value: '\u0000none' }];
-  const leaves: TelemetryFilter[] = services.map((s) => ({ key: '$metadata.service', operation: 'eq', type: 'string', value: s }));
-  return leaves.length === 1 ? leaves : [{ kind: 'group', filterCombination: 'or', filters: leaves }];
+  const families = services.map(familyFilter);
+  return families.length === 1 ? families : [{ kind: 'group', filterCombination: 'or', filters: families }];
 }
 
 /**
@@ -169,6 +193,8 @@ const MAX_LINES_PER_INVOCATION = 20;
  */
 const GROUP_PAGE = 2000;
 const GROUP_PAGE_CAP = 20;
+/** How many times a full span is halved before a single grain is paged instead. */
+const SPLIT_DEPTH_CAP = 6;
 
 /** A value as text, or null. */
 const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null);
@@ -539,7 +565,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
    */
   const telemetry: AggregateSource = {
     async requests(q) {
-      const { rows, estimated } = await countGrouped(q, 'invocation', [
+      const { rows, estimated, complete } = await countGrouped(q, 'invocation', [
         { type: 'string', value: 'tenantId' },
         { type: 'string', value: 'scopeId' },
         { type: 'string', value: 'level' },
@@ -551,6 +577,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       ]);
       return {
         estimated,
+        complete,
         rows: rows.flatMap(({ bucket, groups, count }) => {
           const tenantId = str(groups.get('tenantId'));
           if (tenantId === null) return [];
@@ -571,7 +598,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       };
     },
     async patterns(q) {
-      const { rows, estimated } = await countGrouped(q, 'log', [
+      const { rows, estimated, complete } = await countGrouped(q, 'log', [
         { type: 'string', value: 'tenantId' },
         { type: 'string', value: 'scopeId' },
         { type: 'string', value: 'template' },
@@ -580,6 +607,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       ]);
       return {
         estimated,
+        complete,
         rows: rows.flatMap(({ bucket, groups, count }) => {
           const tenantId = str(groups.get('tenantId'));
           const template = str(groups.get('template'));
@@ -592,35 +620,36 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
   const source: AggregateSource = opts.cubeStore ? cachedSource(telemetry, opts.cubeStore) : telemetry;
 
   /**
-   * One script's lines of one kind over a span, counted per grain bucket and grouped by
-   * `groupBys`. Pages through the groups when one answer cannot hold them all; a span
-   * whose groups outrun the page cap is refused rather than answered in part, since a
-   * partial cube would be cached as if it were whole.
+   * One script family's lines of one kind over a span, counted per grain bucket and grouped
+   * by `groupBys`.
+   *
+   * When one answer is full — as many groups as it can carry — the span is SPLIT in two at a
+   * grain boundary and each half counted on its own, rather than paged. Paging with
+   * `offsetBy` depends on an order the telemetry API does not promise to hold between
+   * requests, so pages could overlap or skip groups; a narrower span is a smaller, complete
+   * answer with no order to trust. Only a single grain that is still full is paged, and a
+   * cube built that way is marked incomplete so the cache never keeps it as final.
    */
   async function countGrouped(
     q: CubeQuery,
     kind: 'invocation' | 'log',
     groupBys: Array<{ type: string; value: string }>,
-  ): Promise<{ rows: Array<{ bucket: number; groups: Map<string, unknown>; count: number }>; estimated: boolean }> {
+  ): Promise<{ rows: Array<{ bucket: number; groups: Map<string, unknown>; count: number }>; estimated: boolean; complete: boolean }> {
     const filters: TelemetryFilter[] = [
-      { key: '$metadata.service', operation: 'eq', type: 'string', value: q.service },
+      ...serviceFilter([q.service]),
       { key: 'substrat', operation: 'eq', type: 'string', value: kind },
     ];
-    const buckets = Math.max(1, Math.round((q.to - q.from) / q.grainMs));
-    const rows: Array<{ bucket: number; groups: Map<string, unknown>; count: number }> = [];
-    let estimated = false;
-    for (let page = 0; ; page++) {
-      if (page >= GROUP_PAGE_CAP) {
-        throw new ControlPlaneError(503, 'too many distinct series to count in one span — try a shorter window');
-      }
-      const calc = await queryCalculation(filters, { from: q.from, to: q.to }, {
+    const once = async (from: number, to: number, offsetBy?: number) => {
+      const calc = await queryCalculation(filters, { from, to }, {
         groupBys,
-        granularity: buckets,
+        granularity: Math.max(1, Math.round((to - from) / q.grainMs)),
         chartType: 'timeseries',
         limit: GROUP_PAGE,
-        ...(page > 0 ? { offsetBy: page * GROUP_PAGE } : {}),
+        ...(offsetBy ? { offsetBy } : {}),
       });
+      const rows: Array<{ bucket: number; groups: Map<string, unknown>; count: number }> = [];
       const groupsSeen = new Set<string>();
+      let estimated = false;
       for (const point of calc.series ?? []) {
         const at = point.time ? Date.parse(point.time) : NaN;
         if (!Number.isFinite(at)) continue;
@@ -636,9 +665,33 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           rows.push({ bucket, groups, count });
         }
       }
-      if (groupsSeen.size < GROUP_PAGE) break;
-    }
-    return { rows, estimated };
+      return { rows, estimated, full: groupsSeen.size >= GROUP_PAGE };
+    };
+    const span = async (
+      from: number,
+      to: number,
+      depth: number,
+    ): Promise<{ rows: Array<{ bucket: number; groups: Map<string, unknown>; count: number }>; estimated: boolean; complete: boolean }> => {
+      const first = await once(from, to);
+      if (!first.full) return { rows: first.rows, estimated: first.estimated, complete: true };
+      const grains = Math.round((to - from) / q.grainMs);
+      if (grains > 1 && depth < SPLIT_DEPTH_CAP) {
+        const mid = from + Math.floor(grains / 2) * q.grainMs;
+        const [a, b] = await Promise.all([span(from, mid, depth + 1), span(mid, to, depth + 1)]);
+        return { rows: [...a.rows, ...b.rows], estimated: a.estimated || b.estimated, complete: a.complete && b.complete };
+      }
+      // One grain and still full: page it, and say the answer cannot be trusted as whole.
+      const rows = [...first.rows];
+      let estimated = first.estimated;
+      for (let page = 1; page < GROUP_PAGE_CAP; page++) {
+        const next = await once(from, to, page * GROUP_PAGE);
+        rows.push(...next.rows);
+        estimated ||= next.estimated;
+        if (!next.full) break;
+      }
+      return { rows, estimated, complete: false };
+    };
+    return span(q.from, q.to, 0);
   }
 
   return {

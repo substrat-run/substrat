@@ -193,6 +193,18 @@ export function alignWindow(from: number, to: number, grainMs: number): { from: 
 }
 
 /**
+ * The scripts an aggregate read counts over — REQUIRED. A cube is counted per script family,
+ * so there is no tenant-only fallback, and answering an absent list with empty counts would
+ * read as "no traffic". The routes always resolve it; this refuses a caller that did not.
+ */
+function scriptsOf(services: readonly string[] | undefined): readonly string[] {
+  if (services === undefined) {
+    throw new Error("aggregate log reads need the app's script families (`services`) — a cube is counted per family");
+  }
+  return services;
+}
+
+/**
  * The three aggregate reads of `ObservabilityReader`, over any source (#1877). An adapter
  * binds its reads to this rather than computing them itself, so every source — the
  * telemetry query, a cache of it, a future store — answers with the same semantics, and
@@ -205,10 +217,11 @@ export function aggregateReads(
   source: AggregateSource,
 ): Required<Pick<ObservabilityReader, 'tenantRequestVolume' | 'tenantRequestFacets' | 'tenantLogPatterns'>> {
   const requestCube = async (input: TenantRequestScope) => {
+    const services = scriptsOf(input.services);
     const grainMs = grainFor(input.to - input.from);
     const window = alignWindow(input.from, input.to, grainMs);
     const cube = mergeCubes(
-      await Promise.all((input.services ?? []).map((service) => source.requests({ service, ...window, grainMs }))),
+      await Promise.all(services.map((service) => source.requests({ service, ...window, grainMs }))),
     );
     return { grainMs, window, cube };
   };
@@ -222,10 +235,11 @@ export function aggregateReads(
       return facetsFrom(cube, input);
     },
     async tenantLogPatterns(input) {
+      const services = scriptsOf(input.services);
       const grainMs = grainFor(input.to - input.from);
       const window = alignWindow(input.from, input.to, grainMs);
       const cube = mergeCubes(
-        await Promise.all((input.services ?? []).map((service) => source.patterns({ service, ...window, grainMs }))),
+        await Promise.all(services.map((service) => source.patterns({ service, ...window, grainMs }))),
       );
       return patternsFrom(cube, { ...input, ...window, grainMs });
     },

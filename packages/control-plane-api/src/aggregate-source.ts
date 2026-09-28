@@ -63,6 +63,12 @@ export interface Cube<Row> {
   rows: Row[];
   /** The backend scaled a sample; the counts are estimates. */
   estimated: boolean;
+  /**
+   * `false` when the source could not vouch for having every group — it had to page an
+   * answer whose order is not guaranteed. Still answered, never KEPT: a cache that stored
+   * it would serve a smaller answer as final for good. Absent means complete.
+   */
+  complete?: boolean;
 }
 
 /** What a source is asked: one service, one span, cut at one grain. */
@@ -184,7 +190,10 @@ export function cachedSource(
     const missing = closed.filter((_, i) => !found.has(keys[i]!));
     const counted = await inBatches(missing, BLOCK_CONCURRENCY, async (s) => {
       const block = await count({ service: q.service, from: s, to: s + blockMs, grainMs: q.grainMs });
-      await store.put(blockKey(kind, q.service, q.grainMs, s), block, s);
+      // Only a block the source vouches for as whole is kept; the rest is recounted next time.
+      if (block.complete !== false) {
+        await store.put(blockKey(kind, q.service, q.grainMs, s), { rows: block.rows, estimated: block.estimated }, s);
+      }
       return block;
     });
     // The open blocks as ONE live span: they are contiguous, and one query is cheaper

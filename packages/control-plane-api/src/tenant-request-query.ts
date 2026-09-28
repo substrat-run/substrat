@@ -5,6 +5,7 @@
  */
 import { z, tenantId as tenantIdSchema } from '@substrat-run/contracts';
 import { REQUEST_FACET_KEYS, type RequestFacetKey, type RequestWhere, type TenantRequestScope } from './observability.js';
+import { stableDeploymentRefFor } from './deploy.js';
 
 /** The widest window a tenant-grain read may cover — the same three days `hours` caps at. */
 export const TENANT_WINDOW_MAX_HOURS = 72;
@@ -129,29 +130,28 @@ export function parseTenantWindowQuery(
 }
 
 /**
- * #1877: which deployed scripts serve a tenant's app — or, with no scope named, its apps.
- * The serving script when a scope has one (#286), otherwise the bound version's own
- * deployment, where a legacy scope's traffic lands. Only the tenant's own scopes are
- * given, so a foreign scope id matches none and resolves no script.
+ * #1877: the script FAMILIES a tenant's app — or, with no scope named, its apps — are served
+ * from. A family is a vertical's stem (`stableDeploymentRefFor`): its serving script, every
+ * per-version script (`<stem>-<ulid>`, which previews and legacy scopes run on), and any
+ * jurisdictional one (`<stem>-eu`).
+ *
+ * The family, not the script a scope is on today, because a scope MOVES between them — a
+ * preview onto each push's own script, a legacy scope on a rebind, any scope on
+ * `adopt-serving` — and a read scoped to today's script alone would draw silence before
+ * the move. Every script in a family belongs to the same vertical, so the trust boundary
+ * holds; the tenant and scope filters still narrow the rows within it.
+ *
+ * Only the tenant's own scopes are given, so a foreign scope id matches none.
  */
-export async function servicesOfScopes(
-  scopes: ReadonlyArray<{ id: string; vertical: string | null; verticalVersionId: string | null; servingRef?: string | null | undefined }>,
+export function scriptFamiliesOfScopes(
+  scopes: ReadonlyArray<{ id: string; vertical: string | null }>,
   narrow: { scopeId?: string | undefined; vertical?: string | undefined },
-  versionsOf: (vertical: string) => Promise<ReadonlyArray<{ id: string; deploymentRef: string | null }>>,
-): Promise<string[]> {
-  const services = new Set<string>();
-  const cache = new Map<string, Promise<ReadonlyArray<{ id: string; deploymentRef: string | null }>>>();
+): string[] {
+  const families = new Set<string>();
   for (const s of scopes) {
     if (narrow.scopeId && s.id !== narrow.scopeId) continue;
     if (narrow.vertical && s.vertical !== narrow.vertical) continue;
-    if (s.servingRef) {
-      services.add(s.servingRef);
-      continue;
-    }
-    if (!s.vertical || !s.verticalVersionId) continue;
-    if (!cache.has(s.vertical)) cache.set(s.vertical, versionsOf(s.vertical).catch(() => []));
-    const ref = (await cache.get(s.vertical)!).find((v) => v.id === s.verticalVersionId)?.deploymentRef;
-    if (ref) services.add(ref);
+    if (s.vertical) families.add(stableDeploymentRefFor(s.vertical));
   }
-  return [...services];
+  return [...families];
 }

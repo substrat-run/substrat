@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { aggregateReads, barWidth } from '../src/aggregate-reads.js';
-import { servicesOfScopes } from '../src/tenant-request-query.js';
+import { scriptFamiliesOfScopes } from '../src/tenant-request-query.js';
 import {
   blockMsFor,
   cachedSource,
@@ -250,26 +250,57 @@ describe('grains (#1877)', () => {
   });
 });
 
-describe('which scripts serve an app (#1877)', () => {
+describe('which script families serve an app (#1877)', () => {
   const scopes = [
-    { id: 'A', vertical: 'acme/widgets', verticalVersionId: 'v2', servingRef: 'acme-widgets' },
-    { id: 'B', vertical: 'acme/widgets', verticalVersionId: 'v1', servingRef: null },
-    { id: 'C', vertical: 'acme/crm', verticalVersionId: 'c1', servingRef: 'acme-crm' },
+    { id: 'A', vertical: 'acme/widgets' },
+    { id: 'B', vertical: 'acme/widgets' },
+    { id: 'C', vertical: 'acme/crm' },
+    { id: 'D', vertical: null },
   ];
-  const versions = async (slug: string) =>
-    slug === 'acme/widgets' ? [{ id: 'v1', deploymentRef: 'acme-widgets-01V1' }, { id: 'v2', deploymentRef: 'acme-widgets-01V2' }] : [];
 
-  it('is the serving script, or the bound version’s own deployment for a legacy scope', async () => {
-    expect(await servicesOfScopes(scopes, { scopeId: 'A' }, versions)).toEqual(['acme-widgets']);
-    expect(await servicesOfScopes(scopes, { scopeId: 'B' }, versions)).toEqual(['acme-widgets-01V1']);
+  it('is the vertical’s stem — every script it runs as, whichever one the scope is on today', () => {
+    expect(scriptFamiliesOfScopes(scopes, { scopeId: 'A' })).toEqual(['acme-widgets']);
+    expect(scriptFamiliesOfScopes(scopes, { scopeId: 'B' })).toEqual(['acme-widgets']);
   });
 
-  it('is every app’s with no scope named, narrowed by vertical when one is', async () => {
-    expect((await servicesOfScopes(scopes, {}, versions)).sort()).toEqual(['acme-crm', 'acme-widgets', 'acme-widgets-01V1']);
-    expect(await servicesOfScopes(scopes, { vertical: 'acme/crm' }, versions)).toEqual(['acme-crm']);
+  it('is every app’s with no scope named, narrowed by vertical when one is', () => {
+    expect(scriptFamiliesOfScopes(scopes, {}).sort()).toEqual(['acme-crm', 'acme-widgets']);
+    expect(scriptFamiliesOfScopes(scopes, { vertical: 'acme/crm' })).toEqual(['acme-crm']);
   });
 
-  it('is nothing for a scope that is not among the tenant’s', async () => {
-    expect(await servicesOfScopes(scopes, { scopeId: 'SOMEONE-ELSES' }, versions)).toEqual([]);
+  it('is nothing for a scope that is not among the tenant’s', () => {
+    expect(scriptFamiliesOfScopes(scopes, { scopeId: 'SOMEONE-ELSES' })).toEqual([]);
+  });
+});
+
+describe('what the reads refuse (#1877)', () => {
+  it('refuses an absent script list, rather than answering "no traffic"', async () => {
+    const reads = aggregateReads(fixedSource());
+    await expect(reads.tenantRequestVolume({ tenantId: OURS, ...window, buckets: 12 })).rejects.toThrow(/script families/);
+    await expect(reads.tenantRequestFacets({ tenantId: OURS, ...window })).rejects.toThrow(/script families/);
+    await expect(reads.tenantLogPatterns({ tenantId: OURS, ...window, buckets: 12 })).rejects.toThrow(/script families/);
+  });
+});
+
+describe('an incomplete cube (#1877)', () => {
+  it('is answered but never kept', async () => {
+    let calls = 0;
+    const inner: AggregateSource = {
+      async requests(q) {
+        calls++;
+        return { rows: REQUESTS.filter((r) => r.bucket >= q.from && r.bucket < q.to), estimated: false, complete: false };
+      },
+      async patterns() {
+        return { rows: [], estimated: false };
+      },
+    };
+    const store = memoryCubeStore();
+    const source = cachedSource(inner, store, { now: () => T0 + 24 * 60 * MIN });
+    const v1 = await aggregateReads(source).tenantRequestVolume({ ...scope, buckets: 12 });
+    expect(v1.buckets.length).toBeGreaterThan(0);
+    expect(store.size()).toBe(0);
+    const before = calls;
+    await aggregateReads(source).tenantRequestVolume({ ...scope, buckets: 12 });
+    expect(calls).toBeGreaterThan(before);
   });
 });

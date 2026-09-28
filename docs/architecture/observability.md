@@ -297,10 +297,13 @@ demo volume, the grouped time series timed out after 30 s (a gateway 504), and a
 5 s: every read scanned the whole account's logs, on every view and every click, against one
 account-wide quota. So the reads are now computed from **cubes**, behind the unchanged routes:
 
-- **Every read is scoped to the app's own scripts** (`$metadata.service`), resolved by the route
-  from the directory: the serving script (#286), or the bound version's deployment for a
-  legacy scope. That is the scan boundary, and a trust boundary — a line counts only if the
-  app's script wrote it.
+- **Every read is scoped to the app's script family** (`$metadata.service`), resolved by the
+  route from the directory: the vertical's stem, which covers its serving script (#286), every
+  per-version script (`<stem>-<ulid>`) and a jurisdictional one (`<stem>-eu`). A family rather
+  than today's script, because a scope moves between them — a preview onto each push's script,
+  a legacy scope on a rebind, any scope on `adopt-serving` — and a read of today's script alone
+  would draw silence before the move. That is the scan boundary, and a trust boundary: a line
+  counts only if one of the vertical's own scripts wrote it.
 - An `AggregateSource` (`aggregate-source.ts`) answers **counts for one script and one span,
   grouped by tenant and every facet, cut into a grain** (10 s, 1 min, 5 min or 1 h, following the
   window). The histogram, the facets and the patterns are computed from those cubes by
@@ -311,6 +314,11 @@ account-wide quota. So the reads are now computed from **cubes**, behind the unc
   late) is counted once and kept — in `ObservabilityCacheDO`, one object per script, via
   `sqlCubeStore` — and only the open span is read live. Grouping by tenant is what makes that
   pay: the first viewer of a block counts it for every tenant on the script.
+- A span whose answer is full (2,000 groups) is **split in two** and each half counted, rather
+  than paged: the telemetry API does not promise a stable order between pages. Only a single
+  grain that is still full is paged, and that cube is marked incomplete so it is never kept.
+- The aggregate reads refuse a call with no script list — a cube is counted per family, and an
+  empty answer would read as "no traffic".
 - A telemetry timeout reaches the caller as a 504 saying so, and a throttle as a 503.
 - The contract suite (`aggregate-reads.test.ts`) runs the same cases over the source answering
   directly and through the cache, so a new source cannot change what the numbers mean.

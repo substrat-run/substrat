@@ -177,7 +177,7 @@ import {
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import { TENANT_SERIES_SCOPE_CAP, REQUEST_FACET_KEYS, type ObservabilityReader } from './observability.js';
-import { parseTenantRequestQuery, parseTenantWindowQuery, refineTenantWindow, servicesOfScopes, type QueryReader } from './tenant-request-query.js';
+import { parseTenantRequestQuery, parseTenantWindowQuery, refineTenantWindow, scriptFamiliesOfScopes, type QueryReader } from './tenant-request-query.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { namespacesForScript, type DoNamespaceReader } from './do-namespaces.js';
 import type {
@@ -6061,15 +6061,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
-   * #1877: the deployed scripts a tenant's app — or, with no scope named, its apps — are
-   * served from. Every tenant log read is scoped to these: a query then reads one script's
-   * lines instead of the whole account's, and a line counts only if the app's own script
-   * wrote it.
-   *
-   * From the directory, never from the caller, and within the tenant: a scope id that is
-   * not this tenant's resolves no script, and a read over no script answers nothing. The
-   * serving script when the scope has one (#286); otherwise the bound version's own
-   * deployment, which is where a legacy scope's traffic lands.
+   * #1877: the script families a tenant's app — or, with no scope named, its apps — run
+   * as (`scriptFamiliesOfScopes`). Every tenant log read is scoped to these: a query then
+   * reads one vertical's scripts instead of the whole account's, and a line counts only if
+   * one of them wrote it. From the directory, never the caller, and within the tenant: a
+   * scope id that is not this tenant's resolves no family, and a read over none answers
+   * nothing. `listScopes`, not `getScopeRecord`: a dashboard read must not write an access
+   * row per page view.
    */
   const appServices = async (
     actor: PlatformActorId,
@@ -6077,11 +6075,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     scopeId?: string,
     vertical?: string,
   ): Promise<string[]> =>
-    servicesOfScopes(
-      await admin.listScopes(actor, { tenantId: tenantIdSchema.parse(tenantId) }),
-      { scopeId, vertical },
-      (slug) => admin.listVersions(actor, slug),
-    );
+    scriptFamiliesOfScopes(await admin.listScopes(actor, { tenantId: tenantIdSchema.parse(tenantId) }), { scopeId, vertical });
 
   app.get('/observability/tenant-request-volume', async (c) => {
     if (!options.observability?.tenantRequestVolume) {

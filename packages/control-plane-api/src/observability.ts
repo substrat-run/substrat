@@ -268,11 +268,15 @@ export interface TenantRequestScope {
   scopeId?: string;
   vertical?: string;
   /**
-   * #1877: the deployed scripts this tenant's app (or apps) are served from, resolved by
-   * the route from the directory. Every read is scoped to them — which is both the scan
-   * boundary (a query reads one script's lines, not the account's) and a trust boundary
-   * (a line counts only if the app's own script wrote it). An empty list answers nothing;
-   * absent, a reader falls back to the tenant filter alone.
+   * #1877: the script FAMILIES this tenant's app (or apps) run as — each a vertical's stem,
+   * covering its serving script and every per-version script (`scriptFamiliesOfScopes`) —
+   * resolved by the route from the directory. Every read is scoped to them: the scan
+   * boundary (a query reads one vertical's scripts, not the account's) and a trust boundary
+   * (a line counts only if one of them wrote it). An empty list answers nothing.
+   *
+   * Absent: the raw reads (`tenantLogs`, `tenantRequests`) fall back to the tenant filter
+   * alone, while the aggregate reads REFUSE — a cube is counted per family, and an absent
+   * list answering with empty counts would read as "no traffic".
    */
   services?: readonly string[];
   /** Epoch milliseconds, inclusive. */
