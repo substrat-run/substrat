@@ -91,7 +91,7 @@ describe('overflow recovery in the loop', () => {
 								});
 								c.enqueue({
 									type: 'finish' as const,
-									finishReason: 'tool-calls' as const,
+									finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
 									usage: {
 										inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
 										outputTokens: { total: 5, text: 5, reasoning: undefined },
@@ -112,7 +112,7 @@ describe('overflow recovery in the loop', () => {
 							c.enqueue({ type: 'text-end' as const, id: '0' });
 							c.enqueue({
 								type: 'finish' as const,
-								finishReason: 'stop' as const,
+								finishReason: { unified: 'stop' as const, raw: 'stop' },
 								usage: {
 									inputTokens: { total: 20, noCache: 20, cacheRead: undefined, cacheWrite: undefined },
 									outputTokens: { total: 7, text: 7, reasoning: undefined },

@@ -101,7 +101,7 @@ const okStream = (text: string) => ({
 			c.enqueue({ type: 'text-end' as const, id: '0' });
 			c.enqueue({
 				type: 'finish' as const,
-				finishReason: 'stop' as const,
+				finishReason: { unified: 'stop' as const, raw: 'stop' },
 				// The nested V3 usage shape — flat numbers normalize to undefined.
 				usage: {
 					inputTokens: { total: 20, noCache: 20, cacheRead: undefined, cacheWrite: undefined },

@@ -57,7 +57,7 @@ const textStream = (text: string, u: V3Usage) => ({
 			c.enqueue({ type: 'text-start' as const, id: '0' });
 			c.enqueue({ type: 'text-delta' as const, id: '0', delta: text });
 			c.enqueue({ type: 'text-end' as const, id: '0' });
-			c.enqueue({ type: 'finish' as const, finishReason: 'stop' as const, usage: u });
+			c.enqueue({ type: 'finish' as const, finishReason: { unified: 'stop' as const, raw: 'stop' }, usage: u });
 			c.close();
 		},
 	}),
@@ -73,7 +73,7 @@ const toolCallStream = (u: V3Usage) => ({
 				toolName: 'list_files',
 				input: '{"path":"."}',
 			});
-			c.enqueue({ type: 'finish' as const, finishReason: 'tool-calls' as const, usage: u });
+			c.enqueue({ type: 'finish' as const, finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' }, usage: u });
 			c.close();
 		},
 	}),
