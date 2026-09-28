@@ -267,6 +267,18 @@ export interface TenantRequestScope {
   tenantId: string;
   scopeId?: string;
   vertical?: string;
+  /**
+   * #1877: the script FAMILIES this tenant's app (or apps) run as — each a vertical's stem,
+   * covering its serving script and every per-version script (`scriptFamiliesOfScopes`) —
+   * resolved by the route from the directory. Every read is scoped to them: the scan
+   * boundary (a query reads one vertical's scripts, not the account's) and a trust boundary
+   * (a line counts only if one of them wrote it). An empty list answers nothing.
+   *
+   * Absent: the raw reads (`tenantLogs`, `tenantRequests`) fall back to the tenant filter
+   * alone, while the aggregate reads REFUSE — a cube is counted per family, and an absent
+   * list answering with empty counts would read as "no traffic".
+   */
+  services?: readonly string[];
   /** Epoch milliseconds, inclusive. */
   from: number;
   /** Epoch milliseconds, exclusive. */
@@ -495,6 +507,8 @@ export interface ObservabilityReader {
     invocationId?: string;
     /** #1747: only the `ctx.log` lines written from this template — a pattern opened. */
     template?: string;
+    /** #1877: the app's deployed scripts — see `TenantRequestScope.services`. */
+    services?: readonly string[];
     hours: number;
     since?: string;
     until?: string;
@@ -523,6 +537,8 @@ export interface ObservabilityReader {
     level?: readonly string[];
     /** Alternatives: a line matches if it was written under any of these operations. */
     operation?: readonly string[];
+    /** #1877: the app's deployed scripts — see `TenantRequestScope.services`. */
+    services?: readonly string[];
   }): Promise<LogPatterns>;
 
   /**
