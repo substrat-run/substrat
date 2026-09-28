@@ -810,6 +810,25 @@ describe('the record is carried into the deployment and its in-unit move audited
       { sourceScopeId: off, exact: false },
       { sourceScopeId: origin, exact: false },
     ]);
+    // A separate `sourceScopeId` hint (an upload's own scope) wins for the re-point only; the
+    // dump's own ids, which pick the keys that open sealed payloads, are not replaced by it.
+    const hint = scopeId.parse(ulid());
+    const hinted = await app().request(`/tenants/${t}/scopes/${off}/restore`, {
+      method: 'POST',
+      headers: asStaff,
+      body: JSON.stringify({ ...dump, sourceScopeId: hint }),
+    });
+    expect(hinted.status).toBe(200);
+    expect(restoreSources.at(-1)).toEqual({ sourceScopeId: hint, exact: false });
+    // A hint that is not a scope id is refused, and nothing is restored.
+    const before = restoreSources.length;
+    const bad = await app().request(`/tenants/${t}/scopes/${off}/restore`, {
+      method: 'POST',
+      headers: asStaff,
+      body: JSON.stringify({ ...dump, sourceScopeId: 'scope:x' }),
+    });
+    expect(bad.status).toBe(400);
+    expect(restoreSources).toHaveLength(before);
   });
 });
 

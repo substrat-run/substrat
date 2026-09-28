@@ -1067,6 +1067,8 @@ export async function restoreAppData(
     /** The app's bound hostname — gives the safety copy a preview URL. */
     appHostname?: string | null;
     controlPlane?: TenantNarrowedControlPlane;
+    /** #1869: the scope the uploaded file says it came from, a hint for the grant re-point only. */
+    sourceScopeId?: ScopeId;
   },
 ): Promise<{ restored: ScopeId; tables: number; safetyCopyId: string }> {
   const safety = await snapshotApp(host, {
@@ -1082,7 +1084,11 @@ export async function restoreAppData(
     detail: `${input.tables.length} tables; safety copy ${safety.id}`,
   });
   if (input.controlPlane) {
-    await input.controlPlane.restoreScope(input.appScopeId, input.tables);
+    await input.controlPlane.restoreScope(
+      input.appScopeId,
+      input.tables,
+      input.sourceScopeId ? { sourceScopeId: input.sourceScopeId } : undefined,
+    );
   } else {
     // No schedule-switch re-assert here (#1674): a CP-less host has no directory, so no switch
     // is recorded to put back. The control-plane branch above restores through the route that does.
@@ -1098,7 +1104,7 @@ export async function restoreAppData(
       capturedAt: new Date().toISOString(),
       // boundary-lint-end R6
       tables: input.tables,
-    });
+    }, input.sourceScopeId ? { sourceScopeId: input.sourceScopeId } : undefined);
   }
   return { restored: input.appScopeId, tables: input.tables.length, safetyCopyId: safety.id };
 }

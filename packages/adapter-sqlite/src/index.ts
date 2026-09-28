@@ -3296,6 +3296,7 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     dump: ScopeDump,
+    opts?: { sourceScopeId?: ScopeId },
   ): Promise<void> {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
@@ -3305,7 +3306,9 @@ export class SqliteScopeHost implements ScopeHost {
     // provision's seat does — no schedule pass can run in between.
     // The re-assert's audit rows are written only once the load has committed.
     const rows: Record<string, unknown>[] = [];
-    await this.loadDump(tenantId, scopeId, dump, (rt) =>
+    // #1869: the re-point's source is the separate hint when given; the dump is otherwise as sent.
+    const source = { tables: dump.tables, scopeId: opts?.sourceScopeId ?? dump.scopeId };
+    await this.loadDump(tenantId, scopeId, source, (rt) =>
       this.reassertSwitchesInTurn(rt, actor, tenantId, scopeId, undefined, (after) => rows.push(after)),
     );
     for (const after of rows) this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, after);

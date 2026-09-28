@@ -3023,13 +3023,18 @@ app.post('/api/apps/:scopeId/restore', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  // The upload is a pulled export or a local `.dump.json` — only `tables` matters
-  // here; any tenantId/scopeId in the file are provenance, never authority.
-  const body = z.object({ tables: z.array(scopeDumpTable).min(1) }).parse(await c.req.json());
+  // The upload is a pulled export or a local `.dump.json`. Any tenantId/scopeId in the file
+  // are provenance, never authority. The file's own scopeId, when it is one, rides along as a
+  // hint for the grant re-point only (#1869); anything else there is ignored, as before.
+  const body = z
+    .object({ tables: z.array(scopeDumpTable).min(1), scopeId: z.unknown().optional() })
+    .parse(await c.req.json());
+  const fileScope = scopeId.safeParse(body.scopeId);
   const result = await restoreAppData(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
     tables: body.tables,
+    ...(fileScope.success ? { sourceScopeId: fileScope.data } : {}),
     appHostname: appRow.hostname,
     controlPlane: controlPlaneFor(c.env, node.tenantId),
   });

@@ -3159,6 +3159,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     dump: ScopeDump,
+    opts?: { sourceScopeId?: ScopeId },
   ): Promise<void> {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
@@ -3171,7 +3172,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const recordedOff = ownStore ? await this.cp.switchedOffModulesOf(tenantId, scopeId) : [];
     const switchedOff = await this.scopeStub(scopeId).importDump(dump.tables, scopeId, {
       switchOff: recordedOff.length ? { moduleIds: recordedOff, at: new Date().toISOString() } : undefined,
-      sourceScopeId: dump.scopeId as ScopeId,
+      sourceScopeId: opts?.sourceScopeId ?? (dump.scopeId as ScopeId),
     });
     await this.recordAdmin(
       actor,

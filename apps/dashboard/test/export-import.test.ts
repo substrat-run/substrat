@@ -90,6 +90,42 @@ describe('Dashboard export & import — dump out, dump in, safety copy', () => {
     expect(copies[0]!.expiresAt).not.toBeNull();
   });
 
+  it("an upload naming its real source re-points exactly; with no provenance it falls back (#1869)", async () => {
+    // A world captured from ANOTHER scope: its scope-level grant names that scope, and a
+    // pre-#1856 entity grant typed exactly `scope` rides along.
+    const { node, appScope } = await makeTeamWithApp();
+    const source = scopeId.parse(ulid());
+    const dump = await exportAppData(host, { node, appScopeId: appScope });
+    const planted = (tables: typeof dump.tables) =>
+      tables.map((t) =>
+        t.name !== '_substrat_tuples'
+          ? t
+          : {
+              ...t,
+              rows: [
+                ...t.rows,
+                t.columns.map((c) => ({ subject: 'principal:ann', relation: 'role:admin', object: `scope:${source}` })[c] ?? null),
+                t.columns.map((c) => ({ subject: 'principal:bob', relation: 'granted:x:read', object: 'scope:e-1' })[c] ?? null),
+              ],
+            },
+      );
+    const objectOf = async (subject: string) => {
+      const q = await host.admin.queryScope(staff, node.tenantId, appScope, {
+        sql: `SELECT object FROM _substrat_tuples WHERE subject = '${subject}'`,
+      });
+      return q.rows.map((r) => r[0]);
+    };
+
+    await restoreAppData(host, { node, appScopeId: appScope, tables: planted(dump.tables), sourceScopeId: source });
+    expect(await objectOf('principal:ann')).toEqual([`scope:${appScope}`]);
+    expect(await objectOf('principal:bob')).toEqual(['scope:e-1']);
+
+    // Twin: the same upload with no provenance falls back, as before, and moves `scope:e-1` too.
+    await restoreAppData(host, { node, appScopeId: appScope, tables: planted(dump.tables) });
+    expect(await objectOf('principal:ann')).toEqual([`scope:${appScope}`]);
+    expect(await objectOf('principal:bob')).toEqual([`scope:${appScope}`]);
+  });
+
   it('both halves require app-management authority, before any effect', async () => {
     const { node, appScope } = await makeTeamWithApp();
     const stranger: DashboardNode = { ...node, principal: principalId.parse(ulid()) };

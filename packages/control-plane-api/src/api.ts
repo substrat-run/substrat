@@ -4075,13 +4075,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // a vertical deployment, the same dump is then loaded THERE — the bytes the router
   // actually serves. (Yes, that stores the dump twice in delegated mode; the
   // placeholder copy is the price of one canonical audited path, same as export.)
+  /** #1869: the optional re-point hint a restore body may carry beside the dump. */
+  const restoreSourceHint = z.object({ sourceScopeId: scopeIdSchema.optional() });
+
   app.post('/tenants/:tenantId/scopes/:scopeId/restore', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const actor = c.get('actor');
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const dump = scopeDump.parse(await c.req.json());
+    const raw: unknown = await c.req.json();
+    const dump = scopeDump.parse(raw);
+    // #1869: where the uploaded file says it came from, when the caller had to set the dump's
+    // own `scopeId` to something else. A hint for the grant re-point ONLY: the dump's
+    // `tenantId`/`scopeId` below still choose the keys that open its sealed payloads.
+    const { sourceScopeId: sourceHint } = restoreSourceHint.parse(raw);
     // A backup with no tables is not a scope dump — name that plainly rather than letting
     // the empty replay reach the checker and surface as a bare `internal error` (#321).
     if (dump.tables.length === 0) {
@@ -4101,12 +4109,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const origin = { tenantId: tenantIdSchema.parse(dump.tenantId), scopeId: scopeIdSchema.parse(dump.scopeId) };
       const tables = await openDump(dump.tables, sealerFor(c, origin.tenantId, origin.scopeId));
       const landing = { ...dump, tables };
-      await host.restoreScope(actor, tenantId, scopeId, landing);
+      await host.restoreScope(actor, tenantId, scopeId, landing, sourceHint ? { sourceScopeId: sourceHint } : undefined);
       const vertical = await verticalForScope(c, scope);
       // #1742: the recorded OFF positions ride the restore, so the deployment switches them
       // off in the replay's own event — its own sweeper cannot land in between.
       const restored = vertical
-        ? await restoreCarryingSwitches(actor, vertical, tenantId, scopeId, tables, { scopeId: origin.scopeId, exact: false })
+        ? await restoreCarryingSwitches(actor, vertical, tenantId, scopeId, tables, {
+            scopeId: sourceHint ?? origin.scopeId,
+            exact: false,
+          })
         : undefined;
       // #1674: a backup from before a module was switched off brings it back on; the
       // directory's record puts it back off now, not at the next reconcile. Where the
