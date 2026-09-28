@@ -247,3 +247,36 @@ describe('cli.ts — the gate runs before anything can fail on the network', () 
     }
   });
 });
+
+describe('R10 at push — empty dashboard logs are a warning, not a refusal (#1746)', () => {
+  const withWorker = (worker: string) => {
+    const dir = vertical(CLEAN, { substrat: { slug: 'acme/crm' } });
+    writeFileSync(join(dir, 'src', 'worker.ts'), worker);
+    return dir;
+  };
+
+  it('warns about a worker that never mounts invocationLog, and still lets the push through', () => {
+    const said: string[] = [];
+    const dir = withWorker("const app = new Hono();\napp.get('/health', h);\n");
+    expect(() => assertLayerRules(dir, false, (m) => said.push(m))).not.toThrow();
+    expect(said.join('\n')).toMatch(/dashboard logs will be empty/);
+    expect(said.join('\n')).toMatch(/src\/worker\.ts: R10/);
+  });
+
+  it('says nothing about a worker that mounts it first', () => {
+    const said: string[] = [];
+    const dir = withWorker(
+      "const app = new Hono();\napp.use('*', invocationLog<Env>({ routerSecret: (env) => env.ROUTER_SECRET }));\napp.get('/x', h);\n",
+    );
+    assertLayerRules(dir, false, (m) => said.push(m));
+    expect(said.join('\n')).not.toMatch(/R10/);
+  });
+
+  it('still refuses the other rules, with the R10 warning beside them', () => {
+    const said: string[] = [];
+    const dir = vertical(DIRTY, { substrat: { slug: 'acme/crm' } });
+    writeFileSync(join(dir, 'src', 'worker.ts'), "const app = new Hono();\napp.get('/health', h);\n");
+    expect(() => assertLayerRules(dir, false, (m) => said.push(m))).toThrow(/cannot be pushed/);
+    expect(said.join('\n')).toMatch(/dashboard logs will be empty/);
+  });
+});

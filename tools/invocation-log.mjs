@@ -43,6 +43,7 @@
  */
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { invocationLogOffence } from '../packages/boundary-lint/dist/index.js';
 
 /** Where verticals live. The template is not a workspace member, so it is named directly. */
 const ROOTS = ['demos', 'engines', 'apps'];
@@ -50,52 +51,12 @@ const TEMPLATE = 'packages/create-substrat/template';
 
 /** A top-level Hono app, however it is typed. */
 const CONSTRUCTS_APP = /^const app = new Hono\b/m;
-/** Any registration on that app — `app.use(`, `app.get(`, `app.all(`, `app.on(`, … */
-const REGISTRATION = /^app\.(\w+)\s*\(/gm;
 /**
- * The mount we require, quote- and spacing-tolerant — and it must CONFIGURE the
- * verification, not merely be present.
- *
- * `invocationLog()` with no arguments compiles, mounts, runs, and writes nothing: with no
- * `routerSecret` to check the assertion against, every routed request fails verification
- * and the line is dropped. That is the fail-closed behaviour the middleware wants and it
- * is indistinguishable, from the outside, from the empty log view this gate exists to
- * prevent. So a bare call is an offence in its own right.
+ * The predicate is boundary-lint's R10 (#1746), imported rather than restated: the same
+ * definition runs in every external vertical's `substrat-boundary-lint` and `substrat push`,
+ * so this repo's gate and theirs cannot drift apart.
  */
-const MOUNT = /^app\.use\(\s*['"`]\*['"`]\s*,\s*invocationLog[<(]/;
-/** …and the options it must carry, found in the lines following the mount. */
-const VERIFIES = /invocationLog\s*(?:<[^>]*>)?\s*\(\s*\{[\s\S]{0,600}?routerSecret\s*:/m;
-
-/**
- * The offence in one file, or null when it is fine.
- *
- * Deliberately anchored on the FIRST registration rather than searching for the mount
- * anywhere: "present" is not the property that matters, "present before everything else"
- * is, and a check for mere presence would pass the exact arrangement that breaks.
- */
-function offence(source) {
-  if (!CONSTRUCTS_APP.test(source)) return null; // not an app file
-  REGISTRATION.lastIndex = 0;
-  const first = REGISTRATION.exec(source);
-  if (!first) return null; // an app with no routes registers nothing to miss
-  // The mount spans several lines once it carries options, so judge the window that
-  // starts at the first registration rather than that line alone.
-  const from = source.slice(first.index);
-  const line = from.split('\n')[0].trim();
-  const head = from.split('\n').slice(0, 14).join('\n');
-  // Anchored at the FIRST registration, not searched within the window: "present" is not
-  // the property that matters, "present before everything else" is. `\s` spans newlines,
-  // so the one-line and the options-carrying multi-line spellings both match here.
-  if (!MOUNT.test(from)) {
-    return /invocationLog[<(]/.test(source)
-      ? `invocationLog() is mounted, but AFTER \`${line}\` — Hono will not wrap the routes above it`
-      : `no \`app.use('*', invocationLog({ … }))\` — first registration is \`${line}\``;
-  }
-  if (!VERIFIES.test(head)) {
-    return 'invocationLog() is mounted first but passes no `routerSecret` — it can verify nothing, so it writes nothing';
-  }
-  return null;
-}
+const offence = invocationLogOffence;
 
 // ── The predicate has to be able to tell its own cases apart, or a green run means
 //    nothing. Same guard `lint:vite-proxy` carries, for the same reason.

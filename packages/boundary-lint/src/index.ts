@@ -95,6 +95,19 @@
  *                      may not import it, because a deployed entry that could
  *                      would be a caller naming itself. The one rule that reads
  *                      harness files; no hatch.
+ *   R10 logged         a deployable vertical's worker mounts `invocationLog` as the
+ *                      FIRST registration on its Hono app, with a `routerSecret`.
+ *                      Without it the vertical writes no verified tenant stamp per
+ *                      request, and the dashboard's Logs (Lines, Requests, Patterns)
+ *                      is empty for it — silently, and a redeploy does not help.
+ *                      First, because Hono wraps only what is registered after a
+ *                      middleware; with a secret, because an unverifiable mount
+ *                      writes nothing. Applies to a package whose `src/worker.ts`
+ *                      and `substrat.slug` make it deployable, over the app files
+ *                      reachable from that entry by relative import — a node-only
+ *                      `server.ts` harness has no router in front and is exempt.
+ *                      `substrat push` reports it as a warning rather than refusing:
+ *                      empty logs are a defect, not unsafe code. No hatch.
  *
  * NUMBERING. Rule numbers are claimed WHEN THEY SHIP, not when they are
  * proposed. #786's "catch outside ctx.atomic" rule was drafted as R6 while
@@ -146,7 +159,7 @@
  * reaching into a stranger's tables.
  */
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -157,7 +170,7 @@ export interface Violation {
   file: string;
   /** 1-indexed, when the rule is line-anchored. */
   line?: number;
-  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8' | 'R9';
+  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8' | 'R9' | 'R10';
   message: string;
 }
 
@@ -1203,6 +1216,104 @@ export function resolvePackages(root: string, config?: BoundaryLintConfig): Pack
 }
 
 // ---------------------------------------------------------------------------
+// R10 — the deployed worker mounts invocationLog first
+// ---------------------------------------------------------------------------
+
+/**
+ * A top-level Hono app, however it is typed — `const`/`let`, an optional `export`, and an
+ * optional type annotation before the `=`. Every deployed worker.ts and app.ts in this repo
+ * constructs an unexported, untyped `const app = new Hono(...)`, but `src/app.ts` built and
+ * exported for `worker.ts` to import is the ordinary shape of the split, and the identifier
+ * itself stays fixed at `app` — REGISTRATION and MOUNT below assume it too, so a renamed
+ * binding is a pre-existing, matching gap rather than a new one.
+ */
+const CONSTRUCTS_APP = /^(?:export\s+)?(?:const|let)\s+app(?:\s*:\s*[^=\n]+)?\s*=\s*new Hono\b/m;
+/** Any registration on that app — `app.use(`, `app.get(`, `app.all(`, `app.on(`, … */
+const REGISTRATION = /^app\.(\w+)\s*\(/gm;
+/** The mount itself, as the first registration (`\s` spans the multi-line spelling). */
+const MOUNT = /^app\.use\(\s*['"`]\*['"`]\s*,\s*invocationLog[<(]/;
+/** …and the option it must carry to verify anything. */
+const VERIFIES = /invocationLog\s*(?:<[^>]*>)?\s*\(\s*\{[\s\S]{0,600}?routerSecret\s*:/m;
+
+/**
+ * R10's offence in one source file, or null when it is fine — also what this repo's own
+ * `lint:invocation-log` runs, so the two can never disagree.
+ *
+ * Anchored on the FIRST registration rather than searching for the mount anywhere:
+ * "present" is not the property that matters, "present before everything else" is, and a
+ * check for mere presence would pass the exact arrangement that breaks.
+ */
+export function invocationLogOffence(source: string): string | null {
+  if (!CONSTRUCTS_APP.test(source)) return null;
+  REGISTRATION.lastIndex = 0;
+  const first = REGISTRATION.exec(source);
+  if (!first) return null;
+  const from = source.slice(first.index);
+  const line = from.split('\n')[0]!.trim();
+  const head = from.split('\n').slice(0, 14).join('\n');
+  if (!MOUNT.test(from)) {
+    return /invocationLog[<(]/.test(source)
+      ? `invocationLog() is mounted, but AFTER \`${line}\` — Hono will not wrap the routes above it`
+      : `no \`app.use('*', invocationLog({ routerSecret }))\` — the first registration is \`${line}\`, so this vertical writes no tenant stamp and its dashboard logs stay empty`;
+  }
+  if (!VERIFIES.test(head)) {
+    return 'invocationLog() is mounted first but passes no `routerSecret` — it can verify nothing, so it writes nothing';
+  }
+  return null;
+}
+
+/**
+ * The app-constructing files reachable from a worker entry by relative import. Reachability
+ * from the DEPLOYED entry is the point: a package's `server.ts` builds its own app for node,
+ * with no router in front of it, and requiring the mount there would demand a no-op.
+ */
+function deployedAppFiles(entry: string): string[] {
+  const seen = new Set<string>();
+  const found: string[] = [];
+  const queue = [entry];
+  while (queue.length > 0) {
+    const file = queue.pop()!;
+    if (seen.has(file) || !existsSync(file)) continue;
+    seen.add(file);
+    const source = readFileSync(file, 'utf8');
+    if (CONSTRUCTS_APP.test(source)) found.push(file);
+    for (const m of source.matchAll(/from\s+['"](\.[^'"]+)['"]/g)) {
+      // A specifier arrives extensionless (`./app`), with an explicit `.js`/`.ts`/`.tsx`, or
+      // naming a directory (`./routes`) — strip whatever suffix it carries first, so the
+      // explicit-`.ts` case does not turn into `app.ts.ts`, then try every real shape TS
+      // resolves it to. Only a candidate that exists is queued, into a worklist whose loop
+      // already dedupes and re-checks existence, so a stray miss here costs nothing.
+      const base = join(dirname(file), m[1]!.replace(/\.(?:js|jsx|ts|tsx)$/, ''));
+      for (const candidate of [`${base}.ts`, `${base}.tsx`, join(base, 'index.ts')]) {
+        if (existsSync(candidate)) queue.push(candidate);
+      }
+    }
+  }
+  return found;
+}
+
+/** A package is a deployable vertical when its `src/worker.ts` sits beside a `substrat.slug`. */
+function deployableEntry(srcDir: string): string | null {
+  const entry = join(srcDir, 'worker.ts');
+  if (!existsSync(entry)) return null;
+  try {
+    const pkg = JSON.parse(readFileSync(join(srcDir, '..', 'package.json'), 'utf8')) as { substrat?: { slug?: unknown } };
+    return typeof pkg.substrat?.slug === 'string' ? entry : null;
+  } catch {
+    return null;
+  }
+}
+
+function checkInvocationLog(root: string, pkg: PackageSpec, violations: Violation[]): void {
+  const entry = deployableEntry(pkg.dir);
+  if (!entry) return;
+  for (const file of deployedAppFiles(entry)) {
+    const why = invocationLogOffence(readFileSync(file, 'utf8'));
+    if (why) violations.push({ file: relative(root, file).split(sep).join('/'), rule: 'R10', message: why });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1229,6 +1340,8 @@ export function lint(root: string, config?: BoundaryLintConfig): Violation[] {
       if (harness.has(inPkg)) continue;
       checkModuleFile(file, relative(root, file), pkg, tableOwners, violations);
     }
+    // R10 reads the deployed entry, which is harness — so it runs beside the walk, not in it.
+    checkInvocationLog(root, pkg, violations);
   }
 
   return violations;

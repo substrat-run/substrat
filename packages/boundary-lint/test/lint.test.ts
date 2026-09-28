@@ -1220,3 +1220,87 @@ describe('maskSource', () => {
     expect(masked).not.toContain('import ');
   });
 });
+
+describe('R10 — the deployed worker mounts invocationLog first (#1746)', () => {
+  const MOUNTED = "app.use('*', invocationLog<Env>({ routerSecret: (env) => env.ROUTER_SECRET }));";
+  const vertical = (worker: string, extra: Record<string, string> = {}, slug: string | null = 'acme/widgets') =>
+    project({
+      'package.json': JSON.stringify({ name: 'acme-widgets', ...(slug ? { substrat: { slug } } : {}) }),
+      'src/module.ts': 'export const mod = {};\n',
+      'src/worker.ts': worker,
+      ...extra,
+    });
+  const r10 = (vs: Violation[]) => vs.filter((v) => v.rule === 'R10');
+
+  it('passes a worker that mounts it first, with a routerSecret — one line or several', () => {
+    expect(r10(lint(vertical(`const app = new Hono<{ Bindings: Env }>();\n${MOUNTED}\napp.get('/x', h);\n`)))).toEqual([]);
+    const multi = "const app = new Hono();\napp.use(\n  '*',\n  invocationLog<Env>({\n    routerSecret: (env) => env.ROUTER_SECRET,\n  }),\n);\napp.get('/x', h);\n";
+    expect(r10(lint(vertical(multi)))).toEqual([]);
+  });
+
+  it('flags a worker that never mounts it — its dashboard logs would stay empty', () => {
+    const vs = r10(lint(vertical("const app = new Hono();\napp.get('/health', h);\n")));
+    expect(vs).toEqual([
+      expect.objectContaining({ file: 'src/worker.ts', rule: 'R10', message: expect.stringContaining('logs stay empty') }),
+    ]);
+  });
+
+  it('flags a mount below a route, which Hono does not wrap', () => {
+    const vs = r10(lint(vertical(`const app = new Hono();\napp.get('/x', h);\n${MOUNTED}\n`)));
+    expect(vs[0]?.message).toMatch(/AFTER/);
+  });
+
+  it('flags a mount with no routerSecret, which verifies nothing and writes nothing', () => {
+    const vs = r10(lint(vertical("const app = new Hono();\napp.use('*', invocationLog());\napp.get('/x', h);\n")));
+    expect(vs[0]?.message).toMatch(/routerSecret/);
+  });
+
+  it('follows the entry into the file that builds the app', () => {
+    const worker = "import { app } from './app.js';\nexport default app;\n";
+    const vs = r10(lint(vertical(worker, { 'src/app.ts': "export const app = 1;\nconst app = new Hono();\napp.get('/x', h);\n" })));
+    expect(vs.map((v) => v.file)).toEqual(['src/app.ts']);
+  });
+
+  it('follows an extensionless import to the file that builds the app', () => {
+    const worker = "import { app } from './app';\nexport default app;\n";
+    const vs = r10(lint(vertical(worker, { 'src/app.ts': "const app = new Hono();\napp.get('/x', h);\n" })));
+    expect(vs.map((v) => v.file)).toEqual(['src/app.ts']);
+  });
+
+  it('follows an explicit .ts import without doubling the suffix into app.ts.ts', () => {
+    const worker = "import { app } from './app.ts';\nexport default app;\n";
+    const vs = r10(lint(vertical(worker, { 'src/app.ts': "const app = new Hono();\napp.get('/x', h);\n" })));
+    expect(vs.map((v) => v.file)).toEqual(['src/app.ts']);
+  });
+
+  it('follows a directory import to its index.ts', () => {
+    const worker = "import { app } from './routes';\nexport default app;\n";
+    const vs = r10(lint(vertical(worker, { 'src/routes/index.ts': "const app = new Hono();\napp.get('/x', h);\n" })));
+    expect(vs.map((v) => v.file)).toEqual(['src/routes/index.ts']);
+  });
+
+  it('flags an exported app builder with no mount — the shape src/app.ts + worker.ts uses', () => {
+    const worker = "import { app } from './app.js';\nexport default app;\n";
+    const vs = r10(lint(vertical(worker, { 'src/app.ts': "export const app = new Hono<{ Bindings: Env }>();\napp.get('/x', h);\n" })));
+    expect(vs).toEqual([
+      expect.objectContaining({ file: 'src/app.ts', rule: 'R10', message: expect.stringContaining('logs stay empty') }),
+    ]);
+  });
+
+  it('passes an exported app builder that mounts it first', () => {
+    const worker = "import { app } from './app.js';\nexport default app;\n";
+    const vs = r10(lint(vertical(worker, { 'src/app.ts': `export const app = new Hono<{ Bindings: Env }>();\n${MOUNTED}\napp.get('/x', h);\n` })));
+    expect(vs).toEqual([]);
+  });
+
+  it('leaves a node-only server harness alone — no router is in front of it', () => {
+    const vs = r10(
+      lint(vertical(`const app = new Hono();\n${MOUNTED}\napp.get('/x', h);\n`, { 'src/server.ts': "const app = new Hono();\napp.get('/x', h);\n" })),
+    );
+    expect(vs).toEqual([]);
+  });
+
+  it('does not apply to a package that declares no slug — it is not deployed', () => {
+    expect(r10(lint(vertical("const app = new Hono();\napp.get('/x', h);\n", {}, null)))).toEqual([]);
+  });
+});

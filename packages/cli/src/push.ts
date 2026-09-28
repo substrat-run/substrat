@@ -982,7 +982,21 @@ export function assertLayerRules(
         'R5 (tables private) checked nothing this push',
     );
   }
-  const violations = lint(root, config);
+  const found = lint(root, config);
+  // R10 (#1746) is reported, not refused: a worker that does not mount `invocationLog` first
+  // deploys fine and simply writes nothing the dashboard's logs can attribute, which is a
+  // defect to fix and not unsafe code to stop. `substrat-boundary-lint` in CI still fails on it.
+  const unlogged = found.filter((v) => v.rule === 'R10');
+  const violations = found.filter((v) => v.rule !== 'R10');
+  if (unlogged.length > 0) {
+    log(
+      [
+        `warning: this vertical's dashboard logs will be empty (${unlogged.length} app file(s)):`,
+        formatViolations(unlogged),
+        "  Mount it as the first registration: app.use('*', invocationLog<Env>({ routerSecret: (env) => env.ROUTER_SECRET }));",
+      ].join('\n'),
+    );
+  }
   if (violations.length === 0) {
     log(`boundary-lint: all layer rules hold (${linted.length} package(s))`);
     return { root, gate: 'passed' };

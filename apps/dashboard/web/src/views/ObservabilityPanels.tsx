@@ -166,7 +166,10 @@ export function TenantLogs({
               question about minutes with evidence about days. (`window` is always set —
               it is the range's own bounds without a cursor — so it cannot tell here.) */}
           {hadTraffic
-            ? 'No log events in this window. If this app’s version was deployed before per-request logging, its lines are not attributed to your team yet — a new deploy of the vertical starts that.'
+            ? // Two causes, and the reader needs to know which one a redeploy fixes. A worker
+              // that does not mount `invocationLog` writes no tenant stamp at all, and pushing
+              // it again changes nothing — boundary-lint R10 and `substrat push` say so.
+              'No log events in this window, though the app served requests. Its lines are attributed to your team through a per-request stamp, and none arrived: either the deployed version predates it (a new deploy starts it), or the vertical’s worker does not mount invocationLog as its first middleware (it needs adding to the code — a redeploy alone will not help).'
             : 'No log events in this window.'}
         </div>
       ) : (
