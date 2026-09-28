@@ -1,5 +1,16 @@
 # @substrat-run/kernel
 
+## 0.127.0
+
+### Minor Changes
+
+- 2f1e5f5: `ctx.link(child, parent)` now refuses `parent` that is `child` itself or already lies beneath it, with `validation_failed` — the same recursive walk over live parent edges `ctx.relink` (#1864) already used, now shared by both verbs. This is a behaviour change to a shipped verb: a module that already wrote a cycle now fails an operation that used to succeed. A store that already holds a cycle needs nothing done to it — the walk never revisits a ref (`UNION`, not `UNION ALL`), so it terminates on an already-cyclic graph instead of looping, the same way `relink`'s did; its cost grows with the size of `parent`'s ancestor set, not with a depth cap (that's the permission checker's own walk, capped at 4 — a different mechanism).
+- b6248b0: Every deployed vertical is now stamped by the platform. At upload, the control plane puts its own entry module in front of the vertical's bundle and wraps the default export with the kernel's new `withInvocationLog`, so each request writes its invocation line whether or not the vertical mounted `invocationLog`. The middleware still works and now steps aside when the platform has already stamped the request, so a request is logged once either way. A bundle built on an older kernel that writes the line itself is uploaded unwrapped. Operation routes and MCP tools read the platform's stamp when no middleware is mounted.
+
+### Patch Changes
+
+- @substrat-run/contracts@0.127.0
+
 ## 0.126.0
 
 ### Minor Changes
@@ -5226,7 +5237,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
