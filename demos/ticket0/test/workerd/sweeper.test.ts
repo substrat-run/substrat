@@ -1128,6 +1128,22 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
   });
 
+  it("refuses the desk's own service accounts as `to` — each holds a role, and no login is theirs", async () => {
+    const s = await installed();
+    const recorded = JSON.parse((await directory().getScopeConfig(s))['ticket0:services']!) as Record<string, string>;
+    const accounts = Object.values(recorded).map((p) => principalId.parse(p));
+    expect(accounts.length).toBeGreaterThan(0);
+    for (const account of accounts) {
+      const res = await transfer(s, A, account);
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toMatch(/no member `to`/);
+    }
+    expect(await directory().getOwnerOfRecord(s)).toBe(A);
+    expect(await ownerSeats(s)).toEqual([A]);
+    expect((await transfer(s, A, B)).status).toBe(200); // the twin: a member who signs in
+    expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+
   it('refuses an unclaimed seat, and leaves it claimable by the owner it was minted for', async () => {
     const s = scopeId.parse(ulid());
     expect((await platform('/internal/provision', { tenantId: tenant, scopeId: s, owner: A, entitlements })).status).toBe(201);
