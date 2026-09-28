@@ -365,6 +365,21 @@ interface Finished<Env> {
  * tenant of their choosing.
  */
 function writeInvocationLine<Env>(stamp: InvocationStamp, done: Finished<Env>, options: InvocationLogOptions<Env>): void {
+  // Called from a `finally`: a throw here would replace the vertical's answer, or its own
+  // error, with a logging failure. The platform wraps every uploaded script in this (#1893),
+  // so nothing in it may escape — a line that cannot be written is one missing line.
+  try {
+    writeLineOrThrow(stamp, done, options);
+  } catch (e) {
+    try {
+      console.log(JSON.stringify({ substrat: 'invocation-log-fault', detail: String(e) }));
+    } catch {
+      /* the console itself is gone; there is nowhere left to say so */
+    }
+  }
+}
+
+function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, options: InvocationLogOptions<Env>): void {
   const node = routedNodeOrNull(done.request.headers, done.env, options);
   if (!node) return;
   const { record, invocationId } = stamp;

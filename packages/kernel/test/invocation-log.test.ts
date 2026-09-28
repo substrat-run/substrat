@@ -349,6 +349,22 @@ describe('invocationLog', () => {
     const request = (path = '/api/things', init: RequestInit = {}) =>
       new Request(`https://acme.example${path}`, { ...init, headers: { ...routed, ...(init.headers as Record<string, string> | undefined) } });
 
+    it('a line that cannot be written never changes the answer or the error', async () => {
+      const original = console.log;
+      console.log = () => {
+        throw new Error('console is gone');
+      };
+      try {
+        const ok = withInvocationLog<Env>({ fetch: async () => new Response('ok', { status: 201 }) }, options);
+        expect((await ok.fetch!(request(), ENV, {})).status).toBe(201);
+        const boom = new Error('the vertical failed');
+        const failing = withInvocationLog<Env>({ fetch: async () => { throw boom; } }, options);
+        await expect(failing.fetch!(request(), ENV, {})).rejects.toBe(boom);
+      } finally {
+        console.log = original;
+      }
+    });
+
     it('stamps a worker that mounts nothing, whatever it is written in', async () => {
       const cap = capture();
       try {

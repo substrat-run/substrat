@@ -53,8 +53,10 @@ Observability page would be either empty or someone else's.
 So a line carrying the tenant is written from inside the vertical's script, and the platform
 puts it there. At upload, the control plane adds its own entry module in front of the
 vertical's. That module wraps the vertical's default export with the kernel's
-`withInvocationLog`, so every request the script serves is stamped whether or not its author
-thought about logging. A vertical may also mount the same thing as middleware, first on its app,
+`withInvocationLog`, so every request the script's `fetch` handler serves is stamped, whether or
+not its author thought about logging. Two kinds of script are uploaded unwrapped: one whose default
+export has no `fetch` to wrap, and one built on an older kernel that writes the line itself (see
+below). A vertical may also mount the same thing as middleware, first on its app,
 and the scaffold does:
 
 ```ts
@@ -62,11 +64,13 @@ app.use('*', invocationLog({ routerSecret: (env) => env.ROUTER_SECRET }));
 ```
 
 Doing both is safe. The middleware finds the platform's stamp on the request and steps aside, so
-the request is still one line, and what the operation route learns about the request lands on
+the request is still at most one line, and what the operation route learns about the request lands on
 that line.
 
-The stamp writes one JSON line per request to Workers Logs, in a `finally`, so logging can never fail
-the request:
+The stamp is internal: an id and a record for the request. What reaches Workers Logs is one JSON line
+for each request whose router assertion **verifies**. A request with no assertion, or one that does
+not verify, writes nothing (more on that below). The line is written in a `finally`, and a line that
+cannot be written is dropped rather than thrown, so logging can never fail the request:
 
 ```
 substrat: 'invocation'
