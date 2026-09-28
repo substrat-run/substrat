@@ -49,10 +49,13 @@ export function isSpineTable(name: string): boolean {
  * directory instead. Loading one anyway would mean dropping its rows, which a restore does not
  * do silently.
  */
-export function assertSpineTablesBuilt(names: readonly string[], built: (name: string) => boolean): void {
-  const missing = names.filter((n) => isSpineTable(n) && !built(n));
+export function assertSpineTablesBuilt(names: readonly string[], columnsOf: KernelColumnsOf): void {
+  const missing = names.filter((n) => isSpineTable(n) && columnsOf(n) === undefined);
   if (missing.length > 0) throw unbuiltSpineTables(missing);
 }
+
+/** A table's columns as the kernel built it here, or `undefined` when it built no such table. */
+export type KernelColumnsOf = (name: string) => readonly string[] | undefined;
 
 const unbuiltSpineTables = (names: readonly string[]) =>
   substratError(
@@ -72,13 +75,25 @@ const DERIVED_COLUMNS: Record<string, Record<string, string>> = {
 };
 
 /**
- * The `INSERT` that loads one dumped spine table's rows into the table the kernel built, one
- * row of positional parameters per execution, in the dump's column order.
+ * The `INSERT` that loads one dumped table's rows, one row of positional parameters per
+ * execution, in the dump's column order: `spineRowsInsert` for a spine table, and the dump's
+ * own columns for a vertical one. The names are quoted as given: the loader has already passed
+ * the dump through `assertReplayableDump`.
+ */
+export function dumpRowsInsert(table: { name: string; columns: readonly string[] }, columnsOf: KernelColumnsOf): string {
+  return isSpineTable(table.name) ? spineRowsInsert(table, columnsOf(table.name)) : plainInsert(table);
+}
+
+const plainInsert = (table: { name: string; columns: readonly string[] }): string =>
+  `INSERT INTO "${table.name}" (${table.columns.map((c) => `"${c}"`).join(', ')}) ` +
+  `VALUES (${table.columns.map(() => '?').join(', ')})`;
+
+/**
+ * The `INSERT` that loads one dumped spine table's rows into the table the kernel built.
  *
  * `kernelColumns` is the kernel table's column list as the loader reads it back, or
  * `undefined` when the kernel built no such table; both refusals throw `validation_failed`
- * inside the load's transaction, so the target keeps what it held. The names are quoted as
- * given: the loader has already passed the dump through `assertReplayableDump`.
+ * inside the load's transaction, so the target keeps what it held.
  */
 export function spineRowsInsert(
   table: { name: string; columns: readonly string[] },
@@ -95,13 +110,11 @@ export function spineRowsInsert(
         `${unknown.join(', ')}. Nothing was changed.`,
     );
   }
-  const quoted = table.columns.map((c) => `"${c}"`);
   const derived = Object.entries(DERIVED_COLUMNS[table.name.toLowerCase()] ?? {}).filter(
     ([c]) => known.has(c) && !table.columns.includes(c),
   );
-  if (derived.length === 0) {
-    return `INSERT INTO "${table.name}" (${quoted.join(', ')}) VALUES (${quoted.map(() => '?').join(', ')})`;
-  }
+  if (derived.length === 0) return plainInsert(table);
+  const quoted = table.columns.map((c) => `"${c}"`);
   // The derivation reads the dumped row by name, so the row is a one-row SELECT to read from.
   const row = table.columns.map((c, i) => `? AS ${quoted[i]}`).join(', ');
   return (

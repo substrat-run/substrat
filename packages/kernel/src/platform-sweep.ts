@@ -393,6 +393,14 @@ export const SCHEDULE_STATE_DDL = `
 `;
 
 /**
+ * The `kind` a pre-#1288 row belongs to, derived from its `schedule_op` — the backfill's one
+ * rule, shared by `SCHEDULE_STATE_REBUILD` below and by a restore of a dump taken before the
+ * column (`spineRowsInsert`, #1883), so the two cannot file the same row differently.
+ */
+export const SCHEDULE_STATE_KIND_OF_OP =
+  "CASE WHEN substr(schedule_op, 1, 10) = 'freshness:' THEN 'freshness' ELSE 'schedule' END";
+
+/**
  * `_substrat_schedule_state`, rebuilt with its #1288 key on a store created before
  * it. Create-copy-drop-rename, because `kind` joins the PRIMARY KEY and SQLite
  * cannot widen a key in place — the same shape the directory's `ensureIdentityKey`
@@ -431,14 +439,6 @@ export const SCHEDULE_STATE_DDL = `
  * derives `kind` for a legacy dump's rows with `SCHEDULE_STATE_KIND_OF_OP`. This runs only
  * for a store that already holds the old table when it wakes.
  */
-/**
- * The `kind` a pre-#1288 row belongs to, derived from its `schedule_op` — the backfill's one
- * rule, shared by `SCHEDULE_STATE_REBUILD` below and by a restore of a dump taken before the
- * column (`spineRowsInsert`, #1883), so the two cannot file the same row differently.
- */
-export const SCHEDULE_STATE_KIND_OF_OP =
-  "CASE WHEN substr(schedule_op, 1, 10) = 'freshness:' THEN 'freshness' ELSE 'schedule' END";
-
 export const SCHEDULE_STATE_REBUILD = `
   DROP TABLE IF EXISTS _substrat_schedule_state_new;
   ${SCHEDULE_STATE_DDL.replace(

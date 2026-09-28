@@ -257,7 +257,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { assertSpineTablesBuilt, isSpineTable, repointScopeGrants, spineRowsInsert, type RepointSource } from '@substrat-run/kernel';
+import { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4502,9 +4502,10 @@ export function defineScopeDO(
     /**
      * The additive spine-column migrations. KERNEL_DDL is all IF NOT EXISTS, so a
      * scope DO created before a column keeps the old shape until this runs on its next
-     * wake. `importDump` runs it too, after rebuilding the spine from KERNEL_DDL, where
-     * every ALTER is a duplicate: a restore never brings a legacy spine table (#1883), so
-     * this is the constructor's pass repeated, not a repair. Attempt-and-tolerate: DO SQLite restricts PRAGMA, so there
+     * wake. `importDump` runs it too, after rebuilding the spine from KERNEL_DDL: there every
+     * ALTER is a duplicate, since a restore never brings a legacy spine table (#1883), but the
+     * pass also creates `_substrat_outbox_invocation`, which KERNEL_DDL deliberately does not
+     * and the restore's DROP of the outbox took with it. Attempt-and-tolerate: DO SQLite restricts PRAGMA, so there
      * is no column probe, and a duplicate is the steady state after the first cold
      * start (same argument as ControlPlaneDO.addColumn).
      */
@@ -4682,19 +4683,15 @@ export function defineScopeDO(
         // them, and without them the very next permission check would raise a bare `no such
         // table: _substrat_roles`. Roles land empty here and are re-projected by the
         // restore's repair leg (host.projectRolesLocal) — the spine's job is only to exist so
-        // the checker can read it. The additive columns follow, so the tables are the shape
-        // this code writes.
+        // the checker can read it. The column pass follows, for the one outbox index KERNEL_DDL
+        // leaves to it.
         for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
         this.applySpineColumnAdditions();
-        assertSpineTablesBuilt(
-          replayable.map((t) => t.name),
-          (name) => this.spineColumnsOf(name) !== undefined,
-        );
+        const columnsOf = (name: string) => this.spineColumnsOf(name);
+        assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
         for (const t of replayable) {
-          // Judged with or without rows: a spine table or column the kernel does not know is refused.
-          const insert = isSpineTable(t.name)
-            ? spineRowsInsert(t, this.spineColumnsOf(t.name))
-            : `INSERT INTO "${t.name}" (${t.columns.map((c) => `"${c}"`).join(', ')}) VALUES (${t.columns.map(() => '?').join(', ')})`;
+          // Judged with or without rows: a spine column the kernel does not know is refused.
+          const insert = dumpRowsInsert(t, columnsOf);
           for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
         }
         // #1738: a dump's `provisioned_for` names the scope (and tenant) it was captured from,

@@ -479,7 +479,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
-import { assertSpineTablesBuilt, isSpineTable, repointScopeGrants, spineRowsInsert } from '@substrat-run/kernel';
+import { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
@@ -506,16 +506,16 @@ function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
   write(event);
 }
 
-/** The kernel's schedule-switch SQL (#1666), over one scope's database handle. */
 /**
  * The columns of spine table `name` as this scope's kernel built it, or `undefined` when it
- * built no such table — what `spineRowsInsert` judges a dump's columns against (#1883).
+ * built no such table — what a restore judges a dump's spine tables against (#1883).
  */
 const spineColumnsOf = (db: Database.Database, name: string): string[] | undefined => {
   const cols = db.prepare(`SELECT name FROM pragma_table_info(?)`).all(name) as { name: string }[];
   return cols.length === 0 ? undefined : cols.map((c) => c.name);
 };
 
+/** The kernel's schedule-switch SQL (#1666), over one scope's database handle. */
 const switchSqlOf = (db: Database.Database): SwitchSql => ({
   all: (sql, ...params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
   run: (sql, ...params) => {
@@ -3257,20 +3257,17 @@ export class SqliteScopeHost implements ScopeHost {
       // A vertical's tables take the dump's own DDL. The spine never does (#1883): its tables
       // come from KERNEL_DDL, which also fills in any the dump omits (#321) — e.g.
       // `_substrat_migrations`, which the frontier refresh below reads — and the dump
-      // contributes only rows, by column name (`spineRowsInsert`). Otherwise a dump could
-      // declare a column the checker compares on as COLLATE NOCASE.
+      // contributes only rows, by column name (`dumpRowsInsert`). Otherwise a dump could
+      // declare a column the checker compares on as COLLATE NOCASE. The column pass follows,
+      // for the one outbox index KERNEL_DDL leaves to it.
       for (const t of replayable) if (!isSpineTable(t.name)) db.prepare(t.ddl).run();
       db.exec(KERNEL_DDL);
       this.ensureSpineColumns(db);
-      assertSpineTablesBuilt(
-        replayable.map((t) => t.name),
-        (name) => spineColumnsOf(db, name) !== undefined,
-      );
+      const columnsOf = (name: string) => spineColumnsOf(db, name);
+      assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
       for (const t of replayable) {
-        // Judged with or without rows: a spine table or column the kernel does not know is refused.
-        const insert = isSpineTable(t.name)
-          ? spineRowsInsert(t, spineColumnsOf(db, t.name))
-          : `INSERT INTO "${t.name}" (${t.columns.map((c) => `"${c}"`).join(', ')}) VALUES (${t.columns.map(() => '?').join(', ')})`;
+        // Judged with or without rows: a spine column the kernel does not know is refused.
+        const insert = dumpRowsInsert(t, columnsOf);
         if (t.rows.length === 0) continue;
         const stmt = db.prepare(insert);
         for (const row of t.rows) stmt.run(...(row as unknown[]));
@@ -10976,8 +10973,9 @@ export class SqliteScopeHost implements ScopeHost {
    * The additive spine-column migrations, shared by `runtime()` and the dump replay.
    * KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before a column keeps the
    * old shape until this runs on its next wake. `loadDump` runs it too, after rebuilding
-   * the spine from KERNEL_DDL, where it finds nothing to add: a restore never brings a
-   * legacy spine table (#1883), so there it is `runtime()`'s pass repeated, not a repair.
+   * the spine from KERNEL_DDL: there it adds no column, since a restore never brings a
+   * legacy spine table (#1883), but it also creates `_substrat_outbox_invocation`, which
+   * KERNEL_DDL deliberately does not and the restore's DROP of the outbox took with it.
    */
   private ensureSpineColumns(db: Database.Database): void {
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the

@@ -95,6 +95,9 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
       ),
     });
     const tuplesAt = async (scope: ScopeId) => tuplesOf(await host.admin.exportScope(staff, t, scope)).rows;
+    /** A tuples row in `planted`'s column order: the cells given, NULL in every other column. */
+    const tupleRow = (cells: Record<string, unknown>): unknown[] =>
+      tuplesOf(planted).columns.map((c) => cells[c] ?? null);
     const expectGenuineGrantMoved = async (scope: ScopeId) => {
       const rows = await rowsFor(scope, gina);
       expect(rows.map((r) => r.object)).toEqual([`scope:${scope}`]);
@@ -281,13 +284,13 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
       // Distinct timestamps per side, so the byte-for-byte read-back says WHICH row survived.
       // The destination's live row carries an expiry the source's does not: keeping it is
       // what "never widen an expiry" means.
-      const cellsOf = { expires_at: null as string | null, revoked_at: null as string | null };
-      const src: Record<State, typeof cellsOf> = {
+      type Cells = { expires_at: string | null; revoked_at: string | null };
+      const src: Record<State, Cells> = {
         live: { expires_at: null, revoked_at: null },
         revoked: { expires_at: null, revoked_at: '2020-01-01T00:00:00.000Z' },
         expired: { expires_at: '2000-01-01T00:00:00.000Z', revoked_at: null },
       };
-      const dst: Record<State, typeof cellsOf> = {
+      const dst: Record<State, Cells> = {
         live: { expires_at: '2999-01-01T00:00:00.000Z', revoked_at: null },
         revoked: { expires_at: null, revoked_at: '2021-06-01T00:00:00.000Z' },
         expired: { expires_at: '2001-01-01T00:00:00.000Z', revoked_at: null },
@@ -295,9 +298,9 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
       interface Case {
         who: PrincipalId;
         /** What the dump holds for `who`, and on which object. */
-        rows: { object: 'source' | 'dest'; state: typeof cellsOf }[];
+        rows: { object: 'source' | 'dest'; state: Cells }[];
         /** The one row `who` holds after the load, on the destination. */
-        kept: typeof cellsOf;
+        kept: Cells;
       }
       const cases: Case[] = [];
       for (const s of STATES) {
@@ -316,36 +319,33 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         cases.push({ who: principalId.parse(ulid()), rows: [{ object: 'source', state: src[s] }], kept: src[s] });
         cases.push({ who: principalId.parse(ulid()), rows: [{ object: 'dest', state: dst[s] }], kept: dst[s] });
       }
-      const live = (c: typeof cellsOf) => c.revoked_at === null && (c.expires_at === null || c.expires_at > '2026');
+      const live = (c: Cells) => c.revoked_at === null && (c.expires_at === null || c.expires_at > '2026');
 
       /** `planted` plus every case's rows, the destination's naming `dest`. */
       const collisions = (dest: ScopeId): ScopeDump => {
-        const columns = tuplesOf(planted).columns;
         const extra = cases.flatMap((c) =>
-          c.rows.map(({ object, state }) => {
-            const cell: Record<string, unknown> = {
+          c.rows.map(({ object, state }) =>
+            tupleRow({
               subject: `principal:${c.who}`,
               relation: 'role:reader',
               object: `scope:${object === 'source' ? source : dest}`,
               ...state,
-            };
-            return columns.map((col) => cell[col] ?? null);
-          }),
+            }),
+          ),
         );
         return variant((rows) => [...rows, ...extra]);
       };
-      const expectSettled = async (dest: ScopeId) => {
+      /** Every case holds exactly its kept row, byte for byte, and the checker agrees. */
+      const expectCasesSettled = async (dest: ScopeId) => {
         const columns = tuplesOf(planted).columns;
         for (const c of cases) {
-          const want: Record<string, unknown> = {
-            subject: `principal:${c.who}`,
-            relation: 'role:reader',
-            object: `scope:${dest}`,
-            ...c.kept,
-          };
-          expect(await rowsFor(dest, c.who)).toEqual([Object.fromEntries(columns.map((col) => [col, want[col] ?? null]))]);
+          const want = tupleRow({ subject: `principal:${c.who}`, relation: 'role:reader', object: `scope:${dest}`, ...c.kept });
+          expect(await rowsFor(dest, c.who)).toEqual([Object.fromEntries(columns.map((col, i) => [col, want[i]]))]);
           expect(await allowed(c.who, dest)).toBe(live(c.kept));
         }
+      };
+      const expectSettled = async (dest: ScopeId) => {
+        await expectCasesSettled(dest);
         // The rest of the dump re-pointed as before.
         await expectGenuineGrantMoved(dest);
         await expectEntityGrantsKept(dest);
@@ -369,11 +369,8 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         // object order alone would have picked the other.
         const [a, b] = [scopeId.parse(ulid()), scopeId.parse(ulid())].sort();
         const mia = principalId.parse(ulid());
-        const columns = tuplesOf(planted).columns;
         const row = (object: string, revoked_at: string | null) =>
-          columns.map((col) =>
-            col === 'subject' ? `principal:${mia}` : col === 'relation' ? 'role:reader' : col === 'object' ? object : col === 'revoked_at' ? revoked_at : null,
-          );
+          tupleRow({ subject: `principal:${mia}`, relation: 'role:reader', object, revoked_at });
         const dump = collisions(dest);
         const withBoth = {
           ...dump,
@@ -386,11 +383,7 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
           ),
         };
         await host.restoreScope(staff, t, dest, withBoth);
-        for (const c of cases) {
-          expect((await rowsFor(dest, c.who)).map((r) => [r.object, r.expires_at, r.revoked_at])).toEqual([
-            [`scope:${dest}`, c.kept.expires_at, c.kept.revoked_at],
-          ]);
-        }
+        await expectCasesSettled(dest);
         expect((await rowsFor(dest, mia)).map((r) => [r.object, r.revoked_at])).toEqual([[`scope:${dest}`, null]]);
         expect(await allowed(mia, dest)).toBe(true);
       });
@@ -413,9 +406,7 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         return out.allowed;
       };
       const entityRow = (who: PrincipalId, object: string) =>
-        tuplesOf(planted).columns.map((c) =>
-          c === 'subject' ? `principal:${who}` : c === 'relation' ? `granted:${PERM_READ}` : c === 'object' ? object : null,
-        );
+        tupleRow({ subject: `principal:${who}`, relation: `granted:${PERM_READ}`, object });
       /** Every table, whole: what a refused load must leave exactly as it was. */
       const everything = async (scope: ScopeId) => (await host.admin.exportScope(staff, t, scope)).tables;
 

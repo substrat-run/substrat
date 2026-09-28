@@ -88,7 +88,7 @@ export function repointScopeGrants(
   const dest = `scope:${destScopeId}`;
   const from = source === undefined ? undefined : `scope:${source.scopeId}`;
   if (from === undefined || (!source?.exact && sql.all(SOURCE_PROBE, from).length === 0)) {
-    moveOnto(sql, dest, now, { where: `substr(%.object, 1, 6) = 'scope:' COLLATE BINARY`, params: [] });
+    moveOnto(sql, dest, now, undefined);
     return;
   }
   const strays = source!.exact
@@ -105,60 +105,58 @@ export function repointScopeGrants(
         `${strays.slice(0, 3).join(', ')}${strays.length > 3 ? ', …' : ''}`,
     );
   }
-  moveOnto(sql, dest, now, { where: '%.object = ? COLLATE BINARY', params: [from] });
+  moveOnto(sql, dest, now, from);
 }
 
 /**
- * Move every row `moved` selects onto `dest`, settling each key collision by the rule in
- * `repointScopeGrants`'s header. `moved.where` is written over `%`, which each statement
- * replaces with the alias of the row it is judging. A row already on `dest` is never moved.
+ * Move onto `dest` every row naming `from` (the exact rule), or every `scope:` row when `from`
+ * is undefined (the fallback), settling each key collision by the rule in
+ * `repointScopeGrants`'s header. A row already on `dest` is never moved.
  */
-function moveOnto(sql: SwitchSql, dest: string, now: string, moved: { where: string; params: string[] }): void {
-  const isMoved = (alias: string) => ({
-    sql: `(${moved.where.replaceAll('%', alias)} AND ${alias}.object <> ? COLLATE BINARY)`,
-    params: [...moved.params, dest],
-  });
-  // The checker's own definition of live, so a restore keeps the row a check would honour.
-  const live = (alias: string) => ({ sql: `(${liveTupleSql(alias)})`, params: [now] });
+function moveOnto(sql: SwitchSql, dest: string, now: string, from: string | undefined): void {
+  // Whether the row under `alias` moves. Binds `moved` (below), in that order.
+  const isMoved = (alias: string) =>
+    `(${from === undefined ? `substr(${alias}.object, 1, 6) = 'scope:'` : `${alias}.object = ?`} COLLATE BINARY ` +
+    `AND ${alias}.object <> ? COLLATE BINARY)`;
+  const moved = from === undefined ? [dest] : [from, dest];
+  // The checker's own definition of live, so a restore keeps the row a check would honour. Binds `now`.
+  const live = (alias: string) => `(${liveTupleSql(alias)})`;
   const sameKey = (a: string, b: string) =>
     `${a}.subject = ${b}.subject COLLATE BINARY AND ${a}.relation = ${b}.relation COLLATE BINARY`;
   // `_substrat_tuples` is the row being judged; SQLite takes no alias on a DELETE's target.
   const T = '_substrat_tuples';
-  const m = isMoved(T);
-  const other = isMoved('o');
-  const [liveT, liveO, liveD] = [live(T), live('o'), live('d')];
 
   // 1. Between two moved rows for one key: live first, then the lower object.
   sql.run(
-    `DELETE FROM ${T} WHERE ${m.sql} AND EXISTS (
-       SELECT 1 FROM ${T} o WHERE ${sameKey('o', T)} AND ${other.sql} AND o.object <> ${T}.object COLLATE BINARY
-         AND (${liveO.sql} > ${liveT.sql} OR (${liveO.sql} = ${liveT.sql} AND o.object < ${T}.object COLLATE BINARY)))`,
-    ...m.params,
-    ...other.params,
-    ...liveO.params,
-    ...liveT.params,
-    ...liveO.params,
-    ...liveT.params,
+    `DELETE FROM ${T} WHERE ${isMoved(T)} AND EXISTS (
+       SELECT 1 FROM ${T} o WHERE ${sameKey('o', T)} AND ${isMoved('o')} AND o.object <> ${T}.object COLLATE BINARY
+         AND (${live('o')} > ${live(T)} OR (${live('o')} = ${live(T)} AND o.object < ${T}.object COLLATE BINARY)))`,
+    ...moved,
+    ...moved,
+    now,
+    now,
+    now,
+    now,
   );
   // 2. A moved row loses to the destination row unless it is live and the destination row is not.
   sql.run(
-    `DELETE FROM ${T} WHERE ${m.sql} AND EXISTS (
+    `DELETE FROM ${T} WHERE ${isMoved(T)} AND EXISTS (
        SELECT 1 FROM ${T} d WHERE ${sameKey('d', T)} AND d.object = ? COLLATE BINARY
-         AND (${liveD.sql} OR NOT ${liveT.sql}))`,
-    ...m.params,
+         AND (${live('d')} OR NOT ${live(T)}))`,
+    ...moved,
     dest,
-    ...liveD.params,
-    ...liveT.params,
+    now,
+    now,
   );
   // 3. Every moved row still standing beat the destination row for its key, which goes.
   sql.run(
     `DELETE FROM ${T} WHERE object = ? COLLATE BINARY AND EXISTS (
-       SELECT 1 FROM ${T} o WHERE ${sameKey('o', T)} AND ${other.sql})`,
+       SELECT 1 FROM ${T} o WHERE ${sameKey('o', T)} AND ${isMoved('o')})`,
     dest,
-    ...other.params,
+    ...moved,
   );
   // 4. No key collides now. A plain UPDATE, so one that still did would fail the restore.
-  sql.run(`UPDATE ${T} SET object = ? WHERE ${m.sql}`, dest, ...m.params);
+  sql.run(`UPDATE ${T} SET object = ? WHERE ${isMoved(T)}`, dest, ...moved);
 }
 
 const SOURCE_PROBE = 'SELECT 1 FROM _substrat_tuples WHERE object = ? COLLATE BINARY LIMIT 1';
