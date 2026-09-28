@@ -26,7 +26,9 @@ import {
   claimOwner as claimOwnerRow,
   unbindSubject as unbindSubjectRow,
   subjectsOf as subjectsOfRows,
+  transferOwner as transferOwnerRow,
   type OwnerSeat,
+  type OwnerTransfer,
 } from './owner-seat.js';
 
 /**
@@ -236,6 +238,16 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /**
+   * Hand the owner of record from `from` to `to` (#1665): the principal a reconcile's lockout
+   * repair re-seats. Moves the record only, and refuses (writing nothing) on an unclaimed seat,
+   * a stale `from`, or a `to` no subject is bound to. `owner-seat.ts` has the rules; the
+   * seat-then-revoke around it is vertical-host's `/internal/owner-transfer`.
+   */
+  async transferOwner(scopeId: string, from: string, to: string): Promise<OwnerTransfer> {
+    return transferOwnerRow(this.registrySql, scopeId, from, to);
+  }
+
+  /**
    * Is this scope awaiting first-run setup? True while its owner seat is unclaimed — whether or
    * not a plain first sign-in can still claim it (`ownerSeat` says which). The worker uses this
    * to answer `needs-setup` instead of a bare 401, so the SPA can say what to do.
@@ -404,6 +416,7 @@ export type IdentityStub = {
   resolveSiteScope(slug: string): Promise<string | null>;
   setPendingOwner(scopeId: string, principal: string): Promise<void>;
   getOwnerOfRecord(scopeId: string): Promise<string | null>;
+  transferOwner(scopeId: string, from: string, to: string): Promise<OwnerTransfer>;
   needsSetup(scopeId: string): Promise<boolean>;
   ownerSeat(scopeId: string): Promise<OwnerSeat>;
   resolvePrincipal(scopeId: string, sub: string): Promise<string | null>;

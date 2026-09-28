@@ -12,6 +12,7 @@ import {
   resolvePrincipal,
   mintOwnerClaim,
   claimOwner,
+  transferOwner,
 } from '../src/owner-seat.js';
 import type { RegistrySql } from '../src/site-registry.js';
 
@@ -177,5 +178,117 @@ describe('owner seat', () => {
     expect(needsSetup(sql, SCOPE)).toBe(false);
     expect(resolvePrincipal(sql, SCOPE, 'sub-anyone', T0)).toBeNull();
     expect(mintOwnerClaim(sql, SCOPE, 'hash', T0)).toBeNull();
+  });
+});
+
+/**
+ * The owner hand-over (#1665). `transferOwner` moves the record a reconcile's lockout repair
+ * re-seats from, and only that — the seat and revoke around it are the host's. Every refusal
+ * has a twin that goes through, so each test fails if its precondition stops being checked.
+ */
+describe('owner transfer', () => {
+  let sql: RegistrySql;
+  const SUCCESSOR = '01PRINCIPALSUCCESSOR';
+  /** A member: what an accepted invite writes — a subject bound to a pre-minted principal. */
+  const bindMember = (principal: string, sub: string, scope = SCOPE) =>
+    sql.exec('INSERT INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', scope, sub, principal);
+  /** A provisioned scope whose owner has claimed the seat, with SUCCESSOR a member. */
+  const claimedWithMember = () => {
+    recordOwnerSeat(sql, SCOPE, OWNER, T0);
+    expect(resolvePrincipal(sql, SCOPE, 'sub-installer', T0 + MIN)).toBe(OWNER);
+    bindMember(SUCCESSOR, 'sub-successor');
+  };
+
+  beforeEach(() => {
+    const db = new Database(':memory:');
+    for (const stmt of OWNER_SEAT_DDL) db.exec(stmt);
+    sql = sqlOver(db);
+    migrateOwnerSeat(sql);
+  });
+
+  it('moves the record to a member, and the seat stays claimed', () => {
+    claimedWithMember();
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'transferred', owner: SUCCESSOR });
+    expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
+    expect(ownerSeat(sql, SCOPE, T0 + 2 * MIN)).toEqual({
+      state: 'claimed',
+      owner: SUCCESSOR,
+      firstSignIn: null,
+      claimLink: null,
+    });
+    // Nothing re-opened: no pending seat, nothing to mint, a stranger still resolves to nobody.
+    expect(needsSetup(sql, SCOPE)).toBe(false);
+    expect(mintOwnerClaim(sql, SCOPE, 'hash', T0 + 2 * MIN)).toBeNull();
+    expect(resolvePrincipal(sql, SCOPE, 'sub-stranger', T0 + 2 * MIN)).toBeNull();
+    // Both logins keep their bindings: the hand-over moves ownership, not identities.
+    expect(resolvePrincipal(sql, SCOPE, 'sub-installer', T0 + 2 * MIN)).toBe(OWNER);
+    expect(resolvePrincipal(sql, SCOPE, 'sub-successor', T0 + 2 * MIN)).toBe(SUCCESSOR);
+  });
+
+  it('a repeat answers `already` and writes nothing — the retry the platform flow relies on', () => {
+    claimedWithMember();
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR).outcome).toBe('transferred');
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'already', owner: SUCCESSOR });
+    expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
+  });
+
+  it('refuses a `from` that is not the current record — and a hand-over onward from the new owner works', () => {
+    claimedWithMember();
+    bindMember('01PRINCIPALTHIRD', 'sub-third');
+    // A stale caller naming someone who never owned it.
+    expect(transferOwner(sql, SCOPE, '01PRINCIPALNOBODY', SUCCESSOR)).toEqual({
+      outcome: 'refused',
+      owner: OWNER,
+      reason: 'not-owner',
+    });
+    expect(ownerOfRecord(sql, SCOPE)).toBe(OWNER);
+    transferOwner(sql, SCOPE, OWNER, SUCCESSOR);
+    // The ORIGINAL owner is no longer the record, so it cannot hand the scope on.
+    expect(transferOwner(sql, SCOPE, OWNER, '01PRINCIPALTHIRD')).toMatchObject({ outcome: 'refused', reason: 'not-owner' });
+    expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
+    // The twin: the current owner can.
+    expect(transferOwner(sql, SCOPE, SUCCESSOR, '01PRINCIPALTHIRD').outcome).toBe('transferred');
+    expect(ownerOfRecord(sql, SCOPE)).toBe('01PRINCIPALTHIRD');
+  });
+
+  it('refuses a `to` nobody is bound to — and goes through once someone is', () => {
+    recordOwnerSeat(sql, SCOPE, OWNER, T0);
+    resolvePrincipal(sql, SCOPE, 'sub-installer', T0 + MIN);
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'refused', owner: OWNER, reason: 'not-member' });
+    // A binding in ANOTHER scope does not make it a member of this one.
+    bindMember(SUCCESSOR, 'sub-successor', '01SCOPEOTHER');
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toMatchObject({ outcome: 'refused', reason: 'not-member' });
+    expect(ownerOfRecord(sql, SCOPE)).toBe(OWNER);
+    bindMember(SUCCESSOR, 'sub-successor');
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR).outcome).toBe('transferred');
+  });
+
+  it('refuses an UNCLAIMED seat, touching neither the pending seat nor its link — and goes through once claimed', () => {
+    recordOwnerSeat(sql, SCOPE, OWNER, T0);
+    bindMember(SUCCESSOR, 'sub-successor');
+    const late = T0 + FIRST_SIGN_IN_WINDOW_MS + MIN;
+    mintOwnerClaim(sql, SCOPE, 'hash-1', late);
+    const before = ownerSeat(sql, SCOPE, late);
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'refused', owner: OWNER, reason: 'unclaimed' });
+    expect(ownerSeat(sql, SCOPE, late)).toEqual(before);
+    // The link still binds the OWNER principal, as minted.
+    expect(claimOwner(sql, SCOPE, 'sub-installer', 'hash-1', late + MIN)).toBe(OWNER);
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR).outcome).toBe('transferred');
+  });
+
+  it('refuses a hand-over to oneself, and a scope never provisioned here', () => {
+    claimedWithMember();
+    expect(transferOwner(sql, SCOPE, OWNER, OWNER)).toEqual({ outcome: 'refused', owner: OWNER, reason: 'same-principal' });
+    expect(transferOwner(sql, '01SCOPENEVER', OWNER, SUCCESSOR)).toEqual({ outcome: 'refused', owner: null, reason: 'unknown' });
+    expect(ownerOfRecord(sql, SCOPE)).toBe(OWNER);
+  });
+
+  it('a re-provision after a transfer keeps the NEW record — first-write-wins still holds', () => {
+    claimedWithMember();
+    transferOwner(sql, SCOPE, OWNER, SUCCESSOR);
+    // The platform re-runs provision with the principal it minted at install: the old owner.
+    recordOwnerSeat(sql, SCOPE, OWNER, T0 + 10 * MIN);
+    expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
+    expect(needsSetup(sql, SCOPE)).toBe(false);
   });
 });

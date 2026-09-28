@@ -361,6 +361,49 @@ export const ownerClaimLink = z.object({
 export type OwnerClaimLink = z.infer<typeof ownerClaimLink>;
 
 /**
+ * An owner HAND-OVER request (#1665): the current owner of record and the member who takes
+ * over. Two principals in the scope's own identity directory. The scope comes from the address.
+ * One principal on both sides is refused here, before anything is reached.
+ */
+export const ownerTransferPair = z.object({ from: principalId, to: principalId });
+export const ownerTransferInput = ownerTransferPair
+  .strict()
+  .refine((b) => b.from !== b.to, { message: '`from` and `to` must be different principals', path: ['to'] });
+export type OwnerTransferInput = z.infer<typeof ownerTransferInput>;
+
+/**
+ * What the vertical's identity directory answered to the record half of a hand-over (#1665).
+ * `transferred` moved `owner_of_record`; `already` found it naming `to`, which is a retry of a
+ * hand-over that got at least that far. `refused` wrote nothing: the scope has no owner here
+ * (`unknown`), the seat is still unclaimed, `from` is not the current record, or no subject in
+ * the scope is bound to `to`.
+ */
+export const ownerTransferRecord = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.enum(['transferred', 'already']), owner: principalId }),
+  z.object({
+    outcome: z.literal('refused'),
+    owner: principalId.nullable(),
+    reason: z.enum(['unknown', 'same-principal', 'unclaimed', 'not-owner', 'not-member']),
+  }),
+]);
+export type OwnerTransferRecord = z.infer<typeof ownerTransferRecord>;
+
+/**
+ * A completed hand-over (#1665), as `/internal/owner-transfer` answers it. `owner` is the new
+ * owner of record. `recordMoved` is false on a retry that found the record already moved, and
+ * `fromRevoked` is false when `from` held no live owner seat to take back. Neither is an error:
+ * both are how a repeat of the same hand-over reads.
+ */
+export const ownerTransferResult = z.object({
+  scopeId: scopeId,
+  from: principalId,
+  owner: principalId,
+  recordMoved: z.boolean(),
+  fromRevoked: z.boolean(),
+});
+export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
+
+/**
  * How an identity pool relates to tenants (K-23) — the fact that decides whether the
  * same `externalId` seen in two tenants is one human or two.
  *

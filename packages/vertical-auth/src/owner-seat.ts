@@ -120,6 +120,62 @@ export function ownerOfRecord(sql: RegistrySql, scopeId: string): string | null 
   return row?.principal ?? null;
 }
 
+/**
+ * What `transferOwner` did. `transferred` moved the record; `already` found it naming `to`
+ * (a repeat of a hand-over that got this far, which is what makes the platform's flow safe to
+ * retry). `refused` wrote nothing, and `reason` says which precondition failed.
+ */
+export type OwnerTransfer =
+  | { outcome: 'transferred' | 'already'; owner: string }
+  | {
+      outcome: 'refused';
+      /** The owner of record as it stands — null when the scope has none. */
+      owner: string | null;
+      reason: 'unknown' | 'same-principal' | 'unclaimed' | 'not-owner' | 'not-member';
+    };
+
+/**
+ * Hand the owner of record from `from` to `to` (#1665) — the one write that moves
+ * `owner_of_record`, which `recordOwnerSeat` never does after the first. The record is what a
+ * reconcile's lockout repair re-seats (#1659), so without this a hand-over left it naming the
+ * ORIGINAL owner, and revoking the successor later brought that owner back.
+ *
+ * It moves the record and nothing else. Seating `to` in the owner's role and revoking `from`
+ * are the scope host's writes, in another Durable Object; the platform's flow runs them around
+ * this, in the order vertical-host's `/internal/owner-transfer` spells out.
+ *
+ * Refuses, writing nothing, when:
+ * - the scope has no owner of record here (`unknown`);
+ * - `from` and `to` are one principal (`same-principal`);
+ * - the seat is still UNCLAIMED (`unclaimed`). `pending_owner` names the principal a claim binds
+ *   to, so moving the record under it would leave a claim link that seats a stranger as a
+ *   principal that is no longer the owner. Claim the seat first. A claimed seat stays claimed:
+ *   this never writes `pending_owner` or `owner_claim`.
+ * - `from` is not the current record (`not-owner`) — a caller working from a stale view;
+ * - `to` is not a member: no subject in this scope is bound to it (`not-member`). The owner
+ *   must be someone who can sign in as that principal. A record naming a principal nobody can
+ *   become would hand the scope to no one, and the lockout repair would re-seat no one usable.
+ *
+ * Synchronous over one DO's storage, so the read and the write cannot interleave with another
+ * call; the `UPDATE` still carries `principal = from` so it can only ever move the record it read.
+ */
+export function transferOwner(sql: RegistrySql, scopeId: string, from: string, to: string): OwnerTransfer {
+  const owner = ownerOfRecord(sql, scopeId);
+  if (owner === null) return { outcome: 'refused', owner, reason: 'unknown' };
+  if (from === to) return { outcome: 'refused', owner, reason: 'same-principal' };
+  if (pendingRow(sql, scopeId)) return { outcome: 'refused', owner, reason: 'unclaimed' };
+  if (!isBound(sql, scopeId, to)) return { outcome: 'refused', owner, reason: 'not-member' };
+  if (owner === to) return { outcome: 'already', owner };
+  if (owner !== from) return { outcome: 'refused', owner, reason: 'not-owner' };
+  sql.exec('UPDATE owner_of_record SET principal = ? WHERE scope_id = ? AND principal = ?', to, scopeId, from);
+  return { outcome: 'transferred', owner: to };
+}
+
+/** Is some subject in this scope bound to `principal` — can anybody sign in as it? */
+function isBound(sql: RegistrySql, scopeId: string, principal: string): boolean {
+  return [...sql.exec('SELECT 1 FROM identity WHERE scope_id = ? AND principal = ? LIMIT 1', scopeId, principal)].length > 0;
+}
+
 /** Is the seat unclaimed? True whatever the window says — a closed window is still an empty seat. */
 export function needsSetup(sql: RegistrySql, scopeId: string): boolean {
   return [...sql.exec('SELECT 1 FROM pending_owner WHERE scope_id = ?', scopeId)][0] !== undefined;

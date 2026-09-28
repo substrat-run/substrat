@@ -1524,3 +1524,212 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
     expect(await restore.json()).toEqual({ tables: 2 });
   });
 });
+
+/**
+ * The owner hand-over (#1665). Three writes in two Durable Objects with no transaction across
+ * them, so what these pin is the ORDER (record, then seat `to`, then revoke `from`), that every
+ * refusal is decided before anything is written, and that a failure between any two steps
+ * leaves one owner of record, at least one live owner seat, and a state the same request
+ * completes on retry.
+ *
+ * The directory and the host share one in-memory model here, so the assertions read the
+ * scope's state rather than which mocks were called.
+ */
+describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
+  const A = '01JZ0000000000000000PRNAAA';
+  const B = '01JZ0000000000000000PRNBBB';
+  const STRANGER = '01JZ0000000000000000PRNZZZ';
+  const REF = { tenantId: TENANT, scopeId: SCOPE };
+
+  /** One scope's owner state: the record, who is bound (a member), who holds the owner role. */
+  function world(init: { record?: string | null; claimed?: boolean; members?: string[] } = {}) {
+    const w = {
+      record: init.record === undefined ? A : init.record,
+      claimed: init.claimed ?? true,
+      members: new Set(init.members ?? [A, B]),
+      seats: new Set([A]),
+      steps: [] as string[],
+      /** Throw on the named step, once — the failure "between" steps. */
+      failOn: null as null | 'record' | 'assign' | 'revoke',
+    };
+    const failIf = (step: 'record' | 'assign' | 'revoke') => {
+      if (w.failOn === step) {
+        w.failOn = null;
+        throw new Error(`injected failure at ${step}`);
+      }
+    };
+    const transferOwner = async (_env: Env, _ref: unknown, { from, to }: { from: string; to: string }) => {
+      w.steps.push('record');
+      failIf('record');
+      // The directory's rules (vertical-auth owner-seat.ts `transferOwner`), in the same order.
+      if (w.record === null) return { outcome: 'refused', owner: null, reason: 'unknown' } as const;
+      if (!w.claimed) return { outcome: 'refused', owner: w.record, reason: 'unclaimed' } as const;
+      if (!w.members.has(to)) return { outcome: 'refused', owner: w.record, reason: 'not-member' } as const;
+      if (w.record === to) return { outcome: 'already', owner: to } as const;
+      if (w.record !== from) return { outcome: 'refused', owner: w.record, reason: 'not-owner' } as const;
+      w.record = to;
+      return { outcome: 'transferred', owner: to } as const;
+    };
+    const host = fakeHost({
+      assignScopeRole: async (_s, principal, roleKey) => {
+        w.steps.push(`assign ${principal} ${roleKey}`);
+        failIf('assign');
+        w.seats.add(principal);
+      },
+      revokeScopeRole: async (_s, principal, roleKey) => {
+        w.steps.push(`revoke ${principal} ${roleKey}`);
+        failIf('revoke');
+        return w.seats.delete(principal);
+      },
+    });
+    const app = appWith(host, {
+      transferOwner: transferOwner as never,
+      resolveOwner: async () => w.record as never,
+    });
+    const send = (body: unknown) =>
+      app.request(
+        '/internal/owner-transfer',
+        { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) },
+        ENV,
+      );
+    return { w, host, app, send };
+  }
+
+  it('moves the record, seats `to`, then revokes `from` — in that order', async () => {
+    const { w, send } = world();
+    const res = await send({ ...REF, from: A, to: B });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, recordMoved: true, fromRevoked: true });
+    expect(w.steps).toEqual(['record', `assign ${B} admin`, `revoke ${A} admin`]);
+    expect(w.record).toBe(B);
+    expect([...w.seats]).toEqual([B]);
+  });
+
+  it('a repeat of a finished hand-over is a 200 that changes nothing', async () => {
+    const { w, send } = world();
+    await send({ ...REF, from: A, to: B });
+    const again = await send({ ...REF, from: A, to: B });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, recordMoved: false, fromRevoked: false });
+    expect(w.record).toBe(B);
+    expect([...w.seats]).toEqual([B]);
+  });
+
+  it.each([
+    ['a `from` that is not the owner of record', { record: STRANGER }, /not owned by `from`/],
+    ['an unclaimed seat', { claimed: false }, /claim it first/],
+    ['a `to` no subject is bound to', { members: [A] }, /no member bound to `to`/],
+    ['a scope with no owner of record', { record: null }, /no owner of record/],
+  ])('refuses %s with 409, and no seat moves', async (_label, init, message) => {
+    const { w, send } = world(init);
+    const before = { record: w.record, seats: [...w.seats] };
+    const res = await send({ ...REF, from: A, to: B });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(message);
+    expect(w.steps).toEqual(['record']); // decided at the record, before any seat write
+    expect({ record: w.record, seats: [...w.seats] }).toEqual(before);
+  });
+
+  it('refuses a malformed body before the directory is reached', async () => {
+    const { w, send } = world();
+    for (const body of [
+      { ...REF, from: A, to: A }, // one principal on both sides
+      { ...REF, from: A }, // no `to`
+      { ...REF, from: A, to: 'not-a-principal' },
+      { ...REF, from: A, to: B, owner: STRANGER }, // strict: nothing else rides along
+    ]) {
+      expect((await send(body)).status).toBe(400);
+    }
+    expect(w.steps).toEqual([]);
+    expect(w.record).toBe(A);
+  });
+
+  it('a hook answering an owner other than `to` stops before any seat moves', async () => {
+    const { w, host } = world();
+    const app = appWith(host, { transferOwner: async () => ({ outcome: 'transferred', owner: STRANGER }) as never });
+    const res = await app.request(
+      '/internal/owner-transfer',
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, from: A, to: B }) },
+      ENV,
+    );
+    expect(res.status).toBe(500);
+    expect(w.steps).toEqual([]);
+    expect([...w.seats]).toEqual([A]);
+  });
+
+  it('a failure AT the record moves nothing, and the retry completes', async () => {
+    const { w, send } = world();
+    w.failOn = 'record';
+    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false); // the envelope's status, never a 2xx
+    expect({ record: w.record, seats: [...w.seats] }).toEqual({ record: A, seats: [A] });
+    expect((await send({ ...REF, from: A, to: B })).status).toBe(200);
+    expect({ record: w.record, seats: [...w.seats] }).toEqual({ record: B, seats: [B] });
+  });
+
+  it('a failure between the record and the seat leaves the record on `to`, `from` still seated — and the retry completes', async () => {
+    const { w, send } = world();
+    w.failOn = 'assign';
+    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false); // the envelope's status, never a 2xx
+    // One owner of record (the new one), and the scope was never without a live owner seat.
+    expect({ record: w.record, seats: [...w.seats] }).toEqual({ record: B, seats: [A] });
+    const retry = await send({ ...REF, from: A, to: B });
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ recordMoved: false, fromRevoked: true });
+    expect({ record: w.record, seats: [...w.seats] }).toEqual({ record: B, seats: [B] });
+  });
+
+  it('a failure between the seat and the revoke leaves both seated with the record on `to` — and the retry completes', async () => {
+    const { w, send } = world();
+    w.failOn = 'revoke';
+    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false); // the envelope's status, never a 2xx
+    expect({ record: w.record, seats: [...w.seats].sort() }).toEqual({ record: B, seats: [A, B].sort() });
+    const retry = await send({ ...REF, from: A, to: B });
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ recordMoved: false, fromRevoked: true });
+    expect({ record: w.record, seats: [...w.seats] }).toEqual({ record: B, seats: [B] });
+  });
+
+  it('after a hand-over, a reconcile re-sources the NEW owner — never the one it replaced', async () => {
+    const { host, app, send } = world();
+    const provisioned: unknown[] = [];
+    host.provisionScopeLocal = async (input) => {
+      provisioned.push(input.owner);
+    };
+    await send({ ...REF, from: A, to: B });
+    const reconcile = await app.request(
+      '/internal/reconcile',
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(REF) },
+      ENV,
+    );
+    expect(reconcile.status).toBe(200);
+    expect(provisioned).toEqual([B]);
+  });
+
+  it('501s without the hook, and without the host verbs — before the record is touched', async () => {
+    const REQ = { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, from: A, to: B }) };
+    expect((await appWith(fakeHost()).request('/internal/owner-transfer', REQ, ENV)).status).toBe(501);
+    const touched: unknown[] = [];
+    const oldHost = appWith(fakeHost(), {
+      transferOwner: async () => {
+        touched.push(1);
+        return { outcome: 'transferred', owner: B } as never;
+      },
+    });
+    const res = await oldHost.request('/internal/owner-transfer', REQ, ENV);
+    expect(res.status).toBe(501);
+    expect(((await res.json()) as { error: string }).error).toMatch(/redeploy/);
+    expect(touched).toEqual([]);
+  });
+
+  it('is behind the platform-secret gate — and its twin with the secret gets through', async () => {
+    const { w, app } = world();
+    const body = JSON.stringify({ ...REF, from: A, to: B });
+    const headers = { 'content-type': 'application/json' };
+    expect((await app.request('/internal/owner-transfer', { method: 'POST', headers, body }, ENV)).status).toBe(403);
+    const wrong = { ...headers, [PLATFORM_SECRET_HEADER]: 'not-the-secret' };
+    expect((await app.request('/internal/owner-transfer', { method: 'POST', headers: wrong, body }, ENV)).status).toBe(403);
+    expect(w.steps).toEqual([]);
+    const right = { ...headers, [PLATFORM_SECRET_HEADER]: SECRET };
+    expect((await app.request('/internal/owner-transfer', { method: 'POST', headers: right, body }, ENV)).status).toBe(200);
+  });
+});
