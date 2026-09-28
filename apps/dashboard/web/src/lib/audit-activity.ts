@@ -23,8 +23,8 @@ const PAST: Record<string, string> = {
   prune: 'pruned', publish: 'published', put: 'put', reap: 'reaped', reassert: 'reasserted',
   redrain: 'redrained', register: 'registered', reject: 'rejected', remove: 'removed',
   request: 'requested', reset: 'reset', restore: 'restored', revoke: 'revoked', rewind: 'rewound',
-  set: 'set', shred: 'shredded', suspend: 'suspended', unarchive: 'unarchived', unassign: 'unassigned',
-  unbind: 'unbound', unlink: 'unlinked', unsuspend: 'unsuspended', update: 'updated',
+  set: 'set', shred: 'shredded', suspend: 'suspended', transfer: 'transferred', unarchive: 'unarchived',
+  unassign: 'unassigned', unbind: 'unbound', unlink: 'unlinked', unsuspend: 'unsuspended', update: 'updated',
 };
 
 /** An action key split into lower-case words: `bindScopeVersion` → `['bind', 'scope', 'version']`. */
