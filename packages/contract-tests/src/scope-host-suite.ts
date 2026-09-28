@@ -17,11 +17,14 @@ import {
   scopeId,
   tenantId,
   SCOPE_QUERY_ROW_MAX,
+  type EntityRef,
   type ErrorCode,
+  KERNEL_AUTHORED_EVENT_TYPES,
   type OrgId,
   type PlatformRequest,
   type PlatformRequestId,
   type PrincipalId,
+  type ScopeDump,
   type ScopeId,
   type TenantId,
   type ModelUsageLine,
@@ -5962,7 +5965,7 @@ export function scopeHostContractSuite(
     it('links declared entity relations, idempotently (K-16)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       await stub.invoke('testmod/add', { id: 'i1', box: 'b1' });
-      await stub.invoke('testmod/relink', { id: 'i1', box: 'b1' }); // no duplicate
+      await stub.invoke('testmod/link-again', { id: 'i1', box: 'b1' }); // no duplicate
       const tuples = await stub.invoke<{ subject: string; relation: string; object: string }[]>(
         'testmod/read-tuples',
       );
@@ -5976,6 +5979,377 @@ export function scopeHostContractSuite(
       await expect(stub.invoke('testmod/link-undeclared')).rejects.toThrow(
         /undeclared entity relation/,
       );
+    });
+
+    /**
+     * #1864: `ctx.relink(child, from, to)` — the inverse `link` never had. The tuple half
+     * lives here (this suite runs the allow-all checker); that access follows the move is
+     * proven against the tuple checker in the permission suite.
+     */
+    describe('ctx.relink moves one parent edge, atomically (K-16, #1864)', () => {
+      type Edge = { object: string; revoked: boolean };
+      const item = (id: string): EntityRef => ({ entityType: 'item', entityId: id });
+      const box = (id: string): EntityRef => ({ entityType: 'box', entityId: id });
+      const folder = (id: string): EntityRef => ({ entityType: 'folder', entityId: id });
+      const stub = () => host.getScope(alice, t1, s1);
+      const link = async (child: EntityRef, parent: EntityRef) =>
+        (await stub()).invoke('testmod/link', { child, parent });
+      const move = async (child: EntityRef, from: EntityRef, to: EntityRef) =>
+        (await stub()).invoke('testmod/move', { child, from, to });
+      const edges = async (child: EntityRef) =>
+        (await stub()).invoke<Edge[]>('testmod/read-edges', {
+          subject: `${child.entityType}:${child.entityId}`,
+        });
+      const relinked = async (child: EntityRef, type?: string) =>
+        (await stub()).invoke<
+          { entity_type: string; payload: unknown; actor: string; operation: string | null }[]
+        >('testmod/read-relinked', { entityId: child.entityId, type });
+
+      it('tombstones the old edge, writes the new one, and records ONE entity.relinked', async () => {
+        await link(item('rl1'), box('rb1'));
+        await move(item('rl1'), box('rb1'), box('rb2'));
+        // Exactly one live edge; the old one is kept as K-21 evidence, never deleted.
+        expect(await edges(item('rl1'))).toEqual([
+          { object: 'box:rb1', revoked: true },
+          { object: 'box:rb2', revoked: false },
+        ]);
+        const events = await relinked(item('rl1'));
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+          entity_type: 'item',
+          operation: 'testmod/move',
+          payload: { child: item('rl1'), from: box('rb1'), to: box('rb2') },
+        });
+        expect(JSON.parse(events[0]!.actor)).toBe(alice); // a principal actor is its bare id
+      });
+
+      it.each([...KERNEL_AUTHORED_EVENT_TYPES])('ctx.emit refuses the kernel-authored type %s', async (type) => {
+        await expectRefusal(
+          (await stub()).invoke('testmod/emit-type', { type }),
+          'validation_failed',
+          /the kernel authors that event type itself/,
+        );
+      });
+
+      it.each([...KERNEL_AUTHORED_EVENT_TYPES])(
+        'emptying the exported list first does not unlock %s',
+        async (type) => {
+          await expectRefusal(
+            (await stub()).invoke('testmod/forge-after-mutating', { type }),
+            'validation_failed',
+            /the kernel authors that event type itself/,
+          );
+        },
+      );
+
+      it('the twin: an ordinary type still emits — and relink still writes its own event', async () => {
+        await (await stub()).invoke('testmod/emit-type', { type: 'testmod.ordinary' });
+        await link(item('rl-twin'), box('rb1'));
+        await move(item('rl-twin'), box('rb1'), box('rb2'));
+        expect(await relinked(item('rl-twin'))).toHaveLength(1);
+      });
+
+      it('refuses a `from` that is not a live parent with conflict — and its twin moves', async () => {
+        await link(item('rl2'), box('rb1'));
+        // Never a parent.
+        await expectRefusal(move(item('rl2'), box('rb9'), box('rb2')), 'conflict', /not a live parent/);
+        // Once a parent, since moved away: a tombstone is not an edge to move.
+        await move(item('rl2'), box('rb1'), box('rb2'));
+        await expectRefusal(move(item('rl2'), box('rb1'), box('rb3')), 'conflict', /not a live parent/);
+        expect(await edges(item('rl2'))).toEqual([
+          { object: 'box:rb1', revoked: true },
+          { object: 'box:rb2', revoked: false },
+        ]);
+        expect(await relinked(item('rl2'))).toHaveLength(1);
+      });
+
+      /**
+       * Parent edges `ctx.link` could never write today — an undeclared relation, an expiry —
+       * planted the only way the platform can: a restore of an edited dump.
+       */
+      const plant = async (
+        rows: { subject: string; object: string; expires_at?: string; revoked_at?: string }[],
+      ) => {
+        const dump = await host.admin.exportScope(staff, t1, s1);
+        const table = dump.tables.find((t) => t.name === '_substrat_tuples')!;
+        for (const r of rows) {
+          const cells: Record<string, unknown> = { relation: 'parent', ...r };
+          table.rows.push(table.columns.map((c) => cells[c] ?? null));
+        }
+        await host.restoreScope(staff, t1, s1, dump);
+      };
+
+      it('moves out of an edge whose relation is no longer declared — an edge that grants stays movable', async () => {
+        // The walk expands every live parent edge, declared or not, so refusing this move
+        // would trap whatever access the edge carries.
+        await plant([{ subject: 'item:rl-ud', object: 'widget:w9' }]);
+        await move(item('rl-ud'), { entityType: 'widget', entityId: 'w9' }, box('rb1'));
+        expect(await edges(item('rl-ud'))).toEqual([
+          { object: 'box:rb1', revoked: false },
+          { object: 'widget:w9', revoked: true },
+        ]);
+      });
+
+      it('refuses an expired `from` with conflict — it is no longer a parent the walk sees', async () => {
+        await plant([{ subject: 'item:rl-ex', object: 'box:rb1', expires_at: '2000-01-01T00:00:00.000Z' }]);
+        await expectRefusal(move(item('rl-ex'), box('rb1'), box('rb2')), 'conflict', /not a live parent/);
+        expect(await relinked(item('rl-ex'))).toEqual([]);
+      });
+
+      it('a revive is unconditional: link clears an expiry as well as a tombstone', async () => {
+        await plant([
+          // Tombstoned AND expired, the shape a restored dump can hold.
+          {
+            subject: 'item:rl-rv1',
+            object: 'box:rb1',
+            revoked_at: '2001-01-01T00:00:00.000Z',
+            expires_at: '2000-01-01T00:00:00.000Z',
+          },
+          // Expired only: not revoked, and still not a parent the walk sees.
+          { subject: 'item:rl-rv2', object: 'box:rb1', expires_at: '2000-01-01T00:00:00.000Z' },
+        ]);
+        await link(item('rl-rv1'), box('rb1'));
+        await link(item('rl-rv2'), box('rb1'));
+        const table = (await host.admin.exportScope(staff, t1, s1)).tables.find(
+          (t) => t.name === '_substrat_tuples',
+        )!;
+        const col = (name: string) => table.columns.indexOf(name);
+        for (const id of ['rl-rv1', 'rl-rv2']) {
+          const row = table.rows.find((r) => r[col('subject')] === `item:${id}`)!;
+          expect([row[col('revoked_at')], row[col('expires_at')]]).toEqual([null, null]);
+          // Access resumed, so each revive is recorded; the proof that it is live is that a
+          // relink from it now succeeds.
+          expect(await relinked(item(id), 'entity.linked')).toHaveLength(1);
+          await move(item(id), box('rb1'), box('rb2'));
+        }
+      });
+
+      it('link and relink leave a live edge permanent: a future expiry is cleared, silently', async () => {
+        const FUTURE = '2999-01-01T00:00:00.000Z';
+        await plant([
+          { subject: 'item:rl-fx1', object: 'box:rb1', expires_at: FUTURE }, // link target
+          { subject: 'item:rl-fx2', object: 'box:rb1' }, // relink from…
+          { subject: 'item:rl-fx2', object: 'box:rb2', expires_at: FUTURE }, // …onto this
+          { subject: 'item:rl-fx3', object: 'box:rb1' }, // the twin: plain and live
+        ]);
+        const expiry = async (subject: string, object: string) => {
+          const table = (await host.admin.exportScope(staff, t1, s1)).tables.find(
+            (t) => t.name === '_substrat_tuples',
+          )!;
+          const col = (name: string) => table.columns.indexOf(name);
+          const row = table.rows.find(
+            (r) => r[col('subject')] === subject && r[col('object')] === object,
+          )!;
+          return { expires: row[col('expires_at')], revoked: row[col('revoked_at')] };
+        };
+
+        await link(item('rl-fx1'), box('rb1'));
+        expect(await expiry('item:rl-fx1', 'box:rb1')).toEqual({ expires: null, revoked: null });
+        // Access never stopped, so this is not a revive: nothing is recorded.
+        expect(await relinked(item('rl-fx1'), 'entity.linked')).toEqual([]);
+
+        await move(item('rl-fx2'), box('rb1'), box('rb2'));
+        expect(await expiry('item:rl-fx2', 'box:rb2')).toEqual({ expires: null, revoked: null });
+        expect(await relinked(item('rl-fx2'), 'entity.linked')).toEqual([]);
+        expect(await relinked(item('rl-fx2'))).toHaveLength(1); // the move itself
+
+        await link(item('rl-fx3'), box('rb1'));
+        expect(await expiry('item:rl-fx3', 'box:rb1')).toEqual({ expires: null, revoked: null });
+        expect(await relinked(item('rl-fx3'), 'entity.linked')).toEqual([]);
+      });
+
+      it('refuses a `to` that link could not write — and leaves the old edge intact', async () => {
+        await link(item('rl3'), box('rb1'));
+        await expectRefusal(
+          move(item('rl3'), box('rb1'), { entityType: 'widget', entityId: 'w1' }), // declared nowhere
+          'validation_failed',
+          /^ctx\.relink: undeclared entity relation: item → widget/,
+        );
+        expect(await edges(item('rl3'))).toEqual([{ object: 'box:rb1', revoked: false }]);
+        expect(await relinked(item('rl3'))).toEqual([]);
+      });
+
+      it('refuses a malformed or reserved ref at any of the three ends', async () => {
+        await link(item('rl4'), box('rb1'));
+        const bad: EntityRef[] = [
+          { entityType: 'bo:x', entityId: 'rb1' },
+          { entityType: 'scope', entityId: 'rb1' },
+          { entityType: 'box', entityId: 'r b1' },
+        ];
+        for (const b of bad) {
+          for (const args of [
+            [b, box('rb1'), box('rb2')],
+            [item('rl4'), b, box('rb2')],
+            [item('rl4'), box('rb1'), b],
+          ] as const) {
+            await expectRefusal(move(...args), 'validation_failed', /^ctx\.relink: malformed entity ref/);
+          }
+        }
+        expect(await edges(item('rl4'))).toEqual([{ object: 'box:rb1', revoked: false }]);
+      });
+
+      it('from === to is a no-op: nothing written, nothing emitted', async () => {
+        await link(item('rl5'), box('rb1'));
+        await move(item('rl5'), box('rb1'), box('rb1'));
+        expect(await edges(item('rl5'))).toEqual([{ object: 'box:rb1', revoked: false }]);
+        expect(await relinked(item('rl5'))).toEqual([]);
+      });
+
+      it('moves only `from` on a multi-parent entity, including into a parent it already has', async () => {
+        await link(item('rl6'), box('rb1'));
+        await link(item('rl6'), box('rb2'));
+        await move(item('rl6'), box('rb1'), box('rb3'));
+        expect(await edges(item('rl6'))).toEqual([
+          { object: 'box:rb1', revoked: true },
+          { object: 'box:rb2', revoked: false },
+          { object: 'box:rb3', revoked: false },
+        ]);
+        // Into a parent it already has: the move still happened, so it is still recorded.
+        await move(item('rl6'), box('rb3'), box('rb2'));
+        expect(await edges(item('rl6'))).toEqual([
+          { object: 'box:rb1', revoked: true },
+          { object: 'box:rb2', revoked: false },
+          { object: 'box:rb3', revoked: true },
+        ]);
+        expect(await relinked(item('rl6'))).toHaveLength(2);
+      });
+
+      it('link revives an edge relink moved away from — INSERT OR IGNORE would have kept it dead', async () => {
+        await link(item('rl7'), box('rb1'));
+        // The twin first: a first-time link records nothing, as it never has.
+        expect(await relinked(item('rl7'), 'entity.linked')).toEqual([]);
+        await move(item('rl7'), box('rb1'), box('rb2'));
+        await link(item('rl7'), box('rb1'));
+        // A revive resumes access a move stopped, so it is recorded: once, on the child.
+        const revives = await relinked(item('rl7'), 'entity.linked');
+        expect(revives).toHaveLength(1);
+        expect(revives[0]).toMatchObject({
+          entity_type: 'item',
+          operation: 'testmod/link',
+          payload: { child: item('rl7'), parent: box('rb1') },
+        });
+        // Linking a live edge again is still a no-op: no second event.
+        await link(item('rl7'), box('rb1'));
+        expect(await relinked(item('rl7'), 'entity.linked')).toHaveLength(1);
+        expect(await edges(item('rl7'))).toEqual([
+          { object: 'box:rb1', revoked: false },
+          { object: 'box:rb2', revoked: false },
+        ]);
+        // …and a move back onto a tombstone revives it the same way.
+        await move(item('rl7'), box('rb2'), box('rb4'));
+        await move(item('rl7'), box('rb4'), box('rb2'));
+        // That revive is part of a move, which entity.relinked already records.
+        expect(await relinked(item('rl7'), 'entity.linked')).toHaveLength(1);
+        expect(await edges(item('rl7'))).toEqual([
+          { object: 'box:rb1', revoked: false },
+          { object: 'box:rb2', revoked: false },
+          { object: 'box:rb4', revoked: true },
+        ]);
+      });
+
+      it('an operation that throws after relinking leaves the old edge live and emits nothing', async () => {
+        await link(item('rl8'), box('rb1'));
+        await expect(
+          (await stub()).invoke('testmod/move-then-throw', {
+            child: item('rl8'),
+            from: box('rb1'),
+            to: box('rb2'),
+          }),
+        ).rejects.toThrow(/boom after relink/);
+        expect(await edges(item('rl8'))).toEqual([{ object: 'box:rb1', revoked: false }]);
+        expect(await relinked(item('rl8'))).toEqual([]);
+      });
+
+      it('a relink inside a caught ctx.atomic is undone with it (#770)', async () => {
+        await link(item('rl9'), box('rb1'));
+        await expect(
+          (await stub()).invoke('testmod/move-in-caught-atomic', {
+            child: item('rl9'),
+            from: box('rb1'),
+            to: box('rb2'),
+          }),
+        ).resolves.toEqual({ caught: 'inner boom' });
+        expect(await edges(item('rl9'))).toEqual([{ object: 'box:rb1', revoked: false }]);
+        expect(await relinked(item('rl9'))).toEqual([]);
+      });
+
+      describe('cycles', () => {
+        // fr ← f1 ← f2 ← f3, and a sibling subtree fr ← f4.
+        beforeAll(async () => {
+          await link(folder('f1'), folder('fr'));
+          await link(folder('f2'), folder('f1'));
+          await link(folder('f3'), folder('f2'));
+          await link(folder('f4'), folder('fr'));
+        });
+
+        it('refuses a move beneath its own descendant, or onto itself', async () => {
+          await expectRefusal(
+            move(folder('f1'), folder('fr'), folder('f3')),
+            'validation_failed',
+            /its own ancestor/,
+          );
+          await expectRefusal(
+            move(folder('f1'), folder('fr'), folder('f1')),
+            'validation_failed',
+            /its own ancestor/,
+          );
+          expect(await edges(folder('f1'))).toEqual([{ object: 'folder:fr', revoked: false }]);
+        });
+
+        it('the twin: a move into a sibling subtree is allowed', async () => {
+          await move(folder('f2'), folder('f1'), folder('f4'));
+          expect(await edges(folder('f2'))).toEqual([
+            { object: 'folder:f1', revoked: true },
+            { object: 'folder:f4', revoked: false },
+          ]);
+          // …and the subtree came with it: f1 is no longer above f3, so f1 may now move
+          // beneath f3 without a cycle.
+          await move(folder('f1'), folder('fr'), folder('f3'));
+        });
+
+        it('terminates on a graph that is already cyclic', async () => {
+          // `link` does not refuse a cycle (a follow-up), so one can exist: c1 ⇄ c2.
+          await link(folder('c1'), folder('c2'));
+          await link(folder('c2'), folder('c1'));
+          await link(folder('cx'), folder('fr'));
+          await move(folder('cx'), folder('fr'), folder('c1'));
+          expect(await edges(folder('cx'))).toEqual([
+            { object: 'folder:c1', revoked: false },
+            { object: 'folder:fr', revoked: true },
+          ]);
+          // Moving a member of the cycle beneath itself is still refused.
+          await expectRefusal(
+            move(folder('c1'), folder('c2'), folder('cx')),
+            'validation_failed',
+            /its own ancestor/,
+          );
+        });
+      });
+
+      it('a tombstone survives export, restore and snapshot — never resurrected', async () => {
+        await link(item('rl10'), box('rb1'));
+        await move(item('rl10'), box('rb1'), box('rb2'));
+        const tupleRows = (dump: ScopeDump) => {
+          const table = dump.tables.find((t) => t.name === '_substrat_tuples')!;
+          const col = (name: string) => table.columns.indexOf(name);
+          return table.rows
+            .filter((r) => r[col('subject')] === 'item:rl10')
+            .map((r) => ({ object: r[col('object')], revoked: r[col('revoked_at')] !== null }))
+            .sort((a, b) => String(a.object).localeCompare(String(b.object)));
+        };
+        const expected = [
+          { object: 'box:rb1', revoked: true },
+          { object: 'box:rb2', revoked: false },
+        ];
+        const backup = await host.admin.exportScope(staff, t1, s1);
+        expect(tupleRows(backup)).toEqual(expected);
+
+        await host.restoreScope(staff, t1, s1, backup);
+        expect(await edges(item('rl10'))).toEqual(expected);
+
+        const snapId = await host.snapshotScope(staff, t1, s1);
+        expect(tupleRows(await host.admin.exportScope(staff, t1, snapId))).toEqual(expected);
+      });
     });
 
     it('dispatches events to consumers, cascading, exactly once per (event, consumer)', async () => {

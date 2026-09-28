@@ -242,9 +242,9 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
    roles/grants, migrations. **User-initiated sharing is `ctx.grant(principal, perm,
    entityRef)` and `ctx.revoke(principal, perm, entityRef)`** — entity-required and
    delegating (the caller's own decision on that entity is re-checked), transactional with
-   the operation. Neither alternative is this: a `ctx.link` edge is permanent (not
-   revocable at all), and org membership is revocable but coarse — a whole org, not one
-   record. Never mint an org per domain row to get a revoke (#798);
+   the operation. Neither alternative is this: a `ctx.link` edge can be moved
+   (`ctx.relink`, #1864) but never removed, so it is not a revoke, and org membership is
+   revocable but coarse — a whole org, not one record. Never mint an org per domain row to get a revoke (#798);
    `demos/todo/src/module.ts` is the two-line reference.
 2. **Engines own invariants**: state machines that can't skip states, append-only
    entries, immutable-after-export, every mutation emits an event, every operation

@@ -480,9 +480,39 @@ export interface OperationContext {
    * Record a relation tuple child→parent (K-16) — the write path for the
    * permission evaluator's entity-edge rule (design doc §4.2 rule 3). The
    * relation must be declared in some registered module's `entityRelations`.
-   * Idempotent.
+   * Idempotent, and it leaves the edge live and permanent, clearing any expiry a restored dump
+   * carried. A first link emits nothing; linking back to an edge `relink` moved away from
+   * revives it and records that as one `entity.linked` spine event, since access resumes.
+   *
+   * Checks no permission: the operation does, in its own vocabulary.
    */
   link(child: EntityRef, parent: EntityRef): void;
+  /**
+   * Move `child` from parent `from` to parent `to` (#1864) — one atomic replace, so access
+   * follows the move: a grant above `from` stops reaching the child, a grant above `to`
+   * starts, and no check in between sees it parentless.
+   *
+   * - `to` must be a relation declared in `entityRelations`, exactly as `link` requires;
+   *   `validation_failed` otherwise. So is a `to` that is the child or lies beneath it — a
+   *   move would make the child its own ancestor.
+   * - `from` must be a live parent edge of `child`; `conflict` otherwise. Every other
+   *   parent a multi-parent entity has is left alone.
+   * - `from` equal to `to` is a no-op: nothing written, nothing emitted.
+   * - The old edge is tombstoned (K-21), not deleted, and one `entity.relinked` spine event
+   *   records the move on the child's timeline, stamped like any event the operation emits.
+   * - Transactional with the operation: a relink whose operation throws never happened.
+   *
+   * **Checks no permission, like `link`.** Who may move what is vocabulary the kernel does
+   * not have, so the operation checks all three ends itself:
+   *
+   * ```ts
+   * assertAllowed(await ctx.check(FOLDER_MOVE, doc));   // may move this document
+   * assertAllowed(await ctx.check(FOLDER_WRITE, from)); // may take it out of here
+   * assertAllowed(await ctx.check(FOLDER_WRITE, to));   // may put it in there
+   * ctx.relink(doc, from, to);
+   * ```
+   */
+  relink(child: EntityRef, from: EntityRef, to: EntityRef): void;
   /**
    * Narrow a permission the CALLER ALREADY HOLDS onto one entity — how an app
    * expresses user-initiated sharing.

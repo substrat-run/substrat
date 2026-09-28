@@ -1252,6 +1252,21 @@ externalization convention is day one; translations are not).
     proofs already issued against a since-revoked edge. That half does not block
     membership revocation, which has no re-parenting analogue.
 
+    **The kernel offers it (#1864).** `ctx.relink(child, from, to)` is exactly K-21's
+    composition, in one transaction: the `from` edge is tombstoned (`revoked_at`, which the
+    walk already skipped), the `to` edge is written, and one `entity.relinked` spine event
+    names both. `ctx.link` now revives a tombstoned edge instead of ignoring it, or linking
+    back to a former parent would silently grant nothing, and records the revive as one
+    `entity.linked` event. A revive clears the row in place, so the tombstone is not the
+    lasting record; the event log is, and `ctx.emit` refuses every kernel-authored type from
+    module code so that log cannot be forged. Like `link`, it checks no
+    permission — the operation checks child, `from` and `to` in its own vocabulary — and it
+    refuses a `to` the child would be its own ancestor under; `link` does not refuse a cycle
+    yet (#1875). Proofs: there are no issued proofs to invalidate, because a decision is
+    evaluated at check time and never cached (the "no zookies" property), so a check after
+    the move sees the move. An event emitted before it keeps the K-34 authorization that
+    was true when it was emitted — historical evidence, which is what that field is for.
+
     **The excluded option is not a pure loss, and that is the trade to argue when this
     closes.** This question prices *"model movable containment as vertical data"* as the
     silent loss of entity-narrowed grants, and for a compliance domain, where K-21 took it

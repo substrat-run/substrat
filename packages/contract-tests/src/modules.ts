@@ -20,6 +20,7 @@ import {
   type EntityRef,
   type ListPage,
   type PermissionKey,
+  KERNEL_AUTHORED_EVENT_TYPES,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
@@ -42,7 +43,11 @@ export const testModManifest = moduleManifest.parse({
   events: { emits: [], consumes: [] },
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
   attachmentTargets: [],
-  entityRelations: [{ entityType: 'item', parentType: 'box' }],
+  entityRelations: [
+    { entityType: 'item', parentType: 'box' },
+    // #1864: a self-referential tree, so a move can aim beneath itself.
+    { entityType: 'folder', parentType: 'folder' },
+  ],
   entitlementKey: 'testmod',
 });
 
@@ -357,6 +362,9 @@ export const permModManifest = moduleManifest.parse({
     { entityType: 'aiTurn', parentType: 'chatThread' },
     // #1856: a type that only CONTAINS a kernel namespace is an ordinary entity type.
     { entityType: 'scopeItem', parentType: 'box' },
+    // #1864: a folder tree an item can move into, deep enough to cross the walk's depth.
+    { entityType: 'item', parentType: 'folder' },
+    { entityType: 'folder', parentType: 'folder' },
   ],
   entitlementKey: 'perm',
 });
@@ -636,13 +644,97 @@ const addItem: OperationHandler<{ id: string; box: string }, void> = (ctx, input
   ctx.link({ entityType: 'item', entityId: input.id }, { entityType: 'box', entityId: input.box });
 };
 
-const relinkItem: OperationHandler<{ id: string; box: string }, void> = (ctx, input) => {
+/**
+ * Link an item to a box it may already be in — the idempotency case. Not a move: that is
+ * `testmod/move` (#1864).
+ */
+const linkItemAgain: OperationHandler<{ id: string; box: string }, void> = (ctx, input) => {
   ctx.link({ entityType: 'item', entityId: input.id }, { entityType: 'box', entityId: input.box });
 };
 
 const linkUndeclared: OperationHandler<undefined, void> = (ctx) => {
   ctx.link({ entityType: 'box', entityId: 'b1' }, { entityType: 'item', entityId: 'i1' });
 };
+
+// -- #1864: ctx.relink's fixtures ---------------------------------------------
+// Tuples, outbox and atomicity only; whether access follows the move needs the tuple
+// checker, so that half is proven in the permission suite over permMod.
+
+type Move = { child: EntityRef; from: EntityRef; to: EntityRef };
+
+/** The move lands, then the operation fails: nothing of it may survive. */
+const moveThenThrow: OperationHandler<Move, void> = (ctx, input) => {
+  ctx.relink(input.child, input.from, input.to);
+  throw new Error('boom after relink');
+};
+
+/** The move lands inside a sub-transaction that throws and is caught (#770). */
+const moveInCaughtAtomic: OperationHandler<Move, { caught: string }> = async (ctx, input) => {
+  try {
+    await ctx.atomic(() => {
+      ctx.relink(input.child, input.from, input.to);
+      throw new Error('inner boom');
+    });
+  } catch (err) {
+    return { caught: (err as Error).message };
+  }
+  return { caught: '' };
+};
+
+/** Emit an event of whatever type the caller names — the forge a reserved type must refuse. */
+const emitType: OperationHandler<{ type: string }, void> = (ctx, input) => {
+  ctx.emit({
+    type: input.type,
+    schemaVersion: 1,
+    entity: { entityType: 'item', entityId: 'forged' },
+    piiClass: 'none',
+    payload: {},
+  });
+};
+
+/**
+ * The attack the reserved set must survive: module code runs beside contracts in one worker,
+ * so it can reach the export, cast it, and try to empty it before forging.
+ */
+const forgeAfterMutating: OperationHandler<{ type: string }, void> = (ctx, input) => {
+  const exported = KERNEL_AUTHORED_EVENT_TYPES as unknown as Record<string, unknown> & string[];
+  for (const attempt of [
+    () => exported.splice(0),
+    () => (exported.length = 0),
+    () => (exported as unknown as { delete?: (t: string) => void }).delete?.(input.type),
+    () => (exported as unknown as { clear?: () => void }).clear?.(),
+  ]) {
+    try {
+      attempt();
+    } catch {
+      // frozen: refused outright
+    }
+  }
+  emitType(ctx, input);
+};
+
+/** Every parent edge of one child, tombstones included, oldest object first. */
+const readEdges: OperationHandler<{ subject: string }, { object: string; revoked: boolean }[]> = (
+  ctx,
+  input,
+) =>
+  ctx.sql
+    .query<{ object: string; revoked_at: string | null }>(
+      `SELECT object, revoked_at FROM _substrat_tuples
+       WHERE subject = ? AND relation = 'parent' ORDER BY object`,
+      [input.subject],
+    )
+    .map((r) => ({ object: r.object, revoked: r.revoked_at !== null }));
+
+/** One entity's kernel edge events — `entity.relinked` unless `type` names another. */
+const readRelinked: OperationHandler<{ entityId: string; type?: string }, unknown[]> = (ctx, input) =>
+  ctx.sql
+    .query<{ entity_type: string; payload: string; actor: string; operation: string | null }>(
+      `SELECT entity_type, payload, actor, operation FROM _substrat_outbox
+       WHERE type = ? AND entity_id = ? ORDER BY id`,
+      [input.type ?? 'entity.relinked', input.entityId],
+    )
+    .map((r) => ({ ...r, payload: JSON.parse(r.payload) }));
 
 /**
  * Run whatever SQL the caller hands over, through the connection module code holds (#1741).
@@ -740,6 +832,10 @@ const readNotes: OperationHandler<undefined, { id: string; body: string }[]> = (
 
 const linkOp: OperationHandler<{ child: EntityRef; parent: EntityRef }, void> = (ctx, input) => {
   ctx.link(input.child, input.parent);
+};
+
+const relinkOp: OperationHandler<Move, void> = (ctx, input) => {
+  ctx.relink(input.child, input.from, input.to);
 };
 
 const probeOp: OperationHandler<{ permission: PermissionKey; entity?: EntityRef }, unknown> = (
@@ -1110,8 +1206,17 @@ export const testMod: ModuleRegistration = {
   ],
   operations: {
     'testmod/add': addItem as OperationHandler<never, unknown>,
-    'testmod/relink': relinkItem as OperationHandler<never, unknown>,
+    'testmod/link-again': linkItemAgain as OperationHandler<never, unknown>,
     'testmod/link-undeclared': linkUndeclared as OperationHandler<never, unknown>,
+    // #1864 — ctx.relink.
+    'testmod/link': linkOp as OperationHandler<never, unknown>,
+    'testmod/move': relinkOp as OperationHandler<never, unknown>,
+    'testmod/move-then-throw': moveThenThrow as OperationHandler<never, unknown>,
+    'testmod/move-in-caught-atomic': moveInCaughtAtomic as OperationHandler<never, unknown>,
+    'testmod/read-edges': readEdges as OperationHandler<never, unknown>,
+    'testmod/read-relinked': readRelinked as OperationHandler<never, unknown>,
+    'testmod/emit-type': emitType as OperationHandler<never, unknown>,
+    'testmod/forge-after-mutating': forgeAfterMutating as OperationHandler<never, unknown>,
     // #1741 — the SQL limits' fixtures.
     'testmod/sql-query': sqlQuery as OperationHandler<never, unknown>,
     'testmod/sql-exec': sqlExec as OperationHandler<never, unknown>,
@@ -1406,6 +1511,7 @@ export const permMod: ModuleRegistration = {
   manifest: permModManifest,
   operations: {
     'perm/link': linkOp as OperationHandler<never, unknown>,
+    'perm/relink': relinkOp as OperationHandler<never, unknown>,
     'perm/probe': probeOp as OperationHandler<never, unknown>,
     'perm/authorized-emit': authorizedEmitOp as OperationHandler<never, unknown>,
     'perm/authorized-read': authorizedReadOp as OperationHandler<never, unknown>,

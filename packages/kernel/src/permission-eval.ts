@@ -117,6 +117,15 @@ const live = (row: PermissionTupleRow, now: string): boolean =>
   (row.expires_at === null || row.expires_at > now) && row.revoked_at === null;
 
 /**
+ * `live`, as a SQL predicate — for a query that must agree with the walk about which edges
+ * exist (`ctx.relink`, #1864). Binds ONE parameter: the same `now`.
+ */
+export const liveTupleSql = (alias?: string): string => {
+  const col = (name: string) => (alias ? `${alias}.${name}` : name);
+  return `${col('revoked_at')} IS NULL AND (${col('expires_at')} IS NULL OR ${col('expires_at')} > ?)`;
+};
+
+/**
  * Inheritance (rule 2): a scope check also consults tenant-level tuples. Scope first, so a
  * scope-level allow proves itself without a tenant read.
  */

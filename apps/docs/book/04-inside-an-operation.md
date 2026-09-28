@@ -38,7 +38,8 @@ That is representative, not simplified. `ctx` is the entire capability surface:
 | `ctx.page(entityType, params)` | one page of a declared list: filters, sort, keyset cursor, total |
 | `ctx.search(entityType, term)` | full-text lookup over declared searchable fields |
 | `ctx.versionOf(entity)` | an entity's current version, for `If-Match` preconditions |
-| `ctx.link(child, parent)` | a permanent entity relationship |
+| `ctx.link(child, parent)` | an entity relationship, never removed |
+| `ctx.relink(child, from, to)` | the same relationship, moved to another parent |
 | `ctx.grant` / `ctx.revoke` | user-initiated per-entity sharing |
 | `ctx.canAssign(roleKey)` | whether the caller holds everything a role would confer |
 | `ctx.atomic(fn)` | a sub-transaction |

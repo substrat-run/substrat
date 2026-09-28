@@ -173,6 +173,8 @@ export type {
   CapabilityVerbDeps,
   CapabilityVerbs,
 } from './capability.js';
+export { createEntityEdgeVerbs } from './entity-edges.js';
+export type { EntityEdgeDeps, EntityEdgeVerbs } from './entity-edges.js';
 export { createAtomic } from './sub-transaction.js';
 export type { RunSub, AtomicMarks } from './sub-transaction.js';
 export {

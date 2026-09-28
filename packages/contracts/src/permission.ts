@@ -388,6 +388,34 @@ export function entityObjectRef(entity: EntityRef, verb: string): ObjectRef {
   return `${entity.entityType}:${entity.entityId}` as ObjectRef;
 }
 
+/**
+ * The spine event `ctx.relink` emits (#1864) — kernel-authored, like `capability.minted`,
+ * so a move is ONE fact on the entity's timeline rather than an unlink and a link a reader
+ * has to correlate. Entity: the child; actor, K-34 authorization and operation: the
+ * operation that moved it. Fat: a consumer needs no tuple read to know where it went.
+ */
+export const ENTITY_RELINKED = 'entity.relinked';
+
+export const entityRelinkedPayload = z.object({
+  child: entityRef,
+  from: entityRef,
+  to: entityRef,
+});
+export type EntityRelinkedPayload = z.infer<typeof entityRelinkedPayload>;
+
+/**
+ * `ctx.link` brought back an edge a relink had tombstoned (#1864) — access that had stopped
+ * resumes, so it is recorded like the move that stopped it. A first-time link emits nothing,
+ * as it never has. Entity: the child.
+ */
+export const ENTITY_LINKED = 'entity.linked';
+
+export const entityLinkedPayload = z.object({
+  child: entityRef,
+  parent: entityRef,
+});
+export type EntityLinkedPayload = z.infer<typeof entityLinkedPayload>;
+
 // 'member' | 'parent' | 'role:staff' | 'granted:workorder:read' …
 export const relationName = z.string().regex(/^[a-z0-9_:-]+$/);
 
