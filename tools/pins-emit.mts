@@ -29,7 +29,9 @@
  *
  * `changeset version` is the moment the numbers move, so `version-packages` runs this
  * straight after it and the Version-packages PR carries both. CI's `--check` then only
- * fires when someone edits the block by hand.
+ * fires when someone edits the block by hand. When the write moves a pin and the release
+ * did not already bump create-substrat, it patch-bumps it too — otherwise the new pins
+ * sit in a package changesets never publishes (#1876).
  *
  * ## What this does NOT check
  *
@@ -50,6 +52,7 @@
  *
  * Exit codes follow boundary-lint's: 0 = in sync, 1 = drift, 2 = cannot run.
  */
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -145,6 +148,8 @@ if (!existsSync(absolute)) cannot(`missing: ${SCAFFOLDER}`);
 const current = readFileSync(absolute, 'utf8');
 let next = current;
 const wrong: string[] = [];
+/** The same moves, for a changelog reader: package names, not constant names. */
+const moved: string[] = [];
 
 for (const { constant, pkg } of PINS) {
   const want = `^${versionOf(pkg)}`;
@@ -156,7 +161,11 @@ for (const { constant, pkg } of PINS) {
         `  This tool rewrites that exact shape. Restore it, or drop ${constant} from PINS.`,
     );
   }
-  if (found[2] !== want) wrong.push(`  ${constant.padEnd(18)} ${found[2]}  →  ${want}`);
+  if (found[2] !== want) {
+    wrong.push(`  ${constant.padEnd(18)} ${found[2]}  →  ${want}`);
+    const name = readJson(join(pkg, 'package.json')).name;
+    moved.push(constant === 'SUBSTRAT' ? `\`${name}\` and the runtime packages versioned with it: \`${want}\`` : `\`${name}\`: \`${want}\``);
+  }
   next = next.replace(pattern, `$1${want}$3`);
 }
 
@@ -181,3 +190,62 @@ if (check) {
 
 writeFileSync(absolute, next);
 console.log(`pins: updated ${SCAFFOLDER}\n${wrong.join('\n')}`);
+
+// ── The new pins have to ship ────────────────────────────────────────────────
+//
+// Rewriting index.js is half the job: npm serves the create-substrat that was last
+// PUBLISHED, and changesets only publishes a package whose version moved. No changeset
+// names create-substrat when the runtime packages release, so the Version-packages PR
+// carried fresh pins in a package it never bumped — #1876 moved every pin to ^0.126.0
+// while npm kept serving 0.10.0 pinned at ^0.124.0, and engine-workorder 0.12.10
+// (kernel ^0.126.0) then installed a second kernel into every new scaffold, which
+// failed its own typecheck. So when the pins move and this release did not already
+// bump create-substrat, bump it here, with a changelog entry saying why.
+
+const SCAFFOLDER_PKG = 'packages/create-substrat/package.json';
+const SCAFFOLDER_CHANGELOG = 'packages/create-substrat/CHANGELOG.md';
+
+let committed: string;
+try {
+  committed = JSON.parse(
+    execFileSync('git', ['show', `HEAD:${SCAFFOLDER_PKG}`], { cwd: ROOT, encoding: 'utf8' }),
+  ).version;
+} catch {
+  cannot(
+    `cannot read ${SCAFFOLDER_PKG} at HEAD, so cannot tell whether this release already\n` +
+      `  bumps create-substrat. Run inside the git checkout the release is cut from.`,
+  );
+}
+
+const scaffolderPkg = readJson(SCAFFOLDER_PKG);
+if (scaffolderPkg.version !== committed) {
+  console.log(`pins: create-substrat already moves ${committed} → ${scaffolderPkg.version} in this release.`);
+  process.exit(0);
+}
+
+const parts = String(committed).split('.').map(Number);
+if (parts.length !== 3 || parts.some((n) => !Number.isInteger(n))) {
+  cannot(`${SCAFFOLDER_PKG} version '${committed}' is not major.minor.patch.`);
+}
+const bumped = `${parts[0]}.${parts[1]}.${parts[2] + 1}`;
+const pkgText = readFileSync(join(ROOT, SCAFFOLDER_PKG), 'utf8');
+writeFileSync(
+  join(ROOT, SCAFFOLDER_PKG),
+  pkgText.replace(`"version": "${committed}"`, `"version": "${bumped}"`),
+);
+if (readJson(SCAFFOLDER_PKG).version !== bumped) {
+  cannot(`could not rewrite the version in ${SCAFFOLDER_PKG}; bump create-substrat by hand.`);
+}
+
+const entry =
+  `## ${bumped}\n\n### Patch Changes\n\n` +
+  `- A new project now installs the package versions released alongside this one:\n` +
+  moved.map((line) => `  - ${line}\n`).join('');
+const changelogPath = join(ROOT, SCAFFOLDER_CHANGELOG);
+const changelog = existsSync(changelogPath) ? readFileSync(changelogPath, 'utf8') : '# create-substrat\n';
+const heading = changelog.match(/^# .*\n+/);
+writeFileSync(
+  changelogPath,
+  heading ? heading[0] + entry + '\n' + changelog.slice(heading[0].length) : `# create-substrat\n\n${entry}\n${changelog}`,
+);
+console.log(`pins: bumped create-substrat ${committed} → ${bumped} so the new pins are published.`);
