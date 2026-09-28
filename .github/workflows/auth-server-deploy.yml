@@ -44,8 +44,15 @@ on:
 
 jobs:
   deploy:
-    # Trunk-based: every merge to main releases. A private vertical's push lands admitted
-    # and prod is self-serve, so the same run points prod at the new version.
+    # Every merge to main pushes a version; it does NOT promote it. EDITED AFTER GENERATION:
+    # the generated workflow ends in `--promote prod`, which only a PRIVATE vertical's
+    # builder token may do. auth-server is listed, so its push lands PENDING — only a
+    # PRIVATE vertical's push self-admits (packages/control-plane-api/src/api.ts ~5492-5497)
+    # — and prod promotion is also staff-only for a listed vertical ("promotion to prod is
+    # staff-only for a listed vertical"), so `--promote prod` 403'd on every run since #1215
+    # even once a version was admitted. A staff login must first ADMIT the version this run
+    # names in its summary (console: the vertical's Admit button), then PROMOTE it (console,
+    # or `substrat promote auth-server --version <id>`).
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # One promotion at a time, and every merge still gets one. Two merges landing together
@@ -120,13 +127,41 @@ jobs:
           else
             echo "gates passed:$RAN"
           fi
-      - name: Release to prod
+      - name: Push (awaits a staff admit + promote)
         env:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: https://console.substrat.net/api
         run: |
           set -euo pipefail
-          npx @substrat-run/cli push demos/auth-server --slug auth-server --promote prod
+          npx @substrat-run/cli push demos/auth-server --slug auth-server | tee release.out
+          # Matches the CLI's own success line (packages/cli/src/cli.ts: "✓ pushed <slug>.
+          # version <id> (<pkg-version>) is <admission>; deploymentRef=<ref>") and the id's
+          # actual shape — a 26-char Crockford-base32 ULID (0-9, A-Z minus I/L/O/U,
+          # packages/kernel/src/ulid.ts) — rather than a loose alnum match that would also
+          # accept a truncated or wrong-field id. '|| true' so an unmatched grep does not
+          # trip pipefail before the summary below is written.
+          VID=$(grep -F '✓ pushed' release.out | grep -oE 'version [0-9A-HJKMNP-TV-Z]{26}' | head -1 | cut -d' ' -f2 || true)
+          {
+            echo "### auth-server pushed — not yet serving"
+            echo
+            if [ -n "$VID" ]; then
+              echo "Version \`$VID\` is pending. auth-server is a listed vertical, so it does not"
+              echo "self-admit: a staff member must first ADMIT it (console: the vertical's Admit"
+              echo "button), then PROMOTE it (console, or \`substrat promote auth-server --version $VID\`)."
+            else
+              echo "This job could not read the pushed version id from the CLI's output — the push"
+              echo "itself may still have succeeded. Check the console for a new pending version on"
+              echo "auth-server, ADMIT it there, then PROMOTE it (console, or \`substrat promote"
+              echo "auth-server --version <id>\`)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Written AFTER the summary above, so a red job still leaves staff the pointer to
+          # the console even though the id could not be read here.
+          if [ -z "$VID" ]; then
+            echo "could not read the pushed version id from:" >&2
+            cat release.out >&2
+            exit 1
+          fi
       - name: Update the test environment
         if: vars.SUBSTRAT_TEST_SCOPE_ID != ''
         env:
@@ -142,8 +177,9 @@ jobs:
           BASE=$(node -p "require('./demos/auth-server/package.json').version")
           npx @substrat-run/cli push demos/auth-server --slug auth-server --version "$BASE-test.${{ github.run_number }}" | tee push.out
           # '|| true' so an unmatched grep does not trip pipefail before the message below —
-          # "could not read the pushed version id" beats a bare exit 1 from grep.
-          VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [A-Za-z0-9]+' | head -1 | cut -d' ' -f2 || true)
+          # "could not read the pushed version id" beats a bare exit 1 from grep. Same
+          # ULID-shaped match as the push step above, not a loose alnum one.
+          VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [0-9A-HJKMNP-TV-Z]{26}' | head -1 | cut -d' ' -f2 || true)
           if [ -z "$VID" ]; then echo "could not read the pushed version id from:" >&2; cat push.out >&2; exit 1; fi
           npx @substrat-run/cli scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot
 
