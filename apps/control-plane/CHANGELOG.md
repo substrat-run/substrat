@@ -1,5 +1,23 @@
 # @substrat-run/control-plane
 
+## 0.13.44
+
+### Patch Changes
+
+- 491dbb8: The tenant log reads now scale with traffic rather than with views (#1877). The request histogram, facet counts and log patterns are computed from cubes: counts for one app script and one span, grouped by tenant and every facet. Each closed span is counted once and kept, in a new `ObservabilityCacheDO` with one object per script, and only the open span is read live, so later viewers of any tenant read counts without a query. Every tenant log read is also scoped to the app's own scripts, which bounds what a query scans and counts only lines the app's script wrote. A telemetry timeout now reaches the caller as a 504 saying so. The routes and their response shapes are unchanged.
+- Updated dependencies [491dbb8]
+- Updated dependencies [6d57761]
+- Updated dependencies [c78e713]
+- Updated dependencies [5fdd720]
+- Updated dependencies [e1526a0]
+  - @substrat-run/control-plane-api@0.126.0
+  - @substrat-run/contracts@0.126.0
+  - @substrat-run/kernel@0.126.0
+  - @substrat-run/adapter-cloudflare@0.126.0
+  - @substrat-run/connector-fortnox@0.4.28
+  - @substrat-run/connector-planima@0.2.23
+  - @substrat-run/connector-scrive@0.14.31
+
 ## 0.13.43
 
 ### Patch Changes

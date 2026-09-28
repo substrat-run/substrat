@@ -1,5 +1,19 @@
 # @substrat-run/demo-tock
 
+## 0.0.19
+
+### Patch Changes
+
+- e1526a0: A malformed id is refused where the input is parsed, naming the field, rather than by `ctx.link` inside the handler (#1870). In tock, every operation that names a source now holds `sourceKey` to the same lower-kebab pattern `tock/declare-source` uses for `key`. In ticket0, `turnId` on `record-answer`, `record-assistant-failure` and a reply's optional turn must be non-empty with no whitespace.
+- Updated dependencies [6d57761]
+- Updated dependencies [c78e713]
+- Updated dependencies [e1526a0]
+  - @substrat-run/contracts@0.126.0
+  - @substrat-run/kernel@0.126.0
+  - @substrat-run/adapter-sqlite@0.126.0
+  - @substrat-run/vertical-host@0.126.0
+  - @substrat-run/dev-issuer@0.2.8
+
 ## 0.0.18
 
 ### Patch Changes

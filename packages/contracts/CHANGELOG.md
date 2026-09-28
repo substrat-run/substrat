@@ -1,5 +1,39 @@
 # @substrat-run/contracts
 
+## 0.126.0
+
+### Minor Changes
+
+- 6d57761: An operation can now move an entity to a different parent: `ctx.relink(child, from, to)` (#1864). Access follows the move. A grant above the old parent stops reaching the entity, a grant above the new one starts, and no check in between sees the entity without a parent. Before, the only option was a second `ctx.link`, which added a parent. The grant above the old parent then kept reaching the entity after every move.
+
+  `ctx.relink` checks no permission, the same as `ctx.link`. The operation checks the child, `from` and `to` in its own vocabulary before calling it. The kernel refuses:
+
+  - a `to` whose relation is not declared in `entityRelations`, the rule `ctx.link` already applies (`validation_failed`)
+  - a `to` that is the child itself or lies beneath it, since the move would make the child its own ancestor (`validation_failed`)
+  - a malformed or reserved ref at any of the three ends (`validation_failed`)
+  - a `from` that is not a current parent of the child (`conflict`)
+  - any call from a read-only impersonation session
+
+  Moving to the parent the entity already has does nothing. An entity with several parents keeps the others. The old edge is marked revoked rather than deleted, but the lasting record of the move is the event: one `entity.relinked` event on the child (`{ child, from, to }`), stamped with the operation's actor, authorization and operation name. It is transactional with the operation, so a relink in an operation that throws never happened, and neither did its event. New exports: `ENTITY_RELINKED`, `entityRelinkedPayload`, `ENTITY_LINKED` and `entityLinkedPayload` from `@substrat-run/contracts`, and `createEntityEdgeVerbs` from `@substrat-run/kernel`.
+
+  **`ctx.link` changed in two ways.** Linking to a parent the entity was moved away from brings that edge back, and records it as one `entity.linked` event on the child (`{ child, parent }`), because access that had stopped resumes. Before, the link was silently ignored, so it granted nothing. A first-time link still emits nothing. Both verbs leave the edge permanent: an expiry on it, which only a restored dump can carry, is cleared, silently when the edge was still live. An undeclared relation is now refused with `validation_failed` (HTTP 400) and a message starting `ctx.link: undeclared entity relation`, where before it was a plain error.
+
+  **`ctx.emit` refuses the event types the kernel writes itself**: `attachment.added`, `attachment.removed`, `capability.minted`, `capability.revoked`, `capability.exercised`, `entity.relinked` and `entity.linked`, with `validation_failed`. Before, an operation could emit any of them and forge a move, a share or an upload that never happened. The kernel still writes them. The kernel's own writer also refuses any type missing from that list, so a new kernel event cannot be left forgeable. Module code shares a worker with contracts, so the list the checks read is private: nothing exported can be changed to unlock a type. New exports: `KERNEL_AUTHORED_EVENT_TYPES` (a frozen copy), `isKernelAuthoredEventType`, `assertModuleEmittableType` and `assertKernelAuthoredType` from `@substrat-run/contracts`.
+
+- c78e713: Restoring, forking, snapshotting or carrying a scope onto a new version now re-points only the scope-level grants of the scope the copy came from (#1869). Before, it re-pointed every stored grant whose object started with `scope:` in any letter case, so an entity-narrowed grant stored on an entity typed `Scope` or `SCOPE` (possible before #1856) became a grant on the whole destination scope. Such grants now keep their entity.
+
+  A copy the platform exported itself (a fork, snapshot, preview, carry onto a new version, adoption or rebind) moves exactly the grants on its source scope and nothing else, so a carry, whose source is its destination, moves nothing. A copy a caller supplies (a restored backup, an uploaded file) does the same when it holds a grant on the scope it says it came from. When it does not, or names no source (as when `substrat scope restore` loads a local world), the old rule applies without case folding: `Scope:` and `SCOPE:` objects stay put, and an entity typed exactly `scope` still moves, since nothing tells it from a scope grant there (the write verbs refuse that type since #1856). A supplied copy that holds grants on its source and also on a third scope, neither its source nor its destination, is refused with a message naming them, and the target keeps what it held. In a platform copy such a grant authorized nothing where it came from, and it is left as it is. A dashboard upload passes the uploaded file's own `scopeId` as that source when it is a scope id, as a separate `sourceScopeId` beside the dump (the restore route and `ScopeHost.restoreScope` accept it), so an upload of another scope's export re-points exactly; the dump's own ids are unchanged. `/internal/restore` accepts an optional `sourceScopeId` and `exact` (refused together without a source), and the control plane sends them on every restore, adoption, rebind, preview fork and carry. A vertical built on an older `@substrat-run/vertical-host` ignores them and keeps the old rule until it is re-pushed.
+
+  A kernel namespace (`principal`, `org`, `tenant`, `scope`, `role`, `connection`, `capability`, `system`, `vertical`, in any case) is now refused as an entity name by `defineEntities` and `emitModel`, as an entity type in a manifest's `entityRelations`, `attachmentTargets`, `liveTargets`, `searchables`, `lists` and `ui.entityViews`, and as an `entityGrants` shape in a pushed deploy manifest or a manifest published through `POST /verticals/:slug/versions` (a version already stored stays readable). So a module finds out when it emits its model or registers, not at its first `ctx.link`. A name that only starts with one, such as `scopeItem`, is fine.
+
+  The connection-grant read-back (`connectionGrantsInScope`) now matches `connection:` and `granted:` case-sensitively, and the permission walk holds every tuple its readers return to the requested relation prefix exactly, so a relation spelled `Role:` expands no role.
+
+  New exports: `RESERVED_NAMESPACES` and `isKernelNamespace` from `@substrat-run/contracts`, `repointScopeGrants` and `RepointSource` from `@substrat-run/kernel`, and `scopeRepointContractSuite` from `@substrat-run/contract-tests`.
+
+### Patch Changes
+
+- e1526a0: `buildOpenApiDocument` now gives a path parameter the schema of the input field it fills, so a `pattern` or `minLength` the field declares appears on the path too (#1870). The mount writes the path value over that field and parses it, so the constraint was already enforced; the document used to say only `string`, and on a read it appeared nowhere. A field that is not a plain string keeps `string`, since a path segment is always text.
+
 ## 0.125.0
 
 ### Minor Changes
@@ -5830,7 +5864,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
