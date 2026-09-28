@@ -1278,7 +1278,15 @@ function deployedAppFiles(entry: string): string[] {
     const source = readFileSync(file, 'utf8');
     if (CONSTRUCTS_APP.test(source)) found.push(file);
     for (const m of source.matchAll(/from\s+['"](\.[^'"]+)['"]/g)) {
-      queue.push(join(dirname(file), m[1]!.replace(/\.js$/, '.ts')));
+      // A specifier arrives extensionless (`./app`), with an explicit `.js`/`.ts`/`.tsx`, or
+      // naming a directory (`./routes`) — strip whatever suffix it carries first, so the
+      // explicit-`.ts` case does not turn into `app.ts.ts`, then try every real shape TS
+      // resolves it to. Only a candidate that exists is queued, into a worklist whose loop
+      // already dedupes and re-checks existence, so a stray miss here costs nothing.
+      const base = join(dirname(file), m[1]!.replace(/\.(?:js|jsx|ts|tsx)$/, ''));
+      for (const candidate of [`${base}.ts`, `${base}.tsx`, join(base, 'index.ts')]) {
+        if (existsSync(candidate)) queue.push(candidate);
+      }
     }
   }
   return found;

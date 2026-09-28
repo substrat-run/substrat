@@ -1261,6 +1261,24 @@ describe('R10 — the deployed worker mounts invocationLog first (#1746)', () =>
     expect(vs.map((v) => v.file)).toEqual(['src/app.ts']);
   });
 
+  it('follows an extensionless import to the file that builds the app', () => {
+    const worker = "import { app } from './app';\nexport default app;\n";
+    const vs = r10(lint(vertical(worker, { 'src/app.ts': "const app = new Hono();\napp.get('/x', h);\n" })));
+    expect(vs.map((v) => v.file)).toEqual(['src/app.ts']);
+  });
+
+  it('follows an explicit .ts import without doubling the suffix into app.ts.ts', () => {
+    const worker = "import { app } from './app.ts';\nexport default app;\n";
+    const vs = r10(lint(vertical(worker, { 'src/app.ts': "const app = new Hono();\napp.get('/x', h);\n" })));
+    expect(vs.map((v) => v.file)).toEqual(['src/app.ts']);
+  });
+
+  it('follows a directory import to its index.ts', () => {
+    const worker = "import { app } from './routes';\nexport default app;\n";
+    const vs = r10(lint(vertical(worker, { 'src/routes/index.ts': "const app = new Hono();\napp.get('/x', h);\n" })));
+    expect(vs.map((v) => v.file)).toEqual(['src/routes/index.ts']);
+  });
+
   it('flags an exported app builder with no mount — the shape src/app.ts + worker.ts uses', () => {
     const worker = "import { app } from './app.js';\nexport default app;\n";
     const vs = r10(lint(vertical(worker, { 'src/app.ts': "export const app = new Hono<{ Bindings: Env }>();\napp.get('/x', h);\n" })));
