@@ -489,18 +489,19 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         expect(await everything(dest)).toEqual(before);
       });
 
-      it('a spine table the kernel does not build is refused, and the target keeps every table it held', async () => {
+      it('spine tables the kernel does not build are refused, all named, and the target keeps every table it held', async () => {
         const dest = await blank();
         const before = await everything(dest);
-        const extra = {
-          name: '_substrat_smuggled',
-          ddl: 'CREATE TABLE _substrat_smuggled (id TEXT)',
-          columns: ['id'],
-          rows: [] as unknown[][],
-        };
+        const extra = (name: string, rows: unknown[][]) => ({ name, ddl: `CREATE TABLE ${name} (id TEXT)`, columns: ['id'], rows });
         await expect(
-          host.restoreScope(staff, t, dest, { ...planted, tables: [...planted.tables, extra] }),
-        ).rejects.toThrow(/restore refused: the dump carries spine table _substrat_smuggled/);
+          host.restoreScope(staff, t, dest, {
+            ...planted,
+            // One empty and one with a row: a table is refused for existing, not for its rows.
+            tables: [...planted.tables, extra('_substrat_smuggled', []), extra('_substrat_zz_newer', [['r1']])],
+          }),
+        ).rejects.toThrow(
+          /restore refused: the dump carries spine table\(s\) this host's kernel does not build: _substrat_smuggled, _substrat_zz_newer\. It was exported by a different kind of host .* or by a newer kernel/,
+        );
         expect(await everything(dest)).toEqual(before);
       });
 

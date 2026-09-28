@@ -20,7 +20,8 @@ import { isSearchIndexTable } from './search-index.js';
  *   a dump taken before a column existed still restores. The one column that is not additive,
  *   `_substrat_schedule_state.kind` (#1288, part of the key), is derived from the row the way
  *   the #1288 rebuild derives it;
- * - a spine table the kernel does not build is refused.
+ * - a spine table the kernel does not build is refused (`assertSpineTablesBuilt`), every such
+ *   table named at once.
  *
  * Tables outside the spine keep the dump's own DDL: a vertical's schema is the dump's to say.
  */
@@ -30,6 +31,29 @@ export function isSpineTable(name: string): boolean {
   // The search index is `_substrat_`-prefixed too, but derived: a loader rebuilds it, never loads it.
   return name.startsWith('_substrat_') && !isSearchIndexTable(name);
 }
+
+/**
+ * Refuse a dump carrying `_substrat_*` tables this host's kernel does not build, naming every
+ * one of them. Called before any spine row goes in, inside the load's transaction; `built`
+ * answers whether the kernel built a table of that name.
+ *
+ * The usual cause is a dump from the other kind of host: a Durable Object's scope builds spine
+ * tables (`_substrat_roles`, `_substrat_tenant_tuples`, …) that a node scope keeps in its
+ * directory instead. Loading one anyway would mean dropping its rows, which a restore does not
+ * do silently.
+ */
+export function assertSpineTablesBuilt(names: readonly string[], built: (name: string) => boolean): void {
+  const missing = names.filter((n) => isSpineTable(n) && !built(n));
+  if (missing.length > 0) throw unbuiltSpineTables(missing);
+}
+
+const unbuiltSpineTables = (names: readonly string[]) =>
+  substratError(
+    'validation_failed',
+    `restore refused: the dump carries spine table(s) this host's kernel does not build: ${names.join(', ')}. ` +
+      'It was exported by a different kind of host (a Durable Object scope holds spine tables a node scope ' +
+      'keeps in its directory) or by a newer kernel, and its rows would have nowhere to go. Nothing was changed.',
+  );
 
 /**
  * Columns the kernel's table requires that a dump taken before them lacks, with the
@@ -53,13 +77,8 @@ export function spineRowsInsert(
   table: { name: string; columns: readonly string[] },
   kernelColumns: readonly string[] | undefined,
 ): string {
-  if (kernelColumns === undefined) {
-    throw substratError(
-      'validation_failed',
-      `restore refused: the dump carries spine table ${table.name}, which this host's kernel does not build, ` +
-        'so its rows have nowhere to go. Nothing was changed.',
-    );
-  }
+  // `assertSpineTablesBuilt` has refused this already, naming every such table; kept as the backstop.
+  if (kernelColumns === undefined) throw unbuiltSpineTables([table.name]);
   const known = new Set(kernelColumns);
   const unknown = table.columns.filter((c) => !known.has(c));
   if (unknown.length > 0) {

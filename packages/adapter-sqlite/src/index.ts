@@ -479,7 +479,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
-import { isSpineTable, repointScopeGrants, spineRowsInsert } from '@substrat-run/kernel';
+import { assertSpineTablesBuilt, isSpineTable, repointScopeGrants, spineRowsInsert } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
@@ -3262,6 +3262,10 @@ export class SqliteScopeHost implements ScopeHost {
       for (const t of replayable) if (!isSpineTable(t.name)) db.prepare(t.ddl).run();
       db.exec(KERNEL_DDL);
       this.ensureSpineColumns(db);
+      assertSpineTablesBuilt(
+        replayable.map((t) => t.name),
+        (name) => spineColumnsOf(db, name) !== undefined,
+      );
       for (const t of replayable) {
         // Judged with or without rows: a spine table or column the kernel does not know is refused.
         const insert = isSpineTable(t.name)
