@@ -412,6 +412,70 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         expect((await rowsFor(dest, mia)).map((r) => [r.object, r.revoked_at])).toEqual([[`scope:${dest}`, null]]);
         expect(await allowed(mia, dest)).toBe(true);
       });
+
+      it('the fallback settles two moved rows and a destination row together: rank, then the lower object', async () => {
+        const dest = await blank();
+        const [a, b] = [scopeId.parse(ulid()), scopeId.parse(ulid())].sort();
+        type Row = { object: string; expires_at?: string | null; revoked_at?: string | null };
+        const on = (object: 'a' | 'b' | 'dest') => `scope:${object === 'a' ? a : object === 'b' ? b : dest}`;
+        const trio: { rows: Row[]; kept: Cells }[] = [
+          // Same rank, both dead: the lower object's row is the one kept.
+          {
+            rows: [
+              { object: on('a'), revoked_at: '2020-01-01T00:00:00.000Z' },
+              { object: on('b'), revoked_at: '2021-01-01T00:00:00.000Z' },
+            ],
+            kept: { expires_at: null, revoked_at: '2020-01-01T00:00:00.000Z' },
+          },
+          // Same rank, both live: one row is kept, with the earlier expiry.
+          {
+            rows: [
+              { object: on('a'), expires_at: '2999-01-01T00:00:00.000Z' },
+              { object: on('b'), expires_at: '2990-01-01T00:00:00.000Z' },
+            ],
+            kept: { expires_at: '2990-01-01T00:00:00.000Z', revoked_at: null },
+          },
+          // A live moved row beats an expired moved row and a revoked destination row.
+          {
+            rows: [
+              { object: on('a'), expires_at: '2000-01-01T00:00:00.000Z' },
+              { object: on('b') },
+              { object: on('dest'), revoked_at: '2021-01-01T00:00:00.000Z' },
+            ],
+            kept: { expires_at: null, revoked_at: null },
+          },
+          // The live destination row is kept, with the earlier expiry a live moved row carried.
+          {
+            rows: [
+              { object: on('a'), expires_at: '2990-01-01T00:00:00.000Z' },
+              { object: on('b'), revoked_at: '2020-01-01T00:00:00.000Z' },
+              { object: on('dest'), expires_at: '2999-01-01T00:00:00.000Z' },
+            ],
+            kept: { expires_at: '2990-01-01T00:00:00.000Z', revoked_at: null },
+          },
+          // All three expired: a tie, so the destination row stays.
+          {
+            rows: [
+              { object: on('a'), expires_at: '2000-01-01T00:00:00.000Z' },
+              { object: on('b'), expires_at: '2001-01-01T00:00:00.000Z' },
+              { object: on('dest'), expires_at: '2002-01-01T00:00:00.000Z' },
+            ],
+            kept: { expires_at: '2002-01-01T00:00:00.000Z', revoked_at: null },
+          },
+        ];
+        const who = trio.map(() => principalId.parse(ulid()));
+        const extra = trio.flatMap((c, i) =>
+          c.rows.map((r) => tupleRow({ subject: `principal:${who[i]}`, relation: 'role:reader', ...r })),
+        );
+        // Provenance that names no row in the dump, so the re-point falls back and moves both.
+        await host.restoreScope(staff, t, dest, { ...variant((rows) => [...rows, ...extra]), scopeId: scopeId.parse(ulid()) });
+        const columns = tuplesOf(planted).columns;
+        for (const [i, c] of trio.entries()) {
+          const want = tupleRow({ subject: `principal:${who[i]}`, relation: 'role:reader', object: `scope:${dest}`, ...c.kept });
+          expect(await rowsFor(dest, who[i]!)).toEqual([Object.fromEntries(columns.map((col, j) => [col, want[j]]))]);
+          expect(await allowed(who[i]!, dest)).toBe(live(c.kept));
+        }
+      });
     });
 
     /**
@@ -579,6 +643,30 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         const rows = await rowsFor(dest, gina);
         expect(rows.map((r) => [r.object, r.revoked_at])).toEqual([[`scope:${dest}`, null]]);
         expect(await allowed(gina, dest)).toBe(true);
+      });
+
+      it('a pre-#1288 schedule-state table under a name in other case still restores, with kind derived', async () => {
+        const legacy = {
+          name: '_Substrat_schedule_state',
+          ddl: 'CREATE TABLE _Substrat_schedule_state (schedule_op TEXT PRIMARY KEY, last_run_at TEXT, last_status TEXT)',
+          columns: ['schedule_op', 'last_run_at', 'last_status'],
+          rows: [
+            ['freshness:repoint.done', '2026-09-01T00:00:00.000Z', 'failed'],
+            ['repoint/tick', '2026-09-01T00:00:00.000Z', 'ok'],
+          ],
+        };
+        const dest = await blank();
+        await host.restoreScope(staff, t, dest, {
+          ...planted,
+          tables: [...planted.tables.filter((tb) => tb.name !== '_substrat_schedule_state'), legacy],
+        });
+        const state = (await everything(dest)).find((tb) => tb.name === '_substrat_schedule_state');
+        expect(state).toBeDefined();
+        const read = state!.rows.map((r) => Object.fromEntries(state!.columns.map((c, i) => [c, r[i]])));
+        expect(read.map((r) => [r.kind, r.schedule_op, r.last_status, r.invocation_id])).toEqual([
+          ['freshness', 'freshness:repoint.done', 'failed', null],
+          ['schedule', 'repoint/tick', 'ok', null],
+        ]);
       });
 
       it('export, restore, export: the second export is the first, byte for byte', async () => {
