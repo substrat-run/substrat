@@ -448,6 +448,28 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         await expectEntityGrantsKept(dest);
       });
 
+      it('the same dump under a spelling of the name in other case cannot bring its DDL either', async () => {
+        // SQLite matches table names without regard to case, so `_Substrat_tuples` IS the tuples
+        // table. Read as a vertical table, its NOCASE DDL would be replayed and KERNEL_DDL's
+        // `IF NOT EXISTS` would then skip the kernel's own.
+        const dump = nocase([entityRow(tina, 'aiTurn:x')]);
+        const renamed = {
+          ...dump,
+          tables: dump.tables.map((tb) =>
+            tb.name === '_substrat_tuples'
+              ? { ...tb, name: '_Substrat_tuples', ddl: tb.ddl.replace(/^CREATE TABLE _substrat_tuples\b/, 'CREATE TABLE _Substrat_tuples') }
+              : tb,
+          ),
+        };
+        expect(renamed.tables.find((tb) => tb.name === '_Substrat_tuples')?.ddl).toMatch(/^CREATE TABLE _Substrat_tuples .*NOCASE/s);
+        const dest = await blank();
+        await host.restoreScope(staff, t, dest, renamed);
+        expect(await onEntity(tina, dest, 'aiTurn', 'x')).toBe(true);
+        expect(await onEntity(tina, dest, 'aiturn', 'x')).toBe(false);
+        const restored = tuplesOf(await host.admin.exportScope(staff, t, dest));
+        expect(restored.ddl).toBe(tuplesOf(planted).ddl);
+      });
+
       it('two grants whose objects differ only in case stay two rows through that restore', async () => {
         const dest = await blank();
         // Under the dump's NOCASE these are one key, and the load would fail on the second.

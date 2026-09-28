@@ -4791,10 +4791,13 @@ export function defineScopeDO(
     /**
      * The columns of spine table `name` as KERNEL_DDL built it here, or `undefined` when it built
      * no such table — what `spineRowsInsert` judges a dump's columns against (#1883). Read off an
-     * empty `SELECT`, because DO SQLite restricts PRAGMA.
+     * empty `SELECT`, because DO SQLite restricts PRAGMA. The name is matched without case, as
+     * SQLite resolves a table name: a dump's `_Substrat_tuples` is the kernel's tuples table.
      */
     private spineColumnsOf(name: string): string[] | undefined {
-      const built = this.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, name).toArray();
+      const built = this.sql
+        .exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE`, name)
+        .toArray();
       return built.length === 0 ? undefined : this.sql.exec(`SELECT * FROM "${name}" LIMIT 0`).columnNames;
     }
 

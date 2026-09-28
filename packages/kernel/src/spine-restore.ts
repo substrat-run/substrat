@@ -1,6 +1,7 @@
 import { substratError } from '@substrat-run/contracts';
 import { SCHEDULE_STATE_KIND_OF_OP } from './platform-sweep.js';
 import { isSearchIndexTable } from './search-index.js';
+import { SPINE_PREFIX } from './spine-guard.js';
 
 /**
  * How a restore, fork or carry loads a dump's `_substrat_*` spine tables (#1883). One
@@ -26,10 +27,16 @@ import { isSearchIndexTable } from './search-index.js';
  * Tables outside the spine keep the dump's own DDL: a vertical's schema is the dump's to say.
  */
 
-/** A kernel-owned table, which a restore builds from the kernel's DDL rather than the dump's. */
+/**
+ * A kernel-owned table, which a restore builds from the kernel's DDL rather than the dump's.
+ * The prefix is the spine guard's, compared the way SQLite compares table names, without case:
+ * a dump's `_Substrat_tuples` IS the tuples table, and read as a vertical one its DDL would be
+ * replayed and the kernel's `IF NOT EXISTS` would skip its own.
+ */
 export function isSpineTable(name: string): boolean {
-  // The search index is `_substrat_`-prefixed too, but derived: a loader rebuilds it, never loads it.
-  return name.startsWith('_substrat_') && !isSearchIndexTable(name);
+  const lower = name.toLowerCase();
+  // The search index is spine-prefixed too, but derived: a loader rebuilds it, never loads it.
+  return lower.startsWith(SPINE_PREFIX) && !isSearchIndexTable(lower);
 }
 
 /**
@@ -89,7 +96,7 @@ export function spineRowsInsert(
     );
   }
   const quoted = table.columns.map((c) => `"${c}"`);
-  const derived = Object.entries(DERIVED_COLUMNS[table.name] ?? {}).filter(
+  const derived = Object.entries(DERIVED_COLUMNS[table.name.toLowerCase()] ?? {}).filter(
     ([c]) => known.has(c) && !table.columns.includes(c),
   );
   if (derived.length === 0) {
