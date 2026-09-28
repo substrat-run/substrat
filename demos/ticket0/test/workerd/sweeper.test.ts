@@ -1119,7 +1119,7 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     expect(await host().revokeScopeRole(s, B, 'agent')).toBe(true); // removed, binding kept
     const res = await transfer(s, A, B);
     expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toMatch(/no member `to`/);
+    expect(((await res.json()) as { error: string }).error).toMatch(/holding no role here — grant `to` a role first/);
     expect(await directory().getOwnerOfRecord(s)).toBe(A);
     expect(await ownerSeats(s)).toEqual([A]);
     await host().assignScopeRole(s, B, 'agent'); // the twin: a member again
@@ -1176,7 +1176,7 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     for (const account of accounts) {
       const res = await transfer(s, A, account);
       expect(res.status).toBe(409);
-      expect(((await res.json()) as { error: string }).error).toMatch(/no member `to`/);
+      expect(((await res.json()) as { error: string }).error).toMatch(/no login in it is bound to `to`/);
     }
     expect(await directory().getOwnerOfRecord(s)).toBe(A);
     expect(await ownerSeats(s)).toEqual([A]);

@@ -386,7 +386,7 @@ export const ownerTransferInput = ownerTransferPair.strict().refine(...distinctO
  * `from → to` still open (a retry, which the flow finishes); `done` found it finished (a repeat,
  * which seats and revokes nothing). `refused` wrote nothing: the scope has no owner here
  * (`unknown`), the seat is still unclaimed, `from` is not the owner this record was handed from,
- * `to` is not a member, ANOTHER hand-over is still open (`in-flight`), or THIS one is open but
+ * no login is bound to `to` (`not-member`), `to` holds no role here (`no-role`), ANOTHER hand-over is still open (`in-flight`), or THIS one is open but
  * can no longer finish because `to` has since been removed (`wedged`: abandon it).
  */
 export const ownerTransferOutcome = z.enum(['transferred', 'already', 'done', 'abandoned']);
@@ -395,7 +395,7 @@ export const ownerTransferRecord = z.discriminatedUnion('outcome', [
   z.object({
     outcome: z.literal('refused'),
     owner: principalId.nullable(),
-    reason: z.enum(['unknown', 'same-principal', 'unclaimed', 'not-owner', 'not-member', 'in-flight', 'wedged']),
+    reason: z.enum(['unknown', 'same-principal', 'unclaimed', 'not-owner', 'not-member', 'no-role', 'in-flight', 'wedged']),
     /** On `in-flight` / `wedged`: the hand-over still open — to resend, or to abandon. */
     inFlight: z.object({ from: principalId, to: principalId }).optional(),
   }),

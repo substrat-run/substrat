@@ -305,9 +305,11 @@ describe('owner transfer', () => {
     expect(transferOwner(sql, SCOPE, SUCCESSOR, THIRD, true).outcome).toBe('transferred');
   });
 
-  it('a `to` the host says holds no role is not a member, bound or not — and its twin with a role is', () => {
+  it('a bound `to` the host says holds no role is `no-role`; an unbound one `not-member` — and the twin goes through', () => {
     claimedWithMember();
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, false)).toMatchObject({ outcome: 'refused', reason: 'not-member' });
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, false)).toMatchObject({ outcome: 'refused', reason: 'no-role' });
+    expect(transferOwner(sql, SCOPE, OWNER, '01PRINCIPALUNBOUND', true)).toMatchObject({ outcome: 'refused', reason: 'not-member' });
+    expect(transferOwner(sql, SCOPE, OWNER, '01PRINCIPALUNBOUND', false)).toMatchObject({ outcome: 'refused', reason: 'not-member' });
     expect(ownerOfRecord(sql, SCOPE)).toBe(OWNER);
     expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true).outcome).toBe('transferred');
   });

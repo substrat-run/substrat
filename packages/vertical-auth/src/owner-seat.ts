@@ -163,10 +163,12 @@ export type OwnerTransfer = z.input<typeof ownerTransferRecord>;
  * - THIS hand-over is open but can no longer finish (`wedged`): `to` has since lost its login or
  *   its role here. The check still refuses it, since finishing would seat as owner someone the
  *   scope removed; this only makes the refusal say which hand-over is stuck. Abandon it.
- * - `to` is not a member (`not-member`): no subject in this scope is bound to it, or
- *   `toHoldsRole` (the host's read, passed in by the platform's flow) says it holds no role the
- *   scope can expand. The owner must be someone who can sign in as that principal and whom the
- *   scope still counts as a member.
+ * - `to` is not a member (`not-member`): no subject in this scope is bound to it, so nobody can
+ *   sign in as that principal.
+ * - `to` holds no role here (`no-role`): `toHoldsRole`, the host's read passed in by the
+ *   platform's flow, says it holds no role the scope can expand. A member removed by revoking
+ *   their role keeps the binding; so does one whose access is only entity-narrowed grants,
+ *   which a role check does not count. Grant a role first.
  *
  * Synchronous over one DO's storage, so the read and the write cannot interleave with another
  * call; the `UPDATE` still carries `principal = from` so it can only ever move the record it read.
@@ -182,7 +184,8 @@ export function transferOwner(
   if (owner === null) return { outcome: 'refused', owner, reason: 'unknown' };
   if (from === to) return { outcome: 'refused', owner, reason: 'same-principal' };
   if (needsSetup(sql, scopeId)) return { outcome: 'refused', owner, reason: 'unclaimed' };
-  const member = toHoldsRole && isBound(sql, scopeId, to);
+  const bound = isBound(sql, scopeId, to);
+  const member = bound && toHoldsRole;
   const last = lastTransfer(sql, scopeId);
   // An open hand-over is judged first, so each refusal names the real state; the membership
   // check below still decides whether THIS one may finish.
@@ -194,7 +197,8 @@ export function transferOwner(
     if (!member) return { outcome: 'refused', owner, reason: 'wedged', inFlight };
     return { outcome: 'already', owner };
   }
-  if (!member) return { outcome: 'refused', owner, reason: 'not-member' };
+  if (!bound) return { outcome: 'refused', owner, reason: 'not-member' };
+  if (!toHoldsRole) return { outcome: 'refused', owner, reason: 'no-role' };
   if (owner === to) {
     // Only a FINISHED hand-over of this same pair is a repeat; an abandoned one is no retry.
     if (last?.prev_principal === from && last.principal === to && last.state === 'done') {

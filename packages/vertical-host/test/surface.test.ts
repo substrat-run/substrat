@@ -1584,7 +1584,8 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
         if (!member) return { outcome: 'refused', owner: w.record, reason: 'wedged', inFlight } as const;
         return { outcome: 'already', owner: to } as const;
       }
-      if (!member) return { outcome: 'refused', owner: w.record, reason: 'not-member' } as const;
+      if (!w.members.has(to)) return { outcome: 'refused', owner: w.record, reason: 'not-member' } as const;
+      if (!toHoldsRole) return { outcome: 'refused', owner: w.record, reason: 'no-role' } as const;
       if (w.record === to) {
         if (w.last?.from === from && w.last.to === to && w.last.state === 'done') return { outcome: 'done', owner: to } as const;
         return { outcome: 'refused', owner: w.record, reason: 'not-owner' } as const;
@@ -1737,7 +1738,8 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
   it.each([
     ['a `from` that is not the owner of record', { record: STRANGER }, /not owned by `from`/],
     ['an unclaimed seat', { claimed: false }, /claim it first/],
-    ['a `to` no subject is bound to', { members: [A] }, /no member `to`/],
+    ['a `to` no subject is bound to', { members: [A] }, /no login in it is bound to `to`/],
+    ['a bound `to` holding no role', { roles: [A] }, /holding no role here — grant `to` a role first/],
     ['a scope with no owner of record', { record: null }, /no owner of record/],
   ])('refuses %s with 409, and no seat moves', async (_label, init, message) => {
     const { w, send, state } = world(init);
@@ -1754,7 +1756,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     const before = state();
     const res = await send({ ...REF, from: A, to: B });
     expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toMatch(/no member `to`/);
+    expect(((await res.json()) as { error: string }).error).toMatch(/holding no role here/);
     expect(w.steps).toEqual(['record']); // the directory decided, on the host's read, and wrote nothing
     expect(state()).toEqual(before);
     // The twin: give B a role back, and the same request goes through.

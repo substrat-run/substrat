@@ -451,7 +451,8 @@ const ownerTransferRefusal: Record<Extract<OwnerTransferRecord, { outcome: 'refu
   'same-principal': 'cannot be handed to the principal that already owns it',
   unclaimed: 'has an unclaimed owner seat — claim it first, then hand it over',
   'not-owner': 'is not owned by `from` — the owner of record is someone else',
-  'not-member': 'has no member `to` — the new owner must be someone who can sign in to it and still holds a role in it',
+  'not-member': 'has no member `to` — no login in it is bound to `to`, and the new owner must be someone who can sign in',
+  'no-role': 'has `to` as a login holding no role here — grant `to` a role first, then hand over',
   'in-flight': 'has another hand-over in flight — resend that one to finish it, or abandon it',
   wedged:
     'has this hand-over open, and it can no longer finish: `to` has since lost its login or its role here — abandon it, then hand over again',

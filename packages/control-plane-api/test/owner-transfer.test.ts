@@ -343,7 +343,7 @@ describe('the owner hand-over, end to end through the vertical surface (#1665)',
           if (!toHoldsRole) return { outcome: 'refused', owner: world.record as never, reason: 'wedged', inFlight: world.open as never };
           return { outcome: 'already', owner: to };
         }
-        if (!toHoldsRole) return { outcome: 'refused', owner: world.record as never, reason: 'not-member' };
+        if (!toHoldsRole) return { outcome: 'refused', owner: world.record as never, reason: 'no-role' };
         if (world.record === to) return { outcome: 'refused', owner: to, reason: 'not-owner' };
         if (world.record !== from) return { outcome: 'refused', owner: world.record as never, reason: 'not-owner' };
         world.record = to;
