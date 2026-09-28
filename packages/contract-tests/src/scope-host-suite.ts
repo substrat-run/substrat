@@ -6308,9 +6308,12 @@ export function scopeHostContractSuite(
         });
 
         it('terminates on a graph that is already cyclic', async () => {
-          // `link` does not refuse a cycle (a follow-up), so one can exist: c1 ⇄ c2.
-          await link(folder('c1'), folder('c2'));
-          await link(folder('c2'), folder('c1'));
+          // `link` refuses a cycle too now (#1875), so the only way one can exist is a
+          // restored dump — c1 ⇄ c2, planted the same way an undeclared or expired edge is.
+          await plant([
+            { subject: 'folder:c1', object: 'folder:c2' },
+            { subject: 'folder:c2', object: 'folder:c1' },
+          ]);
           await link(folder('cx'), folder('fr'));
           await move(folder('cx'), folder('fr'), folder('c1'));
           expect(await edges(folder('cx'))).toEqual([
@@ -6320,6 +6323,70 @@ export function scopeHostContractSuite(
           // Moving a member of the cycle beneath itself is still refused.
           await expectRefusal(
             move(folder('c1'), folder('c2'), folder('cx')),
+            'validation_failed',
+            /its own ancestor/,
+          );
+        });
+      });
+
+      /**
+       * #1875: `ctx.link` refuses a cycle the same way `ctx.relink` does, via the same shared
+       * walk (`entity-edges.ts`'s `assertNoCycle`) — a behaviour change to a shipped verb, since
+       * a module that already wrote one (by accident) now fails where it used to succeed.
+       */
+      describe("link refuses a cycle, sharing relink's walk (#1875)", () => {
+        // lr ← l1 ← l2, and a sibling subtree lr ← l3.
+        beforeAll(async () => {
+          await link(folder('l1'), folder('lr'));
+          await link(folder('l2'), folder('l1'));
+          await link(folder('l3'), folder('lr'));
+        });
+
+        it('refuses linking a parent that is the child itself', async () => {
+          await expectRefusal(
+            link(folder('l1'), folder('l1')),
+            'validation_failed',
+            /its own ancestor/,
+          );
+          expect(await edges(folder('l1'))).toEqual([{ object: 'folder:lr', revoked: false }]);
+        });
+
+        it('refuses linking into its own descendant', async () => {
+          // lr is an ancestor of l2 (lr ← l1 ← l2); linking lr under l2 would make lr its own
+          // descendant.
+          await expectRefusal(
+            link(folder('lr'), folder('l2')),
+            'validation_failed',
+            /its own ancestor/,
+          );
+          expect(await edges(folder('lr'))).toEqual([]);
+        });
+
+        it('the twin: a link into a sibling subtree still succeeds', async () => {
+          await link(folder('l2'), folder('l3'));
+          expect(await edges(folder('l2'))).toEqual([
+            { object: 'folder:l1', revoked: false },
+            { object: 'folder:l3', revoked: false },
+          ]);
+        });
+
+        it('an already-cyclic graph (planted via export/restore) terminates instead of looping', async () => {
+          // `link` refuses a cycle now, so the only way one exists is a restored dump.
+          await plant([
+            { subject: 'folder:lc1', object: 'folder:lc2' },
+            { subject: 'folder:lc2', object: 'folder:lc1' },
+          ]);
+          await link(folder('lc3'), folder('lr'));
+          // lc1's own chain (lc1 → lc2 → lc1 → …) never reaches lc3, so this still succeeds —
+          // the point is that the walk finishes at all instead of hanging on the cycle.
+          await link(folder('lc3'), folder('lc1'));
+          expect(await edges(folder('lc3'))).toEqual([
+            { object: 'folder:lc1', revoked: false },
+            { object: 'folder:lr', revoked: false },
+          ]);
+          // A member of the cycle still refuses becoming its own ancestor.
+          await expectRefusal(
+            link(folder('lc1'), folder('lc1')),
             'validation_failed',
             /its own ancestor/,
           );
