@@ -9,6 +9,8 @@ import { card } from '../components/ui';
 import { AppFilter, PageHead } from '../components/ObsControls';
 import { LogQueryBar } from '../components/LogQueryBar';
 import { Flow } from './Flow';
+import { ProcessMap } from './ProcessMap';
+import { Tabs } from '@substrat-run/ui';
 import { Pulse } from './Pulse';
 import { EventExplorer, TenantLogs } from './ObservabilityPanels';
 import { RequestsMode } from './RequestsMode';
@@ -151,18 +153,61 @@ export function Observability({
   }
 
   if (section === 'processes') {
-    // A current snapshot of the wiring: no time controls, because nothing on it is a range.
+    // Two views of one app (#1744): its declared state machines with what moved through
+    // them, and a current snapshot of its wiring. Only the map has a period, and it keeps
+    // its own (24h / 7 days / 30 days) — a lifecycle's week is not the log's hour.
+    const sub = view === 'flow' ? 'flow' : 'map';
+    const period = q.period === '24h' || q.period === '30d' ? q.period : '7d';
     return (
       <Page>
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
           <PageHead
             title="Processes"
-            sub={app ? <>How <strong style={{ fontWeight: 550 }}>{app.name}</strong> is wired: triggers, events, consumers and connections.</> : 'How each app is wired: triggers, events, consumers and connections.'}
+            sub={
+              sub === 'map'
+                ? app
+                  ? <>What moved through <strong style={{ fontWeight: 550 }}>{app.name}</strong>'s declared lifecycles.</>
+                  : "What moved through each app's declared lifecycles."
+                : app
+                  ? <>How <strong style={{ fontWeight: 550 }}>{app.name}</strong> is wired: triggers, events, consumers and connections.</>
+                  : 'How each app is wired: triggers, events, consumers and connections.'
+            }
           />
           <AppFilter apps={apps} value={scopeId} onChange={pickApp} />
           {refresh}
         </div>
-        {app ? <Flow key={`${app.app_scope_id}:${nonce}`} app={app} /> : <PickApp section={section} apps={apps} onPick={(s) => onNav({ app: s, view: 'flow' })} />}
+        <Tabs
+          tabs={[
+            { value: 'map', label: 'State machines' },
+            { value: 'flow', label: 'Flow' },
+          ]}
+          value={sub}
+          onChange={(v) => onNav({ ...(scopeId ? { app: scopeId } : {}), view: v })}
+        />
+        {!app ? (
+          <PickApp section={section} apps={apps} onPick={(s) => onNav({ app: s, view: sub })} />
+        ) : sub === 'flow' ? (
+          <Flow key={`${app.app_scope_id}:${nonce}`} app={app} />
+        ) : (
+          <ProcessMap
+            app={app}
+            entity={q.entity}
+            period={period}
+            sel={q.sel}
+            compare={q.compare === '1'}
+            nonce={nonce}
+            onChange={(next) =>
+              onNav({
+                app: app.app_scope_id,
+                view: 'map',
+                ...(('entity' in next ? next.entity : q.entity) ? { entity: 'entity' in next ? next.entity : q.entity } : {}),
+                period: next.period ?? period,
+                ...(('sel' in next ? next.sel : q.sel) ? { sel: 'sel' in next ? next.sel : q.sel } : {}),
+                ...((next.compare ?? q.compare === '1') ? { compare: '1' } : {}),
+              })
+            }
+          />
+        )}
       </Page>
     );
   }

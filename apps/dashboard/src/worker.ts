@@ -1888,6 +1888,7 @@ app.get('/api/apps/:scopeId/processes', async (c) => {
     versionId: runningId,
     processes: [],
     entity: null,
+    lifecycle: null,
     period,
     current: null,
     previous: null,
@@ -1909,12 +1910,12 @@ app.get('/api/apps/:scopeId/processes', async (c) => {
       cp.lifecycleFlow(scope, { entityType: entity, lifecycle, ...windows.current }),
       cp.lifecycleFlow(scope, { entityType: entity, lifecycle, ...windows.previous, stuckLimit: 1 }),
     ]);
-    return c.json(answer({ processes, entity, current, previous }));
+    return c.json(answer({ processes, entity, lifecycle, current, previous }));
   } catch (e) {
     // 404: a control plane or vertical without the route. 502: a vertical script that
     // falls through to its SPA shell for an `/internal/*` path it predates.
     if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 502)) {
-      return c.json(answer({ processes, entity, unavailable: 'not-yet-available' }));
+      return c.json(answer({ processes, entity, lifecycle, unavailable: 'not-yet-available' }));
     }
     throw e;
   }
