@@ -81,6 +81,7 @@ import {
   type ImportBatch,
   type ImportResult,
   type ImportState,
+  substratError,
 } from '@substrat-run/contracts';
 import type { OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER, undrainedEventsOf } from '@substrat-run/kernel';
@@ -968,6 +969,10 @@ export class VerticalClient {
      *  vertical that predates the fields ignores them. */
     opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
   ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[] }> {
+    // `exact` vouches for a named source; the vertical refuses it without one, so say so here.
+    if (opts?.exact && !opts.sourceScopeId) {
+      throw substratError('validation_failed', 'restore: `exact` needs `sourceScopeId`, the scope the dump came from');
+    }
     const { tables: count, switchedOff } = await this.postInternal<{ tables: number; switchedOff?: unknown }>(
       '/internal/restore',
       {

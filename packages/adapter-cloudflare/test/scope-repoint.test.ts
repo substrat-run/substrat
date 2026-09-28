@@ -106,6 +106,16 @@ describe("the ScopeDO's importDump picks the rows to re-point (#1869)", () => {
     expect(tuplesIn(await host.exportScopeLocal(self))).toEqual([kept(self, 1), kept(self, 2), kept(self, 3)]);
   });
 
+  it('exact with no source named is refused before anything is dropped; the twin with a source lands', async () => {
+    const dest = scopeId.parse(ulid());
+    await host.restoreScopeLocal(dest, dumpFrom(source), { sourceScopeId: source, exact: true });
+    const before = tuplesIn(await host.exportScopeLocal(dest));
+    await expect(host.restoreScopeLocal(dest, dumpFrom(dest), { exact: true })).rejects.toThrow(
+      /`exact` needs the scope the dump came from/,
+    );
+    expect(tuplesIn(await host.exportScopeLocal(dest))).toEqual(before);
+  });
+
   it('snapshotScopeLocal of a scope holding no grant on itself copies scope:e-1 byte for byte', async () => {
     // The CP-less snapshot is a platform copy: its re-point is exact and never falls back.
     const self = scopeId.parse(ulid());

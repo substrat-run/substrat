@@ -4634,6 +4634,10 @@ export function defineScopeDO(
       // only the first statement, so the text itself has to be the one statement.
       // Pure input validation, so it runs before the first DROP: a refused dump touches nothing.
       assertReplayableDump(replayable, { maxColumns: DO_SQL_LIMITS.columns });
+      // #1869: `exact` vouches for a named source; without one it would silently fall back.
+      if (exact && !sourceScopeId) {
+        throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
+      }
       const switched = await this.ctx.storage.transaction(async () => {
         this.sql.exec('PRAGMA defer_foreign_keys = ON');
         // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.

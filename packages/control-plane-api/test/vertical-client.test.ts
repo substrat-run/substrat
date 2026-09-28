@@ -895,6 +895,8 @@ describe("VerticalClient — a restore names the dump's source (#1869)", () => {
     await client.restoreScope(t, s, [], { sourceScopeId: source, exact: true });
     await client.restoreScope(t, s, [], { sourceScopeId: source, exact: false });
     await client.restoreScope(t, s, []);
+    // `exact` with no source is refused here, before anything is sent.
+    await expect(client.restoreScope(t, s, [], { exact: true })).rejects.toThrow(/`exact` needs `sourceScopeId`/);
     expect(bodies).toEqual([
       { tenantId: t, scopeId: s, tables: [], sourceScopeId: source, exact: true },
       { tenantId: t, scopeId: s, tables: [], sourceScopeId: source },

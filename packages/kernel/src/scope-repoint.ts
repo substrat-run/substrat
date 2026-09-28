@@ -51,6 +51,10 @@ export interface RepointSource {
  * column declared `COLLATE NOCASE` there would make a bare `=` fold case again.
  */
 export function repointScopeGrants(sql: SwitchSql, destScopeId: string, source?: RepointSource): void {
+  // `exact` is a claim about a named source; with none named it would silently take the fallback.
+  if (source !== undefined && !source.scopeId) {
+    throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
+  }
   const dest = `scope:${destScopeId}`;
   const update = 'UPDATE OR REPLACE _substrat_tuples SET object = ? WHERE object <> ? COLLATE BINARY AND';
   const from = source === undefined ? undefined : `scope:${source.scopeId}`;

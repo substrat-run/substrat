@@ -401,7 +401,12 @@ const restoreBody = z.object({
       rows: z.array(z.array(z.unknown())),
     }),
   ),
-});
+})
+  // #1869: `exact` vouches for a named source. Without one the host would silently fall back.
+  .refine((b) => !b.exact || b.sourceScopeId !== undefined, {
+    message: '`exact` needs `sourceScopeId`, the scope the dump came from',
+    path: ['exact'],
+  });
 
 const configureBody = z.object({
   tenantId: tenantIdOf,

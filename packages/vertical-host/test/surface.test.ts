@@ -671,6 +671,8 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
       [{ sourceScopeId: SOURCE, exact: true }, 200],
       [{}, 200],
       [{ sourceScopeId: 'scope:x' }, 400],
+      // `exact` vouches for a named source: without one it is refused, never passed on.
+      [{ exact: true }, 400],
     ] as const;
     for (const [extra, status] of cases) {
       const res = await appWith(host).request(
