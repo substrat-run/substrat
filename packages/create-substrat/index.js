@@ -36,11 +36,11 @@ const TEMPLATE = join(HERE, 'template');
 // The runtime packages release together off one version line (the changesets `fixed`
 // group), so one constant is right for all of them. Engines do NOT share a line —
 // each versions on its own, so one pin per engine, deliberately.
-const SUBSTRAT = '^0.125.0';
-const ENGINE_WORKORDER = '^0.12.9';
-const ENGINE_INVOICING = '^0.11.9';
+const SUBSTRAT = '^0.126.0';
+const ENGINE_WORKORDER = '^0.12.10';
+const ENGINE_INVOICING = '^0.11.10';
 const BOUNDARY_LINT = '^0.5.0';
-const DEV_ISSUER = '^0.2.7';
+const DEV_ISSUER = '^0.2.8';
 
 const DOCS = 'https://substrat.net';
 
