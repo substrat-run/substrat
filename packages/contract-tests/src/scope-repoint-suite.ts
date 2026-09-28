@@ -240,6 +240,13 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
       await expectEntityGrantsKept(snap);
     });
 
+    it('a separate source hint re-points exactly, while the dump itself names the destination (an upload)', async () => {
+      const dest = await blank();
+      await host.restoreScope(staff, t, dest, { ...planted, scopeId: dest }, { sourceScopeId: source });
+      await expectGenuineGrantMoved(dest);
+      await expectEntityGrantsKept(dest);
+    });
+
     it("the fallback: provenance that names no row in the dump moves every exact 'scope:' prefix, never Scope or SCOPE", async () => {
       // `substrat scope restore` stamps a local world with the TARGET's id, so the dump's
       // stated source (`dest`) describes none of its rows (they name `source`). The exact rule
