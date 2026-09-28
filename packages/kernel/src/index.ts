@@ -286,7 +286,7 @@ export type {
 } from './subject-redaction.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
-export { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, spineRowsInsert, type KernelColumnsOf } from './spine-restore.js';
+export { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, spineColumnAdditions, spineRowsInsert, type KernelColumnsOf } from './spine-restore.js';
 export {
   SYSTEM_SWITCH_OFF_PREDICATE,
   SYSTEM_SWITCH_OFF_RELATION,

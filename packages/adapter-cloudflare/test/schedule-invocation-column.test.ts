@@ -222,3 +222,59 @@ describe('#1288: a DO woken over a pre-kind _substrat_schedule_state rebuilds it
     }
   });
 });
+
+/**
+ * #1883 on a real Durable Object: a restore keeps a spine column a newer kernel's dump carried,
+ * as a plain untyped column spelled as the dump spelled it. When a later kernel adds that
+ * column for real, its additive ALTER meets it on the next wake and must tolerate it as a
+ * duplicate; otherwise the DO cannot construct. Staged on the one additive column the kernel
+ * still ALTERs in, `_substrat_deliveries.invocation_id`, spelled INVOCATION_ID.
+ */
+describe('#1883: a DO woken over a column a restore added untyped', () => {
+  it('constructs, keeps the value, and does not add the column twice', async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      checker: UNSAFE_allowAllChecker,
+    });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    let provisioned = false;
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `untyped1883-${ulid().toLowerCase()}`, name: 'Untyped' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'untyped-vertical' });
+      provisioned = true;
+      const freshStub = () => env.SCOPE.get(env.SCOPE.idFromName(s));
+      await runInDurableObject(freshStub(), (_instance, state) => {
+        state.storage.sql.exec('DROP TABLE _substrat_deliveries');
+        state.storage.sql.exec(
+          'CREATE TABLE _substrat_deliveries (event_id TEXT NOT NULL, consumer_module TEXT NOT NULL, ' +
+            'delivered_at TEXT NOT NULL, error TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, ' +
+            'PRIMARY KEY (event_id, consumer_module))',
+        );
+        state.storage.sql.exec('ALTER TABLE _substrat_deliveries ADD COLUMN "INVOCATION_ID"');
+        state.storage.sql.exec(
+          `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, "INVOCATION_ID")
+           VALUES ('e1', 'm1', '2026-09-01T00:00:00.000Z', 'inv-1')`,
+        );
+      });
+      await runInDurableObject(freshStub(), (_instance, state) => {
+        state.abort('evicted for #1883 test');
+      }).catch(() => undefined);
+
+      const after = await runInDurableObject(freshStub(), (_instance, state) => {
+        const cursor = state.storage.sql.exec('SELECT * FROM _substrat_deliveries');
+        return { columns: cursor.columnNames, rows: Array.from(cursor.raw(), (r) => [...r]) };
+      });
+      expect(after.columns.filter((c) => c.toLowerCase() === 'invocation_id')).toEqual(['INVOCATION_ID']);
+      expect(after.rows).toEqual([['e1', 'm1', '2026-09-01T00:00:00.000Z', null, 0, null, 'inv-1']]);
+      // And the scope serves: the constructor's column pass did not throw.
+      await expect(host.admin.exportScope(staff, t, s)).resolves.toBeDefined();
+    } finally {
+      if (provisioned) await host.admin.archiveScope(staff, t, s);
+      await host.close();
+    }
+  });
+});

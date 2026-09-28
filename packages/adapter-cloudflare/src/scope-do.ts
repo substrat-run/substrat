@@ -257,7 +257,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, type RepointSource } from '@substrat-run/kernel';
+import { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4690,8 +4690,12 @@ export function defineScopeDO(
         this.applySpineColumnAdditions();
         const columnsOf = (name: string) => this.spineColumnsOf(name);
         assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
+        // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
+        // untyped column the checker never reads.
         for (const t of replayable) {
-          // Judged with or without rows: a spine column the kernel does not know is refused.
+          if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
+        }
+        for (const t of replayable) {
           const insert = dumpRowsInsert(t, columnsOf);
           for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
         }

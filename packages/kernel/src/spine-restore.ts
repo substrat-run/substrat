@@ -16,7 +16,11 @@ import { SPINE_PREFIX } from './spine-guard.js';
  *
  * Now the loader builds every spine table from its own kernel DDL, and the dump contributes
  * rows only, inserted by column name:
- * - a column the kernel's table does not have is refused, since there is nowhere to put it;
+ * - a column the kernel's table does not have (a dump from a newer kernel) is added as a plain
+ *   untyped column, with no type, collation, constraint or default, and keeps its values
+ *   (`spineColumnAdditions`). It is not one the checker reads, and it carries nothing that
+ *   could change how the columns the checker does read compare. When a later kernel adds the
+ *   column for real, its additive ALTER meets it and tolerates it as a duplicate;
  * - a column the dump lacks takes the kernel's default (NULL for every additive column), so
  *   a dump taken before a column existed still restores. The one column that is not additive,
  *   `_substrat_schedule_state.kind` (#1288, part of the key), is derived from the row the way
@@ -88,30 +92,55 @@ const plainInsert = (table: { name: string; columns: readonly string[] }): strin
   `INSERT INTO "${table.name}" (${table.columns.map((c) => `"${c}"`).join(', ')}) ` +
   `VALUES (${table.columns.map(() => '?').join(', ')})`;
 
+/** Column names as SQLite resolves them, without case. */
+const lowered = (columns: readonly string[]) => new Set(columns.map((c) => c.toLowerCase()));
+
+/**
+ * The statements that add to a kernel-built spine table each column the dump carries and the
+ * kernel does not, as a plain untyped column: `ADD COLUMN "<name>"` and nothing after it, so it
+ * has no type, collation, constraint or default. Run after `assertSpineTablesBuilt` and before
+ * the table's rows go in, inside the load's transaction. The names are the dump's, which
+ * `assertReplayableDump` has already held to the identifier rule. Empty for a table the kernel
+ * did not build, which `assertSpineTablesBuilt` has refused.
+ */
+export function spineColumnAdditions(
+  table: { name: string; columns: readonly string[] },
+  kernelColumns: readonly string[] | undefined,
+): string[] {
+  if (kernelColumns === undefined) return [];
+  const known = lowered(kernelColumns);
+  return table.columns
+    .filter((c) => !known.has(c.toLowerCase()))
+    .map((c) => `ALTER TABLE "${table.name}" ADD COLUMN "${c}"`);
+}
+
 /**
  * The `INSERT` that loads one dumped spine table's rows into the table the kernel built.
  *
- * `kernelColumns` is the kernel table's column list as the loader reads it back, or
- * `undefined` when the kernel built no such table; both refusals throw `validation_failed`
+ * `kernelColumns` is the kernel table's column list as the loader reads it back after
+ * `spineColumnAdditions`, or `undefined` when the kernel built no such table. Either refusal
+ * below is a backstop the loader's order makes unreachable, and throws `validation_failed`
  * inside the load's transaction, so the target keeps what it held.
  */
 export function spineRowsInsert(
   table: { name: string; columns: readonly string[] },
   kernelColumns: readonly string[] | undefined,
 ): string {
-  // `assertSpineTablesBuilt` has refused this already, naming every such table; kept as the backstop.
+  // `assertSpineTablesBuilt` has refused this already, naming every such table.
   if (kernelColumns === undefined) throw unbuiltSpineTables([table.name]);
-  const known = new Set(kernelColumns);
-  const unknown = table.columns.filter((c) => !known.has(c));
+  const known = lowered(kernelColumns);
+  // `spineColumnAdditions` has added every such column already.
+  const unknown = table.columns.filter((c) => !known.has(c.toLowerCase()));
   if (unknown.length > 0) {
     throw substratError(
       'validation_failed',
-      `restore refused: the dump's ${table.name} has column(s) this host's kernel does not know: ` +
+      `restore refused: the dump's ${table.name} has column(s) that were not added to this host's table: ` +
         `${unknown.join(', ')}. Nothing was changed.`,
     );
   }
+  const dumped = lowered(table.columns);
   const derived = Object.entries(DERIVED_COLUMNS[table.name.toLowerCase()] ?? {}).filter(
-    ([c]) => known.has(c) && !table.columns.includes(c),
+    ([c]) => known.has(c) && !dumped.has(c),
   );
   if (derived.length === 0) return plainInsert(table);
   const quoted = table.columns.map((c) => `"${c}"`);

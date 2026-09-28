@@ -584,23 +584,37 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         expect(back).toEqual(note);
       });
 
-      it('a spine column the kernel does not know is refused, and the target keeps every table it held', async () => {
-        const dest = await blank();
-        const before = await everything(dest);
-        const smuggled = variant(
-          (rows) => rows.map((r) => [...r, 'x']),
-          (ddl) => ddl.replace(/\bobject TEXT NOT NULL\b/, 'object TEXT NOT NULL, smuggled TEXT'),
+      it("a spine column this kernel does not know (a newer kernel's dump) is kept, plain and untyped, through a round trip", async () => {
+        // The dump declares the column typed, NOCASE, NOT NULL and defaulted. None of that comes
+        // with it: the column is added bare, so it can shape nothing the checker compares.
+        const newer = variant(
+          (rows) => rows.map((r, i) => [...r, `actor-${i}`]),
+          (ddl) => ddl.replace(/\bobject TEXT NOT NULL\b/, "object TEXT NOT NULL, granted_by TEXT COLLATE NOCASE NOT NULL DEFAULT 'x'"),
         );
+        const dumped = tuplesOf(newer);
         const withColumn = {
-          ...smuggled,
-          tables: smuggled.tables.map((tb) =>
-            tb.name === '_substrat_tuples' ? { ...tb, columns: [...tb.columns, 'smuggled'] } : tb,
-          ),
+          ...newer,
+          tables: newer.tables.map((tb) => (tb === dumped ? { ...tb, columns: [...tb.columns, 'granted_by'] } : tb)),
         };
-        await expect(host.restoreScope(staff, t, dest, withColumn)).rejects.toThrow(
-          /restore refused: the dump's _substrat_tuples has column\(s\) this host's kernel does not know: smuggled/,
-        );
-        expect(await everything(dest)).toEqual(before);
+        const byKey = (table: { columns: string[]; rows: unknown[][] }) => {
+          const at = (c: string) => table.columns.indexOf(c);
+          return new Map(table.rows.map((r) => [`${r[at('subject')]} ${r[at('relation')]}`, r[at('granted_by')]]));
+        };
+        const dest = await blank();
+        await host.restoreScope(staff, t, dest, withColumn);
+        const first = await host.admin.exportScope(staff, t, dest);
+        const back = tuplesOf(first);
+        expect(back.columns.filter((c) => c === 'granted_by')).toHaveLength(1);
+        expect(back.ddl).toMatch(/"granted_by"/);
+        expect(back.ddl).not.toMatch(/granted_by TEXT|NOCASE|DEFAULT/);
+        // Every value the dump carried, on the row it came with.
+        const kept = byKey(back);
+        for (const [key, value] of byKey(tuplesOf(withColumn))) expect(kept.get(key)).toBe(value);
+        // The checker reads the columns it knows, as before.
+        await expectGenuineGrantMoved(dest);
+        // Round trip: that export restored again keeps the column and its values, byte for byte.
+        await host.restoreScope(staff, t, dest, first);
+        expect((await host.admin.exportScope(staff, t, dest)).tables).toEqual(first.tables);
       });
 
       it('spine tables the kernel does not build are refused, all named, and the target keeps every table it held', async () => {

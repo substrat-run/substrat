@@ -487,6 +487,23 @@ export function scopeTableColumns(table) {
   return cols;
 }
 
+/**
+ * The scope tables one adapter's `KERNEL_DDL` builds and the other's does not, by the same
+ * extraction the drift check runs. A node restore skips the Durable Object's by name
+ * (`DO_SCOPE_ONLY_SPINE_TABLES` in adapter-sqlite, #1883), and its test holds that list to
+ * `doOnly` here, so a spine table added on one side cannot slip past the list.
+ */
+export function scopeOneSidedTables() {
+  const fragments = kernelFragments();
+  const [node, durableObject] = PAIRS[0].sides.map((side) => {
+    const src = read(side.file);
+    const { additions } = additionsFor(side, src);
+    return schemaOf(ddlFor(side, src, fragments), additions, side.label).tables;
+  });
+  const only = (a, b) => [...a.keys()].filter((t) => !b.has(t)).sort();
+  return { doOnly: only(durableObject, node), nodeOnly: only(node, durableObject) };
+}
+
 function main() {
   const fragments = kernelFragments();
   const sources = new Map();

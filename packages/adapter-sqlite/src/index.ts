@@ -479,7 +479,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
-import { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants } from '@substrat-run/kernel';
+import { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
@@ -505,6 +505,25 @@ function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
   if (!write) throw new Error('kernelEmit: not an operation context this host built');
   write(event);
 }
+
+/**
+ * The spine tables a Durable Object's scope builds and this adapter's scope does not (#1883):
+ * the roles, tenant-level tuples, entitlements, identity links and connection keys a node
+ * scope keeps in its DIRECTORY, and the DO's own `_substrat_meta` and PITR bookmarks. A DO's
+ * dump restored here skips them rather than refusing: every one is a projection the directory
+ * already holds, or a record only a DO has a use for. Any OTHER spine table this kernel does
+ * not build is still refused. The list is the difference between the two `KERNEL_DDL`s, and
+ * `test/scope-repoint.test.ts` holds it to that, so a table added on one side cannot slip past.
+ */
+export const DO_SCOPE_ONLY_SPINE_TABLES: ReadonlySet<string> = new Set([
+  '_substrat_connection_keys',
+  '_substrat_entitlements',
+  '_substrat_identity_links',
+  '_substrat_meta',
+  '_substrat_migration_bookmarks',
+  '_substrat_roles',
+  '_substrat_tenant_tuples',
+]);
 
 /**
  * The columns of spine table `name` as this scope's kernel built it, or `undefined` when it
@@ -3261,13 +3280,20 @@ export class SqliteScopeHost implements ScopeHost {
       // contributes only rows, by column name (`dumpRowsInsert`). Otherwise a dump could
       // declare a column the checker compares on as COLLATE NOCASE. The column pass follows,
       // for the one outbox index KERNEL_DDL leaves to it.
-      for (const t of replayable) if (!isSpineTable(t.name)) db.prepare(t.ddl).run();
+      // A Durable Object's dump carries spine tables this adapter keeps in its directory, or does
+      // not keep at all; they are skipped by name, and any other unknown spine table is refused.
+      const loadable = replayable.filter((t) => !DO_SCOPE_ONLY_SPINE_TABLES.has(t.name.toLowerCase()));
+      for (const t of loadable) if (!isSpineTable(t.name)) db.prepare(t.ddl).run();
       db.exec(KERNEL_DDL);
       this.ensureSpineColumns(db);
       const columnsOf = (name: string) => spineColumnsOf(db, name);
-      assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
-      for (const t of replayable) {
-        // Judged with or without rows: a spine column the kernel does not know is refused.
+      assertSpineTablesBuilt(loadable.map((t) => t.name), columnsOf);
+      // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
+      // untyped column the checker never reads.
+      for (const t of loadable) {
+        if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) db.exec(alter);
+      }
+      for (const t of loadable) {
         const insert = dumpRowsInsert(t, columnsOf);
         if (t.rows.length === 0) continue;
         const stmt = db.prepare(insert);
@@ -9958,8 +9984,10 @@ export class SqliteScopeHost implements ScopeHost {
    * has to attempt-and-tolerate instead — see its `ensureDirectoryColumns`).
    */
   private ensureColumn(db: Database.Database, table: string, column: string, ddl: string): void {
+    // Without case, as SQLite resolves a column name: a restore may have added this column
+    // already, untyped and spelled as a newer kernel's dump spelled it (#1883).
     const existing = (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some(
-      (c) => c.name === column,
+      (c) => c.name.toLowerCase() === column.toLowerCase(),
     );
     if (!existing) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   }
