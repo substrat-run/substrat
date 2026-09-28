@@ -480,7 +480,8 @@ export interface OperationContext {
    * Record a relation tuple child→parent (K-16) — the write path for the
    * permission evaluator's entity-edge rule (design doc §4.2 rule 3). The
    * relation must be declared in some registered module's `entityRelations`.
-   * Idempotent. A first link emits nothing; linking back to an edge `relink` moved away from
+   * Idempotent, and it leaves the edge live and permanent, clearing any expiry a restored dump
+   * carried. A first link emits nothing; linking back to an edge `relink` moved away from
    * revives it and records that as one `entity.linked` spine event, since access resumes.
    *
    * Checks no permission: the operation does, in its own vocabulary.

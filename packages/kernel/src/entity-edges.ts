@@ -49,12 +49,14 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
   };
 
   /**
-   * Write the edge, or REVIVE a row that is not live, and say which. The primary key is
+   * Leave the edge live and PERMANENT, and say whether that was a revive. The primary key is
    * (subject, relation, object), so an edge `relink` moved away from is still a row — `INSERT
-   * OR IGNORE` alone would keep it dead while the caller was told it linked. A revive clears
-   * the expiry too, so "linked" always means live: a parent edge carries no expiry any verb
-   * wrote, and one restored from a dump must not quietly keep one. Two statements rather than
-   * an upsert, because an upsert's `changes` cannot tell a revive from an insert.
+   * OR IGNORE` alone would keep it dead while the caller was told it linked. No verb writes a
+   * parent expiry, so one can only arrive in a restored dump, and neither verb may keep it:
+   * a not-live row is revived with both columns cleared, and a live row that is merely due to
+   * expire has its expiry cleared quietly — access never stopped, so there is nothing to
+   * record. Separate statements rather than an upsert, because an upsert's `changes` cannot
+   * tell a revive from an insert.
    */
   const writeEdge = (child: string, parent: string): { revived: boolean } => {
     const revived = deps.sql.exec(
@@ -63,6 +65,12 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
       [child, parent, deps.now],
     ).changes > 0;
     if (!revived) {
+      // Any row left with an expiry is live (the revive took every other one): make it permanent.
+      deps.sql.exec(
+        `UPDATE _substrat_tuples SET expires_at = NULL
+         WHERE subject = ? AND relation = 'parent' AND object = ? AND expires_at IS NOT NULL`,
+        [child, parent],
+      );
       deps.sql.exec(
         `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, 'parent', ?)`,
         [child, parent],

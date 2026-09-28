@@ -6124,6 +6124,40 @@ export function scopeHostContractSuite(
         }
       });
 
+      it('link and relink leave a live edge permanent: a future expiry is cleared, silently', async () => {
+        const FUTURE = '2999-01-01T00:00:00.000Z';
+        await plant([
+          { subject: 'item:rl-fx1', object: 'box:rb1', expires_at: FUTURE }, // link target
+          { subject: 'item:rl-fx2', object: 'box:rb1' }, // relink from…
+          { subject: 'item:rl-fx2', object: 'box:rb2', expires_at: FUTURE }, // …onto this
+          { subject: 'item:rl-fx3', object: 'box:rb1' }, // the twin: plain and live
+        ]);
+        const expiry = async (subject: string, object: string) => {
+          const table = (await host.admin.exportScope(staff, t1, s1)).tables.find(
+            (t) => t.name === '_substrat_tuples',
+          )!;
+          const col = (name: string) => table.columns.indexOf(name);
+          const row = table.rows.find(
+            (r) => r[col('subject')] === subject && r[col('object')] === object,
+          )!;
+          return { expires: row[col('expires_at')], revoked: row[col('revoked_at')] };
+        };
+
+        await link(item('rl-fx1'), box('rb1'));
+        expect(await expiry('item:rl-fx1', 'box:rb1')).toEqual({ expires: null, revoked: null });
+        // Access never stopped, so this is not a revive: nothing is recorded.
+        expect(await relinked(item('rl-fx1'), 'entity.linked')).toEqual([]);
+
+        await move(item('rl-fx2'), box('rb1'), box('rb2'));
+        expect(await expiry('item:rl-fx2', 'box:rb2')).toEqual({ expires: null, revoked: null });
+        expect(await relinked(item('rl-fx2'), 'entity.linked')).toEqual([]);
+        expect(await relinked(item('rl-fx2'))).toHaveLength(1); // the move itself
+
+        await link(item('rl-fx3'), box('rb1'));
+        expect(await expiry('item:rl-fx3', 'box:rb1')).toEqual({ expires: null, revoked: null });
+        expect(await relinked(item('rl-fx3'), 'entity.linked')).toEqual([]);
+      });
+
       it('refuses a `to` that link could not write — and leaves the old edge intact', async () => {
         await link(item('rl3'), box('rb1'));
         await expectRefusal(
