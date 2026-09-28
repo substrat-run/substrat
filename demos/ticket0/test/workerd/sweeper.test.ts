@@ -1128,6 +1128,20 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
   });
 
+  it('a request naming another owner-role holder as `from` revokes nobody, open or closed (review MAJOR)', async () => {
+    const s = await installed();
+    const C = principalId.parse(ulid());
+    await member(s, C);
+    await host().assignScopeRole(s, C, 'desk-admin'); // a second holder of the owner role
+    expect((await transfer(s, A, B)).status).toBe(200);
+    // The record names B. `{ from: C, to: B }` is no retry of that hand-over.
+    const res = await transfer(s, C, B);
+    expect(res.status).toBe(409);
+    expect(await ownerSeats(s)).toEqual([B, C].sort());
+    expect(await canAdmin(C, s)).toBe(true);
+    expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+
   it("refuses the desk's own service accounts as `to` — each holds a role, and no login is theirs", async () => {
     const s = await installed();
     const recorded = JSON.parse((await directory().getScopeConfig(s))['ticket0:services']!) as Record<string, string>;
