@@ -44,8 +44,12 @@ on:
 
 jobs:
   deploy:
-    # Trunk-based: every merge to main releases. A private vertical's push lands admitted
-    # and prod is self-serve, so the same run points prod at the new version.
+    # Every merge to main pushes a version; it does NOT promote it. EDITED AFTER GENERATION:
+    # the generated workflow ends in `--promote prod`, which only a PRIVATE vertical's
+    # builder token may do. auth-server is listed, so prod is staff-only
+    # (packages/control-plane-api/src/api.ts, "promotion to prod is staff-only for a listed
+    # vertical") and that step 403'd on every run since #1215. A staff login promotes the
+    # version this run names in its summary — console, or `substrat promote auth-server`.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # One promotion at a time, and every merge still gets one. Two merges landing together
@@ -120,13 +124,22 @@ jobs:
           else
             echo "gates passed:$RAN"
           fi
-      - name: Release to prod
+      - name: Push (awaits a staff promote)
         env:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: https://console.substrat.net/api
         run: |
           set -euo pipefail
-          npx @substrat-run/cli push demos/auth-server --slug auth-server --promote prod
+          npx @substrat-run/cli push demos/auth-server --slug auth-server | tee release.out
+          # Said where a green run is read, so an admitted-but-unserved version is not
+          # mistaken for a deployed one.
+          VID=$(grep -F '✓ pushed' release.out | grep -oE 'version [A-Za-z0-9]+' | head -1 | cut -d' ' -f2 || true)
+          {
+            echo "### auth-server pushed — not yet serving"
+            echo
+            echo "Version \`${VID:-unknown}\` is admitted. auth-server is a listed vertical, so prod is"
+            echo "staff-only: promote it from the console, or \`substrat promote auth-server --version ${VID:-<id>}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Update the test environment
         if: vars.SUBSTRAT_TEST_SCOPE_ID != ''
         env:
