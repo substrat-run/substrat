@@ -11007,6 +11007,9 @@ export class SqliteScopeHost implements ScopeHost {
    * KERNEL_DDL deliberately does not and the restore's DROP of the outbox took with it.
    */
   private ensureSpineColumns(db: Database.Database): void {
+    // Every column here is nullable with no DEFAULT (`attempts` is grandfathered): a restore may
+    // have added it bare already, and then `ensureColumn` finds it and adds nothing (#1883).
+    // `lint:spine-ddl` refuses one that is not.
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the
     // old shape — ALTER the tombstone in.
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');

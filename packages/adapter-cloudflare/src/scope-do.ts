@@ -4510,6 +4510,9 @@ export function defineScopeDO(
      * start (same argument as ControlPlaneDO.addColumn).
      */
     private applySpineColumnAdditions(): void {
+      // Every column here is nullable with no DEFAULT (`attempts` is grandfathered): a restore may
+      // have added it bare already, and then this ALTER is skipped as a duplicate (#1883).
+      // `lint:spine-ddl` refuses one that is not.
       for (const alter of [
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
         // Executor retry state (#100). The defaults read as "terminal", which is

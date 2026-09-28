@@ -519,6 +519,27 @@ function skipListDrift(sqliteSrc, nodeOnly, doOnly) {
   return out;
 }
 
+/**
+ * #1883: every column a scope's spine ALTERs in must be nullable, with no DEFAULT. A restore of
+ * a newer kernel's dump adds a column this kernel does not know as a bare, untyped column; when
+ * a later kernel then ALTERs the same column in for real, the ALTER meets the bare one and is
+ * skipped as a duplicate. So the later kernel only ever gets what a bare column gives it: NULL
+ * for the rows it did not write, and no constraint. A NOT NULL or a DEFAULT on an additive
+ * column would be a promise that path does not keep. `attempts` (#100) predates the rule and is
+ * grandfathered: its DEFAULT 0 reads as "terminal", which is also what a NULL there reads as.
+ */
+const ADDITIVE_RULE_GRANDFATHERED = new Set(['_substrat_deliveries.attempts']);
+function additiveRuleBreaks(side, additions) {
+  return additions
+    .filter(({ table, ddl }) => /\bNOT\s+NULL\b|\bDEFAULT\b/i.test(ddl))
+    .filter(({ table, ddl }) => !ADDITIVE_RULE_GRANDFATHERED.has(`${table}.${ddl.trim().split(/\s+/)[0]}`))
+    .map(
+      ({ table, ddl }) =>
+        `scope/${table}: the additive column \`${ddl}\` (${side.label}) is NOT NULL or has a DEFAULT. ` +
+        'An additive spine column must be nullable with no DEFAULT, since a restore may have added it bare first.',
+    );
+}
+
 function main() {
   const fragments = kernelFragments();
   const sources = new Map();
@@ -589,6 +610,7 @@ function main() {
     }
     if (pair.name === 'scope') {
       failures.push(...skipListDrift(sources.get(SQLITE), onlyA, onlyB));
+      for (const side of pair.sides) failures.push(...additiveRuleBreaks(side, sideSchemas.get(side).additions));
     }
   }
 
