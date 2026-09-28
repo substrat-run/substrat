@@ -48,15 +48,26 @@ const tourStills = [
   { src: tourAudit, title: 'Audit', body: 'Who touched whose data, by person, AI assistant or job, with the purpose recorded next to the change.' },
 ];
 
-// A looping video is motion the visitor did not ask for. Under reduced motion it stays
-// on its poster with controls, so playing it is a choice.
+// The hero explainer: why Substrat, in 42 s. Rendered from an HTML animation, not
+// the product; every line the "agent" types is a real call, and each verdict is what
+// the platform does with it (a scoped read, the spine guard, boundary-lint R3, the
+// event schema's required piiClass, the permission-diff gate).
+import heroVideo from '../../../assets/hero/hero.mp4';
+import heroPoster from '../../../assets/hero/poster.webp';
+
+// A looping video is motion the visitor did not ask for. Under reduced motion both
+// videos go back to their posters with controls, so playing one is a choice.
+// `load()` after clearing `autoplay` is what returns a started video to its poster.
+const hero = ref<HTMLVideoElement | null>(null);
 const tour = ref<HTMLVideoElement | null>(null);
-const tourControls = ref(false);
+const reducedMotion = ref(false);
 onMounted(() => {
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches && tour.value) {
-    tour.value.pause();
-    tour.value.currentTime = 0;
-    tourControls.value = true;
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  reducedMotion.value = true;
+  for (const v of [hero.value, tour.value]) {
+    if (!v) continue;
+    v.autoplay = false;
+    v.load();
   }
 });
 
@@ -294,6 +305,20 @@ const bookTakeaways = [
           <span class="mono-xs">no invite needed to start</span>
           <code class="cmd">npm create substrat my-app</code>
         </div>
+        <div class="screen hero-screen">
+          <video
+            ref="hero"
+            :src="heroVideo"
+            :poster="heroPoster"
+            :controls="reducedMotion"
+            autoplay
+            muted
+            loop
+            playsinline
+            preload="auto"
+            aria-label="Why Substrat, in 42 seconds. AI writes software faster than anyone can review it. Today you pick a trap: too open, where the AI invents the foundation and forgets part of it, or too closed, where a fixed API rejects what you need. Substrat is the middle: your app is open, engines are reused, and the kernel enforces tenancy, permissions, audit and GDPR. An agent tries five risky lines and each is scoped, refused, blocked, rejected or held for review. Not because you told it not to. Because it can't."
+          />
+        </div>
       </div>
       <div class="rule3"><span class="lv" /><span class="le" /><span class="lk" /></div>
     </section>
@@ -396,7 +421,7 @@ const bookTakeaways = [
             ref="tour"
             :src="tourVideo"
             :poster="tourMap"
-            :controls="tourControls"
+            :controls="reducedMotion"
             autoplay
             muted
             loop
@@ -848,6 +873,11 @@ h2 {
   background: #0e1017;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 24px 64px rgba(0, 0, 0, 0.55);
   aspect-ratio: 1440 / 900;
+}
+.hero-screen {
+  width: 100%;
+  margin-top: 28px;
+  aspect-ratio: 16 / 9;
 }
 .screen video {
   display: block;
