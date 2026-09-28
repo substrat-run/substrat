@@ -403,6 +403,14 @@ export const ownerTransferRecord = z.discriminatedUnion('outcome', [
 export type OwnerTransferRecord = z.infer<typeof ownerTransferRecord>;
 
 /**
+ * What the directory answered to an abandon (#1665): `abandoned` closed the open hand-over;
+ * `not-open` found no open hand-over with that pair; `healthy` found it open and still able to
+ * finish (`to` still signs in and holds a role), which is resent, not abandoned. Only
+ * `abandoned` wrote anything.
+ */
+export const ownerTransferAbandon = z.enum(['abandoned', 'not-open', 'healthy']);
+
+/**
  * A completed hand-over (#1665), as `/internal/owner-transfer` answers it. `owner` is the new
  * owner of record. `outcome` is the directory's: `transferred` (this call moved it), `already`
  * (this call finished one a failure had left open) or `done` (it was finished before, and this

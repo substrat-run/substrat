@@ -32,7 +32,7 @@
  * The IdentityDO's owner-seat methods delegate here.
  */
 
-import type { z, ownerTransferRecord } from '@substrat-run/contracts';
+import type { z, ownerTransferAbandon, ownerTransferRecord } from '@substrat-run/contracts';
 import type { RegistrySql } from './site-registry.js';
 
 /** How long after provision a plain first sign-in still claims the seat. */
@@ -134,6 +134,8 @@ export function ownerOfRecord(sql: RegistrySql, scopeId: string): string | null 
  * which changes nothing). `refused` wrote nothing, and `reason` says why.
  */
 export type OwnerTransfer = z.input<typeof ownerTransferRecord>;
+/** What `abandonOwnerTransfer` did — the contracts' `ownerTransferAbandon`. */
+export type OwnerTransferAbandon = z.infer<typeof ownerTransferAbandon>;
 
 /**
  * Hand the owner of record from `from` to `to` (#1665) — the one write that moves
@@ -234,14 +236,25 @@ export function completeOwnerTransfer(sql: RegistrySql, scopeId: string, from: s
  * Abandon the open hand-over `from → to` (#1665), staff's way out of one that can no longer
  * finish — `to` lost its login or role after step 1, so its resend is `wedged` and every other
  * hand-over `in-flight`. Closes it as `abandoned` and nothing else: no seat, no revoke, and the
- * record stays on `to`, from where staff hand over again. True when this call closed it; false
- * when `from → to` is not the open hand-over, which changes nothing.
+ * record stays on `to`, from where staff hand over again. The original `from` keeps whatever
+ * owner seat it still holds; the next owner removes it in the app.
+ *
+ * Only a WEDGED one: an open hand-over whose `to` still signs in and holds a role
+ * (`toHoldsRole`, the host's read) answers `healthy` and changes nothing — resending it
+ * finishes it. `not-open` when `from → to` is not the open hand-over.
  */
-export function abandonOwnerTransfer(sql: RegistrySql, scopeId: string, from: string, to: string): boolean {
+export function abandonOwnerTransfer(
+  sql: RegistrySql,
+  scopeId: string,
+  from: string,
+  to: string,
+  toHoldsRole: boolean,
+): OwnerTransferAbandon {
   const last = lastTransfer(sql, scopeId);
-  if (last?.state !== 'pending' || last.prev_principal !== from || last.principal !== to) return false;
+  if (last?.state !== 'pending' || last.prev_principal !== from || last.principal !== to) return 'not-open';
+  if (toHoldsRole && isBound(sql, scopeId, to)) return 'healthy';
   sql.exec(`UPDATE owner_transfer SET state = 'abandoned' WHERE scope_id = ?`, scopeId);
-  return true;
+  return 'abandoned';
 }
 
 function lastTransfer(

@@ -1180,7 +1180,8 @@ mountPlatformSurface<Env>(app, {
   transferOwner: (env, ref, input) =>
     identityDo(env, ref).transferOwner(ref.scopeId, input.from, input.to, input.toHoldsRole),
   completeOwnerTransfer: (env, ref, input) => identityDo(env, ref).completeOwnerTransfer(ref.scopeId, input.from, input.to),
-  abandonOwnerTransfer: (env, ref, input) => identityDo(env, ref).abandonOwnerTransfer(ref.scopeId, input.from, input.to),
+  abandonOwnerTransfer: (env, ref, input) =>
+    identityDo(env, ref).abandonOwnerTransfer(ref.scopeId, input.from, input.to, input.toHoldsRole),
 });
 
 // Any OTHER platform verb is honestly unimplemented: JSON 501, never the SPA fallback —

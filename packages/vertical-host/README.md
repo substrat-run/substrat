@@ -39,7 +39,7 @@ mountPlatformSurface(app, {
   mintOwnerClaim: (env, r, i) => mintOwnerClaimLink(identityDo(env, r), r.scopeId, i.origin),
   transferOwner:  (env, r, i) => identityDo(env, r).transferOwner(r.scopeId, i.from, i.to, i.toHoldsRole),
   completeOwnerTransfer: (env, r, i) => identityDo(env, r).completeOwnerTransfer(r.scopeId, i.from, i.to),
-  abandonOwnerTransfer: (env, r, i) => identityDo(env, r).abandonOwnerTransfer(r.scopeId, i.from, i.to),
+  abandonOwnerTransfer: (env, r, i) => identityDo(env, r).abandonOwnerTransfer(r.scopeId, i.from, i.to, i.toHoldsRole),
 });
 
 export default app;

@@ -31,6 +31,7 @@ import {
   abandonOwnerTransfer as abandonOwnerTransferRow,
   type OwnerSeat,
   type OwnerTransfer,
+  type OwnerTransferAbandon,
 } from './owner-seat.js';
 
 /**
@@ -255,8 +256,8 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /** Abandon the open hand-over `from → to`, writing no seat or revoke (#1665). */
-  async abandonOwnerTransfer(scopeId: string, from: string, to: string): Promise<boolean> {
-    return abandonOwnerTransferRow(this.registrySql, scopeId, from, to);
+  async abandonOwnerTransfer(scopeId: string, from: string, to: string, toHoldsRole: boolean): Promise<OwnerTransferAbandon> {
+    return abandonOwnerTransferRow(this.registrySql, scopeId, from, to, toHoldsRole);
   }
 
   /**
@@ -430,7 +431,7 @@ export type IdentityStub = {
   getOwnerOfRecord(scopeId: string): Promise<string | null>;
   transferOwner(scopeId: string, from: string, to: string, toHoldsRole: boolean): Promise<OwnerTransfer>;
   completeOwnerTransfer(scopeId: string, from: string, to: string): Promise<boolean>;
-  abandonOwnerTransfer(scopeId: string, from: string, to: string): Promise<boolean>;
+  abandonOwnerTransfer(scopeId: string, from: string, to: string, toHoldsRole: boolean): Promise<OwnerTransferAbandon>;
   needsSetup(scopeId: string): Promise<boolean>;
   ownerSeat(scopeId: string): Promise<OwnerSeat>;
   resolvePrincipal(scopeId: string, sub: string): Promise<string | null>;

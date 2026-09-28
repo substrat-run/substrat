@@ -1148,14 +1148,18 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     await member(s, C);
     // Step 1 ran and the flow stopped: the record names B, the hand-over is open.
     expect((await directory().transferOwner(s, A, B, true)).outcome).toBe('transferred');
+    const abandon = (from: string, to: string) =>
+      platform('/internal/owner-transfer', { tenantId: tenant, scopeId: s, from, to, abandon: true });
+    // While B can still take it, it is not wedged: an abandon is refused — resend it instead.
+    const healthy = await abandon(A, B);
+    expect(healthy.status).toBe(409);
+    expect(((await healthy.json()) as { error: string }).error).toMatch(/resend it instead/);
     expect(await host().revokeScopeRole(s, B, 'agent')).toBe(true); // then the tenant removed B
     const resend = await transfer(s, A, B);
     expect(resend.status).toBe(409);
     expect(((await resend.json()) as { error: string }).error).toMatch(/can no longer finish/);
     expect(await ownerSeats(s)).toEqual([A]); // B was not seated
     expect((await transfer(s, B, C)).status).toBe(409); // stuck behind it
-    const abandon = (from: string, to: string) =>
-      platform('/internal/owner-transfer', { tenantId: tenant, scopeId: s, from, to, abandon: true });
     expect((await abandon(B, C)).status).toBe(409); // not the open pair
     const abandoned = await abandon(A, B);
     expect(abandoned.status).toBe(200);

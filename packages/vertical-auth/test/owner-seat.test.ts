@@ -293,9 +293,9 @@ describe('owner transfer', () => {
     // Every other hand-over is stuck behind it.
     expect(transferOwner(sql, SCOPE, SUCCESSOR, THIRD, true)).toMatchObject({ reason: 'in-flight', inFlight: open });
     // Abandon closes ONLY the open pair — another pair changes nothing.
-    expect(abandonOwnerTransfer(sql, SCOPE, SUCCESSOR, THIRD)).toBe(false);
-    expect(abandonOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR)).toBe(true);
-    expect(abandonOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR)).toBe(false); // already closed
+    expect(abandonOwnerTransfer(sql, SCOPE, SUCCESSOR, THIRD, true)).toBe('not-open');
+    expect(abandonOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR, true)).toBe('abandoned'); // unbound: wedged
+    expect(abandonOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR, true)).toBe('not-open'); // already closed
     expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR); // the record stays where step 1 put it
     // An abandoned hand-over is no retry: its resend is not `done`.
     expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toMatchObject({ outcome: 'refused', reason: 'not-member' });
@@ -303,6 +303,16 @@ describe('owner transfer', () => {
     expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toMatchObject({ outcome: 'refused', reason: 'not-owner' });
     // And a fresh hand-over from the record goes through.
     expect(transferOwner(sql, SCOPE, SUCCESSOR, THIRD, true).outcome).toBe('transferred');
+  });
+
+  it('abandons only a WEDGED hand-over: a healthy open one is refused (resend it), and changes nothing', () => {
+    claimedWithMember();
+    transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true); // open, and SUCCESSOR can still take it
+    expect(abandonOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR, true)).toBe('healthy');
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true).outcome).toBe('already'); // still open
+    // The twin: once SUCCESSOR has lost its role, the same abandon goes through.
+    expect(abandonOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR, false)).toBe('abandoned');
+    expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
   });
 
   it('a bound `to` the host says holds no role is `no-role`; an unbound one `not-member` — and the twin goes through', () => {

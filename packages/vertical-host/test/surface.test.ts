@@ -1602,11 +1602,16 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
       w.last.state = 'done';
       return true;
     };
-    const abandonOwnerTransfer = async (_env: Env, _ref: unknown, { from, to }: { from: string; to: string }) => {
+    const abandonOwnerTransfer = async (
+      _env: Env,
+      _ref: unknown,
+      { from, to, toHoldsRole }: { from: string; to: string; toHoldsRole: boolean },
+    ) => {
       w.steps.push('abandon');
-      if (w.last?.state !== 'pending' || w.last.from !== from || w.last.to !== to) return false;
+      if (w.last?.state !== 'pending' || w.last.from !== from || w.last.to !== to) return 'not-open' as const;
+      if (toHoldsRole && w.members.has(to)) return 'healthy' as const;
       w.last.state = 'abandoned';
-      return true;
+      return 'abandoned' as const;
     };
     const host = fakeHost({
       assignScopeRole: async (_s, principal, roleKey) => {
@@ -1700,6 +1705,11 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     const { w, send, state } = world();
     w.failOn = 'assign'; // step 1 ran, step 2 did not
     expect((await send({ ...REF, from: A, to: B })).ok).toBe(false);
+    // While B can still take it, it is not wedged: an abandon is refused — resend it instead.
+    const healthy = await send({ ...REF, from: A, to: B, abandon: true });
+    expect(healthy.status).toBe(409);
+    expect(((await healthy.json()) as { error: string }).error).toMatch(/can still finish — resend it instead/);
+    expect(w.last?.state).toBe('pending');
     w.roles.delete(B); // then the tenant removes B
     w.steps = [];
     // The resend is refused and names the stuck hand-over; nothing is seated.
@@ -1723,10 +1733,11 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     expect(state()).toEqual({ record: B, seats: [A], last: { from: A, to: B, state: 'abandoned' } });
     // A second abandon of it is refused: it is closed.
     expect((await send({ ...REF, from: A, to: B, abandon: true })).status).toBe(409);
-    // From the record, a fresh hand-over goes through.
+    // From the record, a fresh hand-over goes through. A keeps the seat it never lost: an
+    // abandon revokes nothing, and the next owner removes it in the app.
     expect((await send({ ...REF, from: B, to: C })).status).toBe(200);
     expect(state().record).toBe(C);
-    expect(state().seats).toContain(C);
+    expect(state().seats).toEqual([A, C].sort());
   });
 
   it('a close that finds the hand-over no longer open is a logged 500 — writes happened — not a quiet 200', async () => {

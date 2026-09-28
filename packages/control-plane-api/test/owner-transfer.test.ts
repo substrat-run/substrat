@@ -354,10 +354,11 @@ describe('the owner hand-over, end to end through the vertical surface (#1665)',
         world.open = null;
         return true;
       },
-      abandonOwnerTransfer: async (_env, _ref, { from, to }) => {
-        if (world.open?.from !== from || world.open.to !== to) return false;
+      abandonOwnerTransfer: async (_env, _ref, { from, to, toHoldsRole }) => {
+        if (world.open?.from !== from || world.open.to !== to) return 'not-open';
+        if (toHoldsRole) return 'healthy';
         world.open = null;
-        return true;
+        return 'abandoned';
       },
     });
     const client = new VerticalClient({
@@ -411,6 +412,10 @@ describe('the owner hand-over, end to end through the vertical surface (#1665)',
       app.request(`/tenants/${t}/scopes/${s}/owner-transfer`, { method: 'POST', headers: asStaff, body: JSON.stringify(body) });
     // Wedged: step 1 ran (the record names B, the hand-over is open) and then B was removed.
     Object.assign(world, { record: B, open: { from: A, to: B }, seats: new Set([A]) });
+    // While B can still take it, an abandon is refused: resend it instead.
+    const early = await send({ from: A, to: B, abandon: true });
+    expect(early.status).toBe(409);
+    expect(((await early.json()) as { error: string }).error).toMatch(/resend it instead/);
     world.members.delete(B);
     const resend = await send({ from: A, to: B });
     expect(resend.status).toBe(409);

@@ -56,6 +56,7 @@ import {
   ownerTransferPair,
   distinctOwnerTransfer,
   ownerTransferRecord,
+  ownerTransferAbandon,
   platformRequestFilter,
   denialFilter,
   type DenialFilter,
@@ -635,15 +636,15 @@ export interface PlatformSurfaceDeps<Env> {
     input: { from: PrincipalId; to: PrincipalId },
   ) => Promise<boolean>;
   /**
-   * Abandon the OPEN hand-over `from → to` without finishing it (#1665): no seat, no revoke, the
-   * record left on `to`. True when it closed it, false when that pair is not the open one (⇒ 409).
-   * IdentityDO `abandonOwnerTransfer` is the reference. Omit ⇒ an abandon answers 501.
+   * Abandon the OPEN, WEDGED hand-over `from → to` without finishing it (#1665): no seat, no
+   * revoke, the record left on `to`. `not-open` and `healthy` (it can still finish) are 409s that
+   * wrote nothing. IdentityDO `abandonOwnerTransfer` is the reference. Omit ⇒ an abandon 501s.
    */
   abandonOwnerTransfer?: (
     env: Env,
     ref: { tenantId: TenantId; scopeId: ScopeId },
-    input: { from: PrincipalId; to: PrincipalId },
-  ) => Promise<boolean>;
+    input: { from: PrincipalId; to: PrincipalId; toHoldsRole: boolean },
+  ) => Promise<z.input<typeof ownerTransferAbandon>>;
   /**
    * Vertical-specific delete-scope side effect — e.g. drop the scope from a deployment
    * sweep roster (#461) so its alarm never wakes a reaped scope. Runs after the host has
@@ -1393,10 +1394,20 @@ export function mountPlatformSurface<Env extends object>(
     // Staff's way out of a hand-over that can no longer finish: close the open pair as
     // abandoned. No seat, no revoke; the record stays on `to`, and a new hand-over starts there.
     if (body.abandon) {
-      if (!deps.abandonOwnerTransfer) throw new HTTPException(501, { message: 'this vertical cannot abandon a hand-over' });
-      if (!(await deps.abandonOwnerTransfer(c.env, ref, pair))) {
+      const roles = deps.hostFor(c.env);
+      if (!deps.abandonOwnerTransfer || !roles.hasScopeRoleLocal) {
+        throw new HTTPException(501, { message: 'this vertical cannot abandon a hand-over' });
+      }
+      const toHoldsRole = await roles.hasScopeRoleLocal(body.tenantId, body.scopeId, body.to);
+      const closed = ownerTransferAbandon.parse(await deps.abandonOwnerTransfer(c.env, ref, { ...pair, toHoldsRole }));
+      if (closed === 'not-open') {
         throw new HTTPException(409, {
           message: `scope ${body.scopeId} has no open hand-over ${body.from} → ${body.to} to abandon`,
+        });
+      }
+      if (closed === 'healthy') {
+        throw new HTTPException(409, {
+          message: `scope ${body.scopeId}: the hand-over ${body.from} → ${body.to} can still finish — resend it instead`,
         });
       }
       const abandoned: OwnerTransferResult = {

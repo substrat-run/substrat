@@ -77,8 +77,9 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   (grant one first: an entity-narrowed grant is not a role), or another hand-over on the same
   instance is still unfinished (resend that one first). A hand-over that can no longer finish,
   because `to` was removed after it started, is refused on every resend and blocks any other.
-  Staff close it with `{ from, to, abandon: true }` on the same route: it closes only that open
-  hand-over, seats and revokes nothing, and leaves the owner of record on `to`, from where a new
+  Staff close it with `{ from, to, abandon: true }` on the same route. It closes only that open
+  hand-over, and only when it is wedged like this — one that can still finish is refused
+  ("resend it instead"). It seats and revokes nothing, and leaves the owner of record on `to`, from where a new
   hand-over starts. Its rows carry `abandon: true`. Every attempt writes two
   `transferOwner` rows to the admin log, paired by the `operationId` the route answers with:
   an `intent` before the vertical is asked, then `applied`, `refused` or `failed`. A `failed`

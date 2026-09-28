@@ -254,7 +254,7 @@ mountPlatformSurface(app, {
   completeOwnerTransfer: (env, ref, input) =>
     identityDo(env, ref).completeOwnerTransfer(ref.scopeId, input.from, input.to),
   abandonOwnerTransfer: (env, ref, input) =>
-    identityDo(env, ref).abandonOwnerTransfer(ref.scopeId, input.from, input.to),
+    identityDo(env, ref).abandonOwnerTransfer(ref.scopeId, input.from, input.to, input.toHoldsRole),
 });
 ```
 
