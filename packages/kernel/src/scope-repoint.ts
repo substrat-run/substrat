@@ -1,4 +1,5 @@
 import { scopeId, substratError } from '@substrat-run/contracts';
+import { liveTupleSql } from './permission-eval.js';
 import type { SwitchSql } from './system-switch.js';
 
 /** Where a dump came from, as the caller of a restore, fork or carry knows it (#1869). */
@@ -117,10 +118,8 @@ function moveOnto(sql: SwitchSql, dest: string, now: string, moved: { where: str
     sql: `(${moved.where.replaceAll('%', alias)} AND ${alias}.object <> ? COLLATE BINARY)`,
     params: [...moved.params, dest],
   });
-  const live = (alias: string) => ({
-    sql: `(${alias}.revoked_at IS NULL AND (${alias}.expires_at IS NULL OR ${alias}.expires_at > ?))`,
-    params: [now],
-  });
+  // The checker's own definition of live, so a restore keeps the row a check would honour.
+  const live = (alias: string) => ({ sql: `(${liveTupleSql(alias)})`, params: [now] });
   const sameKey = (a: string, b: string) =>
     `${a}.subject = ${b}.subject COLLATE BINARY AND ${a}.relation = ${b}.relation COLLATE BINARY`;
   // `_substrat_tuples` is the row being judged; SQLite takes no alias on a DELETE's target.
