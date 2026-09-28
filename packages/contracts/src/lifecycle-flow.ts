@@ -112,6 +112,11 @@ export const lifecycleFlowStuck = z.object({
 
 export const lifecycleFlowState = z.object({
   state: z.string(),
+  /**
+   * False for a state an event's payload showed and the declaration does not have — the
+   * other end of an undeclared edge, listed so an instance sitting in it is still counted.
+   */
+  declared: z.boolean(),
   terminal: z.boolean(),
   /** Instances in this state as of `until`. */
   current: z.number().int().nonnegative(),

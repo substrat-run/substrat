@@ -45,6 +45,8 @@ import type { TimelineReader } from './timeline.js';
 
 const PAGE = 1_000;
 const STUCK_DEFAULT = 5;
+const UNDECLARED_MAX = 32;
+const UNDECLARED_STATE_LENGTH = 128;
 
 interface EventRow {
   entity_id: string;
@@ -129,6 +131,22 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
   const edgeOps = new Set(Object.values(states).flatMap((s) => Object.keys(s.on ?? {})));
   const hasEdge = (from: string, to: string): boolean => Object.values(states[from]?.on ?? {}).includes(to);
   const inWindow = (at: string): boolean => at >= since && at < until;
+  /**
+   * States a payload showed that the declaration does not have. The payload is what the row
+   * held, so such a state is model/code (or version) skew, and is replayed as an undeclared
+   * move rather than hidden behind an inference from the operation. Bounded: past
+   * `UNDECLARED_MAX` distinct values, or for a value too long to be a state, the field is
+   * plainly not the enum the model says, and the declaration is used as for a field-less event.
+   */
+  const undeclared = new Set<string>();
+  const payloadStateOf = (row: EventRow): string | null => {
+    const s = row.state;
+    if (s === null) return null;
+    if (declared(s) || undeclared.has(s)) return s;
+    if (undeclared.size >= UNDECLARED_MAX || s.length > UNDECLARED_STATE_LENGTH) return null;
+    undeclared.add(s);
+    return s;
+  };
 
   // Every declared edge, so one nobody took is present at 0 rather than absent.
   const edges = new Map<string, LifecycleFlowResult['edges'][number]>();
@@ -158,7 +176,7 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
     op: string | null,
     at: string,
     isDeclared: boolean,
-    actor: string,
+    actor: LifecycleActorKind,
     seenLate = false,
   ) => {
     const from = walk.stay.state;
@@ -166,8 +184,7 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
       const key = `${edgeKey(from, to, op ?? '')}${seenLate ? '\u0000late' : ''}`;
       const edge = edges.get(key) ?? { from, to, operation: op, count: 0, actors: {}, declared: isDeclared, seenLate };
       edge.count += 1;
-      const kind = actorKindOf(actor);
-      edge.actors[kind] = (edge.actors[kind] ?? 0) + 1;
+      edge.actors[actor] = (edge.actors[actor] ?? 0) + 1;
       edges.set(key, edge);
       entered.set(to, (entered.get(to) ?? 0) + 1);
       const stays = dwell.get(from) ?? [];
@@ -203,24 +220,26 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
 
   const step = (walk: EntityWalk, row: EventRow) => {
     const op = row.operation;
-    const payloadState = row.state !== null && declared(row.state) ? row.state : null;
+    const payloadState = payloadStateOf(row);
     if (payloadState !== null) {
       const from = walk.stay.state;
       if (payloadState !== from) {
         if (op !== null && targetOf(from, op) === payloadState) {
-          move(walk, payloadState, op, row.occurred_at, true, row.actor);
+          move(walk, payloadState, op, row.occurred_at, true, actorKindOf(row.actor));
         } else if (op !== null && hasEdge(from, payloadState)) {
           // The declaration HAS a way from here to there, and this event's operation is not
           // it: the move was made by a call that emitted nothing about this entity, and this
           // event is merely the first to show the new state. Filed against the declared
           // pair with no operation — never blamed on the operation that happened to report
           // it — at this event's time, which is when it became visible, not when it happened.
+          // Nor is it credited to this event's actor: whoever made the move is unknown.
           seenLate += inWindow(row.occurred_at) ? 1 : 0;
-          move(walk, payloadState, null, row.occurred_at, true, row.actor, true);
+          move(walk, payloadState, null, row.occurred_at, true, 'unknown', true);
         } else {
-          // Either a move the declaration has no edge for, or a consumer's own emit (no
-          // operation), which no declaration of operations can hold.
-          move(walk, payloadState, op, row.occurred_at, false, row.actor);
+          // A move the declaration has no edge for (including into a state it does not
+          // declare), or a consumer's own emit (no operation), which no declaration of
+          // operations can hold.
+          move(walk, payloadState, op, row.occurred_at, false, actorKindOf(row.actor));
         }
       }
     } else if (op !== null) {
@@ -229,7 +248,7 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
       if (target !== undefined && target !== walk.stay.state && !(call !== null && walk.inferredIn.has(call))) {
         inferred += inWindow(row.occurred_at) ? 1 : 0;
         if (call !== null) walk.inferredIn.add(call);
-        move(walk, target, op, row.occurred_at, true, row.actor);
+        move(walk, target, op, row.occurred_at, true, actorKindOf(row.actor));
       } else if (target === undefined && edgeOps.has(op) && !(states[walk.stay.state]?.allow ?? []).includes(op)) {
         unexplained += inWindow(row.occurred_at) ? 1 : 0;
       }
@@ -241,7 +260,7 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
   const begin = (row: EventRow): EntityWalk => {
     // The first event establishes where the entity is. A payload that says so is believed;
     // otherwise the entity starts where the declaration says rows start.
-    const first = row.state !== null && declared(row.state) ? row.state : lifecycle.initial;
+    const first = payloadStateOf(row) ?? lifecycle.initial;
     const walk: EntityWalk = {
       id: row.entity_id,
       firstAt: row.occurred_at,
@@ -262,7 +281,7 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
         // Created by a path that emitted nothing, then moved by a declared edge out of the
         // initial state: it did start in the initial state, so it counts as a start.
         walk.startedInitial = true;
-        move(walk, first, op, row.occurred_at, true, row.actor);
+        move(walk, first, op, row.occurred_at, true, actorKindOf(row.actor));
       } else {
         walk.stay = { state: first, since: row.occurred_at };
         walk.visited = new Set([first]);
@@ -325,12 +344,13 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
     edges: [...edges.values()].sort(
       (a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to) || (a.operation ?? '').localeCompare(b.operation ?? ''),
     ),
-    states: Object.keys(states)
+    states: [...Object.keys(states), ...undeclared]
       .sort()
       .map((state) => {
         const stays = [...(dwell.get(state) ?? [])].sort((a, b) => a - b);
         return {
           state,
+          declared: declared(state),
           terminal: terminal(state),
           current: current.get(state) ?? 0,
           entered: entered.get(state) ?? 0,
