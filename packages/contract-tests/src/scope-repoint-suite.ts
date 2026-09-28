@@ -265,5 +265,274 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
       // `scope` cannot be told from a node grant, and moves with it.
       expect((await rowsFor(dest, jack)).map((r) => r.object)).toEqual([`scope:${dest}`]);
     });
+
+    /**
+     * #1882: a moved row can meet a row the dump already holds for the destination, since
+     * (subject, relation, object) is the key. It was `UPDATE OR REPLACE`, so the moved row
+     * always won, tombstone and expiry included. The rule: a live row beats a dead one, and
+     * otherwise the destination row stays, so a restore never widens an expiry. Every cell
+     * of source state × destination state, with the twins that have no collision at all, on
+     * each path that re-points: a caller's restore (exact), a fork (exact, platform-vouched)
+     * and a caller's restore whose provenance names no row (the fallback).
+     */
+    describe('which row survives a re-point collision (#1882)', () => {
+      type State = 'live' | 'revoked' | 'expired';
+      const STATES: State[] = ['live', 'revoked', 'expired'];
+      // Distinct timestamps per side, so the byte-for-byte read-back says WHICH row survived.
+      // The destination's live row carries an expiry the source's does not: keeping it is
+      // what "never widen an expiry" means.
+      const cellsOf = { expires_at: null as string | null, revoked_at: null as string | null };
+      const src: Record<State, typeof cellsOf> = {
+        live: { expires_at: null, revoked_at: null },
+        revoked: { expires_at: null, revoked_at: '2020-01-01T00:00:00.000Z' },
+        expired: { expires_at: '2000-01-01T00:00:00.000Z', revoked_at: null },
+      };
+      const dst: Record<State, typeof cellsOf> = {
+        live: { expires_at: '2999-01-01T00:00:00.000Z', revoked_at: null },
+        revoked: { expires_at: null, revoked_at: '2021-06-01T00:00:00.000Z' },
+        expired: { expires_at: '2001-01-01T00:00:00.000Z', revoked_at: null },
+      };
+      interface Case {
+        who: PrincipalId;
+        /** What the dump holds for `who`, and on which object. */
+        rows: { object: 'source' | 'dest'; state: typeof cellsOf }[];
+        /** The one row `who` holds after the load, on the destination. */
+        kept: typeof cellsOf;
+      }
+      const cases: Case[] = [];
+      for (const s of STATES) {
+        for (const d of STATES) {
+          const moved = s === 'live' && d !== 'live';
+          cases.push({
+            who: principalId.parse(ulid()),
+            rows: [
+              { object: 'source', state: src[s] },
+              { object: 'dest', state: dst[d] },
+            ],
+            kept: moved ? src[s] : dst[d],
+          });
+        }
+        // Twins with no collision: a source row moves as it is, a destination row stays as it is.
+        cases.push({ who: principalId.parse(ulid()), rows: [{ object: 'source', state: src[s] }], kept: src[s] });
+        cases.push({ who: principalId.parse(ulid()), rows: [{ object: 'dest', state: dst[s] }], kept: dst[s] });
+      }
+      const live = (c: typeof cellsOf) => c.revoked_at === null && (c.expires_at === null || c.expires_at > '2026');
+
+      /** `planted` plus every case's rows, the destination's naming `dest`. */
+      const collisions = (dest: ScopeId): ScopeDump => {
+        const columns = tuplesOf(planted).columns;
+        const extra = cases.flatMap((c) =>
+          c.rows.map(({ object, state }) => {
+            const cell: Record<string, unknown> = {
+              subject: `principal:${c.who}`,
+              relation: 'role:reader',
+              object: `scope:${object === 'source' ? source : dest}`,
+              ...state,
+            };
+            return columns.map((col) => cell[col] ?? null);
+          }),
+        );
+        return variant((rows) => [...rows, ...extra]);
+      };
+      const expectSettled = async (dest: ScopeId) => {
+        const columns = tuplesOf(planted).columns;
+        for (const c of cases) {
+          const want: Record<string, unknown> = {
+            subject: `principal:${c.who}`,
+            relation: 'role:reader',
+            object: `scope:${dest}`,
+            ...c.kept,
+          };
+          expect(await rowsFor(dest, c.who)).toEqual([Object.fromEntries(columns.map((col) => [col, want[col] ?? null]))]);
+          expect(await allowed(c.who, dest)).toBe(live(c.kept));
+        }
+        // The rest of the dump re-pointed as before.
+        await expectGenuineGrantMoved(dest);
+        await expectEntityGrantsKept(dest);
+      };
+
+      it('a restore (exact): live beats dead, otherwise the destination row stays', async () => {
+        const dest = await blank();
+        await host.restoreScope(staff, t, dest, collisions(dest));
+        await expectSettled(dest);
+      });
+
+      it('a fork (exact, platform-vouched) settles the same way', async () => {
+        const fork = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t, scopeId: fork, vertical: 'repoint-vertical' }, collisions(fork));
+        await expectSettled(fork);
+      });
+
+      it('the fallback settles the same way, and two moved rows for one key keep the live one', async () => {
+        const dest = await blank();
+        // Two other scopes' rows for one key, the live one on the higher object, so the
+        // object order alone would have picked the other.
+        const [a, b] = [scopeId.parse(ulid()), scopeId.parse(ulid())].sort();
+        const mia = principalId.parse(ulid());
+        const columns = tuplesOf(planted).columns;
+        const row = (object: string, revoked_at: string | null) =>
+          columns.map((col) =>
+            col === 'subject' ? `principal:${mia}` : col === 'relation' ? 'role:reader' : col === 'object' ? object : col === 'revoked_at' ? revoked_at : null,
+          );
+        const dump = collisions(dest);
+        const withBoth = {
+          ...dump,
+          // Provenance that names no row in the dump, so the re-point falls back.
+          scopeId: scopeId.parse(ulid()),
+          tables: dump.tables.map((tb) =>
+            tb.name === '_substrat_tuples'
+              ? { ...tb, rows: [...tb.rows, row(`scope:${a}`, '2020-01-01T00:00:00.000Z'), row(`scope:${b}`, null)] }
+              : tb,
+          ),
+        };
+        await host.restoreScope(staff, t, dest, withBoth);
+        for (const c of cases) {
+          expect((await rowsFor(dest, c.who)).map((r) => [r.object, r.expires_at, r.revoked_at])).toEqual([
+            [`scope:${dest}`, c.kept.expires_at, c.kept.revoked_at],
+          ]);
+        }
+        expect((await rowsFor(dest, mia)).map((r) => [r.object, r.revoked_at])).toEqual([[`scope:${dest}`, null]]);
+        expect(await allowed(mia, dest)).toBe(true);
+      });
+    });
+
+    /**
+     * #1883: a restore builds every `_substrat_*` table from the kernel's DDL and takes only
+     * the dump's rows, by column name. It used to replay the dump's DDL for the spine too, so
+     * a dump could decide the collation of the column the checker compares on.
+     */
+    describe('the spine is built from the kernel, never from the dump (#1883)', () => {
+      const tina = principalId.parse(ulid()); // granted on aiTurn:x only
+      const uma = principalId.parse(ulid()); // granted on aiTurn:y and on aiturn:y
+      const onEntity = async (who: PrincipalId, scope: ScopeId, entityType: string, entityId: string) => {
+        const stub = await host.getScope(who, t, scope);
+        const out = await stub.invoke<{ allowed: boolean }>('perm/probe', {
+          permission: PERM_READ,
+          entity: { entityType, entityId },
+        });
+        return out.allowed;
+      };
+      const entityRow = (who: PrincipalId, object: string) =>
+        tuplesOf(planted).columns.map((c) =>
+          c === 'subject' ? `principal:${who}` : c === 'relation' ? `granted:${PERM_READ}` : c === 'object' ? object : null,
+        );
+      /** Every table, whole: what a refused load must leave exactly as it was. */
+      const everything = async (scope: ScopeId) => (await host.admin.exportScope(staff, t, scope)).tables;
+
+      it('a dump declaring the tuples columns COLLATE NOCASE restores into the kernel table, and aiTurn:x is not aiturn:x', async () => {
+        const nocase = variant(
+          (rows) => [
+            ...rows,
+            entityRow(tina, 'aiTurn:x'),
+            // Under NOCASE these two are one key, and the load would fail or merge them.
+            entityRow(uma, 'aiTurn:y'),
+            entityRow(uma, 'aiturn:y'),
+          ],
+          (ddl) => {
+            const out = ddl
+              .replace(/\bsubject TEXT NOT NULL\b/, 'subject TEXT NOT NULL COLLATE NOCASE')
+              .replace(/\brelation TEXT NOT NULL\b/, 'relation TEXT NOT NULL COLLATE NOCASE')
+              .replace(/\bobject TEXT NOT NULL\b/, 'object TEXT NOT NULL COLLATE NOCASE');
+            expect(out.match(/COLLATE NOCASE/g)).toHaveLength(3);
+            return out;
+          },
+        );
+        const dest = await blank();
+        await host.restoreScope(staff, t, dest, nocase);
+        // The table is the kernel's, exactly as a scope that was never restored holds it.
+        const restored = tuplesOf(await host.admin.exportScope(staff, t, dest));
+        expect(restored.ddl).toBe(tuplesOf(planted).ddl);
+        expect(restored.ddl).not.toMatch(/NOCASE/i);
+        // The checker compares case-sensitively: the grant is on aiTurn:x and nothing else.
+        expect(await onEntity(tina, dest, 'aiTurn', 'x')).toBe(true);
+        expect(await onEntity(tina, dest, 'aiturn', 'x')).toBe(false);
+        expect((await rowsFor(dest, uma)).map((r) => r.object).sort()).toEqual(['aiTurn:y', 'aiturn:y']);
+        // The re-point still did its job over the same rows.
+        await expectGenuineGrantMoved(dest);
+        await expectEntityGrantsKept(dest);
+      });
+
+      it("twin: a vertical's table keeps the dump's DDL, collation included", async () => {
+        const note = {
+          name: 'repoint_notes',
+          ddl: 'CREATE TABLE repoint_notes (id TEXT PRIMARY KEY, body TEXT COLLATE NOCASE)',
+          columns: ['id', 'body'],
+          rows: [['n1', 'Hello']],
+        };
+        const dest = await blank();
+        await host.restoreScope(staff, t, dest, { ...planted, tables: [...planted.tables, note] });
+        const back = (await everything(dest)).find((tb) => tb.name === 'repoint_notes');
+        expect(back).toEqual(note);
+      });
+
+      it('a spine column the kernel does not know is refused, and the target keeps every table it held', async () => {
+        const dest = await blank();
+        const before = await everything(dest);
+        const smuggled = variant(
+          (rows) => rows.map((r) => [...r, 'x']),
+          (ddl) => ddl.replace(/\bobject TEXT NOT NULL\b/, 'object TEXT NOT NULL, smuggled TEXT'),
+        );
+        const withColumn = {
+          ...smuggled,
+          tables: smuggled.tables.map((tb) =>
+            tb.name === '_substrat_tuples' ? { ...tb, columns: [...tb.columns, 'smuggled'] } : tb,
+          ),
+        };
+        await expect(host.restoreScope(staff, t, dest, withColumn)).rejects.toThrow(
+          /restore refused: the dump's _substrat_tuples has column\(s\) this host's kernel does not know: smuggled/,
+        );
+        expect(await everything(dest)).toEqual(before);
+      });
+
+      it('a spine table the kernel does not build is refused, and the target keeps every table it held', async () => {
+        const dest = await blank();
+        const before = await everything(dest);
+        const extra = {
+          name: '_substrat_smuggled',
+          ddl: 'CREATE TABLE _substrat_smuggled (id TEXT)',
+          columns: ['id'],
+          rows: [] as unknown[][],
+        };
+        await expect(
+          host.restoreScope(staff, t, dest, { ...planted, tables: [...planted.tables, extra] }),
+        ).rejects.toThrow(/restore refused: the dump carries spine table _substrat_smuggled/);
+        expect(await everything(dest)).toEqual(before);
+      });
+
+      it('a spine column the dump lacks takes the default: a tuples table from before revoked_at restores', async () => {
+        const table = tuplesOf(planted);
+        const at = table.columns.indexOf('revoked_at');
+        expect(at).toBeGreaterThanOrEqual(0);
+        const legacy = {
+          ...planted,
+          tables: planted.tables.map((tb) =>
+            tb === table
+              ? {
+                  ...tb,
+                  // A stored DDL may keep the column's comment (node) or not (a DO).
+                  ddl: tb.ddl.replace(/,\s*(?:--[^\n]*\n\s*)*revoked_at TEXT/, ''),
+                  columns: tb.columns.filter((c) => c !== 'revoked_at'),
+                  rows: tb.rows.map((r) => r.filter((_, i) => i !== at)),
+                }
+              : tb,
+          ),
+        };
+        expect(tuplesOf(legacy).ddl).not.toMatch(/revoked_at/);
+        const dest = await blank();
+        await host.restoreScope(staff, t, dest, legacy);
+        const rows = await rowsFor(dest, gina);
+        expect(rows.map((r) => [r.object, r.revoked_at])).toEqual([[`scope:${dest}`, null]]);
+        expect(await allowed(gina, dest)).toBe(true);
+      });
+
+      it('export, restore, export: the second export is the first, byte for byte', async () => {
+        const scope = await blank();
+        await host.admin.assignRole(staff, { principalId: gina, roleKey: 'reader', node: { tenantId: t, scopeId: scope } });
+        const first = await host.admin.exportScope(staff, t, scope);
+        await host.restoreScope(staff, t, scope, first);
+        const second = await host.admin.exportScope(staff, t, scope);
+        expect(second.tables).toEqual(first.tables);
+      });
+    });
   });
 }

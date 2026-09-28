@@ -424,8 +424,21 @@ export const SCHEDULE_STATE_DDL = `
  *
  * The leading `DROP TABLE IF EXISTS` is belt to that braces, not the fix: it costs one
  * statement and makes the rebuild idempotent against a scratch table left by anything
- * below the transaction (a torn copy of the file, a restore that carried one).
+ * below the transaction (a torn copy of the file). A restore cannot carry one in: since
+ * #1883 it refuses a spine table the kernel does not build.
+ *
+ * A restore never reaches this rebuild either: it builds the table from the current DDL and
+ * derives `kind` for a legacy dump's rows with `SCHEDULE_STATE_KIND_OF_OP`. This runs only
+ * for a store that already holds the old table when it wakes.
  */
+/**
+ * The `kind` a pre-#1288 row belongs to, derived from its `schedule_op` — the backfill's one
+ * rule, shared by `SCHEDULE_STATE_REBUILD` below and by a restore of a dump taken before the
+ * column (`spineRowsInsert`, #1883), so the two cannot file the same row differently.
+ */
+export const SCHEDULE_STATE_KIND_OF_OP =
+  "CASE WHEN substr(schedule_op, 1, 10) = 'freshness:' THEN 'freshness' ELSE 'schedule' END";
+
 export const SCHEDULE_STATE_REBUILD = `
   DROP TABLE IF EXISTS _substrat_schedule_state_new;
   ${SCHEDULE_STATE_DDL.replace(
@@ -436,8 +449,7 @@ export const SCHEDULE_STATE_REBUILD = `
   -- only on a pre-#1288 table, which predates invocation_id too, so there is nothing
   -- to copy. The new table's default (NULL) is the honest answer for every such row.
   INSERT INTO _substrat_schedule_state_new (kind, schedule_op, last_run_at, last_status)
-    SELECT CASE WHEN substr(schedule_op, 1, 10) = 'freshness:' THEN 'freshness' ELSE 'schedule' END,
-           schedule_op, last_run_at, last_status
+    SELECT ${SCHEDULE_STATE_KIND_OF_OP}, schedule_op, last_run_at, last_status
       FROM _substrat_schedule_state;
   DROP TABLE _substrat_schedule_state;
   ALTER TABLE _substrat_schedule_state_new RENAME TO _substrat_schedule_state;

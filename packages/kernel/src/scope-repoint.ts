@@ -47,19 +47,47 @@ export interface RepointSource {
  * `WHERE`: the update rewrites the very rows the probe looks for, and the answer must not
  * change part-way through.
  *
- * `COLLATE BINARY` is written out because the tuples table's DDL comes from the dump, and a
- * column declared `COLLATE NOCASE` there would make a bare `=` fold case again.
+ * **Which row wins a collision (#1882).** `(subject, relation, object)` is the primary key,
+ * so a moved row can land on a row the dump already holds for the destination. That used to
+ * be `UPDATE OR REPLACE`, so the moved row always won, `expires_at` and `revoked_at` with it:
+ * a revoked or expired source row could replace a live grant on the destination. The rule
+ * now, with "live" meaning not revoked and not expired at `now`:
+ *
+ * | moved row | destination row | kept                                          |
+ * |-----------|-----------------|-----------------------------------------------|
+ * | live      | live            | the destination row, expiry and all           |
+ * | live      | revoked/expired | the moved row                                 |
+ * | dead      | any             | the destination row                           |
+ *
+ * So a live row beats a dead one, and otherwise the destination row stays: between two live
+ * rows a restore never widens an expiry the destination already had. Two moved rows that
+ * would land on the same key (only the fallback moves more than one object) are settled the
+ * same way, live first and then the lower `object`, before either meets the destination. The
+ * loser is deleted: it cannot stay under its old object, because a row naming another scope
+ * is exactly what a later restore of this scope refuses. Everything runs inside the load's
+ * transaction, and the final `UPDATE` is a plain one, so a collision this missed fails the
+ * restore instead of replacing a row.
+ *
+ * `COLLATE BINARY` is written out on every comparison. Since #1883 the tuples table is always
+ * built from the kernel's DDL, never the dump's, so its columns are BINARY already; the
+ * collation stays as a second guard, so this function never depends on the table it is
+ * handed having the right one.
  */
-export function repointScopeGrants(sql: SwitchSql, destScopeId: string, source?: RepointSource): void {
+export function repointScopeGrants(
+  sql: SwitchSql,
+  destScopeId: string,
+  source: RepointSource | undefined,
+  /** The instant `expires_at` is judged against, as the adapter's checker judges it. */
+  now: string,
+): void {
   // `exact` is a claim about a named source; with none named it would silently take the fallback.
   if (source !== undefined && !source.scopeId) {
     throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
   }
   const dest = `scope:${destScopeId}`;
-  const update = 'UPDATE OR REPLACE _substrat_tuples SET object = ? WHERE object <> ? COLLATE BINARY AND';
   const from = source === undefined ? undefined : `scope:${source.scopeId}`;
   if (from === undefined || (!source?.exact && sql.all(SOURCE_PROBE, from).length === 0)) {
-    sql.run(`${update} substr(object, 1, 6) = 'scope:' COLLATE BINARY`, dest, dest);
+    moveOnto(sql, dest, now, { where: `substr(%.object, 1, 6) = 'scope:' COLLATE BINARY`, params: [] });
     return;
   }
   const strays = source!.exact
@@ -76,7 +104,62 @@ export function repointScopeGrants(sql: SwitchSql, destScopeId: string, source?:
         `${strays.slice(0, 3).join(', ')}${strays.length > 3 ? ', …' : ''}`,
     );
   }
-  sql.run(`${update} object = ? COLLATE BINARY`, dest, dest, from);
+  moveOnto(sql, dest, now, { where: '%.object = ? COLLATE BINARY', params: [from] });
+}
+
+/**
+ * Move every row `moved` selects onto `dest`, settling each key collision by the rule in
+ * `repointScopeGrants`'s header. `moved.where` is written over `%`, which each statement
+ * replaces with the alias of the row it is judging. A row already on `dest` is never moved.
+ */
+function moveOnto(sql: SwitchSql, dest: string, now: string, moved: { where: string; params: string[] }): void {
+  const isMoved = (alias: string) => ({
+    sql: `(${moved.where.replaceAll('%', alias)} AND ${alias}.object <> ? COLLATE BINARY)`,
+    params: [...moved.params, dest],
+  });
+  const live = (alias: string) => ({
+    sql: `(${alias}.revoked_at IS NULL AND (${alias}.expires_at IS NULL OR ${alias}.expires_at > ?))`,
+    params: [now],
+  });
+  const sameKey = (a: string, b: string) =>
+    `${a}.subject = ${b}.subject COLLATE BINARY AND ${a}.relation = ${b}.relation COLLATE BINARY`;
+  // `_substrat_tuples` is the row being judged; SQLite takes no alias on a DELETE's target.
+  const T = '_substrat_tuples';
+  const m = isMoved(T);
+  const other = isMoved('o');
+  const [liveT, liveO, liveD] = [live(T), live('o'), live('d')];
+
+  // 1. Between two moved rows for one key: live first, then the lower object.
+  sql.run(
+    `DELETE FROM ${T} WHERE ${m.sql} AND EXISTS (
+       SELECT 1 FROM ${T} o WHERE ${sameKey('o', T)} AND ${other.sql} AND o.object <> ${T}.object COLLATE BINARY
+         AND (${liveO.sql} > ${liveT.sql} OR (${liveO.sql} = ${liveT.sql} AND o.object < ${T}.object COLLATE BINARY)))`,
+    ...m.params,
+    ...other.params,
+    ...liveO.params,
+    ...liveT.params,
+    ...liveO.params,
+    ...liveT.params,
+  );
+  // 2. A moved row loses to the destination row unless it is live and the destination row is not.
+  sql.run(
+    `DELETE FROM ${T} WHERE ${m.sql} AND EXISTS (
+       SELECT 1 FROM ${T} d WHERE ${sameKey('d', T)} AND d.object = ? COLLATE BINARY
+         AND (${liveD.sql} OR NOT ${liveT.sql}))`,
+    ...m.params,
+    dest,
+    ...liveD.params,
+    ...liveT.params,
+  );
+  // 3. Every moved row still standing beat the destination row for its key, which goes.
+  sql.run(
+    `DELETE FROM ${T} WHERE object = ? COLLATE BINARY AND EXISTS (
+       SELECT 1 FROM ${T} o WHERE ${sameKey('o', T)} AND ${other.sql})`,
+    dest,
+    ...other.params,
+  );
+  // 4. No key collides now. A plain UPDATE, so one that still did would fail the restore.
+  sql.run(`UPDATE ${T} SET object = ? WHERE ${m.sql}`, dest, ...m.params);
 }
 
 const SOURCE_PROBE = 'SELECT 1 FROM _substrat_tuples WHERE object = ? COLLATE BINARY LIMIT 1';
