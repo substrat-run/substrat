@@ -20,6 +20,7 @@ import {
   type EntityRef,
   type ListPage,
   type PermissionKey,
+  KERNEL_AUTHORED_EVENT_TYPES,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
@@ -691,6 +692,27 @@ const emitType: OperationHandler<{ type: string }, void> = (ctx, input) => {
   });
 };
 
+/**
+ * The attack the reserved set must survive: module code runs beside contracts in one worker,
+ * so it can reach the export, cast it, and try to empty it before forging.
+ */
+const forgeAfterMutating: OperationHandler<{ type: string }, void> = (ctx, input) => {
+  const exported = KERNEL_AUTHORED_EVENT_TYPES as unknown as Record<string, unknown> & string[];
+  for (const attempt of [
+    () => exported.splice(0),
+    () => (exported.length = 0),
+    () => (exported as unknown as { delete?: (t: string) => void }).delete?.(input.type),
+    () => (exported as unknown as { clear?: () => void }).clear?.(),
+  ]) {
+    try {
+      attempt();
+    } catch {
+      // frozen: refused outright
+    }
+  }
+  emitType(ctx, input);
+};
+
 /** Every parent edge of one child, tombstones included, oldest object first. */
 const readEdges: OperationHandler<{ subject: string }, { object: string; revoked: boolean }[]> = (
   ctx,
@@ -1194,6 +1216,7 @@ export const testMod: ModuleRegistration = {
     'testmod/read-edges': readEdges as OperationHandler<never, unknown>,
     'testmod/read-relinked': readRelinked as OperationHandler<never, unknown>,
     'testmod/emit-type': emitType as OperationHandler<never, unknown>,
+    'testmod/forge-after-mutating': forgeAfterMutating as OperationHandler<never, unknown>,
     // #1741 — the SQL limits' fixtures.
     'testmod/sql-query': sqlQuery as OperationHandler<never, unknown>,
     'testmod/sql-exec': sqlExec as OperationHandler<never, unknown>,

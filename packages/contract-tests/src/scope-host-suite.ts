@@ -6031,6 +6031,17 @@ export function scopeHostContractSuite(
         );
       });
 
+      it.each([...KERNEL_AUTHORED_EVENT_TYPES])(
+        'emptying the exported list first does not unlock %s',
+        async (type) => {
+          await expectRefusal(
+            (await stub()).invoke('testmod/forge-after-mutating', { type }),
+            'validation_failed',
+            /the kernel authors that event type itself/,
+          );
+        },
+      );
+
       it('the twin: an ordinary type still emits — and relink still writes its own event', async () => {
         await (await stub()).invoke('testmod/emit-type', { type: 'testmod.ordinary' });
         await link(item('rl-twin'), box('rb1'));

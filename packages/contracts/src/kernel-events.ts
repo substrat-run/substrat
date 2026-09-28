@@ -11,9 +11,14 @@ import { ENTITY_LINKED, ENTITY_RELINKED } from './permission.js';
  * or a revoke that did not.
  *
  * The one definition: the adapters' `ctx.emit` asks `assertModuleEmittableType`, and the
- * kernel's own verbs write through the same outbox path without asking.
+ * kernel's own writer asks `assertKernelAuthoredType` — the same set, from both sides.
+ *
+ * The membership the guards consult is this module's own and never exported: module code is
+ * bundled with contracts into the same worker, so an exported `Set` — `ReadonlySet` is only a
+ * type — could be cast, emptied, and then forged past. Readers get a frozen copy and a
+ * predicate; nothing they hold changes what is refused.
  */
-export const KERNEL_AUTHORED_EVENT_TYPES: ReadonlySet<string> = new Set([
+const KERNEL_AUTHORED: ReadonlySet<string> = new Set([
   ATTACHMENT_ADDED,
   ATTACHMENT_REMOVED,
   CAPABILITY_EXERCISED,
@@ -23,9 +28,15 @@ export const KERNEL_AUTHORED_EVENT_TYPES: ReadonlySet<string> = new Set([
   ENTITY_RELINKED,
 ]);
 
+/** The reserved types, for readers: a frozen snapshot, not the set the guards consult. */
+export const KERNEL_AUTHORED_EVENT_TYPES: readonly string[] = Object.freeze([...KERNEL_AUTHORED]);
+
+/** Is `type` one only the kernel may write? */
+export const isKernelAuthoredEventType = (type: string): boolean => KERNEL_AUTHORED.has(type);
+
 /** `ctx.emit`'s refusal of a kernel-authored type: `validation_failed`, naming the type. */
 export function assertModuleEmittableType(type: string): void {
-  if (!KERNEL_AUTHORED_EVENT_TYPES.has(type)) return;
+  if (!KERNEL_AUTHORED.has(type)) return;
   throw substratError(
     'validation_failed',
     `ctx.emit cannot emit '${type}': the kernel authors that event type itself.`,
@@ -39,10 +50,11 @@ export function assertModuleEmittableType(type: string): void {
  * the list was not updated. `internal`, because it is a platform bug, never a caller's.
  */
 export function assertKernelAuthoredType(type: string): void {
-  if (KERNEL_AUTHORED_EVENT_TYPES.has(type)) return;
+  if (KERNEL_AUTHORED.has(type)) return;
   throw substratError(
     'internal',
-    `the kernel wrote '${type}', which is not in KERNEL_AUTHORED_EVENT_TYPES — add it there, ` +
+    `the kernel wrote '${type}', which is not a kernel-authored type — add it to ` +
+      'KERNEL_AUTHORED in contracts/src/kernel-events.ts, ' +
       'or module code can forge it through ctx.emit',
   );
 }
