@@ -513,7 +513,7 @@ function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
  * dump restored here skips them rather than refusing: every one is a projection the directory
  * already holds, or a record only a DO has a use for. Any OTHER spine table this kernel does
  * not build is still refused. The list is the difference between the two `KERNEL_DDL`s, and
- * `test/scope-repoint.test.ts` holds it to that, so a table added on one side cannot slip past.
+ * `pnpm lint:spine-ddl` holds it to that, so a table added on one side cannot slip past.
  */
 export const DO_SCOPE_ONLY_SPINE_TABLES: ReadonlySet<string> = new Set([
   '_substrat_connection_keys',

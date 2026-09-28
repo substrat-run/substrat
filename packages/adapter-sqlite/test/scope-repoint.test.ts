@@ -6,9 +6,7 @@ import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { scopeRepointContractSuite } from '@substrat-run/contract-tests';
 import Database from 'better-sqlite3';
-import { DO_SCOPE_ONLY_SPINE_TABLES, SqliteScopeHost } from '../src/index.js';
-// @ts-expect-error — a plain .mjs tool with no declarations; the same extraction lint:spine-ddl runs.
-import { scopeOneSidedTables } from '../../../tools/spine-ddl-drift.mjs';
+import { SqliteScopeHost } from '../src/index.js';
 
 // #1869, on the DEFAULT checker so the suite can assert decisions as well as rows.
 scopeRepointContractSuite('adapter-sqlite', async () => {
@@ -26,8 +24,9 @@ scopeRepointContractSuite('adapter-sqlite', async () => {
 /**
  * #1883: a dump a Durable Object exported, loaded into a node scope. The DO builds spine tables
  * (`_substrat_roles`, `_substrat_tenant_tuples`, …) that a node scope keeps in its directory, or
- * does not keep at all. Those are skipped by name (`DO_SCOPE_ONLY_SPINE_TABLES`); any other spine
- * table this kernel does not build is still refused. The DO's twin, which loads the same tables,
+ * does not keep at all. Those are skipped by name (`DO_SCOPE_ONLY_SPINE_TABLES`, which
+ * `lint:spine-ddl` holds to the difference between the two KERNEL_DDLs); any other spine table
+ * this kernel does not build is still refused. The DO's twin, which loads the same tables,
  * is in `adapter-cloudflare/test/scope-repoint.test.ts`.
  */
 describe('a DO-shaped dump restored into a node scope (#1883)', () => {
@@ -61,13 +60,6 @@ describe('a DO-shaped dump restored into a node scope (#1883)', () => {
       rows: [['permission_source', 'local']],
     },
   ];
-
-  it('the skip list is exactly the spine tables the DO builds in a scope and this adapter does not', () => {
-    const { doOnly: fromDdl, nodeOnly } = scopeOneSidedTables();
-    expect([...DO_SCOPE_ONLY_SPINE_TABLES].sort()).toEqual(fromDdl);
-    // The other direction is empty, so a node dump never meets the same question on a DO.
-    expect(nodeOnly).toEqual([]);
-  });
 
   it('lands, with the DO-only tables skipped and everything else loaded', async () => {
     const { host, staff, t, s, done } = await setup();
