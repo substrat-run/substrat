@@ -3331,13 +3331,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   });
 
-  // The owner HAND-OVER (#1665): move a hosted scope's owner seat from the owner of record to
-  // another member. The move runs in the VERTICAL (its identity directory holds the record, its
-  // scope store the seats) behind `/internal/owner-transfer`, which moves the record, seats `to`
-  // and revokes `from`, in that order. This route decides who may ask, and audits every attempt
-  // in the schedule switch's order: an `intent` row before the vertical is reached, so a row the
-  // log cannot take means nothing moves, then `applied`, `refused` (the vertical's 409, which
-  // wrote nothing) or `failed` (it may have stopped part-way; the same request completes it).
+  // The owner HAND-OVER (#1665). The move runs in the VERTICAL, behind `/internal/owner-transfer`
+  // (vertical-host says in what order and why). This route decides who may ask, and audits every
+  // attempt: an `intent` row before the vertical is reached, so a row the log cannot take means
+  // nothing moves, then `applied`, `refused` (its 409: nothing written) or `failed` (it may have
+  // stopped part-way; the same request completes it).
   //
   // **Staff and the platform service token ONLY.** Builders are refused by BUILDER_ROUTES
   // (default-deny). A tenant-scoped credential passes this path's `/tenants/<pin>` confinement,
@@ -3361,7 +3359,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await admin.recordOwnerTransfer(actor, { ...base, phase: 'intent' });
     let moved;
     try {
-      moved = await vertical.transferOwner({ tenantId, scopeId, from: body.from, to: body.to });
+      moved = await vertical.transferOwner({ tenantId, scopeId, ...body });
     } catch (e) {
       const refused = e instanceof ControlPlaneError && e.status === 409;
       const error = (e instanceof Error ? e.message : String(e)).slice(0, 2000);

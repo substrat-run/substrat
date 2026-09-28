@@ -38,14 +38,20 @@ function sqlOver(db: InstanceType<typeof Database>): RegistrySql {
   };
 }
 
+/** A fresh in-memory directory with the owner-seat tables, migrated. */
+function freshSql(): RegistrySql {
+  const db = new Database(':memory:');
+  for (const stmt of OWNER_SEAT_DDL) db.exec(stmt);
+  const sql = sqlOver(db);
+  migrateOwnerSeat(sql);
+  return sql;
+}
+
 describe('owner seat', () => {
   let sql: RegistrySql;
 
   beforeEach(() => {
-    const db = new Database(':memory:');
-    for (const stmt of OWNER_SEAT_DDL) db.exec(stmt);
-    sql = sqlOver(db);
-    migrateOwnerSeat(sql);
+    sql = freshSql();
   });
 
   it('the first sign-in inside the window claims the seat; the next subject gets nothing', () => {
@@ -200,10 +206,7 @@ describe('owner transfer', () => {
   };
 
   beforeEach(() => {
-    const db = new Database(':memory:');
-    for (const stmt of OWNER_SEAT_DDL) db.exec(stmt);
-    sql = sqlOver(db);
-    migrateOwnerSeat(sql);
+    sql = freshSql();
   });
 
   it('moves the record to a member, and the seat stays claimed', () => {

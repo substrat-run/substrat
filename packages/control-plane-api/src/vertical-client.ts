@@ -493,10 +493,9 @@ export class VerticalClient {
   }
 
   /**
-   * Hand the scope's owner seat from `from` to `to` (#1665). The vertical moves its owner of
-   * record, seats `to` and revokes `from`, in that order (vertical-host's route spells out why).
-   * A refusal (409: unclaimed seat, stale `from`, `to` not a member) wrote nothing. Any other
-   * failure may have stopped part-way, and the same call completes it. Parsed on arrival.
+   * Hand the scope's owner seat from `from` to `to` (#1665) — vertical-host's
+   * `/internal/owner-transfer`. A 409 wrote nothing; any other failure is completed by the same
+   * call again. Parsed on arrival.
    */
   async transferOwner(input: {
     tenantId: TenantId;

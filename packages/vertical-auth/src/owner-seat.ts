@@ -32,6 +32,7 @@
  * The IdentityDO's owner-seat methods delegate here.
  */
 
+import type { z, ownerTransferRecord } from '@substrat-run/contracts';
 import type { RegistrySql } from './site-registry.js';
 
 /** How long after provision a plain first sign-in still claims the seat. */
@@ -121,18 +122,11 @@ export function ownerOfRecord(sql: RegistrySql, scopeId: string): string | null 
 }
 
 /**
- * What `transferOwner` did. `transferred` moved the record; `already` found it naming `to`
- * (a repeat of a hand-over that got this far, which is what makes the platform's flow safe to
- * retry). `refused` wrote nothing, and `reason` says which precondition failed.
+ * What `transferOwner` did — the contracts' `ownerTransferRecord`, which the platform parses it
+ * with. `transferred` moved the record; `already` found it naming `to` (a repeat, which is what
+ * makes the platform's flow safe to retry). `refused` wrote nothing, and `reason` says why.
  */
-export type OwnerTransfer =
-  | { outcome: 'transferred' | 'already'; owner: string }
-  | {
-      outcome: 'refused';
-      /** The owner of record as it stands — null when the scope has none. */
-      owner: string | null;
-      reason: 'unknown' | 'same-principal' | 'unclaimed' | 'not-owner' | 'not-member';
-    };
+export type OwnerTransfer = z.input<typeof ownerTransferRecord>;
 
 /**
  * Hand the owner of record from `from` to `to` (#1665) — the one write that moves
@@ -163,7 +157,7 @@ export function transferOwner(sql: RegistrySql, scopeId: string, from: string, t
   const owner = ownerOfRecord(sql, scopeId);
   if (owner === null) return { outcome: 'refused', owner, reason: 'unknown' };
   if (from === to) return { outcome: 'refused', owner, reason: 'same-principal' };
-  if (pendingRow(sql, scopeId)) return { outcome: 'refused', owner, reason: 'unclaimed' };
+  if (needsSetup(sql, scopeId)) return { outcome: 'refused', owner, reason: 'unclaimed' };
   if (!isBound(sql, scopeId, to)) return { outcome: 'refused', owner, reason: 'not-member' };
   if (owner === to) return { outcome: 'already', owner };
   if (owner !== from) return { outcome: 'refused', owner, reason: 'not-owner' };

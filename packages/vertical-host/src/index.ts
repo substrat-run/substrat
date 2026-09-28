@@ -54,8 +54,8 @@ import {
   ownerSeat,
   ownerClaimLink,
   ownerTransferPair,
+  distinctOwnerTransfer,
   ownerTransferRecord,
-  ownerTransferResult,
   platformRequestFilter,
   denialFilter,
   type DenialFilter,
@@ -102,6 +102,7 @@ import {
   type ProjectedIdentityLink,
   type OwnerClaimLink,
   type OwnerTransferRecord,
+  type OwnerTransferResult,
   type PlatformRequest,
   type PlatformRequestFilter,
   type PlatformRequestId,
@@ -436,12 +437,11 @@ const ownerClaimBody = z.object({
   origin: z.string().url(),
 });
 
-/** `/internal/owner-transfer` body (#1665): the address plus `ownerTransferInput`'s two
- *  principals, refused when they are one (the directory refuses that too, as `same-principal`). */
-const ownerTransferBody = z
-  .object({ tenantId: tenantIdOf, scopeId: scopeIdOf, ...ownerTransferPair.shape })
+/** `/internal/owner-transfer` body (#1665): the address plus `ownerTransferInput`'s two principals. */
+const ownerTransferBody = ownerTransferPair
+  .extend({ tenantId: tenantIdOf, scopeId: scopeIdOf })
   .strict()
-  .refine((b) => b.from !== b.to, { message: '`from` and `to` must be different principals', path: ['to'] });
+  .refine(...distinctOwnerTransfer);
 
 /** Why the directory refused a hand-over, as the platform reads it: every refusal wrote nothing. */
 const ownerTransferRefusal: Record<Extract<OwnerTransferRecord, { outcome: 'refused' }>['reason'], string> = {
@@ -608,10 +608,8 @@ export interface PlatformSurfaceDeps<Env> {
     input: { origin: string },
   ) => Promise<OwnerClaimLink | null>;
   /**
-   * Move the scope's owner of record from `from` to `to` (#1665) — the record a reconcile's
-   * lockout repair re-seats. vertical-auth's IdentityDO `transferOwner` is the reference: it
-   * refuses, writing nothing, when the seat is unclaimed, `from` is not the record, or no
-   * subject is bound to `to`, and answers `already` when the record names `to`. Omit ⇒
+   * Move the scope's owner of record from `from` to `to` (#1665). vertical-auth's IdentityDO
+   * `transferOwner` is the reference, and the route below says what runs around it. Omit ⇒
    * `/internal/owner-transfer` answers 501, like the other owner-seat verbs.
    */
   transferOwner?: (
@@ -1370,15 +1368,13 @@ export function mountPlatformSurface<Env extends object>(
     }
     await host.assignScopeRole(body.scopeId, body.to, deps.ownerRoleKey);
     const fromRevoked = await host.revokeScopeRole(body.scopeId, body.from, deps.ownerRoleKey);
-    return c.json(
-      ownerTransferResult.parse({
-        scopeId: body.scopeId,
-        from: body.from,
-        owner: body.to,
-        recordMoved: record.outcome === 'transferred',
-        fromRevoked,
-      }),
-    );
+    return c.json({
+      scopeId: body.scopeId,
+      from: body.from,
+      owner: body.to,
+      recordMoved: record.outcome === 'transferred',
+      fromRevoked,
+    } satisfies OwnerTransferResult);
   });
 
   // ── The guaranteed error envelope — the whole point (#510). Without this, Hono answers

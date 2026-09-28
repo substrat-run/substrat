@@ -371,10 +371,12 @@ export type OwnerClaimLink = z.infer<typeof ownerClaimLink>;
  * One principal on both sides is refused here, before anything is reached.
  */
 export const ownerTransferPair = z.object({ from: principalId, to: principalId });
-export const ownerTransferInput = ownerTransferPair
-  .strict()
-  .refine((b) => b.from !== b.to, { message: '`from` and `to` must be different principals', path: ['to'] });
-export type OwnerTransferInput = z.infer<typeof ownerTransferInput>;
+/** The one refusal both hand-over bodies share: `ownerTransferInput` and vertical-host's. */
+export const distinctOwnerTransfer: [(b: { from: string; to: string }) => boolean, { message: string; path: string[] }] = [
+  (b) => b.from !== b.to,
+  { message: '`from` and `to` must be different principals', path: ['to'] },
+];
+export const ownerTransferInput = ownerTransferPair.strict().refine(...distinctOwnerTransfer);
 
 /**
  * What the vertical's identity directory answered to the record half of a hand-over (#1665).
@@ -409,26 +411,16 @@ export const ownerTransferResult = z.object({
 export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
 
 /**
- * One row of an owner hand-over's audit (#1665), as the control plane reports it to
- * `HostAdmin.recordOwnerTransfer`. Written twice per attempt, paired by `operationId`: an
- * `intent` before the vertical is reached, then what came of it: `applied` (with what moved),
- * `refused` (the vertical's 409: nothing was written) or `failed` (anything else, where the
- * hand-over may have stopped part-way and a repeat completes it).
- *
- * No `id`, no `at` and no actor: the adapter stamps the first two and the request supplies the
- * third, as for every admin row, so a caller can neither backdate one nor name someone else.
+ * One row of an owner hand-over's audit (#1665), for `HostAdmin.recordOwnerTransfer`: an
+ * `intent`, then `applied`, `refused` (the vertical's 409) or `failed`, paired by `operationId`.
+ * No `id`, `at` or actor: the adapter stamps the first two and the request supplies the third.
  */
-const ownerTransferAuditBase = { tenantId, scopeId, operationId: z.string().min(1), from: principalId, to: principalId };
+const ownerTransferAuditRow = <T extends z.ZodRawShape>(phase: T) =>
+  z.object({ ...phase, tenantId, scopeId, operationId: z.string().min(1), from: principalId, to: principalId }).strict();
 export const ownerTransferAudit = z.discriminatedUnion('phase', [
-  z.object({ phase: z.literal('intent') }).extend(ownerTransferAuditBase).strict(),
-  z
-    .object({ phase: z.literal('applied'), recordMoved: z.boolean(), fromRevoked: z.boolean() })
-    .extend(ownerTransferAuditBase)
-    .strict(),
-  z
-    .object({ phase: z.enum(['refused', 'failed']), error: z.string().max(2000) })
-    .extend(ownerTransferAuditBase)
-    .strict(),
+  ownerTransferAuditRow({ phase: z.literal('intent') }),
+  ownerTransferAuditRow({ phase: z.literal('applied'), recordMoved: z.boolean(), fromRevoked: z.boolean() }),
+  ownerTransferAuditRow({ phase: z.enum(['refused', 'failed']), error: z.string().max(2000) }),
 ]);
 export type OwnerTransferAudit = z.infer<typeof ownerTransferAudit>;
 

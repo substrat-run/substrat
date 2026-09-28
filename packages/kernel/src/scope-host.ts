@@ -3533,19 +3533,11 @@ export interface HostAdmin {
   recordDelegatedRead(actor: PlatformActorId, record: DelegatedReadRecord): Promise<void>;
 
   /**
-   * Record one phase of an owner hand-over (#1665) on the admin log, as `transferOwner`.
-   *
-   * The hand-over itself runs in the vertical's own deployment (its identity directory holds the
-   * owner of record, its scope store the seats), which a hosted scope's control plane reaches
-   * over `/internal/owner-transfer` rather than through this host. So the control plane writes
-   * the audit around that call, in the schedule switch's order: the `intent` row BEFORE the
-   * vertical is reached, and the caller must not reach it if this throws; then `applied`,
-   * `refused` or `failed`, paired by `operationId`. That fails toward "an intent with no
-   * outcome", never toward "an owner moved with no row".
-   *
-   * Narrow for the reason `recordDelegatedRead` is: the action is fixed, the entry is parsed
-   * (`ownerTransferAudit`), the actor comes from the request context, and the adapter stamps the
-   * row's `id` and `at`. It throws when the row cannot be written.
+   * Record one phase of an owner hand-over (#1665) on the admin log, as `transferOwner`. The
+   * hand-over runs in the vertical's deployment, so the control plane writes these around its
+   * call to it: `intent` first (and must not call if this throws), then the outcome. Narrow for
+   * `recordDelegatedRead`'s reason: fixed action, parsed entry, request actor, adapter-stamped
+   * `id` and `at`. Throws when the row cannot be written.
    */
   recordOwnerTransfer(actor: PlatformActorId, entry: OwnerTransferAudit): Promise<void>;
 
