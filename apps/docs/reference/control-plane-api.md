@@ -80,7 +80,8 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   Staff close it with `{ from, to, abandon: true }` on the same route. It closes only that open
   hand-over, and only when it is wedged like this — one that can still finish is refused
   ("resend it instead"). It seats and revokes nothing, and leaves the owner of record on `to`, from where a new
-  hand-over starts. Its rows carry `abandon: true`. Every attempt writes two
+  hand-over starts. The original `from` keeps any owner seat it still holds, since the abandon
+  revoked nothing; the next owner removes it in the app. Its rows carry `abandon: true`. Every attempt writes two
   `transferOwner` rows to the admin log, paired by the `operationId` the route answers with:
   an `intent` before the vertical is asked, then `applied`, `refused` or `failed`. A `failed`
   hand-over may have stopped part-way, and sending the same request again completes it.

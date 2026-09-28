@@ -1165,10 +1165,11 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     expect(abandoned.status).toBe(200);
     expect(await abandoned.json()).toMatchObject({ outcome: 'abandoned', owner: B, fromRevoked: false });
     expect(await ownerSeats(s)).toEqual([A]);
-    // From the record (B), a fresh hand-over goes through.
+    // From the record (B), a fresh hand-over goes through. A keeps the seat it never lost: an
+    // abandon revokes nothing, and the next owner removes it in the app.
     expect((await transfer(s, B, C)).status).toBe(200);
     expect(await directory().getOwnerOfRecord(s)).toBe(C);
-    expect(await ownerSeats(s)).toContain(C);
+    expect(await ownerSeats(s)).toEqual([A, C].sort());
     expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
   });
 

@@ -185,7 +185,9 @@ including the two OIDC ones where Better Auth stays dormant:
   While one is open, any other hand-over on the scope is refused as `in-flight`, and if `to` has
   since been removed, the open one's own resend is refused as `wedged` rather than finished.
   `abandonOwnerTransfer` closes it without seating or revoking anyone, and only then: an open
-  hand-over whose `to` can still take it answers `healthy`, since resending it finishes it.
+  hand-over whose `to` can still take it answers `healthy`, since resending it finishes it. After
+  an abandon the original `from` keeps any owner seat it still holds, until the next owner
+  removes it in the app.
   Wire both as vertical-host's hooks of the same names, which seat and revoke between them.
 - `createInvite` / `listInvites` / `revokeInvite` / `claimInvite` — member invites, the
   post-setup join path. An invite pre-mints a member principal, grants it a role at scope
