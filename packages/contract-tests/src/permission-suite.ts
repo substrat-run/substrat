@@ -1635,6 +1635,39 @@ export function permissionContractSuite(
       expect((await host.admin.accessLog(staff, { actor: reporter })).length).toBe(2);
     });
 
+    it('records an owner hand-over phase as a `transferOwner` admin row, stamped here (#1665)', async () => {
+      // The control plane writes these around a hand-over it ran against a vertical: intent
+      // first, then the outcome. Held on both adapters because the one serving production is
+      // the one an API test never reaches.
+      const operator = platformActorId.parse(ulid());
+      const from = principalId.parse(ulid());
+      const to = principalId.parse(ulid());
+      const operationId = ulid();
+      const base = { tenantId: t1, scopeId: s1, operationId, from, to };
+      const before = Date.now();
+      await host.admin.recordOwnerTransfer(operator, { ...base, phase: 'intent' });
+      await host.admin.recordOwnerTransfer(operator, { ...base, phase: 'applied', outcome: 'transferred', fromRevoked: true });
+      const rows = (await host.admin.auditLog(staff, { tenantId: t1 })).filter(
+        (r) => r.action === 'transferOwner' && r.actor === operator,
+      );
+      expect(rows.map((r) => ({ scopeId: r.scopeId, before: r.before, after: r.after }))).toEqual([
+        { scopeId: s1, before: null, after: { phase: 'intent', operationId, from, to } },
+        { scopeId: s1, before: null, after: { phase: 'applied', outcome: 'transferred', fromRevoked: true, operationId, from, to } },
+      ]);
+      for (const row of rows) {
+        expect(row.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+        expect(Date.parse(row.at)).toBeGreaterThanOrEqual(before - 1_000);
+      }
+      // The entry is parsed: an unknown phase, or a field the schema does not know, writes nothing.
+      await expect(host.admin.recordOwnerTransfer(operator, { ...base, phase: 'moved' } as never)).rejects.toThrow();
+      await expect(
+        host.admin.recordOwnerTransfer(operator, { ...base, phase: 'intent', actor: staff } as never),
+      ).rejects.toThrow();
+      expect(
+        (await host.admin.auditLog(staff, { tenantId: t1 })).filter((r) => r.action === 'transferOwner' && r.actor === operator),
+      ).toHaveLength(2);
+    });
+
     it('audits reading the audit trail, and reading the access log itself', async () => {
       const nosy = platformActorId.parse(ulid());
       await host.admin.auditLog(nosy, { tenantId: t1 });
