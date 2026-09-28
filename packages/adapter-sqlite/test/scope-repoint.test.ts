@@ -102,8 +102,8 @@ describe('a DO-shaped dump restored into a node scope (#1883)', () => {
  * #1883: a restore keeps a spine column a newer kernel's dump carried, as a plain untyped column
  * spelled as the dump spelled it. When a later kernel then adds that column for real, its
  * additive pass must find it there rather than add it twice, which SQLite refuses and which
- * would leave the scope unable to open. Staged directly: the untyped column, spelled in other
- * case, on the one additive column the kernel still ALTERs in on wake.
+ * would leave the scope unable to open. Staged directly: the untyped column a restore adds
+ * (lowercased), on the one additive column the kernel still ALTERs in on wake.
  */
 describe('a later kernel waking over a column a restore added untyped (#1883)', () => {
   it('opens, keeps the value, and does not add the column twice', async () => {
@@ -118,7 +118,7 @@ describe('a later kernel waking over a column a restore added untyped (#1883)', 
       await host.close();
 
       // The deliveries table as a kernel from before #1525 built it, with `invocation_id` then
-      // added by a restore of a newer dump: untyped, and spelled INVOCATION_ID.
+      // added by a restore of a newer dump: untyped, and lowercased as a restore adds it.
       const db = new Database(join(dir, `${t}__${s}.sqlite`));
       db.exec('DROP TABLE _substrat_deliveries');
       db.exec(
@@ -126,8 +126,8 @@ describe('a later kernel waking over a column a restore added untyped (#1883)', 
           'delivered_at TEXT NOT NULL, error TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, ' +
           'PRIMARY KEY (event_id, consumer_module))',
       );
-      db.exec('ALTER TABLE _substrat_deliveries ADD COLUMN "INVOCATION_ID"');
-      db.prepare('INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, "INVOCATION_ID") VALUES (?, ?, ?, ?)').run(
+      db.exec('ALTER TABLE _substrat_deliveries ADD COLUMN "invocation_id"');
+      db.prepare('INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id) VALUES (?, ?, ?, ?)').run(
         'e1',
         'm1',
         '2026-09-01T00:00:00.000Z',
@@ -137,7 +137,7 @@ describe('a later kernel waking over a column a restore added untyped (#1883)', 
 
       host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
       const deliveries = (await host.admin.exportScope(staff, t, s)).tables.find((tb) => tb.name === '_substrat_deliveries')!;
-      expect(deliveries.columns.filter((c) => c.toLowerCase() === 'invocation_id')).toEqual(['INVOCATION_ID']);
+      expect(deliveries.columns.filter((c) => c.toLowerCase() === 'invocation_id')).toEqual(['invocation_id']);
       expect(deliveries.rows).toEqual([['e1', 'm1', '2026-09-01T00:00:00.000Z', null, 0, null, 'inv-1']]);
     } finally {
       await host.close();

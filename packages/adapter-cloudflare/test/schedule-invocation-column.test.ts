@@ -228,7 +228,7 @@ describe('#1288: a DO woken over a pre-kind _substrat_schedule_state rebuilds it
  * as a plain untyped column spelled as the dump spelled it. When a later kernel adds that
  * column for real, its additive ALTER meets it on the next wake and must tolerate it as a
  * duplicate; otherwise the DO cannot construct. Staged on the one additive column the kernel
- * still ALTERs in, `_substrat_deliveries.invocation_id`, spelled INVOCATION_ID.
+ * still ALTERs in, `_substrat_deliveries.invocation_id`, untyped and lowercased as a restore adds it.
  */
 describe('#1883: a DO woken over a column a restore added untyped', () => {
   it('constructs, keeps the value, and does not add the column twice', async () => {
@@ -254,9 +254,9 @@ describe('#1883: a DO woken over a column a restore added untyped', () => {
             'delivered_at TEXT NOT NULL, error TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, ' +
             'PRIMARY KEY (event_id, consumer_module))',
         );
-        state.storage.sql.exec('ALTER TABLE _substrat_deliveries ADD COLUMN "INVOCATION_ID"');
+        state.storage.sql.exec('ALTER TABLE _substrat_deliveries ADD COLUMN "invocation_id"');
         state.storage.sql.exec(
-          `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, "INVOCATION_ID")
+          `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
            VALUES ('e1', 'm1', '2026-09-01T00:00:00.000Z', 'inv-1')`,
         );
       });
@@ -268,7 +268,7 @@ describe('#1883: a DO woken over a column a restore added untyped', () => {
         const cursor = state.storage.sql.exec('SELECT * FROM _substrat_deliveries');
         return { columns: cursor.columnNames, rows: Array.from(cursor.raw(), (r) => [...r]) };
       });
-      expect(after.columns.filter((c) => c.toLowerCase() === 'invocation_id')).toEqual(['INVOCATION_ID']);
+      expect(after.columns.filter((c) => c.toLowerCase() === 'invocation_id')).toEqual(['invocation_id']);
       expect(after.rows).toEqual([['e1', 'm1', '2026-09-01T00:00:00.000Z', null, 0, null, 'inv-1']]);
       // And the scope serves: the constructor's column pass did not throw.
       await expect(host.admin.exportScope(staff, t, s)).resolves.toBeDefined();

@@ -617,6 +617,22 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         expect((await host.admin.exportScope(staff, t, dest)).tables).toEqual(first.tables);
       });
 
+      it('an unknown spine column spelled in other case is added lowercased, as every kernel column is spelled', async () => {
+        const dumped = tuplesOf(planted);
+        const dump = {
+          ...planted,
+          tables: planted.tables.map((tb) =>
+            tb === dumped ? { ...tb, columns: [...tb.columns, 'Granted_By'], rows: tb.rows.map((r) => [...r, 'actor']) } : tb,
+          ),
+        };
+        const dest = await blank();
+        await host.restoreScope(staff, t, dest, dump);
+        const back = tuplesOf(await host.admin.exportScope(staff, t, dest));
+        expect(back.columns.filter((c) => c.toLowerCase() === 'granted_by')).toEqual(['granted_by']);
+        const at = back.columns.indexOf('granted_by');
+        expect(new Set(back.rows.map((r) => r[at]))).toEqual(new Set(['actor']));
+      });
+
       it("a spine column named for SQLite's rowid is refused, in any case, and the target keeps every table it held", async () => {
         // A real column named rowid, oid or _rowid_ shadows the alias. On the outbox that is the
         // mark #1705's and #1746's since-queries read, so a dump's value would silence both.

@@ -97,7 +97,7 @@ const lowered = (columns: readonly string[]) => new Set(columns.map((c) => c.toL
 
 /**
  * The statements that add to a kernel-built spine table each column the dump carries and the
- * kernel does not, as a plain untyped column: `ADD COLUMN "<name>"` and nothing after it, so it
+ * kernel does not, as a plain untyped column: `ADD COLUMN "<name>"`, lowercased, and nothing after it, so it
  * has no type, collation, constraint or default. Run after `assertSpineTablesBuilt` and before
  * the table's rows go in, inside the load's transaction. The names are the dump's, which
  * `assertReplayableDump` has already held to the identifier rule. Empty for a table the kernel
@@ -121,7 +121,9 @@ export function spineColumnAdditions(
         'A real column by that name would shadow the rowid the kernel reads. Nothing was changed.',
     );
   }
-  return unknown.map((c) => `ALTER TABLE "${table.name}" ADD COLUMN "${c}"`);
+  // Lowercased, as every kernel column is spelled: a later kernel adding the column for real
+  // then meets the name it expects, whatever case the dump used.
+  return unknown.map((c) => `ALTER TABLE "${table.name}" ADD COLUMN "${c.toLowerCase()}"`);
 }
 
 /** The names SQLite resolves to a table's rowid, unless a real column takes one. */
