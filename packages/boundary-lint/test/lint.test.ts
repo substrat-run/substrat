@@ -1261,6 +1261,20 @@ describe('R10 — the deployed worker mounts invocationLog first (#1746)', () =>
     expect(vs.map((v) => v.file)).toEqual(['src/app.ts']);
   });
 
+  it('flags an exported app builder with no mount — the shape src/app.ts + worker.ts uses', () => {
+    const worker = "import { app } from './app.js';\nexport default app;\n";
+    const vs = r10(lint(vertical(worker, { 'src/app.ts': "export const app = new Hono<{ Bindings: Env }>();\napp.get('/x', h);\n" })));
+    expect(vs).toEqual([
+      expect.objectContaining({ file: 'src/app.ts', rule: 'R10', message: expect.stringContaining('logs stay empty') }),
+    ]);
+  });
+
+  it('passes an exported app builder that mounts it first', () => {
+    const worker = "import { app } from './app.js';\nexport default app;\n";
+    const vs = r10(lint(vertical(worker, { 'src/app.ts': `export const app = new Hono<{ Bindings: Env }>();\n${MOUNTED}\napp.get('/x', h);\n` })));
+    expect(vs).toEqual([]);
+  });
+
   it('leaves a node-only server harness alone — no router is in front of it', () => {
     const vs = r10(
       lint(vertical(`const app = new Hono();\n${MOUNTED}\napp.get('/x', h);\n`, { 'src/server.ts': "const app = new Hono();\napp.get('/x', h);\n" })),

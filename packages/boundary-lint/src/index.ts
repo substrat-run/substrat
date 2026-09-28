@@ -1219,8 +1219,15 @@ export function resolvePackages(root: string, config?: BoundaryLintConfig): Pack
 // R10 — the deployed worker mounts invocationLog first
 // ---------------------------------------------------------------------------
 
-/** A top-level Hono app, however it is typed. */
-const CONSTRUCTS_APP = /^const app = new Hono\b/m;
+/**
+ * A top-level Hono app, however it is typed — `const`/`let`, an optional `export`, and an
+ * optional type annotation before the `=`. Every deployed worker.ts and app.ts in this repo
+ * constructs an unexported, untyped `const app = new Hono(...)`, but `src/app.ts` built and
+ * exported for `worker.ts` to import is the ordinary shape of the split, and the identifier
+ * itself stays fixed at `app` — REGISTRATION and MOUNT below assume it too, so a renamed
+ * binding is a pre-existing, matching gap rather than a new one.
+ */
+const CONSTRUCTS_APP = /^(?:export\s+)?(?:const|let)\s+app(?:\s*:\s*[^=\n]+)?\s*=\s*new Hono\b/m;
 /** Any registration on that app — `app.use(`, `app.get(`, `app.all(`, `app.on(`, … */
 const REGISTRATION = /^app\.(\w+)\s*\(/gm;
 /** The mount itself, as the first registration (`\s` spans the multi-line spelling). */
