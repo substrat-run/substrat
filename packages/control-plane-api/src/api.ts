@@ -3371,12 +3371,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       throw e;
     }
-    await admin.recordOwnerTransfer(actor, {
-      ...base,
-      phase: 'applied',
-      outcome: moved.outcome,
-      fromRevoked: moved.fromRevoked,
-    });
+    try {
+      await admin.recordOwnerTransfer(actor, {
+        ...base,
+        phase: 'applied',
+        outcome: moved.outcome,
+        fromRevoked: moved.fromRevoked,
+      });
+    } catch (e) {
+      // The owner HAS moved; only the outcome row is missing. Say exactly that, so nobody retries
+      // a hand-over believing it failed, and name the operation whose intent row stands alone.
+      const why = e instanceof Error ? e.message : String(e);
+      return c.json(
+        {
+          error: `the hand-over completed, but its outcome could not be written to the admin log: ${why}`,
+          operationId,
+          ...moved,
+        },
+        500,
+      );
+    }
     return c.json({ operationId, ...moved });
   });
 

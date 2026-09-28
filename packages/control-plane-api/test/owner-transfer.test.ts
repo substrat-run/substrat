@@ -219,6 +219,28 @@ describe('the owner hand-over route (#1665)', () => {
     expect(asked).toHaveLength(1);
   });
 
+  it('a hand-over whose OUTCOME row cannot be written says it completed, with its operationId', async () => {
+    const s = await newScope();
+    const original = host.admin.recordOwnerTransfer;
+    host.admin.recordOwnerTransfer = async (actor, entry) => {
+      if (entry.phase === 'applied') throw new Error('admin log unavailable');
+      return original.call(host.admin, actor, entry);
+    };
+    let res: Response;
+    try {
+      res = await send(route(s), asStaff);
+    } finally {
+      host.admin.recordOwnerTransfer = original;
+    }
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; operationId: string; owner: string };
+    expect(body.error).toMatch(/hand-over completed, but its outcome could not be written/);
+    expect(body.owner).toBe(B);
+    expect(asked).toHaveLength(1);
+    // The intent row stands, under the operation id the caller was told.
+    expect((await rows(s)).map((r) => [r.operationId, r.phase])).toEqual([[body.operationId, 'intent']]);
+  });
+
   it('a scope no vertical serves has no owner seat to hand over — 501, and nothing is recorded', async () => {
     const s = await newScope(null);
     expect((await send(route(s), asStaff)).status).toBe(501);
