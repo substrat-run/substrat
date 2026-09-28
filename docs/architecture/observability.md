@@ -323,8 +323,27 @@ account-wide quota. So the reads are now computed from **cubes**, behind the unc
 - The contract suite (`aggregate-reads.test.ts`) runs the same cases over the source answering
   directly and through the cache, so a new source cannot change what the numbers mean.
 
-If cold windows prove too slow even per block, an Analytics Engine source (the router writing
-the record's fields into its per-request datapoint) is the next implementation of the same seam.
+**From the router's datapoints (#1904).** Cold windows did prove too slow: a first view of three
+days counted seven 12-hour blocks, each a scan whose cost grows with traffic, and answered 504.
+So the request cube (not the patterns) has a second source, the router's Analytics Engine
+dataset, behind the same seam:
+
+- The platform entry (`withInvocationLog`) hands the request's `operation`, `problemCode` and
+  `principalKind` back on `x-substrat-invocation-record` — only on a request the router vouched
+  for. The router writes them as blobs 6–8, files its own `level` (blob 9, from the status and
+  that problem code) and strips the header before the response leaves. The index stays the
+  tenant the router resolved, so a vertical can at most mislabel its own operations.
+- The source reads one tenant (`index1`), grouped by every facet and the grain, weighted by
+  `_sample_interval`. Analytics Engine samples per index, so a quiet tenant's counts are exact
+  and a busy one's are estimates, flagged `estimated`. A family is `stableDeploymentRefFor` of
+  the vertical slug (blob 1), so no new field names it. A query that names no tenant is
+  refused, and so is an answer that saturates the row limit rather than shown as a prefix.
+- Only datapoints written after the router change carry blobs 6–9, so the control plane's
+  `REQUESTS_FROM_ROUTER_SINCE` names the instant it was deployed. `cutOverSource` reads a
+  window's part before it from the cached telemetry cube and the rest from Analytics Engine;
+  unset, everything comes from Workers Logs as before.
+- Log patterns stay on the telemetry cube (a request writes many `ctx.log` lines), and so does
+  the Lines list: sampling cannot find one request.
 
 **4.7 Module log lines and patterns (#1746, #1747).** Module code logs through `ctx.log`
 (`module-log.ts`): one JSON line with `substrat: 'log'`, stamped by the host with the tenant,

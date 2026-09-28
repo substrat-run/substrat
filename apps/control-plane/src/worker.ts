@@ -395,6 +395,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv {
    */
   ROUTER_ANALYTICS_DATASET?: string;
   /**
+   * #1904: the ISO instant from which the request histogram and facets read the router's
+   * Analytics Engine datapoints instead of Workers Logs — set to the deploy of the router
+   * that writes blobs 6–9, per environment. Unset ⇒ Workers Logs only, as before.
+   */
+  REQUESTS_FROM_ROUTER_SINCE?: string;
+  /**
    * #1691: one Analytics Engine data point per connector call, written by the host
    * `hostFor` builds (kernel `connector-calls.ts`). Absent (local dev) ⇒ the no-op
    * recorder, and connector calls are unchanged.
@@ -650,6 +656,8 @@ function observabilityFor(env: Env) {
     // reader exposes no `tenantMetrics` and the route 501s, which is the honest answer;
     // the alternative was TEST quietly charting production's traffic as a tenant's own.
     routerDataset: env.ROUTER_ANALYTICS_DATASET,
+    // #1904: from when the request histogram and facets read the router's datapoints.
+    ...(env.REQUESTS_FROM_ROUTER_SINCE ? { requestsFromRouterSince: env.REQUESTS_FROM_ROUTER_SINCE } : {}),
     // #1691: the same never-defaulted rule for the connector-call dataset.
     connectorCallsDataset: env.CONNECTOR_ANALYTICS_DATASET,
   });

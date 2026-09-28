@@ -79,6 +79,12 @@ export interface CubeQuery {
   from: number;
   to: number;
   grainMs: number;
+  /**
+   * #1904: the tenant the read is for. A source MAY narrow to it — the Analytics Engine
+   * source must, since its index is the tenant — and the reads filter to the tenant
+   * regardless. A cache never passes it on: its blocks are every tenant's.
+   */
+  tenantId?: string;
 }
 
 /** A source of cubes. Implementations: the telemetry query, and a cache wrapping one. */
@@ -213,5 +219,35 @@ export function cachedSource(
   return {
     requests: (q) => read('requests', q, (b) => inner.requests(b)),
     patterns: (q) => read('patterns', q, (b) => inner.patterns(b)),
+  };
+}
+
+/**
+ * #1904: two sources joined at an instant — the request cube from `before` up to it, and from
+ * `after` from it on. The router's Analytics Engine datapoints carry the request facets only
+ * from the deploy that added them, so the older part of a window still comes from the
+ * (cached) telemetry cube; a window wholly on one side asks only that side.
+ *
+ * The cut is rounded UP to a grain, so a grain the instant falls inside is counted whole from
+ * `before`, which has every line of it, rather than partly from each. Patterns are always
+ * `before`'s: the router meters requests, not `ctx.log` lines.
+ */
+export function cutOverSource(before: AggregateSource, after: Pick<AggregateSource, 'requests'>, since: number): AggregateSource {
+  return {
+    async requests(q) {
+      const cut = Math.ceil(since / q.grainMs) * q.grainMs;
+      if (q.to <= cut) return before.requests(q);
+      if (q.from >= cut) return after.requests(q);
+      const [old, recent] = await Promise.all([
+        before.requests({ ...q, to: cut }),
+        after.requests({ ...q, from: cut }),
+      ]);
+      return {
+        rows: [...old.rows, ...recent.rows],
+        estimated: old.estimated || recent.estimated,
+        ...(old.complete === false || recent.complete === false ? { complete: false } : {}),
+      };
+    },
+    patterns: (q) => before.patterns(q),
   };
 }

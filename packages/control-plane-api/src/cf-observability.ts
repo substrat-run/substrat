@@ -1,6 +1,7 @@
 import { resolveObservabilityWindow, observabilityBucketMinutes } from './observability-window.js';
 import { ControlPlaneError } from './client.js';
-import { cachedSource, type AggregateSource, type CubeQuery, type CubeStore } from './aggregate-source.js';
+import { cachedSource, cutOverSource, type AggregateSource, type CubeQuery, type CubeStore, type RequestCubeRow } from './aggregate-source.js';
+import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
 import type {
   ObservabilityReader,
@@ -483,6 +484,17 @@ export interface CfObservabilityOptions {
    * and the route 501s.
    */
   connectorCallsDataset?: string;
+  /**
+   * #1904: the instant (ISO 8601) from which the request histogram and facets are read from
+   * the router's Analytics Engine datapoints instead of Workers Logs — the deploy of the
+   * router that writes blobs 6–9. Before it, those blobs are empty, so a window reaching
+   * further back reads its older part from the telemetry cube (`cutOverSource`).
+   *
+   * Absent, or with no `routerDataset`, the histogram and facets read Workers Logs only —
+   * today's behaviour. An unparseable value makes the request reads refuse — a typo here
+   * would otherwise read as "no requests before the epoch" or silently never switch.
+   */
+  requestsFromRouterSince?: string;
 }
 
 const GRAPHQL_URL = 'https://api.cloudflare.com/client/v4/graphql';
@@ -527,6 +539,13 @@ const METRICS_QUERY = `
  * saturates — `available: false` is a true answer, a fabricated outage is not.
  */
 const SERIES_ROW_LIMIT = 5000;
+
+/**
+ * The most rows one tenant's request cube may come back with (#1904): one per (grain, scope,
+ * operation, status, …) combination. A three-day window is 72 grains, so this leaves room for
+ * several hundred combinations per grain before the read refuses rather than truncates.
+ */
+const REQUEST_CUBE_ROW_LIMIT = 50_000;
 
 function seriesQuery(dimension: 'datetimeFifteenMinutes' | 'datetimeHour'): string {
   return `
@@ -617,7 +636,99 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       };
     },
   };
-  const source: AggregateSource = opts.cubeStore ? cachedSource(telemetry, opts.cubeStore) : telemetry;
+  const logs: AggregateSource = opts.cubeStore ? cachedSource(telemetry, opts.cubeStore) : telemetry;
+  const routerSince = opts.requestsFromRouterSince ? Date.parse(opts.requestsFromRouterSince) : undefined;
+  const routerDataset = opts.routerDataset;
+  const source: AggregateSource =
+    routerDataset && routerSince !== undefined
+      ? cutOverSource(
+          logs,
+          {
+            requests: (q) => {
+              // Refused per read, like a dataset name: a mistyped instant costs the request
+              // reads a 500, never every other observability read.
+              if (!Number.isFinite(routerSince)) {
+                throw new Error(
+                  `observability: requestsFromRouterSince is not an instant: ${JSON.stringify(opts.requestsFromRouterSince)}`,
+                );
+              }
+              return routerRequestCube(routerDataset, q);
+            },
+          },
+          Number.isFinite(routerSince) ? routerSince : 0,
+        )
+      : logs;
+
+  /**
+   * #1904: one tenant's request cube from the router's Analytics Engine datapoints, for one
+   * script family — the same rows the telemetry cube has, without scanning a single log line.
+   *
+   * Narrowed on `index1`, the tenant, which is also what Analytics Engine samples by: a quiet
+   * tenant's counts are exact and a busy one's are estimates, reweighted by
+   * `_sample_interval` and flagged `estimated`. A family is not written into the datapoint; it
+   * is a function of the vertical slug (blob1), so the rows of every vertical the tenant runs
+   * come back and the ones of other families are dropped here.
+   *
+   * Refuses a query with no tenant rather than reading every tenant's datapoints: this source
+   * is never cached, so it has no reason to.
+   */
+  async function routerRequestCube(dataset: string, q: CubeQuery): Promise<{ rows: RequestCubeRow[]; estimated: boolean }> {
+    if (!q.tenantId) throw new Error('observability: the router request cube is read per tenant, and this query named none');
+    const grainSeconds = Math.max(1, Math.round(q.grainMs / 1000));
+    const sql = `
+      SELECT
+        blob1 AS vertical,
+        blob2 AS scopeId,
+        blob3 AS surface,
+        double2 AS status,
+        blob6 AS operation,
+        blob7 AS problemCode,
+        blob8 AS principalKind,
+        blob9 AS level,
+        toStartOfInterval(timestamp, INTERVAL '${grainSeconds}' SECOND) AS bucket,
+        sum(_sample_interval) AS requests,
+        max(_sample_interval) AS maxInterval
+      FROM ${aeDataset(dataset)}
+      WHERE index1 = ${aeLiteral(q.tenantId)}
+        AND timestamp >= toDateTime(${Math.floor(q.from / 1000)})
+        AND timestamp < toDateTime(${Math.ceil(q.to / 1000)})
+      GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, bucket
+      ORDER BY bucket ASC
+      LIMIT ${REQUEST_CUBE_ROW_LIMIT}
+      FORMAT JSON`;
+    const answer = await analyticsEngineSql(sql);
+    if (answer.length >= REQUEST_CUBE_ROW_LIMIT) {
+      // A saturated page is a prefix of the window, which facet counts would present as the
+      // whole of it. Refused, like the metrics series.
+      throw new Error(
+        `Cloudflare Analytics Engine request cube saturated at ${REQUEST_CUBE_ROW_LIMIT} rows: the counts would be partial`,
+      );
+    }
+    let estimated = false;
+    const rows = answer.flatMap((r): RequestCubeRow[] => {
+      if (stableDeploymentRefFor(String(r['vertical'] ?? '')) !== q.service) return [];
+      const at = aeInstant(r['bucket']);
+      const instant = at === null ? NaN : Date.parse(at);
+      if (!Number.isFinite(instant)) return [];
+      if (aeNum(r['maxInterval']) > 1) estimated = true;
+      const status = aeNum(r['status']);
+      return [
+        {
+          bucket: Math.floor(instant / q.grainMs) * q.grainMs,
+          tenantId: q.tenantId!,
+          scopeId: blank(r['scopeId']),
+          level: blank(r['level']),
+          operation: blank(r['operation']),
+          problemCode: blank(r['problemCode']),
+          principalKind: blank(r['principalKind']),
+          surface: blank(r['surface']),
+          status: status > 0 ? status : null,
+          count: Math.round(aeNum(r['requests'])),
+        },
+      ];
+    });
+    return { rows, estimated };
+  }
 
   /**
    * One script family's lines of one kind over a span, counted per grain bucket and grouped
@@ -1719,6 +1830,11 @@ function aeLiteral(v: string): string {
     throw new Error('observability: refusing a dimension value with unexpected characters');
   }
   return `'${v}'`;
+}
+
+/** An Analytics Engine blob as a facet value: an unwritten blob is `''`, which is `null` here. */
+function blank(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null;
 }
 
 /** AE returns aggregate sums as STRINGS (they are 64-bit), quantiles as numbers. */

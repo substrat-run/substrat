@@ -16,6 +16,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./invocation-record": {
+      "types": "./dist/invocation-record.d.ts",
+      "default": "./dist/invocation-record.js"
     }
   },
   "files": [

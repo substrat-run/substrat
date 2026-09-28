@@ -28,9 +28,15 @@ returns, in a `finally` so errors count too, the router writes one Analytics Eng
 
 ```
 index:   [tenantId]
-blobs:   [verticalSlug, scopeId, surface, statusClass, rayId]
+blobs:   [verticalSlug, scopeId, surface, statusClass, rayId,
+          operation, problemCode, principalKind, level]
 doubles: [durationMs, status]
 ```
+
+The router knows the tenant, scope, surface and status by itself. Which operation ran, how it
+failed and who it ran as are known only inside the vertical, so the platform's entry hands them
+back on a response header, which the router writes into the datapoint and removes before the
+response leaves. The Requests histogram and its facet counts are read from these fields.
 
 The index is the tenant, so every read of this dataset is a read of one tenant. The dashboard's
 chart is a sampling-weighted `sum(_sample_interval)` with weighted quantiles for latency, run

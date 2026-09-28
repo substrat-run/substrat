@@ -221,7 +221,7 @@ export function aggregateReads(
     const grainMs = grainFor(input.to - input.from);
     const window = alignWindow(input.from, input.to, grainMs);
     const cube = mergeCubes(
-      await Promise.all(services.map((service) => source.requests({ service, ...window, grainMs }))),
+      await Promise.all(services.map((service) => source.requests({ service, ...window, grainMs, tenantId: input.tenantId }))),
     );
     return { grainMs, window, cube };
   };

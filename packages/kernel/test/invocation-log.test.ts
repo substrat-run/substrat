@@ -438,3 +438,77 @@ describe('invocationLog', () => {
     });
   });
 });
+
+// #1904: the router meters the request with the vertical's record, carried on one header.
+describe('withInvocationLog — the record handed back to the router (#1904)', () => {
+  const options = { routerSecret: (env: Env) => env.ROUTER_SECRET };
+  const HEADER = 'x-substrat-invocation-record';
+  /** A worker whose handler fills the record the way `mountOperations` does. */
+  const operationWorker = (fill: InvocationRecord, response = () => new Response('ok')) =>
+    withInvocationLog<Env>(
+      {
+        fetch: async (req) => {
+          Object.assign(invocationStampOf(req)!.record, fill);
+          return response();
+        },
+      },
+      options,
+    );
+  const quiet = () => {
+    const cap = capture();
+    return cap;
+  };
+
+  it('carries operation, problem code and principal kind on a routed request', async () => {
+    const cap = quiet();
+    try {
+      const res = (await operationWorker({ operation: 'tickets/close', problemCode: 'conflict', principalKind: 'user' }).fetch!(
+        new Request('https://acme.example/api/x', { headers: routed }),
+        ENV,
+        {},
+      )) as Response;
+      const carried = new URLSearchParams(res.headers.get(HEADER)!);
+      expect(Object.fromEntries(carried)).toEqual({ operation: 'tickets/close', problemCode: 'conflict', principalKind: 'user' });
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('never carries it to a caller the router did not vouch for', async () => {
+    const cap = quiet();
+    try {
+      const { 'x-substrat-router': _signature, ...unsigned } = routed;
+      const res = (await operationWorker({ operation: 'tickets/close' }).fetch!(
+        new Request('https://acme.example/api/x', { headers: unsigned }),
+        ENV,
+        {},
+      )) as Response;
+      expect(res.headers.get(HEADER)).toBeNull();
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('carries nothing when no operation ran, and survives immutable headers', async () => {
+    const cap = quiet();
+    try {
+      const plain = (await operationWorker({}).fetch!(new Request('https://acme.example/', { headers: routed }), ENV, {})) as Response;
+      expect(plain.headers.get(HEADER)).toBeNull();
+
+      // A response passed straight through from a fetch has immutable headers.
+      const frozen = new Response('asset', { status: 203 });
+      Object.defineProperty(frozen, 'headers', {
+        value: { set: () => { throw new TypeError('immutable'); }, get: () => null },
+      });
+      const res = await operationWorker({ operation: 'tickets/close' }, () => frozen).fetch!(
+        new Request('https://acme.example/', { headers: routed }),
+        ENV,
+        {},
+      );
+      expect(res.status).toBe(203);
+      expect(cap.lines).toHaveLength(2);
+    } finally {
+      cap.restore();
+    }
+  });
+});

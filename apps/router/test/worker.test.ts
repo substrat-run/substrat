@@ -524,7 +524,7 @@ describe('router', () => {
 
       expect(points).toHaveLength(1);
       expect(points[0]!.indexes).toEqual([T]);
-      expect(points[0]!.blobs).toEqual(['fsm', S, 'app', '2xx', '8f2ab-ARN']);
+      expect(points[0]!.blobs).toEqual(['fsm', S, 'app', '2xx', '8f2ab-ARN', '', '', '', 'info']);
       const [durationMs, status] = points[0]!.doubles!;
       expect(status).toBe(200);
       expect(durationMs).toBeGreaterThanOrEqual(0);
@@ -544,6 +544,34 @@ describe('router', () => {
     }
   });
 
+  it("meters the vertical's record from its header, and never lets the header out (#1904)", async () => {
+    const points: Array<{ indexes?: string[]; blobs?: string[]; doubles?: number[] }> = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const env = {
+      ROUTER_SECRET: SECRET,
+      CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+      VERTICAL_FSM: spyVertical({
+        'x-substrat-invocation-record': 'operation=repairs%2Fclose&problemCode=conflict&principalKind=user',
+        'x-kept': 'yes',
+      }).binding,
+      ANALYTICS: { writeDataPoint: (p: (typeof points)[number]) => points.push(p) },
+    } as unknown as Env;
+
+    try {
+      const res = await worker.fetch(get('https://acme.example.com/api/repairs/close'), env);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('ok');
+      expect(res.headers.get('x-substrat-invocation-record')).toBeNull();
+      expect(res.headers.get('x-kept')).toBe('yes');
+      // The index is still the tenant the ROUTER resolved; the level is the router's, and a
+      // problem code on a 200 files it as a warning.
+      expect(points[0]!.indexes).toEqual([T]);
+      expect(points[0]!.blobs!.slice(5)).toEqual(['repairs/close', 'conflict', 'user', 'warn']);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('meters the failure paths too — a 502 with no binding, and an unmetered 404', async () => {
     const points: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -558,6 +586,7 @@ describe('router', () => {
       expect((await worker.fetch(get('https://acme.example.com/'), env)).status).toBe(502);
       expect(points).toHaveLength(1);
       expect(points[0]!.blobs?.[3]).toBe('5xx');
+      expect(points[0]!.blobs?.[8]).toBe('error');
       expect(points[0]!.doubles?.[1]).toBe(502);
 
       // An unresolved hostname has no tenant to write under — no datapoint.
