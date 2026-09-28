@@ -1729,7 +1729,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     expect(state().seats).toContain(C);
   });
 
-  it('a close that finds the hand-over no longer open is reported and logged, not a quiet 200', async () => {
+  it('a close that finds the hand-over no longer open is a logged 500 — writes happened — not a quiet 200', async () => {
     const { w, host, send } = world();
     // An abandon lands between the revoke and the close.
     const revoke = host.revokeScopeRole!;
@@ -1741,7 +1741,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       const res = await send({ ...REF, from: A, to: B });
-      expect(res.status).toBe(409);
+      expect(res.status).toBe(500); // never 409, which says nothing was written
       expect(((await res.json()) as { error: string }).error).toMatch(/no longer open to close/);
       expect(logged).toHaveBeenCalledWith(expect.stringMatching(/^owner-transfer: .*no longer open to close/));
     } finally {

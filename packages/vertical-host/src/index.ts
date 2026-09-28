@@ -1435,12 +1435,14 @@ export function mountPlatformSurface<Env extends object>(
     const fromRevoked = await host.revokeScopeRole(body.scopeId, body.from, deps.ownerRoleKey);
     if (!(await deps.completeOwnerTransfer(c.env, ref, pair))) {
       // Seated and revoked, but the hand-over was no longer the open one to close: it was
-      // abandoned (or closed) while this ran. Not a success to report quietly.
+      // abandoned (or closed) while this ran. Not a success to report quietly, and not a 409
+      // either — a 409 here means "nothing was written", and a seat and a revoke were. A 500,
+      // which the platform audits as `failed`.
       const message =
         `scope ${body.scopeId}: seated ${body.to} and revoked ${body.from}'s owner seat, but the hand-over ` +
         `${body.from} → ${body.to} was no longer open to close — it was abandoned or closed meanwhile; check the owner seats`;
       console.error(`owner-transfer: ${message}`);
-      throw new HTTPException(409, { message });
+      throw new HTTPException(500, { message });
     }
     return c.json({ ...answer, fromRevoked } satisfies OwnerTransferResult);
   });
