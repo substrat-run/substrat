@@ -250,9 +250,11 @@ mountPlatformSurface(app, {
     mintOwnerClaimLink(identityDo(env, ref), ref.scopeId, input.origin),
   // The owner hand-over: moves the owner of record a reconcile re-seats (omit ⇒ 501)
   transferOwner: (env, ref, input) =>
-    identityDo(env, ref).transferOwner(ref.scopeId, input.from, input.to),
+    identityDo(env, ref).transferOwner(ref.scopeId, input.from, input.to, input.toHoldsRole),
   completeOwnerTransfer: (env, ref, input) =>
     identityDo(env, ref).completeOwnerTransfer(ref.scopeId, input.from, input.to),
+  abandonOwnerTransfer: (env, ref, input) =>
+    identityDo(env, ref).abandonOwnerTransfer(ref.scopeId, input.from, input.to),
 });
 ```
 

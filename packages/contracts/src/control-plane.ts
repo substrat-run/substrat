@@ -368,9 +368,11 @@ export type OwnerClaimLink = z.infer<typeof ownerClaimLink>;
 /**
  * An owner HAND-OVER request (#1665): the current owner of record and the member who takes
  * over. Two principals in the scope's own identity directory. The scope comes from the address.
- * One principal on both sides is refused here, before anything is reached.
+ * One principal on both sides is refused here, before anything is reached. `abandon: true`
+ * instead closes the OPEN hand-over `from → to` without finishing it (staff's way out of one
+ * that can no longer finish), writing no seat or revoke.
  */
-export const ownerTransferPair = z.object({ from: principalId, to: principalId });
+export const ownerTransferPair = z.object({ from: principalId, to: principalId, abandon: z.literal(true).optional() });
 /** The one refusal both hand-over bodies share: `ownerTransferInput` and vertical-host's. */
 export const distinctOwnerTransfer: [(b: { from: string; to: string }) => boolean, { message: string; path: string[] }] = [
   (b) => b.from !== b.to,
@@ -384,16 +386,17 @@ export const ownerTransferInput = ownerTransferPair.strict().refine(...distinctO
  * `from → to` still open (a retry, which the flow finishes); `done` found it finished (a repeat,
  * which seats and revokes nothing). `refused` wrote nothing: the scope has no owner here
  * (`unknown`), the seat is still unclaimed, `from` is not the owner this record was handed from,
- * no subject in the scope is bound to `to`, or ANOTHER hand-over is still open (`in-flight`).
+ * `to` is not a member, ANOTHER hand-over is still open (`in-flight`), or THIS one is open but
+ * can no longer finish because `to` has since been removed (`wedged`: abandon it).
  */
-export const ownerTransferOutcome = z.enum(['transferred', 'already', 'done']);
+export const ownerTransferOutcome = z.enum(['transferred', 'already', 'done', 'abandoned']);
 export const ownerTransferRecord = z.discriminatedUnion('outcome', [
-  z.object({ outcome: ownerTransferOutcome, owner: principalId }),
+  z.object({ outcome: ownerTransferOutcome.exclude(['abandoned']), owner: principalId }),
   z.object({
     outcome: z.literal('refused'),
     owner: principalId.nullable(),
-    reason: z.enum(['unknown', 'same-principal', 'unclaimed', 'not-owner', 'not-member', 'in-flight']),
-    /** On `in-flight`: the hand-over still open, which re-sending finishes. */
+    reason: z.enum(['unknown', 'same-principal', 'unclaimed', 'not-owner', 'not-member', 'in-flight', 'wedged']),
+    /** On `in-flight` / `wedged`: the hand-over still open — to resend, or to abandon. */
     inFlight: z.object({ from: principalId, to: principalId }).optional(),
   }),
 ]);
@@ -403,7 +406,8 @@ export type OwnerTransferRecord = z.infer<typeof ownerTransferRecord>;
  * A completed hand-over (#1665), as `/internal/owner-transfer` answers it. `owner` is the new
  * owner of record. `outcome` is the directory's: `transferred` (this call moved it), `already`
  * (this call finished one a failure had left open) or `done` (it was finished before, and this
- * call changed nothing). `fromRevoked` is false when `from` held no live scope-level owner seat
+ * call changed nothing), or `abandoned` (this call closed the open hand-over without finishing
+ * it, seating and revoking nothing). `fromRevoked` is false when `from` held no live scope-level owner seat
  * to take back — on a `done`, always. It says nothing about the TENANT level: a role `from` holds
  * there (projected into the scope) is not the vertical's to revoke, so `false` can mean `from`
  * still acts as owner through it. Take that one back on the platform (the tenant's role
@@ -427,7 +431,18 @@ export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
  *  no place for a vertical's whole response, and the caller got that in full already. */
 export const OWNER_TRANSFER_AUDIT_ERROR_MAX = 300;
 const ownerTransferAuditRow = <T extends z.ZodRawShape>(phase: T) =>
-  z.object({ ...phase, tenantId, scopeId, operationId: z.string().min(1), from: principalId, to: principalId }).strict();
+  z
+    .object({
+      ...phase,
+      tenantId,
+      scopeId,
+      operationId: z.string().min(1),
+      from: principalId,
+      to: principalId,
+      /** Present on every row of an abandon, so the log tells one from a hand-over. */
+      abandon: z.literal(true).optional(),
+    })
+    .strict();
 export const ownerTransferAudit = z.discriminatedUnion('phase', [
   ownerTransferAuditRow({ phase: z.literal('intent') }),
   ownerTransferAuditRow({ phase: z.literal('applied'), outcome: ownerTransferOutcome, fromRevoked: z.boolean() }),

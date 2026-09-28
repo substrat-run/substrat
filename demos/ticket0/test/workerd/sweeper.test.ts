@@ -1142,6 +1142,32 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
   });
 
+  it('a hand-over wedged by removing `to` is refused with nothing seated; an abandon clears it', async () => {
+    const s = await installed();
+    const C = principalId.parse(ulid());
+    await member(s, C);
+    // Step 1 ran and the flow stopped: the record names B, the hand-over is open.
+    expect((await directory().transferOwner(s, A, B, true)).outcome).toBe('transferred');
+    expect(await host().revokeScopeRole(s, B, 'agent')).toBe(true); // then the tenant removed B
+    const resend = await transfer(s, A, B);
+    expect(resend.status).toBe(409);
+    expect(((await resend.json()) as { error: string }).error).toMatch(/can no longer finish/);
+    expect(await ownerSeats(s)).toEqual([A]); // B was not seated
+    expect((await transfer(s, B, C)).status).toBe(409); // stuck behind it
+    const abandon = (from: string, to: string) =>
+      platform('/internal/owner-transfer', { tenantId: tenant, scopeId: s, from, to, abandon: true });
+    expect((await abandon(B, C)).status).toBe(409); // not the open pair
+    const abandoned = await abandon(A, B);
+    expect(abandoned.status).toBe(200);
+    expect(await abandoned.json()).toMatchObject({ outcome: 'abandoned', owner: B, fromRevoked: false });
+    expect(await ownerSeats(s)).toEqual([A]);
+    // From the record (B), a fresh hand-over goes through.
+    expect((await transfer(s, B, C)).status).toBe(200);
+    expect(await directory().getOwnerOfRecord(s)).toBe(C);
+    expect(await ownerSeats(s)).toContain(C);
+    expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+
   it("refuses the desk's own service accounts as `to` — each holds a role, and no login is theirs", async () => {
     const s = await installed();
     const recorded = JSON.parse((await directory().getScopeConfig(s))['ticket0:services']!) as Record<string, string>;

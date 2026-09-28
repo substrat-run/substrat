@@ -232,6 +232,42 @@ describe('the owner hand-over route (#1665)', () => {
     expect(asked).toHaveLength(1);
   });
 
+  it('staff abandon an open hand-over: relayed as `abandon: true`, and every row is marked', async () => {
+    const s = await newScope();
+    answer = async () => ({ scopeId: s, from: A, owner: B, outcome: 'abandoned', fromRevoked: false });
+    const res = await send(route(s), asStaff, { from: A, to: B, abandon: true });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { operationId: string; outcome: string };
+    expect(body.outcome).toBe('abandoned');
+    expect(asked).toEqual([{ tenantId: t, scopeId: s, from: A, to: B, abandon: true }]);
+    const base = { actor: staff, operationId: body.operationId, from: A, to: B, abandon: true };
+    expect(await rows(s)).toEqual([
+      { ...base, phase: 'intent' },
+      { ...base, phase: 'applied', outcome: 'abandoned', fromRevoked: false },
+    ]);
+    // The vertical's refusal (no such open hand-over) is a `refused` abandon row.
+    answer = async () => {
+      throw new ControlPlaneError(409, `scope ${s} has no open hand-over ${A} → ${B} to abandon`);
+    };
+    const refused = await send(route(s), asStaff, { from: A, to: B, abandon: true });
+    expect(refused.status).toBe(409);
+    expect((await rows(s)).slice(2).map((r) => [r.phase, r.abandon])).toEqual([
+      ['intent', true],
+      ['refused', true],
+    ]);
+  });
+
+  it("REFUSES an abandon on the tenant's own credential and a builder's — and the staff twin goes through", async () => {
+    const s = await newScope();
+    const abandon = { from: A, to: B, abandon: true };
+    expect((await send(route(s), asTenant, abandon)).status).toBe(403);
+    expect((await send(route(s), asBuilder, abandon)).status).toBe(403);
+    expect(asked).toEqual([]);
+    expect(await rows(s)).toEqual([]);
+    answer = async () => ({ scopeId: s, from: A, owner: B, outcome: 'abandoned', fromRevoked: false });
+    expect((await send(route(s), asStaff, abandon)).status).toBe(200);
+  });
+
   it('a hand-over whose OUTCOME row cannot be written says it completed, with its operationId', async () => {
     const s = await newScope();
     const original = host.admin.recordOwnerTransfer;
@@ -278,7 +314,14 @@ describe('the owner hand-over, end to end through the vertical surface (#1665)',
   let host: SqliteScopeHost;
   let app: ReturnType<typeof createControlPlaneApi>;
   /** The vertical's side: its owner of record, whether the seat is claimed, who holds the owner role. */
-  const world = { record: A as string, claimed: true, members: new Set<string>([A, B]), seats: new Set<string>([A]) };
+  const world = {
+    record: A as string,
+    claimed: true,
+    members: new Set<string>([A, B]),
+    seats: new Set<string>([A]),
+    /** The open hand-over, as the directory keeps it. */
+    open: null as null | { from: string; to: string },
+  };
 
   beforeAll(async () => {
     const vertical = new Hono<{ Bindings: { PLATFORM_SECRET: string } }>();
@@ -292,15 +335,29 @@ describe('the owner hand-over, end to end through the vertical surface (#1665)',
         }) as never,
       roles: [],
       ownerRoleKey: 'admin',
-      transferOwner: async (_env, _ref, { from, to }) => {
+      transferOwner: async (_env, _ref, { from, to, toHoldsRole }) => {
         if (!world.claimed) return { outcome: 'refused', owner: world.record as never, reason: 'unclaimed' };
-        if (!world.members.has(to)) return { outcome: 'refused', owner: world.record as never, reason: 'not-member' };
+        if (world.open) {
+          const same = world.open.from === from && world.open.to === to;
+          if (!same) return { outcome: 'refused', owner: world.record as never, reason: 'in-flight', inFlight: world.open as never };
+          if (!toHoldsRole) return { outcome: 'refused', owner: world.record as never, reason: 'wedged', inFlight: world.open as never };
+          return { outcome: 'already', owner: to };
+        }
+        if (!toHoldsRole) return { outcome: 'refused', owner: world.record as never, reason: 'not-member' };
         if (world.record === to) return { outcome: 'refused', owner: to, reason: 'not-owner' };
         if (world.record !== from) return { outcome: 'refused', owner: world.record as never, reason: 'not-owner' };
         world.record = to;
+        world.open = { from, to };
         return { outcome: 'transferred', owner: to };
       },
-      completeOwnerTransfer: async () => undefined,
+      completeOwnerTransfer: async () => {
+        world.open = null;
+      },
+      abandonOwnerTransfer: async (_env, _ref, { from, to }) => {
+        if (world.open?.from !== from || world.open.to !== to) return false;
+        world.open = null;
+        return true;
+      },
     });
     const client = new VerticalClient({
       fetch: ((url: string, init?: RequestInit) =>
@@ -343,5 +400,25 @@ describe('the owner hand-over, end to end through the vertical surface (#1665)',
       fromRevoked: true,
     });
     expect({ record: world.record, seats: [...world.seats] }).toEqual({ record: B, seats: [B] });
+  });
+
+  it('a hand-over wedged by removing `to` is refused on resend with nothing seated, and staff abandon it', async () => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'desk-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    const send = (body: unknown) =>
+      app.request(`/tenants/${t}/scopes/${s}/owner-transfer`, { method: 'POST', headers: asStaff, body: JSON.stringify(body) });
+    // Wedged: step 1 ran (the record names B, the hand-over is open) and then B was removed.
+    Object.assign(world, { record: B, open: { from: A, to: B }, seats: new Set([A]) });
+    world.members.delete(B);
+    const resend = await send({ from: A, to: B });
+    expect(resend.status).toBe(409);
+    expect(((await resend.json()) as { error: string }).error).toMatch(/can no longer finish/);
+    expect([...world.seats]).toEqual([A]); // nothing seated
+    const abandoned = await send({ from: A, to: B, abandon: true });
+    expect(abandoned.status).toBe(200);
+    expect(await abandoned.json()).toMatchObject({ outcome: 'abandoned', owner: B, fromRevoked: false });
+    expect(world.open).toBeNull();
+    expect([...world.seats]).toEqual([A]); // and still nothing seated or revoked
   });
 });

@@ -502,6 +502,7 @@ export class VerticalClient {
     scopeId: ScopeId;
     from: PrincipalId;
     to: PrincipalId;
+    abandon?: true;
   }): Promise<OwnerTransferResult> {
     return ownerTransferResult.parse(await this.postInternal<unknown>('/internal/owner-transfer', input, 'owner-transfer'));
   }

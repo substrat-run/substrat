@@ -3356,7 +3356,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const vertical = await verticalForScope(c, scope);
     if (!vertical) return c.json({ error: await diagnoseUnboundScope(actor, scope) }, 501);
     const operationId = ulid();
-    const base = { tenantId, scopeId, operationId, from: body.from, to: body.to };
+    // An abandon (`abandon: true`) is audited the same way, every row marked, so the log tells
+    // a hand-over closed without finishing from one that finished.
+    const base = { tenantId, scopeId, operationId, from: body.from, to: body.to, ...(body.abandon ? { abandon: true as const } : {}) };
     await admin.recordOwnerTransfer(actor, { ...base, phase: 'intent' });
     let moved;
     try {

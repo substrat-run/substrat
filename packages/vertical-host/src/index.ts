@@ -452,7 +452,9 @@ const ownerTransferRefusal: Record<Extract<OwnerTransferRecord, { outcome: 'refu
   unclaimed: 'has an unclaimed owner seat — claim it first, then hand it over',
   'not-owner': 'is not owned by `from` — the owner of record is someone else',
   'not-member': 'has no member `to` — the new owner must be someone who can sign in to it and still holds a role in it',
-  'in-flight': 'has another hand-over in flight — resend that one to finish it first',
+  'in-flight': 'has another hand-over in flight — resend that one to finish it, or abandon it',
+  wedged:
+    'has this hand-over open, and it can no longer finish: `to` has since lost its login or its role here — abandon it, then hand over again',
 };
 
 const settleBody = z.object({
@@ -618,7 +620,8 @@ export interface PlatformSurfaceDeps<Env> {
   transferOwner?: (
     env: Env,
     ref: { tenantId: TenantId; scopeId: ScopeId },
-    input: { from: PrincipalId; to: PrincipalId },
+    /** `toHoldsRole`: the host's read of whether `to` holds a role the scope can expand. */
+    input: { from: PrincipalId; to: PrincipalId; toHoldsRole: boolean },
   ) => Promise<z.input<typeof ownerTransferRecord>>;
   /**
    * Close the hand-over `from → to` once `/internal/owner-transfer` has seated and revoked around
@@ -630,6 +633,16 @@ export interface PlatformSurfaceDeps<Env> {
     ref: { tenantId: TenantId; scopeId: ScopeId },
     input: { from: PrincipalId; to: PrincipalId },
   ) => Promise<unknown>;
+  /**
+   * Abandon the OPEN hand-over `from → to` without finishing it (#1665): no seat, no revoke, the
+   * record left on `to`. True when it closed it, false when that pair is not the open one (⇒ 409).
+   * IdentityDO `abandonOwnerTransfer` is the reference. Omit ⇒ an abandon answers 501.
+   */
+  abandonOwnerTransfer?: (
+    env: Env,
+    ref: { tenantId: TenantId; scopeId: ScopeId },
+    input: { from: PrincipalId; to: PrincipalId },
+  ) => Promise<boolean>;
   /**
    * Vertical-specific delete-scope side effect — e.g. drop the scope from a deployment
    * sweep roster (#461) so its alarm never wakes a reaped scope. Runs after the host has
@@ -1366,11 +1379,34 @@ export function mountPlatformSurface<Env extends object>(
   // 2 or 3: both may be seated, the record names `to`. Re-sending the same hand-over reads
   // `already` at step 1 and runs 2–4 again, which are idempotent; after step 4 it reads `done`
   // and writes NOTHING, so a stale retry cannot re-seat or revoke over what the scope decided
-  // since. There is always exactly one owner of record.
+  // since. There is always exactly one owner of record. A hand-over that can no longer finish
+  // (`to` removed after step 1: its resend is `wedged`, every other one `in-flight`) is closed by
+  // `abandon: true`, which seats and revokes nothing.
   //
   // `from` loses the owner ROLE at scope level only: its login stays bound and any other grant
   // it holds stays, so a former owner who should keep working is re-invited or re-granted.
   app.post('/internal/owner-transfer', async (c) => {
+    const body = ownerTransferBody.parse(await c.req.json());
+    const ref = { tenantId: body.tenantId, scopeId: body.scopeId };
+    const pair = { from: body.from, to: body.to };
+    // Staff's way out of a hand-over that can no longer finish: close the open pair as
+    // abandoned. No seat, no revoke; the record stays on `to`, and a new hand-over starts there.
+    if (body.abandon) {
+      if (!deps.abandonOwnerTransfer) throw new HTTPException(501, { message: 'this vertical cannot abandon a hand-over' });
+      if (!(await deps.abandonOwnerTransfer(c.env, ref, pair))) {
+        throw new HTTPException(409, {
+          message: `scope ${body.scopeId} has no open hand-over ${body.from} → ${body.to} to abandon`,
+        });
+      }
+      const abandoned: OwnerTransferResult = {
+        scopeId: body.scopeId,
+        from: body.from,
+        owner: body.to,
+        outcome: 'abandoned',
+        fromRevoked: false,
+      };
+      return c.json(abandoned);
+    }
     if (!deps.transferOwner || !deps.completeOwnerTransfer) {
       throw new HTTPException(501, { message: 'this vertical keeps no owner seat' });
     }
@@ -1378,16 +1414,12 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.assignScopeRole || !host.revokeScopeRole || !host.hasScopeRoleLocal) {
       return c.json({ error: 'this deployment cannot seat a new owner (#1665) — redeploy it. Nothing was moved.' }, 501);
     }
-    const body = ownerTransferBody.parse(await c.req.json());
-    const ref = { tenantId: body.tenantId, scopeId: body.scopeId };
-    const pair = { from: body.from, to: body.to };
     // A bound login is not enough: `to` must still hold a role here. A member removed by
     // revoking their role keeps the binding, and handing them the scope would seat someone
-    // the scope already let go. Read before step 1, so a refusal writes nothing.
-    if (!(await host.hasScopeRoleLocal(body.tenantId, body.scopeId, body.to))) {
-      throw new HTTPException(409, { message: `scope ${body.scopeId} ${ownerTransferRefusal['not-member']}` });
-    }
-    const record = ownerTransferRecord.parse(await deps.transferOwner(c.env, ref, pair));
+    // the scope already let go. Read before step 1 and decided by the directory, which judges
+    // an open hand-over first so a refusal names the real state; a refusal writes nothing.
+    const toHoldsRole = await host.hasScopeRoleLocal(body.tenantId, body.scopeId, body.to);
+    const record = ownerTransferRecord.parse(await deps.transferOwner(c.env, ref, { ...pair, toHoldsRole }));
     if (record.outcome === 'refused') {
       const open = record.inFlight ? ` (${record.inFlight.from} → ${record.inFlight.to})` : '';
       throw new HTTPException(409, { message: `scope ${body.scopeId} ${ownerTransferRefusal[record.reason]}${open}` });

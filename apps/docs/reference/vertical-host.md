@@ -38,6 +38,7 @@ mountPlatformSurface(app, {
   mintOwnerClaim,  // a short-lived owner-claim link (omit ⇒ 501)
   transferOwner,   // hand the owner of record to another member (omit ⇒ 501)
   completeOwnerTransfer, // close that hand-over once seated and revoked (required with it)
+  abandonOwnerTransfer,  // close an open hand-over without finishing it (omit ⇒ an abandon 501s)
   onDeleteScope,   // e.g. drop the scope from a sweep roster (optional)
 });
 

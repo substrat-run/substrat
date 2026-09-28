@@ -1550,7 +1550,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
   ) {
     const w = {
       record: init.record === undefined ? A : init.record,
-      last: null as null | { from: string; to: string; state: 'pending' | 'done' },
+      last: null as null | { from: string; to: string; state: 'pending' | 'done' | 'abandoned' },
       claimed: init.claimed ?? true,
       members: new Set(init.members ?? [A, B, C]),
       seats: new Set(init.seats ?? [A]),
@@ -1566,19 +1566,27 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
         throw new Error(`injected failure at ${step}`);
       }
     };
-    const transferOwner = async (_env: Env, _ref: unknown, { from, to }: { from: string; to: string }) => {
+    const transferOwner = async (
+      _env: Env,
+      _ref: unknown,
+      { from, to, toHoldsRole }: { from: string; to: string; toHoldsRole: boolean },
+    ) => {
       w.steps.push('record');
       failIf('record');
       if (w.record === null) return { outcome: 'refused', owner: null, reason: 'unknown' } as const;
       if (!w.claimed) return { outcome: 'refused', owner: w.record, reason: 'unclaimed' } as const;
-      if (!w.members.has(to)) return { outcome: 'refused', owner: w.record, reason: 'not-member' } as const;
-      if (w.last?.state === 'pending' && (w.last.from !== from || w.last.to !== to)) {
-        return { outcome: 'refused', owner: w.record, reason: 'in-flight', inFlight: { from: w.last.from, to: w.last.to } } as const;
-      }
-      if (w.record === to) {
-        if (w.last?.from === from && w.last.to === to) {
-          return { outcome: w.last.state === 'pending' ? 'already' : 'done', owner: to } as const;
+      const member = toHoldsRole && w.members.has(to);
+      if (w.last?.state === 'pending') {
+        const inFlight = { from: w.last.from, to: w.last.to };
+        if (w.last.from !== from || w.last.to !== to) {
+          return { outcome: 'refused', owner: w.record, reason: 'in-flight', inFlight } as const;
         }
+        if (!member) return { outcome: 'refused', owner: w.record, reason: 'wedged', inFlight } as const;
+        return { outcome: 'already', owner: to } as const;
+      }
+      if (!member) return { outcome: 'refused', owner: w.record, reason: 'not-member' } as const;
+      if (w.record === to) {
+        if (w.last?.from === from && w.last.to === to && w.last.state === 'done') return { outcome: 'done', owner: to } as const;
         return { outcome: 'refused', owner: w.record, reason: 'not-owner' } as const;
       }
       if (w.record !== from) return { outcome: 'refused', owner: w.record, reason: 'not-owner' } as const;
@@ -1590,6 +1598,12 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
       w.steps.push('complete');
       failIf('complete');
       if (w.last?.state === 'pending' && w.last.from === from && w.last.to === to) w.last.state = 'done';
+    };
+    const abandonOwnerTransfer = async (_env: Env, _ref: unknown, { from, to }: { from: string; to: string }) => {
+      w.steps.push('abandon');
+      if (w.last?.state !== 'pending' || w.last.from !== from || w.last.to !== to) return false;
+      w.last.state = 'abandoned';
+      return true;
     };
     const host = fakeHost({
       assignScopeRole: async (_s, principal, roleKey) => {
@@ -1607,6 +1621,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     const app = appWith(host, {
       transferOwner: transferOwner as never,
       completeOwnerTransfer,
+      abandonOwnerTransfer,
       resolveOwner: async () => w.record as never,
     });
     const send = (body: unknown) =>
@@ -1678,6 +1693,39 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     expect(state()).toEqual({ record: C, seats: [C], last: { from: B, to: C, state: 'done' } });
   });
 
+  it('a hand-over wedged by removing `to` stays refused — and an abandon clears it for a fresh one', async () => {
+    const { w, send, state } = world();
+    w.failOn = 'assign'; // step 1 ran, step 2 did not
+    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false);
+    w.roles.delete(B); // then the tenant removes B
+    w.steps = [];
+    // The resend is refused and names the stuck hand-over; nothing is seated.
+    const resend = await send({ ...REF, from: A, to: B });
+    expect(resend.status).toBe(409);
+    expect(((await resend.json()) as { error: string }).error).toMatch(/can no longer finish.*abandon it/);
+    // A fresh hand-over is stuck behind it too.
+    const fresh = await send({ ...REF, from: B, to: C });
+    expect(fresh.status).toBe(409);
+    expect(((await fresh.json()) as { error: string }).error).toMatch(/in flight/);
+    expect(w.steps).toEqual(['record', 'record']);
+    expect(state()).toEqual({ record: B, seats: [A], last: { from: A, to: B, state: 'pending' } });
+    // The twin of the abandon: a pair that is not the open one is refused, and closes nothing.
+    expect((await send({ ...REF, from: B, to: C, abandon: true })).status).toBe(409);
+    // The abandon: closed, and nothing seated or revoked.
+    w.steps = [];
+    const abandoned = await send({ ...REF, from: A, to: B, abandon: true });
+    expect(abandoned.status).toBe(200);
+    expect(await abandoned.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, outcome: 'abandoned', fromRevoked: false });
+    expect(w.steps).toEqual(['abandon']);
+    expect(state()).toEqual({ record: B, seats: [A], last: { from: A, to: B, state: 'abandoned' } });
+    // A second abandon of it is refused: it is closed.
+    expect((await send({ ...REF, from: A, to: B, abandon: true })).status).toBe(409);
+    // From the record, a fresh hand-over goes through.
+    expect((await send({ ...REF, from: B, to: C })).status).toBe(200);
+    expect(state().record).toBe(C);
+    expect(state().seats).toContain(C);
+  });
+
   it('two hand-overs racing from one owner: one wins, the other is refused, and one owner is seated', async () => {
     const { send, state } = world();
     const [toB, toC] = await Promise.all([send({ ...REF, from: A, to: B }), send({ ...REF, from: A, to: C })]);
@@ -1701,13 +1749,13 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     expect(state()).toEqual(before);
   });
 
-  it('refuses a `to` still bound but whose role was taken back — before the directory is asked', async () => {
+  it('refuses a `to` still bound but whose role was taken back — before anything is written', async () => {
     const { w, send, state } = world({ roles: [A] }); // B signs in, but holds no role any more
     const before = state();
     const res = await send({ ...REF, from: A, to: B });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toMatch(/no member `to`/);
-    expect(w.steps).toEqual([]);
+    expect(w.steps).toEqual(['record']); // the directory decided, on the host's read, and wrote nothing
     expect(state()).toEqual(before);
     // The twin: give B a role back, and the same request goes through.
     w.roles.add(B);

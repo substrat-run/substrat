@@ -14,6 +14,8 @@ import {
   claimOwner,
   transferOwner,
   completeOwnerTransfer,
+  abandonOwnerTransfer,
+  unbindSubject,
 } from '../src/owner-seat.js';
 import type { RegistrySql } from '../src/site-registry.js';
 
@@ -212,7 +214,7 @@ describe('owner transfer', () => {
 
   it('moves the record to a member, and the seat stays claimed', () => {
     claimedWithMember();
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'transferred', owner: SUCCESSOR });
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toEqual({ outcome: 'transferred', owner: SUCCESSOR });
     expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
     expect(ownerSeat(sql, SCOPE, T0 + 2 * MIN)).toEqual({
       state: 'claimed',
@@ -231,12 +233,12 @@ describe('owner transfer', () => {
 
   it('a repeat while open answers `already`; once closed, `done` — both write nothing', () => {
     claimedWithMember();
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR).outcome).toBe('transferred');
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true).outcome).toBe('transferred');
     // The platform's flow failed after the record moved: its retry is `already`, and it finishes.
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'already', owner: SUCCESSOR });
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toEqual({ outcome: 'already', owner: SUCCESSOR });
     expect(completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR)).toBe(true);
     // Closed: a repeat is `done`, which the flow answers without seating or revoking anyone.
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'done', owner: SUCCESSOR });
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toEqual({ outcome: 'done', owner: SUCCESSOR });
     expect(completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR)).toBe(false); // already closed
     expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
   });
@@ -244,47 +246,82 @@ describe('owner transfer', () => {
   it('a record naming `to` is NOT a retry for any other `from` — open or closed (review MAJOR)', () => {
     claimedWithMember();
     const OTHER = '01PRINCIPALOTHERHOLDER';
-    transferOwner(sql, SCOPE, OWNER, SUCCESSOR);
+    transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true);
     // Open: only OWNER → SUCCESSOR is `already`; any other pair is refused while it is.
-    expect(transferOwner(sql, SCOPE, OTHER, SUCCESSOR)).toMatchObject({ outcome: 'refused', reason: 'in-flight' });
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR).outcome).toBe('already');
+    expect(transferOwner(sql, SCOPE, OTHER, SUCCESSOR, true)).toMatchObject({ outcome: 'refused', reason: 'in-flight' });
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true).outcome).toBe('already');
     completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR);
     // Closed: likewise.
-    expect(transferOwner(sql, SCOPE, OTHER, SUCCESSOR)).toMatchObject({ outcome: 'refused', reason: 'not-owner' });
+    expect(transferOwner(sql, SCOPE, OTHER, SUCCESSOR, true)).toMatchObject({ outcome: 'refused', reason: 'not-owner' });
     // Closing names the hand-over too: another pair cannot close it.
     const s2 = '01SCOPESECOND';
     recordOwnerSeat(sql, s2, OWNER, T0);
     resolvePrincipal(sql, s2, 'sub-installer-2', T0 + MIN);
     bindMember(SUCCESSOR, 'sub-successor', s2);
-    transferOwner(sql, s2, OWNER, SUCCESSOR);
+    transferOwner(sql, s2, OWNER, SUCCESSOR, true);
     expect(completeOwnerTransfer(sql, s2, OTHER, SUCCESSOR)).toBe(false);
-    expect(transferOwner(sql, s2, OWNER, SUCCESSOR).outcome).toBe('already');
+    expect(transferOwner(sql, s2, OWNER, SUCCESSOR, true).outcome).toBe('already');
   });
 
   it('refuses a second hand-over while one is open, naming it — and takes it once that one is closed', () => {
     claimedWithMember();
     const THIRD = '01PRINCIPALTHIRDMEMBER';
     bindMember(THIRD, 'sub-third');
-    transferOwner(sql, SCOPE, OWNER, SUCCESSOR); // open: seat and revoke not yet run
+    transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true); // open: seat and revoke not yet run
     const inFlight = { outcome: 'refused', owner: SUCCESSOR, reason: 'in-flight', inFlight: { from: OWNER, to: SUCCESSOR } };
     // Chained on top of it (the new owner handing on), and a competing one from the same owner.
-    expect(transferOwner(sql, SCOPE, SUCCESSOR, THIRD)).toEqual(inFlight);
-    expect(transferOwner(sql, SCOPE, OWNER, THIRD)).toEqual(inFlight);
+    expect(transferOwner(sql, SCOPE, SUCCESSOR, THIRD, true)).toEqual(inFlight);
+    expect(transferOwner(sql, SCOPE, OWNER, THIRD, true)).toEqual(inFlight);
     expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
     completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR);
-    expect(transferOwner(sql, SCOPE, SUCCESSOR, THIRD).outcome).toBe('transferred');
+    expect(transferOwner(sql, SCOPE, SUCCESSOR, THIRD, true).outcome).toBe('transferred');
+  });
+
+  it('a hand-over whose `to` was removed after step 1 is `wedged`, and only an abandon clears it', () => {
+    claimedWithMember();
+    const THIRD = '01PRINCIPALTHIRDMEMBER';
+    bindMember(THIRD, 'sub-third');
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true).outcome).toBe('transferred'); // then the flow failed
+    const open = { from: OWNER, to: SUCCESSOR };
+    // The tenant takes SUCCESSOR's role away: its resend must not finish (it would seat them).
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, false)).toEqual({
+      outcome: 'refused', owner: SUCCESSOR, reason: 'wedged', inFlight: open,
+    });
+    // …and unbinds them: the same, whichever of the two went.
+    unbindSubject(sql, SCOPE, 'sub-successor');
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toMatchObject({ reason: 'wedged' });
+    // Every other hand-over is stuck behind it.
+    expect(transferOwner(sql, SCOPE, SUCCESSOR, THIRD, true)).toMatchObject({ reason: 'in-flight', inFlight: open });
+    // Abandon closes ONLY the open pair — another pair changes nothing.
+    expect(abandonOwnerTransfer(sql, SCOPE, SUCCESSOR, THIRD)).toBe(false);
+    expect(abandonOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR)).toBe(true);
+    expect(abandonOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR)).toBe(false); // already closed
+    expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR); // the record stays where step 1 put it
+    // An abandoned hand-over is no retry: its resend is not `done`.
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toMatchObject({ outcome: 'refused', reason: 'not-member' });
+    bindMember(SUCCESSOR, 'sub-successor');
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toMatchObject({ outcome: 'refused', reason: 'not-owner' });
+    // And a fresh hand-over from the record goes through.
+    expect(transferOwner(sql, SCOPE, SUCCESSOR, THIRD, true).outcome).toBe('transferred');
+  });
+
+  it('a `to` the host says holds no role is not a member, bound or not — and its twin with a role is', () => {
+    claimedWithMember();
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, false)).toMatchObject({ outcome: 'refused', reason: 'not-member' });
+    expect(ownerOfRecord(sql, SCOPE)).toBe(OWNER);
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true).outcome).toBe('transferred');
   });
 
   it('a stale resend after a later hand-over is refused, not replayed', () => {
     claimedWithMember();
     const THIRD = '01PRINCIPALTHIRDMEMBER';
     bindMember(THIRD, 'sub-third');
-    transferOwner(sql, SCOPE, OWNER, SUCCESSOR);
+    transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true);
     completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR);
-    transferOwner(sql, SCOPE, SUCCESSOR, THIRD);
+    transferOwner(sql, SCOPE, SUCCESSOR, THIRD, true);
     completeOwnerTransfer(sql, SCOPE, SUCCESSOR, THIRD);
     // The first request arrives again (a retry queued somewhere): the scope has moved on.
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'refused', owner: THIRD, reason: 'not-owner' });
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toEqual({ outcome: 'refused', owner: THIRD, reason: 'not-owner' });
     expect(ownerOfRecord(sql, SCOPE)).toBe(THIRD);
   });
 
@@ -292,32 +329,32 @@ describe('owner transfer', () => {
     claimedWithMember();
     bindMember('01PRINCIPALTHIRD', 'sub-third');
     // A stale caller naming someone who never owned it.
-    expect(transferOwner(sql, SCOPE, '01PRINCIPALNOBODY', SUCCESSOR)).toEqual({
+    expect(transferOwner(sql, SCOPE, '01PRINCIPALNOBODY', SUCCESSOR, true)).toEqual({
       outcome: 'refused',
       owner: OWNER,
       reason: 'not-owner',
     });
     expect(ownerOfRecord(sql, SCOPE)).toBe(OWNER);
-    transferOwner(sql, SCOPE, OWNER, SUCCESSOR);
+    transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true);
     completeOwnerTransfer(sql, SCOPE, OWNER, SUCCESSOR);
     // The ORIGINAL owner is no longer the record, so it cannot hand the scope on.
-    expect(transferOwner(sql, SCOPE, OWNER, '01PRINCIPALTHIRD')).toMatchObject({ outcome: 'refused', reason: 'not-owner' });
+    expect(transferOwner(sql, SCOPE, OWNER, '01PRINCIPALTHIRD', true)).toMatchObject({ outcome: 'refused', reason: 'not-owner' });
     expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
     // The twin: the current owner can.
-    expect(transferOwner(sql, SCOPE, SUCCESSOR, '01PRINCIPALTHIRD').outcome).toBe('transferred');
+    expect(transferOwner(sql, SCOPE, SUCCESSOR, '01PRINCIPALTHIRD', true).outcome).toBe('transferred');
     expect(ownerOfRecord(sql, SCOPE)).toBe('01PRINCIPALTHIRD');
   });
 
   it('refuses a `to` nobody is bound to — and goes through once someone is', () => {
     recordOwnerSeat(sql, SCOPE, OWNER, T0);
     resolvePrincipal(sql, SCOPE, 'sub-installer', T0 + MIN);
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'refused', owner: OWNER, reason: 'not-member' });
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toEqual({ outcome: 'refused', owner: OWNER, reason: 'not-member' });
     // A binding in ANOTHER scope does not make it a member of this one.
     bindMember(SUCCESSOR, 'sub-successor', '01SCOPEOTHER');
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toMatchObject({ outcome: 'refused', reason: 'not-member' });
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toMatchObject({ outcome: 'refused', reason: 'not-member' });
     expect(ownerOfRecord(sql, SCOPE)).toBe(OWNER);
     bindMember(SUCCESSOR, 'sub-successor');
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR).outcome).toBe('transferred');
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true).outcome).toBe('transferred');
   });
 
   it('refuses an UNCLAIMED seat, touching neither the pending seat nor its link — and goes through once claimed', () => {
@@ -326,23 +363,23 @@ describe('owner transfer', () => {
     const late = T0 + FIRST_SIGN_IN_WINDOW_MS + MIN;
     mintOwnerClaim(sql, SCOPE, 'hash-1', late);
     const before = ownerSeat(sql, SCOPE, late);
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR)).toEqual({ outcome: 'refused', owner: OWNER, reason: 'unclaimed' });
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toEqual({ outcome: 'refused', owner: OWNER, reason: 'unclaimed' });
     expect(ownerSeat(sql, SCOPE, late)).toEqual(before);
     // The link still binds the OWNER principal, as minted.
     expect(claimOwner(sql, SCOPE, 'sub-installer', 'hash-1', late + MIN)).toBe(OWNER);
-    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR).outcome).toBe('transferred');
+    expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true).outcome).toBe('transferred');
   });
 
   it('refuses a hand-over to oneself, and a scope never provisioned here', () => {
     claimedWithMember();
-    expect(transferOwner(sql, SCOPE, OWNER, OWNER)).toEqual({ outcome: 'refused', owner: OWNER, reason: 'same-principal' });
-    expect(transferOwner(sql, '01SCOPENEVER', OWNER, SUCCESSOR)).toEqual({ outcome: 'refused', owner: null, reason: 'unknown' });
+    expect(transferOwner(sql, SCOPE, OWNER, OWNER, true)).toEqual({ outcome: 'refused', owner: OWNER, reason: 'same-principal' });
+    expect(transferOwner(sql, '01SCOPENEVER', OWNER, SUCCESSOR, true)).toEqual({ outcome: 'refused', owner: null, reason: 'unknown' });
     expect(ownerOfRecord(sql, SCOPE)).toBe(OWNER);
   });
 
   it('a re-provision after a transfer keeps the NEW record — first-write-wins still holds', () => {
     claimedWithMember();
-    transferOwner(sql, SCOPE, OWNER, SUCCESSOR);
+    transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true);
     // The platform re-runs provision with the principal it minted at install: the old owner.
     recordOwnerSeat(sql, SCOPE, OWNER, T0 + 10 * MIN);
     expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);

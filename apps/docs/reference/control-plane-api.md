@@ -75,7 +75,11 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   and closes the hand-over. A repeat after that answers `outcome: 'done'` and changes nothing. It refuses with `409`, changing nothing, when the seat is still unclaimed, `from`
   is not the owner of record, `to` is not a member (no login bound to it, or no role left
   in the instance), or another hand-over on the same
-  instance is still unfinished (resend that one first). Every attempt writes two
+  instance is still unfinished (resend that one first). A hand-over that can no longer finish,
+  because `to` was removed after it started, is refused on every resend and blocks any other.
+  Staff close it with `{ from, to, abandon: true }` on the same route: it closes only that open
+  hand-over, seats and revokes nothing, and leaves the owner of record on `to`, from where a new
+  hand-over starts. Its rows carry `abandon: true`. Every attempt writes two
   `transferOwner` rows to the admin log, paired by the `operationId` the route answers with:
   an `intent` before the vertical is asked, then `applied`, `refused` or `failed`. A `failed`
   hand-over may have stopped part-way, and sending the same request again completes it.
