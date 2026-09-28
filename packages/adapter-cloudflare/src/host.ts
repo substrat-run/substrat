@@ -7987,9 +7987,12 @@ export class CloudflareScopeHost implements ScopeHost {
    *   vertical no longer defines passes no check, so it does not count. A scope nobody can
    *   act in is the #332 lockout the reconcile exists to repair, so revoking the LAST holder
    *   is undone at the next reconcile. Seat the successor (in a role the vertical defines)
-   *   before unseating the owner, and the revoke stands. The owner re-seated is the one `owner_of_record` names, which is first-write-
-   *   wins — if a successor is later revoked too, the ORIGINAL owner comes back. To lock a
-   *   compromised owner out, suspend the scope; a seat revoke is not that lever.
+   *   before unseating the owner, and the revoke stands. The owner re-seated is the one the
+   *   vertical's owner of record names. A hand-over by hand leaves that record on the ORIGINAL
+   *   owner, who comes back if the successor is later revoked too; the platform's owner
+   *   hand-over (`/internal/owner-transfer`, #1665) moves the record, and then the successor
+   *   is the one re-seated. To lock a compromised owner out, suspend the scope; a seat revoke
+   *   is not that lever.
    * - An explicit grant does clear it: `assignScopeRole` is `INSERT OR REPLACE`, and so is
    *   a vertical's `onProvision` hook that re-issues it — which re-seats whatever it names
    *   on every reconcile. Revoke the seats your own flow granted and does not re-grant.
