@@ -5,6 +5,7 @@
  */
 import { z, tenantId as tenantIdSchema } from '@substrat-run/contracts';
 import { REQUEST_FACET_KEYS, type RequestFacetKey, type RequestWhere, type TenantRequestScope } from './observability.js';
+import { stableDeploymentRefFor } from './deploy.js';
 
 /** The widest window a tenant-grain read may cover — the same three days `hours` caps at. */
 export const TENANT_WINDOW_MAX_HOURS = 72;
@@ -126,4 +127,31 @@ export function parseTenantWindowQuery(
     from,
     to,
   };
+}
+
+/**
+ * #1877: the script FAMILIES a tenant's app — or, with no scope named, its apps — are served
+ * from. A family is a vertical's stem (`stableDeploymentRefFor`): its serving script, every
+ * per-version script (`<stem>-<ulid>`, which previews and legacy scopes run on), and any
+ * jurisdictional one (`<stem>-eu`).
+ *
+ * The family, not the script a scope is on today, because a scope MOVES between them — a
+ * preview onto each push's own script, a legacy scope on a rebind, any scope on
+ * `adopt-serving` — and a read scoped to today's script alone would draw silence before
+ * the move. Every script in a family belongs to the same vertical, so the trust boundary
+ * holds; the tenant and scope filters still narrow the rows within it.
+ *
+ * Only the tenant's own scopes are given, so a foreign scope id matches none.
+ */
+export function scriptFamiliesOfScopes(
+  scopes: ReadonlyArray<{ id: string; vertical: string | null }>,
+  narrow: { scopeId?: string | undefined; vertical?: string | undefined },
+): string[] {
+  const families = new Set<string>();
+  for (const s of scopes) {
+    if (narrow.scopeId && s.id !== narrow.scopeId) continue;
+    if (narrow.vertical && s.vertical !== narrow.vertical) continue;
+    if (s.vertical) families.add(stableDeploymentRefFor(s.vertical));
+  }
+  return [...families];
 }
