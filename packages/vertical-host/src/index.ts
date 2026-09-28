@@ -147,11 +147,13 @@ export interface VerticalScopeHost {
      */
     switchedOff?: ModuleId[];
   }): Promise<void | { switchedOff?: SwitchedOff[] }>;
-  /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event. */
+  /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
+   *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
+   *  `opts.exact`: the platform exported the dump itself, so the re-point never falls back. */
   restoreScopeLocal(
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
-    opts?: { switchedOff?: ModuleId[] },
+    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
@@ -385,6 +387,12 @@ const restoreBody = z.object({
   scopeId: scopeIdOf,
   /** #1742: as on the reconcile — applied to `scopeId`, in the restore's own event. */
   switchedOff: z.array(moduleIdOf).optional(),
+  /** #1869: the scope the dump was captured from. Only its node grants are re-pointed at
+   *  `scopeId`; a platform that predates the field sends none, and the host falls back. */
+  sourceScopeId: scopeIdOf.optional(),
+  /** #1869: the platform exported these tables itself, so `sourceScopeId` is a fact and the
+   *  re-point never falls back. Absent for a dump a caller supplied. */
+  exact: z.boolean().optional(),
   tables: z.array(
     z.object({
       name: z.string(),
@@ -393,7 +401,12 @@ const restoreBody = z.object({
       rows: z.array(z.array(z.unknown())),
     }),
   ),
-});
+})
+  // #1869: `exact` vouches for a named source. Without one the host would silently fall back.
+  .refine((b) => !b.exact || b.sourceScopeId !== undefined, {
+    message: '`exact` needs `sourceScopeId`, the scope the dump came from',
+    path: ['exact'],
+  });
 
 const configureBody = z.object({
   tenantId: tenantIdOf,
@@ -621,7 +634,11 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/restore', async (c) => {
     const body = restoreBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
-    const result = await host.restoreScopeLocal(body.scopeId, body.tables, { switchedOff: body.switchedOff });
+    const result = await host.restoreScopeLocal(body.scopeId, body.tables, {
+      switchedOff: body.switchedOff,
+      sourceScopeId: body.sourceScopeId,
+      exact: body.exact,
+    });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
   });

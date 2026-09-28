@@ -1815,11 +1815,19 @@ export class TenantNarrowedControlPlane {
   /**
    * Load a dump into the app's EXISTING scope, replacing its data wholesale.
    * tenantId/scopeId in the body are provenance; the URL says where it lands.
+   * `opts.sourceScopeId` (#1869) is the uploaded file's own scope, sent as a separate hint for
+   * the grant re-point only; the body's `tenantId`/`scopeId`, which pick the keys that open
+   * sealed payloads, are unchanged by it.
    */
-  restoreScope(scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<{ restored: string; tables: number }> {
+  restoreScope(
+    scopeId: ScopeId,
+    tables: ScopeDumpTable[],
+    opts?: { sourceScopeId?: ScopeId },
+  ): Promise<{ restored: string; tables: number }> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/restore`, {
       tenantId: this.tenantId,
       scopeId,
+      ...(opts?.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
       // boundary-lint-allow R6
       // Host-driving code, not module code: this is the app calling INTO a scope
       // from outside, so there is no operation whose instant to borrow. The value

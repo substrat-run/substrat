@@ -875,3 +875,32 @@ describe('VerticalClient.peerGrantsStatus (#1706)', () => {
     expect((err as ControlPlaneError).message).toMatch(/redeploy it/);
   });
 });
+
+describe("VerticalClient — a restore names the dump's source (#1869)", () => {
+  const sent = () => {
+    const bodies: Record<string, unknown>[] = [];
+    const client = new VerticalClient({
+      fetch: (async (_u: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ tables: 0 }), { status: 200 });
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    return { client, bodies };
+  };
+  const source = scopeId.parse(ulid());
+
+  it('sends sourceScopeId, and exact only when the platform exported the tables', async () => {
+    const { client, bodies } = sent();
+    await client.restoreScope(t, s, [], { sourceScopeId: source, exact: true });
+    await client.restoreScope(t, s, [], { sourceScopeId: source, exact: false });
+    await client.restoreScope(t, s, []);
+    // `exact` with no source is refused here, before anything is sent.
+    await expect(client.restoreScope(t, s, [], { exact: true })).rejects.toThrow(/`exact` needs `sourceScopeId`/);
+    expect(bodies).toEqual([
+      { tenantId: t, scopeId: s, tables: [], sourceScopeId: source, exact: true },
+      { tenantId: t, scopeId: s, tables: [], sourceScopeId: source },
+      { tenantId: t, scopeId: s, tables: [] },
+    ]);
+  });
+});

@@ -23,6 +23,7 @@
  */
 import { z } from 'zod';
 import { emitLifecycles, type EmittedLifecycle, type LifecycleDef } from './lifecycle.js';
+import { isKernelNamespace } from './object-ref.js';
 
 /**
  * One entity: the table it lives in, its field schema, and its place in the
@@ -174,7 +175,25 @@ export function defineEntities<
     };
   },
 >(entities: T): T {
+  assertEntityNames(Object.keys(entities));
   return entities;
+}
+
+/**
+ * Refuse an entity named for a kernel namespace, in any case (#1869). Its refs would be
+ * stored as `scope:<id>` or `Scope:<id>` beside the kernel's own rows, and `ctx.link`
+ * refuses them at write time (#1856); this says so where the model is declared and
+ * emitted instead. A `parents` entry is a key of the same map, so it is covered too.
+ */
+function assertEntityNames(names: readonly string[]): void {
+  for (const name of names) {
+    if (isKernelNamespace(name)) {
+      throw new Error(
+        `model: '${name}' is a kernel namespace (in any case), not an entity name — ` +
+          'the permission graph writes its own rows under it. Rename the entity',
+      );
+    }
+  }
 }
 
 /** The declared entity names. */
@@ -354,6 +373,7 @@ export function emitModel<T extends Record<string, EntityDef>>(
   if (options.version !== undefined && options.version.length === 0) {
     throw new Error('model: `version` is declared but empty — omit it or state one');
   }
+  assertEntityNames(Object.keys(entities));
   const out: Record<string, EmittedEntity> = {};
   for (const name of Object.keys(entities).sort()) {
     const e = entities[name];

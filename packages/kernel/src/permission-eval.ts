@@ -57,7 +57,11 @@ export interface PermissionTupleRow {
  * construction, so all three live together.
  */
 export interface ScopeTupleReader {
-  /** Scope-level tuples for `subject` whose relation starts with `relationPrefix`. */
+  /**
+   * Scope-level tuples for `subject` whose relation starts with `relationPrefix`. A
+   * pre-filter only: the adapters answer it with SQL `LIKE`, which ignores ASCII case and
+   * reads `_` as a wildcard, so the evaluator re-judges every row's relation exactly (#1869).
+   */
   tuples(subject: string, relationPrefix: string): MaybePromise<PermissionTupleRow[]>;
   /** The one grant tuple (subject, relation, object), if it exists. */
   grant(
@@ -292,16 +296,19 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     // `covers` (§ `subjectsOf`).
     const subjects = await subjectsOf(subject, node, now);
 
+    // The readers' prefix match is a pre-filter (SQL LIKE ignores case), so every row is held
+    // to the prefix exactly here: `Role:admin` must not expand as `role:admin` (#1869).
     const tuplesFor = async (
       subjectRefValue: string,
       prefix: string,
       scoped: boolean,
     ): Promise<PermissionTupleRow[]> =>
-      scoped
+      (scoped
         ? scope
-          ? scope.tuples(subjectRefValue, prefix)
+          ? await scope.tuples(subjectRefValue, prefix)
           : []
-        : reader.tenantTuples(node.tenantId, subjectRefValue, prefix);
+        : await reader.tenantTuples(node.tenantId, subjectRefValue, prefix)
+      ).filter((row) => row.relation.startsWith(prefix));
 
     for (const nodeObj of nodeObjectsOf(node)) {
       for (const s of subjects) {

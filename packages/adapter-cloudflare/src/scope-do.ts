@@ -254,6 +254,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
+import { repointScopeGrants, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -1717,12 +1718,13 @@ export function defineScopeDO(
         // BOTH stores, because a scope check consults both: rule 2 inheritance makes a
         // tenant-level grant enforceable here exactly as a scope-level one is, and the
         // projected `_substrat_tenant_tuples` is where this DO holds them. A read-back
-        // that disagreed with enforcement would be worse than none.
+        // that disagreed with enforcement would be worse than none. GLOB, not LIKE (#1869):
+        // case-sensitive, as the checker's match is.
         const rows = [
           ...(this.sql
             .exec(
               `SELECT subject, relation, expires_at FROM _substrat_tuples
-               WHERE subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+               WHERE subject GLOB 'connection:*' AND relation GLOB 'granted:*'
                  AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
               now,
             )
@@ -1730,7 +1732,7 @@ export function defineScopeDO(
           ...(this.sql
             .exec(
               `SELECT subject, relation, expires_at FROM _substrat_tenant_tuples
-               WHERE subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+               WHERE subject GLOB 'connection:*' AND relation GLOB 'granted:*'
                  AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
               now,
             )
@@ -4589,10 +4591,20 @@ export function defineScopeDO(
     async importDump(
       tables: ScopeDumpTable[],
       destScopeId?: ScopeId,
-      /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
-       *  the replay re-points the grants, in the same event: a dump from before the switch was
-       *  pulled carries the grants live and no marker. Needs `destScopeId`, the scope restored. */
-      switchOff?: { moduleIds: readonly string[]; at: string },
+      {
+        switchOff,
+        sourceScopeId,
+        exact,
+      }: {
+        /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
+         *  the replay re-points the grants, in the same event: a dump from before the switch was
+         *  pulled carries the grants live and no marker. Needs `destScopeId`, the scope restored. */
+        switchOff?: { moduleIds: readonly string[]; at: string };
+        /** The scope the dump was captured FROM (#1869), whose grants the re-point moves. */
+        sourceScopeId?: ScopeId;
+        /** The platform exported this dump itself, so the re-point never falls back (`RepointSource`). */
+        exact?: boolean;
+      } = {},
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
       //
@@ -4622,6 +4634,10 @@ export function defineScopeDO(
       // only the first statement, so the text itself has to be the one statement.
       // Pure input validation, so it runs before the first DROP: a refused dump touches nothing.
       assertReplayableDump(replayable, { maxColumns: DO_SQL_LIMITS.columns });
+      // #1869: `exact` vouches for a named source; without one it would silently fall back.
+      if (exact && !sourceScopeId) {
+        throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
+      }
       const switched = await this.ctx.storage.transaction(async () => {
         this.sql.exec('PRAGMA defer_foreign_keys = ON');
         // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
@@ -4666,7 +4682,7 @@ export function defineScopeDO(
         this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
         // Re-point the restored grants at THIS scope (after the spine exists, so a dump
         // that carried no tuples table still finds one here).
-        if (destScopeId) this.rewriteScopeTuples(destScopeId);
+        if (destScopeId) this.rewriteScopeTuples(destScopeId, sourceScopeId && { scopeId: sourceScopeId, exact });
         // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
         // the spine and the re-point. A switch that throws rolls the whole restore back, so
         // the dump's grants never commit live without the switch that should cover them.
@@ -4739,18 +4755,14 @@ export function defineScopeDO(
      * `_substrat_tenant_tuples`, which this does not attempt — a cross-tenant restore is a
      * governed copy, not a repair.
      *
+     * Which rows move is `repointScopeGrants`'s (#1869): the dump's source scope, exactly.
+     *
      * `UPDATE OR REPLACE` because (subject, relation, object) is the primary key: if the
      * dump already held a tuple for the destination scope, the rewritten row collapses
      * onto it instead of failing the whole restore.
      */
-    private rewriteScopeTuples(destScopeId: ScopeId): void {
-      this.sql.exec(
-        `UPDATE OR REPLACE _substrat_tuples
-            SET object = ?
-          WHERE object LIKE 'scope:%' AND object <> ?`,
-        `scope:${destScopeId}`,
-        `scope:${destScopeId}`,
-      );
+    private rewriteScopeTuples(destScopeId: ScopeId, source?: RepointSource): void {
+      repointScopeGrants(this.switchSql(), destScopeId, source);
     }
 
     /**

@@ -59,6 +59,8 @@ describe('the bind gate route (#1756)', () => {
   const refOf = new Map<string, string>(); // versionId → its script
   const scripts = new Map<string, Map<string, ScopeDumpTable[]>>(); // script → scope → dump
   const calls: string[] = [];
+  /** #1869: what each restore was told about where its tables came from. */
+  const sources: { scopeId: string; sourceScopeId?: string; exact?: boolean }[] = [];
   const storeOf = (ref: string) => {
     if (!scripts.has(ref)) scripts.set(ref, new Map());
     return scripts.get(ref)!;
@@ -69,8 +71,14 @@ describe('the bind gate route (#1756)', () => {
         calls.push(`export ${ref}`);
         return storeOf(ref).get(sid) ?? [];
       },
-      restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[]) => {
+      restoreScope: async (
+        _t: string,
+        sid: string,
+        tables: ScopeDumpTable[],
+        opts?: { sourceScopeId?: string; exact?: boolean },
+      ) => {
         calls.push(`restore ${ref}`);
+        sources.push({ scopeId: sid, sourceScopeId: opts?.sourceScopeId, exact: opts?.exact });
         storeOf(ref).set(sid, tables);
         return { tables: tables.length };
       },
@@ -180,6 +188,8 @@ describe('the bind gate route (#1756)', () => {
     expect(calls).toEqual([`export ${refOf.get(v1)}`, `restore ${refOf.get(kept)}`]);
     expect(await boundTo()).toBe(kept);
     expect(rows(kept)).toEqual([['row-1']]);
+    // #1869: the carry names its own scope as the source, exported by the platform.
+    expect(sources.at(-1)).toEqual({ scopeId: producerScope, sourceScopeId: producerScope, exact: true });
   });
 
   it('if the break appears between the question and the bind, the host still refuses, and nothing is half-bound', async () => {
@@ -314,6 +324,7 @@ describe('the bind gate route (#1756)', () => {
       storeOf(SERVING).set(s, table('crossing-row'));
       const res = await post(`/tenants/${t}/scopes/${s}/rebind-vertical`, asStaff, { vertical: OTHER });
       expect(res.status).toBe(200);
+      expect(sources.at(-1)).toEqual({ scopeId: s, sourceScopeId: s, exact: true }); // #1869
       expect(await recordOf(s)).toMatchObject({ servingRef: OTHER_SERVING, verticalVersionId: l1 });
       expect(storeOf(OTHER_SERVING).get(s)?.[0]?.rows).toEqual([['crossing-row']]);
     });
@@ -323,6 +334,7 @@ describe('the bind gate route (#1756)', () => {
       const s = await legacy();
       const adopt = await post(`/tenants/${t}/scopes/${s}/adopt-serving`, asStaff);
       expect(adopt.status).toBe(200);
+      expect(sources.at(-1)).toEqual({ scopeId: s, sourceScopeId: s, exact: true }); // #1869
       expect(await recordOf(s)).toMatchObject({ servingRef: SERVING, verticalVersionId: kept });
     });
   });

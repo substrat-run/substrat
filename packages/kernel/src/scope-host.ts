@@ -4176,12 +4176,17 @@ export interface ScopeHost {
    * Refuses an unknown scope — restore never creates one; that is `importScope`. The
    * dump's own `tenantId`/`scopeId` are provenance, never the authority: the caller
    * says where it lands. Audited as `restoreScope` with the dump's provenance.
+   *
+   * `opts.sourceScopeId` (#1869) is a separate hint for the grant re-point ONLY: the scope the
+   * uploaded file says it came from, when the dump's own `scopeId` was set to something else.
+   * The dump's `tenantId`/`scopeId` are left exactly as they are for everything else.
    */
   restoreScope(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     dump: ScopeDump,
+    opts?: { sourceScopeId?: ScopeId },
   ): Promise<void>;
 
   /**

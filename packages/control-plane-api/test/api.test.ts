@@ -3925,6 +3925,29 @@ describe('control-plane API — vertical registry', () => {
       expect(await host.admin.versionManifest(staff, 'fsm', id)).toBe(sent);
     });
 
+    it('refuses a registry whose entity-grant shape is a kernel namespace, and accepts its twin (#1869)', async () => {
+      const withGrant = (id: string, entityType: string) =>
+        JSON.stringify({
+          version: id.slice(-6),
+          entry: 'index.js',
+          compatibilityDate: '2026-07-01',
+          registry: { permissions: [], roles: [], entityGrants: [{ entityType, permissions: ['fsm:job-read'] }] },
+          digests: { manifest: 'm', permission: 'p', migration: 'g' },
+        });
+      for (const entityType of ['scope', 'Scope', 'TENANT']) {
+        const id = ulid();
+        const res = await post(id, withGrant(id, entityType));
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: string }).error).toBe(
+          `manifestJson is not a deploy manifest: registry.entityGrants.0.entityType: ` +
+            `'${entityType}' is a kernel namespace (in any case), not an entity type`,
+        );
+        expect((await get(`/verticals/fsm/versions/${id}/registry`)).status).toBe(404);
+      }
+      const ok = ulid();
+      expect((await post(ok, withGrant(ok, 'scopeItem'))).status).toBe(201);
+    });
+
     it('still accepts a pre-#286 version with no manifest, and one with no registry', async () => {
       expect((await post(ulid(), null)).status).toBe(201);
       expect((await post(ulid(), undefined)).status).toBe(201);
