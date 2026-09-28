@@ -109,6 +109,11 @@ app.use('*', invocationLog<Env>({
 }));
 ```
 
+A deployed script is stamped by the platform as well: the upload puts an entry of its own in
+front of the worker, wrapping it in the same stamp, and this middleware then steps aside rather
+than writing a second line. It stays in the template because it is the explicit, visible form
+of the stamp, and it is what places the stamp before your routes wherever the app runs.
+
 [`invocationLog`](/reference/kernel#trusting-the-edges) from `@substrat-run/kernel` writes one
 line per *routed* invocation, stamped with the tenant and scope the router asserted. An
 invocation whose assertion it cannot accept — an un-routed local request, a missing, malformed or

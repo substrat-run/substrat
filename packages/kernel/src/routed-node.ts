@@ -1,6 +1,18 @@
-import { scopeId as scopeIdSchema, tenantId as tenantIdSchema } from '@substrat-run/contracts';
 import { secretMatches } from './platform-call.js';
 import type { ScopeId, TenantId } from '@substrat-run/contracts';
+
+/**
+ * A tenant or scope id: a ULID, exactly what `@substrat-run/contracts`' `tenantId` and
+ * `scopeId` schemas accept (`z.string().regex(ULID).brand()`).
+ *
+ * Checked with the pattern itself rather than through those schemas since #1893, because
+ * this file is bundled into the platform's entry in front of EVERY deployed vertical
+ * (`withInvocationLog`), and a runtime import of the contracts package pulls all of it —
+ * and zod — into that bundle: 750 KB added to every upload to run one regex. The brands
+ * are types, so they still come from contracts; `routed-node.test.ts` holds this pattern to
+ * those schemas so the two cannot drift.
+ */
+export const ROUTED_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
 /**
  * Reading the node the router asserted (K-26).
@@ -99,15 +111,13 @@ export function readRoutedNode(
     throw new RouterAssertionError('router assertion is incomplete');
   }
 
-  const tenant = tenantIdSchema.safeParse(rawTenant);
-  const scope = scopeIdSchema.safeParse(rawScope);
-  if (!tenant.success || !scope.success) {
+  if (!ROUTED_ID.test(rawTenant) || !ROUTED_ID.test(rawScope)) {
     throw new RouterAssertionError('router assertion carries a malformed id');
   }
 
   return {
-    tenantId: tenant.data,
-    scopeId: scope.data,
+    tenantId: rawTenant as TenantId,
+    scopeId: rawScope as ScopeId,
     surface: headers.get('x-substrat-surface') ?? 'app',
     verticalSlug: headers.get('x-substrat-vertical'),
   };

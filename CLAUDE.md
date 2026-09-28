@@ -445,6 +445,8 @@ generated while nothing re-emits it. So a generated file has all three of:
 The re-emit gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:client`,
 `lint:conformance`, `lint:migrations`, plus `lint:decisions`, `lint:playbook`, `lint:docs`,
 `lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`,
+`lint:platform-entry` (`tools/platform-entry-emit.mts`: the entry module the uploader puts
+in front of every vertical's bundle, #1893, bundled from the kernel's `withInvocationLog`),
 `lint:auth-schema`, `lint:lake-schema` (`tools/lake-schema-emit.mjs`: the Tier-2 stream
 schema, derived from the outbox DDL the same way `lint:spine-ddl` reads it).
 

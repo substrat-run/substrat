@@ -269,6 +269,12 @@ jobs:
       # while the engine surface moved underneath it. `version-packages` runs
       # the write, so this only reddens on a hand edit.
       - run: pnpm lint:pins --check
+      # The platform-entry checkpoint (#1893). The control plane uploads its own entry
+      # module in front of every vertical's bundle, so each request is stamped whether
+      # or not the vertical mounted `invocationLog`. That module is the kernel's
+      # `withInvocationLog`, bundled into a string constant — so a kernel change that
+      # is not re-emitted deploys every vertical behind the OLD stamp, silently.
+      - run: pnpm lint:platform-entry --check
       # The issuer-schema checkpoint (#987). `demos/auth-server`'s Drizzle schema and
       # raw DDL are emitted from Better Auth's own table declarations, and both carry
       # "do not edit by hand" — but the only `--check` was inside a vitest case, while

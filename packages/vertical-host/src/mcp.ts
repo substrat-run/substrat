@@ -59,7 +59,7 @@ import {
   mcpResourceOf,
   errorCodeOf,
 } from '@substrat-run/contracts';
-import { INVOCATION_RECORD_KEY, type InvocationRecord, type ScopeStub } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord, type ScopeStub } from '@substrat-run/kernel';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 
 /** What `invocationLog` handed this request (#1746, #1237). Both absent without the middleware. */
@@ -707,8 +707,9 @@ export function mountMcp(
       // simply records nothing.
       const get = (c as { get?: (k: string) => unknown }).get;
       const invocation: McpInvocation = {
-        record: get?.(INVOCATION_RECORD_KEY) as InvocationRecord | undefined,
-        invocationId: get?.('substratInvocationId') as string | undefined,
+        // #1893: or the platform's stamp, when the worker mounts no middleware.
+        record: (get?.(INVOCATION_RECORD_KEY) as InvocationRecord | undefined) ?? invocationStampOf(c.req.raw)?.record,
+        invocationId: (get?.('substratInvocationId') as string | undefined) ?? invocationStampOf(c.req.raw)?.invocationId,
       };
       if (invocation.record && stub.subjectKind !== undefined) invocation.record.principalKind = stub.subjectKind;
       for (const msg of messages) {
