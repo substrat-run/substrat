@@ -41,8 +41,8 @@ export function isSpineTable(name: string): boolean {
 
 /**
  * Refuse a dump carrying `_substrat_*` tables this host's kernel does not build, naming every
- * one of them. Called before any spine row goes in, inside the load's transaction; `built`
- * answers whether the kernel built a table of that name.
+ * one of them. Called before any spine row goes in, inside the load's transaction; `columnsOf`
+ * is the same lookup `dumpRowsInsert` takes, `undefined` for a table the kernel did not build.
  *
  * The usual cause is a dump from the other kind of host: a Durable Object's scope builds spine
  * tables (`_substrat_roles`, `_substrat_tenant_tuples`, …) that a node scope keeps in its
