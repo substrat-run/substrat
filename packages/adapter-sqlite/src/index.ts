@@ -195,6 +195,7 @@ import {
   substratError,
   assertReplayableDump,
   delegatedReadRecord,
+  ownerTransferAudit,
   redrainEventsInput,
   REDRAIN_BATCH,
 } from '@substrat-run/contracts';
@@ -9433,6 +9434,15 @@ export class SqliteScopeHost implements ScopeHost {
           parsed.params,
           parsed.resultCount,
         );
+      },
+      /**
+       * #1665: one phase of an owner hand-over the control plane ran against the vertical that
+       * holds the scope's owner seat. Parsed, then written as an ordinary `transferOwner` row:
+       * the id and instant are stamped here, the actor is the request's.
+       */
+      recordOwnerTransfer: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
+        this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
       },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const where: string[] = [];

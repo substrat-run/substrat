@@ -28,6 +28,7 @@ import type {
   ProjectedIdentityLink,
   OwnerSeat,
   OwnerClaimLink,
+  OwnerTransferResult,
   QueryScopeInput,
   ReadScopeTableInput,
   EntityHistoryInput,
@@ -64,6 +65,7 @@ import {
   mintedPreviewClient,
   ownerSeat,
   ownerClaimLink,
+  ownerTransferResult,
   previewClientClaim,
   retiredPreviewClients,
   peerGrantsEntry,
@@ -490,6 +492,21 @@ export class VerticalClient {
    */
   async mintOwnerClaim(input: { tenantId: TenantId; scopeId: ScopeId; origin: string }): Promise<OwnerClaimLink> {
     return ownerClaimLink.parse(await this.postInternal<unknown>('/internal/owner-claim', input, 'owner-claim'));
+  }
+
+  /**
+   * Hand the scope's owner seat from `from` to `to` (#1665) — vertical-host's
+   * `/internal/owner-transfer`. A 409 wrote nothing; any other failure is completed by the same
+   * call again. Parsed on arrival.
+   */
+  async transferOwner(input: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    from: PrincipalId;
+    to: PrincipalId;
+    abandon?: true;
+  }): Promise<OwnerTransferResult> {
+    return ownerTransferResult.parse(await this.postInternal<unknown>('/internal/owner-transfer', input, 'owner-transfer'));
   }
 
   /**

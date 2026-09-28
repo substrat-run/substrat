@@ -32,6 +32,7 @@
  * The IdentityDO's owner-seat methods delegate here.
  */
 
+import type { z, ownerTransferAbandon, ownerTransferRecord } from '@substrat-run/contracts';
 import type { RegistrySql } from './site-registry.js';
 
 /** How long after provision a plain first sign-in still claims the seat. */
@@ -58,6 +59,12 @@ export const OWNER_SEAT_DDL: readonly string[] = [
   // One outstanding claim link per scope — the hash of its token and when it stops working.
   // Minting again replaces it, so a leaked link is retired by minting a fresh one.
   `CREATE TABLE IF NOT EXISTS owner_claim (scope_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, expires_at INTEGER NOT NULL)`,
+  // The last owner hand-over (#1665): who handed to whom, and whether the platform's flow has
+  // finished seating and revoking around it (`pending` → `done`), or staff abandoned it
+  // (`pending` → `abandoned`). What tells a retry of THAT
+  // hand-over, which must finish it, from any other request that merely finds the record naming
+  // `to`, which must not revoke anybody.
+  `CREATE TABLE IF NOT EXISTS owner_transfer (scope_id TEXT PRIMARY KEY, prev_principal TEXT NOT NULL, principal TEXT NOT NULL, state TEXT NOT NULL)`,
 ];
 
 /**
@@ -118,6 +125,150 @@ export function ownerOfRecord(sql: RegistrySql, scopeId: string): string | null 
     | { principal: string }
     | undefined;
   return row?.principal ?? null;
+}
+
+/**
+ * What `transferOwner` did — the contracts' `ownerTransferRecord`, which the platform parses it
+ * with. `transferred` moved the record and opened the hand-over; `already` found THIS hand-over
+ * still open (a retry, which the platform's flow finishes); `done` found it finished (a repeat,
+ * which changes nothing). `refused` wrote nothing, and `reason` says why.
+ */
+export type OwnerTransfer = z.input<typeof ownerTransferRecord>;
+/** What `abandonOwnerTransfer` did — the contracts' `ownerTransferAbandon`. */
+export type OwnerTransferAbandon = z.infer<typeof ownerTransferAbandon>;
+
+/**
+ * Hand the owner of record from `from` to `to` (#1665) — the one write that moves
+ * `owner_of_record`, which `recordOwnerSeat` never does after the first. The record is what a
+ * reconcile's lockout repair re-seats (#1659), so without this a hand-over left it naming the
+ * ORIGINAL owner, and revoking the successor later brought that owner back.
+ *
+ * It moves the record and opens the hand-over (`owner_transfer`, `pending`). Seating `to` in the
+ * owner's role and revoking `from` are the scope host's writes, in another Durable Object; the
+ * platform's flow runs them after this, then closes the hand-over with `completeOwnerTransfer`.
+ * A record already naming `to` is `already` or `done` ONLY for this same `from → to`: the record
+ * says who owns the scope now, not who handed it over, and answering a different `from` as a
+ * retry would have the flow revoke that principal's owner role on nobody's hand-over.
+ *
+ * Refuses, writing nothing, when:
+ * - the scope has no owner of record here (`unknown`);
+ * - `from` and `to` are one principal (`same-principal`);
+ * - the seat is still UNCLAIMED (`unclaimed`). `pending_owner` names the principal a claim binds
+ *   to, so moving the record under it would leave a claim link that seats a stranger as a
+ *   principal that is no longer the owner. Claim the seat first. A claimed seat stays claimed:
+ *   this never writes `pending_owner` or `owner_claim`.
+ * - `from` is not the current record (`not-owner`) — a caller working from a stale view, or one
+ *   naming a `from` other than the one this scope's record was handed over from;
+ * - ANOTHER hand-over is still open (`in-flight`): its seat and revoke have not both run, and
+ *   starting a second on top would let the two flows revoke across each other. Re-sending the
+ *   open one finishes it, or staff abandon it (`abandonOwnerTransfer`); `inFlight` names it.
+ * - THIS hand-over is open but can no longer finish (`wedged`): `to` has since lost its login or
+ *   its role here. The check still refuses it, since finishing would seat as owner someone the
+ *   scope removed; this only makes the refusal say which hand-over is stuck. Abandon it.
+ * - `to` is not a member (`not-member`): no subject in this scope is bound to it, so nobody can
+ *   sign in as that principal.
+ * - `to` holds no role here (`no-role`): `toHoldsRole`, the host's read passed in by the
+ *   platform's flow, says it holds no role the scope can expand. A member removed by revoking
+ *   their role keeps the binding; so does one whose access is only entity-narrowed grants,
+ *   which a role check does not count. Grant a role first.
+ *
+ * Synchronous over one DO's storage, so the read and the write cannot interleave with another
+ * call; the `UPDATE` still carries `principal = from` so it can only ever move the record it read.
+ */
+export function transferOwner(
+  sql: RegistrySql,
+  scopeId: string,
+  from: string,
+  to: string,
+  toHoldsRole: boolean,
+): OwnerTransfer {
+  const owner = ownerOfRecord(sql, scopeId);
+  if (owner === null) return { outcome: 'refused', owner, reason: 'unknown' };
+  if (from === to) return { outcome: 'refused', owner, reason: 'same-principal' };
+  if (needsSetup(sql, scopeId)) return { outcome: 'refused', owner, reason: 'unclaimed' };
+  const bound = isBound(sql, scopeId, to);
+  const member = bound && toHoldsRole;
+  const last = lastTransfer(sql, scopeId);
+  // An open hand-over is judged first, so each refusal names the real state; the membership
+  // check below still decides whether THIS one may finish.
+  if (last?.state === 'pending') {
+    const inFlight = { from: last.prev_principal, to: last.principal };
+    if (last.prev_principal !== from || last.principal !== to) {
+      return { outcome: 'refused', owner, reason: 'in-flight', inFlight };
+    }
+    if (!member) return { outcome: 'refused', owner, reason: 'wedged', inFlight };
+    return { outcome: 'already', owner };
+  }
+  if (!bound) return { outcome: 'refused', owner, reason: 'not-member' };
+  if (!toHoldsRole) return { outcome: 'refused', owner, reason: 'no-role' };
+  if (owner === to) {
+    // Only a FINISHED hand-over of this same pair is a repeat; an abandoned one is no retry.
+    if (last?.prev_principal === from && last.principal === to && last.state === 'done') {
+      return { outcome: 'done', owner };
+    }
+    return { outcome: 'refused', owner, reason: 'not-owner' };
+  }
+  if (owner !== from) return { outcome: 'refused', owner, reason: 'not-owner' };
+  sql.exec('UPDATE owner_of_record SET principal = ? WHERE scope_id = ? AND principal = ?', to, scopeId, from);
+  sql.exec(
+    `INSERT OR REPLACE INTO owner_transfer (scope_id, prev_principal, principal, state) VALUES (?, ?, ?, 'pending')`,
+    scopeId,
+    from,
+    to,
+  );
+  return { outcome: 'transferred', owner: to };
+}
+
+/**
+ * Close the hand-over `from → to` (#1665) once the platform's flow has seated `to` and revoked
+ * `from`: from then on a repeat of it answers `done` and the flow seats and revokes nothing, so
+ * a stale retry cannot undo what the scope decided since. True when this call closed it; false
+ * when it was already closed or is not the open hand-over.
+ */
+export function completeOwnerTransfer(sql: RegistrySql, scopeId: string, from: string, to: string): boolean {
+  const last = lastTransfer(sql, scopeId);
+  if (last?.state !== 'pending' || last.prev_principal !== from || last.principal !== to) return false;
+  sql.exec(`UPDATE owner_transfer SET state = 'done' WHERE scope_id = ?`, scopeId);
+  return true;
+}
+
+/**
+ * Abandon the open hand-over `from → to` (#1665), staff's way out of one that can no longer
+ * finish — `to` lost its login or role after step 1, so its resend is `wedged` and every other
+ * hand-over `in-flight`. Closes it as `abandoned` and nothing else: no seat, no revoke, and the
+ * record stays on `to`, from where staff hand over again. The original `from` keeps whatever
+ * owner seat it still holds; the next owner removes it in the app.
+ *
+ * Only a WEDGED one: an open hand-over whose `to` still signs in and holds a role
+ * (`toHoldsRole`, the host's read) answers `healthy` and changes nothing — resending it
+ * finishes it. `not-open` when `from → to` is not the open hand-over.
+ */
+export function abandonOwnerTransfer(
+  sql: RegistrySql,
+  scopeId: string,
+  from: string,
+  to: string,
+  toHoldsRole: boolean,
+): OwnerTransferAbandon {
+  const last = lastTransfer(sql, scopeId);
+  if (last?.state !== 'pending' || last.prev_principal !== from || last.principal !== to) return 'not-open';
+  if (toHoldsRole && isBound(sql, scopeId, to)) return 'healthy';
+  sql.exec(`UPDATE owner_transfer SET state = 'abandoned' WHERE scope_id = ?`, scopeId);
+  return 'abandoned';
+}
+
+function lastTransfer(
+  sql: RegistrySql,
+  scopeId: string,
+): { prev_principal: string; principal: string; state: 'pending' | 'done' | 'abandoned' } | undefined {
+  return [...sql.exec('SELECT prev_principal, principal, state FROM owner_transfer WHERE scope_id = ?', scopeId)][0] as
+    | { prev_principal: string; principal: string; state: 'pending' | 'done' | 'abandoned' }
+    | undefined;
+}
+
+/** Is some subject in this scope bound to `principal` — can anybody sign in as it? */
+function isBound(sql: RegistrySql, scopeId: string, principal: string): boolean {
+  return [...sql.exec('SELECT 1 FROM identity WHERE scope_id = ? AND principal = ? LIMIT 1', scopeId, principal)].length > 0;
 }
 
 /** Is the seat unclaimed? True whatever the window says — a closed window is still an empty seat. */

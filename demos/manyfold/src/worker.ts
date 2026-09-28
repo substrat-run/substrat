@@ -284,6 +284,12 @@ mountPlatformSurface<Env>(app, {
   // provision hook above writes.
   ownerSeat: (env, ref) => identityDo(env, ref).ownerSeat(ref.scopeId),
   mintOwnerClaim: (env, ref, input) => mintOwnerClaimLink(identityDo(env, ref), ref.scopeId, input.origin),
+  // The owner hand-over (#1665): moves the record the reconcile above re-sources its owner from.
+  transferOwner: (env, ref, input) =>
+    identityDo(env, ref).transferOwner(ref.scopeId, input.from, input.to, input.toHoldsRole),
+  completeOwnerTransfer: (env, ref, input) => identityDo(env, ref).completeOwnerTransfer(ref.scopeId, input.from, input.to),
+  abandonOwnerTransfer: (env, ref, input) =>
+    identityDo(env, ref).abandonOwnerTransfer(ref.scopeId, input.from, input.to, input.toHoldsRole),
 });
 
 // Resolve the caller + selected site → a scope stub. 401 if nobody. Shared route table.

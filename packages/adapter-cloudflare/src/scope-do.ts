@@ -1862,6 +1862,14 @@ export function defineScopeDO(
       }
     }
 
+    /** Does `subject` hold a role this scope can expand (#1665)? The #1659 lockout predicate
+     *  narrowed to one holder: a live role tuple, scope or tenant level, for a current role. */
+    async hasEffectiveRoleGrantFor(tenantId: string, subject: string): Promise<boolean> {
+      const q = effectiveRoleGrantQuery(tenantId, new Date().toISOString(), subject);
+      const row = this.sql.exec(q.sql, ...q.params).toArray()[0] as { effective: number } | undefined;
+      return row?.effective === 1;
+    }
+
     /** Tombstone a scope tuple (K-21) — the row stays, the walk skips it. Returns
      *  whether anything changed so a repeat revoke is a silent no-op. */
     async revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean> {

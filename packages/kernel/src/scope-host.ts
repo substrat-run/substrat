@@ -26,6 +26,7 @@ import type {
   ProjectedConnectionKey,
   AccessLogEntry,
   DelegatedReadRecord,
+  OwnerTransferAudit,
   BindHostnameInput,
   AdminLogEntry,
   OpsFailureEntry,
@@ -3546,6 +3547,15 @@ export interface HostAdmin {
    * exists to prevent.
    */
   recordDelegatedRead(actor: PlatformActorId, record: DelegatedReadRecord): Promise<void>;
+
+  /**
+   * Record one phase of an owner hand-over (#1665) on the admin log, as `transferOwner`. The
+   * hand-over runs in the vertical's deployment, so the control plane writes these around its
+   * call to it: `intent` first (and must not call if this throws), then the outcome. Narrow for
+   * `recordDelegatedRead`'s reason: fixed action, parsed entry, request actor, adapter-stamped
+   * `id` and `at`. Throws when the row cannot be written.
+   */
+  recordOwnerTransfer(actor: PlatformActorId, entry: OwnerTransferAudit): Promise<void>;
 
   /**
    * Stamp `drainedAt` on every not-yet-drained access row up to and including

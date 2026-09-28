@@ -163,6 +163,26 @@ describe('effectiveRoleGrantQuery (#1659)', () => {
     return (db.prepare(q.sql).get(...q.params) as { effective: number }).effective === 1;
   };
 
+  it('narrowed to one subject, answers for THAT holder only, at scope and tenant level (#1665)', () => {
+    const db = fresh();
+    role(db, 'office-admin');
+    scopeTuple(db, 'office-admin'); // p1 at scope level
+    tenantTuple(db, 'office-admin'); // p2 at tenant level
+    const holds = (subject: string): boolean => {
+      const q = effectiveRoleGrantQuery(T, NOW, subject);
+      return (db.prepare(q.sql).get(...q.params) as { effective: number }).effective === 1;
+    };
+    expect(holds('principal:p1')).toBe(true);
+    expect(holds('principal:p2')).toBe(true);
+    expect(holds('principal:p3')).toBe(false);
+    // The same stale-role rule: a live tuple for a role no longer defined is no grant.
+    const stale = fresh();
+    role(stale, 'office-admin');
+    stale.prepare(`INSERT INTO _substrat_tuples VALUES ('principal:p1', 'role:retired', 'scope:s1', NULL, NULL)`).run();
+    const q = effectiveRoleGrantQuery(T, NOW, 'principal:p1');
+    expect((stale.prepare(q.sql).get(...q.params) as { effective: number }).effective).toBe(0);
+  });
+
   it('a live tuple for a CURRENT role is effective', () => {
     const db = fresh();
     role(db, 'office-admin');

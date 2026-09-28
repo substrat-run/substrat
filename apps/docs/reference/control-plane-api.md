@@ -71,6 +71,25 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   scope is bound to no vertical (with the diagnosis) or the bound vertical keeps no owner
   seat — both callbacks are optional in [`vertical-host`](/reference/vertical-host), and the
   vertical's own status is forwarded unchanged.
+  A third, `POST …/owner-transfer` with `{ from, to }`, hands the owner seat to another member
+  of the instance. It is **staff-only**: a tenant credential or a builder is refused `403`.
+  The vertical moves its owner of record, seats `to` in the owner role, revokes `from`'s,
+  and closes the hand-over. A repeat after that answers `outcome: 'done'` and changes nothing. It refuses with `409`, changing nothing, when the seat is still unclaimed, `from`
+  is not the owner of record, no login is bound to `to`, `to` holds no role in the instance
+  (grant one first: an entity-narrowed grant is not a role), or another hand-over on the same
+  instance is still unfinished (resend that one first). A hand-over that can no longer finish,
+  because `to` was removed after it started, is refused on every resend and blocks any other.
+  Staff close it with `{ from, to, abandon: true }` on the same route. It closes only that open
+  hand-over, and only when it is wedged like this — one that can still finish is refused
+  ("resend it instead"). It seats and revokes nothing, and leaves the owner of record on `to`, from where a new
+  hand-over starts. The original `from` keeps any owner seat it still holds, since the abandon
+  revoked nothing; the next owner removes it in the app. Its rows carry `abandon: true`. Every attempt writes two
+  `transferOwner` rows to the admin log, paired by the `operationId` the route answers with:
+  an `intent` before the vertical is asked, then `applied`, `refused` or `failed`. A `failed`
+  hand-over may have stopped part-way, and sending the same request again completes it.
+  The answer's `fromRevoked` is about the instance's own owner seat only. `false` means `from`
+  held none there; if `from` holds the owner role at the tenant level, that grant is untouched
+  and still applies, and it is taken back through the tenant's role assignments.
 - **Verticals** — `/verticals` (+ `versions`, `versions/:id/admit`|`reject`, `channels`,
   `channels/:c/promote`, `deploy`, `instances`, `listing`, `publish-request`,
   `install-block`): the registry, admission, promotion, and the deploy path. A staff or

@@ -26,7 +26,12 @@ import {
   claimOwner as claimOwnerRow,
   unbindSubject as unbindSubjectRow,
   subjectsOf as subjectsOfRows,
+  transferOwner as transferOwnerRow,
+  completeOwnerTransfer as completeOwnerTransferRow,
+  abandonOwnerTransfer as abandonOwnerTransferRow,
   type OwnerSeat,
+  type OwnerTransfer,
+  type OwnerTransferAbandon,
 } from './owner-seat.js';
 
 /**
@@ -236,6 +241,26 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /**
+   * Hand the owner of record from `from` to `to` (#1665): the principal a reconcile's lockout
+   * repair re-seats. Moves the record only, and refuses (writing nothing) on an unclaimed seat,
+   * a stale `from`, or a `to` no subject is bound to. `owner-seat.ts` has the rules; the
+   * seat-then-revoke around it is vertical-host's `/internal/owner-transfer`.
+   */
+  async transferOwner(scopeId: string, from: string, to: string, toHoldsRole: boolean): Promise<OwnerTransfer> {
+    return transferOwnerRow(this.registrySql, scopeId, from, to, toHoldsRole);
+  }
+
+  /** Close the hand-over `from → to` once the platform has seated and revoked around it (#1665). */
+  async completeOwnerTransfer(scopeId: string, from: string, to: string): Promise<boolean> {
+    return completeOwnerTransferRow(this.registrySql, scopeId, from, to);
+  }
+
+  /** Abandon the open hand-over `from → to`, writing no seat or revoke (#1665). */
+  async abandonOwnerTransfer(scopeId: string, from: string, to: string, toHoldsRole: boolean): Promise<OwnerTransferAbandon> {
+    return abandonOwnerTransferRow(this.registrySql, scopeId, from, to, toHoldsRole);
+  }
+
+  /**
    * Is this scope awaiting first-run setup? True while its owner seat is unclaimed — whether or
    * not a plain first sign-in can still claim it (`ownerSeat` says which). The worker uses this
    * to answer `needs-setup` instead of a bare 401, so the SPA can say what to do.
@@ -404,6 +429,9 @@ export type IdentityStub = {
   resolveSiteScope(slug: string): Promise<string | null>;
   setPendingOwner(scopeId: string, principal: string): Promise<void>;
   getOwnerOfRecord(scopeId: string): Promise<string | null>;
+  transferOwner(scopeId: string, from: string, to: string, toHoldsRole: boolean): Promise<OwnerTransfer>;
+  completeOwnerTransfer(scopeId: string, from: string, to: string): Promise<boolean>;
+  abandonOwnerTransfer(scopeId: string, from: string, to: string, toHoldsRole: boolean): Promise<OwnerTransferAbandon>;
   needsSetup(scopeId: string): Promise<boolean>;
   ownerSeat(scopeId: string): Promise<OwnerSeat>;
   resolvePrincipal(scopeId: string, sub: string): Promise<string | null>;

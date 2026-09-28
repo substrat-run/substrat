@@ -77,26 +77,33 @@ export function seatScopeTuple(
  * So: a non-revoked, unexpired role tuple JOINED to a non-revoked definition of the same
  * key for this tenant. Expiry is compared as ISO text, as every tuple walk here does.
  * Returns one row, `effective` 0 or 1.
+ *
+ * `subject` narrows the same question to one holder (#1665): does THIS principal hold a role
+ * the scope can expand? An owner hand-over asks it of the successor, so the scope is not
+ * handed to a principal whose member role was taken back.
  */
 export function effectiveRoleGrantQuery(
   tenantId: string,
   now: string,
-): { sql: string; params: [string, string, string, string] } {
+  subject?: string,
+): { sql: string; params: string[] } {
+  const only = subject === undefined ? '' : ' AND subject = ?';
+  const who = subject === undefined ? [] : [subject];
   return {
     sql: `SELECT (
         EXISTS (
           SELECT 1 FROM _substrat_tuples t
             JOIN _substrat_roles r
               ON r.tenant_id = ? AND r.revoked_at IS NULL AND t.relation = 'role:' || r.role_key
-           WHERE t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?)
+           WHERE t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?)${only.replace('subject', 't.subject')}
         )
         OR EXISTS (
           SELECT 1 FROM _substrat_tenant_tuples tt
             JOIN _substrat_roles r
               ON r.tenant_id = tt.tenant_id AND r.revoked_at IS NULL AND tt.relation = 'role:' || r.role_key
-           WHERE tt.tenant_id = ? AND tt.revoked_at IS NULL AND (tt.expires_at IS NULL OR tt.expires_at > ?)
+           WHERE tt.tenant_id = ? AND tt.revoked_at IS NULL AND (tt.expires_at IS NULL OR tt.expires_at > ?)${only.replace('subject', 'tt.subject')}
         )
       ) AS effective`,
-    params: [tenantId, now, tenantId, now],
+    params: [tenantId, now, ...who, tenantId, now, ...who],
   };
 }
