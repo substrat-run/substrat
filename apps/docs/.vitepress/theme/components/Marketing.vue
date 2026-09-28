@@ -283,19 +283,23 @@ const bookTakeaways = [
 
 <template>
   <div class="mkt">
-    <!-- Hero. Breadth first: the guarantees are a clause at the end of the lede,
-         not the pitch. -->
+    <!-- Hero. The promise is safety at AI speed, and it is stated as a mechanism
+         (the platform refuses) rather than as advice (the model is told). Breadth
+         follows as evidence: the demos section right below is what "any business
+         app" rests on, and the video under the calls to action tells the whole
+         argument for anyone who reads no further. -->
     <section class="bleed hero">
       <div class="wrap hero-inner">
         <span class="badge badge-info">
           <span class="dot" />Private beta — the hosted platform is invite-only
         </span>
-        <h1>Build almost any business app.</h1>
+        <h1>Build at AI speed.<br />Without the expensive mistakes.</h1>
         <p class="lede">
-          Field service, HR, a bike workshop, a CMS, a coffee shop, a support desk —
-          eight demo verticals on one kernel, and four of them run their core domain
-          on the kernel alone. Tenancy, identity, permissions, audit and GDPR come
-          with the foundation instead of with your discipline.
+          Your agent writes the app: the model, the operations, the screens.
+          Substrat holds the parts that are catastrophic when wrong — tenancy,
+          identity, permissions, audit and GDPR — and enforces them at runtime, below
+          the code the AI writes. The mistakes that cost the most aren’t discouraged
+          there. They’re unreachable.
         </p>
         <div class="cta-row">
           <a class="btn btn-primary" href="#beta">Request an invite</a>
@@ -538,6 +542,7 @@ const bookTakeaways = [
     <section class="bleed linkband">
       <div class="wrap linkband-in">
         <span class="linkband-l">Straight answers</span>
+        <a href="/guide/ai-guardrails">Where AI mistakes stop</a>
         <a href="/guide/comparisons">How Substrat compares</a>
         <a href="/guide/what-substrat-lacks">What Substrat doesn’t have (yet)</a>
         <a href="/guide/faq">FAQ</a>
@@ -678,7 +683,7 @@ h1 {
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-display);
   margin: 0;
-  max-width: 780px;
+  max-width: 920px;
   text-wrap: balance;
   border: 0;
   padding: 0;
