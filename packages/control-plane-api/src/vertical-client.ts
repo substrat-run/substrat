@@ -39,6 +39,8 @@ import type {
   InvocationEvents,
   DeadLettersInput,
   DeadLetter,
+  LifecycleFlowInput,
+  LifecycleFlowResult,
   CauseChain,
   EventFacetResult,
   HistoryEntry,
@@ -1027,6 +1029,11 @@ export class VerticalClient {
     if (input.limit !== undefined) q.set('limit', String(input.limit));
     if (input.cursor !== undefined) q.set('cursor', input.cursor);
     return this.getInternal<Page<DeadLetter>>(`/internal/dead-letters?${q.toString()}`);
+  }
+
+  /** One entity's lifecycle replayed (#1744) — through the vertical that holds the outbox. */
+  async lifecycleFlow(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult> {
+    return this.postInternal<LifecycleFlowResult>('/internal/lifecycle-flow', { scopeId, ...input }, 'lifecycle-flow');
   }
 
   /** One record's event history (#1235) — `readHistory`'s answer, through the vertical that holds the data. */

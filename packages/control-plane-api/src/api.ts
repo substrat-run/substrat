@@ -52,6 +52,7 @@ import {
   eventEffectsInput,
   invocationEventsInput,
   deadLettersInput,
+  lifecycleFlowInput,
   type DelegatedReadMethod,
   type DelegatedReadInput,
   delegatedReadParams,
@@ -3137,6 +3138,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           colocated: () => admin.deadLetters(c.get('actor'), tenantId, scopeId, input),
         },
         (r) => r.entries.length,
+      ),
+    );
+  });
+
+  // #1744: one entity's declared lifecycle replayed over the scope's outbox — the process
+  // map's data. POST, because the declaration travels in the body; delegated like every
+  // outbox read, and logged with the entity and window only (`delegatedReadParams`).
+  app.post('/tenants/:tenantId/scopes/:scopeId/lifecycle-flow', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = lifecycleFlowInput.parse(await c.req.json());
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    return c.json(
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'lifecycleFlow', input,
+        {
+          viaVertical: (v) => v.lifecycleFlow(scopeId, input),
+          colocated: () => admin.lifecycleFlow(c.get('actor'), tenantId, scopeId, input),
+        },
+        (r) => r.observation.events,
       ),
     );
   });

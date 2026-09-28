@@ -237,6 +237,7 @@ import {
   domainEventOf,
   facetEvents,
   readDeadLetters,
+  readLifecycleFlow,
   readHistory,
   readInvocation,
   readUndrainedOutbox,
@@ -254,6 +255,8 @@ import type {
   EffectsTree,
   InvocationEvents,
   DeadLetter,
+  LifecycleFlowInput,
+  LifecycleFlowResult,
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
@@ -1650,6 +1653,11 @@ export function defineScopeDO(
     /** #1525: every delivery in this scope that gave up, inside the DO where both tables live. */
     deadLetters(input: { limit?: number; cursor?: string }): Page<DeadLetter> {
       return readDeadLetters({ sql: doScopedSql(this.sql) }, { limit: input.limit, cursor: input.cursor });
+    }
+
+    /** #1744: one entity's lifecycle replayed over this scope's outbox, where it lives. */
+    lifecycleFlow(input: LifecycleFlowInput): LifecycleFlowResult {
+      return readLifecycleFlow({ sql: doScopedSql(this.sql) }, input);
     }
 
     migrationBookmarks(limit = 20): { bookmark: string; takenAt: string; pending: string[] }[] {

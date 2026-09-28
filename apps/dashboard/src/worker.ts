@@ -41,6 +41,7 @@ import { deriveAppOverlays, overlayWindow } from './overlays.js';
 import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
+import { declaredProcesses, isProcessPeriod, processWindows, type ProcessMapAnswer } from './process-map.js';
 import { placesReconcile, reconcilePlaces } from './places.js';
 import { deriveOperationHealth } from './operation-health.js';
 import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './connection-sweep.js';
@@ -1856,6 +1857,67 @@ app.get('/api/apps/:scopeId/model', async (c) => {
     running: { versionId: runningId, version: runningLabel, model: runningModel },
     update: updateId ? { versionId: updateId, version: updateLabel, model: updateModel } : null,
   });
+});
+
+/**
+ * One app's process map (#1744): a declared lifecycle of the version the ADDRESSED scope
+ * runs, replayed over that scope's outbox for the period asked and the one before it.
+ *
+ * The declaration comes from the running version's `model.json` — the same read the Model
+ * tab makes — and is handed to the replay, so the scope needs no model of its own and the
+ * map is always drawn against the machine the running code was built from. `entity` picks
+ * one lifecycle; with none named, the first declared one is shown.
+ *
+ * An app whose deployed code predates the read answers `not-yet-available` rather than an
+ * error: the model is there, and the reader's next step is a re-push, not a bug report.
+ */
+app.get('/api/apps/:scopeId/processes', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const { appRow, scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const periodParam = c.req.query('period') ?? '7d';
+  if (!isProcessPeriod(periodParam)) throw new HTTPException(400, { message: `unknown period: ${periodParam}` });
+  const period = periodParam;
+  const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, appRow.vertical_slug), cp.boundVersionId(scope)]);
+  const { runningId } = versionPair(deployment, boundVersionId);
+  const answer = (over: Partial<ProcessMapAnswer>): ProcessMapAnswer => ({
+    versionId: runningId,
+    processes: [],
+    entity: null,
+    period,
+    current: null,
+    previous: null,
+    unavailable: null,
+    ...over,
+  });
+  if (runningId === null) return c.json(answer({ unavailable: 'no-version' }));
+  const model = await cp.versionModel(appRow.vertical_slug, runningId);
+  const processes = declaredProcesses(model);
+  const entity = c.req.query('entity') ?? processes[0]?.entity ?? null;
+  const lifecycle = entity === null ? undefined : model?.lifecycles?.[entity];
+  if (entity === null || lifecycle === undefined) {
+    if (processes.length === 0) return c.json(answer({ processes, unavailable: 'no-lifecycles' }));
+    throw new HTTPException(404, { message: `no declared lifecycle for entity: ${entity}` });
+  }
+  const windows = processWindows(period, Date.now());
+  try {
+    const [current, previous] = await Promise.all([
+      cp.lifecycleFlow(scope, { entityType: entity, lifecycle, ...windows.current }),
+      cp.lifecycleFlow(scope, { entityType: entity, lifecycle, ...windows.previous, stuckLimit: 1 }),
+    ]);
+    return c.json(answer({ processes, entity, current, previous }));
+  } catch (e) {
+    // 404: a control plane or vertical without the route. 502: a vertical script that
+    // falls through to its SPA shell for an `/internal/*` path it predates.
+    if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 502)) {
+      return c.json(answer({ processes, entity, unavailable: 'not-yet-available' }));
+    }
+    throw e;
+  }
 });
 
 /**

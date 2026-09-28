@@ -24,6 +24,7 @@ export * from './routing.js';
 export * from './hostnames.js';
 export * from './tenancy.js';
 export * from './introspection.js';
+export * from './lifecycle-flow.js';
 export * from './pagination.js';
 export * from './concurrency.js';
 export * from './idempotency.js';
