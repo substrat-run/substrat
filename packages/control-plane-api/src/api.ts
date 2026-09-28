@@ -6,6 +6,8 @@ import {
   withLabel,
   RESERVED_LABEL_SEPARATOR,
   adminAction,
+  ownerTransferInput,
+  OWNER_TRANSFER_AUDIT_ERROR_MAX,
   ASSET_PART_PREFIX,
   assetHash,
   channelName,
@@ -3350,6 +3352,71 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
       throw e;
     }
+  });
+
+  // The owner HAND-OVER (#1665). The move runs in the VERTICAL, behind `/internal/owner-transfer`
+  // (vertical-host says in what order and why). This route decides who may ask, and audits every
+  // attempt: an `intent` row before the vertical is reached, so a row the log cannot take means
+  // nothing moves, then `applied`, `refused` (its 409: nothing written) or `failed` (it may have
+  // stopped part-way; the same request completes it).
+  //
+  // **Staff and the platform service token ONLY.** Builders are refused by BUILDER_ROUTES
+  // (default-deny). A tenant-scoped credential passes this path's `/tenants/<pin>` confinement,
+  // so the handler refuses it by `confinedTenant`. The owner is a person inside the vertical,
+  // and a team credential cannot show it is that person asking.
+  app.post('/tenants/:tenantId/scopes/:scopeId/owner-transfer', async (c) => {
+    if (confinedTenant(c.get('principal')) !== null) {
+      return c.json({ error: 'forbidden: an owner hand-over is staff-only' }, 403);
+    }
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const body = ownerTransferInput.parse(await c.req.json());
+    const actor = c.get('actor');
+    // K-3 first, so a scope of another tenant reads as absent before anything is reached.
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) return c.json({ error: await diagnoseUnboundScope(actor, scope) }, 501);
+    const operationId = ulid();
+    // An abandon (`abandon: true`) is audited the same way, every row marked, so the log tells
+    // a hand-over closed without finishing from one that finished.
+    const base = { tenantId, scopeId, operationId, from: body.from, to: body.to, ...(body.abandon ? { abandon: true as const } : {}) };
+    await admin.recordOwnerTransfer(actor, { ...base, phase: 'intent' });
+    let moved;
+    try {
+      moved = await vertical.transferOwner({ tenantId, scopeId, ...body });
+    } catch (e) {
+      const refused = e instanceof ControlPlaneError && e.status === 409;
+      const error = (e instanceof Error ? e.message : String(e)).slice(0, OWNER_TRANSFER_AUDIT_ERROR_MAX);
+      await admin
+        .recordOwnerTransfer(actor, { ...base, phase: refused ? 'refused' : 'failed', error })
+        .catch(() => undefined);
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message, operationId }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+    try {
+      await admin.recordOwnerTransfer(actor, {
+        ...base,
+        phase: 'applied',
+        outcome: moved.outcome,
+        fromRevoked: moved.fromRevoked,
+      });
+    } catch (e) {
+      // The owner HAS moved; only the outcome row is missing. Say exactly that, so nobody retries
+      // a hand-over believing it failed, and name the operation whose intent row stands alone.
+      const why = e instanceof Error ? e.message : String(e);
+      return c.json(
+        {
+          error: `the hand-over completed, but its outcome could not be written to the admin log: ${why}`,
+          operationId,
+          ...moved,
+        },
+        500,
+      );
+    }
+    return c.json({ operationId, ...moved });
   });
 
   // Deliver per-instance CONFIG to the scope's own storage (vertical-auth-detach.md

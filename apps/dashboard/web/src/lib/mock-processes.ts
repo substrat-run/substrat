@@ -40,9 +40,10 @@ function flow(scale: number, since: string, until: string): LifecycleFlowResult 
       edge('closed', 'open', 'ticket0/ingest-message', 12, { declared: false }),
     ],
     states: [
-      { state: 'closed', terminal: true, current: n(1016), entered: n(1047), dwell: null, stuck: [] },
+      { state: 'closed', declared: true, terminal: true, current: n(1016), entered: n(1047), dwell: null, stuck: [] },
       {
         state: 'new',
+        declared: true,
         terminal: false,
         current: n(23),
         entered: 0,
@@ -53,6 +54,7 @@ function flow(scale: number, since: string, until: string): LifecycleFlowResult 
       },
       {
         state: 'open',
+        declared: true,
         terminal: false,
         current: n(142),
         entered: n(1760),
@@ -64,6 +66,7 @@ function flow(scale: number, since: string, until: string): LifecycleFlowResult 
       },
       {
         state: 'resolved',
+        declared: true,
         terminal: false,
         current: n(88),
         entered: n(1153),
@@ -72,6 +75,7 @@ function flow(scale: number, since: string, until: string): LifecycleFlowResult 
       },
       {
         state: 'snoozed',
+        declared: true,
         terminal: false,
         current: n(61),
         entered: n(412),

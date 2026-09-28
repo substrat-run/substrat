@@ -176,6 +176,19 @@ including the two OIDC ones where Better Auth stays dormant:
   `mintOwnerClaimLink` does the token, the hash and the URL in one call, so the vertical's
   `mintOwnerClaim` hook is a one-liner. A closed window is not a lost instance: the seat stays
   pending — `needsSetup` keeps saying so, and `ownerSeat` says *why* — until a claim binds it.
+- `transferOwner(scopeId, from, to)` — the owner hand-over. Moves the owner of record, which
+  `setPendingOwner` never does after its first write, and which a reconcile re-seats when a
+  scope is locked out. It refuses, changing nothing, when the seat is still unclaimed, `from`
+  is not the current record, or no subject in the scope is bound to `to`. It never re-opens
+  a claimed seat. A record already naming `to` counts as a retry only for the same `from`:
+  `already` while the hand-over is open, `done` once `completeOwnerTransfer` has closed it.
+  While one is open, any other hand-over on the scope is refused as `in-flight`, and if `to` has
+  since been removed, the open one's own resend is refused as `wedged` rather than finished.
+  `abandonOwnerTransfer` closes it without seating or revoking anyone, and only then: an open
+  hand-over whose `to` can still take it answers `healthy`, since resending it finishes it. After
+  an abandon the original `from` keeps any owner seat it still holds, until the next owner
+  removes it in the app.
+  Wire both as vertical-host's hooks of the same names, which seat and revoke between them.
 - `createInvite` / `listInvites` / `revokeInvite` / `claimInvite` — member invites, the
   post-setup join path. An invite pre-mints a member principal, grants it a role at scope
   level, and records the token's hash; accepting binds the invitee's verified `sub` to that

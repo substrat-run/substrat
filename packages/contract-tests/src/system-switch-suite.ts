@@ -468,9 +468,12 @@ export function systemSwitchContractSuite(
 
     /**
      * #1742 review: the restore's switch runs inside the replay's own transaction, on both
-     * adapters. A dump whose `_substrat_tuples` refuses the OFF marker (a CHECK) makes the
-     * switch throw part-way through. That must roll the whole restore back, leaving the prior
-     * marker live, rather than commit the dump's live grants with no switch over them.
+     * adapters. This was proven with a dump whose `_substrat_tuples` DDL carried a CHECK refusing
+     * the OFF marker. Since #1883 a restore builds that table from the kernel's DDL, so a dump can
+     * no longer make the switch throw: its CHECK never reaches the table, and the restore lands
+     * switched off. The rollback itself is proven per adapter, with the fault injected at the
+     * switch's own write (`adapter-cloudflare/test/contract.test.ts`,
+     * `adapter-sqlite/test/restore-switch-rollback.test.ts`).
      */
     const refusingMarker = (dump: ScopeDump): ScopeDump => ({
       ...dump,
@@ -481,18 +484,16 @@ export function systemSwitchContractSuite(
       ),
     });
 
-    it('a restore whose switch fails is rolled back whole: the prior marker stays live (#1742 review)', async () => {
+    it('a dump whose tuples DDL refuses the OFF marker cannot reach the kernel table: the restore lands off (#1742, #1883)', async () => {
       const s = await newScope();
       const before = refusingMarker(await host.admin.exportScope(staff, t, s));
-      expect(before.tables.some((tbl) => tbl.name === '_substrat_tuples')).toBe(true);
+      expect(before.tables.find((tbl) => tbl.name === '_substrat_tuples')?.ddl).toMatch(/CHECK \(relation <> 'switch:off'\)/);
       await off(s);
-      await expect(host.restoreScope(staff, t, s, before)).rejects.toThrow(/CHECK constraint failed/);
+      await host.restoreScope(staff, t, s, before);
       expect((await status(s)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
       expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
-      // Nothing was moved, so nothing is on the log as a re-assert.
-      expect(
-        await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: ['reassertSystemSwitch'] }),
-      ).toEqual([]);
+      const tuples = (await host.admin.exportScope(staff, t, s)).tables.find((tbl) => tbl.name === '_substrat_tuples');
+      expect(tuples?.ddl).not.toMatch(/CHECK/);
     });
 
     it('twin: the same dump with nothing recorded off restores, and fires', async () => {

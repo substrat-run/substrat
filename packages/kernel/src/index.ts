@@ -286,6 +286,7 @@ export type {
 } from './subject-redaction.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
+export { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, spineColumnAdditions, spineRowsInsert, type KernelColumnsOf } from './spine-restore.js';
 export {
   SYSTEM_SWITCH_OFF_PREDICATE,
   SYSTEM_SWITCH_OFF_RELATION,
@@ -468,6 +469,7 @@ export {
   startPlatformSweeper,
   SCHEDULE_STATE_DDL,
   SCHEDULE_STATE_REBUILD,
+  SCHEDULE_STATE_KIND_OF_OP,
   scheduleStateHasKind,
 } from './platform-sweep.js';
 export type {

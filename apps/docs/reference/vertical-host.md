@@ -36,6 +36,9 @@ mountPlatformSurface(app, {
   onConfigure,     // per-instance config store (omit ⇒ 501)
   ownerSeat,       // the owner seat's state, for the dashboard (omit ⇒ 501)
   mintOwnerClaim,  // a short-lived owner-claim link (omit ⇒ 501)
+  transferOwner,   // hand the owner of record to another member (omit ⇒ 501)
+  completeOwnerTransfer, // close that hand-over once seated and revoked (required with it)
+  abandonOwnerTransfer,  // close an open hand-over without finishing it (omit ⇒ an abandon 501s)
   onDeleteScope,   // e.g. drop the scope from a sweep roster (optional)
 });
 
@@ -68,12 +71,20 @@ export default app;
   gate first. Generic in the same sense as the group above: owned by the package,
   answered by your host's `connector…Local` members.
 - **Flavored routes** — `provision`, `reconcile`, `configure`, `owner-seat`,
-  `owner-claim` — the package keeps the platform-secret gate, body parse and response
+  `owner-claim`, `owner-transfer` — the package keeps the platform-secret gate, body parse and response
   envelope; you supply only the hook. Omit `resolveOwner` / `onConfigure` / `ownerSeat` /
-  `mintOwnerClaim` and that route answers `501`. The two owner-seat routes are how the
+  `mintOwnerClaim` / `transferOwner` and that route answers `501`. The two owner-seat routes are how the
   dashboard sees whether anyone has claimed an instance, and mints the claim link that
   binds its owner once the first-sign-in window has closed (see
-  [vertical-auth](/reference/vertical-auth)).
+  [vertical-auth](/reference/vertical-auth)). `owner-transfer` is the hand-over. Your
+  `transferOwner` hook moves the owner of record; the package then seats `to` in
+  `ownerRoleKey`, revokes `from`'s, and calls `completeOwnerTransfer`, in that order, so the
+  scope always has a live owner seat. Sending the same hand-over again finishes one a failure
+  left open, and once it is closed, answers `done` and changes nothing. Only the scope-level
+  seat is revoked: `fromRevoked: false` can mean `from` still holds the role at the tenant
+  level, which the platform, not the vertical, takes back. A reconcile's lockout
+  repair re-seats whoever the record names, so after a hand-over it brings back the new owner,
+  never the old one.
 - **The gate** — one `/internal/*` middleware runs the platform-secret check; an unset
   secret fails closed (`403`).
 - **The error envelope** — a Hono `onError` that maps the kernel/engine vocabulary onto HTTP

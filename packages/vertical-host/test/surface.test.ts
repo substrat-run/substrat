@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
@@ -1560,5 +1560,409 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
     const restore = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], switchedOff: [SCHED] });
     expect(restore.status).toBe(200);
     expect(await restore.json()).toEqual({ tables: 2 });
+  });
+});
+
+/**
+ * The owner hand-over (#1665). Four writes in two Durable Objects with no transaction across
+ * them, so what these pin is the ORDER (record, seat `to`, revoke `from`, close), that every
+ * refusal is decided before anything is written, that a failure at any step leaves one owner of
+ * record, at least one live owner seat, and a state the same request completes on retry, and
+ * that once closed, a repeat writes nothing.
+ *
+ * The directory and the host share one in-memory model here, so the assertions read the
+ * scope's state rather than which mocks were called. The directory's rules are vertical-auth
+ * owner-seat.ts `transferOwner` / `completeOwnerTransfer`, in the same order.
+ */
+describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
+  const A = '01JZ0000000000000000PRNAAA';
+  const B = '01JZ0000000000000000PRNBBB';
+  const C = '01JZ0000000000000000PRNCCC';
+  const STRANGER = '01JZ0000000000000000PRNZZZ';
+  const REF = { tenantId: TENANT, scopeId: SCOPE };
+  type Step = 'record' | 'assign' | 'revoke' | 'complete';
+
+  /** One scope's owner state: the record, the last hand-over, members, owner-role holders. */
+  function world(
+    init: { record?: string | null; claimed?: boolean; members?: string[]; seats?: string[]; roles?: string[] } = {},
+  ) {
+    const w = {
+      record: init.record === undefined ? A : init.record,
+      last: null as null | { from: string; to: string; state: 'pending' | 'done' | 'abandoned' },
+      claimed: init.claimed ?? true,
+      members: new Set(init.members ?? [A, B, C]),
+      seats: new Set(init.seats ?? [A]),
+      /** Who holds SOME live role in the scope (a member role), besides the owner seats. */
+      roles: new Set(init.roles ?? [A, B, C]),
+      steps: [] as string[],
+      /** Throw on the named step, once — the failure "between" steps. */
+      failOn: null as null | Step,
+    };
+    const failIf = (step: Step) => {
+      if (w.failOn === step) {
+        w.failOn = null;
+        throw new Error(`injected failure at ${step}`);
+      }
+    };
+    const transferOwner = async (
+      _env: Env,
+      _ref: unknown,
+      { from, to, toHoldsRole }: { from: string; to: string; toHoldsRole: boolean },
+    ) => {
+      w.steps.push('record');
+      failIf('record');
+      if (w.record === null) return { outcome: 'refused', owner: null, reason: 'unknown' } as const;
+      if (!w.claimed) return { outcome: 'refused', owner: w.record, reason: 'unclaimed' } as const;
+      const member = toHoldsRole && w.members.has(to);
+      if (w.last?.state === 'pending') {
+        const inFlight = { from: w.last.from, to: w.last.to };
+        if (w.last.from !== from || w.last.to !== to) {
+          return { outcome: 'refused', owner: w.record, reason: 'in-flight', inFlight } as const;
+        }
+        if (!member) return { outcome: 'refused', owner: w.record, reason: 'wedged', inFlight } as const;
+        return { outcome: 'already', owner: to } as const;
+      }
+      if (!w.members.has(to)) return { outcome: 'refused', owner: w.record, reason: 'not-member' } as const;
+      if (!toHoldsRole) return { outcome: 'refused', owner: w.record, reason: 'no-role' } as const;
+      if (w.record === to) {
+        if (w.last?.from === from && w.last.to === to && w.last.state === 'done') return { outcome: 'done', owner: to } as const;
+        return { outcome: 'refused', owner: w.record, reason: 'not-owner' } as const;
+      }
+      if (w.record !== from) return { outcome: 'refused', owner: w.record, reason: 'not-owner' } as const;
+      w.record = to;
+      w.last = { from, to, state: 'pending' };
+      return { outcome: 'transferred', owner: to } as const;
+    };
+    const completeOwnerTransfer = async (_env: Env, _ref: unknown, { from, to }: { from: string; to: string }) => {
+      w.steps.push('complete');
+      failIf('complete');
+      if (w.last?.state !== 'pending' || w.last.from !== from || w.last.to !== to) return false;
+      w.last.state = 'done';
+      return true;
+    };
+    const abandonOwnerTransfer = async (
+      _env: Env,
+      _ref: unknown,
+      { from, to, toHoldsRole }: { from: string; to: string; toHoldsRole: boolean },
+    ) => {
+      w.steps.push('abandon');
+      if (w.last?.state !== 'pending' || w.last.from !== from || w.last.to !== to) return 'not-open' as const;
+      if (toHoldsRole && w.members.has(to)) return 'healthy' as const;
+      w.last.state = 'abandoned';
+      return 'abandoned' as const;
+    };
+    const host = fakeHost({
+      assignScopeRole: async (_s, principal, roleKey) => {
+        w.steps.push(`assign ${principal} ${roleKey}`);
+        failIf('assign');
+        w.seats.add(principal);
+      },
+      revokeScopeRole: async (_s, principal, roleKey) => {
+        w.steps.push(`revoke ${principal} ${roleKey}`);
+        failIf('revoke');
+        return w.seats.delete(principal);
+      },
+      hasScopeRoleLocal: async (_t, _s, principal) => w.roles.has(principal) || w.seats.has(principal),
+    });
+    const app = appWith(host, {
+      transferOwner: transferOwner as never,
+      completeOwnerTransfer,
+      abandonOwnerTransfer,
+      resolveOwner: async () => w.record as never,
+    });
+    const send = (body: unknown) =>
+      app.request(
+        '/internal/owner-transfer',
+        { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) },
+        ENV,
+      );
+    const state = () => ({ record: w.record, seats: [...w.seats].sort(), last: w.last });
+    return { w, host, app, send, state };
+  }
+
+  it('moves the record, seats `to`, revokes `from`, then closes the hand-over — in that order', async () => {
+    const { w, send, state } = world();
+    const res = await send({ ...REF, from: A, to: B });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, outcome: 'transferred', fromRevoked: true });
+    expect(w.steps).toEqual(['record', `assign ${B} admin`, `revoke ${A} admin`, 'complete']);
+    expect(state()).toEqual({ record: B, seats: [B], last: { from: A, to: B, state: 'done' } });
+  });
+
+  it('a repeat of a finished hand-over is a 200 that seats and revokes nothing', async () => {
+    const { w, send, state } = world();
+    await send({ ...REF, from: A, to: B });
+    // Since then the scope decided to give A the owner role back. A stale resend must not undo it.
+    w.seats.add(A);
+    w.steps = [];
+    const again = await send({ ...REF, from: A, to: B });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, outcome: 'done', fromRevoked: false });
+    expect(w.steps).toEqual(['record']);
+    expect(state().seats).toEqual([A, B].sort());
+  });
+
+  it("refuses a `from` other than the one the record was handed from — and revokes nobody (review MAJOR)", async () => {
+    // Record = B after A → B, and C also holds the owner role. `{ from: C, to: B }` finds the
+    // record naming `to`, but it is not the hand-over the record came from, so it is no retry.
+    const { w, send, state } = world({ seats: [A, C] });
+    expect((await send({ ...REF, from: A, to: B })).status).toBe(200);
+    w.steps = [];
+    const res = await send({ ...REF, from: C, to: B });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not owned by `from`/);
+    expect(w.steps).toEqual(['record']);
+    expect(state().seats).toEqual([B, C].sort()); // C still holds its seat
+    // Also while the A → B hand-over is still OPEN: only its own retry is `already`.
+    const open = world({ seats: [A, C] });
+    open.w.failOn = 'revoke';
+    expect((await open.send({ ...REF, from: A, to: B })).ok).toBe(false);
+    open.w.steps = [];
+    expect((await open.send({ ...REF, from: C, to: B })).status).toBe(409);
+    expect(open.w.steps).toEqual(['record']);
+    expect(open.state().seats).toEqual([A, B, C].sort());
+  });
+
+  it('refuses a hand-over chained onto one still open, and takes it once that one is finished', async () => {
+    const { w, send, state } = world();
+    w.failOn = 'revoke'; // A → B stops with both seated, the hand-over open
+    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false);
+    w.steps = [];
+    const chained = await send({ ...REF, from: B, to: C });
+    expect(chained.status).toBe(409);
+    expect(((await chained.json()) as { error: string }).error).toMatch(new RegExp(`in flight.*${A} → ${B}`));
+    expect(w.steps).toEqual(['record']);
+    expect(state().seats).toEqual([A, B].sort());
+    // The open one first, then the chained one: each revokes exactly its own `from`.
+    expect((await send({ ...REF, from: A, to: B })).status).toBe(200);
+    expect((await send({ ...REF, from: B, to: C })).status).toBe(200);
+    expect(state()).toEqual({ record: C, seats: [C], last: { from: B, to: C, state: 'done' } });
+  });
+
+  it('a hand-over wedged by removing `to` stays refused — and an abandon clears it for a fresh one', async () => {
+    const { w, send, state } = world();
+    w.failOn = 'assign'; // step 1 ran, step 2 did not
+    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false);
+    // While B can still take it, it is not wedged: an abandon is refused — resend it instead.
+    const healthy = await send({ ...REF, from: A, to: B, abandon: true });
+    expect(healthy.status).toBe(409);
+    expect(((await healthy.json()) as { error: string }).error).toMatch(/can still finish — resend it instead/);
+    expect(w.last?.state).toBe('pending');
+    w.roles.delete(B); // then the tenant removes B
+    w.steps = [];
+    // The resend is refused and names the stuck hand-over; nothing is seated.
+    const resend = await send({ ...REF, from: A, to: B });
+    expect(resend.status).toBe(409);
+    expect(((await resend.json()) as { error: string }).error).toMatch(/can no longer finish.*abandon it/);
+    // A fresh hand-over is stuck behind it too.
+    const fresh = await send({ ...REF, from: B, to: C });
+    expect(fresh.status).toBe(409);
+    expect(((await fresh.json()) as { error: string }).error).toMatch(/in flight/);
+    expect(w.steps).toEqual(['record', 'record']);
+    expect(state()).toEqual({ record: B, seats: [A], last: { from: A, to: B, state: 'pending' } });
+    // The twin of the abandon: a pair that is not the open one is refused, and closes nothing.
+    expect((await send({ ...REF, from: B, to: C, abandon: true })).status).toBe(409);
+    // The abandon: closed, and nothing seated or revoked.
+    w.steps = [];
+    const abandoned = await send({ ...REF, from: A, to: B, abandon: true });
+    expect(abandoned.status).toBe(200);
+    expect(await abandoned.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, outcome: 'abandoned', fromRevoked: false });
+    expect(w.steps).toEqual(['abandon']);
+    expect(state()).toEqual({ record: B, seats: [A], last: { from: A, to: B, state: 'abandoned' } });
+    // A second abandon of it is refused: it is closed.
+    expect((await send({ ...REF, from: A, to: B, abandon: true })).status).toBe(409);
+    // From the record, a fresh hand-over goes through. A keeps the seat it never lost: an
+    // abandon revokes nothing, and the next owner removes it in the app.
+    expect((await send({ ...REF, from: B, to: C })).status).toBe(200);
+    expect(state().record).toBe(C);
+    expect(state().seats).toEqual([A, C].sort());
+  });
+
+  it('a close that finds the hand-over no longer open is a logged 500 — writes happened — not a quiet 200', async () => {
+    const { w, host, send } = world();
+    // An abandon lands between the revoke and the close.
+    const revoke = host.revokeScopeRole!;
+    host.revokeScopeRole = async (s, p, r) => {
+      const out = await revoke(s, p, r);
+      if (w.last) w.last.state = 'abandoned';
+      return out;
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const res = await send({ ...REF, from: A, to: B });
+      expect(res.status).toBe(500); // never 409, which says nothing was written
+      expect(((await res.json()) as { error: string }).error).toMatch(/no longer open to close/);
+      expect(logged).toHaveBeenCalledWith(expect.stringMatching(/^owner-transfer: .*no longer open to close/));
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it('two hand-overs racing from one owner: one wins, the other is refused, and one owner is seated', async () => {
+    const { send, state } = world();
+    const [toB, toC] = await Promise.all([send({ ...REF, from: A, to: B }), send({ ...REF, from: A, to: C })]);
+    expect([toB.status, toC.status].sort()).toEqual([200, 409]);
+    const winner = toB.status === 200 ? B : C;
+    expect(state()).toEqual({ record: winner, seats: [winner], last: { from: A, to: winner, state: 'done' } });
+  });
+
+  it.each([
+    ['a `from` that is not the owner of record', { record: STRANGER }, /not owned by `from`/],
+    ['an unclaimed seat', { claimed: false }, /claim it first/],
+    ['a `to` no subject is bound to', { members: [A] }, /no login in it is bound to `to`/],
+    ['a bound `to` holding no role', { roles: [A] }, /holding no role here — grant `to` a role first/],
+    ['a scope with no owner of record', { record: null }, /no owner of record/],
+  ])('refuses %s with 409, and no seat moves', async (_label, init, message) => {
+    const { w, send, state } = world(init);
+    const before = state();
+    const res = await send({ ...REF, from: A, to: B });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(message);
+    expect(w.steps).toEqual(['record']); // decided at the record, before any seat write
+    expect(state()).toEqual(before);
+  });
+
+  it('refuses a `to` still bound but whose role was taken back — before anything is written', async () => {
+    const { w, send, state } = world({ roles: [A] }); // B signs in, but holds no role any more
+    const before = state();
+    const res = await send({ ...REF, from: A, to: B });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/holding no role here/);
+    expect(w.steps).toEqual(['record']); // the directory decided, on the host's read, and wrote nothing
+    expect(state()).toEqual(before);
+    // The twin: give B a role back, and the same request goes through.
+    w.roles.add(B);
+    expect((await send({ ...REF, from: A, to: B })).status).toBe(200);
+    expect(state().record).toBe(B);
+  });
+
+  it('refuses a malformed body before the directory is reached', async () => {
+    const { w, send } = world();
+    for (const body of [
+      { ...REF, from: A, to: A }, // one principal on both sides
+      { ...REF, from: A }, // no `to`
+      { ...REF, from: A, to: 'not-a-principal' },
+      { ...REF, from: A, to: B, owner: STRANGER }, // strict: nothing else rides along
+    ]) {
+      expect((await send(body)).status).toBe(400);
+    }
+    expect(w.steps).toEqual([]);
+    expect(w.record).toBe(A);
+  });
+
+  it('a hook answering an owner other than `to` stops before any seat moves', async () => {
+    const { w, host } = world();
+    const app = appWith(host, {
+      transferOwner: async () => ({ outcome: 'transferred', owner: STRANGER }) as never,
+      completeOwnerTransfer: async () => true,
+    });
+    const res = await app.request(
+      '/internal/owner-transfer',
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, from: A, to: B }) },
+      ENV,
+    );
+    expect(res.status).toBe(500);
+    expect(w.steps).toEqual([]);
+    expect([...w.seats]).toEqual([A]);
+  });
+
+  it.each([
+    // [the step that fails, the state it leaves, the retry's outcome and fromRevoked]
+    ['record', { record: A, seats: [A], last: null }, 'transferred', true],
+    ['assign', { record: B, seats: [A], last: { from: A, to: B, state: 'pending' } }, 'already', true],
+    ['revoke', { record: B, seats: [A, B].sort(), last: { from: A, to: B, state: 'pending' } }, 'already', true],
+    ['complete', { record: B, seats: [B], last: { from: A, to: B, state: 'pending' } }, 'already', false],
+  ] as const)(
+    'a failure at the %s step leaves one owner of record and a live owner seat — and the retry completes',
+    async (step, left, outcome, fromRevoked) => {
+      const { w, send, state } = world();
+      w.failOn = step;
+      expect((await send({ ...REF, from: A, to: B })).ok).toBe(false); // the envelope's status, never a 2xx
+      expect(state()).toEqual(left);
+      expect(state().seats.length).toBeGreaterThan(0);
+      const retry = await send({ ...REF, from: A, to: B });
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toMatchObject({ outcome, fromRevoked });
+      expect(state()).toEqual({ record: B, seats: [B], last: { from: A, to: B, state: 'done' } });
+    },
+  );
+
+  it('after a hand-over, a reconcile re-sources the NEW owner — never the one it replaced', async () => {
+    const { host, app, send } = world();
+    const provisioned: unknown[] = [];
+    host.provisionScopeLocal = async (input) => {
+      provisioned.push(input.owner);
+    };
+    await send({ ...REF, from: A, to: B });
+    const reconcile = await app.request(
+      '/internal/reconcile',
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(REF) },
+      ENV,
+    );
+    expect(reconcile.status).toBe(200);
+    expect(provisioned).toEqual([B]);
+  });
+
+  it('after a hand-over, a re-PROVISION seats the new owner, not the one the platform minted', async () => {
+    const { host, app, send } = world();
+    const seated: unknown[] = [];
+    host.provisionScopeLocal = async (input) => {
+      seated.push(input.owner);
+    };
+    const provision = () =>
+      app.request(
+        '/internal/provision',
+        { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, owner: A }) },
+        ENV,
+      );
+    expect((await provision()).status).toBe(201); // the install: the record names A
+    await send({ ...REF, from: A, to: B });
+    const again = await provision(); // the platform re-runs it with the principal it minted: A
+    expect(again.status).toBe(201);
+    expect(((await again.json()) as { owner: string }).owner).toBe(B);
+    expect(seated).toEqual([A, B]);
+  });
+
+  it('…and its twin: a scope with no owner of record yet seats the owner the platform sent', async () => {
+    const { host, app } = world({ record: null });
+    const seated: unknown[] = [];
+    host.provisionScopeLocal = async (input) => {
+      seated.push(input.owner);
+    };
+    const res = await app.request(
+      '/internal/provision',
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, owner: A }) },
+      ENV,
+    );
+    expect(res.status).toBe(201);
+    expect(seated).toEqual([A]);
+  });
+
+  it('501s without either hook, and without the host verbs — before the record is touched', async () => {
+    const REQ = { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, from: A, to: B }) };
+    const touched: unknown[] = [];
+    const begin = async () => {
+      touched.push(1);
+      return { outcome: 'transferred', owner: B } as never;
+    };
+    expect((await appWith(fakeHost()).request('/internal/owner-transfer', REQ, ENV)).status).toBe(501);
+    expect((await appWith(fakeHost(), { transferOwner: begin }).request('/internal/owner-transfer', REQ, ENV)).status).toBe(501);
+    const oldHost = appWith(fakeHost(), { transferOwner: begin, completeOwnerTransfer: async () => true });
+    const res = await oldHost.request('/internal/owner-transfer', REQ, ENV);
+    expect(res.status).toBe(501);
+    expect(((await res.json()) as { error: string }).error).toMatch(/redeploy/);
+    expect(touched).toEqual([]);
+  });
+
+  it('is behind the platform-secret gate — and its twin with the secret gets through', async () => {
+    const { w, app } = world();
+    const body = JSON.stringify({ ...REF, from: A, to: B });
+    const headers = { 'content-type': 'application/json' };
+    expect((await app.request('/internal/owner-transfer', { method: 'POST', headers, body }, ENV)).status).toBe(403);
+    const wrong = { ...headers, [PLATFORM_SECRET_HEADER]: 'not-the-secret' };
+    expect((await app.request('/internal/owner-transfer', { method: 'POST', headers: wrong, body }, ENV)).status).toBe(403);
+    expect(w.steps).toEqual([]);
+    const right = { ...headers, [PLATFORM_SECRET_HEADER]: SECRET };
+    expect((await app.request('/internal/owner-transfer', { method: 'POST', headers: right, body }, ENV)).status).toBe(200);
   });
 });

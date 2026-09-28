@@ -439,8 +439,20 @@ export function assertDumpIdentifiers(tables: { name: string; columns?: string[]
       );
     }
     seen.add(key);
+    // The same rule one level down: a column named twice makes the row insert name it twice,
+    // and which cell lands would be SQLite's choice rather than the dump's. Case-folded, as
+    // SQLite resolves column names that way too.
+    const columns = new Set<string>();
     for (const c of t.columns ?? []) {
       assertSqlIdentifier(c, `column name in table ${JSON.stringify(t.name)}`);
+      if (columns.has(c.toLowerCase())) {
+        throw new Error(
+          `refusing this dump: column ${JSON.stringify(c)} in table ${JSON.stringify(t.name)} is listed twice ` +
+            '(SQLite resolves column names case-insensitively). A dumped table names each of its columns once, ' +
+            'so the dump is not loaded.',
+        );
+      }
+      columns.add(c.toLowerCase());
     }
   }
 }

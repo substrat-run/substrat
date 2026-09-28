@@ -151,6 +151,8 @@ describe('readLifecycleFlow (#1744)', () => {
       operation: null,
       count: 1,
       declared: true,
+      // Nor who: the principal on `desk/set-priority` only exposed the move.
+      actors: { unknown: 1 },
     });
     // The declared edge itself is still at 0: nobody can say `desk/ingest` did it.
     expect(edge(r, 'resolved', 'open', 'desk/ingest')!.count).toBe(0);
@@ -173,6 +175,43 @@ describe('readLifecycleFlow (#1744)', () => {
     expect(edge(r, 'new', 'open', 'desk/assign')!.count).toBe(0);
     // A consumer emit names no operation, so no declaration can hold its move.
     expect(edge(r, 'resolved', 'open', null)).toMatchObject({ count: 1, declared: false });
+  });
+
+  it('believes a payload state the declaration does not have, rather than inferring from the operation', () => {
+    // `desk/assign` IS the declared edge new → open, but the row says `archived`: the code
+    // and the model disagree, and the payload is what the row held.
+    const r = read([
+      { entity: 'c1', at: at(1), op: 'desk/create', state: 'new' },
+      { entity: 'c1', at: at(1, 1), op: 'desk/assign', state: 'archived' },
+    ]);
+    expect(edge(r, 'new', 'archived', 'desk/assign')).toMatchObject({ count: 1, declared: false });
+    expect(edge(r, 'new', 'open', 'desk/assign')!.count).toBe(0);
+    expect(r.observation.inferred).toBe(0);
+    // Listed, so the instance sitting in it is still counted somewhere.
+    expect(state(r, 'archived')).toMatchObject({ declared: false, terminal: false, current: 1, entered: 1 });
+    expect(state(r, 'open')).toMatchObject({ declared: true, current: 0 });
+    expect(r.totals.inFlight).toBe(1);
+  });
+
+  it('believes an undeclared state an entity is first found in', () => {
+    const r = read([{ entity: 'c1', at: at(1), op: 'desk/import', state: 'archived' }]);
+    expect(state(r, 'archived')).toMatchObject({ declared: false, current: 1 });
+    expect(state(r, 'new').current).toBe(0);
+  });
+
+  it('stops believing undeclared payload states once there are too many to be an enum', () => {
+    // 40 distinct values: past the bound the field is not the enum the model says, and those
+    // events fall back to the declaration (here `desk/assign`, the edge new → open).
+    const evs: Ev[] = [];
+    for (let i = 0; i < 40; i += 1) {
+      const entity = `c${String(i).padStart(2, '0')}`;
+      evs.push({ entity, at: at(1), op: 'desk/create', state: 'new' });
+      evs.push({ entity, at: at(1, 1), op: 'desk/assign', state: `free text ${i}` });
+    }
+    const r = read(evs);
+    expect(r.states.filter((s) => !s.declared)).toHaveLength(32);
+    expect(edge(r, 'new', 'open', 'desk/assign')!.count).toBe(8);
+    expect(r.observation.inferred).toBe(8);
   });
 
   it('says who made each move, by the kind of actor the outbox recorded', () => {

@@ -109,6 +109,7 @@ import {
   type EntityHistoryInput,
   type EventCauseInput,
   delegatedReadRecord,
+  ownerTransferAudit,
   type EventEffectsInput,
   type EffectsTree,
   type InvocationEventsInput,
@@ -1175,6 +1176,7 @@ interface ScopeStubRpc {
   ): Promise<SwitchedOff[]>;
   /** Tombstone a scope tuple by exact (subject, relation, object). Idempotent. */
   revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
+  hasEffectiveRoleGrantFor(tenantId: string, subject: string): Promise<boolean>;
   /** Attachment surface, metadata half (#473) — see the ScopeDO methods of the same names.
    *  `connectionId` (#476) gates as a connection instead of `principal` when set. */
   attachmentAdd(
@@ -6766,6 +6768,15 @@ export class CloudflareScopeHost implements ScopeHost {
           parsed.resultCount,
         );
       },
+      /**
+       * #1665: one phase of an owner hand-over the control plane ran against the vertical that
+       * holds the scope's owner seat. Parsed, then written as an ordinary `transferOwner` row:
+       * the id and instant are stamped here, the actor is the request's.
+       */
+      recordOwnerTransfer: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
+        await this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
+      },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const rows = await this.cp.accessLog({
           actor: filter?.actor,
@@ -7996,15 +8007,27 @@ export class CloudflareScopeHost implements ScopeHost {
    *   vertical no longer defines passes no check, so it does not count. A scope nobody can
    *   act in is the #332 lockout the reconcile exists to repair, so revoking the LAST holder
    *   is undone at the next reconcile. Seat the successor (in a role the vertical defines)
-   *   before unseating the owner, and the revoke stands. The owner re-seated is the one `owner_of_record` names, which is first-write-
-   *   wins — if a successor is later revoked too, the ORIGINAL owner comes back. To lock a
-   *   compromised owner out, suspend the scope; a seat revoke is not that lever.
+   *   before unseating the owner, and the revoke stands. The owner re-seated is the one the
+   *   vertical's owner of record names. A hand-over by hand leaves that record on the ORIGINAL
+   *   owner, who comes back if the successor is later revoked too; the platform's owner
+   *   hand-over (`/internal/owner-transfer`, #1665) moves the record, and then the successor
+   *   is the one re-seated. To lock a compromised owner out, suspend the scope; a seat revoke
+   *   is not that lever.
    * - An explicit grant does clear it: `assignScopeRole` is `INSERT OR REPLACE`, and so is
    *   a vertical's `onProvision` hook that re-issues it — which re-seats whatever it names
    *   on every reconcile. Revoke the seats your own flow granted and does not re-grant.
    * On a CP-less host this records no admin-log row (there is no control plane to hold
    * one), so the row's `revoked_at` is the only evidence, and a re-assign replaces it.
    */
+  /**
+   * Does `principal` hold a role this scope can expand (#1665) — scope-level or projected from
+   * the tenant, for a role the vertical still defines? What an owner hand-over asks of its
+   * successor before anything moves: a member whose role was taken back is not one to hand to.
+   */
+  async hasScopeRoleLocal(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId): Promise<boolean> {
+    return this.scopeStub(scopeId).hasEffectiveRoleGrantFor(tenantId, `principal:${principal}`);
+  }
+
   async revokeScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean> {
     return this.scopeStub(scopeId).revokeTuple(
       `principal:${principal}`,

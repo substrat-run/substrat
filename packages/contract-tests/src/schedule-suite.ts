@@ -293,11 +293,11 @@ export function scheduleContractSuite(
     });
 
     /**
-     * #1288's migration, on the one legacy shape a test can actually produce: a
-     * restore replays the dump's own DDL verbatim, so a dump captured before the
-     * column puts the pre-#1288 table back into a live store — exactly what a scope
-     * created before this release wakes up holding. Both adapters then run their
-     * spine pass over it (`ensureSpineColumns` / `applySpineColumnAdditions`).
+     * #1288's backfill, on a dump captured before the column: a restore builds the table
+     * from the kernel's DDL (#1883) and derives each row's `kind` from its key, by the
+     * rule the wake-time rebuild uses (`SCHEDULE_STATE_KIND_OF_OP`). The rebuild itself,
+     * over a live store holding the old table, is each adapter's own test
+     * (`schedule-state-kind.test.ts`, `schedule-invocation-column.test.ts`).
      *
      * LAST in this file deliberately: a restore replaces the scope's storage, so
      * anything after it would be reading a different scope than it provisioned.

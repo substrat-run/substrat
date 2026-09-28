@@ -2679,10 +2679,10 @@ export function scopeHostContractSuite(
         const dump = await host.admin.exportScope(staff, t1, s1);
         // Doctor the dump into one captured before the `operation` column existed:
         // the DDL loses the column and every row loses that cell — exactly what a
-        // dump exported by an older platform carries. The replay's DDL is
-        // authoritative, and KERNEL_DDL's IF NOT EXISTS cannot widen a table the
-        // dump brought, so without the post-replay re-run of the additive
-        // migrations the emit below fails with `no such column: operation`.
+        // dump exported by an older platform carries. The restore builds the outbox
+        // from the kernel's DDL, not the dump's (#1883), and inserts the rows by
+        // column name, so the missing cell reads NULL and the emit below still has
+        // its column.
         const doctored = dump.tables.map((t) => {
           if (t.name !== '_substrat_outbox') return t;
           const idx = t.columns.indexOf('operation');
@@ -2842,6 +2842,17 @@ export function scopeHostContractSuite(
               { name: 'MARKER', ddl: 'CREATE TABLE MARKER (id TEXT)', columns: ['id'], rows: [] },
             ]),
           ).rejects.toThrow(/listed twice/);
+        });
+
+        // A column listed twice is the same shape one level down: the row insert names it twice,
+        // and which of the two cells lands is SQLite's choice, not the dump's. Case-folded, as
+        // SQLite resolves column names that way too (#1883 review).
+        it('refuses a column listed twice in one table, including differing only in case', async () => {
+          await expect(
+            importForged([
+              { name: 'marker', ddl: 'CREATE TABLE marker (id TEXT, note TEXT)', columns: ['id', 'note', 'ID'], rows: [] },
+            ]),
+          ).rejects.toThrow(/column "ID" in table "marker" is listed twice/);
         });
 
         // Non-vacuous: proves the checks do not simply reject everything, and that a

@@ -1,5 +1,11 @@
 # @substrat-run/model-providers
 
+## 0.5.17
+
+### Patch Changes
+
+- @substrat-run/contracts@0.127.0
+
 ## 0.5.16
 
 ### Patch Changes

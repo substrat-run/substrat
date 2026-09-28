@@ -188,6 +188,11 @@ export const adminAction = z.enum([
   // append-only, so a credential written here could never be removed.
   'mintCapability',
   'revokeCapability',
+  // #1665 — an owner hand-over: the scope's owner of record moved from one principal to
+  // another, the new one seated in the owner role and the old one's taken back. The row names
+  // both principals and, like every row, the actor from the request. Written intent-first then
+  // outcome, like the schedule switch, since the move happens in the vertical's own deployment.
+  'transferOwner',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 
@@ -360,6 +365,99 @@ export const ownerClaimLink = z.object({
   expiresAt: z.string(),
 });
 export type OwnerClaimLink = z.infer<typeof ownerClaimLink>;
+
+/**
+ * An owner HAND-OVER request (#1665): the current owner of record and the member who takes
+ * over. Two principals in the scope's own identity directory. The scope comes from the address.
+ * One principal on both sides is refused here, before anything is reached. `abandon: true`
+ * instead closes the OPEN hand-over `from → to` without finishing it (staff's way out of one
+ * that can no longer finish), writing no seat or revoke.
+ */
+export const ownerTransferPair = z.object({ from: principalId, to: principalId, abandon: z.literal(true).optional() });
+/** The one refusal both hand-over bodies share: `ownerTransferInput` and vertical-host's. */
+export const distinctOwnerTransfer: [(b: { from: string; to: string }) => boolean, { message: string; path: string[] }] = [
+  (b) => b.from !== b.to,
+  { message: '`from` and `to` must be different principals', path: ['to'] },
+];
+export const ownerTransferInput = ownerTransferPair.strict().refine(...distinctOwnerTransfer);
+
+/**
+ * What the vertical's identity directory answered to the record half of a hand-over (#1665).
+ * `transferred` moved `owner_of_record` and opened the hand-over; `already` found this same
+ * `from → to` still open (a retry, which the flow finishes); `done` found it finished (a repeat,
+ * which seats and revokes nothing). `refused` wrote nothing: the scope has no owner here
+ * (`unknown`), the seat is still unclaimed, `from` is not the owner this record was handed from,
+ * no login is bound to `to` (`not-member`), `to` holds no role here (`no-role`), ANOTHER hand-over is still open (`in-flight`), or THIS one is open but
+ * can no longer finish because `to` has since been removed (`wedged`: abandon it).
+ */
+export const ownerTransferOutcome = z.enum(['transferred', 'already', 'done', 'abandoned']);
+export const ownerTransferRecord = z.discriminatedUnion('outcome', [
+  z.object({ outcome: ownerTransferOutcome.exclude(['abandoned']), owner: principalId }),
+  z.object({
+    outcome: z.literal('refused'),
+    owner: principalId.nullable(),
+    reason: z.enum(['unknown', 'same-principal', 'unclaimed', 'not-owner', 'not-member', 'no-role', 'in-flight', 'wedged']),
+    /** On `in-flight` / `wedged`: the hand-over still open — to resend, or to abandon. */
+    inFlight: z.object({ from: principalId, to: principalId }).optional(),
+  }),
+]);
+export type OwnerTransferRecord = z.infer<typeof ownerTransferRecord>;
+
+/**
+ * What the directory answered to an abandon (#1665): `abandoned` closed the open hand-over;
+ * `not-open` found no open hand-over with that pair; `healthy` found it open and still able to
+ * finish (`to` still signs in and holds a role), which is resent, not abandoned. Only
+ * `abandoned` wrote anything.
+ */
+export const ownerTransferAbandon = z.enum(['abandoned', 'not-open', 'healthy']);
+
+/**
+ * A completed hand-over (#1665), as `/internal/owner-transfer` answers it. `owner` is the new
+ * owner of record. `outcome` is the directory's: `transferred` (this call moved it), `already`
+ * (this call finished one a failure had left open) or `done` (it was finished before, and this
+ * call changed nothing), or `abandoned` (this call closed the open hand-over without finishing
+ * it, seating and revoking nothing). `fromRevoked` is false when `from` held no live scope-level owner seat
+ * to take back — on a `done`, always. It says nothing about the TENANT level: a role `from` holds
+ * there (projected into the scope) is not the vertical's to revoke, so `false` can mean `from`
+ * still acts as owner through it. Take that one back on the platform (the tenant's role
+ * assignments) if the hand-over is meant to remove them.
+ */
+export const ownerTransferResult = z.object({
+  scopeId: scopeId,
+  from: principalId,
+  owner: principalId,
+  outcome: ownerTransferOutcome,
+  fromRevoked: z.boolean(),
+});
+export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
+
+/**
+ * One row of an owner hand-over's audit (#1665), for `HostAdmin.recordOwnerTransfer`: an
+ * `intent`, then `applied`, `refused` (the vertical's 409) or `failed`, paired by `operationId`.
+ * No `id`, `at` or actor: the adapter stamps the first two and the request supplies the third.
+ */
+/** How much of the vertical's error text a `refused`/`failed` row keeps: the append-only log is
+ *  no place for a vertical's whole response, and the caller got that in full already. */
+export const OWNER_TRANSFER_AUDIT_ERROR_MAX = 300;
+const ownerTransferAuditRow = <T extends z.ZodRawShape>(phase: T) =>
+  z
+    .object({
+      ...phase,
+      tenantId,
+      scopeId,
+      operationId: z.string().min(1),
+      from: principalId,
+      to: principalId,
+      /** Present on every row of an abandon, so the log tells one from a hand-over. */
+      abandon: z.literal(true).optional(),
+    })
+    .strict();
+export const ownerTransferAudit = z.discriminatedUnion('phase', [
+  ownerTransferAuditRow({ phase: z.literal('intent') }),
+  ownerTransferAuditRow({ phase: z.literal('applied'), outcome: ownerTransferOutcome, fromRevoked: z.boolean() }),
+  ownerTransferAuditRow({ phase: z.enum(['refused', 'failed']), error: z.string().max(OWNER_TRANSFER_AUDIT_ERROR_MAX) }),
+]);
+export type OwnerTransferAudit = z.infer<typeof ownerTransferAudit>;
 
 /**
  * How an identity pool relates to tenants (K-23) — the fact that decides whether the

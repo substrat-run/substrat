@@ -1,7 +1,7 @@
 /**
- * #1525's ALTER on a real Durable Object, run twice — not the #1288 REBUILD the
- * shared schedule contract suite proves through a restore, and not the single ALTER
- * that suite's export/restore trick can reach either: a restore never forces a LIVE
+ * #1525's ALTER on a real Durable Object, run twice — not the #1288 REBUILD (the
+ * second describe below), and not the single ALTER a restore could once reach
+ * either (since #1883 a restore builds the spine from KERNEL_DDL): a restore never forces a LIVE
  * DO to be reconstructed, so it can show the column arriving once but never show the
  * same `ALTER TABLE ... ADD COLUMN invocation_id` meeting a table that already has
  * it. `applySpineColumnAdditions` runs unconditionally in the DO's constructor, on
@@ -140,6 +140,139 @@ describe('#1525: _substrat_schedule_state ALTERs invocation_id in on a DO create
       // runs — including `schedule-suite.ts`'s own — inflating counts asserted as
       // exact numbers there. Guarded by `provisioned`: archiving a scope that was
       // never provisioned throws its own error, masking whatever failed above.
+      if (provisioned) await host.admin.archiveScope(staff, t, s);
+      await host.close();
+    }
+  });
+});
+
+/**
+ * #1288's REBUILD on a real Durable Object, woken over a table that predates `kind`. The shared
+ * schedule suite used to reach this through a restore, which replayed a dump's pre-#1288 DDL
+ * into a live store. Since #1883 a restore builds every spine table from KERNEL_DDL and derives
+ * `kind` for the dump's rows itself, so the only way left to hold the old table is to have held
+ * it at wake — which is what this stages: put the old table back, evict, and read what the next
+ * construction left.
+ */
+describe('#1288: a DO woken over a pre-kind _substrat_schedule_state rebuilds it, once', () => {
+  it('backfills kind from the freshness: prefix, keeps every row, and a second wake is a no-op', async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      checker: UNSAFE_allowAllChecker,
+    });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    let provisioned = false;
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `rebuild1288-${ulid().toLowerCase()}`, name: 'Rebuild' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'rebuild-vertical' });
+      provisioned = true;
+      const freshStub = () => env.SCOPE.get(env.SCOPE.idFromName(s));
+      const evict = (why: string) =>
+        runInDurableObject(freshStub(), (_instance, state) => {
+          state.abort(why);
+        }).catch(() => undefined);
+      const read = () =>
+        runInDurableObject(freshStub(), (_instance, state) => ({
+          ddl: (
+            state.storage.sql
+              .exec("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '_substrat_schedule_state'")
+              .toArray() as unknown as { sql: string }[]
+          )[0]!.sql,
+          rows: state.storage.sql
+            .exec('SELECT kind, schedule_op, last_status, invocation_id FROM _substrat_schedule_state ORDER BY schedule_op')
+            .toArray(),
+          scratch: state.storage.sql
+            .exec("SELECT name FROM sqlite_master WHERE name = '_substrat_schedule_state_new'")
+            .toArray().length,
+        }));
+
+      // The pre-#1288 table, one row of each family — the statuses differ, so a rebuild that
+      // dropped the rows and let a sweep recreate them could not pass.
+      await runInDurableObject(freshStub(), (_instance, state) => {
+        state.storage.sql.exec('DROP TABLE _substrat_schedule_state');
+        state.storage.sql.exec(
+          'CREATE TABLE _substrat_schedule_state (schedule_op TEXT PRIMARY KEY, last_run_at TEXT, last_status TEXT)',
+        );
+        state.storage.sql.exec(
+          `INSERT INTO _substrat_schedule_state VALUES
+             ('freshness:sched.ticked', '2026-09-01T00:00:00.000Z', 'failed'),
+             ('sched/tick', '2026-09-01T00:00:00.000Z', 'ok')`,
+        );
+      });
+      await evict('evicted for #1288 test — first wake');
+
+      const want = [
+        { kind: 'freshness', schedule_op: 'freshness:sched.ticked', last_status: 'failed', invocation_id: null },
+        { kind: 'schedule', schedule_op: 'sched/tick', last_status: 'ok', invocation_id: null },
+      ];
+      const first = await read();
+      expect(first.ddl).toMatch(/PRIMARY KEY \(kind, schedule_op\)/);
+      expect(first.rows).toEqual(want);
+      expect(first.scratch).toBe(0);
+
+      await evict('evicted for #1288 test — second wake');
+      expect(await read()).toEqual(first);
+    } finally {
+      if (provisioned) await host.admin.archiveScope(staff, t, s);
+      await host.close();
+    }
+  });
+});
+
+/**
+ * #1883 on a real Durable Object: a restore keeps a spine column a newer kernel's dump carried,
+ * as a plain untyped column spelled as the dump spelled it. When a later kernel adds that
+ * column for real, its additive ALTER meets it on the next wake and must tolerate it as a
+ * duplicate; otherwise the DO cannot construct. Staged on the one additive column the kernel
+ * still ALTERs in, `_substrat_deliveries.invocation_id`, untyped and lowercased as a restore adds it.
+ */
+describe('#1883: a DO woken over a column a restore added untyped', () => {
+  it('constructs, keeps the value, and does not add the column twice', async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      checker: UNSAFE_allowAllChecker,
+    });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    let provisioned = false;
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `untyped1883-${ulid().toLowerCase()}`, name: 'Untyped' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'untyped-vertical' });
+      provisioned = true;
+      const freshStub = () => env.SCOPE.get(env.SCOPE.idFromName(s));
+      await runInDurableObject(freshStub(), (_instance, state) => {
+        state.storage.sql.exec('DROP TABLE _substrat_deliveries');
+        state.storage.sql.exec(
+          'CREATE TABLE _substrat_deliveries (event_id TEXT NOT NULL, consumer_module TEXT NOT NULL, ' +
+            'delivered_at TEXT NOT NULL, error TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, ' +
+            'PRIMARY KEY (event_id, consumer_module))',
+        );
+        state.storage.sql.exec('ALTER TABLE _substrat_deliveries ADD COLUMN "invocation_id"');
+        state.storage.sql.exec(
+          `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
+           VALUES ('e1', 'm1', '2026-09-01T00:00:00.000Z', 'inv-1')`,
+        );
+      });
+      await runInDurableObject(freshStub(), (_instance, state) => {
+        state.abort('evicted for #1883 test');
+      }).catch(() => undefined);
+
+      const after = await runInDurableObject(freshStub(), (_instance, state) => {
+        const cursor = state.storage.sql.exec('SELECT * FROM _substrat_deliveries');
+        return { columns: cursor.columnNames, rows: Array.from(cursor.raw(), (r) => [...r]) };
+      });
+      expect(after.columns.filter((c) => c.toLowerCase() === 'invocation_id')).toEqual(['invocation_id']);
+      expect(after.rows).toEqual([['e1', 'm1', '2026-09-01T00:00:00.000Z', null, 0, null, 'inv-1']]);
+      // And the scope serves: the constructor's column pass did not throw.
+      await expect(host.admin.exportScope(staff, t, s)).resolves.toBeDefined();
+    } finally {
       if (provisioned) await host.admin.archiveScope(staff, t, s);
       await host.close();
     }

@@ -172,6 +172,22 @@ describe("the ScopeDO's importDump picks the rows to re-point (#1869)", () => {
     expect(rows[1]).toEqual(kept(source, 1));
     expect(rows[2]).toEqual(kept(source, 2));
   });
+  // #1883's twin of the node refusal (`adapter-sqlite/test/scope-repoint.test.ts`): the DO's
+  // KERNEL_DDL builds `_substrat_roles`, so a dump carrying it restores, rows by column name.
+  it('a dump carrying _substrat_roles, a table only this host builds in a scope, lands here', async () => {
+    const dest = scopeId.parse(ulid());
+    const roles: ScopeDumpTable = {
+      name: '_substrat_roles',
+      ddl:
+        'CREATE TABLE _substrat_roles (tenant_id TEXT NOT NULL, role_key TEXT NOT NULL, permissions TEXT NOT NULL, ' +
+        'source TEXT NOT NULL, revoked_at TEXT, PRIMARY KEY (tenant_id, role_key))',
+      columns: ['tenant_id', 'role_key', 'permissions', 'source', 'revoked_at'],
+      rows: [['tenant-a', 'reader', '["perm:read"]', 'vertical', null]],
+    };
+    await host.restoreScopeLocal(dest, [...dumpFrom(source), roles], { sourceScopeId: source });
+    const back = (await host.exportScopeLocal(dest)).find((t) => t.name === '_substrat_roles');
+    expect(back?.rows).toEqual(roles.rows);
+  });
 });
 
 /**
