@@ -33,7 +33,7 @@ ambient env.
 | **R6** no clock | module code never reads the wall clock (`new Date()`, `Date.now()`) — the operation's instant is `ctx.now()` |
 | **R7** no bare catch | module code never catches an engine error outside [`ctx.atomic`](/concepts/modules) — a `catch` around a raw engine call commits its partial writes (under-fires; see below) |
 | **R8** no `SELECT *` | an **engine** never reads with a star — `SELECT *` publishes whatever columns the physical table holds today, so a column that moves between two engine versions reaches a vertical as *wrong data on a screen* rather than a throw. A read names its columns (`columnsOf(schema)`) and returns through `returns(schema, …)` |
-| **R10** logged | a deployable vertical's worker (`src/worker.ts` beside a `substrat.slug`) mounts `invocationLog` as the **first** registration on its app, with a `routerSecret`. Without it the vertical writes no verified per-request stamp, so the dashboard's Logs (Lines, Requests, Patterns) stay empty for it — and a redeploy does not help. `substrat push` reports this as a **warning** and still deploys; the CLI fails on it |
+| **R10** logged | a deployable vertical's worker (`src/worker.ts` beside a `substrat.slug`) mounts `invocationLog` as the **first** registration on its app, with a `routerSecret`. Without it the vertical writes no verified per-request stamp, so the dashboard's Logs (Lines, Requests, Patterns) stay empty for it — and a redeploy does not help. `substrat push` reports this as a **warning** and still deploys; `substrat-boundary-lint` fails on it |
 
 R7 allows the two shapes that do not swallow: `try`/`finally` with no `catch`, and a catch
 that always rethrows (`catch (e) { log(e); throw e }`) — the operation still fails, so the
