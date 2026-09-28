@@ -352,6 +352,7 @@ describe('the owner hand-over, end to end through the vertical surface (#1665)',
       },
       completeOwnerTransfer: async () => {
         world.open = null;
+        return true;
       },
       abandonOwnerTransfer: async (_env, _ref, { from, to }) => {
         if (world.open?.from !== from || world.open.to !== to) return false;

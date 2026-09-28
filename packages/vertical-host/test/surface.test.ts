@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
@@ -1598,7 +1598,9 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     const completeOwnerTransfer = async (_env: Env, _ref: unknown, { from, to }: { from: string; to: string }) => {
       w.steps.push('complete');
       failIf('complete');
-      if (w.last?.state === 'pending' && w.last.from === from && w.last.to === to) w.last.state = 'done';
+      if (w.last?.state !== 'pending' || w.last.from !== from || w.last.to !== to) return false;
+      w.last.state = 'done';
+      return true;
     };
     const abandonOwnerTransfer = async (_env: Env, _ref: unknown, { from, to }: { from: string; to: string }) => {
       w.steps.push('abandon');
@@ -1727,6 +1729,26 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     expect(state().seats).toContain(C);
   });
 
+  it('a close that finds the hand-over no longer open is reported and logged, not a quiet 200', async () => {
+    const { w, host, send } = world();
+    // An abandon lands between the revoke and the close.
+    const revoke = host.revokeScopeRole!;
+    host.revokeScopeRole = async (s, p, r) => {
+      const out = await revoke(s, p, r);
+      if (w.last) w.last.state = 'abandoned';
+      return out;
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const res = await send({ ...REF, from: A, to: B });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toMatch(/no longer open to close/);
+      expect(logged).toHaveBeenCalledWith(expect.stringMatching(/^owner-transfer: .*no longer open to close/));
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
   it('two hand-overs racing from one owner: one wins, the other is refused, and one owner is seated', async () => {
     const { send, state } = world();
     const [toB, toC] = await Promise.all([send({ ...REF, from: A, to: B }), send({ ...REF, from: A, to: C })]);
@@ -1783,7 +1805,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     const { w, host } = world();
     const app = appWith(host, {
       transferOwner: async () => ({ outcome: 'transferred', owner: STRANGER }) as never,
-      completeOwnerTransfer: async () => undefined,
+      completeOwnerTransfer: async () => true,
     });
     const res = await app.request(
       '/internal/owner-transfer',
@@ -1876,7 +1898,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     };
     expect((await appWith(fakeHost()).request('/internal/owner-transfer', REQ, ENV)).status).toBe(501);
     expect((await appWith(fakeHost(), { transferOwner: begin }).request('/internal/owner-transfer', REQ, ENV)).status).toBe(501);
-    const oldHost = appWith(fakeHost(), { transferOwner: begin, completeOwnerTransfer: async () => undefined });
+    const oldHost = appWith(fakeHost(), { transferOwner: begin, completeOwnerTransfer: async () => true });
     const res = await oldHost.request('/internal/owner-transfer', REQ, ENV);
     expect(res.status).toBe(501);
     expect(((await res.json()) as { error: string }).error).toMatch(/redeploy/);

@@ -633,7 +633,7 @@ export interface PlatformSurfaceDeps<Env> {
     env: Env,
     ref: { tenantId: TenantId; scopeId: ScopeId },
     input: { from: PrincipalId; to: PrincipalId },
-  ) => Promise<unknown>;
+  ) => Promise<boolean>;
   /**
    * Abandon the OPEN hand-over `from → to` without finishing it (#1665): no seat, no revoke, the
    * record left on `to`. True when it closed it, false when that pair is not the open one (⇒ 409).
@@ -1433,7 +1433,15 @@ export function mountPlatformSurface<Env extends object>(
     if (record.outcome === 'done') return c.json({ ...answer, fromRevoked: false } satisfies OwnerTransferResult);
     await host.assignScopeRole(body.scopeId, body.to, deps.ownerRoleKey);
     const fromRevoked = await host.revokeScopeRole(body.scopeId, body.from, deps.ownerRoleKey);
-    await deps.completeOwnerTransfer(c.env, ref, pair);
+    if (!(await deps.completeOwnerTransfer(c.env, ref, pair))) {
+      // Seated and revoked, but the hand-over was no longer the open one to close: it was
+      // abandoned (or closed) while this ran. Not a success to report quietly.
+      const message =
+        `scope ${body.scopeId}: seated ${body.to} and revoked ${body.from}'s owner seat, but the hand-over ` +
+        `${body.from} → ${body.to} was no longer open to close — it was abandoned or closed meanwhile; check the owner seats`;
+      console.error(`owner-transfer: ${message}`);
+      throw new HTTPException(409, { message });
+    }
     return c.json({ ...answer, fromRevoked } satisfies OwnerTransferResult);
   });
 
