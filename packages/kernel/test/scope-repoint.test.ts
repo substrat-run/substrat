@@ -31,8 +31,9 @@ describe('repointScopeGrants', () => {
   it('twin: `exact` with a source settles collisions, then runs a plain update (#1882)', () => {
     const { sql, ran } = recording();
     repointScopeGrants(sql, '01JZ0000000000000000SCP001', { scopeId: '01JZ0000000000000000SCP002', exact: true }, NOW);
-    expect(ran.map((q) => q.trimStart().split(/\s+/, 1)[0])).toEqual(['DELETE', 'DELETE', 'DELETE', 'UPDATE']);
+    expect(ran.map((q) => q.trimStart().split(/\s+/, 1)[0])).toEqual(['UPDATE', 'DELETE', 'DELETE', 'DELETE', 'UPDATE']);
+    expect(ran[0]).toMatch(/^UPDATE _substrat_tuples SET expires_at = \(/);
     // Never `UPDATE OR REPLACE`: a collision the deletes missed must fail the load, not replace a row.
-    expect(ran[3]).toMatch(/^UPDATE _substrat_tuples SET object = \? WHERE/);
+    expect(ran[4]).toMatch(/^UPDATE _substrat_tuples SET object = \? WHERE/);
   });
 });

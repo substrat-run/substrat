@@ -323,6 +323,27 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         cases.push({ who: principalId.parse(ulid()), rows: [{ object: 'source', state: src[s] }], kept: src[s] });
         cases.push({ who: principalId.parse(ulid()), rows: [{ object: 'dest', state: dst[s] }], kept: dst[s] });
       }
+      // Two live rows: the destination row is kept with the EARLIER expiry, whichever side had it,
+      // so a restore never widens a grant's life. No expiry is the latest of all.
+      const earlier = { expires_at: '2990-01-01T00:00:00.000Z', revoked_at: null };
+      const later = { expires_at: '2999-01-01T00:00:00.000Z', revoked_at: null };
+      const never = { expires_at: null, revoked_at: null };
+      for (const [a, b, kept] of [
+        [earlier, later, earlier],
+        [later, earlier, earlier],
+        [never, later, later],
+        [later, never, later],
+        [never, never, never],
+      ] as [Cells, Cells, Cells][]) {
+        cases.push({
+          who: principalId.parse(ulid()),
+          rows: [
+            { object: 'source', state: a },
+            { object: 'dest', state: b },
+          ],
+          kept,
+        });
+      }
       const live = (c: Cells) => c.revoked_at === null && (c.expires_at === null || c.expires_at > '2026');
 
       /** `planted` plus every case's rows, the destination's naming `dest`. */

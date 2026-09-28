@@ -67,7 +67,9 @@ export interface RepointSource {
  *
  * On a tie the destination row stays. Two moved rows that would land on the same key (only
  * the fallback moves more than one object) are settled by the same rank, and on a tie by the
- * lower `object`, before either meets the destination. The loser is deleted: it cannot stay under its old object, because a row naming another scope
+ * lower `object`, before either meets the destination. Whichever live row is kept takes the
+ * EARLIEST expiry among the live rows for its key (no expiry counting as the latest), so a
+ * restore never widens a grant's life, whichever side it came from. The loser is deleted: it cannot stay under its old object, because a row naming another scope
  * is exactly what a later restore of this scope refuses. Everything runs inside the load's
  * transaction, and the final `UPDATE` is a plain one, so a collision this missed fails the
  * restore instead of replacing a row.
@@ -126,11 +128,32 @@ function moveOnto(sql: SwitchSql, dest: string, now: string, from: string | unde
   // check would honour), 1 revoked, 0 expired. Binds `now`.
   const rank = (alias: string) =>
     `(CASE WHEN ${liveTupleSql(alias)} THEN 2 WHEN ${alias}.revoked_at IS NOT NULL THEN 1 ELSE 0 END)`;
+  // A row competing for `dest`: moved there, or already on it. Binds `moved`, then `dest`.
+  const competes = (alias: string) => `(${isMoved(alias)} OR ${alias}.object = ? COLLATE BINARY)`;
+  const competing = [...moved, dest];
+  const live = (alias: string) => `(${liveTupleSql(alias)})`;
   const sameKey = (a: string, b: string) =>
     `${a}.subject = ${b}.subject COLLATE BINARY AND ${a}.relation = ${b}.relation COLLATE BINARY`;
   // `_substrat_tuples` is the row being judged; SQLite takes no alias on a DELETE's target.
   const T = '_substrat_tuples';
 
+  // 0. Every live row that meets another live one, carrying an earlier expiry, for its key
+  //    takes the earliest, so the row kept below never outlives any of them. MIN skips NULL,
+  //    which is "no expiry", the latest.
+  sql.run(
+    `UPDATE ${T} SET expires_at = (
+       SELECT MIN(o.expires_at) FROM ${T} o WHERE ${sameKey('o', T)} AND ${competes('o')} AND ${live('o')})
+     WHERE ${live(T)} AND ${competes(T)} AND EXISTS (
+       SELECT 1 FROM ${T} o WHERE ${sameKey('o', T)} AND o.object <> ${T}.object COLLATE BINARY
+         AND ${competes('o')} AND ${live('o')} AND o.expires_at IS NOT NULL
+         AND (${T}.expires_at IS NULL OR o.expires_at < ${T}.expires_at))`,
+    ...competing,
+    now,
+    now,
+    ...competing,
+    ...competing,
+    now,
+  );
   // 1. Between two moved rows for one key: the higher rank, then the lower object.
   sql.run(
     `DELETE FROM ${T} WHERE ${isMoved(T)} AND EXISTS (
