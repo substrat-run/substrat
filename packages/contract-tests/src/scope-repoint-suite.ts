@@ -272,15 +272,17 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
     /**
      * #1882: a moved row can meet a row the dump already holds for the destination, since
      * (subject, relation, object) is the key. It was `UPDATE OR REPLACE`, so the moved row
-     * always won, tombstone and expiry included. The rule: a live row beats a dead one, and
-     * otherwise the destination row stays, so a restore never widens an expiry. Every cell
+     * always won, tombstone and expiry included. The rule: the higher rank is kept, live above
+     * revoked above expired (a tombstone is evidence, an expiry is not), and on a tie the
+     * destination row stays. A row both revoked and expired ranks as revoked. Every cell
      * of source state × destination state, with the twins that have no collision at all, on
      * each path that re-points: a caller's restore (exact), a fork (exact, platform-vouched)
      * and a caller's restore whose provenance names no row (the fallback).
      */
     describe('which row survives a re-point collision (#1882)', () => {
-      type State = 'live' | 'revoked' | 'expired';
-      const STATES: State[] = ['live', 'revoked', 'expired'];
+      type State = 'live' | 'revoked' | 'expired' | 'revokedExpired';
+      const STATES: State[] = ['live', 'revoked', 'expired', 'revokedExpired'];
+      const RANK: Record<State, number> = { live: 2, revoked: 1, revokedExpired: 1, expired: 0 };
       // Distinct timestamps per side, so the byte-for-byte read-back says WHICH row survived.
       // The destination's live row carries an expiry the source's does not: keeping it is
       // what "never widen an expiry" means.
@@ -289,11 +291,13 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         live: { expires_at: null, revoked_at: null },
         revoked: { expires_at: null, revoked_at: '2020-01-01T00:00:00.000Z' },
         expired: { expires_at: '2000-01-01T00:00:00.000Z', revoked_at: null },
+        revokedExpired: { expires_at: '2000-06-01T00:00:00.000Z', revoked_at: '2020-06-01T00:00:00.000Z' },
       };
       const dst: Record<State, Cells> = {
         live: { expires_at: '2999-01-01T00:00:00.000Z', revoked_at: null },
         revoked: { expires_at: null, revoked_at: '2021-06-01T00:00:00.000Z' },
         expired: { expires_at: '2001-01-01T00:00:00.000Z', revoked_at: null },
+        revokedExpired: { expires_at: '2001-06-01T00:00:00.000Z', revoked_at: '2021-09-01T00:00:00.000Z' },
       };
       interface Case {
         who: PrincipalId;
@@ -305,7 +309,7 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
       const cases: Case[] = [];
       for (const s of STATES) {
         for (const d of STATES) {
-          const moved = s === 'live' && d !== 'live';
+          const moved = RANK[s] > RANK[d];
           cases.push({
             who: principalId.parse(ulid()),
             rows: [

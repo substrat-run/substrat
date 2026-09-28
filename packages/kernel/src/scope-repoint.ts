@@ -51,20 +51,23 @@ export interface RepointSource {
  * **Which row wins a collision (#1882).** `(subject, relation, object)` is the primary key,
  * so a moved row can land on a row the dump already holds for the destination. That used to
  * be `UPDATE OR REPLACE`, so the moved row always won, `expires_at` and `revoked_at` with it:
- * a revoked or expired source row could replace a live grant on the destination. The rule
- * now, with "live" meaning not revoked and not expired at `now`:
+ * a revoked or expired source row could replace a live grant on the destination. Now each
+ * row is ranked, and the higher rank is kept:
  *
- * | moved row | destination row | kept                                          |
- * |-----------|-----------------|-----------------------------------------------|
- * | live      | live            | the destination row, expiry and all           |
- * | live      | revoked/expired | the moved row                                 |
- * | dead      | any             | the destination row                           |
+ * 1. **live**: not revoked, and not expired at `now`;
+ * 2. **revoked**: a K-21 tombstone, the evidence of a revocation (#1659's reconcile never
+ *    re-seats a grant it finds tombstoned, so losing one would un-revoke it);
+ * 3. **expired**: not revoked, but past its `expires_at`, which is evidence of nothing.
  *
- * So a live row beats a dead one, and otherwise the destination row stays: between two live
- * rows a restore never widens an expiry the destination already had. Two moved rows that
- * would land on the same key (only the fallback moves more than one object) are settled the
- * same way, live first and then the lower `object`, before either meets the destination. The
- * loser is deleted: it cannot stay under its old object, because a row naming another scope
+ * | moved row \ destination row | live        | revoked     | expired     |
+ * |-----------------------------|-------------|-------------|-------------|
+ * | live                        | destination | moved       | moved       |
+ * | revoked                     | destination | destination | moved       |
+ * | expired                     | destination | destination | destination |
+ *
+ * On a tie the destination row stays. Two moved rows that would land on the same key (only
+ * the fallback moves more than one object) are settled by the same rank, and on a tie by the
+ * lower `object`, before either meets the destination. The loser is deleted: it cannot stay under its old object, because a row naming another scope
  * is exactly what a later restore of this scope refuses. Everything runs inside the load's
  * transaction, and the final `UPDATE` is a plain one, so a collision this missed fails the
  * restore instead of replacing a row.
@@ -119,18 +122,20 @@ function moveOnto(sql: SwitchSql, dest: string, now: string, from: string | unde
     `(${from === undefined ? `substr(${alias}.object, 1, 6) = 'scope:'` : `${alias}.object = ?`} COLLATE BINARY ` +
     `AND ${alias}.object <> ? COLLATE BINARY)`;
   const moved = from === undefined ? [dest] : [from, dest];
-  // The checker's own definition of live, so a restore keeps the row a check would honour. Binds `now`.
-  const live = (alias: string) => `(${liveTupleSql(alias)})`;
+  // The rank in the header: 2 live (the checker's own definition, so a restore keeps the row a
+  // check would honour), 1 revoked, 0 expired. Binds `now`.
+  const rank = (alias: string) =>
+    `(CASE WHEN ${liveTupleSql(alias)} THEN 2 WHEN ${alias}.revoked_at IS NOT NULL THEN 1 ELSE 0 END)`;
   const sameKey = (a: string, b: string) =>
     `${a}.subject = ${b}.subject COLLATE BINARY AND ${a}.relation = ${b}.relation COLLATE BINARY`;
   // `_substrat_tuples` is the row being judged; SQLite takes no alias on a DELETE's target.
   const T = '_substrat_tuples';
 
-  // 1. Between two moved rows for one key: live first, then the lower object.
+  // 1. Between two moved rows for one key: the higher rank, then the lower object.
   sql.run(
     `DELETE FROM ${T} WHERE ${isMoved(T)} AND EXISTS (
        SELECT 1 FROM ${T} o WHERE ${sameKey('o', T)} AND ${isMoved('o')} AND o.object <> ${T}.object COLLATE BINARY
-         AND (${live('o')} > ${live(T)} OR (${live('o')} = ${live(T)} AND o.object < ${T}.object COLLATE BINARY)))`,
+         AND (${rank('o')} > ${rank(T)} OR (${rank('o')} = ${rank(T)} AND o.object < ${T}.object COLLATE BINARY)))`,
     ...moved,
     ...moved,
     now,
@@ -138,11 +143,11 @@ function moveOnto(sql: SwitchSql, dest: string, now: string, from: string | unde
     now,
     now,
   );
-  // 2. A moved row loses to the destination row unless it is live and the destination row is not.
+  // 2. A moved row loses to the destination row unless it ranks higher.
   sql.run(
     `DELETE FROM ${T} WHERE ${isMoved(T)} AND EXISTS (
        SELECT 1 FROM ${T} d WHERE ${sameKey('d', T)} AND d.object = ? COLLATE BINARY
-         AND (${live('d')} OR NOT ${live(T)}))`,
+         AND ${rank('d')} >= ${rank(T)})`,
     ...moved,
     dest,
     now,
