@@ -17,7 +17,7 @@ import { SPINE_PREFIX } from './spine-guard.js';
  * Now the loader builds every spine table from its own kernel DDL, and the dump contributes
  * rows only, inserted by column name:
  * - a column the kernel's table does not have (a dump from a newer kernel) is added as a plain
- *   untyped column, with no type, collation, constraint or default, and keeps its values
+ *   untyped column, unless it is named for SQLite's rowid (refused, since it would shadow it), with no type, collation, constraint or default, and keeps its values
  *   (`spineColumnAdditions`). It is not one the checker reads, and it carries nothing that
  *   could change how the columns the checker does read compare. When a later kernel adds the
  *   column for real, its additive ALTER meets it and tolerates it as a duplicate;
@@ -109,10 +109,23 @@ export function spineColumnAdditions(
 ): string[] {
   if (kernelColumns === undefined) return [];
   const known = lowered(kernelColumns);
-  return table.columns
-    .filter((c) => !known.has(c.toLowerCase()))
-    .map((c) => `ALTER TABLE "${table.name}" ADD COLUMN "${c}"`);
+  const unknown = table.columns.filter((c) => !known.has(c.toLowerCase()));
+  // A real column named for the rowid shadows SQLite's alias. On the outbox, `rowid` is the mark
+  // the #1705 and #1746 since-queries read (`OUTBOX_MARK_SQL`), so a dump's value would silence
+  // them from then on, and survive every later export.
+  const aliased = unknown.filter((c) => ROWID_ALIASES.has(c.toLowerCase()));
+  if (aliased.length > 0) {
+    throw substratError(
+      'validation_failed',
+      `restore refused: the dump's ${table.name} has column(s) named for SQLite's rowid: ${aliased.join(', ')}. ` +
+        'A real column by that name would shadow the rowid the kernel reads. Nothing was changed.',
+    );
+  }
+  return unknown.map((c) => `ALTER TABLE "${table.name}" ADD COLUMN "${c}"`);
 }
+
+/** The names SQLite resolves to a table's rowid, unless a real column takes one. */
+const ROWID_ALIASES: ReadonlySet<string> = new Set(['rowid', 'oid', '_rowid_']);
 
 /**
  * The `INSERT` that loads one dumped spine table's rows into the table the kernel built.

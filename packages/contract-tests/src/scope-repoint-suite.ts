@@ -617,6 +617,27 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
         expect((await host.admin.exportScope(staff, t, dest)).tables).toEqual(first.tables);
       });
 
+      it("a spine column named for SQLite's rowid is refused, in any case, and the target keeps every table it held", async () => {
+        // A real column named rowid, oid or _rowid_ shadows the alias. On the outbox that is the
+        // mark #1705's and #1746's since-queries read, so a dump's value would silence both.
+        const dest = await blank();
+        const before = await everything(dest);
+        for (const alias of ['rowid', 'OID', '_rowid_']) {
+          const dump = {
+            ...planted,
+            tables: planted.tables.map((tb) =>
+              tb.name === '_substrat_outbox'
+                ? { ...tb, columns: [...tb.columns, alias], rows: tb.rows.map((r) => [...r, 999999]) }
+                : tb,
+            ),
+          };
+          await expect(host.restoreScope(staff, t, dest, dump)).rejects.toThrow(
+            new RegExp(`restore refused: the dump's _substrat_outbox has column\\(s\\) named for SQLite's rowid: ${alias}\\b`),
+          );
+          expect(await everything(dest)).toEqual(before);
+        }
+      });
+
       it('spine tables the kernel does not build are refused, all named, and the target keeps every table it held', async () => {
         const dest = await blank();
         const before = await everything(dest);
