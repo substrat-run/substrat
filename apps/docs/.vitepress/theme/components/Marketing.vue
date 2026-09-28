@@ -25,9 +25,40 @@
  */
 defineProps<{ desk: string }>();
 
+import { onMounted, ref } from 'vue';
+
 // The ebook's own cover (the EPUB's cover.png), imported so Vite fingerprints it
 // rather than the page naming a path the build does not publish.
 import cover from '../../../assets/book-cover.png';
+
+// The console tour: one support conversation followed from its declared process down
+// to the request that moved it, recorded from the observability console design
+// (#1752). Every name in it is invented. Imported for the same reason as the cover:
+// fingerprinted, same origin, so the CSP's `default-src 'self'` already admits it.
+import tourVideo from '../../../assets/tour/tour.mp4';
+import tourMap from '../../../assets/tour/process-map.webp';
+import tourRequest from '../../../assets/tour/request-waterfall.webp';
+import tourFinding from '../../../assets/tour/finding.webp';
+import tourAudit from '../../../assets/tour/audit.webp';
+
+const tourStills = [
+  { src: tourMap, title: 'Process map', body: 'The state machine you declared, with a week of traffic on it: time in each state against its target, and the transitions the model refused.' },
+  { src: tourRequest, title: 'Request waterfall', body: 'The one request behind a transition: the permission check, the rows it read, the AI call and what it cost, and the slow connector.' },
+  { src: tourFinding, title: 'Findings', body: 'Anomalies against a baseline, explained in plain words and traced to their likely cause, down to the deploy that shipped it.' },
+  { src: tourAudit, title: 'Audit', body: 'Who touched whose data, by person, AI assistant or job, with the purpose recorded next to the change.' },
+];
+
+// A looping video is motion the visitor did not ask for. Under reduced motion it stays
+// on its poster with controls, so playing it is a choice.
+const tour = ref<HTMLVideoElement | null>(null);
+const tourControls = ref(false);
+onMounted(() => {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches && tour.value) {
+    tour.value.pause();
+    tour.value.currentTime = 0;
+    tourControls.value = true;
+  }
+});
 
 // The eight demo verticals, in the order they make the argument. `kernel` marks the
 // four whose CORE domain no engine matched: Manyfold, Todo and Tock compose nothing at
@@ -345,6 +376,42 @@ const bookTakeaways = [
             </span>
           </li>
         </ul>
+      </div>
+    </section>
+
+    <!-- What you see. The previous section declares; this one shows what declaring
+         buys: because the platform holds the model, its telemetry speaks the
+         business's vocabulary. Always dark, because the console it shows is. -->
+    <section class="bleed showcase">
+      <div class="wrap section">
+        <div class="kicker">What you see</div>
+        <h2>See the business, not just the servers.</h2>
+        <p class="muted lede-narrow">
+          The platform knows your model: every entity, operation and process. So it
+          can show what your business is doing, and connect that to what the code
+          did. From a process map to the one slow call behind a transition, and back.
+        </p>
+        <div class="screen">
+          <video
+            ref="tour"
+            :src="tourVideo"
+            :poster="tourMap"
+            :controls="tourControls"
+            autoplay
+            muted
+            loop
+            playsinline
+            preload="metadata"
+            aria-label="A tour of the Substrat console: a declared support-conversation process, its live process map, one conversation's timeline, the request that resolved it, the anomaly findings and the audit log."
+          />
+        </div>
+        <div class="stills">
+          <a v-for="s in tourStills" :key="s.title" class="still" :href="s.src" target="_blank" rel="noopener">
+            <img :src="s.src" :alt="`The Substrat console: ${s.title.toLowerCase()}`" loading="lazy" width="1440" height="900" />
+            <span class="still-title">{{ s.title }}</span>
+            <span class="still-body">{{ s.body }}</span>
+          </a>
+        </div>
       </div>
     </section>
 
@@ -755,6 +822,74 @@ h2 {
   background: var(--status-info-bg);
   border-top: 1px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Console tour. Dark in both themes: the recording is of the dark console, and a
+   dark screen on a light band reads as a hole in the page. The dark theme's own
+   token values are restated here so .muted and .kicker follow without new classes. */
+.showcase {
+  --text-primary: #f2f3f7;
+  --text-secondary: #a7adbe;
+  --text-tertiary: #7c8397;
+  --text-brand: #a8abf5;
+  background: radial-gradient(120% 60% at 50% 0%, #1e1947 0%, #0e1017 62%);
+  color: var(--text-primary);
+  border-top: 1px solid #1e2230;
+  border-bottom: 1px solid #1e2230;
+}
+.showcase h2 {
+  color: var(--text-primary);
+}
+.screen {
+  margin-top: 36px;
+  border: 1px solid #343a50;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0e1017;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 24px 64px rgba(0, 0, 0, 0.55);
+  aspect-ratio: 1440 / 900;
+}
+.screen video {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.stills {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+.still {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: inherit;
+  text-decoration: none;
+}
+.still img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid #262b3c;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+.still:hover {
+  text-decoration: none;
+}
+.still:hover img {
+  border-color: #483abc;
+}
+.still-title {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+}
+.still-body {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
 }
 
 /* Layer accents */
@@ -1418,7 +1553,8 @@ h2 {
    things that cannot survive a phone, so they collapse rather than scroll. */
 @media (max-width: 960px) {
   .grid-4,
-  .inv {
+  .inv,
+  .stills {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .split,
@@ -1477,6 +1613,9 @@ h2 {
   }
   .section {
     padding: 56px 24px;
+  }
+  .still-body {
+    display: none;
   }
   .ebook,
   .ebook-list {
