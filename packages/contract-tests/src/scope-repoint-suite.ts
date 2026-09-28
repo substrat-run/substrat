@@ -403,7 +403,7 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
      */
     describe('the spine is built from the kernel, never from the dump (#1883)', () => {
       const tina = principalId.parse(ulid()); // granted on aiTurn:x only
-      const uma = principalId.parse(ulid()); // granted on aiTurn:y and on aiturn:y
+      const uma = principalId.parse(ulid()); // granted on aiTurn:y and, separately, on aiturn:y
       const onEntity = async (who: PrincipalId, scope: ScopeId, entityType: string, entityId: string) => {
         const stub = await host.getScope(who, t, scope);
         const out = await stub.invoke<{ allowed: boolean }>('perm/probe', {
@@ -419,15 +419,10 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
       /** Every table, whole: what a refused load must leave exactly as it was. */
       const everything = async (scope: ScopeId) => (await host.admin.exportScope(staff, t, scope)).tables;
 
-      it('a dump declaring the tuples columns COLLATE NOCASE restores into the kernel table, and aiTurn:x is not aiturn:x', async () => {
-        const nocase = variant(
-          (rows) => [
-            ...rows,
-            entityRow(tina, 'aiTurn:x'),
-            // Under NOCASE these two are one key, and the load would fail or merge them.
-            entityRow(uma, 'aiTurn:y'),
-            entityRow(uma, 'aiturn:y'),
-          ],
+      /** `planted` plus `extra` tuples, its DDL declaring subject, relation and object COLLATE NOCASE. */
+      const nocase = (extra: unknown[][]) =>
+        variant(
+          (rows) => [...rows, ...extra],
           (ddl) => {
             const out = ddl
               .replace(/\bsubject TEXT NOT NULL\b/, 'subject TEXT NOT NULL COLLATE NOCASE')
@@ -437,19 +432,29 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
             return out;
           },
         );
+
+      it('a dump declaring the tuples columns COLLATE NOCASE restores into a case-sensitive table: aiTurn:x is not aiturn:x', async () => {
         const dest = await blank();
-        await host.restoreScope(staff, t, dest, nocase);
-        // The table is the kernel's, exactly as a scope that was never restored holds it.
-        const restored = tuplesOf(await host.admin.exportScope(staff, t, dest));
-        expect(restored.ddl).toBe(tuplesOf(planted).ddl);
-        expect(restored.ddl).not.toMatch(/NOCASE/i);
+        await host.restoreScope(staff, t, dest, nocase([entityRow(tina, 'aiTurn:x')]));
         // The checker compares case-sensitively: the grant is on aiTurn:x and nothing else.
         expect(await onEntity(tina, dest, 'aiTurn', 'x')).toBe(true);
         expect(await onEntity(tina, dest, 'aiturn', 'x')).toBe(false);
-        expect((await rowsFor(dest, uma)).map((r) => r.object).sort()).toEqual(['aiTurn:y', 'aiturn:y']);
+        // Because the table is the kernel's, exactly as a scope that was never restored holds it.
+        const restored = tuplesOf(await host.admin.exportScope(staff, t, dest));
+        expect(restored.ddl).toBe(tuplesOf(planted).ddl);
+        expect(restored.ddl).not.toMatch(/NOCASE/i);
         // The re-point still did its job over the same rows.
         await expectGenuineGrantMoved(dest);
         await expectEntityGrantsKept(dest);
+      });
+
+      it('two grants whose objects differ only in case stay two rows through that restore', async () => {
+        const dest = await blank();
+        // Under the dump's NOCASE these are one key, and the load would fail on the second.
+        await host.restoreScope(staff, t, dest, nocase([entityRow(uma, 'aiTurn:y'), entityRow(uma, 'aiturn:y')]));
+        expect((await rowsFor(dest, uma)).map((r) => r.object).sort()).toEqual(['aiTurn:y', 'aiturn:y']);
+        expect(await onEntity(uma, dest, 'aiTurn', 'y')).toBe(true);
+        expect(await onEntity(uma, dest, 'aiturn', 'y')).toBe(true);
       });
 
       it("twin: a vertical's table keeps the dump's DDL, collation included", async () => {

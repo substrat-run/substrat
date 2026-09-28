@@ -145,3 +145,80 @@ describe('#1525: _substrat_schedule_state ALTERs invocation_id in on a DO create
     }
   });
 });
+
+/**
+ * #1288's REBUILD on a real Durable Object, woken over a table that predates `kind`. The shared
+ * schedule suite used to reach this through a restore, which replayed a dump's pre-#1288 DDL
+ * into a live store. Since #1883 a restore builds every spine table from KERNEL_DDL and derives
+ * `kind` for the dump's rows itself, so the only way left to hold the old table is to have held
+ * it at wake — which is what this stages: put the old table back, evict, and read what the next
+ * construction left.
+ */
+describe('#1288: a DO woken over a pre-kind _substrat_schedule_state rebuilds it, once', () => {
+  it('backfills kind from the freshness: prefix, keeps every row, and a second wake is a no-op', async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      checker: UNSAFE_allowAllChecker,
+    });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    let provisioned = false;
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `rebuild1288-${ulid().toLowerCase()}`, name: 'Rebuild' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'rebuild-vertical' });
+      provisioned = true;
+      const freshStub = () => env.SCOPE.get(env.SCOPE.idFromName(s));
+      const evict = (why: string) =>
+        runInDurableObject(freshStub(), (_instance, state) => {
+          state.abort(why);
+        }).catch(() => undefined);
+      const read = () =>
+        runInDurableObject(freshStub(), (_instance, state) => ({
+          ddl: (
+            state.storage.sql
+              .exec("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '_substrat_schedule_state'")
+              .toArray() as unknown as { sql: string }[]
+          )[0]!.sql,
+          rows: state.storage.sql
+            .exec('SELECT kind, schedule_op, last_status, invocation_id FROM _substrat_schedule_state ORDER BY schedule_op')
+            .toArray(),
+          scratch: state.storage.sql
+            .exec("SELECT name FROM sqlite_master WHERE name = '_substrat_schedule_state_new'")
+            .toArray().length,
+        }));
+
+      // The pre-#1288 table, one row of each family — the statuses differ, so a rebuild that
+      // dropped the rows and let a sweep recreate them could not pass.
+      await runInDurableObject(freshStub(), (_instance, state) => {
+        state.storage.sql.exec('DROP TABLE _substrat_schedule_state');
+        state.storage.sql.exec(
+          'CREATE TABLE _substrat_schedule_state (schedule_op TEXT PRIMARY KEY, last_run_at TEXT, last_status TEXT)',
+        );
+        state.storage.sql.exec(
+          `INSERT INTO _substrat_schedule_state VALUES
+             ('freshness:sched.ticked', '2026-09-01T00:00:00.000Z', 'failed'),
+             ('sched/tick', '2026-09-01T00:00:00.000Z', 'ok')`,
+        );
+      });
+      await evict('evicted for #1288 test — first wake');
+
+      const want = [
+        { kind: 'freshness', schedule_op: 'freshness:sched.ticked', last_status: 'failed', invocation_id: null },
+        { kind: 'schedule', schedule_op: 'sched/tick', last_status: 'ok', invocation_id: null },
+      ];
+      const first = await read();
+      expect(first.ddl).toMatch(/PRIMARY KEY \(kind, schedule_op\)/);
+      expect(first.rows).toEqual(want);
+      expect(first.scratch).toBe(0);
+
+      await evict('evicted for #1288 test — second wake');
+      expect(await read()).toEqual(first);
+    } finally {
+      if (provisioned) await host.admin.archiveScope(staff, t, s);
+      await host.close();
+    }
+  });
+});
