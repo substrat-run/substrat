@@ -959,3 +959,152 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     expect(anonymous.webSocket).toBeNull();
   });
 });
+
+/**
+ * #1665 on the runtime a hosted desk runs: an owner hand-over through the deployed worker's
+ * `/internal/owner-transfer`, against the desk's real identity directory and scope store, and
+ * then the two re-seat paths a reconcile has. The ordinary reconcile re-sources its owner
+ * from `owner_of_record`, and the lockout repair (#1659) re-seats that owner when nobody else
+ * holds an effective role. After a hand-over both must name the NEW owner: the old one is
+ * never re-seated by either, and the new one comes back from a lockout.
+ *
+ * The twin is the hand-over this verb replaces: seat the successor and revoke the owner by
+ * hand. The record never moves, so the same lockout brings the ORIGINAL owner back. That is
+ * the #1665 bug, and it is what makes the first test able to fail.
+ */
+describe('ticket0 on workerd — an owner hand-over moves the owner the lockout repair re-seats (#1665)', () => {
+  const tenant = tenantId.parse(ulid());
+  const A = principalId.parse(ulid());
+  const B = principalId.parse(ulid());
+  const directory = () => env.AUTH.get(env.AUTH.idFromName(tenant));
+  const scopeStub = (s: ScopeId) => env.SCOPE.get(env.SCOPE.idFromName(s));
+
+  /** Whether `who` can act as the desk's admin: its settings write, which only desk-admin holds. */
+  async function canAdmin(who: PrincipalId, s: ScopeId): Promise<boolean> {
+    try {
+      await (await host().getScope(who, tenant, s)).invoke('ticket0/configure-desk', {
+        settings: { sla: { resolutionMinutes: { normal: 60 } } },
+      });
+      return true;
+    } catch (e) {
+      if (e instanceof Error && e.name === 'PermissionDenied') return false;
+      throw e;
+    }
+  }
+  /** Who holds a LIVE owner-role tuple in the desk's own storage. */
+  const ownerSeats = (s: ScopeId): Promise<string[]> =>
+    runInDurableObject(scopeStub(s), async (_instance, state) =>
+      [
+        ...state.storage.sql.exec(
+          `SELECT subject FROM _substrat_tuples
+            WHERE relation = 'role:desk-admin' AND object = ? AND revoked_at IS NULL ORDER BY subject`,
+          `scope:${s}`,
+        ),
+      ].map((r) => String(r.subject).slice('principal:'.length)),
+    );
+
+  /**
+   * Take back every live role in the desk: the lockout the repair exists for. Revoking the
+   * owner alone is not one here, because the desk's service principals (relay, widget,
+   * assistant) each hold a role of their own and count as holders.
+   */
+  async function revokeEveryRole(s: ScopeId): Promise<void> {
+    const live = await runInDurableObject(scopeStub(s), async (_instance, state) =>
+      [
+        ...state.storage.sql.exec(
+          `SELECT subject, relation FROM _substrat_tuples
+            WHERE relation LIKE 'role:%' AND object = ? AND revoked_at IS NULL`,
+          `scope:${s}`,
+        ),
+      ].map((r) => ({ who: String(r.subject).slice('principal:'.length), role: String(r.relation).slice('role:'.length) })),
+    );
+    expect(live.length).toBeGreaterThan(0);
+    for (const { who, role } of live) expect(await host().revokeScopeRole(s, principalId.parse(who), role)).toBe(true);
+  }
+
+  /** A desk A installed and signed in to, with B a member by an accepted invite. */
+  async function installed(): Promise<ScopeId> {
+    const s = scopeId.parse(ulid());
+    expect((await platform('/internal/provision', { tenantId: tenant, scopeId: s, owner: A, entitlements })).status).toBe(201);
+    expect(await directory().resolvePrincipal(s, `sub-a-${s}`)).toBe(A);
+    await directory().createInvite(s, B, 'agent', null, `hash-${s}`);
+    expect(await directory().claimInvite(s, `sub-b-${s}`, `hash-${s}`)).toBe(B);
+    return s;
+  }
+  const reconcile = (s: ScopeId) => platform('/internal/reconcile', { tenantId: tenant, scopeId: s, entitlements });
+  const transfer = (s: ScopeId, from: string, to: string) =>
+    platform('/internal/owner-transfer', { tenantId: tenant, scopeId: s, from, to });
+
+  it('after A hands to B, a reconcile keeps A out, and a lockout repair re-seats B, not A', async () => {
+    const s = await installed();
+    expect(await ownerSeats(s)).toEqual([A]);
+
+    const res = await transfer(s, A, B);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ scopeId: s, from: A, owner: B, recordMoved: true, fromRevoked: true });
+    expect(await directory().getOwnerOfRecord(s)).toBe(B);
+    expect((await directory().ownerSeat(s)).state).toBe('claimed'); // a claimed seat stays claimed
+    expect(await ownerSeats(s)).toEqual([B]);
+    expect(await canAdmin(B, s)).toBe(true);
+    expect(await canAdmin(A, s)).toBe(false);
+
+    // The ordinary reconcile, which every listed promote runs: B stays, A does not come back.
+    expect((await reconcile(s)).status).toBe(200);
+    expect(await ownerSeats(s)).toEqual([B]);
+    expect(await canAdmin(A, s)).toBe(false);
+
+    // The lockout: B revoked too, with every other role, nobody seated in between. The repair
+    // re-seats the RECORD.
+    await revokeEveryRole(s);
+    expect(await canAdmin(B, s)).toBe(false); // locked out: nobody here passes a check
+    const repaired = await reconcile(s);
+    expect(repaired.status).toBe(200);
+    expect(((await repaired.json()) as { owner: string }).owner).toBe(B);
+    expect(await ownerSeats(s)).toEqual([B]);
+    expect(await canAdmin(B, s)).toBe(true);
+    expect(await canAdmin(A, s)).toBe(false);
+
+    expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+
+  it('the twin: a hand-over by hand leaves the record on A, so the same lockout brings A back', async () => {
+    const s = await installed();
+    await host().assignScopeRole(s, B, 'desk-admin'); // B seated first, as #1659 advises
+    expect(await host().revokeScopeRole(s, A, 'desk-admin')).toBe(true);
+    await revokeEveryRole(s); // later B too, and with it the desk's last holder
+    expect((await reconcile(s)).status).toBe(200);
+    expect(await directory().getOwnerOfRecord(s)).toBe(A);
+    expect(await ownerSeats(s)).toEqual([A]); // the original owner, re-seated from a stale record
+    expect(await canAdmin(A, s)).toBe(true);
+    expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+
+  it('refuses a stale `from` and a non-member `to` with nothing moved; a repeat changes nothing', async () => {
+    const s = await installed();
+    const stranger = principalId.parse(ulid());
+    expect((await transfer(s, stranger, B)).status).toBe(409); // `from` is not the record
+    expect((await transfer(s, A, stranger)).status).toBe(409); // nobody is bound to `to`
+    expect(await directory().getOwnerOfRecord(s)).toBe(A);
+    expect(await ownerSeats(s)).toEqual([A]);
+
+    expect((await transfer(s, A, B)).status).toBe(200);
+    const again = await transfer(s, A, B);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toMatchObject({ owner: B, recordMoved: false, fromRevoked: false });
+    expect(await ownerSeats(s)).toEqual([B]);
+    expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+
+  it('refuses an unclaimed seat, and leaves it claimable by the owner it was minted for', async () => {
+    const s = scopeId.parse(ulid());
+    expect((await platform('/internal/provision', { tenantId: tenant, scopeId: s, owner: A, entitlements })).status).toBe(201);
+    await directory().createInvite(s, B, 'agent', null, `hash-${s}`);
+    expect(await directory().claimInvite(s, `sub-b-${s}`, `hash-${s}`)).toBe(B);
+    const res = await transfer(s, A, B);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/claim it first/);
+    expect((await directory().ownerSeat(s)).state).toBe('unclaimed');
+    expect(await directory().resolvePrincipal(s, `sub-a-${s}`)).toBe(A);
+    expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+});
