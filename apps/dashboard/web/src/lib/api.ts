@@ -430,6 +430,34 @@ export interface AppliedMigration {
  * is where each one is turned into words.
  */
 export type { HistoryEntry, CauseChain, CauseTerminal, EffectsTree, EventEffects, EventDelivery, EffectsTerminal, InvocationEvents, DeadLetter } from '@substrat-run/contracts';
+export type { LifecycleFlowResult, EmittedLifecycle } from '@substrat-run/contracts';
+
+/** One declared lifecycle as the process map lists it (#1744). */
+export interface DeclaredProcess {
+  entity: string;
+  initial: string;
+  states: number;
+  edges: number;
+}
+
+export type ProcessPeriod = '24h' | '7d' | '30d';
+
+/**
+ * One app's process map (#1744): a declared lifecycle replayed over the period asked and
+ * the one before it. `unavailable` says why there is nothing to draw — each reason is a
+ * different next step, so the screen never renders them as one empty map.
+ */
+export interface ProcessMapView {
+  versionId: string | null;
+  processes: DeclaredProcess[];
+  entity: string | null;
+  /** The machine the counts were replayed against — what the map lays out. */
+  lifecycle: import('@substrat-run/contracts').EmittedLifecycle | null;
+  period: ProcessPeriod;
+  current: import('@substrat-run/contracts').LifecycleFlowResult | null;
+  previous: import('@substrat-run/contracts').LifecycleFlowResult | null;
+  unavailable: 'no-version' | 'no-lifecycles' | 'not-yet-available' | null;
+}
 
 /**
  * One app's health verdict (#1238), rolled up from the signals tiers 1–2 record.
@@ -2043,6 +2071,13 @@ export const api = {
   /** Field coverage for the running version (#1321) — declared vs returnable. */
   /** Declared-vs-observed findings (#1234) — what this app promises against what it has done. */
   appFlow: (scopeId: string) => call<FlowView>(`/apps/${encodeURIComponent(scopeId)}/flow`),
+
+  /** One declared lifecycle replayed for the process map (#1744); the first declared one when `entity` is absent. */
+  appProcesses: (scopeId: string, input: { entity?: string; period: ProcessPeriod }) => {
+    const q = new URLSearchParams({ period: input.period });
+    if (input.entity) q.set('entity', input.entity);
+    return call<ProcessMapView>(`/apps/${encodeURIComponent(scopeId)}/processes?${q}`);
+  },
 
   appFieldCoverage: (scopeId: string) =>
     call<FieldCoverageView>(`/apps/${encodeURIComponent(scopeId)}/field-coverage`),

@@ -20,6 +20,11 @@ export interface ObsQuery {
   surface?: string;
   /** #1747: one log pattern — a `ctx.log` template, verbatim. Narrows the Lines mode. */
   tpl?: string;
+  /** #1744: the process map's lifecycle (an entity name), period, selection and compare switch. */
+  entity?: string;
+  period?: string;
+  sel?: string;
+  compare?: string;
 }
 export const OBS_KEYS = [
   'app',
@@ -40,6 +45,10 @@ export const OBS_KEYS = [
   'status',
   'surface',
   'tpl',
+  'entity',
+  'period',
+  'sel',
+  'compare',
 ] as const;
 export function readObsQuery(search: string): ObsQuery {
   const p = new URLSearchParams(search);

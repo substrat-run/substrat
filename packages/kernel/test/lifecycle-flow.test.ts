@@ -227,6 +227,47 @@ describe('readLifecycleFlow (#1744)', () => {
     expect(edge(r, 'open', 'snoozed', 'desk/snooze')!.actors).toEqual({});
   });
 
+  describe('a declared self-transition', () => {
+    // `desk/reassign` keeps the conversation `open`: a real edge, from a state to itself.
+    const LOOPING: LifecycleFlowInput['lifecycle'] = {
+      ...LIFECYCLE,
+      states: { ...LIFECYCLE.states, open: { ...LIFECYCLE.states.open!, on: { ...LIFECYCLE.states.open!.on, 'desk/reassign': 'open' } } },
+    };
+    const readLooping = (evs: Ev[]) => read(evs, { lifecycle: LOOPING });
+
+    it('is counted on its edge whether the payload says the state or not', () => {
+      const r = readLooping([
+        { entity: 'c1', at: at(1), op: 'desk/create', state: 'new' },
+        { entity: 'c1', at: at(1, 1), op: 'desk/assign', state: 'open' },
+        { entity: 'c1', at: at(1, 2), op: 'desk/reassign', state: 'open' },
+        { entity: 'c1', at: at(1, 3), op: 'desk/reassign' },
+      ]);
+      expect(edge(r, 'open', 'open', 'desk/reassign')).toMatchObject({ count: 2, declared: true, actors: { principal: 2 } });
+      // Only the state-less one came from the declaration.
+      expect(r.observation.inferred).toBe(1);
+    });
+
+    it('does not end the stay: no entry, no dwell sample, and `stuck` still dates from the real entry', () => {
+      const r = readLooping([
+        { entity: 'c1', at: at(1), op: 'desk/create', state: 'new' },
+        { entity: 'c1', at: at(1, 1), op: 'desk/assign', state: 'open' },
+        { entity: 'c1', at: at(2), op: 'desk/reassign', state: 'open' },
+      ]);
+      expect(state(r, 'open')).toMatchObject({ entered: 1, dwell: null, current: 1 });
+      expect(state(r, 'open').stuck[0]!.since).toBe(at(1, 1));
+    });
+
+    it('counts once per call, however many events the call emits', () => {
+      const r = readLooping([
+        { entity: 'c1', at: at(1), op: 'desk/create', state: 'new' },
+        { entity: 'c1', at: at(1, 1), op: 'desk/assign', state: 'open' },
+        { entity: 'c1', at: at(1, 2), op: 'desk/reassign', state: 'open', call: 'call-9' },
+        { entity: 'c1', at: at(1, 2), op: 'desk/reassign', state: 'open', call: 'call-9' },
+      ]);
+      expect(edge(r, 'open', 'open', 'desk/reassign')!.count).toBe(1);
+    });
+  });
+
   it('moves once per call when one call emits several state-less events for the entity', () => {
     const r = read([
       { entity: 'c1', at: at(1), op: 'desk/create' },

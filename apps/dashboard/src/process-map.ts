@@ -1,4 +1,4 @@
-import type { EmittedModel, LifecycleFlowResult } from '@substrat-run/contracts';
+import type { EmittedLifecycle, EmittedModel, LifecycleFlowResult } from '@substrat-run/contracts';
 
 /**
  * The process map's windows (#1744) — which lifecycle an app declares, and the two
@@ -55,6 +55,8 @@ export interface ProcessMapAnswer {
   versionId: string | null;
   processes: DeclaredProcess[];
   entity: string | null;
+  /** The machine the counts were replayed against — what the screen lays out. */
+  lifecycle: EmittedLifecycle | null;
   period: ProcessPeriod;
   current: LifecycleFlowResult | null;
   previous: LifecycleFlowResult | null;

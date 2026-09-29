@@ -213,6 +213,8 @@ describe('the process map route (#1744)', () => {
       { entity: 'ticket', initial: 'new', states: 2, edges: 1 },
     ]);
     expect(body.entity).toBe('order');
+    // The machine the screen lays out is the one the counts were replayed against.
+    expect(body.lifecycle).toEqual(RUNNING_MODEL.lifecycles!.order);
     expect(body.period).toBe('7d');
     expect(body.unavailable).toBeNull();
     expect(body.current!.entityType).toBe('order');
@@ -222,6 +224,7 @@ describe('the process map route (#1744)', () => {
   it('names another declared lifecycle with `entity`', async () => {
     const body = await read(appScope, '?entity=ticket');
     expect(body.entity).toBe('ticket');
+    expect(body.lifecycle).toEqual(RUNNING_MODEL.lifecycles!.ticket);
     expect(body.current!.entityType).toBe('ticket');
     expect(body.current!.edges.map((e) => [e.from, e.to, e.count])).toEqual([['new', 'solved', 0]]);
   });
@@ -298,6 +301,7 @@ describe('the process map route (#1744)', () => {
         versionId: null,
         processes: [],
         entity: null,
+        lifecycle: null,
         period: '7d',
         current: null,
         previous: null,
@@ -322,6 +326,8 @@ describe('the process map route (#1744)', () => {
         sabotage = (p) => (p.endsWith('/lifecycle-flow') ? Response.json({ error: 'no such route' }, { status }) : undefined);
         const body = await read(appScope);
         expect(body).toMatchObject({ versionId: v.running, entity: 'order', current: null, previous: null, unavailable: 'not-yet-available' });
+        // Still carried, so the screen can draw the machine a re-push would fill in.
+        expect(body.lifecycle).toEqual(RUNNING_MODEL.lifecycles!.order);
         expect(body.processes.map((p) => p.entity)).toEqual(['order', 'ticket']);
       });
     }

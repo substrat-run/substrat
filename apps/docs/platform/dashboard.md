@@ -226,11 +226,16 @@ Two views are about the team's apps rather than one instance, so they are pages 
 with an **app filter** rather than tabs on each app. The app page links into both already narrowed.
 
 - **Observability** — every app on the team on **one chart**, under **one time range** (1h, 24h
-  or 3d), with an app selector that decides the mode rather than merely filtering rows. The
-  sub-views are **Traffic · Health · Logs · Events · Schedules · Flow**, and each answers in the
-  mode it makes sense in: on *All apps* the chart draws one line per installation, followed by a
-  row per app (Traffic) and the worst-first health list (Health); narrowed to one app it is the
-  same chart at tenant grain plus that app's Logs, Events, Schedules and Flow map. A sub-view
+  or 3d), with an app selector that decides the mode rather than merely filtering rows. Its
+  menu children are **Pulse · Processes · Logs**, and each answers in the mode it makes sense in:
+  on *All apps* Pulse draws one line per installation, followed by a row per app and the
+  worst-first health list; narrowed to one app it is the same chart at tenant grain, and Logs and
+  Processes open for that app. **Processes** has two views. *State machines* draws each lifecycle
+  the running version declares, with what moved through it over 24 hours, 7 days or 30 days:
+  moves per transition and who made them, how many instances sit in each state and how long they
+  stay (median and p90), the ones stuck longest, and the share of starts that reached each state,
+  optionally against the previous period. A transition the model declares but nobody took is
+  dashed, and one the model does not declare is drawn apart. *Flow* is the app's wiring. A sub-view
   never carries its own window, so two panels always answer about the same slice. On the one-app
   bar chart, clicking a bucket sets a **cursor** — one instant worth looking at — which rides the
   URL beside the app and the sub-view and narrows the panels below to the minutes around it; the
