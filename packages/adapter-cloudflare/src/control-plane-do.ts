@@ -1307,8 +1307,9 @@ export class ControlPlaneDO extends DurableObject {
    * refuses a manual BEGIN through `sql.exec`, and this body has no `await`, which is
    * the one case the sync API is for. The caller is the constructor, so it must be
    * synchronous anyway. Each list leads with `DROP TABLE IF EXISTS <table>_new` to absorb
-   * a scratch table arriving from BELOW the transaction (a restored backup that captured
-   * one mid-rebuild) — belt, not the fix.
+   * a scratch table arriving from BELOW the transaction — belt, not the fix. A restore no
+   * longer brings one: since #1898 a dump's `_substrat_*_new` is an unbuilt spine table, and
+   * refused, and since this rebuild became atomic a consistent dump cannot capture one.
    */
   private rebuildAtomically(statements: readonly string[]): void {
     this.ctx.storage.transactionSync(() => {
