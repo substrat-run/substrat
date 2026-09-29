@@ -111,8 +111,10 @@ export function Observability({
   // linked to, and closing it is a step back to the page exactly as it was.
   const openRequest = (invocationId: string, atMs: number) => navigateQuery({ ...q, req: invocationId, reqAt: String(Math.round(atMs)) });
   const reqAt = Number(q.reqAt);
+  // A hand-edited `reqAt` outside what a Date can hold would throw inside the panel and
+  // take the page with it; such a link simply opens nothing.
   const slideOver =
-    scopeId && q.req && Number.isFinite(reqAt) ? (
+    scopeId && q.req && Number.isFinite(reqAt) && !Number.isNaN(new Date(reqAt).getTime()) ? (
       <RequestSlideOver key={q.req} scopeId={scopeId} invocationId={q.req} atMs={reqAt} onClose={() => navigateQuery({ ...q, req: undefined, reqAt: undefined })} />
     ) : null;
 

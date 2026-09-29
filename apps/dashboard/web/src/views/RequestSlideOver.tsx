@@ -52,15 +52,17 @@ interface Detail {
   events: Part<HistoryEntry[]>;
   /** Walked trees, or (preview) follow-ups already flattened; timed at render from the request's end. */
   followUps: Part<{ trees: EffectsTree[] } | { flat: FollowUp[] }>;
+  /** Some events' consumers could not be read — said beside the ones that could, never instead of them. */
+  followUpsError: string | null;
   transitions: Part<CausedTransition[]>;
 }
 
 function useRequestDetail(scopeId: string, invocationId: string, atMs: number): Detail {
-  const [d, setD] = useState<Detail>({ logs: loading, record: null, events: loading, followUps: loading, transitions: loading });
+  const [d, setD] = useState<Detail>({ logs: loading, record: null, events: loading, followUps: loading, followUpsError: null, transitions: loading });
   useEffect(() => {
     let live = true;
     const set = (patch: Partial<Detail>) => live && setD((prev) => ({ ...prev, ...patch }));
-    setD({ logs: loading, record: null, events: loading, followUps: loading, transitions: loading });
+    setD({ logs: loading, record: null, events: loading, followUps: loading, followUpsError: null, transitions: loading });
     if (DEV_MOCK) {
       const m = mockRequestDetail(invocationId);
       setD({
@@ -68,6 +70,7 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
         record: m.record,
         events: { state: 'ready', value: m.events },
         followUps: { state: 'ready', value: { flat: m.followUps } },
+        followUpsError: null,
         transitions: { state: 'ready', value: m.transitions },
       });
       return;
@@ -105,8 +108,12 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
       .appInvocationEvents(scopeId, invocationId)
       .then(async (r) => {
         set({ events: { state: 'ready', value: r.events } });
-        const trees = await Promise.all(r.events.slice(0, EFFECTS_MAX).map((e) => api.appEventEffects(scopeId, e.id)));
-        set({ followUps: { state: 'ready', value: { trees } } });
+        // Each event's consumers are their own read: one that fails costs its own rows,
+        // not the events list or the consumers of the others.
+        const settled = await Promise.allSettled(r.events.slice(0, EFFECTS_MAX).map((e) => api.appEventEffects(scopeId, e.id)));
+        const trees = settled.flatMap((s) => (s.status === 'fulfilled' ? [s.value] : []));
+        const failed = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
+        set({ followUps: { state: 'ready', value: { trees } }, followUpsError: failed ? errorText(failed.reason) : null });
       })
       .catch((e) => set({ events: { state: 'error', message: errorText(e) }, followUps: { state: 'error', message: errorText(e) } }));
     return () => {
@@ -229,6 +236,7 @@ export function RequestSlideOver({
 
           <Section title="Emitted" hint={d.events.state === 'ready' ? (events.length === 0 ? undefined : `${events.length} event${events.length === 1 ? '' : 's'} · consumers timed from the response`) : undefined}>
             <FollowUps
+              error={d.followUpsError}
               events={d.events}
               followUps={
                 d.followUps.state === 'ready'
@@ -443,7 +451,7 @@ const STATE: Record<string, { mark: string; tone: string; word: string }> = {
   dead: { mark: '●', tone: 'var(--status-danger-fg)', word: 'gave up' },
 };
 
-function FollowUps({ events, followUps }: { events: Detail['events']; followUps: Part<FollowUp[]> }) {
+function FollowUps({ events, followUps, error }: { events: Detail['events']; followUps: Part<FollowUp[]>; error: string | null }) {
   if (events.state === 'loading') return <Quiet>Reading what the call emitted…</Quiet>;
   if (events.state === 'error') return <Quiet tone="danger">What the call emitted could not be read ({events.message}).</Quiet>;
   if (events.value.length === 0) return <Quiet>The call emitted no events — a read, a refusal, or a change that recorded nothing.</Quiet>;
@@ -483,6 +491,7 @@ function FollowUps({ events, followUps }: { events: Detail['events']; followUps:
         );
       })}
       {followUps.state === 'error' && <div style={{ padding: '8px 12px' }}><Quiet tone="danger">What its consumers did could not be read ({followUps.message}).</Quiet></div>}
+      {error && <div style={{ padding: '8px 12px' }}><Quiet tone="danger">Some events’ consumers could not be read ({error}); the rest are shown.</Quiet></div>}
     </div>
   );
 }
