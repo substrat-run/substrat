@@ -586,6 +586,10 @@ export function mountOperations(
         // reading of the failure whatever envelope the vertical answers with.
         const code = errorCodeOf(err);
         if (record && code !== undefined) record.problemCode = code;
+        // #1331: the walk ran on the result, but `respond` or the serialisation then threw
+        // (a `BigInt` in the body, say), so no response carried those fields — a failed call
+        // never reports any.
+        if (record) delete record.outputFields;
         const mapped = await options.onError?.(c, err, name);
         if (mapped) return mapped;
         const seen = classifyError(err);

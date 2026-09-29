@@ -187,6 +187,21 @@ describe('the field walk (#1331)', () => {
     expect(record).not.toHaveProperty('outputFields');
   });
 
+  it('records nothing when the response itself fails after the walk — respond or the serialisation', async () => {
+    const throwing = harness({ output: card }, () => ({ id: 'c1', title: 'T', owner_email: 'x' }), {
+      respond: () => {
+        throw new Error('respond broke');
+      },
+    });
+    await Promise.resolve(throwing.call(ARMED)).catch(() => undefined);
+    expect(throwing.record).not.toHaveProperty('outputFields');
+
+    // The default path: `c.json` cannot serialise a BigInt.
+    const unserialisable = harness({ output: card }, () => ({ id: 1n, title: 'T', owner_email: 'x' }));
+    await Promise.resolve(unserialisable.call(ARMED)).catch(() => undefined);
+    expect(unserialisable.record).not.toHaveProperty('outputFields');
+  });
+
   it('cannot fail a request: a result that throws when read is simply not observed', async () => {
     const hostile = new Proxy({}, {
       get(_t, k) {
