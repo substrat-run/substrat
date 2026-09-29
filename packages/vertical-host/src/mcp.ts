@@ -58,14 +58,22 @@ import {
   mcpEndpointPath,
   mcpResourceOf,
   errorCodeOf,
+  FIELD_COVERAGE_ARMED,
+  FIELD_COVERAGE_BINDING,
 } from '@substrat-run/contracts';
 import { INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord, type ScopeStub } from '@substrat-run/kernel';
 import { classifyError, messageOf, problemResponse } from './errors.js';
+import { observeOutputFields, outputWalkOf, type OutputWalk } from './field-coverage.js';
 
 /** What `invocationLog` handed this request (#1746, #1237). Both absent without the middleware. */
 interface McpInvocation {
   record: InvocationRecord | undefined;
   invocationId: string | undefined;
+  /**
+   * #1331: the platform armed the field walk for this request. Read once where the Hono
+   * context is, so a tool call in a batch pays nothing per call to find out.
+   */
+  fieldCoverage: boolean;
 }
 
 /**
@@ -110,6 +118,8 @@ export interface McpTool {
   readonly pinned: Record<string, unknown>;
   readonly paged: boolean;
   readonly takesInput: boolean;
+  /** #1331: how a result is walked for field coverage, read once here. Absent when the output names no fields. */
+  readonly outputWalk?: OutputWalk;
 }
 
 /**
@@ -232,6 +242,7 @@ export function mcpToolsOf(operations: Readonly<Record<string, object>>): McpToo
     };
 
     const method = op.http.method;
+    const outputWalk = outputWalkOf(op.output, op.paged !== undefined);
     tools.push({
       name,
       operation,
@@ -248,6 +259,7 @@ export function mcpToolsOf(operations: Readonly<Record<string, object>>): McpToo
       pinned: literalPins(op.input),
       paged: Boolean(op.paged),
       takesInput: Boolean(op.input),
+      ...(outputWalk ? { outputWalk } : {}),
     });
   }
   return tools;
@@ -515,6 +527,9 @@ export function mountMcp(
       record.operation = tool.operation;
       delete record.problemCode;
       delete record.emitted;
+      // #1331: and the field report, so an HTTP call's, or an earlier tool's, never rides
+      // this tool's line. Deleted whether or not the walk is armed for this request.
+      delete record.outputFields;
     }
     try {
       const result = await stub.invoke(tool.operation, payloadOf(tool, args), {
@@ -528,8 +543,17 @@ export function mountMcp(
             }
           : {}),
       });
+      // #1331: the same walk the HTTP mount runs, on the RESULT before it is serialised.
+      // Only with a record to write to, and only when the platform armed the switch.
+      if (record && tool.outputWalk && invocation.fieldCoverage) {
+        const observed = observeOutputFields(result, tool.outputWalk);
+        if (observed) record.outputFields = observed;
+      }
       return rpcResult(id, toolResult(result));
     } catch (err) {
+      // #1331: a failed call reports no fields, including one whose serialisation threw
+      // after the walk (a `BigInt` in the result), since no response carried them.
+      if (record) delete record.outputFields;
       // In-band, so the response is a 200 — the code is what tells the line it failed.
       const code = errorCodeOf(err);
       if (record && code !== undefined) record.problemCode = code;
@@ -710,6 +734,8 @@ export function mountMcp(
         // #1893: or the platform's stamp, when the worker mounts no middleware.
         record: (get?.(INVOCATION_RECORD_KEY) as InvocationRecord | undefined) ?? invocationStampOf(c.req.raw)?.record,
         invocationId: (get?.('substratInvocationId') as string | undefined) ?? invocationStampOf(c.req.raw)?.invocationId,
+        fieldCoverage:
+          (c.env as Record<string, unknown> | undefined)?.[FIELD_COVERAGE_BINDING] === FIELD_COVERAGE_ARMED,
       };
       if (invocation.record && stub.subjectKind !== undefined) invocation.record.principalKind = stub.subjectKind;
       for (const msg of messages) {

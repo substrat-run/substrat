@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX } from '@substrat-run/contracts';
+import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, FIELD_COVERAGE_ARMED, FIELD_COVERAGE_BINDING } from '@substrat-run/contracts';
 import { INVOCATION_RECORD_KEY, PermissionDenied, type InvocationRecord } from '@substrat-run/kernel';
 import { mountOperations } from '../src/operations-routes.js';
 import { mcpToolsOf, mcpToolName, MCP_PROTOCOL_VERSIONS } from '../src/mcp.js';
@@ -872,5 +872,190 @@ describe('the per-request record on a tool call (#1746)', () => {
     });
     await batch(second.app);
     expect(second.record).toEqual({ operation: 'todo/my-lists', principalKind: 'principal' });
+  });
+});
+
+/**
+ * #1331 on the MCP door: a tool call is walked for field coverage exactly as a mounted route
+ * is, with the same rules. Armed only by the platform's binding, names only, nothing recorded
+ * for a call that failed, and unarmed the result is never so much as looked at.
+ */
+describe('the field walk on a tool call (#1331)', () => {
+  const ARMED = { [FIELD_COVERAGE_BINDING]: FIELD_COVERAGE_ARMED };
+  /** A value no record may ever contain. */
+  const SECRET = 'value-7e2a-never-recorded@example.com';
+  const card = z.object({ id: z.string(), title: z.string(), note: z.string().optional(), owner_email: z.string() });
+  const ops = {
+    'acme/get-card': { summary: 'One card', output: card, http: { method: 'GET', path: '/card' } },
+    'acme/list-cards': { summary: 'Cards', output: card, paged: {}, http: { method: 'GET', path: '/cards' } },
+    'acme/ping': { summary: 'No declared output', http: { method: 'GET', path: '/ping' } },
+  } as const;
+
+  function walked(invoke: (operation: string) => unknown, seed?: (record: InvocationRecord) => void) {
+    const record: InvocationRecord = {};
+    seed?.(record);
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      (c as unknown as { set: (k: string, v: unknown) => void }).set(INVOCATION_RECORD_KEY, record);
+      await next();
+    });
+    mountOperations(app, ops, async () => ({
+      subjectKind: 'principal',
+      invoke: async (operation: string) => invoke(operation),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any);
+    const call = (tools: string[], env?: Record<string, unknown>) =>
+      app.request(
+        '/api/mcp',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(
+            tools.map((name, i) => ({ jsonrpc: '2.0', id: i + 1, method: 'tools/call', params: { name, arguments: {} } })),
+          ),
+        },
+        env,
+      );
+    return { record, call };
+  }
+
+  const cardResult = () => ({ id: 'c1', title: SECRET, owner_email: SECRET, extra: SECRET, [SECRET]: 1 });
+
+  it('armed, a tool call records which declared fields the result carried, and no value', async () => {
+    const { record, call } = walked(cardResult);
+    expect((await call(['acme_get-card'], ARMED)).status).toBe(200);
+    expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], empty: [], absent: ['note'] });
+    expect(JSON.stringify(record)).not.toContain(SECRET);
+  });
+
+  it('armed, a paged tool is walked on its first entry', async () => {
+    const { record, call } = walked(() => ({ entries: [cardResult()], nextCursor: null }));
+    await call(['acme_list-cards'], ARMED);
+    expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], empty: [], absent: ['note'] });
+  });
+
+  /** Every way a result is looked at while one tool call is answered. */
+  function touchesOf(tool: string, env: Record<string, unknown> | undefined) {
+    const touched: string[] = [];
+    const proxy = new Proxy(cardResult(), {
+      get(t, k, r) {
+        if (k !== 'then') touched.push(`get:${String(k)}`);
+        return Reflect.get(t, k, r);
+      },
+      getOwnPropertyDescriptor(t, k) {
+        touched.push(`desc:${String(k)}`);
+        return Reflect.getOwnPropertyDescriptor(t, k);
+      },
+      has(t, k) {
+        touched.push(`in:${String(k)}`);
+        return Reflect.has(t, k);
+      },
+      ownKeys(t) {
+        touched.push('ownKeys');
+        return Reflect.ownKeys(t);
+      },
+    });
+    const { record, call } = walked(() => proxy);
+    return { touched, record, done: call([tool], env) };
+  }
+
+  it('unarmed, the walk never touches the result and the record is exactly as before', async () => {
+    // The serialiser reads a result to answer the call, so "untouched" is stated against a
+    // control: a tool declaring no output is never walked, and the walked tool, unarmed,
+    // must be looked at exactly as often and in exactly the same way.
+    const control = touchesOf('acme_ping', ARMED);
+    expect((await control.done).status).toBe(200);
+    expect(control.touched.length).toBeGreaterThan(0);
+    for (const env of [undefined, {}, { [FIELD_COVERAGE_BINDING]: 'true' }, { [FIELD_COVERAGE_BINDING]: 'ON' }]) {
+      const run = touchesOf('acme_get-card', env);
+      expect((await run.done).status).toBe(200);
+      expect(run.touched).toEqual(control.touched);
+      expect(run.record).toEqual({ operation: 'acme/get-card', principalKind: 'principal' });
+    }
+    // The positive twin: armed, the same tool is looked at more, so the comparison can fail.
+    const armed = touchesOf('acme_get-card', ARMED);
+    await armed.done;
+    expect(armed.touched.length).toBeGreaterThan(control.touched.length);
+    expect(armed.record.outputFields).toBeDefined();
+  });
+
+  it('a failing tool carries no fields, in-band or by a serialisation that throws after the walk', async () => {
+    const denied = walked(() => {
+      throw new PermissionDenied(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        'acme:read' as any,
+      );
+    });
+    await denied.call(['acme_get-card'], ARMED);
+    expect(denied.record).toMatchObject({ operation: 'acme/get-card', problemCode: 'permission_denied' });
+    expect(denied.record).not.toHaveProperty('outputFields');
+
+    // The walk reads `id`, `title` and `owner_email` fine; `JSON.stringify` then throws on the
+    // BigInt, so no response ever carried those fields.
+    const unserialisable = walked(() => ({ id: 'c1', title: 'T', owner_email: 'x', big: 1n }));
+    await Promise.resolve(unserialisable.call(['acme_get-card'], ARMED)).catch(() => undefined);
+    expect(unserialisable.record).not.toHaveProperty('outputFields');
+  });
+
+  it("two calls on one line never share fields: the second tool's line is its own", async () => {
+    // A walked tool followed by one that declares no output.
+    const noOutput = walked((operation) => (operation === 'acme/get-card' ? cardResult() : { ok: true }));
+    await noOutput.call(['acme_get-card', 'acme_ping'], ARMED);
+    expect(noOutput.record).toEqual({ operation: 'acme/ping', principalKind: 'principal' });
+
+    // A walked tool followed by one that fails.
+    const failing = walked((operation) => {
+      if (operation === 'acme/get-card') return cardResult();
+      throw new PermissionDenied(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        'acme:read' as any,
+      );
+    });
+    await failing.call(['acme_get-card', 'acme_list-cards'], ARMED);
+    expect(failing.record).toMatchObject({ operation: 'acme/list-cards', problemCode: 'permission_denied' });
+    expect(failing.record).not.toHaveProperty('outputFields');
+
+    // And two walked tools: the line carries the second's report, not a merge.
+    const both = walked((operation) =>
+      operation === 'acme/get-card' ? cardResult() : { entries: [{ id: 'c2', title: 'T', note: null, owner_email: 'x' }], nextCursor: null },
+    );
+    await both.call(['acme_get-card', 'acme_list-cards'], ARMED);
+    expect(both.record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], empty: ['note'], absent: [] });
+  });
+
+  it("an HTTP call's fields already on the record never ride a tool call — armed or not", async () => {
+    const stale = { present: ['id'], empty: [], absent: ['title'] };
+    for (const env of [undefined, ARMED]) {
+      const { record, call } = walked(
+        () => ({ ok: true }),
+        (r) => {
+          r.outputFields = stale;
+        },
+      );
+      await call(['acme_ping'], env);
+      expect(record).not.toHaveProperty('outputFields');
+    }
+  });
+
+  it('a page held behind a getter is left unobserved, and the walk never runs the getter', async () => {
+    const reads = async (env: Record<string, unknown> | undefined) => {
+      let ran = 0;
+      const { record, call } = walked(() => ({
+        get entries() {
+          ran++;
+          return [cardResult()];
+        },
+        nextCursor: null,
+      }));
+      await call(['acme_list-cards'], env);
+      return { ran, record };
+    };
+    // The serialiser reads the getter to answer the call; unarmed is that baseline, and
+    // armed must read it no more often.
+    const unarmed = await reads(undefined);
+    const armed = await reads(ARMED);
+    expect(unarmed.ran).toBeGreaterThan(0);
+    expect(armed.ran).toBe(unarmed.ran);
+    expect(armed.record).not.toHaveProperty('outputFields');
   });
 });
