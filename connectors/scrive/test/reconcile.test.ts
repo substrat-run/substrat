@@ -516,6 +516,71 @@ describe('scrive connector — return path (record signatures back)', () => {
         expect(await stored(instanceId)).toEqual([provider[1]!.id, provider[2]!.id]);
       });
 
+      it('still pins when the sender slot shows a signatory’s name — the account holder may be the issuer', async () => {
+        await grantRecordSignature();
+        const { instanceId, requestIds, docId } = await issue();
+        await asLegacy(instanceId);
+        // Scrive rewrites the sender to the account holder; here that person is also the
+        // issuing signatory the vertical named. The sender never signs, so it is no rival.
+        scrive.editParty(docId, 0, { name: 'Arbetsgivare' });
+        scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+
+        const result = await reconcile(instanceId);
+        expect(result.needsAttention).toEqual([]);
+        expect(result.recorded.map((r) => r.requestId)).toEqual([requestIds[0]]);
+        const provider = scrive.documents.get(docId)!.parties;
+        expect(await stored(instanceId)).toEqual([provider[1]!.id, provider[2]!.id]);
+      });
+
+      it('attributes by a name only the sender shares when the shape has changed', async () => {
+        await grantRecordSignature();
+        const { instanceId, requestIds, docId } = await issue();
+        await asLegacy(instanceId);
+        const doc = scrive.documents.get(docId)!;
+        doc.parties.push({ ...doc.parties[2]!, id: 'extra-party', name: 'Extra' });
+        scrive.editParty(docId, 0, { name: 'Arbetsgivare' });
+        scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+
+        const result = await reconcile(instanceId);
+        expect(result.needsAttention).toEqual([]);
+        expect(result.recorded.map((r) => r.requestId)).toEqual([requestIds[0]]);
+      });
+
+      it('still pins a single rename when only the sender shows the renamed party’s label', async () => {
+        await grantRecordSignature();
+        const { instanceId, requestIds, docId } = await issue();
+        await asLegacy(instanceId);
+        // The account holder is the issuer: the sender slot shows 'Arbetsgivare', and
+        // the issuer's own signatory slot was renamed. The sender is no rival.
+        scrive.editParty(docId, 0, { name: 'Arbetsgivare' });
+        scrive.editParty(docId, 1, { name: 'arbetsgivare.person' });
+        scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+
+        const result = await reconcile(instanceId);
+        expect(result.needsAttention).toEqual([]);
+        expect(result.recorded.map((r) => r.requestId)).toEqual([requestIds[0]]);
+      });
+
+      it('does not pin a rename when another signing party still shows the same label', async () => {
+        await grantRecordSignature();
+        const { instanceId, requestIds, docId } = await issue();
+        await asLegacy(instanceId);
+        // Two dispatched parties that share a label — rewritten onto the row, since the
+        // point is the ledger's view. One is renamed at Scrive; the other still shows
+        // the shared label, so position is the only thing telling them apart.
+        const row = await ledger(instanceId);
+        await host.admin.putConnectorState(connId, ledgerKey(instanceId), {
+          ...row,
+          parties: row.parties.map((p) => ({ ...p, label: 'Anställd' })),
+        });
+        scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+
+        const result = await reconcile(instanceId);
+        expect(result.recorded).toEqual([]);
+        expect(await stored(instanceId)).toEqual([undefined, undefined]);
+        expect(result.needsAttention.map((a) => a.requestId)).toEqual([requestIds[0]]);
+      });
+
       it('does not pin two parties that changed places, and surfaces the signature', async () => {
         await grantRecordSignature();
         const { instanceId, requestIds, docId } = await issue();

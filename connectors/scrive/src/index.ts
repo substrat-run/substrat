@@ -343,17 +343,17 @@ const providerNameOf = (party: ScriveDocument['parties'][number] | undefined): s
  * no party ids — the evidence `providerPartyIdsByPosition` does not ask for.
  *
  * The shape alone is not enough. Two parties that changed places keep the count and
- * the roles, so pinning by position would credit each one's signature to the other.
- * Two parties renamed at once look exactly like that swap. So position is trusted only
- * when every party's name is still its label, or when exactly ONE differs (the edit
- * #1927 was about) and nothing points elsewhere:
+ * the roles, so pinning by position would credit each one's signature to the other,
+ * and two parties renamed at once look exactly like that swap. So position is trusted
+ * only when every party's name is still its label, or when exactly ONE differs (the
+ * edit #1927 was about) and nothing points elsewhere: its label is on no signing
+ * party, and its slot's new name is not another dispatched party's label, since a
+ * swap followed by one rename leaves exactly that.
  *
- * - each label that matches appears on no other provider party;
- * - the one that differs appears on no provider party at all, and its slot's new name
- *   is not another dispatched party's label, since a swap followed by one rename leaves
- *   exactly that.
- *
- * A party with no name field counts as differing: no evidence is not agreement.
+ * Names are compared among the SIGNING parties only. The sender slot (#852) never
+ * signs, and Scrive rewrites it to the account holder, who may well be the party the
+ * vertical named as issuer. A party with no name field counts as differing: no
+ * evidence is not agreement.
  */
 function namesSupportPosition(
   provider: ScriveDocument['parties'],
@@ -361,14 +361,12 @@ function namesSupportPosition(
   labels: readonly string[],
 ): boolean {
   const names = provider.map(providerNameOf);
-  const shown = (label: string) => names.filter((n) => n === label).length;
-  const differing = labels.filter((label, i) => names[i + offset] !== label).length;
-  if (differing > 1) return false;
-  return labels.every((label, i) => {
-    const name = names[i + offset];
-    if (name === label) return shown(label) === 1;
-    return shown(label) === 0 && !labels.some((other, j) => j !== i && other === name);
-  });
+  const differing = labels.flatMap((label, i) => (names[i + offset] === label ? [] : [i]));
+  if (differing.length === 0) return true;
+  if (differing.length > 1) return false;
+  const i = differing[0]!;
+  const signing = provider.filter((p) => p.is_signatory !== false).map(providerNameOf);
+  return !signing.includes(labels[i]) && !labels.some((other, j) => j !== i && other === names[i + offset]);
 }
 
 /**
@@ -971,7 +969,7 @@ export async function reconcileScriveDispatch(
 
     // No id, and nothing was pinned: the document no longer has the dispatched shape,
     // or its names do not bear position out. Position is the only key left, so the
-    // slot's name must BE the label and no other provider party may carry it. A party
+    // slot's name must BE the label and no other signing party may carry it. A party
     // showing no name is not evidence either way, so it is refused like a mismatch.
     // A refusal is never silent: the party lands in `needsAttention`, where the
     // activity view shows it.
@@ -979,7 +977,9 @@ export async function reconcileScriveDispatch(
     const signedAt = providerParty?.sign_time ?? null;
     if (!signedAt) continue; // not signed yet
     const providerName = providerNameOf(providerParty);
-    const elsewhere = doc.parties.filter((p) => p !== providerParty && providerNameOf(p) === party.label);
+    const elsewhere = doc.parties.filter(
+      (p) => p !== providerParty && p.is_signatory !== false && providerNameOf(p) === party.label,
+    );
     if (providerName !== party.label || elsewhere.length > 0) {
       unrecorded(
         party.requestId,
