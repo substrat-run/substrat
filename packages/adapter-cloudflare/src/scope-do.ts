@@ -4487,7 +4487,7 @@ export function defineScopeDO(
         this.sql
           .exec(
             `SELECT name, sql FROM sqlite_master
-              WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+              WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND sql IS NOT NULL
               ORDER BY name`,
           )
           .toArray() as unknown as { name: string; sql: string }[]
@@ -4681,7 +4681,7 @@ export function defineScopeDO(
         this.sql.exec('PRAGMA defer_foreign_keys = ON');
         // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
         const existing = this.sql
-          .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+          .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
           .toArray() as unknown as { name: string }[];
         // Search index tables are left alone here and rebuilt below (#827): dropping a
         // shadow table directly is an error, and `sqlite_master` order would reach one

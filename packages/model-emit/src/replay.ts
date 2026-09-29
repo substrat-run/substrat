@@ -140,7 +140,7 @@ export function readSchema(sql: string): Map<string, TableSchema> {
 
     const schema = new Map<string, TableSchema>();
     const names = db
-      .prepare(`SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+      .prepare(`SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT GLOB 'sqlite_*' ORDER BY name`)
       .all() as unknown as Array<{ name: string }>;
 
     for (const { name } of names) {
