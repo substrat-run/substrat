@@ -71,12 +71,87 @@ export function formatPreviewLogin(created: PreviewCreated): string[] {
  * the same message here as they do from `push` or `promote` — so a preview 400 names the
  * field it refused, and which command a builder ran stops changing the shape of the answer.
  */
-async function request<T>(action: string, url: string, header: Record<string, string>, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { ...init, headers: { 'content-type': 'application/json', ...header } });
-  warnIfStale(res.headers);
-  const body = await res.text();
-  if (!res.ok) throw new Error(failureMessage(action, res.status, body));
-  return parseJsonBody<T>(body, url);
+async function request<T>(
+  action: string,
+  url: string,
+  header: Record<string, string>,
+  init?: RequestInit,
+  opts: { retry?: Retry } = {},
+): Promise<T> {
+  // A transient platform fault (#1918) is one retry away from working, and a CI job nobody
+  // watches turns it into a red build. Only the callers that are idempotent by contract opt
+  // in; a 4xx or any other status is a definite answer and is never retried. `Retry` says
+  // how sure we must be that the first attempt is over before sending a second.
+  const attempts = opts.retry ? 1 + RETRY_BACKOFF_MS.length : 1;
+  for (let attempt = 1; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url, { ...init, headers: { 'content-type': 'application/json', ...header } });
+    } catch (e) {
+      // A network-level failure (no response at all) is the same transient class as a 502 —
+      // for a call that is safe to repeat while the first is still running. A dropped
+      // connection can come after the handler started, so a create does not retry on it.
+      if (attempt >= attempts || opts.retry !== 'idempotent') throw e;
+      await backoff(action, attempt, attempts, `network error: ${e instanceof Error ? e.message : String(e)}`);
+      continue;
+    }
+    warnIfStale(res.headers);
+    let body: string;
+    try {
+      body = await res.text();
+    } catch (e) {
+      // `fetch` resolves once headers arrive, so a drop while streaming the body rejects here,
+      // not above. Same rule as a failed fetch: only a repeatable call retries. A definite
+      // refusal (4xx, 500, 501) keeps its status rather than becoming a read error.
+      if (res.ok || TRANSIENT_STATUS.has(res.status)) {
+        if (attempt >= attempts || opts.retry !== 'idempotent') throw e;
+        await backoff(action, attempt, attempts, `network error: ${e instanceof Error ? e.message : String(e)}`);
+        continue;
+      }
+      body = '';
+    }
+    if (!res.ok) {
+      const ref = /\breference\s*=\s*([a-z0-9]+)/i.exec(body)?.[1];
+      if (attempt < attempts && shouldRetry(opts.retry, res.status, body)) {
+        await backoff(action, attempt, attempts, `${res.status}${ref ? `, reference = ${ref}` : ''}`);
+        continue;
+      }
+      throw new Error(failureMessage(action, res.status, body));
+    }
+    return parseJsonBody<T>(body, url);
+  }
+}
+
+/**
+ * How sure a caller needs to be that the failed attempt is OVER before it sends another.
+ * - `idempotent`: the call is safe to repeat even while the first is still running (read,
+ *   delete) — any transient status will do.
+ * - `after-handler-ended`: repeating while the first is still running is NOT safe. A create
+ *   whose retry finds its row `provisioning` reaps it and re-forks (`orchestratedPreview`),
+ *   and nothing there tells a dead half-built row from one still being built. A bare 502/504
+ *   can be a gateway giving up on a handler that is still forking, so it is not enough.
+ */
+type Retry = 'idempotent' | 'after-handler-ended';
+
+function shouldRetry(retry: Retry | undefined, status: number, body: string): boolean {
+  if (!retry || !TRANSIENT_STATUS.has(status)) return false;
+  if (retry === 'idempotent') return true;
+  // 503: the request was refused, never handled. The redacted-fault shape is what Cloudflare
+  // answers when the Worker's own invocation threw — the handler that would still be forking
+  // has ended. Anything else (a bare 502/504) may be a timeout in front of a live handler.
+  return status === 503 || /\binternal error; reference\s*=\s*[a-z0-9]+/i.test(body);
+}
+
+/** The statuses `explainPlatformFault` calls momentary: the gateway or upstream, not the request. */
+const TRANSIENT_STATUS: ReadonlySet<number> = new Set([502, 503, 504]);
+/** The wait before each further attempt — two extra attempts, bounded. */
+const RETRY_BACKOFF_MS = [1_000, 3_000] as const;
+
+/** Say the retry happened (one line per attempt, reference kept), then wait. */
+async function backoff(action: string, attempt: number, attempts: number, why: string): Promise<void> {
+  const wait = RETRY_BACKOFF_MS[attempt - 1]!;
+  console.warn(`${action} (${why}); retrying in ${wait / 1000}s (attempt ${attempt + 1} of ${attempts})`);
+  await new Promise((resolve) => setTimeout(resolve, wait));
 }
 
 /**
@@ -116,6 +191,10 @@ export async function createPreview(opts: {
         ...(opts.refresh ? { refresh: true } : {}),
       }),
     },
+    // Converges on the tag: a second call rebinds the same fork, and a create that died
+    // half-built is reaped and re-forked, never duplicated. But that reap cannot tell a dead
+    // row from one still being built, so only retry once the first handler has ended.
+    { retry: 'after-handler-ended' },
   );
 }
 
@@ -133,6 +212,9 @@ export async function deletePreview(opts: {
     `${base}/verticals/${encodeURIComponent(opts.slug)}/previews/${encodeURIComponent(opts.tag)}`,
     opts.header,
     { method: 'DELETE' },
+    // The route answers 200 `{ deleted: null }` for a preview already gone, so a retry after a
+    // delete that landed but whose response was lost succeeds rather than failing on a 404.
+    { retry: 'idempotent' },
   );
 }
 
@@ -146,6 +228,8 @@ export async function listPreviews(opts: {
     'preview list failed',
     `${base}/verticals/${encodeURIComponent(opts.slug)}/previews`,
     opts.header,
+    undefined,
+    { retry: 'idempotent' },
   );
 }
 
