@@ -1257,8 +1257,9 @@ export class ControlPlaneDO extends DurableObject {
   /**
    * The directory's tables as this code builds them, carrying whatever the directory already
    * holds forward to that shape: the construction's pass, and a restore's (#1898, #1912), which
-   * runs it inside its transaction onto an emptied directory, before loading any row. `holdSwitchRecord` leaves the #1674 record's statements to the caller, which
-   * creates the table with its backfill.
+   * runs it inside its transaction onto an emptied directory, before loading any row.
+   * `holdSwitchRecord` leaves the #1674 record's statements to the caller, which creates the
+   * table with its backfill.
    */
   private buildDirectorySchema({ holdSwitchRecord }: { holdSwitchRecord: boolean }): void {
     for (const stmt of DIRECTORY_DDL_PLAN.loop) {
