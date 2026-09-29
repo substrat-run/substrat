@@ -116,7 +116,7 @@ async function request<T>(
         await backoff(action, attempt, attempts, `${res.status}${ref ? `, reference = ${ref}` : ''}`);
         continue;
       }
-      throw new Error(failureMessage(action, res.status, body));
+      throw new Error(failureMessage(action, res.status, body) + retriedInFlight(opts.retry, attempt, res.status, body));
     }
     return parseJsonBody<T>(body, url);
   }
@@ -137,10 +137,26 @@ type Retry = 'idempotent' | 'after-handler-ended';
 function shouldRetry(retry: Retry | undefined, status: number, body: string): boolean {
   if (!retry || !TRANSIENT_STATUS.has(status)) return false;
   if (retry === 'idempotent') return true;
-  // 503: the request was refused, never handled. The redacted-fault shape is what Cloudflare
-  // answers when the Worker's own invocation threw — the handler that would still be forking
-  // has ended. Anything else (a bare 502/504) may be a timeout in front of a live handler.
+  // 503: the request was refused before a handler ran, or the isolate running it was killed
+  // (Cloudflare's 1102, resources exceeded). The redacted-fault shape is what Cloudflare
+  // answers when the Worker's own invocation threw. Either way the handler that would still be
+  // forking has ended. Anything else (a bare 502/504) may be a timeout in front of a live handler.
   return status === 503 || /\binternal error; reference\s*=\s*[a-z0-9]+/i.test(body);
+}
+
+/**
+ * The line a RETRIED create adds to an in-flight 409 (#1920). The server refuses a tag whose
+ * create is still `provisioning`, and a create that fails in its own request marks its row so
+ * the retry is not refused. So a retry that is refused anyway most likely follows an attempt
+ * that died without the chance to mark, such as a killed isolate. It can also be a different
+ * create for the same tag that is still running.
+ */
+function retriedInFlight(retry: Retry | undefined, attempt: number, status: number, body: string): string {
+  if (retry !== 'after-handler-ended' || attempt === 1 || status !== 409 || !/\bis in progress\b/.test(body)) return '';
+  return (
+    '\n  The earlier attempt of this create most likely died after its preview row landed; ' +
+    '--refresh reclaims the tag now.'
+  );
 }
 
 /** The statuses `explainPlatformFault` calls momentary: the gateway or upstream, not the request. */

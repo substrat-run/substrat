@@ -355,7 +355,34 @@ describe('preview create retries a transient platform fault (#1918)', () => {
       'Retry once it finishes; if it died, the tag can be reclaimed in 12 min, ' +
       'or now with refresh (substrat preview create --refresh), which replaces it';
     const bodies = script([() => new Response(JSON.stringify({ error }), { status: 409 })]);
-    await expect(run(createPreview(args))).rejects.toThrow(`preview create failed (409): ${error}`);
+    const refused = run(createPreview(args));
+    await expect(refused).rejects.toThrow(`preview create failed (409): ${error}`);
+    // A first attempt refused is someone else's create still running: no guess about a dead one.
+    await expect(refused).rejects.not.toThrow(/most likely died/);
     expect(bodies).toHaveLength(1);
+  });
+
+  it('a RETRIED create refused as in progress says the earlier attempt died, and how to reclaim now (#1920)', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = "a create for preview 'pr-1' is in progress (started 2026-09-29T10:00:00.000Z).";
+    const bodies = script([
+      () => new Response('', { status: 503 }),
+      () => new Response(JSON.stringify({ error }), { status: 409 }),
+    ]);
+    const refused = run(createPreview(args));
+    await expect(refused).rejects.toThrow(`preview create failed (409): ${error}`);
+    await expect(refused).rejects.toThrow(/earlier attempt of this create most likely died .*--refresh reclaims the tag now/s);
+    expect(bodies).toHaveLength(2);
+  });
+
+  it('a retried create refused for any other reason adds nothing', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    script([
+      () => new Response('', { status: 503 }),
+      () => new Response('{"error":"no prod scope to fork"}', { status: 409 }),
+    ]);
+    await expect(run(createPreview(args))).rejects.not.toThrow(/most likely died/);
   });
 });
