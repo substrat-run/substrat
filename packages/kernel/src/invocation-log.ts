@@ -111,9 +111,11 @@ export interface InvocationRecord {
  * value is ever read into it.
  */
 export interface OutputFieldsReport {
-  /** Declared fields the response carried with a defined value, in declaration order. */
+  /** Declared fields the response carried with a value other than `null`, in declaration order. */
   present: string[];
-  /** Declared fields the response did not carry. */
+  /** Declared fields the response carried as `null` — on the wire, carrying nothing. */
+  empty: string[];
+  /** Declared fields the response did not carry (missing, or `undefined`). */
   absent: string[];
 }
 

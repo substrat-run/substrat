@@ -259,7 +259,7 @@ It carries them as additive top-level fields, which Workers Logs indexes like `t
 | `principalKind` | `ScopeStub.subjectKind`, decided by the door that minted the stub: `principal`, `connection`, `system`, `capability`, `vertical` | the stub is the vertical's own and does not say |
 | `eventCount`, `eventTypes`, `entities` | `InvokeOptions.onEmitted`: the rows the operation added to the outbox, read after its commit and **before** the consumer drain | not recorded. `0` and `[]` are a fact: the call emitted nothing |
 | `versionId` | the platform's `SUBSTRAT_VERSION_ID` binding | a local run, or a script pushed before the binding existed |
-| `outputFields` | `mountOperations`' field walk (#1331): `{ present, absent }`, the operation's declared output field names split by whether the response carried them | **omitted, not `null`**: the walk is off unless the platform arms `SUBSTRAT_FIELD_COVERAGE=on`, and an unarmed line stays byte-for-byte what it was. Also omitted for a failed call, an empty list, or an operation declaring no output fields |
+| `outputFields` | `mountOperations`' field walk (#1331): `{ present, empty, absent }`, the operation's declared output field names split three ways: carried with a value, carried as `null`, or not carried at all | **omitted, not `null`**: the walk is off unless the platform arms `SUBSTRAT_FIELD_COVERAGE=on`, and an unarmed line stays byte-for-byte what it was. Also omitted for a failed call, an empty list, or an operation declaring no output fields |
 
 `outputFields` is the observed half of field coverage, whose declared half (#1321) rides the
 deploy manifest. The walk costs O(declared fields), never O(response): it asks the result

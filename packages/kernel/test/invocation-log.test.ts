@@ -536,8 +536,8 @@ describe('the line’s outputFields (#1331)', () => {
   };
 
   it('carries the report a mount filled in', async () => {
-    const line = await lineFor({ operation: 'acme/op', outputFields: { present: ['id'], absent: ['note'] } });
-    expect(line.outputFields).toEqual({ present: ['id'], absent: ['note'] });
+    const line = await lineFor({ operation: 'acme/op', outputFields: { present: ['id'], empty: ['title'], absent: ['note'] } });
+    expect(line.outputFields).toEqual({ present: ['id'], empty: ['title'], absent: ['note'] });
   });
 
   it('omits the key — not null — when nothing was walked, so an unarmed line is unchanged', async () => {

@@ -89,14 +89,18 @@ export function observeOutputFields(result: unknown, walk: OutputWalk): OutputFi
     if (subject === null || typeof subject !== 'object' || Array.isArray(subject)) return undefined;
     const row = subject as Record<string, unknown>;
     const present: string[] = [];
+    const empty: string[] = [];
     const absent: string[] = [];
     for (const field of walk.fields) {
       // Own properties only, as `JSON.stringify` serialises them, and `undefined` is what it
-      // drops — so "present" means "on the wire".
-      if (row[field] !== undefined && Object.prototype.hasOwnProperty.call(row, field)) present.push(field);
-      else absent.push(field);
+      // drops — so "present" and "empty" both mean "on the wire". `null` is its own bucket:
+      // a column that is always null is on the wire and still never carries anything.
+      const value = row[field];
+      if (value === undefined || !Object.prototype.hasOwnProperty.call(row, field)) absent.push(field);
+      else if (value === null) empty.push(field);
+      else present.push(field);
     }
-    return { present, absent };
+    return { present, empty, absent };
   } catch {
     return undefined;
   }

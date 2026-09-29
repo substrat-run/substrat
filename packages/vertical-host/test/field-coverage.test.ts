@@ -86,13 +86,13 @@ describe('the field walk (#1331)', () => {
   it('records which declared fields the response carried, and which it did not', async () => {
     const { record, call } = harness({ output: card }, () => ({ id: 'c1', title: 'T', owner_email: SECRET }));
     expect((await call(ARMED)).status).toBe(200);
-    expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], absent: ['note'] });
+    expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], empty: [], absent: ['note'] });
   });
 
-  it('counts an undefined value as absent, as the wire does, and null as present', async () => {
+  it('counts an undefined value as absent, as the wire does, and null as empty — never as returned', async () => {
     const { record, call } = harness({ output: card }, () => ({ id: 'c1', title: null, note: undefined, owner_email: 'x' }));
     await call(ARMED);
-    expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], absent: ['note'] });
+    expect(record.outputFields).toEqual({ present: ['id', 'owner_email'], empty: ['title'], absent: ['note'] });
   });
 
   /**
@@ -110,7 +110,7 @@ describe('the field walk (#1331)', () => {
     const written = JSON.stringify(record);
     expect(written).not.toContain(SECRET);
     expect(written).not.toContain('value-4c1d');
-    expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], absent: ['note'] });
+    expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], empty: [], absent: ['note'] });
   });
 
   it('asks about declared names only — it never enumerates the response', async () => {
@@ -122,7 +122,7 @@ describe('the field walk (#1331)', () => {
     expect(touched).not.toContain('ownKeys');
     const asked = new Set(touched.map((t) => t.split(':')[1]));
     expect([...asked].sort()).toEqual(['id', 'note', 'owner_email', 'title']);
-    expect(record.outputFields).toEqual({ present: ['id'], absent: ['title', 'note', 'owner_email'] });
+    expect(record.outputFields).toEqual({ present: ['id'], empty: [], absent: ['title', 'note', 'owner_email'] });
   });
 
   it('observes a vertical that owns its envelope — `respond` cannot skip it', async () => {
@@ -130,7 +130,7 @@ describe('the field walk (#1331)', () => {
       respond: (_c, result) => new Response(JSON.stringify({ ok: true, result })),
     });
     await call(ARMED);
-    expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], absent: ['note'] });
+    expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], empty: [], absent: ['note'] });
   });
 
   it('walks the first entry of a paged read, and only the first', async () => {
@@ -141,7 +141,7 @@ describe('the field walk (#1331)', () => {
       { respond: blind },
     );
     await call(ARMED);
-    expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], absent: ['note'] });
+    expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], empty: [], absent: ['note'] });
     expect(second.touched).toEqual([]);
   });
 
@@ -151,13 +151,13 @@ describe('the field walk (#1331)', () => {
       () => [{ id: 'c1', title: 'A', note: 'n', owner_email: 'x' }],
     );
     await call(ARMED);
-    expect(record.outputFields).toEqual({ present: ['id', 'title', 'note', 'owner_email'], absent: [] });
+    expect(record.outputFields).toEqual({ present: ['id', 'title', 'note', 'owner_email'], empty: [], absent: [] });
   });
 
   it('walks the first element of an array output', async () => {
     const { record, call } = harness({ output: z.array(card) }, () => [{ id: 'c1' }, { id: 'c2', title: 'B' }]);
     await call(ARMED);
-    expect(record.outputFields).toEqual({ present: ['id'], absent: ['title', 'note', 'owner_email'] });
+    expect(record.outputFields).toEqual({ present: ['id'], empty: [], absent: ['title', 'note', 'owner_email'] });
   });
 
   it('records nothing for an empty list — an unobserved field is not an absent one', async () => {
@@ -309,7 +309,7 @@ describe('what reaches the line and the router (#1331)', () => {
   it('armed: the line carries the field names and no value; the router header is unchanged', async () => {
     const unarmed = await run({ output: card }, {});
     const armed = await run({ output: card }, ARMED);
-    expect(armed.line['outputFields']).toEqual({ present: ['id', 'title', 'owner_email'], absent: ['note'] });
+    expect(armed.line['outputFields']).toEqual({ present: ['id', 'title', 'owner_email'], empty: [], absent: ['note'] });
     expect(JSON.stringify(armed.line)).not.toContain(SECRET);
     // The router's datapoint carries three named fields and nothing else; the walk adds none.
     expect(armed.res.headers.get(INVOCATION_RECORD_HEADER)).toBe(unarmed.res.headers.get(INVOCATION_RECORD_HEADER));
@@ -340,6 +340,6 @@ describe('outputWalkOf — the declared fields, read once at mount', () => {
     const walk = outputWalkOf(wide, false)!;
     expect(walk.fields).toHaveLength(DECLARED_OUTPUT_FIELDS_MAX);
     const report = observeOutputFields(Object.fromEntries(walk.fields.map((f) => [f, 'x'])), walk)!;
-    expect(report.present.length + report.absent.length).toBe(DECLARED_OUTPUT_FIELDS_MAX);
+    expect(report.present.length + report.empty.length + report.absent.length).toBe(DECLARED_OUTPUT_FIELDS_MAX);
   });
 });
