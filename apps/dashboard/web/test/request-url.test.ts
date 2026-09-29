@@ -46,3 +46,21 @@ describe('opening and closing', () => {
     expect(window.location.search).toBe('?view=logs');
   });
 });
+
+describe('a record by its address (#1921)', () => {
+  it('reads the entity, the id — which may hold colons — and an optional scope', async () => {
+    const { recordInUrl } = await import('../src/lib/request-url');
+    expect(recordInUrl('?rec=contact:c:42&recScope=S2')).toEqual({ entityType: 'contact', entityId: 'c:42', scopeId: 'S2' });
+    expect(recordInUrl('?rec=nocolon')).toBeNull();
+    expect(recordInUrl('?rec=:id')).toBeNull();
+  });
+
+  it('opens and closes on the page it is on, as history steps', async () => {
+    const { openRecordInUrl, closeRecordInUrl } = await import('../src/lib/request-url');
+    window.history.replaceState(null, '', '/acme/observability?view=logs');
+    openRecordInUrl('conversation', 'C1', 'S2');
+    expect(Object.fromEntries(new URLSearchParams(window.location.search))).toEqual({ view: 'logs', rec: 'conversation:C1', recScope: 'S2' });
+    closeRecordInUrl();
+    expect(window.location.search).toBe('?view=logs');
+  });
+});

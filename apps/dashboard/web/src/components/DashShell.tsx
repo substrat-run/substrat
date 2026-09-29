@@ -303,7 +303,7 @@ export function DashShell(props: DashShellProps) {
             }}
           >
             <Ic name="search" size={14} />
-            <span style={{ flex: 1, textAlign: 'left' }}>Jump to app or action…</span>
+            <span style={{ flex: 1, textAlign: 'left' }}>Jump to… or write to support</span>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, border: '1px solid var(--border-default)', borderRadius: 4, padding: '1px 4px', color: 'var(--text-tertiary)' }}>⌘K</span>
           </button>
           <IconTile label="Notifications" onClick={props.onOpenNotifications} size={28} badge={props.unread}>

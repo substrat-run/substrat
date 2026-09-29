@@ -25,7 +25,8 @@ import { AppSchedulesCard } from './AppSchedulesCard';
 import { AppHeader } from './AppHeader';
 import { EntityTimeline } from './EventHistory';
 import { RequestSlideOver } from './RequestSlideOver';
-import { closeRequestInUrl, useRequestInUrl } from '../lib/request-url';
+import { closeRecordInUrl, closeRequestInUrl, useRecordInUrl, useRequestInUrl } from '../lib/request-url';
+import { RecordPanel } from './RecordPanel';
 import { useTenantMetrics } from '../lib/use-tenant-metrics';
 import { useAppSchedules, type SchedulesState } from '../lib/use-app-schedules';
 import { brokenAppLines, sendWithExportBreakAck, type BrokenApp } from '../lib/bind-ack';
@@ -173,9 +174,20 @@ export function AppDetail({
   // #1916: a request opened from a record's timeline (Data tab) is part of the address, as
   // on the Observability pages — linkable, kept on reload, closed by Back.
   const openRequest = useRequestInUrl();
+  // #1921: a record opened by its address — the ⌘K overlay's pasted id, or a shared link.
+  const openRecord = useRecordInUrl();
 
   return (
     <Page style={{ gap: 16 }}>
+      {openRecord && (
+        <RecordPanel
+          key={`${openRecord.entityType}:${openRecord.entityId}`}
+          scopeId={openRecord.scopeId ?? app.app_scope_id}
+          entityType={openRecord.entityType}
+          entityId={openRecord.entityId}
+          onClose={closeRecordInUrl}
+        />
+      )}
       {openRequest && (
         <RequestSlideOver
           key={openRequest.invocationId}

@@ -43,7 +43,7 @@ export type { SideNavItem, SideNavProps, SideNavSection } from './SideNav';
 export { Breadcrumbs } from './Breadcrumbs';
 export type { BreadcrumbItem, BreadcrumbsProps } from './Breadcrumbs';
 
-export { SupportWidget } from './SupportWidget';
+export { SupportWidget, openSupport } from './SupportWidget';
 export type { SupportWidgetProps } from './SupportWidget';
 
 export { SubIcon, SubIcons } from './icons';

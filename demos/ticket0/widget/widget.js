@@ -383,6 +383,17 @@
   document.addEventListener('visibilitychange', onVisibility);
 
   var api = {
+    /**
+     * Open the panel, as a click on the bubble would (#1921): a host page with its own way
+     * in to support — the dashboard's ⌘K overlay — sends the reader to the same
+     * conversation instead of drawing a second one.
+     */
+    open: function () {
+      if (!dead) toggle(true);
+    },
+    close: function () {
+      if (!dead) toggle(false);
+    },
     unmount: function () {
       dead = true;
       aborter.abort();

@@ -11,7 +11,8 @@ import { LogQueryBar } from '../components/LogQueryBar';
 import { Flow } from './Flow';
 import { ProcessMap } from './ProcessMap';
 import { RequestSlideOver } from './RequestSlideOver';
-import { closeRequestInUrl, openRequestInUrl, requestInUrl } from '../lib/request-url';
+import { closeRecordInUrl, closeRequestInUrl, openRequestInUrl, recordInUrl, requestInUrl } from '../lib/request-url';
+import { RecordPanel } from './RecordPanel';
 import { Tabs } from '@substrat-run/ui';
 import { Pulse } from './Pulse';
 import { EventExplorer, TenantLogs } from './ObservabilityPanels';
@@ -115,10 +116,17 @@ export function Observability({
   // a request named by a transition card deep in a record's timeline opens here too, and in
   // the scope it belongs to when that is not the page's own.
   const open = requestInUrl(query);
-  const slideOver =
-    open && (open.scopeId ?? scopeId) ? (
-      <RequestSlideOver key={open.invocationId} scopeId={(open.scopeId ?? scopeId)!} invocationId={open.invocationId} atMs={open.atMs} onClose={closeRequestInUrl} />
-    ) : null;
+  const rec = recordInUrl(query);
+  const slideOver = (
+    <>
+      {rec && (rec.scopeId ?? scopeId) && (
+        <RecordPanel key={`${rec.entityType}:${rec.entityId}`} scopeId={(rec.scopeId ?? scopeId)!} entityType={rec.entityType} entityId={rec.entityId} onClose={closeRecordInUrl} />
+      )}
+      {open && (open.scopeId ?? scopeId) && (
+        <RequestSlideOver key={open.invocationId} scopeId={(open.scopeId ?? scopeId)!} invocationId={open.invocationId} atMs={open.atMs} onClose={closeRequestInUrl} />
+      )}
+    </>
+  );
 
   /**
    * A marker opens the sub-view that EXPLAINS it — the run row for a failed schedule, the

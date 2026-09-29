@@ -244,7 +244,11 @@ with an **app filter** rather than tabs on each app. The app page links into bot
   axis. The panel is part of the address, so a request can be linked to. A record whose entity
   declares a lifecycle opens with that lifecycle drawn above its event history: where its time
   went (one segment per state, to scale), and one column per transition naming who moved it and
-  by which operation. Each transition opens the request that made it. A sub-view
+  by which operation. Each transition opens the request that made it. A record is addressable
+  too, so a link can open one's timeline over the page. **⌘K** (or the top-bar field) opens
+  one overlay for getting anywhere: apps, each app's process maps, every page, and — inside
+  an app — a pasted request or record id, which opens that request or record. Tab switches it
+  to **Support**, which opens the support conversation. A sub-view
   never carries its own window, so two panels always answer about the same slice. On the one-app
   bar chart, clicking a bucket sets a **cursor** — one instant worth looking at — which rides the
   URL beside the app and the sub-view and narrows the panels below to the minutes around it; the
