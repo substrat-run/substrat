@@ -21,7 +21,16 @@ import {
   createRouteResolver,
   type RouteResolver,
 } from '@substrat-run/adapter-cloudflare/routing';
-import { peerCallRequest, peerCallResponse, peerCaller, type PeerCaller, type RouteTarget } from '@substrat-run/contracts';
+import {
+  decodeInvocationRecord,
+  INVOCATION_RECORD_HEADER,
+  invocationLevelOf,
+  peerCallRequest,
+  peerCallResponse,
+  peerCaller,
+  type PeerCaller,
+  type RouteTarget,
+} from '@substrat-run/contracts';
 
 export interface Env {
   /**
@@ -227,23 +236,59 @@ const isReplayable = (request: Request): boolean => request.body === null;
 const resolverFor = (env: Env): RouteResolver => createRouteResolver(env.CONTROL_PLANE);
 
 /**
+ * A response without one header. A dispatched response's headers are immutable, so it is
+ * rebuilt around the same body and status — except an upgrade, which carries a socket a
+ * rebuilt response would drop; that one is answered as it came, header and all.
+ */
+function withoutHeader(response: Response, name: string): Response {
+  if (response.status === 101 || (response as Response & { webSocket?: unknown }).webSocket) return response;
+  const out = new Response(response.body, response);
+  out.headers.delete(name);
+  return out;
+}
+
+/**
  * Record one resolved request (design/observability.md §4.2/§4.3): an Analytics
  * Engine datapoint keyed by tenant, and one structured log line carrying the same
  * fields for the telemetry query path. Blob/double order is a published shape —
  * the read proxy indexes into it — so it only ever grows, never reorders:
- * index [tenantId]; blobs [vertical, scope, surface, statusClass, rayId];
- * doubles [durationMs, status].
+ * index [tenantId]; blobs [vertical, scope, surface, statusClass, rayId,
+ * operation, problemCode, principalKind, level]; doubles [durationMs, status].
+ *
+ * Blobs 6–9 are #1904's, and are what the request histogram and facets read. The first three
+ * are the vertical's own record, handed back on `INVOCATION_RECORD_HEADER` (empty when the
+ * request reached no operation, or the vertical predates the header); the level is the
+ * router's, from the status and that problem code, so a request is filed under one even when
+ * the vertical said nothing. The index stays the tenant the router resolved.
  */
 function record(
   env: Env,
   target: RouteTarget,
-  m: { hostname: string; rayId: string | null; status: number; durationMs: number },
+  m: {
+    hostname: string;
+    rayId: string | null;
+    status: number;
+    threw: boolean;
+    durationMs: number;
+    invocation: ReturnType<typeof decodeInvocationRecord>;
+  },
 ): void {
   const statusClass = `${Math.floor(m.status / 100)}xx`;
+  const { operation, problemCode, principalKind } = m.invocation;
   try {
     env.ANALYTICS?.writeDataPoint({
       indexes: [target.tenantId],
-      blobs: [target.verticalSlug ?? '', target.scopeId, target.surface, statusClass, m.rayId ?? ''],
+      blobs: [
+        target.verticalSlug ?? '',
+        target.scopeId,
+        target.surface,
+        statusClass,
+        m.rayId ?? '',
+        operation ?? '',
+        problemCode ?? '',
+        principalKind ?? '',
+        invocationLevelOf(m.status, m.threw, problemCode),
+      ],
       doubles: [m.durationMs, m.status],
     });
   } catch {
@@ -401,9 +446,18 @@ export default {
     // If dispatch throws (non-transient vertical error), the runtime answers 500 —
     // record it as such; the finally is what makes error paths count in the metrics.
     let status = 500;
+    let threw = true;
+    let invocation = decodeInvocationRecord(null);
     try {
-      const response = await dispatch(env, request, target, hostname);
+      let response = await dispatch(env, request, target, hostname);
       status = response.status;
+      threw = false;
+      // #1904: the vertical's record of what ran, for the datapoint — and never for the caller.
+      const carried = response.headers.get(INVOCATION_RECORD_HEADER);
+      if (carried !== null) {
+        invocation = decodeInvocationRecord(carried);
+        response = withoutHeader(response, INVOCATION_RECORD_HEADER);
+      }
       // The vertical just enqueued a platform intent, or committed an event another vertical
       // imports (#1705), and flagged the response. Kick the control plane out of band so it
       // runs in seconds — after we've returned, never blocking it. Both flags are RESPONSE
@@ -423,7 +477,9 @@ export default {
         hostname,
         rayId: request.headers.get('cf-ray'),
         status,
+        threw,
         durationMs: Date.now() - startedAt,
+        invocation,
       });
     }
   },

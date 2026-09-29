@@ -54,6 +54,14 @@
  * verification the vertical does for its own routing happens here, with the same secret
  * and the same dev opt-out, and a failed one writes nothing at all.
  */
+// The subpath, not the root: this module is bundled into every vertical's upload (the
+// platform entry, #1893), and the root carries every schema in the vocabulary.
+import {
+  encodeInvocationRecord,
+  INVOCATION_RECORD_HEADER,
+  invocationLevelOf,
+  type InvocationLevel,
+} from '@substrat-run/contracts/invocation-record';
 import { ulid } from './ulid.js';
 import { readRoutedNode, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
@@ -90,31 +98,9 @@ export interface InvocationRecord {
   emitted?: EmittedReport;
 }
 
-/** The level a stamped line is filed under (#1746). See {@link invocationLevelOf}. */
-export type InvocationLevel = 'error' | 'warn' | 'info';
-
-/**
- * The level of an invocation, from how it ended.
- *
- * A stamped line is pure JSON, so the log platform sets no level on it (the reader's
- * comments in `cf-observability.ts` found this out the hard way). The level histogram
- * still needs one per request, so the line carries its own: a 5xx or an escaped throw is
- * an error, a 4xx is a warning (the request was refused, which the caller may need to
- * hear about, and nothing broke), a success carrying a problem code is a warning too, and
- * anything else is info.
- */
-export function invocationLevelOf(
-  status: number | null,
-  threw: boolean,
-  problemCode?: string | null,
-): InvocationLevel {
-  if (threw || status === null || status >= 500) return 'error';
-  if (status >= 400) return 'warn';
-  // A failure answered IN-BAND — an MCP tool error is a 200 carrying `isError` — is still
-  // a refused call, and filing it as info would hide it from the one filter that looks.
-  if (problemCode) return 'warn';
-  return 'info';
-}
+// The level and its type moved to contracts in #1904 — the router files its datapoint under
+// the same level — and stay exported from here, where every caller already reads them.
+export { invocationLevelOf, type InvocationLevel } from '@substrat-run/contracts/invocation-record';
 
 /**
  * The middleware's context, taken STRUCTURALLY — kernel depends on no web framework,
@@ -527,6 +513,7 @@ export function withInvocationLog<Env = unknown>(
       try {
         const response = await inner.call(worker, request, env, ctx);
         status = response.status;
+        handRecordToRouter(response, stamp.record, request, env, options);
         return response;
       } catch (e) {
         threw = true;
@@ -541,6 +528,34 @@ export function withInvocationLog<Env = unknown>(
     if (typeof h === 'function') wrapped[name] = (h as (...a: unknown[]) => unknown).bind(worker);
   }
   return wrapped;
+}
+
+/**
+ * #1904: hand the record back to the router on the response, which meters the request with
+ * it and strips the header before the response leaves (`INVOCATION_RECORD_HEADER`).
+ *
+ * Only on a request the router vouched for: a direct caller gets no header, and the router
+ * is the only reader. Never a throw — a response whose headers are immutable (one passed
+ * straight through from a `fetch`) reached no operation and has nothing to hand back, and
+ * metering must not fail a request either way.
+ */
+function handRecordToRouter<Env>(
+  response: unknown,
+  record: InvocationRecord,
+  request: IncomingRequest,
+  env: Env,
+  options: InvocationLogOptions<Env>,
+): void {
+  try {
+    const value = encodeInvocationRecord(record);
+    if (value === null || !routedNodeOrNull(request.headers, env, options)) return;
+    (response as { headers?: { set?: (name: string, value: string) => void } }).headers?.set?.(
+      INVOCATION_RECORD_HEADER,
+      value,
+    );
+  } catch {
+    /* immutable headers: see above */
+  }
 }
 
 /**

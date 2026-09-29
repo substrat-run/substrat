@@ -49,6 +49,15 @@ export function scheduleContractSuite(
     // re-minted would still pass a shape check.
     let pass1Ids: { tick: string; collision: string };
 
+    /**
+     * The tests that sweep get longer than vitest's 5 s default. The sweep walks every scope
+     * in the control plane, and on adapter-cloudflare that one control plane is shared by
+     * every test file in the worker (#1591, #1899), so its cost is the whole suite's, not
+     * this one's. Locally that is a fraction of a second; on a CI shard running other suites
+     * beside it, it has run past 5 s. Nothing asserted here depends on time. Remove once
+     * #1899 gives each harness its own control plane.
+     */
+    const SWEEP_TIMEOUT_MS = 30_000;
     const sweep = () =>
       runPlatformSweep(host, {
         actor: staff,
@@ -127,7 +136,7 @@ export function scheduleContractSuite(
       );
       expect(collisionRow?.invocation_id).not.toBe(firedRow!.invocation_id);
       pass1Ids = { tick: firedRow!.invocation_id!, collision: collisionRow!.invocation_id! };
-    });
+    }, SWEEP_TIMEOUT_MS);
 
     it('skips a schedule still inside its cadence window', async () => {
       const report = await sweep();
@@ -169,7 +178,7 @@ export function scheduleContractSuite(
           invocation_id: pass1Ids.tick,
         },
       ]);
-    });
+    }, SWEEP_TIMEOUT_MS);
 
     it('lets ctx.check gate what the schedule may do — an ungranted op is denied', async () => {
       // The system principal holds `sched:tick` (scheduled) but NOT `sched:admin`
@@ -246,7 +255,7 @@ export function scheduleContractSuite(
       // restore either) — still null, since it invoked nothing.
       const freshnessRow = state.find((r) => r.kind === 'freshness');
       expect(freshnessRow?.invocation_id).toBeNull();
-    });
+    }, SWEEP_TIMEOUT_MS);
 
     /**
      * The failure twin of "fires a due schedule" above: a FAILED run still records a
