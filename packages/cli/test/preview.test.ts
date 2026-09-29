@@ -353,7 +353,8 @@ describe('preview create retries a transient platform fault (#1918)', () => {
     const error =
       "a create for preview 'pr-1' is in progress (started 2026-09-29T10:00:00.000Z). " +
       'Retry once it finishes; if it died, the tag can be reclaimed in 12 min, ' +
-      'or now with refresh (substrat preview create --refresh), which replaces it';
+      'or now with refresh (substrat preview create --refresh), which replaces it and stops a ' +
+      'create still running: that create then fails';
     const bodies = script([() => new Response(JSON.stringify({ error }), { status: 409 })]);
     const refused = run(createPreview(args));
     await expect(refused).rejects.toThrow(`preview create failed (409): ${error}`);

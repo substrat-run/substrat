@@ -6834,7 +6834,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           409,
           `a create for preview '${opts.tag}' is in progress (started ${existing.createdAt}). ` +
             `Retry once it finishes; if it died, the tag can be reclaimed in ${minutes} min, ` +
-            `or now with refresh (substrat preview create --refresh), which replaces it`,
+            `or now with refresh (substrat preview create --refresh), which replaces it and stops a ` +
+            `create still running: that create then fails`,
         );
       }
     }

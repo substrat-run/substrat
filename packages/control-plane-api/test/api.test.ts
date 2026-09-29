@@ -2381,7 +2381,7 @@ describe('control-plane API', () => {
       // Readable, and says both ways out: wait (with how long) or replace it now.
       expect(error).toMatch(/a create for preview 'pr-1' is in progress/);
       expect(error).toMatch(/reclaimed in 15 min/);
-      expect(error).toMatch(/--refresh/);
+      expect(error).toMatch(/--refresh\), which replaces it and stops a create still running/);
       // Nothing was reaped and nothing was forked a second time.
       expect(w.deletes).toEqual([]);
       expect(w.exports).toBe('empty' in kind ? 0 : 1);
