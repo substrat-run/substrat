@@ -1195,6 +1195,15 @@ const DOCUMENT_STATUS: Record<string, string> = {
 };
 
 /** An ISO instant, or null — a projector must never fail a read over a stray timestamp. */
+/**
+ * Clip a string to a `connectionFact` limit (label 80, value 400). The activity route
+ * parses this projection against that contract, so one over-long value — a party name
+ * as the vertical or the provider spelled it — would fail the whole read instead of
+ * showing the row.
+ */
+const clip = (value: string, max: number): string =>
+  value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+
 const asInstant = (value: string | undefined): Instant | null => {
   const parsed = instant.safeParse(value);
   return parsed.success ? parsed.data : null;
@@ -1291,11 +1300,14 @@ export async function scriveConnectionActivity(
       at: asInstant(state.dispatchedAt),
       facts: [
         ...state.parties.slice(0, 24).map((p) => ({
-          label: p.label,
+          label: clip(p.label, 80),
           value: done.has(p.requestId)
             ? 'signature recorded'
             : attention.has(p.requestId)
-              ? `${attention.get(p.requestId)!.signedAt ? 'signed at Scrive, not recorded' : 'not found at Scrive'}: ${attention.get(p.requestId)!.reason}`
+              ? clip(
+                  `${attention.get(p.requestId)!.signedAt ? 'signed at Scrive, not recorded' : 'not found at Scrive'}: ${attention.get(p.requestId)!.reason}`,
+                  400,
+                )
               : 'awaiting signature',
         })),
         { label: 'Content hash', value: state.contentHash },

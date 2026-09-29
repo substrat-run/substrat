@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
+  connectionActivity,
   connectionId,
   dataSubjectId,
   platformActorId,
@@ -471,6 +472,24 @@ describe('scrive connector — return path (record signatures back)', () => {
       expect(fixed.recorded.map((r) => r.requestId)).toEqual([requestIds[1]]);
       expect(fixed.needsAttention).toEqual([]);
       expect((await ledger(instanceId)).needsAttention).toBeUndefined();
+    });
+
+    it('keeps an attention row inside the activity contract however long the names are', async () => {
+      await grantRecordSignature();
+      const { instanceId, docId } = await issue();
+      await asLegacy(instanceId);
+      const doc = scrive.documents.get(docId)!;
+      doc.parties.push({ ...doc.parties[2]!, id: `${docId}-extra`, name: 'Extra' });
+      scrive.editParty(docId, 2, { name: 'x'.repeat(600) });
+      scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
+      await reconcile(instanceId);
+
+      // The shape the activity route parses with — a value over 400 used to fail the read.
+      const parsed = connectionActivity.safeParse(await activity());
+      expect(parsed.success).toBe(true);
+      const fact = parsed.data!.entries[0]!.facts.find((f) => f.label === 'Anställd')!;
+      expect(fact.value).toMatch(/^signed at Scrive, not recorded/);
+      expect(fact.value.length).toBeLessThanOrEqual(400);
     });
 
     it('flags a pinned party the provider no longer shows', async () => {
