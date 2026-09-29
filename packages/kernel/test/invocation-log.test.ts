@@ -512,3 +512,41 @@ describe('withInvocationLog — the record handed back to the router (#1904)', (
     }
   });
 });
+
+// #1331: the field walk's report rides the line when a mount filled it — and only then.
+describe('the line’s outputFields (#1331)', () => {
+  const lineFor = async (fill: InvocationRecord) => {
+    const cap = capture();
+    try {
+      const worker = withInvocationLog<Env>(
+        {
+          fetch: async (req) => {
+            Object.assign(invocationStampOf(req)!.record, fill);
+            return new Response('ok');
+          },
+        },
+        { routerSecret: (env) => env.ROUTER_SECRET },
+      );
+      await worker.fetch!(new Request('https://acme.example/api/x', { headers: routed }), ENV, {});
+      expect(cap.lines).toHaveLength(1);
+      return cap.lines[0]!;
+    } finally {
+      cap.restore();
+    }
+  };
+
+  it('carries the report a mount filled in', async () => {
+    const line = await lineFor({ operation: 'acme/op', outputFields: { present: ['id'], absent: ['note'] } });
+    expect(line.outputFields).toEqual({ present: ['id'], absent: ['note'] });
+  });
+
+  it('omits the key — not null — when nothing was walked, so an unarmed line is unchanged', async () => {
+    const line = await lineFor({ operation: 'acme/op' });
+    expect(Object.keys(line)).not.toContain('outputFields');
+    expect(Object.keys(line)).toEqual([
+      'substrat', 'tenantId', 'scopeId', 'vertical', 'surface', 'method', 'path', 'status', 'threw',
+      'durationMs', 'invocationId', 'level', 'operation', 'problemCode', 'principalKind', 'eventCount',
+      'eventTypes', 'entities', 'versionId',
+    ]);
+  });
+});

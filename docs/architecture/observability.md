@@ -259,6 +259,15 @@ It carries them as additive top-level fields, which Workers Logs indexes like `t
 | `principalKind` | `ScopeStub.subjectKind`, decided by the door that minted the stub: `principal`, `connection`, `system`, `capability`, `vertical` | the stub is the vertical's own and does not say |
 | `eventCount`, `eventTypes`, `entities` | `InvokeOptions.onEmitted`: the rows the operation added to the outbox, read after its commit and **before** the consumer drain | not recorded. `0` and `[]` are a fact: the call emitted nothing |
 | `versionId` | the platform's `SUBSTRAT_VERSION_ID` binding | a local run, or a script pushed before the binding existed |
+| `outputFields` | `mountOperations`' field walk (#1331): `{ present, absent }`, the operation's declared output field names split by whether the response carried them | **omitted, not `null`**: the walk is off unless the platform arms `SUBSTRAT_FIELD_COVERAGE=on`, and an unarmed line stays byte-for-byte what it was. Also omitted for a failed call, an empty list, or an operation declaring no output fields |
+
+`outputFields` is the observed half of field coverage, whose declared half (#1321) rides the
+deploy manifest. The walk costs O(declared fields), never O(response): it asks the result
+about each declared name and never enumerates the result's keys. It reads the top level only,
+takes the first entry of a list or paged read, and stops at 200 names, the declared half's own
+cap. It runs on the operation's result before `respond`, so a vertical that owns its envelope
+is observed too. It records names from the declaration only, never a value and never a
+response key the declaration does not name, since a key can be data.
 
 `entities` and `eventTypes` are distinct values from at most `EMITTED_REPORT_CAP` events,
 in emission order; `eventCount` is the uncapped count. Only the operation's own emits are
