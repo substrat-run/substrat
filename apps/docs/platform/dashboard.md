@@ -241,7 +241,10 @@ with an **app filter** rather than tabs on each app. The app page links into bot
   record's history), its log lines and emitted events on a time axis, the consumers that
   handled what it emitted and how long after the response, and its full log lines. Database,
   connector and model calls are not recorded as timings yet, so they do not appear on that
-  axis. The panel is part of the address, so a request can be linked to. A sub-view
+  axis. The panel is part of the address, so a request can be linked to. A record whose entity
+  declares a lifecycle opens with that lifecycle drawn above its event history: where its time
+  went (one segment per state, to scale), and one column per transition naming who moved it and
+  by which operation. Each transition opens the request that made it. A sub-view
   never carries its own window, so two panels always answer about the same slice. On the one-app
   bar chart, clicking a bucket sets a **cursor** — one instant worth looking at — which rides the
   URL beside the app and the sub-view and narrows the panels below to the minutes around it; the
