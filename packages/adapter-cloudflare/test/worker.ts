@@ -73,8 +73,9 @@ export { ControlPlaneDO };
  * reason `PreviewV1ScopeDO`…`V3` exist. The classes are identical, and that is the point.
  *
  * What they do NOT separate: a scope DO whose permission source is still `control-plane`
- * reads tenant tuples through its own `env.CONTROL_PLANE`, never the host's binding. Every
- * harness below provisions scopes that project to `local`, so none reads through it.
+ * reads tenant tuples and roles through its own `env.CONTROL_PLANE`, never the host's
+ * binding. A provisioned scope projects to `local` (the #332 guard aside), but a harness
+ * here that relies on the RPC read path would read the shared directory, not its own.
  */
 export class SweepControlPlaneDO extends ControlPlaneDO {}
 export class VeControlPlaneDO extends ControlPlaneDO {}
