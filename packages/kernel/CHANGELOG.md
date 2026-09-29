@@ -1,5 +1,33 @@
 # @substrat-run/kernel
 
+## 0.130.0
+
+### Minor Changes
+
+- 65a0690: A directory restore now builds every directory table from the running code's own schema, and takes only the rows from the dump (#1912). Since #1898 that held for the `_substrat_*` tables; the platform's registries (`tenants`, `scopes`, `hostnames`, `verticals`, `vertical_versions`, `vertical_version_migrations`, `vertical_channels`, `vertical_channel_history`, `orgs`, `tenant_stores`, `blob_stores`) still took the dump's own `CREATE TABLE`. So a dump declaring `verticals.tenant_provisioner … DEFAULT 1` gave every vertical registered after the restore the tenant-provisioner capability without a staff grant, since registration does not name that column (the same for `email_sender` and `installs_blocked`), and a `COLLATE NOCASE` on `tenants.slug` or `hostnames.hostname` changed how those lookups match.
+
+  The rules are the spine's: a column the dump lacks takes the running code's default, so a dump taken before a directory migration still restores; a column this code does not know is kept as a plain untyped column, lowercased, with its values; a column named for SQLite's rowid is refused. A table the directory does not build is now refused, spine or not, naming every such table: an extra table would keep the dump's own DDL, and one declaring `REFERENCES tenants(tenant_id)` would make the delete of a referenced row fail. The legacy backfill of a pre-directory scope row's `slug`, `kind` and `name` now runs inside the restore's transaction, so a refusal anywhere leaves the directory as it was.
+
+  New kernel exports: `loadDirectoryDump`, the load sequence both adapters' directory restores run, `assertDirectoryTablesBuilt` and `LEGACY_SCOPE_ROWS_BACKFILL`. `spineColumnAdditions` and `spineRowsInsert` now serve any table the host built. A dump naming one of SQLite's own tables, or on the hosted adapter one of workerd's (`_cf_*`), is refused by name too. On the hosted adapter, a table the dump would widen past a Durable Object's 100 columns (this code's own plus the dump's unknown ones) is refused with a sentence rather than SQLite's error. `pnpm lint:spine-ddl` now holds every directory table's additive column to nullable with no DEFAULT, not only the spine's, since a restore may have added it bare first. New `@substrat-run/contract-tests` export: `directoryRestoreSuite`, which restores every shape each directory table has had.
+
+- b53ecff: The vertical host can now record which of an operation's declared output fields each response actually carried, the observed half of field coverage. It is off by default and nothing turns it on yet, so a request costs and returns exactly what it did before. When the platform arms it, each mounted operation's response is checked against the field names its `output` declares: top-level fields only, the first entry of a list or paged read, at most 200 names. The result is written to the invocation record and its log line as `outputFields: { present, empty, absent }`. A field that comes back `null` counts as `empty` rather than as returned, so a column that is always null does not look used. Only declared field names are recorded. A value never is, and neither is a response key the declaration does not name.
+
+  Known gap: calls through the MCP endpoint are not walked yet, so a field that only an MCP client reads looks unread.
+
+  A declared environment variable can no longer use a name starting with `SUBSTRAT_`. That namespace is the platform's, and a key there could have switched on a platform setting from a vertical's own settings form. The deploy check already refused the prefix for bindings.
+
+- 8236531: A refused lifecycle move is now recorded. When an operation fails because `assertTransition` refused the move, the kernel writes the attempt to its own table after the rollback, the way a denied permission is recorded. The row holds the record, the state it was in, the operation, where that operation leads when it is legal, who tried, and in which call.
+
+  `assertTransition` takes the record as an optional last argument (`{ entityType, entityId }`), and the work-order and booking engines now pass it. The HTTP response to a refused move is unchanged.
+
+  The process map's lifecycle read now also returns the window's refused moves.
+
+### Patch Changes
+
+- Updated dependencies [b53ecff]
+- Updated dependencies [8236531]
+  - @substrat-run/contracts@0.130.0
+
 ## 0.129.0
 
 ### Minor Changes
@@ -5291,7 +5319,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
