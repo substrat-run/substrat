@@ -1,11 +1,11 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useMemo, type CSSProperties } from 'react';
 import type { EmittedLifecycle, HistoryEntry } from '../lib/api';
 import { actorLabel } from '../lib/history';
 import { formatDuration } from '../lib/process-layout';
 import { dayTicks, instanceTimeline, type ActorKind, type Move, type Stay } from '../lib/instance-timeline';
 import { navigate, obsPath } from '../lib/router';
 import { shortId } from '../lib/format';
-import { RequestSlideOver } from './RequestSlideOver';
+import { openRequestInUrl } from '../lib/request-url';
 
 /**
  * One record's lifecycle (#1916, design §5), above its event history: where its time went,
@@ -58,7 +58,6 @@ export function InstanceLifecycle({
   /** The lifecycle's median over the process map's period, when the opener has it. */
   medianMs?: number | null;
 }) {
-  const [request, setRequest] = useState<{ invocationId: string; atMs: number } | null>(null);
   const now = useMemo(() => new Date().toISOString(), [entries]);
   const t = useMemo(() => instanceTimeline(entries, lifecycle, now, actorLabel), [entries, lifecycle, now]);
   const tint = useMemo(() => {
@@ -133,14 +132,13 @@ export function InstanceLifecycle({
           <div style={{ overflowX: 'auto', paddingBottom: 4 }}>
             <div style={{ display: 'grid', gridTemplateColumns: `repeat(${t.stays.length}, minmax(150px, 1fr))`, gap: 0, minWidth: t.stays.length * 150 }}>
               {t.stays.map((s, i) => (
-                <Column key={i} stay={s} move={t.moves[i]} tint={tint(s.state)} onOpen={(m) => m.invocationId && setRequest({ invocationId: m.invocationId, atMs: Date.parse(m.at) })} />
+                <Column key={i} stay={s} move={t.moves[i]} tint={tint(s.state)} onOpen={(m) => m.invocationId && openRequestInUrl(m.invocationId, Date.parse(m.at), scopeId)} />
               ))}
             </div>
           </div>
         </div>
       )}
 
-      {request && <RequestSlideOver scopeId={scopeId} invocationId={request.invocationId} atMs={request.atMs} onClose={() => setRequest(null)} />}
     </div>
   );
 }
@@ -192,7 +190,12 @@ function Column({ stay, move, tint, onOpen }: { stay: Stay; move: Move | undefin
             disabled={!move.invocationId}
             title={move.invocationId ? 'Open the request that made this move' : 'No call was recorded for this move'}
             style={{
-              all: 'unset',
+              // Reset by hand rather than `all: unset`, which would take the focus ring too.
+              appearance: 'none',
+              font: 'inherit',
+              color: 'inherit',
+              textAlign: 'left',
+              margin: 0,
               boxSizing: 'border-box',
               display: 'flex',
               flexDirection: 'column',

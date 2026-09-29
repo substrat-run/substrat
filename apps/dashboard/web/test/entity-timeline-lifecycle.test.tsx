@@ -60,6 +60,18 @@ describe('EntityTimeline with a lifecycle', () => {
     expect(text).not.toContain('later events are not loaded');
   });
 
+  it('opens the request behind a transition through the address, so it can be linked and closed with Back', async () => {
+    pages();
+    window.history.replaceState(null, '', '/acme/observability?view=map');
+    await render({ stateField: 'state', lifecycle: LC });
+    const card = container.querySelector<HTMLButtonElement>('button[title="Open the request that made this move"]')!;
+    await act(async () => card.click());
+    const q = new URLSearchParams(window.location.search);
+    expect([q.get('view'), q.get('req'), q.get('reqScope')]).toEqual(['map', 'CALL-01B', 'app-a']);
+    expect(q.get('reqAt')).toBe(String(Date.parse('2026-09-21T02:00:00.000Z')));
+    window.history.replaceState(null, '', '/');
+  });
+
   it('reads one page, and draws no lifecycle, when none is declared', async () => {
     const read = pages();
     await render({});

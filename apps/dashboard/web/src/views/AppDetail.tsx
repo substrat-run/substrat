@@ -24,6 +24,8 @@ import { AppEdges } from './AppEdges';
 import { AppSchedulesCard } from './AppSchedulesCard';
 import { AppHeader } from './AppHeader';
 import { EntityTimeline } from './EventHistory';
+import { RequestSlideOver } from './RequestSlideOver';
+import { closeRequestInUrl, useRequestInUrl } from '../lib/request-url';
 import { useTenantMetrics } from '../lib/use-tenant-metrics';
 import { useAppSchedules, type SchedulesState } from '../lib/use-app-schedules';
 import { brokenAppLines, sendWithExportBreakAck, type BrokenApp } from '../lib/bind-ack';
@@ -168,9 +170,21 @@ export function AppDetail({
     };
   }, [app.app_scope_id]);
   const surfaceUrls = deriveSurfaceUrls(hostnames, app.hostname);
+  // #1916: a request opened from a record's timeline (Data tab) is part of the address, as
+  // on the Observability pages — linkable, kept on reload, closed by Back.
+  const openRequest = useRequestInUrl();
 
   return (
     <Page style={{ gap: 16 }}>
+      {openRequest && (
+        <RequestSlideOver
+          key={openRequest.invocationId}
+          scopeId={openRequest.scopeId ?? app.app_scope_id}
+          invocationId={openRequest.invocationId}
+          atMs={openRequest.atMs}
+          onClose={closeRequestInUrl}
+        />
+      )}
       <AppHeader
         app={app}
         statusKind={statusKind}

@@ -150,7 +150,9 @@ export interface CausedTransition {
   field: string;
 }
 
+/** Only an unclassified payload is read for the state — the process map's rule (#1762). */
 const stateIn = (e: HistoryEntry, field: string): string | null => {
+  if (e.piiClass !== 'none') return null;
   const p = e.payload;
   if (p === null || typeof p !== 'object') return null;
   const v = (p as Record<string, unknown>)[field];

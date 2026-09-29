@@ -72,7 +72,13 @@ export function actorKindOf(actor: Actor): ActorKind {
   return 'unknown';
 }
 
+/**
+ * The lifecycle field, read only from an event classed as carrying no personal data — the
+ * process map's rule (#1762, `readLifecycleFlow`), so a record here takes the same path it
+ * takes there. A classified event is treated as field-less, and the declaration decides.
+ */
 const stateIn = (e: HistoryEntry, field: string): string | null => {
+  if (e.piiClass !== 'none') return null;
   const p = e.payload;
   if (p === null || typeof p !== 'object') return null;
   const v = (p as Record<string, unknown>)[field];

@@ -24,6 +24,7 @@ const ev = (at: string, op: string | null, payload: unknown, over: Record<string
     occurredAt: at,
     actor: 'prin_ada',
     payload,
+    piiClass: 'none',
     operation: op,
     invocationId: `CALL${n}`,
     ...over,
@@ -69,6 +70,17 @@ describe('instanceTimeline', () => {
   it('reads the move from the declared edge when the event does not carry the state', () => {
     const t = instanceTimeline([ev(H(0), 'desk/create', { state: 'new' }), ev(H(1), 'desk/assign', null), ev(H(2), 'desk/snooze', { note: 'x' })], LC, H(3))!;
     expect(t.moves.map((m) => m.to)).toEqual(['open', 'snoozed']);
+  });
+
+  it('does not read the state from a classified payload — the declaration decides, as in the process map', () => {
+    // The payload SAYS resolved, but it is classed as personal data, so it is treated as
+    // field-less: `desk/assign` from new is the declared move to open.
+    const t = instanceTimeline(
+      [ev(H(0), 'desk/create', { state: 'new' }), ev(H(1), 'desk/assign', { state: 'resolved' }, { piiClass: 'pseudonymous' })],
+      LC,
+      H(2),
+    )!;
+    expect(t.moves.map((m) => `${m.from}>${m.to}`)).toEqual(['new>open']);
   });
 
   it('keeps a move first seen on a later event without blaming the operation that reported it', () => {
