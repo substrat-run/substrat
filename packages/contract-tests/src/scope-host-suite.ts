@@ -35,6 +35,7 @@ import {
   REDACTED_INTENT_MARKER,
   runPlatformSweep,
   ulid,
+  type AuditLogFilter,
   type OperationHandler,
   type ScopeHost,
 } from '@substrat-run/kernel';
@@ -2925,6 +2926,8 @@ export function scopeHostContractSuite(
       });
 
       it('restores: a directory diverged past the copy is rewound, and still serves', async () => {
+        const ownRestores: AuditLogFilter = { actor: staff, action: 'restoreDirectory' };
+        const restoresInCopy = (await host.admin.auditLog(staff, ownRestores)).length;
         const backup = await host.admin.exportDirectory(staff);
 
         // Diverge past the copy — a tenant that did not exist when it was taken.
@@ -2955,13 +2958,13 @@ export function scopeHostContractSuite(
         // The restore is audited, in the log it just replaced: the entry after a
         // restored history is the restore itself, so the seam is legible.
         //
-        // A wide window on purpose: this asks whether the entry EXISTS, and the 50 it used
-        // to read was incidental. `redrainEvents` now records an intent row per call (#1334
-        // review — the receipt must survive a crash between the reopen and its row), so the
-        // suite writes more admin rows than it did and a narrow window stopped reaching back
-        // this far. Nothing about what is asserted changes.
-        const log = await host.admin.auditLog(staff, { limit: 500 });
-        expect(log.some((e) => e.action === 'restoreDirectory')).toBe(true);
+        // Filtered to THIS suite's restores and read as a delta, never as a window over the
+        // whole log: the log reads oldest-first and is the whole directory's, so a window
+        // stops reaching the entry once enough other rows precede it. A 50-row window did
+        // when the suite's own rows grew (#1334), and a 500-row one did when other test
+        // files sharing the directory ran first (#1899). The copy carries the restores it
+        // had seen, so one more than it held is exactly this one.
+        expect((await host.admin.auditLog(staff, ownRestores)).length).toBe(restoresInCopy + 1);
       });
 
       // A directory dump is untrusted input exactly as a scope dump is (#1143), and
