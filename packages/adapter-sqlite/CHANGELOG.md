@@ -1,5 +1,43 @@
 # @substrat-run/adapter-sqlite
 
+## 0.128.0
+
+### Minor Changes
+
+- 260fb5a: A declared lifecycle can now be read back as what actually happened. `readLifecycleFlow` replays one entity type's events against its lifecycle declaration and answers the process map's numbers:
+
+  - how many times each edge was taken, and by what kind of actor; a declared edge nobody took is listed at 0, and a move the declaration does not have is kept apart;
+  - how many instances are in each state now;
+  - median and p90 time in state;
+  - the instances stuck longest;
+  - the funnel from the initial state.
+
+  It is exposed as the `lifecycleFlow` platform read, through the vertical's new `/internal/lifecycle-flow` route and the control plane's `lifecycle-flow` route, and logged like every other scope read. A state is taken from the event's payload when it carries the lifecycle field and holds no personal data, and inferred from the declared edge otherwise. The replay is bounded and says so when it stops early. A vertical serves the read once it is pushed on this release.
+
+- 4ba2a52: An owner hand-over. Platform staff can now move an instance's owner seat to another member with `POST /tenants/:tenantId/scopes/:scopeId/owner-transfer`. The vertical moves its owner of record, seats the new owner, then revokes the old one. Before this, the owner of record never moved, so if the successor was later revoked and the scope locked out, the lockout repair re-seated the original owner. It now re-seats whoever the record names. The new owner must already be a member who holds a role in the instance, and a second hand-over is refused while one is unfinished; resending the unfinished one completes it, and a repeat after that changes nothing. One that can no longer finish, because the new owner was removed after it started, is refused on every resend; staff close it with `abandon: true`, which seats and revokes nothing. A re-provision now seats the owner of record rather than the principal the platform minted at install. A vertical opts in with vertical-host's new `transferOwner`, `completeOwnerTransfer` and `abandonOwnerTransfer` hooks (vertical-auth's `IdentityDO` methods are the reference); without them the route answers `501`. Every attempt is on the admin log as `transferOwner` rows naming both principals.
+- f79e8ba: A scope restore, fork or preview carry now builds every `_substrat_*` table from the kernel's own schema and takes only the rows from the dump (#1883). Before, it replayed the dump's `CREATE TABLE` for these tables too, so a dump could change the schema the permission checker reads. A dump declaring `_substrat_tuples.object` as `COLLATE NOCASE` made a grant on `aiTurn:x` also answer for `aiturn:x`. The rows go in by column name:
+
+  - a column the dump lacks takes the kernel's default, so a dump taken before a column existed still restores. `_substrat_schedule_state.kind`, which is part of that table's key, is derived from the row the way the wake-time rebuild derives it;
+  - a column the kernel does not know, from a newer kernel's dump, is kept: it is added as a plain untyped column (no type, collation, constraint or default), with its values. It cannot change how the columns the permission checker reads compare. A later kernel that adds the column for real finds it already there, which is why every additive spine column is nullable with no DEFAULT (`pnpm lint:spine-ddl` now refuses one that is not). A column named for SQLite's rowid (`rowid`, `oid`, `_rowid_`, in any case) is refused instead, since a real column by that name shadows the rowid the kernel reads. An added column is spelled lowercase, as every kernel column is;
+  - a restore into a node scope skips the spine tables a Durable Object's scope builds and a node scope keeps in its directory or not at all (`_substrat_roles`, `_substrat_tenant_tuples`, `_substrat_entitlements`, `_substrat_identity_links`, `_substrat_connection_keys`, `_substrat_meta`, `_substrat_migration_bookmarks`), so a DO's dump loads there;
+  - any other `_substrat_*` table the kernel does not build is refused with `validation_failed`. The error names every such table and says the dump came from a different kind of host or a newer kernel. The refusal happens inside the load's transaction, so the target scope keeps everything it held.
+
+  A vertical's own tables still take the dump's `CREATE TABLE`. A table named in the search index's namespace, in any case, is skipped like the index itself. Building the spine from the kernel covers the scope restore only: a directory restore still replays its dump's DDL. Every dump check, the directory restore's and `substrat scope restore`'s included, now also refuses a dump that lists a column twice in one table (case-folded), as it already refused a table listed twice.
+
+  When a restore re-points scope-level grants and a moved grant meets one the dump already holds for the destination scope, the kept row is now decided by a rule (#1882). Before, the moved row always replaced the other one, including its revocation and expiry, so a revoked or expired grant could replace a live one. Now the higher-ranked grant is kept: live (not revoked, not expired) above revoked above expired, since a revocation is evidence and an expiry is not. On a tie the destination's grant stays. When two live grants meet, the one kept takes the earlier of their two expiries (no expiry counts as the latest), so a restore never lengthens a grant's life.
+
+  `repointScopeGrants` takes a fourth argument, the time expiry is judged at. A spine table is recognised by the spine guard's `_substrat` prefix without regard to case, the way SQLite resolves a table name, so `_Substrat_tuples` cannot bring its own DDL either. New kernel exports: `isSpineTable`, `assertSpineTablesBuilt`, `dumpRowsInsert`, `spineColumnAdditions`, `spineRowsInsert`, `KernelColumnsOf` and `SCHEDULE_STATE_KIND_OF_OP`. New `@substrat-run/adapter-sqlite` export: `DO_SCOPE_ONLY_SPINE_TABLES`.
+
+### Patch Changes
+
+- Updated dependencies [260fb5a]
+- Updated dependencies [4a53af7]
+- Updated dependencies [4ba2a52]
+- Updated dependencies [f79e8ba]
+- Updated dependencies [ba75c81]
+  - @substrat-run/contracts@0.128.0
+  - @substrat-run/kernel@0.128.0
+
 ## 0.127.0
 
 ### Patch Changes
@@ -5407,7 +5445,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

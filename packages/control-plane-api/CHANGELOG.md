@@ -1,5 +1,32 @@
 # @substrat-run/control-plane-api
 
+## 0.128.0
+
+### Minor Changes
+
+- 260fb5a: A declared lifecycle can now be read back as what actually happened. `readLifecycleFlow` replays one entity type's events against its lifecycle declaration and answers the process map's numbers:
+
+  - how many times each edge was taken, and by what kind of actor; a declared edge nobody took is listed at 0, and a move the declaration does not have is kept apart;
+  - how many instances are in each state now;
+  - median and p90 time in state;
+  - the instances stuck longest;
+  - the funnel from the initial state.
+
+  It is exposed as the `lifecycleFlow` platform read, through the vertical's new `/internal/lifecycle-flow` route and the control plane's `lifecycle-flow` route, and logged like every other scope read. A state is taken from the event's payload when it carries the lifecycle field and holds no personal data, and inferred from the declared edge otherwise. The replay is bounded and says so when it stops early. A vertical serves the read once it is pushed on this release.
+
+- 4ba2a52: An owner hand-over. Platform staff can now move an instance's owner seat to another member with `POST /tenants/:tenantId/scopes/:scopeId/owner-transfer`. The vertical moves its owner of record, seats the new owner, then revokes the old one. Before this, the owner of record never moved, so if the successor was later revoked and the scope locked out, the lockout repair re-seated the original owner. It now re-seats whoever the record names. The new owner must already be a member who holds a role in the instance, and a second hand-over is refused while one is unfinished; resending the unfinished one completes it, and a repeat after that changes nothing. One that can no longer finish, because the new owner was removed after it started, is refused on every resend; staff close it with `abandon: true`, which seats and revokes nothing. A re-provision now seats the owner of record rather than the principal the platform minted at install. A vertical opts in with vertical-host's new `transferOwner`, `completeOwnerTransfer` and `abandonOwnerTransfer` hooks (vertical-auth's `IdentityDO` methods are the reference); without them the route answers `501`. Every attempt is on the admin log as `transferOwner` rows naming both principals.
+- ba75c81: The request histogram and facets can read the router's Analytics Engine datapoints instead of scanning Workers Logs (#1904). The platform entry hands a routed request's operation, problem code and principal kind back to the router on `x-substrat-invocation-record`; the router writes them into its datapoint and strips the header. `createCfObservabilityReader` takes `requestsFromRouterSince`, the instant from which request reads come from the router's dataset; before it, and when it is unset, they come from Workers Logs as before. `invocationLevelOf` moves to `@substrat-run/contracts/invocation-record` and is still exported from the kernel.
+
+### Patch Changes
+
+- Updated dependencies [260fb5a]
+- Updated dependencies [4a53af7]
+- Updated dependencies [4ba2a52]
+- Updated dependencies [f79e8ba]
+- Updated dependencies [ba75c81]
+  - @substrat-run/contracts@0.128.0
+  - @substrat-run/kernel@0.128.0
+
 ## 0.127.0
 
 ### Minor Changes

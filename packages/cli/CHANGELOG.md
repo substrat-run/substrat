@@ -1,5 +1,16 @@
 # @substrat-run/cli
 
+## 0.37.2
+
+### Patch Changes
+
+- Updated dependencies [260fb5a]
+- Updated dependencies [4ba2a52]
+- Updated dependencies [f79e8ba]
+- Updated dependencies [ba75c81]
+  - @substrat-run/contracts@0.128.0
+  - @substrat-run/model-view@0.2.30
+
 ## 0.37.1
 
 ### Patch Changes
