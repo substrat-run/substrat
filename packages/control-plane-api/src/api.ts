@@ -6627,13 +6627,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const PREVIEW_CREATE_BOUND_MS = 15 * 60_000;
 
   /** When a `provisioning` preview row's create counts as OVER, so the row may be reaped: at
-   *  once if its own frame expired it on failure, else `createdAt` plus the bound. A
-   *  `createdAt` that does not parse is read as over: reaping a corpse is what the row did
-   *  before #1920, and refusing forever over a value nobody can age is worse. */
+   *  once if its own frame expired it on failure, else `createdAt` plus the bound. `createdAt`
+   *  always ages: both hosts parse a listed row through `scopeSchema`, whose `instant` refuses
+   *  a value that does not. */
   const previewReclaimAt = (row: Scope, now: number): number => {
     if (row.expiresAt !== null && Date.parse(row.expiresAt) <= now) return now;
-    const born = Date.parse(row.createdAt);
-    return Number.isNaN(born) ? now : born + PREVIEW_CREATE_BOUND_MS;
+    return Date.parse(row.createdAt) + PREVIEW_CREATE_BOUND_MS;
   };
 
   /** Reap one preview: wipe the DO in its own deployment, then drop the directory row and

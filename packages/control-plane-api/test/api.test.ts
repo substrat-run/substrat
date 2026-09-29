@@ -2418,18 +2418,6 @@ describe('control-plane API', () => {
       expect(await w.rowOf(id)).toBeUndefined();
     });
 
-    it('a row whose age cannot be read is treated as a corpse and reaped', async () => {
-      const w = await setup('unaged');
-      const id = await w.leftover('pr-1');
-      const list = host.admin.listScopes.bind(host.admin);
-      vi.spyOn(host.admin, 'listScopes').mockImplementation(async (...args) =>
-        (await list(...args)).map((s) => (s.id === id ? { ...s, createdAt: '' } : s)),
-      );
-      const res = await w.create({ tag: 'pr-1' });
-      expect(res.status).toBe(201);
-      expect(w.deletes).toEqual([id]);
-    });
-
     /** The one `provisioning` preview row `w`'s tenant holds, and whether its own create marked it over. */
     const strandedOf = async (w: Awaited<ReturnType<typeof setup>>) => {
       const rows = (await host.admin.listScopes(staff, { tenantId: w.t })).filter((s) => s.kind === 'preview');
