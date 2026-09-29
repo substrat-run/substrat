@@ -113,12 +113,26 @@ export const freshnessSpec = z.object({
 });
 export type FreshnessSpec = z.infer<typeof freshnessSpec>;
 
+/**
+ * The binding namespace the platform injects into a pushed script — `SUBSTRAT_VERSION_ID`,
+ * `SUBSTRAT_FIELD_COVERAGE` (#1331) — and a vertical therefore never names. Refused in a
+ * declared binding (`assertSandboxContract`) and in a declared env var (`envVarSpec` below):
+ * a vertical whose config could set `SUBSTRAT_FIELD_COVERAGE=on` would arm a platform switch
+ * from its own settings form.
+ */
+export const PLATFORM_BINDING_PREFIX = 'SUBSTRAT_';
+
 // A single declared environment variable — the config a deployment must provide,
 // self-describing so a host/console can render a settings form (placeholder +
 // description) and validate the required keys before deploy. `secret: true` marks a
 // value that is write-only in the UI and delivered as a secret, never echoed back.
 export const envVarSpec = z.object({
-  key: z.string().regex(/^[A-Z][A-Z0-9_]*$/), // ADMIN_PASSWORD
+  key: z
+    .string()
+    .regex(/^[A-Z][A-Z0-9_]*$/) // ADMIN_PASSWORD
+    .refine((k) => !k.startsWith(PLATFORM_BINDING_PREFIX), {
+      message: `the '${PLATFORM_BINDING_PREFIX}' namespace is the platform's — these names are injected at deploy, never declared`,
+    }),
   label: z.string().optional(), // "Admin password" — falls back to the key
   description: z.string().min(1), // shown under the field
   placeholder: z.string().optional(), // "at least 8 characters"
