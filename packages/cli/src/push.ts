@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import {
+  DECLARED_OUTPUT_FIELDS_MAX,
   ASSET_PART_PREFIX,
   assetHash,
   assetsNeed,
@@ -1663,7 +1664,7 @@ export function readDeclaredOutputSurface(dir: string): DeclaredOperationOutput[
       // empty row, so "absent" means the same thing everywhere in the surface.
       if (fields.length === 0) continue;
       seen.add(o.operationId);
-      out.push({ operationId: o.operationId, fields: fields.slice(0, 200) });
+      out.push({ operationId: o.operationId, fields: fields.slice(0, DECLARED_OUTPUT_FIELDS_MAX) });
     }
   }
   return out.length > 0 ? out.slice(0, 500) : undefined;

@@ -558,7 +558,7 @@ export type {
   ModuleLogContext,
 } from './module-log.js';
 export { invocationLog } from './invocation-log.js';
-export type { InvocationLogLine, InvocationLogContext, InvocationRecord, InvocationLevel } from './invocation-log.js';
+export type { InvocationLogLine, InvocationLogContext, InvocationRecord, InvocationLevel, OutputFieldsReport } from './invocation-log.js';
 export { INVOCATION_RECORD_KEY, invocationLevelOf, invocationStampOf, withInvocationLog } from './invocation-log.js';
 export type { InvocationStamp, ModuleWorker, IncomingRequest } from './invocation-log.js';
 

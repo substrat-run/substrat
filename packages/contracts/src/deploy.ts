@@ -814,6 +814,13 @@ export type DeployAssets = z.infer<typeof deployAssets>;
 
 /** The JSON part a `substrat push` sends alongside the module files. */
 /**
+ * The most output fields one operation contributes to the field-coverage surface — the
+ * declared half (#1321) and the observed walk (#1331) both cap here, so they count the
+ * same fields.
+ */
+export const DECLARED_OUTPUT_FIELDS_MAX = 200;
+
+/**
  * One operation's DECLARED output fields (#1321) — the operation id as OpenAPI
  * knows it, and the property names of the response body. An operation whose
  * response declares no properties (a 204, a bare scalar) contributes nothing and
@@ -822,7 +829,7 @@ export type DeployAssets = z.infer<typeof deployAssets>;
  */
 export const declaredOperationOutput = z.object({
   operationId: z.string().min(1),
-  fields: z.array(z.string().min(1)).min(1).max(200),
+  fields: z.array(z.string().min(1)).min(1).max(DECLARED_OUTPUT_FIELDS_MAX),
 });
 export type DeclaredOperationOutput = z.infer<typeof declaredOperationOutput>;
 
