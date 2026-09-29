@@ -120,6 +120,12 @@ replace is the honest semantic — and the restore refuses a directory that stil
 unless the request explicitly says to overwrite. That guard exists for the realistic hazard: a
 restore replayed against a control plane that has already recovered.
 
+**The dump brings rows, not schema.** Every directory table is built from the running platform's
+own schema, and the dump's rows go into it by column name: a copy taken before a directory
+migration is carried forward to today's shape, never rolled back to its own. A dump holding a
+table the directory does not build is refused, naming each such table, and a refused restore
+leaves the directory exactly as it was.
+
 **What it does not cover.** The backup bucket lives in the platform's own account, so this
 survives losing the *directory* — a bug, a bad migration, a deleted DO — but not losing the
 *account*. The store is a provider-neutral seam so an off-account target is a drop-in, but as

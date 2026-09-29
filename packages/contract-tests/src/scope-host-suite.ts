@@ -3011,22 +3011,27 @@ export function scopeHostContractSuite(
         await stub.invoke('test/write-marker', { v: 'after-refused-directory-restore' });
       });
 
-      // The positive twin: the check does not refuse every extra table, and a `;` inside
-      // a string literal is not read as a statement boundary.
-      it('still restores an honest extra table whose DDL contains a quoted semicolon', async () => {
+      // The positive twin: the check does not refuse every DDL with a `;` in it, when the `;` is
+      // inside a string literal. On a table the directory builds, since #1912 refuses any other
+      // (`directoryRestoreSuite`): the dump's DDL is judged and then not used, so the column it
+      // declares is kept bare, without its DEFAULT.
+      it('still restores a registry whose DDL contains a quoted semicolon', async () => {
         const backup = await host.admin.exportDirectory(staff);
+        const tenants = backup.tables.find((t) => t.name === 'tenants')!;
         const honest = {
-          name: 'directory_probe',
-          ddl: "CREATE TABLE directory_probe (id TEXT, note TEXT DEFAULT 'a;b')",
-          columns: ['id', 'note'],
-          rows: [['1', 'ok']],
+          ...tenants,
+          ddl: tenants.ddl.replace(/\)\s*$/, ", note TEXT DEFAULT 'a;b')"),
+          columns: [...tenants.columns, 'note'],
+          rows: tenants.rows.map((r) => [...r, 'ok']),
         };
-        await host.admin.restoreDirectory(staff, { ...backup, tables: [...backup.tables, honest] });
-        const restored = (await host.admin.exportDirectory(staff)).tables.find((t) => t.name === 'directory_probe');
-        expect(restored?.rows).toEqual([['1', 'ok']]);
-        // Back to the copy, which does not carry the probe.
+        await host.admin.restoreDirectory(staff, { ...backup, tables: backup.tables.map((t) => (t.name === 'tenants' ? honest : t)) });
+        const restored = (await host.admin.exportDirectory(staff)).tables.find((t) => t.name === 'tenants')!;
+        expect(restored.columns.at(-1)).toBe('note');
+        expect(restored.ddl).not.toMatch(/a;b/);
+        expect(new Set(restored.rows.map((r) => r.at(-1)))).toEqual(new Set(['ok']));
+        // Back to the copy, which does not carry the column.
         await host.admin.restoreDirectory(staff, backup);
-        expect((await host.admin.exportDirectory(staff)).tables.some((t) => t.name === 'directory_probe')).toBe(false);
+        expect((await host.admin.exportDirectory(staff)).tables.find((t) => t.name === 'tenants')!.columns).not.toContain('note');
       });
     });
 

@@ -521,26 +521,39 @@ function skipListDrift(sqliteSrc, nodeOnly, doOnly) {
 
 /**
  * #1883: every column a scope's spine ALTERs in must be nullable, with no DEFAULT, and since #1898
- * the directory's spine too, whose restore follows the same rules. A restore of
- * a newer kernel's dump adds a column this kernel does not know as a bare, untyped column; when
- * a later kernel then ALTERs the same column in for real, the ALTER meets the bare one and is
- * skipped as a duplicate. So the later kernel only ever gets what a bare column gives it: NULL
- * for the rows it did not write, and no constraint. A NOT NULL or a DEFAULT on an additive
- * column would be a promise that path does not keep. `attempts` (#100) predates the rule and is
- * grandfathered: its DEFAULT 0 reads as "terminal", which is also what a NULL there reads as.
+ * the directory's spine too, and since #1912 every directory table, whose restores all follow
+ * the same rules. A restore of a newer kernel's dump adds a column this kernel does not know as a
+ * bare, untyped column; when a later kernel then ALTERs the same column in for real, the ALTER
+ * meets the bare one and is skipped as a duplicate. So the later kernel only ever gets what a
+ * bare column gives it: NULL for the rows it did not write, and no constraint. A NOT NULL or a
+ * DEFAULT on an additive column would be a promise that path does not keep.
+ *
+ * Grandfathered, each with the reason it cannot meet that path: `attempts` (#100) predates the
+ * rule, and its DEFAULT 0 reads as "terminal", which is also what a NULL there reads as. The
+ * directory's five were ALTERs long before #1912 made a directory restore add columns bare, and
+ * every restore since builds them from this code's `CREATE TABLE` with their DEFAULT, so no dump
+ * can bring one in bare ahead of its ALTER. Nothing new joins this list: a new column that needs
+ * a DEFAULT belongs in the reads that meet its NULL.
  */
-const ADDITIVE_RULE_GRANDFATHERED = new Set(['_substrat_deliveries.attempts']);
+const ADDITIVE_RULE_GRANDFATHERED = new Set([
+  '_substrat_deliveries.attempts',
+  'scopes.migration_attempts',
+  'verticals.listed',
+  'verticals.installs_blocked',
+  'verticals.tenant_provisioner',
+  'verticals.email_sender',
+]);
 function additiveRuleBreaks(store, side, additions) {
   return additions
-    // The directory's own registries (`scopes`, `verticals`, …) are not spine: a restore replays
-    // their DDL, so none of them is ever added to bare.
-    .filter(({ table }) => table.toLowerCase().startsWith('_substrat'))
-    .filter(({ table, ddl }) => /\bNOT\s+NULL\b|\bDEFAULT\b/i.test(ddl))
+    // A scope's non-spine tables are its vertical's, whose DDL a restore replays: never added to
+    // bare. A directory has no vertical tables, and a restore builds every one of them (#1912).
+    .filter(({ table }) => store === 'directory' || table.toLowerCase().startsWith('_substrat'))
+    .filter(({ ddl }) => /\bNOT\s+NULL\b|\bDEFAULT\b/i.test(ddl))
     .filter(({ table, ddl }) => !ADDITIVE_RULE_GRANDFATHERED.has(`${table}.${ddl.trim().split(/\s+/)[0]}`))
     .map(
       ({ table, ddl }) =>
         `${store}/${table}: the additive column \`${ddl}\` (${side.label}) is NOT NULL or has a DEFAULT. ` +
-        'An additive spine column must be nullable with no DEFAULT, since a restore may have added it bare first.',
+        'An additive column must be nullable with no DEFAULT, since a restore may have added it bare first.',
     );
 }
 

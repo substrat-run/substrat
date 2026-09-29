@@ -7,6 +7,7 @@ import { platformActorId, tenantId, type DirectoryDump, type PrincipalId, type S
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 import { createTupleChecker } from '../src/checker.js';
+import { readDirectoryFile } from './directory-file.js';
 
 /**
  * #1898 on the pure adapter: a directory restore builds the directory's `_substrat_*` tables
@@ -38,21 +39,7 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
     return host;
   };
 
-  /** The directory as its file holds it: every table's DDL and rows, in name order. */
-  const snapshot = (): { name: string; ddl: string; columns: string[]; rows: unknown[][] }[] => {
-    const db = new Database(join(dir!, '_directory.sqlite'), { readonly: true });
-    try {
-      const defs = db
-        .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND sql IS NOT NULL ORDER BY name`)
-        .all() as { name: string; sql: string }[];
-      return defs.map(({ name, sql }) => {
-        const stmt = db.prepare(`SELECT * FROM "${name}"`).raw(true);
-        return { name, ddl: sql, rows: stmt.all() as unknown[][], columns: stmt.columns().map((c) => c.name) };
-      });
-    } finally {
-      db.close();
-    }
-  };
+  const snapshot = () => readDirectoryFile(dir!);
   const ddlOf = (name: string) => snapshot().find((t) => t.name === name)?.ddl;
 
   const withTable = (dump: DirectoryDump, name: string, edit: (t: ScopeDumpTable) => ScopeDumpTable): DirectoryDump => ({
@@ -124,14 +111,6 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
     } finally {
       db.close();
     }
-  });
-
-  it('twin: a vertical-shaped (non-spine) table keeps the dump’s own DDL, NOCASE and all', async () => {
-    const h = await open();
-    const dump = await h.admin.exportDirectory(staff);
-    const probe = { name: 'directory_probe', ddl: 'CREATE TABLE directory_probe (k TEXT COLLATE NOCASE PRIMARY KEY)', columns: ['k'], rows: [['A']] };
-    await h.admin.restoreDirectory(staff, { ...dump, tables: [...dump.tables, probe] });
-    expect(ddlOf('directory_probe')).toBe(probe.ddl);
   });
 
   it('export → restore → export round-trips: every table’s DDL and rows, plus the restore’s own audit row', async () => {
@@ -283,12 +262,14 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
       });
     }
 
-    it('twin: a directory table referencing another directory table restores', async () => {
+    // Since #1912 a directory table this code does not build is refused whatever it references
+    // (`directory-restore-tables.test.ts`), so the twin is a registry the directory does build.
+    it('twin: a directory table whose DDL references another directory table restores', async () => {
       const h = await open();
       const dump = await h.admin.exportDirectory(staff);
-      const probe = { name: 'directory_probe', ddl: 'CREATE TABLE directory_probe (t TEXT REFERENCES tenants(tenant_id))', columns: ['t'], rows: [[tenant]] };
-      await h.admin.restoreDirectory(staff, { ...dump, tables: [...dump.tables, probe] });
-      expect(snapshot().find((t) => t.name === 'directory_probe')!.rows).toEqual([[tenant]]);
+      expect(dump.tables.find((t) => t.name === 'tenants')!.ddl).toMatch(/REFERENCES tenants\(tenant_id\)/);
+      await h.admin.restoreDirectory(staff, dump);
+      expect(snapshot().find((t) => t.name === 'tenants')!.rows.map((r) => r[0])).toEqual([tenant]);
     });
   });
 });

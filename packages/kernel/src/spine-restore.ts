@@ -1,6 +1,7 @@
 import { SPINE_PREFIX, namesSpineTable, substratError } from '@substrat-run/contracts';
 import { SCHEDULE_STATE_KIND_OF_OP } from './platform-sweep.js';
 import { isSearchIndexTable } from './search-index.js';
+import { SYSTEM_SWITCHES_BACKFILL_SQL, dumpCarriesSystemSwitches } from './system-switch-record.js';
 
 /**
  * How a restore, fork or carry loads a dump's `_substrat_*` spine tables (#1883). One
@@ -27,7 +28,10 @@ import { isSearchIndexTable } from './search-index.js';
  * - a spine table the kernel does not build is refused (`assertSpineTablesBuilt`), every such
  *   table named at once.
  *
- * Tables outside the spine keep the dump's own DDL: a vertical's schema is the dump's to say.
+ * In a scope, tables outside the spine keep the dump's own DDL: a vertical's schema is the
+ * dump's to say. A directory has no vertical tables, so there every table is built by the
+ * host and loaded by these same rules, and a table it does not build is refused
+ * (`assertDirectoryTablesBuilt`, #1912).
  */
 
 /**
@@ -54,8 +58,7 @@ export function isSpineTable(name: string): boolean {
  *
  * Every `_substrat*` name is judged, the search index's namespace included (`namesSpineTable`,
  * not `isSpineTable`): a scope restore has skipped its index tables before this, since it
- * rebuilds them, and a directory has no search index, so there such a table is one more spine
- * table the directory does not build (#1898).
+ * rebuilds them. A directory restore judges every table instead (`assertDirectoryTablesBuilt`).
  */
 export function assertSpineTablesBuilt(names: readonly string[], columnsOf: KernelColumnsOf): void {
   const missing = names.filter((n) => namesSpineTable(n) && columnsOf(n) === undefined);
@@ -64,6 +67,26 @@ export function assertSpineTablesBuilt(names: readonly string[], columnsOf: Kern
 
 /** A table's columns as the kernel built it here, or `undefined` when it built no such table. */
 export type KernelColumnsOf = (name: string) => readonly string[] | undefined;
+
+/**
+ * Refuse a directory dump carrying any table the directory does not build, spine or not, naming
+ * every one of them (#1912). A directory holds only the platform's own tables, so there is no
+ * vertical table whose DDL the dump could have a say in: an extra table would keep the dump's
+ * DDL, and with it whatever that declares, such as a `REFERENCES tenants` that fails the
+ * delete of a referenced row. `loadDirectoryDump` calls it first, where `assertSpineTablesBuilt`
+ * is in a scope restore, with the same `columnsOf`.
+ */
+export function assertDirectoryTablesBuilt(names: readonly string[], columnsOf: KernelColumnsOf): void {
+  const missing = names.filter((n) => columnsOf(n) === undefined);
+  if (missing.length > 0) {
+    throw substratError(
+      'validation_failed',
+      `restore refused: the dump carries table(s) this directory does not build: ${missing.join(', ')}. ` +
+        'A directory holds only the platform\'s own tables, each built by this code, and a table it does not ' +
+        'build would keep the dump\'s own schema. Nothing was changed.',
+    );
+  }
+}
 
 const unbuiltSpineTables = (names: readonly string[]) =>
   substratError(
@@ -85,7 +108,8 @@ const DERIVED_COLUMNS: Record<string, Record<string, string>> = {
 /**
  * The `INSERT` that loads one dumped table's rows, one row of positional parameters per
  * execution, in the dump's column order: `spineRowsInsert` for a spine table, and the dump's
- * own columns for a vertical one. The names are quoted as given: the loader has already passed
+ * own columns for a vertical one. A directory builds every table, so it calls
+ * `spineRowsInsert` directly. The names are quoted as given: the loader has already passed
  * the dump through `assertReplayableDump`.
  */
 export function dumpRowsInsert(table: { name: string; columns: readonly string[] }, columnsOf: KernelColumnsOf): string {
@@ -100,12 +124,13 @@ const plainInsert = (table: { name: string; columns: readonly string[] }): strin
 const lowered = (columns: readonly string[]) => new Set(columns.map((c) => c.toLowerCase()));
 
 /**
- * The statements that add to a kernel-built spine table each column the dump carries and the
- * kernel does not, as a plain untyped column: `ADD COLUMN "<name>"`, lowercased, and nothing after it, so it
- * has no type, collation, constraint or default. Run after `assertSpineTablesBuilt` and before
- * the table's rows go in, inside the load's transaction. The names are the dump's, which
- * `assertReplayableDump` has already held to the identifier rule. Empty for a table the kernel
- * did not build, which `assertSpineTablesBuilt` has refused.
+ * The statements that add to a table the host built (a spine table, or any directory table,
+ * #1912) each column the dump carries and the host's table does not, as a plain untyped column:
+ * `ADD COLUMN "<name>"`, lowercased, and nothing after it, so it has no type, collation,
+ * constraint or default. Run after `assertSpineTablesBuilt` / `assertDirectoryTablesBuilt` and
+ * before the table's rows go in, inside the load's transaction. The names are the dump's, which
+ * `assertReplayableDump` has already held to the identifier rule. Empty for a table the host
+ * did not build, which those have refused.
  */
 export function spineColumnAdditions(
   table: { name: string; columns: readonly string[] },
@@ -116,7 +141,8 @@ export function spineColumnAdditions(
   const unknown = table.columns.filter((c) => !known.has(c.toLowerCase()));
   // A real column named for the rowid shadows SQLite's alias. On the outbox, `rowid` is the mark
   // the #1705 and #1746 since-queries read (`OUTBOX_MARK_SQL`), so a dump's value would silence
-  // them from then on, and survive every later export.
+  // them from then on, and survive every later export. A directory table is held to the same
+  // rule: whatever reads its rowid, now or later, reads the dump's value instead.
   const aliased = unknown.filter((c) => ROWID_ALIASES.has(c.toLowerCase()));
   if (aliased.length > 0) {
     throw substratError(
@@ -134,10 +160,11 @@ export function spineColumnAdditions(
 const ROWID_ALIASES: ReadonlySet<string> = new Set(['rowid', 'oid', '_rowid_']);
 
 /**
- * The `INSERT` that loads one dumped spine table's rows into the table the kernel built.
+ * The `INSERT` that loads one dumped table's rows into the table the host built: a spine table,
+ * or any directory table (#1912).
  *
- * `kernelColumns` is the kernel table's column list as the loader reads it back after
- * `spineColumnAdditions`, or `undefined` when the kernel built no such table. Either refusal
+ * `kernelColumns` is the built table's column list as the loader reads it back after
+ * `spineColumnAdditions`, or `undefined` when the host built no such table. Either refusal
  * below is a backstop the loader's order makes unreachable, and throws `validation_failed`
  * inside the load's transaction, so the target keeps what it held.
  */
@@ -145,7 +172,7 @@ export function spineRowsInsert(
   table: { name: string; columns: readonly string[] },
   kernelColumns: readonly string[] | undefined,
 ): string {
-  // `assertSpineTablesBuilt` has refused this already, naming every such table.
+  // `assertSpineTablesBuilt` / `assertDirectoryTablesBuilt` has refused this already, naming every such table.
   if (kernelColumns === undefined) throw unbuiltSpineTables([table.name]);
   const known = lowered(kernelColumns);
   // `spineColumnAdditions` has added every such column already.
@@ -169,4 +196,78 @@ export function spineRowsInsert(
     `INSERT INTO "${table.name}" (${[...quoted, ...derived.map(([c]) => `"${c}"`)].join(', ')}) ` +
     `SELECT ${[...quoted, ...derived.map(([, expr]) => expr)].join(', ')} FROM (SELECT ${row})`
   );
+}
+
+/**
+ * The naming columns a scope row from before the directory left NULL, filled with the defaults
+ * `resolveScopeRecord` applies: a ULID lowercases into a valid slug, so the placeholder is unique
+ * by construction. Run by both adapters' schema pass on every start, and by a directory restore
+ * after its rows are in, inside its transaction (#1912). One statement per entry, since a
+ * Durable Object's `exec` and better-sqlite3's `prepare` each take one.
+ */
+export const LEGACY_SCOPE_ROWS_BACKFILL: readonly string[] = [
+  'UPDATE scopes SET slug = lower(scope_id) WHERE slug IS NULL',
+  "UPDATE scopes SET kind = 'scope' WHERE kind IS NULL",
+  'UPDATE scopes SET name = slug WHERE name IS NULL',
+];
+
+/** Refuse a table whose built columns plus the dump's unknown ones would pass `max`. */
+function assertWithinColumnCap(
+  tables: readonly { name: string; columns: readonly string[] }[],
+  columnsOf: KernelColumnsOf,
+  max: number,
+): void {
+  for (const t of tables) {
+    const built = columnsOf(t.name) ?? [];
+    const known = lowered(built);
+    const width = built.length + new Set(t.columns.map((c) => c.toLowerCase()).filter((c) => !known.has(c))).size;
+    if (width > max) {
+      throw substratError(
+        'validation_failed',
+        `restore refused: the dump's ${t.name} would hold ${width} columns once the ones this code does not ` +
+          `know are added to its own, and a table here holds at most ${max}. Nothing was changed.`,
+      );
+    }
+  }
+}
+
+/**
+ * Load a directory dump's rows into the tables the host has just built from its own schema
+ * (#1912): the one sequence both adapters' directory restores run, inside their transaction,
+ * after dropping the old directory and running the schema pass.
+ *
+ * 1. refuse a table the directory does not build (`assertDirectoryTablesBuilt`), and one that
+ *    would pass `maxColumns` once the dump's unknown columns join this code's own;
+ * 2. add each column the dump carries and this code does not know, bare and lowercased, and
+ *    refuse one named for the rowid (`spineColumnAdditions`);
+ * 3. insert every row by column name, against the columns read back after step 2
+ *    (`spineRowsInsert`);
+ * 4. fill a pre-directory scope row's naming columns (`LEGACY_SCOPE_ROWS_BACKFILL`);
+ * 5. backfill the schedule switch's record from the dump's own admin log, when the dump
+ *    predates it (#1674). One that carried it keeps its rows and is never backfilled over.
+ *
+ * A throw anywhere is the caller's transaction rolling back, so the directory keeps what it held.
+ */
+export function loadDirectoryDump(
+  tables: readonly { name: string; columns: readonly string[]; rows: readonly (readonly unknown[])[] }[],
+  host: {
+    columnsOf: KernelColumnsOf;
+    exec: (sql: string) => void;
+    insert: (sql: string, rows: readonly (readonly unknown[])[]) => void;
+    /**
+     * The most columns a table here may hold: a Durable Object's cap. `assertReplayableDump`
+     * holds the dump's own column list to it, but a table grows by this code's columns plus the
+     * dump's unknown ones, which can pass it while each list alone does not.
+     */
+    maxColumns?: number;
+  },
+): void {
+  assertDirectoryTablesBuilt(tables.map((t) => t.name), host.columnsOf);
+  if (host.maxColumns !== undefined) assertWithinColumnCap(tables, host.columnsOf, host.maxColumns);
+  for (const t of tables) for (const alter of spineColumnAdditions(t, host.columnsOf(t.name))) host.exec(alter);
+  for (const t of tables) {
+    if (t.rows.length > 0) host.insert(spineRowsInsert(t, host.columnsOf(t.name)), t.rows);
+  }
+  for (const stmt of LEGACY_SCOPE_ROWS_BACKFILL) host.exec(stmt);
+  if (!dumpCarriesSystemSwitches(tables.map((t) => t.name))) host.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
 }

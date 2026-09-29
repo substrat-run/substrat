@@ -47,13 +47,21 @@ export function doSpineSql(sql: SqlStorage): ScopedSql {
 }
 
 /**
- * The columns of spine table `name` as this DO built it, or `undefined` when it built no such
- * table — what a restore judges a dump's spine tables against (#1883), on a scope and on the
- * directory (#1898) alike. Read off an empty `SELECT`, because DO SQLite restricts PRAGMA. The
- * name is matched without case, as SQLite resolves a table name: a dump's `_Substrat_tuples` is
- * the kernel's tuples table.
+ * The columns of table `name` as this DO built it, or `undefined` when it built no such table —
+ * what a restore judges a dump's spine tables against (#1883), on a scope and on the directory
+ * (#1898) alike, and on the directory every other table too (#1912). Read off an empty `SELECT`,
+ * because DO SQLite restricts PRAGMA. The name is matched without case, as SQLite resolves a
+ * table name: a dump's `_Substrat_tuples` is the kernel's tuples table.
  */
-export function doSpineColumnsOf(sql: SqlStorage, name: string): string[] | undefined {
-  const built = sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE`, name).toArray();
+export function doBuiltColumnsOf(sql: SqlStorage, name: string): string[] | undefined {
+  // SQLite's own tables and workerd's (`_cf_*`) are never ones this DO built, and an export never
+  // dumps them, so a dump naming one is refused by name rather than failing on its SELECT (#1912).
+  const built = sql
+    .exec(
+      `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE
+          AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'`,
+      name,
+    )
+    .toArray();
   return built.length === 0 ? undefined : sql.exec(`SELECT * FROM "${name}" LIMIT 0`).columnNames;
 }

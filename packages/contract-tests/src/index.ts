@@ -83,3 +83,4 @@ export {
   resetConnectorCalls,
   type ConnectorCall,
 } from './connector-fixture.js';
+export { directoryRestoreSuite, type DirectoryRestoreHarness, type RestorableDirectory } from './directory-restore-suite.js';

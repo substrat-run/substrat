@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 import { platformActorId, scopeId, tenantId, type ScopeDumpTable } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
@@ -34,7 +35,7 @@ const setup = async () => {
     await host.close();
     rmSync(dir, { recursive: true, force: true });
   };
-  return { host, staff, t, s, done };
+  return { host, staff, t, s, dir, done };
 };
 
 describe('tables named like the sqlite_ prefix (#1881)', () => {
@@ -78,14 +79,32 @@ describe('tables named like the sqlite_ prefix (#1881)', () => {
   });
 
   it('the directory dump: same filter, same round trip', async () => {
-    const { host, staff, done } = await setup();
+    const { host, staff, dir, done } = await setup();
     try {
       const base = await host.admin.exportDirectory(staff);
-      await host.admin.restoreDirectory(staff, { ...base, tables: [...base.tables, SQLITEDATA] });
+      // Planted through a connection of its own: since #1912 a directory restore refuses a table
+      // the directory does not build (below), so no restore can put one there.
+      const db = new Database(join(dir, '_directory.sqlite'));
+      db.exec(SQLITEDATA.ddl);
+      for (const r of SQLITEDATA.rows) db.prepare('INSERT INTO sqlitedata (id, v) VALUES (?, ?)').run(...r);
+      db.close();
       const withIt = await host.admin.exportDirectory(staff);
       expect(withIt.tables.map((x) => x.name)).toContain('sqlitedata');
       expect(withIt.tables.map((x) => x.name)).not.toContain('sqlite_sequence');
       await host.admin.restoreDirectory(staff, base);
+      expect((await host.admin.exportDirectory(staff)).tables.map((x) => x.name)).not.toContain('sqlitedata');
+    } finally {
+      await done();
+    }
+  });
+
+  it('a directory dump carrying sqlitedata is refused by name, not passed over as an internal table (#1912)', async () => {
+    const { host, staff, done } = await setup();
+    try {
+      const base = await host.admin.exportDirectory(staff);
+      await expect(
+        host.admin.restoreDirectory(staff, { ...base, tables: [...base.tables, SQLITEDATA] }),
+      ).rejects.toThrow(/does not build: sqlitedata\b/);
       expect((await host.admin.exportDirectory(staff)).tables.map((x) => x.name)).not.toContain('sqlitedata');
     } finally {
       await done();
