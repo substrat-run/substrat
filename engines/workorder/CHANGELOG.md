@@ -1,5 +1,21 @@
 # @substrat-run/engine-workorder
 
+## 0.12.14
+
+### Patch Changes
+
+- 8236531: A refused lifecycle move is now recorded. When an operation fails because `assertTransition` refused the move, the kernel writes the attempt to its own table after the rollback, the way a denied permission is recorded. The row holds the record, the state it was in, the operation, where that operation leads when it is legal, who tried, and in which call.
+
+  `assertTransition` takes the record as an optional last argument (`{ entityType, entityId }`), and the work-order and booking engines now pass it. The HTTP response to a refused move is unchanged.
+
+  The process map's lifecycle read now also returns the window's refused moves.
+
+- Updated dependencies [65a0690]
+- Updated dependencies [b53ecff]
+- Updated dependencies [8236531]
+  - @substrat-run/kernel@0.130.0
+  - @substrat-run/contracts@0.130.0
+
 ## 0.12.13
 
 ### Patch Changes
@@ -1768,7 +1784,7 @@ active`, `unknown tenant/scope/table`). Those are next, and they are the ones th
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

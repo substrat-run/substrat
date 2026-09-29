@@ -51,6 +51,31 @@ export type ScriveSecret = z.infer<typeof scriveSecret>;
 export const scriveDocRef = z.object({ id: z.string().min(1) });
 export type ScriveDocRef = z.infer<typeof scriveDocRef>;
 
+/**
+ * What `start` answers, read for the one thing the dispatch keeps from it: each
+ * party's provider `id` (#1927). That id survives every edit made at Scrive — a
+ * corrected name, a corrected address — which neither the name nor the email does,
+ * so it is the only key the return path can attribute a signature by.
+ *
+ * Lenient on purpose: `parties` falls back to `undefined` on any shape it does not
+ * expect. This is read AFTER the document has gone out, so failing here would fail a
+ * dispatch whose invitations were already sent; a missing id costs nothing more than
+ * the first poll pinning it from `get` instead.
+ */
+export const scriveStartedDocument = scriveDocRef.extend({
+  parties: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        is_author: z.boolean().optional(),
+        is_signatory: z.boolean().optional(),
+      }),
+    )
+    .optional()
+    .catch(undefined),
+});
+export type ScriveStartedDocument = z.infer<typeof scriveStartedDocument>;
+
 /** The full document, as `get` returns it — extra fields ignored. */
 export const scriveDocument = z.object({
   id: z.string().min(1),
@@ -66,10 +91,11 @@ export const scriveDocument = z.object({
         sign_time: z.string().nullable().optional(),
         authentication_method_to_sign: z.string().optional(),
         /**
-         * The party's fields — read by the poll driver to cross-check that the
-         * provider's Nth party is still the dispatch's Nth party (name), before
-         * attributing a signature to a request. Kept so the reconcile can fail
-         * closed on a reorder rather than mis-record.
+         * The party's fields — read by the poll driver only for a dispatch that has
+         * no provider party id pinned yet and whose shape does not line up, where
+         * the name is the last cross-check before attributing by position. A pinned
+         * dispatch matches on `id` and never reads these (#1927): names are
+         * editable at Scrive.
          */
         fields: z
           .array(z.object({ type: z.string(), value: z.unknown() }))
@@ -396,12 +422,12 @@ export class ScriveApi {
   }
 
   /** Send it. After this the document is `pending` and the parties are invited. */
-  async start(documentId: string): Promise<ScriveDocRef> {
+  async start(documentId: string): Promise<ScriveStartedDocument> {
     const res = await this.conn.fetch(`${this.baseUrl}/api/v2/documents/${documentId}/start`, {
       method: 'POST',
       headers: this.headers(),
     });
-    return scriveDocRef.parse(await asJson(res, 'start'));
+    return scriveStartedDocument.parse(await asJson(res, 'start'));
   }
 
   /**

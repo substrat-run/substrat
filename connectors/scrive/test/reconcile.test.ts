@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
+  connectionActivity,
   connectionId,
   dataSubjectId,
   platformActorId,
@@ -18,7 +19,9 @@ import {
   ScriveMock,
   registerScriveConnector,
   reconcileScriveDispatch,
+  scriveConnectionActivity,
   sweepScriveReconciliations,
+  type ScriveDispatchState,
 } from '../src/index.js';
 
 /**
@@ -364,5 +367,142 @@ describe('scrive connector — return path (record signatures back)', () => {
     expect(report.errors).toEqual([]);
     // The signature landed in the scope — end to end, driver included.
     expect((await detail(instanceId)).instance.status).toBe('signed');
+  });
+
+  /**
+   * #1927: a party's name and address are both editable at Scrive, and the reconcile
+   * used to key on position with the name as a cross-check — so a routine correction
+   * at the provider unhooked a signature from its request, silently, on every poll.
+   * Scrive's party id survives the edit; these pin that the ledger keeps it and the
+   * reconcile matches on it, and that what still cannot be attributed is visible.
+   */
+  describe('matching on Scrive party ids (#1927)', () => {
+    const ledgerKey = (instanceId: string) => `scrive:dispatch:${instanceId}`;
+    const ledger = async (instanceId: string) =>
+      (await host.admin.getConnectorState(connId, ledgerKey(instanceId))) as ScriveDispatchState;
+    /** Rewrite the row as a dispatch made before the ledger kept provider ids. */
+    const asLegacy = async (instanceId: string) => {
+      const row = await ledger(instanceId);
+      await host.admin.putConnectorState(connId, ledgerKey(instanceId), {
+        ...row,
+        parties: row.parties.map(({ providerPartyId: _id, ...p }) => p),
+      });
+    };
+    const activity = () =>
+      scriveConnectionActivity(host, { id: connId, tenantId: t, vertical: 'meridian' }, {
+        fetch: scrive.fetch,
+        baseUrl: BASE,
+      });
+
+    it('keeps each party’s provider id from the dispatch', async () => {
+      const { instanceId, docId } = await issue();
+      const row = await ledger(instanceId);
+      const provider = scrive.documents.get(docId)!.parties;
+      // Party 0 is the non-signing sender; the signatories follow it.
+      expect(row.parties.map((p) => p.providerPartyId)).toEqual([provider[1]!.id, provider[2]!.id]);
+    });
+
+    it('records a signature whose party was renamed and re-addressed at Scrive', async () => {
+      await grantRecordSignature();
+      const { instanceId, requestIds, docId } = await issue();
+
+      // The production shape: the invitation address was mistyped, someone corrected
+      // the party in Scrive's own UI, and the name field came back different too.
+      scrive.editParty(docId, 2, { name: 'anstalld.person', email: 'anstalld.person@example.se' });
+      scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
+
+      const result = await reconcile(instanceId);
+      expect(result.skipped).toEqual([]);
+      expect(result.needsAttention).toEqual([]);
+      expect(result.recorded).toEqual([{ requestId: requestIds[1], signedAt: '2026-07-21T10:30:00.000Z' }]);
+      const d = await detail(instanceId);
+      // Attributed to the dispatched signatory, not to whatever the provider now calls it.
+      expect(d.signatures.map((sig) => sig.signed_by)).toEqual([employeeRef]);
+    });
+
+    it('pins ids on a pre-#1927 dispatch whose shape still lines up, then records it', async () => {
+      await grantRecordSignature();
+      const { instanceId, requestIds, docId } = await issue();
+      await asLegacy(instanceId);
+
+      scrive.editParty(docId, 2, { name: 'anstalld.person' });
+      scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
+
+      const result = await reconcile(instanceId);
+      expect(result.recorded.map((r) => r.requestId)).toEqual([requestIds[1]]);
+      expect(result.needsAttention).toEqual([]);
+      const provider = scrive.documents.get(docId)!.parties;
+      expect((await ledger(instanceId)).parties.map((p) => p.providerPartyId)).toEqual([
+        provider[1]!.id,
+        provider[2]!.id,
+      ]);
+    });
+
+    it('shows a signature it cannot attribute instead of skipping it silently', async () => {
+      await grantRecordSignature();
+      const { instanceId, requestIds, docId } = await issue();
+      await asLegacy(instanceId);
+
+      // A document that no longer has the dispatched shape — an extra party — leaves
+      // position as the only key, and the edited name refuses it.
+      const doc = scrive.documents.get(docId)!;
+      doc.parties.push({ ...doc.parties[2]!, id: `${docId}-extra`, name: 'Extra' });
+      scrive.editParty(docId, 2, { name: 'anstalld.person' });
+      scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
+
+      const result = await reconcile(instanceId);
+      expect(result.recorded).toEqual([]);
+      expect(result.needsAttention).toEqual([
+        expect.objectContaining({ requestId: requestIds[1], signedAt: '2026-07-21T10:30:00.000Z' }),
+      ]);
+      // Durable on the row, where the activity view reads it…
+      expect((await ledger(instanceId)).needsAttention).toHaveLength(1);
+      const [entry] = (await activity()).entries;
+      expect(entry!.status).toMatch(/^needs attention/);
+      expect(entry!.facts.find((f) => f.label === 'Anställd')!.value).toMatch(/^signed at Scrive, not recorded/);
+      // …and reported by the sweep, so a sweeper can log it.
+      const swept = await sweep();
+      expect(swept.needsAttention).toEqual([
+        expect.objectContaining({ instanceId, requestId: requestIds[1] }),
+      ]);
+
+      // Once it is resolved, the flag clears itself.
+      doc.parties.pop();
+      const fixed = await reconcile(instanceId);
+      expect(fixed.recorded.map((r) => r.requestId)).toEqual([requestIds[1]]);
+      expect(fixed.needsAttention).toEqual([]);
+      expect((await ledger(instanceId)).needsAttention).toBeUndefined();
+    });
+
+    it('keeps an attention row inside the activity contract however long the names are', async () => {
+      await grantRecordSignature();
+      const { instanceId, docId } = await issue();
+      await asLegacy(instanceId);
+      const doc = scrive.documents.get(docId)!;
+      doc.parties.push({ ...doc.parties[2]!, id: `${docId}-extra`, name: 'Extra' });
+      scrive.editParty(docId, 2, { name: 'x'.repeat(600) });
+      scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
+      await reconcile(instanceId);
+
+      // The shape the activity route parses with — a value over 400 used to fail the read.
+      const parsed = connectionActivity.safeParse(await activity());
+      expect(parsed.success).toBe(true);
+      const fact = parsed.data!.entries[0]!.facts.find((f) => f.label === 'Anställd')!;
+      expect(fact.value).toMatch(/^signed at Scrive, not recorded/);
+      expect(fact.value.length).toBeLessThanOrEqual(400);
+    });
+
+    it('flags a pinned party the provider no longer shows', async () => {
+      await grantRecordSignature();
+      const { instanceId, requestIds, docId } = await issue();
+      scrive.documents.get(docId)!.parties.splice(2, 1);
+
+      const result = await reconcile(instanceId);
+      expect(result.needsAttention).toEqual([
+        expect.objectContaining({ requestId: requestIds[1], signedAt: null }),
+      ]);
+      // Not a signature, so not in `skipped` — that list stays "signed but not recorded".
+      expect(result.skipped).toEqual([]);
+    });
   });
 });
