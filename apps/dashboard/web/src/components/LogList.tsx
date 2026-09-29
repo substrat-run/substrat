@@ -72,9 +72,12 @@ export function LogList({
   events,
   maxHeight,
   onFilter,
+  onOpenRequest,
   compact = false,
 }: {
   events: ObservabilityLogEvent[];
+  /** #1752 §7a: when given, a line's request id opens that request instead of filtering by it. */
+  onOpenRequest?: (invocationId: string, atMs: number) => void;
   /** A box of its own, for a list nested in another panel. Absent — the Logs page — the
    *  lines render in page flow and scroll with it, as the design's stream does. */
   maxHeight?: number;
@@ -137,15 +140,16 @@ export function LogList({
               <span role="cell" style={ellipsis} title={e.trigger ?? undefined}>{e.trigger ?? e.entrypoint ?? e.invocation ?? '—'}</span>
               {!compact && <span role="cell" style={{ ...ellipsis, color: e.outcome && e.outcome !== 'ok' ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}>{e.outcome ?? '—'}</span>}
               <span role="cell" style={compact ? { color: lv.msg, overflowWrap: 'anywhere', minWidth: 0 } : { ...ellipsis, color: lv.msg }} title={compact ? undefined : (e.message ?? undefined)}>{e.message ?? '—'}</span>
-              {compact ? null : invocation && onFilter ? (
+              {compact ? null : invocation && (onOpenRequest || onFilter) ? (
                 <span role="cell" style={{ textAlign: 'right' }}>
                   <button
                     type="button"
-                    title={`Only invocation ${invocation}`}
-                    aria-label={`Only invocation ${invocation}`}
+                    title={onOpenRequest ? `Open request ${invocation}` : `Only invocation ${invocation}`}
+                    aria-label={onOpenRequest ? `Open request ${invocation}` : `Only invocation ${invocation}`}
                     onClick={(ev) => {
                       ev.stopPropagation();
-                      onFilter({ invocationId: invocation });
+                      if (onOpenRequest) onOpenRequest(invocation, e.timestamp ?? Date.now());
+                      else onFilter!({ invocationId: invocation });
                     }}
                     style={{ appearance: 'none', border: 0, background: 'none', padding: 0, font: 'inherit', textAlign: 'right', color: 'var(--text-link)', cursor: 'pointer' }}
                   >
@@ -158,7 +162,7 @@ export function LogList({
                 </span>
               )}
             </div>
-            {on && <LineFields event={e} columns={compact ? 4 : 6} onFilter={onFilter} onClose={() => close(i)} />}
+            {on && <LineFields event={e} columns={compact ? 4 : 6} onFilter={onFilter} onOpenRequest={onOpenRequest} onClose={() => close(i)} />}
           </div>
         );
       })}
@@ -171,7 +175,19 @@ export function LogList({
  * returned are listed — a key with a null value is a key this line did not carry, and
  * `"cpuTimeMs": null` would read as a measurement.
  */
-function LineFields({ event, columns, onFilter, onClose }: { event: ObservabilityLogEvent; columns: number; onFilter: ((f: LogFilter) => void) | undefined; onClose: () => void }) {
+function LineFields({
+  event,
+  columns,
+  onFilter,
+  onOpenRequest,
+  onClose,
+}: {
+  event: ObservabilityLogEvent;
+  columns: number;
+  onFilter: ((f: LogFilter) => void) | undefined;
+  onOpenRequest: ((invocationId: string, atMs: number) => void) | undefined;
+  onClose: () => void;
+}) {
   const [raw, setRaw] = useState(false);
   const fields = FIELDS.filter((k) => event[k] !== null && event[k] !== undefined);
   return (
@@ -213,6 +229,11 @@ function LineFields({ event, columns, onFilter, onClose }: { event: Observabilit
           <div style={{ color: 'var(--text-tertiary)' }}>{'}'}</div>
         </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 10, fontFamily: 'var(--font-sans)' }}>
+          {onOpenRequest && event.invocationId && ULID.test(event.invocationId) && (
+            <Button variant="secondary" size="sm" onClick={() => onOpenRequest(event.invocationId!, event.timestamp ?? Date.now())}>
+              Open request
+            </Button>
+          )}
           {onFilter && event.invocationId && ULID.test(event.invocationId) && (
             <Button variant="secondary" size="sm" onClick={() => onFilter({ invocationId: event.invocationId! })}>
               Only this invocation’s lines

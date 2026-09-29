@@ -76,7 +76,7 @@ export function RequestsMode({
   /** A brushed range — the page's new window. */
   onRange: (w: { from: string; to: string }) => void;
   /** Open one request's own log lines. */
-  onOpenCall: (invocationId: string) => void;
+  onOpenCall: (invocationId: string, atMs: number) => void;
 }) {
   const [volume, setVolume] = useState<Loaded<RequestVolume>>(null);
   const [facets, setFacets] = useState<Loaded<RequestFacets>>(null);
@@ -385,9 +385,9 @@ function FacetSidebar({
 const ROW_GRID = '96px minmax(0,1.4fr) 110px minmax(0,1fr) 150px 56px';
 
 /**
- * The requests, newest first. A row opens that request's own log lines — the Lines mode
- * narrowed to its invocation — which is the one detail view that exists today; the
- * design's slide-over waterfall waits on spans (#1237).
+ * The requests, newest first. A row opens the request slide-over (#1752 §7a): the request,
+ * its lines and events on a time axis, what it set off and the move it made. The design's
+ * span waterfall is the one part it cannot draw yet (#1237).
  */
 function RequestList({
   rows,
@@ -396,7 +396,7 @@ function RequestList({
 }: {
   rows: Loaded<RequestRecord[]>;
   total: number | null;
-  onOpenCall: (invocationId: string) => void;
+  onOpenCall: (invocationId: string, atMs: number) => void;
 }) {
   const quiet = { padding: 16, fontSize: 13, color: 'var(--text-tertiary)' } as const;
   if (rows === null) return <div style={quiet}>Loading requests…</div>;
@@ -430,8 +430,8 @@ function RequestList({
             key={r.invocationId ?? `row-${i}`}
             type="button"
             disabled={!r.invocationId}
-            onClick={() => r.invocationId && onOpenCall(r.invocationId)}
-            title={r.invocationId ? 'Open this request’s log lines' : 'This request carries no invocation id'}
+            onClick={() => r.invocationId && onOpenCall(r.invocationId, r.timestamp ?? Date.now())}
+            title={r.invocationId ? 'Open this request' : 'This request carries no invocation id'}
             style={{ display: 'grid', gridTemplateColumns: ROW_GRID, gap: 10, alignItems: 'center', width: '100%', height: 32, padding: '0 16px', border: 0, borderBottom: '1px solid var(--border-subtle)', background: 'transparent', font: 'inherit', fontSize: 12.5, textAlign: 'left', cursor: r.invocationId ? 'pointer' : 'default' }}
           >
             <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{lineTime(r.timestamp).slice(0, 8)}</span>
@@ -460,7 +460,7 @@ function RequestList({
             of <span style={{ fontFamily: 'var(--font-mono)' }}>{total.toLocaleString('en-US')}</span>
           </>
         )}{' '}
-        requests in this window · a row opens its log lines
+        requests in this window · a row opens the request
       </div>
     </div>
   );

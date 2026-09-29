@@ -10,6 +10,7 @@ import { AppFilter, PageHead } from '../components/ObsControls';
 import { LogQueryBar } from '../components/LogQueryBar';
 import { Flow } from './Flow';
 import { ProcessMap } from './ProcessMap';
+import { RequestSlideOver } from './RequestSlideOver';
 import { Tabs } from '@substrat-run/ui';
 import { Pulse } from './Pulse';
 import { EventExplorer, TenantLogs } from './ObservabilityPanels';
@@ -106,6 +107,16 @@ export function Observability({
   // ask for an app rather than falling back). A stale invocation filter is dropped: it
   // names one app's call.
   const pickApp = (next: string | null) => onNav({ ...(next ? { app: next } : {}), invocationId: undefined, ...(view ? { view } : {}) });
+  // #1752 §7a: one request, over whichever page is open. In the URL, so a request can be
+  // linked to, and closing it is a step back to the page exactly as it was.
+  const openRequest = (invocationId: string, atMs: number) => navigateQuery({ ...q, req: invocationId, reqAt: String(Math.round(atMs)) });
+  const reqAt = Number(q.reqAt);
+  // A hand-edited `reqAt` outside what a Date can hold would throw inside the panel and
+  // take the page with it; such a link simply opens nothing.
+  const slideOver =
+    scopeId && q.req && Number.isFinite(reqAt) && !Number.isNaN(new Date(reqAt).getTime()) ? (
+      <RequestSlideOver key={q.req} scopeId={scopeId} invocationId={q.req} atMs={reqAt} onClose={() => navigateQuery({ ...q, req: undefined, reqAt: undefined })} />
+    ) : null;
 
   /**
    * A marker opens the sub-view that EXPLAINS it — the run row for a failed schedule, the
@@ -133,6 +144,7 @@ export function Observability({
 
   if (section === 'pulse') {
     return (
+      <>
       <Pulse
         apps={apps}
         scopeId={scopeId}
@@ -149,6 +161,8 @@ export function Observability({
         onRefresh={() => setNonce((n) => n + 1)}
         onMarker={onMarker}
       />
+      {slideOver}
+      </>
     );
   }
 
@@ -208,6 +222,7 @@ export function Observability({
             }
           />
         )}
+        {slideOver}
       </Page>
     );
   }
@@ -243,7 +258,7 @@ export function Observability({
         // cursor comes along: "what was happening at 09:13" is one question asked of both.
         <LogStream mode={logMode} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
           {logMode === 'logs' && (
-            <LinesMode scopeId={scopeId} q={q} hours={hours} nonce={nonce} cursor={cursor} window={panelWindow} onFilters={(filters) => navigateQuery({ ...q, ...filters })} />
+            <LinesMode scopeId={scopeId} q={q} hours={hours} nonce={nonce} cursor={cursor} window={panelWindow} onFilters={(filters) => navigateQuery({ ...q, ...filters })} onOpenRequest={openRequest} />
           )}
           {logMode === 'requests' && (
             <RequestsMode
@@ -253,8 +268,8 @@ export function Observability({
               nonce={nonce}
               onFilters={(filters) => navigateQuery({ ...q, ...filters })}
               onRange={applyWindow}
-              // A request opens its own lines, in the window the reader is already looking at.
-              onOpenCall={(invocationId) => onNav({ app: scopeId, view: 'logs', invocationId, ...(cursor ?? {}) })}
+              // A request opens over the page, so closing it leaves the list as it was.
+              onOpenCall={openRequest}
             />
           )}
           {logMode === 'patterns' && (
@@ -289,6 +304,7 @@ export function Observability({
       ) : (
         <PickApp section={section} apps={apps} onPick={(s) => onNav({ app: s, view: logMode, ...(cursor ?? {}) })} />
       )}
+      {slideOver}
     </Page>
   );
 }
@@ -307,6 +323,7 @@ function LinesMode({
   cursor,
   window,
   onFilters,
+  onOpenRequest,
 }: {
   scopeId: string;
   q: ObsQuery;
@@ -315,6 +332,7 @@ function LinesMode({
   cursor: { from: string; to: string } | null;
   window: { from: string; to: string };
   onFilters: (filters: Partial<ObsQuery>) => void;
+  onOpenRequest: (invocationId: string, atMs: number) => void;
 }) {
   const [metrics, setMetrics] = useState<AppMetricsView | null>(null);
   useEffect(() => {
@@ -337,6 +355,7 @@ function LinesMode({
       scopeId={scopeId}
       filters={q}
       onFilters={onFilters}
+      onOpenRequest={onOpenRequest}
       hours={hours}
       nonce={nonce}
       {...(typeof requests === 'number' ? { hadTraffic: requests > 0 } : {})}

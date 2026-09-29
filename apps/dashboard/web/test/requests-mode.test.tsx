@@ -183,7 +183,7 @@ describe('RequestsMode', () => {
     expect(container.querySelectorAll('[data-bucket]')).toHaveLength(2);
   });
 
-  it('ticks a facet value and opens a request’s lines', async () => {
+  it('ticks a facet value and opens a request', async () => {
     vi.spyOn(api, 'appRequestVolume').mockResolvedValue(volume);
     vi.spyOn(api, 'appRequestFacets').mockResolvedValue(facets);
     vi.spyOn(api, 'appRequests').mockResolvedValue([row()]);
@@ -191,9 +191,10 @@ describe('RequestsMode', () => {
     const box = [...container.querySelectorAll('[role="checkbox"]')].find((b) => b.textContent?.startsWith('scheduled job'))!;
     await act(async () => box.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(onFilters).toHaveBeenLastCalledWith({ pk: 'system' });
-    const rowButton = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('acme/assign') && b.title.includes('log lines'))!;
+    const rowButton = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('acme/assign') && b.title === 'Open this request')!;
     await act(async () => rowButton.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    expect(onOpenCall).toHaveBeenCalledWith('01J8Z3KX0Q5R7T9V1W2Y4A6B8C');
+    // The call and when it happened: the slide-over windows its log read around that instant.
+    expect(onOpenCall).toHaveBeenCalledWith('01J8Z3KX0Q5R7T9V1W2Y4A6B8C', row().timestamp);
   });
 
   it('keeps a ticked value listed after it fell out of the counts, so it can be unticked', async () => {
