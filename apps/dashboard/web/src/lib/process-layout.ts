@@ -373,48 +373,61 @@ export const stubPillWidth = (label: string) => 14 + label.length * 6.4;
 
 export const stubId = (r: { from: string; attempted: string | null; operation: string }) => `${r.from}|${r.attempted ?? ''}|${r.operation}`;
 
+/** How far apart two stubs out of one state sit: along its top edge, and in height. */
+const STUB_STEP_X = 34;
+const STUB_LANE = 24;
+
+export interface RefusalStubs {
+  stubs: LaidStub[];
+  /**
+   * Refusals out of a state the model does not declare (#1745 review): there is no node to
+   * draw them from, so the screen lists them instead — never drops them.
+   */
+  unplaced: { from: string; attempted: string | null; operation: string; count: number }[];
+  /**
+   * The topmost y the stubs reach, 0 when they stay inside the layout. A stub out of a
+   * top-row state rises above it; the drawing's viewBox starts here so nothing is clipped.
+   */
+  top: number;
+}
+
 /**
  * Where each refused move is drawn. A short stroke leaves the top edge of the state the
  * record was in and ends in a cross — it goes nowhere, which is the point — with its count
- * in a pill beyond it. Several out of one state fan left along that edge, the busiest
- * rightmost. A refusal from a state the model does not declare has no node to leave, and
- * is left to the side panel's list rather than drawn somewhere misleading.
+ * in a pill beyond it. Several out of one state each get their own lane upward, so no two
+ * pills share a height, and their anchors wrap along that state's top edge rather than
+ * running off it; the busiest is nearest the corner and lowest.
  */
 export function refusalStubs(
   layout: ProcessLayout,
   refused: { from: string; attempted: string | null; operation: string; count: number }[],
-): LaidStub[] {
+): RefusalStubs {
   const at = new Map(layout.states.map((s) => [s.state, s]));
   const perState = new Map<string, number>();
-  const out: LaidStub[] = [];
+  const perEdge = Math.max(1, Math.floor((NODE_W - 22 - 12) / STUB_STEP_X) + 1);
+  const stubs: LaidStub[] = [];
+  const unplaced: RefusalStubs['unplaced'] = [];
+  let top = 0;
   for (const r of [...refused].sort((a, b) => b.count - a.count || a.operation.localeCompare(b.operation))) {
     const s = at.get(r.from);
-    if (!s) continue;
+    if (!s) {
+      unplaced.push(r);
+      continue;
+    }
     const i = perState.get(r.from) ?? 0;
     perState.set(r.from, i + 1);
-    const x1 = s.x + NODE_W - 22 - i * 34;
+    const x1 = s.x + NODE_W - 22 - (i % perEdge) * STUB_STEP_X;
     const y1 = s.y;
     const x2 = x1 + 14;
-    const y2 = y1 - 30;
+    const y2 = y1 - 30 - i * STUB_LANE;
     const label = `${r.from} → ${r.attempted ?? '?'} ×${r.count.toLocaleString('en-US')}`;
     // Kept inside the drawing: a refusal out of the rightmost state (typically the terminal
     // one — "closed → open") would otherwise put its pill past the edge.
     const w = stubPillWidth(label);
     const labelX = Math.min(Math.max(x2, w / 2 + 4), layout.width - w / 2 - 4);
-    out.push({
-      id: stubId(r),
-      from: r.from,
-      attempted: r.attempted,
-      operation: r.operation,
-      count: r.count,
-      x1,
-      y1,
-      x2,
-      y2,
-      labelX,
-      labelY: y2 - 14,
-      label,
-    });
+    const labelY = y2 - 14;
+    top = Math.min(top, labelY - 12);
+    stubs.push({ id: stubId(r), from: r.from, attempted: r.attempted, operation: r.operation, count: r.count, x1, y1, x2, y2, labelX, labelY, label });
   }
-  return out;
+  return { stubs, unplaced, top };
 }

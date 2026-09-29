@@ -264,11 +264,12 @@ function Diagram({
   onSelect: (s: ProcessSelection) => void;
 }) {
   const stateOf = new Map(current.states.map((s) => [s.state, s]));
-  const stubs = refusalStubs(layout, current.refused ?? []);
+  const { stubs, unplaced, top } = refusalStubs(layout, current.refused ?? []);
   return (
     <div style={{ padding: 12, overflowX: 'auto' }}>
       <svg
-        viewBox={`0 0 ${layout.width} ${layout.height}`}
+        // Starts above 0 when a top-row state has refusals, so their stubs are not clipped.
+        viewBox={`0 ${top} ${layout.width} ${layout.height - top}`}
         width="100%"
         style={{ display: 'block', minWidth: Math.min(layout.width, 640), maxWidth: layout.width * 1.15 }}
         role="group"
@@ -299,6 +300,39 @@ function Diagram({
           <Stub key={st.id} stub={st} selected={selection?.kind === 'refused' && selection.id === st.id} onSelect={() => onSelect({ kind: 'refused', id: st.id })} />
         ))}
       </svg>
+      {/* Refusals out of a state this version's model does not declare have no node to
+          leave — listed here, so they stay reachable rather than silently undrawn. */}
+      {unplaced.length > 0 && (
+        <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 12 }}>
+          <span style={{ color: 'var(--text-tertiary)' }}>Refused from states this model does not declare:</span>
+          {unplaced.map((u) => {
+            const id = stubId(u);
+            const on = selection?.kind === 'refused' && selection.id === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onSelect({ kind: 'refused', id })}
+                aria-pressed={on}
+                style={{
+                  appearance: 'none',
+                  font: 'inherit',
+                  ...mono,
+                  fontSize: 11.5,
+                  padding: '2px 10px',
+                  borderRadius: 999,
+                  cursor: 'pointer',
+                  background: 'var(--status-danger-bg)',
+                  color: 'var(--status-danger-fg)',
+                  border: `1px solid ${on ? 'var(--status-danger-fg)' : 'transparent'}`,
+                }}
+              >
+                {u.from} → {u.attempted ?? '?'} ×{num(u.count)}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
