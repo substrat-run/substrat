@@ -28,6 +28,10 @@ const AUTO: ScopeDumpTable = {
 };
 const mine = (tables: ScopeDumpTable[]) => tables.filter((t) => ['sqlitedata', 'sqliteX'].includes(t.name));
 
+/** The directory DO's own instance, reached the way directory-rebuild.test.ts does. */
+const inCp = <T>(stub: DurableObjectStub<undefined>, fn: (i: ControlPlaneDO) => T | Promise<T>) =>
+  runInDurableObject(stub, (i) => fn(i as unknown as ControlPlaneDO));
+
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
 
 describe('tables named like the sqlite_ prefix, on the ScopeDO (#1881)', () => {
@@ -65,14 +69,14 @@ describe('tables named like the sqlite_ prefix, on the ScopeDO (#1881)', () => {
 describe('tables named like the sqlite_ prefix, in the directory DO (#1881)', () => {
   it('exportDump keeps sqlitedata, importDump replaces it, sqlite_sequence stays out', async () => {
     const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`prefix-${ulid()}`));
-    const base = await runInDurableObject(stub, (i: ControlPlaneDO) => i.exportDump());
-    await runInDurableObject(stub, (i: ControlPlaneDO) => i.importDump([...base, SQLITEDATA, AUTO]));
-    const withIt = await runInDurableObject(stub, (i: ControlPlaneDO) => i.exportDump());
+    const base = await inCp(stub, (i) => i.exportDump());
+    await inCp(stub, (i) => i.importDump([...base, SQLITEDATA, AUTO]));
+    const withIt = await inCp(stub, (i) => i.exportDump());
     expect(mine(withIt).map((t) => t.name)).toEqual(['sqlitedata']);
     expect(withIt.map((t) => t.name)).toContain('sqlitecounter');
     expect(withIt.map((t) => t.name)).not.toContain('sqlite_sequence');
-    await runInDurableObject(stub, (i: ControlPlaneDO) => i.importDump(base));
-    const gone = await runInDurableObject(stub, (i: ControlPlaneDO) => i.exportDump());
+    await inCp(stub, (i) => i.importDump(base));
+    const gone = await inCp(stub, (i) => i.exportDump());
     expect(mine(gone)).toEqual([]);
   });
 });
