@@ -96,6 +96,27 @@ export interface InvocationRecord {
   principalKind?: string;
   /** What the operation itself emitted — `InvokeOptions.onEmitted`. */
   emitted?: EmittedReport;
+  /**
+   * #1331: which of the operation's DECLARED output fields its response carried. Filled
+   * only while the field-coverage switch is armed (`FIELD_COVERAGE_BINDING`), and absent
+   * otherwise — never an empty report, so "not walked" cannot read as "returned nothing".
+   */
+  outputFields?: OutputFieldsReport;
+}
+
+/**
+ * The field walk's answer for one response (#1331). Names only, and only names the
+ * operation DECLARES: a key the response carries that the declaration does not name is
+ * never written down, since a key can be data (a map keyed by email is still a map). No
+ * value is ever read into it.
+ */
+export interface OutputFieldsReport {
+  /** Declared fields the response carried with a value other than `null`, in declaration order. */
+  present: string[];
+  /** Declared fields the response carried as `null` — on the wire, carrying nothing. */
+  empty: string[];
+  /** Declared fields the response did not carry (missing, or `undefined`). */
+  absent: string[];
 }
 
 // The level and its type moved to contracts in #1904 — the router files its datapoint under
@@ -253,6 +274,13 @@ export interface InvocationLogLine {
    * locally and on a script pushed before the binding existed.
    */
   versionId: string | null;
+  /**
+   * #1331: which declared output fields the response carried. The one field on this line
+   * that is OMITTED rather than `null` when unrecorded: the walk behind it is off by
+   * default, and an unarmed line must stay byte-for-byte what it was before the field
+   * existed. A reader treats absence exactly as it treats `null` elsewhere.
+   */
+  outputFields?: OutputFieldsReport;
 }
 
 /** Distinct values, first occurrence wins — the order a reader expects to see them in. */
@@ -390,6 +418,7 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
     entities: emitted ? distinct(emitted.events.map((e) => e.entity)) : [],
     versionId: versionIdOf(done.env),
+    ...(record.outputFields ? { outputFields: record.outputFields } : {}),
   };
   console.log(JSON.stringify(line));
 }

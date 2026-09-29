@@ -1,4 +1,4 @@
-import { ADMISSIBLE_BINDING_TYPES, substratError } from '@substrat-run/contracts';
+import { ADMISSIBLE_BINDING_TYPES, PLATFORM_BINDING_PREFIX, substratError } from '@substrat-run/contracts';
 import type { AssetRouting, DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
 /**
@@ -214,8 +214,8 @@ export function assertSandboxContract(m: DeployManifest): void {
     // unforgeability `domainEventInput` gives the kernel-stamped envelope fields
     // for free, a binding channel has to be given here. Prefix-refused so the
     // namespace stays the platform's as it grows.
-    if (b.name.startsWith('SUBSTRAT_')) {
-      refuse("the 'SUBSTRAT_' binding namespace is the platform's — these names are injected at deploy, never declared");
+    if (b.name.startsWith(PLATFORM_BINDING_PREFIX)) {
+      refuse(`the '${PLATFORM_BINDING_PREFIX}' binding namespace is the platform's — these names are injected at deploy, never declared`);
     }
     // Allowlist: a type not among the vertical's own admissible resources is refused — with a
     // teachable reason where we have one, the generic one otherwise.

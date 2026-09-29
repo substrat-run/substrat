@@ -38,9 +38,13 @@ import {
   PAGE_LINK_HEADER,
   PAGE_TOTAL_HEADER,
   errorCodeOf,
+  FIELD_COVERAGE_ARMED,
+  FIELD_COVERAGE_BINDING,
 } from '@substrat-run/contracts';
 import { INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord, type ScopeStub } from '@substrat-run/kernel';
 import { classifyError } from './errors.js';
+import { observeOutputFields, outputWalkOf } from './field-coverage.js';
+import { defOf, transparentInner } from './zod-structural.js';
 import { mountMcp, type MountMcpOptions } from './mcp.js';
 
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
@@ -56,29 +60,12 @@ export type ResolveStub = (c: Context) => Promise<ScopeStub>;
 interface HttpDecl {
   readonly http?: { readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; readonly path: string };
   readonly input?: { readonly shape?: Record<string, unknown> };
+  /** What the operation returns — a paged read's ENTRY schema. Read by the field walk (#1331). */
+  readonly output?: unknown;
   /** Declared by a paged read (#811). Its presence is what turns on the projection below. */
   readonly paged?: { readonly sortKey?: string; readonly total?: boolean };
   /** Declared by an operation participating in optimistic concurrency (#129). */
   readonly concurrency?: { readonly over: string; readonly idFrom: string };
-}
-
-/** Zod's internal definition, across the layouts this reads structurally. */
-interface ZodDef {
-  readonly type?: string;
-  readonly values?: unknown[];
-  readonly value?: unknown;
-  readonly innerType?: unknown;
-  readonly in?: unknown;
-}
-
-/**
- * Read a schema's definition without `instanceof`, which fails across duplicate
- * copies of the library — the same reason the rest of this file reads Zod
- * structurally.
- */
-function defOf(schema: unknown): ZodDef | undefined {
-  return ((schema as { _zod?: { def?: unknown } })?._zod?.def ??
-    (schema as { _def?: unknown })?._def) as ZodDef | undefined;
 }
 
 /**
@@ -162,19 +149,10 @@ function coercerFor(schema: unknown, depth = 0): ((raw: string) => unknown) | un
       // Only the two spellings a URL can mean unambiguously. `?flag` with no
       // value arrives as '' and stays '' — "present" is not "true" here.
       return (raw) => (raw === 'true' ? true : raw === 'false' ? false : raw);
-    case 'optional':
-    case 'nullable':
-    case 'nullish':
-    case 'default':
-    case 'prefault':
-    case 'catch':
-    case 'readonly':
-    case 'nonoptional':
-      return coercerFor(def.innerType, depth + 1);
-    case 'pipe':
-      return coercerFor(def.in, depth + 1);
-    default:
-      return undefined;
+    default: {
+      const inner = transparentInner(def);
+      return inner === undefined ? undefined : coercerFor(inner, depth + 1);
+    }
   }
 }
 
@@ -404,6 +382,9 @@ export function mountOperations(
     const takesBody = method === 'POST' || method === 'PUT' || method === 'PATCH';
     const pinned = pinnedFields(op.input);
     const coercers = queryCoercers(op.input);
+    // #1331: which declared fields to ask a response about, resolved once here so a route
+    // whose declaration names none pays nothing per request, armed or not.
+    const outputWalk = outputWalkOf(op.output, op.paged !== undefined);
 
     /** Types the values a URL hands over as strings, per the declared shape. */
     const typed = (values: Record<string, string | undefined>): Record<string, unknown> => {
@@ -539,6 +520,18 @@ export function mountOperations(
             }
           : undefined;
       const result = await stub.invoke(name, payload, invokeOptions);
+      // #1331: the field walk, on the RESULT rather than the serialised body, and before
+      // `respond`, so a vertical that owns its envelope is observed like every other. Only
+      // when there is a record to write it to, and only when the platform armed the switch —
+      // the one extra read an unarmed request pays is the binding's.
+      if (
+        record &&
+        outputWalk &&
+        (c.env as Record<string, unknown> | undefined)?.[FIELD_COVERAGE_BINDING] === FIELD_COVERAGE_ARMED
+      ) {
+        const observed = observeOutputFields(result, outputWalk);
+        if (observed) record.outputFields = observed;
+      }
       // Set BEFORE `respond`, so a vertical that owns its envelope still gets the
       // validator on its response without writing header code — and can still
       // override it, since it holds the `Context` too.
@@ -593,6 +586,10 @@ export function mountOperations(
         // reading of the failure whatever envelope the vertical answers with.
         const code = errorCodeOf(err);
         if (record && code !== undefined) record.problemCode = code;
+        // #1331: the walk ran on the result, but `respond` or the serialisation then threw
+        // (a `BigInt` in the body, say), so no response carried those fields — a failed call
+        // never reports any.
+        if (record) delete record.outputFields;
         const mapped = await options.onError?.(c, err, name);
         if (mapped) return mapped;
         const seen = classifyError(err);

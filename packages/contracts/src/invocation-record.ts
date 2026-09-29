@@ -74,6 +74,23 @@ export function decodeInvocationRecord(value: string | null | undefined): {
   return out;
 }
 
+/**
+ * The switch that arms the per-response field walk (#1331), as a binding on the vertical's
+ * env: the walk runs only when this reads exactly {@link FIELD_COVERAGE_ARMED}.
+ *
+ * Off by default, and nothing sets it yet — so until the platform injects it the walk costs
+ * a request nothing. A `SUBSTRAT_` name on purpose: the deploy check refuses that namespace
+ * in a vertical's declared bindings, so arming it is the platform's decision (the model
+ * binding's fleet switch is the precedent), never a vertical's.
+ *
+ * Here rather than in `vertical-host`, which reads it, because the side that will inject it
+ * does not depend on that package, and the two must agree on the spelling.
+ */
+export const FIELD_COVERAGE_BINDING = 'SUBSTRAT_FIELD_COVERAGE';
+
+/** The one value of {@link FIELD_COVERAGE_BINDING} that arms the walk. Anything else is off. */
+export const FIELD_COVERAGE_ARMED = 'on';
+
 /** The level a request is filed under (#1746). See {@link invocationLevelOf}. */
 export type InvocationLevel = 'error' | 'warn' | 'info';
 

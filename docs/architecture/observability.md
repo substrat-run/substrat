@@ -259,6 +259,36 @@ It carries them as additive top-level fields, which Workers Logs indexes like `t
 | `principalKind` | `ScopeStub.subjectKind`, decided by the door that minted the stub: `principal`, `connection`, `system`, `capability`, `vertical` | the stub is the vertical's own and does not say |
 | `eventCount`, `eventTypes`, `entities` | `InvokeOptions.onEmitted`: the rows the operation added to the outbox, read after its commit and **before** the consumer drain | not recorded. `0` and `[]` are a fact: the call emitted nothing |
 | `versionId` | the platform's `SUBSTRAT_VERSION_ID` binding | a local run, or a script pushed before the binding existed |
+| `outputFields` | `mountOperations`' field walk (#1331): `{ present, empty, absent }`, the operation's declared output field names split three ways: carried with a value, carried as `null`, or not carried at all | **omitted, not `null`**: the walk is off unless the platform arms `SUBSTRAT_FIELD_COVERAGE=on`, and an unarmed line stays byte-for-byte what it was. Also omitted for a failed call, an empty list, or an operation declaring no output fields |
+
+`outputFields` is the observed half of field coverage, whose declared half (#1321) rides the
+deploy manifest. The walk costs O(declared fields), never O(response): it asks the result
+about each declared name and never enumerates the result's keys. It reads the top level only,
+takes the first entry of a list or paged read, and stops at 200 names, the declared half's own
+cap. It runs on the operation's result before `respond`, so a vertical that owns its envelope
+is observed too. It records names from the declaration only, never a value and never a
+response key the declaration does not name, since a key can be data. It reads property
+descriptors rather than values, so no ordinary getter and no Proxy `get` trap runs. A Proxy's
+`getOwnPropertyDescriptor` trap still can, and a throw from it leaves the response
+unobserved. The page (`entries`) and a list's first entry are read the same way, and a page
+held behind a getter is left unobserved. `present` means an own enumerable property, not a
+guarantee that it serialised: an own accessor counts as present without being called, even
+though calling it could give `undefined` or throw. An inherited or non-enumerable property
+counts as absent.
+
+Names only is not the same as saying nothing. `outputFields` is derived from ONE response's
+data. It sits on a line that also carries the tenant, the scope and the path, and a path can
+name a record (`/customers/{id}`). So the line can disclose a fact about one identified
+record: that its `phone` is null, or that it has no `terminated_at`. The line is read under
+the same tenant filter as everything else on it, which keeps that fact inside the tenant
+it came from. Any store built from it must still **aggregate per (operation, field)**, as
+counts over a window, and never keep the per-request buckets. The question field coverage
+asks is "is this field ever returned", and a count answers it without holding a fact about
+any one record.
+
+**Known gap: the MCP door is not walked.** Only the routes `mountOperations` derives record
+`outputFields`. A call through the MCP mount leaves it unrecorded, so a field that only an MCP
+client reads looks unread.
 
 `entities` and `eventTypes` are distinct values from at most `EMITTED_REPORT_CAP` events,
 in emission order; `eventCount` is the uncapped count. Only the operation's own emits are
