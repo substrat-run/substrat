@@ -96,7 +96,20 @@ async function request<T>(
       continue;
     }
     warnIfStale(res.headers);
-    const body = await res.text();
+    let body: string;
+    try {
+      body = await res.text();
+    } catch (e) {
+      // `fetch` resolves once headers arrive, so a drop while streaming the body rejects here,
+      // not above. Same rule as a failed fetch: only a repeatable call retries. A definite
+      // refusal (4xx, 500, 501) keeps its status rather than becoming a read error.
+      if (res.ok || TRANSIENT_STATUS.has(res.status)) {
+        if (attempt >= attempts || opts.retry !== 'idempotent') throw e;
+        await backoff(action, attempt, attempts, `network error: ${e instanceof Error ? e.message : String(e)}`);
+        continue;
+      }
+      body = '';
+    }
     if (!res.ok) {
       const ref = /\breference\s*=\s*([a-z0-9]+)/i.exec(body)?.[1];
       if (attempt < attempts && shouldRetry(opts.retry, res.status, body)) {

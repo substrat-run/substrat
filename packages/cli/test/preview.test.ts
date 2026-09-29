@@ -239,6 +239,47 @@ describe('preview create retries a transient platform fault (#1918)', () => {
     expect(n).toBe(2);
   });
 
+  /** A response whose headers arrive and whose body stream then drops. */
+  const droppedBody = (status = 200) => () =>
+    new Response(
+      new ReadableStream({
+        start(c) {
+          c.error(new TypeError('terminated'));
+        },
+      }),
+      { status },
+    );
+
+  it('a connection dropped while reading the body is retried for a delete and a list', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { slug, controlPlaneUrl, header, tag } = args;
+    let bodies = script([droppedBody(), () => Response.json({ deleted: null })]);
+    await expect(run(deletePreview({ slug, controlPlaneUrl, header, tag }))).resolves.toEqual({ deleted: null });
+    expect(bodies).toHaveLength(2);
+    bodies = script([droppedBody(), () => Response.json([])]);
+    await expect(run(listPreviews({ slug, controlPlaneUrl, header }))).resolves.toEqual([]);
+    expect(bodies).toHaveLength(2);
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('a connection dropped while reading the body is sent once for a create', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bodies = script([droppedBody(), () => Response.json(ok, { status: 201 })]);
+    await expect(run(createPreview(args))).rejects.toThrow(/terminated/);
+    expect(bodies).toHaveLength(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('a definite refusal keeps its status even if its body drops, and is not retried', async () => {
+    vi.useFakeTimers();
+    const { slug, controlPlaneUrl, header, tag } = args;
+    const bodies = script([droppedBody(404)]);
+    await expect(run(deletePreview({ slug, controlPlaneUrl, header, tag }))).rejects.toThrow(/\(404\)/);
+    expect(bodies).toHaveLength(1);
+  });
+
   it('a network error on a create is sent once: the handler may already be forking', async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
