@@ -189,11 +189,12 @@ capabilityAttachmentContractSuite('adapter-cloudflare', async () => {
 // The schedule suite (#383) also runs against the default tuple checker — it must
 // resolve the projected system grant, not an allow-all. Its sweep walks every active
 // scope in the directory it is handed and asserts exact fired/skipped counts, so it is
-// handed a directory no other suite writes to (#1899).
+// handed a directory no other suite writes to, and scopes that read it (#1899).
 scheduleContractSuite('adapter-cloudflare', async () => {
   await warmControlPlane(env.SCHED_CONTROL_PLANE);
+  await warmSwitchHolds(env.SCHED_SCOPE);
   const host = new CloudflareScopeHost({
-    scope: env.SCOPE,
+    scope: env.SCHED_SCOPE,
     controlPlane: env.SCHED_CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });

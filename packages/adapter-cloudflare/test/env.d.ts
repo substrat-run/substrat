@@ -5,6 +5,8 @@ declare module 'cloudflare:test' {
     CONTROL_PLANE: DurableObjectNamespace;
     /** #1899: the schedule suite's own directory — its sweep counts every active scope in it. */
     SCHED_CONTROL_PLANE: DurableObjectNamespace;
+    /** …and its scopes, which read SCHED_CONTROL_PLANE as their directory. */
+    SCHED_SCOPE: DurableObjectNamespace;
     /** Scopes whose migration fails closed — migration-failure.test.ts. */
     BROKEN_SCOPE: DurableObjectNamespace;
     /** The alarm-driven platform-sweep trigger — platform-sweeper.test.ts. */
@@ -31,6 +33,8 @@ declare module 'cloudflare:test' {
     PC_V2_SCOPE: DurableObjectNamespace;
     PC_V3_SCOPE: DurableObjectNamespace;
     PC_CONTROL_PLANE: DurableObjectNamespace;
+    /** The preview directory's own scopes (#1899). */
+    PC_SCOPE: DurableObjectNamespace;
     /** #1705 PR 2: the kick coalescer (recording, throwing, real) and the log its passes write. */
     KICK_TEST: DurableObjectNamespace;
     KICK_THROW: DurableObjectNamespace;
