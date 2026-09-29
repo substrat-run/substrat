@@ -220,6 +220,22 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
     expect(snapshot().find((t) => t.name === '_substrat_system_switches')!.rows).toEqual([]);
   });
 
+  it('a backfill that fails rolls the whole restore back, and the directory keeps what it held (#1674)', async () => {
+    const h = await open();
+    let dump = await h.admin.exportDirectory(staff);
+    dump = { ...dump, tables: dump.tables.filter((t) => t.name !== '_substrat_system_switches') };
+    // A pre-record dump with a switch row whose payload is not JSON: the backfill's read of
+    // `after` fails outright, inside the restore's transaction.
+    dump = withTable(dump, '_substrat_admin_log', (t) => ({
+      ...t,
+      rows: [...t.rows, row(t, { id: ulid(), actor: 'staff', action: 'revokeFromSystem', after: 'not json', at: '2026-09-01T00:00:00.000Z' })],
+    }));
+    await h.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: 'after-copy', name: 'After' });
+    const before = snapshot();
+    await expect(h.admin.restoreDirectory(staff, dump)).rejects.toThrow(/JSON/i);
+    expect(snapshot()).toEqual(before);
+  });
+
   describe('refused, and the directory is left exactly as it was', () => {
     const refusals: [string, (dump: DirectoryDump) => DirectoryDump, RegExp][] = [
       [
