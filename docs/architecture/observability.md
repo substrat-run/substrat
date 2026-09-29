@@ -267,9 +267,14 @@ about each declared name and never enumerates the result's keys. It reads the to
 takes the first entry of a list or paged read, and stops at 200 names, the declared half's own
 cap. It runs on the operation's result before `respond`, so a vertical that owns its envelope
 is observed too. It records names from the declaration only, never a value and never a
-response key the declaration does not name, since a key can be data. It reads each field's own
-property descriptor and never runs user code: an own accessor counts as present without being
-called (`JSON.stringify` would serialise it), and an inherited or non-enumerable one as absent.
+response key the declaration does not name, since a key can be data. It reads property
+descriptors rather than values, so no ordinary getter and no Proxy `get` trap runs. A Proxy's
+`getOwnPropertyDescriptor` trap still can, and a throw from it leaves the response
+unobserved. The page (`entries`) and a list's first entry are read the same way, and a page
+held behind a getter is left unobserved. `present` means an own enumerable property, not a
+guarantee that it serialised: an own accessor counts as present without being called, even
+though calling it could give `undefined` or throw. An inherited or non-enumerable property
+counts as absent.
 
 Names only is not the same as saying nothing. `outputFields` is derived from ONE response's
 data. It sits on a line that also carries the tenant, the scope and the path, and a path can
