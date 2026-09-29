@@ -76,6 +76,11 @@
 		// would answer questions about prod traffic with no error to notice. Unset ⇒ the
 		// tenant-metrics route 501s.
 		"ROUTER_ANALYTICS_DATASET": "substrat_router",
+		// #1904: from when the Requests histogram and facets read the router's datapoints
+		// (blobs 6–9) instead of scanning Workers Logs. Must be AFTER this environment's
+		// router started writing them — prod's deploy of #1905 is 2026-09-29T07:02:04Z —
+		// and it never moves back: before it, windows still read the Workers Logs cube.
+		"REQUESTS_FROM_ROUTER_SINCE": "2026-09-29T07:05:00Z",
 		// #1691: the dataset this worker's CONNECTOR_ANALYTICS binding writes (below), named
 		// again for the staff read of it — the binding cannot be asked its own name. Its OWN
 		// dataset, never the router's: the two shapes' ordinals mean different things, and a
@@ -266,6 +271,8 @@
 				"PLATFORM_CONNECT_URL": "https://app-test.substrat.net", // differs
 				"SCRIVE_BASE_URL": "https://api-testbed.scrive.com",
 				"SUPPORT_DESK_ORIGIN": "https://ticket0.substrat.net", // same desk; console-test.substrat.net must be on its origin list
+				// #1904: TEST's router has written blobs 6–9 since 2026-09-29T06:52:47Z.
+				"REQUESTS_FROM_ROUTER_SINCE": "2026-09-29T07:05:00Z",
 				// #858: pushed verticals declare Workers automatic tracing at 100%, on TEST
 				// only. Prod sets nothing, so prod scripts keep emitting logs and no spans.
 				// 100% because the question is whether spans appear AT ALL for a
