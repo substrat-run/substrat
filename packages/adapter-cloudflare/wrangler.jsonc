@@ -11,20 +11,28 @@
     "bindings": [
       { "name": "SCOPE", "class_name": "ScopeDO" },
       { "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
+      // #1899: every directory binding below names its OWN ControlPlaneDO subclass, and its
+      // scopes a class that reads it — a second binding to one class is the same directory
+      // (test/worker.ts says why).
+      // The schedule suite's directory (contract.test.ts) — its sweep counts every active scope.
+      { "name": "SCHED_CONTROL_PLANE", "class_name": "SchedControlPlaneDO" },
+      // …and its scopes, whose class reads SCHED_CONTROL_PLANE as its CONTROL_PLANE (onDirectory
+      // in test/worker.ts). Every harness with a directory of its own has scopes that read it.
+      { "name": "SCHED_SCOPE", "class_name": "SchedScopeDO" },
       // Scopes whose migration fails closed — see test/worker.ts.
       { "name": "BROKEN_SCOPE", "class_name": "BrokenScopeDO" },
       // The alarm-driven platform-sweep trigger — see platform-sweeper.test.ts.
       { "name": "SWEEPER", "class_name": "SweeperDO" },
       // …and one whose every pass throws whole (the loop must survive re-armed).
       { "name": "BROKEN_SWEEPER", "class_name": "BrokenSweeperDO" },
-      // The sweeper tests' OWN directory + scope namespaces (same classes).
+      // The sweeper tests' OWN directory + scope namespaces (each its own class, #1899).
       // vitest-pool-workers re-patches the worker's module graph between test
       // files, invalidating live DO instances — if these tests instantiated the
       // contract suites' 'control-plane' singleton, the suite that runs next
       // would find a stale object and fail with "changed, invalidating this
       // Durable Object". Separate namespaces = separate objects = no collision.
-      { "name": "SWEEP_SCOPE", "class_name": "ScopeDO" },
-      { "name": "SWEEP_CONTROL_PLANE", "class_name": "ControlPlaneDO" },
+      { "name": "SWEEP_SCOPE", "class_name": "SweepScopeDO" },
+      { "name": "SWEEP_CONTROL_PLANE", "class_name": "SweepControlPlaneDO" },
       // The CP-less scope-local sweep trigger (#461) + its own scope namespace
       // — see scope-sweeper.test.ts (same isolation reasoning as SWEEP_SCOPE).
       { "name": "SCOPE_SWEEPER", "class_name": "ScopeSweeperDO" },
@@ -38,7 +46,7 @@
       // and must not walk every other suite's).
       { "name": "CRM_SCOPE", "class_name": "CrmScopeDO" },
       { "name": "BOARD_SCOPE", "class_name": "BoardScopeDO" },
-      { "name": "VE_CONTROL_PLANE", "class_name": "ControlPlaneDO" },
+      { "name": "VE_CONTROL_PLANE", "class_name": "VeControlPlaneDO" },
       // #1710: three pushed versions of one vertical. Hosted, each is its own script, and a
       // Durable Object namespace belongs to its script, so each gets its own CLASS here (a
       // second binding to the same class would share one namespace and prove nothing). The
@@ -46,7 +54,9 @@
       { "name": "PC_V1_SCOPE", "class_name": "PreviewV1ScopeDO" },
       { "name": "PC_V2_SCOPE", "class_name": "PreviewV2ScopeDO" },
       { "name": "PC_V3_SCOPE", "class_name": "PreviewV3ScopeDO" },
-      { "name": "PC_CONTROL_PLANE", "class_name": "ControlPlaneDO" },
+      { "name": "PC_CONTROL_PLANE", "class_name": "PcControlPlaneDO" },
+      // The preview directory host's own scope namespace (preview-carry, scope-repoint).
+      { "name": "PC_SCOPE", "class_name": "PcScopeDO" },
       // #1705 PR 2: the cross-vertical kick's coalescer, three ways, and the log its passes write.
       { "name": "KICK_TEST", "class_name": "KickTestDO" },
       { "name": "KICK_THROW", "class_name": "KickThrowDO" },
@@ -94,6 +104,13 @@
     {
       "tag": "v9",
       "new_sqlite_classes": ["SpineParentScopeDO", "OwnParentScopeDO"]
+    },
+    {
+      "tag": "v10",
+      "new_sqlite_classes": [
+        "SweepControlPlaneDO", "VeControlPlaneDO", "PcControlPlaneDO", "SchedControlPlaneDO",
+        "SchedScopeDO", "SweepScopeDO", "PcScopeDO"
+      ]
     }
   ]
 }

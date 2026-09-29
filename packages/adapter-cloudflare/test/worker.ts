@@ -19,14 +19,41 @@ import {
   scheduleMod,
   spineParentMod,
 } from '@substrat-run/contract-tests';
-import { defineScopeDO } from '../src/scope-do.js';
+import { defineScopeDO, type ScopeDoEnv } from '../src/scope-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
 import { defineScopeSweeperDO } from '../src/scope-sweeper-do.js';
 import { defineKickCoalescerDO } from '../src/kick-coalescer-do.js';
+import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { DurableObject } from 'cloudflare:workers';
 
 export const ScopeDO = defineScopeDO(contractTestModules, contractTestBareOps);
+
+/**
+ * #1899: a scope class that reads its harness's directory, not the worker's. A ScopeDO reads
+ * tenant tuples and roles through its own `env.CONTROL_PLANE` (the host does not project a
+ * scope unless `scopeLocalPermissions` is on), and env is script-wide here — so a harness
+ * with a directory of its own needs its scopes to see THAT one as `CONTROL_PLANE`, the way a
+ * hosted scope's binding names the directory its host writes. Otherwise its permission reads
+ * go to the shared directory, where its tenant does not exist.
+ */
+type ScopeDOClass = ReturnType<typeof defineScopeDO>;
+function onDirectory(Base: ScopeDOClass, directory: string): ScopeDOClass {
+  return class extends Base {
+    constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
+      const own = (env as unknown as Record<string, DurableObjectNamespace | undefined>)[directory];
+      if (!own) throw new Error(`test worker: no directory binding ${directory}`);
+      super(ctx, { ...env, CONTROL_PLANE: own });
+    }
+  };
+}
+
+/** The schedule suite's scopes (contract.test.ts), over `SCHED_CONTROL_PLANE`. */
+export const SchedScopeDO = onDirectory(ScopeDO, 'SCHED_CONTROL_PLANE');
+/** The platform-sweep trigger's scopes (platform-sweeper.test.ts), over `SWEEP_CONTROL_PLANE`. */
+export const SweepScopeDO = onDirectory(ScopeDO, 'SWEEP_CONTROL_PLANE');
+/** The preview directory's own scopes (preview-carry, scope-repoint), over `PC_CONTROL_PLANE`. */
+export const PcScopeDO = onDirectory(ScopeDO, 'PC_CONTROL_PLANE');
 
 /**
  * A second scope-DO class carrying ONLY the module whose migration cannot apply.
@@ -51,8 +78,8 @@ export const LiveScopeDO = defineScopeDO([liveMod], {});
  * vertical of the cross-vertical suite gets its own class, the way each is its own script
  * when hosted. The coordinator that reaches each registers the same one module.
  */
-export const CrmScopeDO = defineScopeDO([crmExportMod], {});
-export const BoardScopeDO = defineScopeDO([boardImportMod], {});
+export const CrmScopeDO = onDirectory(defineScopeDO([crmExportMod], {}), 'VE_CONTROL_PLANE');
+export const BoardScopeDO = onDirectory(defineScopeDO([boardImportMod], {}), 'VE_CONTROL_PLANE');
 
 /**
  * #1710: three pushed versions of ONE vertical. Hosted, every push is its own script, and a
@@ -60,9 +87,9 @@ export const BoardScopeDO = defineScopeDO([boardImportMod], {});
  * the point: the only thing that separates them is the namespace, which is the fact a
  * preview's second push used to lose its data to. See preview-carry.test.ts.
  */
-export const PreviewV1ScopeDO = defineScopeDO([], {});
-export const PreviewV2ScopeDO = defineScopeDO([], {});
-export const PreviewV3ScopeDO = defineScopeDO([], {});
+export const PreviewV1ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
+export const PreviewV2ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
+export const PreviewV3ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
 
 /**
  * #1898: a module whose migration declares a foreign key to the spine, and its twin whose
@@ -72,13 +99,28 @@ export const PreviewV3ScopeDO = defineScopeDO([], {});
 export const SpineParentScopeDO = defineScopeDO([spineParentMod], {});
 export const OwnParentScopeDO = defineScopeDO([ownParentMod], {});
 
-export { ControlPlaneDO } from '../src/control-plane-do.js';
+export { ControlPlaneDO };
+
+/**
+ * #1899: a directory per harness that counts. Two bindings to ONE class share one namespace,
+ * and every host addresses the directory as `idFromName('control-plane')`, so every binding to
+ * `ControlPlaneDO` reached the same object: one file's tenants, scopes, schedules and access
+ * rows were in every other file's counts. A class of its own is a namespace of its own — the
+ * reason `PreviewV1ScopeDO`…`V3` exist. The classes are identical, and that is the point.
+ *
+ * A directory of its own is half of it: the harness's scopes read it too, through a scope
+ * class built with `onDirectory` above.
+ */
+export class SweepControlPlaneDO extends ControlPlaneDO {}
+export class VeControlPlaneDO extends ControlPlaneDO {}
+export class PcControlPlaneDO extends ControlPlaneDO {}
+export class SchedControlPlaneDO extends ControlPlaneDO {}
 
 // -- the platform-sweep trigger (platform-sweeper.test.ts) --------------------
 
 interface SweeperEnv {
-  // The sweeper tests' OWN namespaces (same DO classes as the contract suites'
-  // SCOPE/CONTROL_PLANE — see the wrangler.jsonc comment for why they are split).
+  // The sweeper tests' OWN namespaces, each its own class (#1899) — see the
+  // wrangler.jsonc comment for why they are split.
   SWEEP_SCOPE: DurableObjectNamespace;
   SWEEP_CONTROL_PLANE: DurableObjectNamespace;
 }

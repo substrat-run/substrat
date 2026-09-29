@@ -241,7 +241,7 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
 
   beforeAll(async () => {
     await warmControlPlane(env.PC_CONTROL_PLANE);
-    dir = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.PC_CONTROL_PLANE, secretBox });
+    dir = new CloudflareScopeHost({ scope: env.PC_SCOPE, controlPlane: env.PC_CONTROL_PLANE, secretBox });
     await dir.admin.createTenant(staff, { id: t, slug: `repoint-${t.toLowerCase()}`, name: 'Repoint Co' });
     await dir.admin.registerVertical(staff, { slug, name: 'Repoint Vert', source: 'cli', ownerTenant: t });
     const namespaces = { v1: env.PC_V1_SCOPE, v2: env.PC_V2_SCOPE };

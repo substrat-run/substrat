@@ -101,7 +101,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     await warmControlPlane(env.PC_CONTROL_PLANE);
     // The directory. Its own scope namespace is not any version's: a hosted control plane
     // serves no vertical's storage.
-    dir = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.PC_CONTROL_PLANE, secretBox });
+    dir = new CloudflareScopeHost({ scope: env.PC_SCOPE, controlPlane: env.PC_CONTROL_PLANE, secretBox });
     await dir.admin.createTenant(staff, { id: t, slug: `carry-${t.toLowerCase()}`, name: 'Carry Co' });
     // PRIVATE (owned, unlisted), so each push self-admits, as a builder's does.
     await dir.admin.registerVertical(staff, { slug, name: 'Carry Vert', source: 'cli', ownerTenant: t });

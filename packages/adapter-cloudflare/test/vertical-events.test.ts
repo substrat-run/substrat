@@ -646,13 +646,17 @@ describe('the hosted narrowing over a real directory (#1705 PR 2)', () => {
         ...(await dir.admin.accessLog(staff, { method: 'versionManifest' })),
         ...(await dir.admin.accessLog(staff, { method: 'versionImports' })),
       ].length;
+    // A delta, not a total: the access log is the whole directory's, and a row another
+    // describe left in it would read as one of these passes' (#1899).
+    const before = await registryRows();
     await pass();
     await pass();
     await pass();
-    expect(await registryRows()).toBe(0);
+    expect(await registryRows()).toBe(before);
     // The twin: the audited verb does write one, which is why the narrowing does not use it.
     await dir.admin.versionManifest(sweeper, BOARD_VERTICAL, NONE);
     expect((await dir.admin.accessLog(staff, { actor: sweeper, method: 'versionManifest' })).length).toBe(1);
+    expect(await registryRows()).toBe(before + 1);
   });
 });
 
