@@ -602,6 +602,39 @@ describe('engine-protocol', () => {
       ]);
     });
 
+    // #1926: the connector used to title the provider's document
+    // `<templateKey> v<templateVersion>` because the event carried nothing better.
+    it('names the document on the event: the caller\'s title, else the template\'s', async () => {
+      await defineTemplate();
+      const parties = [
+        { label: 'Utställare', kind: 'principal', signatureKind: 'primary' },
+        { label: 'Beställare', kind: 'external', contact: { email: 'part@example.se' } },
+      ];
+      const first = await instantiate();
+      await staff.invoke('protocol/request-signatures', {
+        instanceId: first.id,
+        method: 'scrive',
+        parties,
+      });
+      // One open protocol per template and entity, so the second is on another bike.
+      const second = await staff.invoke<ProtocolInstanceRow>('protocol/instantiate', {
+        templateKey: 'self-inspection',
+        entityType: BIKE.entityType,
+        entityId: ulid(),
+      });
+      await staff.invoke('protocol/request-signatures', {
+        instanceId: second.id,
+        method: 'scrive',
+        parties,
+        title: 'Egenkontroll 2026-0001',
+      });
+
+      const titles = h
+        .eventsOfType('protocol.signatures-requested')
+        .map((e) => (e.payload as { title: string }).title);
+      expect(titles).toEqual(['Self-inspection', 'Egenkontroll 2026-0001']);
+    });
+
     it('freezes the content for the whole time it is out for signature', async () => {
       // THE bug this whole shape exists for: signing used to freeze, so an
       // instance sitting at Scrive for days stayed `open` and writable, and the

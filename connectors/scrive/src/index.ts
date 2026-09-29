@@ -364,6 +364,10 @@ const signaturesRequested = z.object({
   instanceId: z.string().min(1),
   templateKey: z.string().min(1),
   templateVersion: z.number().int(),
+  // #1926: what the signatory is shown the document as. Optional — an engine
+  // older than the field emits none, and falls back to the template KEY: an
+  // identifier, but never with the internal `v<version>` appended to it.
+  title: z.string().min(1).optional(),
   contentHash: z.string().min(1),
   boundHash: z.string().nullable().optional(),
   // #711: which attachment holds the bytes to send. Optional as well as nullable —
@@ -559,10 +563,14 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
         );
       }
     }
+    // The name a signatory reads in the invitation and the provider UI (#1926).
+    // Never `v${templateVersion}`: the version is pinned by the content hash, and
+    // to the person signing it is noise.
+    const title = payload.title ?? payload.templateKey;
     const pdf =
       bound?.body ??
       renderPdf({
-        title: `${payload.templateKey} v${payload.templateVersion}`,
+        title,
         lines: [
           `Instans: ${payload.instanceId}`,
           `Innehållshash (SHA-256): ${payload.contentHash}`,
@@ -586,7 +594,7 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     const doc = await api.createDocument();
     await api.setFile(doc.id, filename, pdf);
     await api.update(doc.id, {
-      title: `${payload.templateKey} v${payload.templateVersion}`,
+      title,
       ...(options.callbackUrl && webhookToken
         ? {
             callbackUrl: options.callbackUrl({

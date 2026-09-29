@@ -220,7 +220,7 @@ describe('scrive connector — inspection (probe + activity)', () => {
     expect(activity.live).toBe(true);
     // `pending` at the provider, humanized — not the ledger's 'sent for signature'.
     expect(activity.entries[0]!.status).toBe('awaiting signatures');
-    expect(activity.entries[0]!.title).toContain('anstallningsavtal');
+    expect(activity.entries[0]!.title).toBe('Anställningsavtal');
   });
 
   it('degrades to the ledger when the provider cannot be reached', async () => {

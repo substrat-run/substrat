@@ -118,6 +118,12 @@ export interface ProtocolSignaturesRequestedPayload {
   instanceId: string;
   templateKey: string;
   templateVersion: number;
+  /**
+   * What the signatory is shown the document as (#1926): the caller's `title`,
+   * else the template's. Always resolved — a connector never falls back to
+   * `templateKey`/`templateVersion`, which are identifiers, not names.
+   */
+  title: string;
   entity: ProtocolSubjectRef;
   /** 'scrive', 'bankid' — the provider a connector will dispatch to. */
   method: string;
