@@ -6,22 +6,17 @@ import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
- * #1899: every directory binding in this worker is its own directory. Every host addresses
- * the directory as `idFromName('control-plane')`, so two bindings to one class are one
- * object — which is how one file's scopes landed in another file's exact counts. A binding
- * pointed back at `ControlPlaneDO` in wrangler.jsonc turns this red; the diagonal is the
- * twin that proves the read would see the tenant at all.
- *
- * And each harness's SCOPES read that same directory: a ScopeDO reads tenant tuples and
- * roles through its own `env.CONTROL_PLANE`, so a scope class left on the worker's binding
- * checks permissions against a directory its tenant is not in (`onDirectory`, test/worker.ts).
+ * #1899 (the why is in test/worker.ts): every directory binding is its own directory, and
+ * each harness's scopes read theirs. A binding pointed back at `ControlPlaneDO`, or a scope
+ * class left off `onDirectory`, turns a row red; the diagonal is the twin that proves the
+ * read would see the tenant at all. `SCOPES` restates worker.ts's pairing on purpose: it is
+ * the oracle, not a copy.
  */
 const DIRECTORIES = ['CONTROL_PLANE', 'SCHED_CONTROL_PLANE', 'SWEEP_CONTROL_PLANE', 'VE_CONTROL_PLANE', 'PC_CONTROL_PLANE'] as const;
 type Directory = (typeof DIRECTORIES)[number];
 
 type TenantReader = { getTenant(id: string): Promise<unknown> };
 const readerOf = (ns: DurableObjectNamespace) => ns.get(ns.idFromName('control-plane')) as unknown as TenantReader;
-const directory = (name: Directory) => readerOf(env[name]);
 
 /** Every scope binding, and the directory its harness hands its host. */
 const SCOPES = [
@@ -59,7 +54,7 @@ describe('each directory binding is its own directory (#1899)', () => {
     it(`a tenant created through ${writer} is in ${writer} and in no other directory`, async () => {
       const t = created.get(writer)!;
       for (const reader of DIRECTORIES) {
-        const seen = (await directory(reader).getTenant(t)) !== undefined;
+        const seen = (await readerOf(env[reader]).getTenant(t)) !== undefined;
         expect({ reader, seen }).toEqual({ reader, seen: reader === writer });
       }
     });

@@ -11,10 +11,9 @@
     "bindings": [
       { "name": "SCOPE", "class_name": "ScopeDO" },
       { "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
-      // #1899: every directory binding below names its OWN ControlPlaneDO subclass. Two
-      // bindings to one class share one namespace, and every host addresses the directory
-      // as idFromName('control-plane'), so a second binding to ControlPlaneDO would be the
-      // same object as this one: another file's scopes in its sweep, its rows in its counts.
+      // #1899: every directory binding below names its OWN ControlPlaneDO subclass, and its
+      // scopes a class that reads it — a second binding to one class is the same directory
+      // (test/worker.ts says why).
       // The schedule suite's directory (contract.test.ts) — its sweep counts every active scope.
       { "name": "SCHED_CONTROL_PLANE", "class_name": "SchedControlPlaneDO" },
       // …and its scopes, whose class reads SCHED_CONTROL_PLANE as its CONTROL_PLANE (onDirectory

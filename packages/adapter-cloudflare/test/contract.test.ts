@@ -3871,12 +3871,6 @@ describe('#1743 — an OFF landing between a tenant grant’s check and its writ
   });
 });
 
-// ---------------------------------------------------------------------------
-// Appended last because `runPlatformSweep` in the schedule suite above used to walk
-// the directory every file shared, so a scope provisioned by an earlier-running file
-// landed in its report. Since #1899 that suite has a directory of its own
-// (`SCHED_CONTROL_PLANE`), and this placement no longer carries anything.
-// ---------------------------------------------------------------------------
 /**
  * What an operation failure carries out of the ScopeDO — measured against workerd,
  * because the comment that used to describe it was wrong twice.

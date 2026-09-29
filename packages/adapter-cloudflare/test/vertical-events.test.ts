@@ -646,9 +646,8 @@ describe('the hosted narrowing over a real directory (#1705 PR 2)', () => {
         ...(await dir.admin.accessLog(staff, { method: 'versionManifest' })),
         ...(await dir.admin.accessLog(staff, { method: 'versionImports' })),
       ].length;
-    // A delta, not a total: the access log is the whole directory's, and a row another suite
-    // left in it would read as one of these passes' (#1899). VE_CONTROL_PLANE is this file's
-    // own class now, so the baseline is expected to be 0 — the delta is what holds either way.
+    // A delta, not a total: the access log is the whole directory's, and a row another
+    // describe left in it would read as one of these passes' (#1899).
     const before = await registryRows();
     await pass();
     await pass();

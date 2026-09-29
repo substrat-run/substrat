@@ -47,11 +47,11 @@ function onDirectory(Base: ScopeDOClass, directory: string): ScopeDOClass {
 }
 
 /** The schedule suite's scopes (contract.test.ts), over `SCHED_CONTROL_PLANE`. */
-export const SchedScopeDO = onDirectory(defineScopeDO(contractTestModules, contractTestBareOps), 'SCHED_CONTROL_PLANE');
+export const SchedScopeDO = onDirectory(ScopeDO, 'SCHED_CONTROL_PLANE');
 /** The platform-sweep trigger's scopes (platform-sweeper.test.ts), over `SWEEP_CONTROL_PLANE`. */
-export const SweepScopeDO = onDirectory(defineScopeDO(contractTestModules, contractTestBareOps), 'SWEEP_CONTROL_PLANE');
+export const SweepScopeDO = onDirectory(ScopeDO, 'SWEEP_CONTROL_PLANE');
 /** The preview directory's own scopes (preview-carry, scope-repoint), over `PC_CONTROL_PLANE`. */
-export const PcScopeDO = onDirectory(defineScopeDO(contractTestModules, contractTestBareOps), 'PC_CONTROL_PLANE');
+export const PcScopeDO = onDirectory(ScopeDO, 'PC_CONTROL_PLANE');
 
 /**
  * A second scope-DO class carrying ONLY the module whose migration cannot apply.
@@ -109,8 +109,8 @@ export class SchedControlPlaneDO extends ControlPlaneDO {}
 // -- the platform-sweep trigger (platform-sweeper.test.ts) --------------------
 
 interface SweeperEnv {
-  // The sweeper tests' OWN namespaces: ScopeDO, and the directory's own subclass
-  // (#1899) — see the wrangler.jsonc comment for why they are split.
+  // The sweeper tests' OWN namespaces, each its own class (#1899) — see the
+  // wrangler.jsonc comment for why they are split.
   SWEEP_SCOPE: DurableObjectNamespace;
   SWEEP_CONTROL_PLANE: DurableObjectNamespace;
 }
