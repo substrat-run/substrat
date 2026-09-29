@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   parseTtlHours,
   formatPreviews,
@@ -166,5 +166,88 @@ describe('preview client', () => {
     const rows = await listPreviews(base);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.tag).toBe('pr-7');
+  });
+});
+
+describe('preview create retries a transient platform fault (#1918)', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+  const args = {
+    controlPlaneUrl: 'https://cp.example/api',
+    header: { 'x-service-token': 't' },
+    slug: 'helpdesk',
+    tag: 'pr-7',
+    versionId: '01J',
+  };
+  const ok = { scopeId: 'S1', hostname: 'h--pr-7.x', url: 'https://h--pr-7.x', versionId: '01J', reused: false };
+  const fault = (ref: string) =>
+    new Response(`internal error; reference = ${ref}`, { status: 502 });
+  /** Answers from a script, one response per call; records each request body. */
+  const script = (answers: Array<() => Response>) => {
+    const bodies: unknown[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit = {}) => {
+      bodies.push(JSON.parse(init.body as string));
+      return answers[Math.min(bodies.length, answers.length) - 1]!();
+    }) as unknown as typeof fetch;
+    return bodies;
+  };
+  const run = async <T>(p: Promise<T>): Promise<T> => {
+    const settled = p.then(
+      (v) => ({ v }),
+      (e) => ({ e }),
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    const r = await settled;
+    if ('e' in r) throw r.e;
+    return r.v;
+  };
+
+  it('a 502 then success succeeds, saying so with the reference, and re-sends the same tag', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bodies = script([() => fault('abc123'), () => Response.json(ok, { status: 201 })]);
+    const out = await run(createPreview(args));
+    expect(out.scopeId).toBe('S1');
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[1]).toMatchObject({ tag: 'pr-7', versionId: '01J' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toMatch(/502.*reference = abc123.*attempt 2 of 3/);
+  });
+
+  it('a network error is retried the same way', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let n = 0;
+    globalThis.fetch = (async () => {
+      if (++n === 1) throw new TypeError('fetch failed');
+      return Response.json(ok, { status: 201 });
+    }) as unknown as typeof fetch;
+    await expect(run(createPreview(args))).resolves.toMatchObject({ scopeId: 'S1' });
+    expect(n).toBe(2);
+  });
+
+  it('three 502s fail with the infrastructure-fault text and the last reference', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bodies = script([() => fault('r1'), () => fault('r2'), () => fault('r3')]);
+    await expect(run(createPreview(args))).rejects.toThrow(/preview create failed \(502\).*reference = r3[\s\S]*Cloudflare-side infrastructure fault/);
+    expect(bodies).toHaveLength(3);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(String(warn.mock.calls[0]![0])).toContain('r1');
+    expect(String(warn.mock.calls[1]![0])).toContain('r2');
+  });
+
+  it.each([400, 401, 403, 404, 409, 422, 500, 501])('a %i is a definite answer and is never retried', async (status) => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bodies = script([() => new Response('{"error":"no"}', { status })]);
+    await expect(run(createPreview(args))).rejects.toThrow(new RegExp(`\\(${status}\\)`));
+    expect(bodies).toHaveLength(1);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

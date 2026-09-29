@@ -71,12 +71,51 @@ export function formatPreviewLogin(created: PreviewCreated): string[] {
  * the same message here as they do from `push` or `promote` — so a preview 400 names the
  * field it refused, and which command a builder ran stops changing the shape of the answer.
  */
-async function request<T>(action: string, url: string, header: Record<string, string>, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { ...init, headers: { 'content-type': 'application/json', ...header } });
-  warnIfStale(res.headers);
-  const body = await res.text();
-  if (!res.ok) throw new Error(failureMessage(action, res.status, body));
-  return parseJsonBody<T>(body, url);
+async function request<T>(
+  action: string,
+  url: string,
+  header: Record<string, string>,
+  init?: RequestInit,
+  opts: { retry?: boolean } = {},
+): Promise<T> {
+  // A transient platform fault (#1918) is one retry away from working, and a CI job nobody
+  // watches turns it into a red build. Only the callers that are idempotent by contract opt
+  // in; a 4xx or any other status is a definite answer and is never retried.
+  const attempts = opts.retry ? 1 + RETRY_BACKOFF_MS.length : 1;
+  for (let attempt = 1; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url, { ...init, headers: { 'content-type': 'application/json', ...header } });
+    } catch (e) {
+      // A network-level failure (no response at all) is the same transient class as a 502.
+      if (attempt >= attempts) throw e;
+      await backoff(action, attempt, attempts, `network error: ${e instanceof Error ? e.message : String(e)}`);
+      continue;
+    }
+    warnIfStale(res.headers);
+    const body = await res.text();
+    if (!res.ok) {
+      if (TRANSIENT_STATUS.has(res.status) && attempt < attempts) {
+        const ref = /\breference\s*=\s*([a-z0-9]+)/i.exec(body)?.[1];
+        await backoff(action, attempt, attempts, `${res.status}${ref ? `, reference = ${ref}` : ''}`);
+        continue;
+      }
+      throw new Error(failureMessage(action, res.status, body));
+    }
+    return parseJsonBody<T>(body, url);
+  }
+}
+
+/** The statuses `explainPlatformFault` calls momentary: the gateway or upstream, not the request. */
+const TRANSIENT_STATUS: ReadonlySet<number> = new Set([502, 503, 504]);
+/** The wait before each further attempt — two extra attempts, bounded. */
+const RETRY_BACKOFF_MS = [1_000, 3_000] as const;
+
+/** Say the retry happened (one line per attempt, reference kept), then wait. */
+async function backoff(action: string, attempt: number, attempts: number, why: string): Promise<void> {
+  const wait = RETRY_BACKOFF_MS[attempt - 1]!;
+  console.warn(`${action} (${why}); retrying in ${wait / 1000}s (attempt ${attempt + 1} of ${attempts})`);
+  await new Promise((resolve) => setTimeout(resolve, wait));
 }
 
 /**
@@ -116,6 +155,9 @@ export async function createPreview(opts: {
         ...(opts.refresh ? { refresh: true } : {}),
       }),
     },
+    // Safe to retry: the control plane converges on the tag — a second call rebinds the same
+    // fork, and a create that died half-built is reaped and re-forked, never duplicated.
+    { retry: true },
   );
 }
 
@@ -133,6 +175,7 @@ export async function deletePreview(opts: {
     `${base}/verticals/${encodeURIComponent(opts.slug)}/previews/${encodeURIComponent(opts.tag)}`,
     opts.header,
     { method: 'DELETE' },
+    { retry: true },
   );
 }
 
@@ -146,6 +189,8 @@ export async function listPreviews(opts: {
     'preview list failed',
     `${base}/verticals/${encodeURIComponent(opts.slug)}/previews`,
     opts.header,
+    undefined,
+    { retry: true },
   );
 }
 
