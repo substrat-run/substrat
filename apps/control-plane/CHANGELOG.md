@@ -1,5 +1,19 @@
 # @substrat-run/control-plane
 
+## 0.13.47
+
+### Patch Changes
+
+- Updated dependencies [b213bfc]
+- Updated dependencies [6f532ef]
+  - @substrat-run/contracts@0.129.0
+  - @substrat-run/kernel@0.129.0
+  - @substrat-run/adapter-cloudflare@0.129.0
+  - @substrat-run/connector-fortnox@0.4.31
+  - @substrat-run/connector-planima@0.2.26
+  - @substrat-run/connector-scrive@0.14.34
+  - @substrat-run/control-plane-api@0.129.0
+
 ## 0.13.46
 
 ### Patch Changes

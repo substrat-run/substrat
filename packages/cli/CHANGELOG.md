@@ -1,5 +1,20 @@
 # @substrat-run/cli
 
+## 0.37.3
+
+### Patch Changes
+
+- b213bfc: A directory restore now builds the directory's `_substrat_*` tables from the running code's own schema and takes only the rows from the dump (#1898), as a scope restore has since #1883. Before, it replayed the dump's `CREATE TABLE` for these tables too, and the directory holds `_substrat_tenant_tuples` and `_substrat_roles`, which every tenant-level permission check reads. A dump declaring their columns `COLLATE NOCASE` made a tenant-level grant or role match without case. The rules are the scope restore's: a column the dump lacks takes the default; a column this code does not know is kept as a plain untyped column, lowercased, with its values; a column named for SQLite's rowid is refused; a `_substrat_*` table this code does not build is refused, naming every such table. The schema pass runs inside the restore's transaction, before any row goes in, so a refused dump leaves the directory as it was. A dump taken before the schedule switch's record existed gets that record backfilled from its own admin log inside the same transaction, so a backfill that fails rolls the restore back instead of committing it without the record.
+
+  A table a restore replays may no longer declare a foreign key to a `_substrat*` table (case-folded, whatever the quoting, with or without comments between `REFERENCES` and the name). With foreign keys enforced, the kernel's own writes to that spine table (a revoke, a restore's re-point) could otherwise fail on the vertical's rows. Every dump check refuses it: the scope and directory restores on both adapters, and `substrat scope pull` / `restore`. The same rule holds a module's own SQL: `ctx.sql` refuses such a statement as a `forbidden` `spine_write`, and so does every migration a scope applies, which then fails the scope closed with the migration recorded as the failure.
+
+  The SQL scanner the spine guard reads statements with, and the spine prefix, now live in `@substrat-run/contracts` (`tokenizeSql`, `SPINE_PREFIX`, `namesSpineTable`, `referencedTables`, `referencedTablesIn`), so the guard, the dump checks and the CLI's foreign-key ordering of a dump read `REFERENCES` one way. The CLI's own regex missed a target behind a comment. New kernel exports: `assertNoSpineReference`, `SYSTEM_SWITCHES_TABLE` and `dumpCarriesSystemSwitches`. A directory dump carrying a table in the search index's namespace is refused too, since a directory has no search index. `pnpm lint:spine-ddl` holds the directory's additive spine columns to the same nullable-with-no-DEFAULT rule as a scope's.
+
+- 6f532ef: A scope's dump and restore no longer skip a table whose name merely looks like SQLite's reserved `sqlite_` prefix. The filter read `name NOT LIKE 'sqlite_%'`, where `_` matches any character, so a table called `sqlitedata` or `sqlite1` was left out of the export and survived a restore's drop sweep. It now reads `NOT GLOB 'sqlite_*'`, which matches the prefix literally. The directory dump and the CLI's scope read had the same filter.
+- Updated dependencies [b213bfc]
+  - @substrat-run/contracts@0.129.0
+  - @substrat-run/model-view@0.2.31
+
 ## 0.37.2
 
 ### Patch Changes
