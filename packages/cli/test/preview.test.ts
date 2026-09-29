@@ -346,4 +346,16 @@ describe('preview create retries a transient platform fault (#1918)', () => {
     expect(bodies).toHaveLength(1);
     expect(warn).not.toHaveBeenCalled();
   });
+
+  it('prints the in-flight 409 whole: how long until the tag frees, and how to replace it now (#1920)', async () => {
+    vi.useFakeTimers();
+    // The body `orchestratedPreview` answers when a create for the tag is still being built.
+    const error =
+      "a create for preview 'pr-1' is in progress (started 2026-09-29T10:00:00.000Z). " +
+      'Retry once it finishes; if it died, the tag can be reclaimed in 12 min, ' +
+      'or now with refresh (substrat preview create --refresh), which replaces it';
+    const bodies = script([() => new Response(JSON.stringify({ error }), { status: 409 })]);
+    await expect(run(createPreview(args))).rejects.toThrow(`preview create failed (409): ${error}`);
+    expect(bodies).toHaveLength(1);
+  });
 });
