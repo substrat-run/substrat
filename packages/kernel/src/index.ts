@@ -312,6 +312,7 @@ export {
   SYSTEM_SWITCHES_BACKFILL_SQL,
   SYSTEM_SWITCHES_DDL,
   SYSTEM_SWITCHES_TABLE,
+  dumpCarriesSystemSwitches,
   forgetSystemSwitchesOf,
   inUnitMovesToAudit,
   listSystemSwitchRecords,

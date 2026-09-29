@@ -140,7 +140,11 @@ export function namesSpineTable(name: string): boolean {
  * A `REFERENCES` that is itself quoted (a column called "references") is not a keyword.
  */
 export function referencedTables(sql: string): string[] {
-  const tokens = tokenizeSql(sql);
+  return referencedTablesIn(tokenizeSql(sql));
+}
+
+/** `referencedTables` over a statement already tokenized, for a caller that scans it anyway. */
+export function referencedTablesIn(tokens: readonly SqlToken[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < tokens.length - 1; i += 1) {
     const token = tokens[i]!;

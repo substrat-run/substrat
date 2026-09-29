@@ -584,8 +584,8 @@ function assertNoSpineParent(ddl: string, name: string): void {
 
 /**
  * Everything a dump must satisfy before any of it reaches SQL: its identifiers, one
- * `CREATE TABLE` per table, and no foreign key from a replayed table to the spine. The single entry point a replay site calls, so a new
- * one cannot pick up half the rules.
+ * `CREATE TABLE` per table, and no foreign key from a replayed table to the spine. The single
+ * entry point a replay site calls, so a new one cannot pick up half the rules.
  */
 export function assertReplayableDump(
   tables: { name: string; ddl: string; columns?: string[] }[],

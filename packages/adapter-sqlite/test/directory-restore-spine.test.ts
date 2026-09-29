@@ -62,6 +62,16 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
   const nocase = (ddl: string, ...columns: string[]) =>
     columns.reduce((d, c) => d.replace(new RegExp(`\\b${c} TEXT NOT NULL`), `${c} TEXT NOT NULL COLLATE NOCASE`), ddl);
   const row = (t: ScopeDumpTable, values: Record<string, unknown>) => t.columns.map((c) => values[c] ?? null);
+  /** The two admin-log rows an applied switch-OFF writes (#1674's backfill reads them). */
+  const switchedOff = (t: ScopeDumpTable, scope: string) => {
+    const operationId = `op-${ulid()}`;
+    const entry = (phase: string, extra: object) =>
+      row(t, {
+        id: ulid(), actor: 'staff', action: 'revokeFromSystem', tenant_id: tenant, scope_id: scope,
+        after: JSON.stringify({ operationId, moduleId: '@test/sched', phase, ...extra }), at: '2026-09-01T00:00:00.000Z',
+      });
+    return [entry('intent', { reason: 'why' }), entry('applied', {})];
+  };
 
   it('a NOCASE _substrat_tenant_tuples and _substrat_roles restore into BINARY tables, and the tenant-level check compares exactly', async () => {
     const h = await open();
@@ -179,15 +189,11 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
     expect(dump.tables.find((t) => t.name === '_substrat_tenant_tuples')!.ddl).not.toMatch(/revoked_at/);
     // Before #1674: no record table, and an applied OFF in the admin log.
     dump = { ...dump, tables: dump.tables.filter((t) => t.name !== '_substrat_system_switches') };
-    const op = `op-${ulid()}`;
     dump = withTable(dump, '_substrat_admin_log', (t) => ({
       ...t,
       rows: [
         ...t.rows,
-        row(t, { id: `01BACKFILL${'1'.padStart(16, '0')}`, actor: 'staff', action: 'revokeFromSystem', tenant_id: tenant, scope_id: 's-1',
-          after: JSON.stringify({ operationId: op, moduleId: '@test/sched', phase: 'intent', reason: 'why' }), at: '2026-09-01T00:00:00.000Z' }),
-        row(t, { id: `01BACKFILL${'2'.padStart(16, '0')}`, actor: 'staff', action: 'revokeFromSystem', tenant_id: tenant, scope_id: 's-1',
-          after: JSON.stringify({ operationId: op, moduleId: '@test/sched', phase: 'applied' }), at: '2026-09-01T00:00:00.000Z' }),
+        ...switchedOff(t, 's-1'),
       ],
     }));
     await h.admin.restoreDirectory(staff, dump);
@@ -202,15 +208,11 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
   it('twin: a dump that carries the switch record keeps its rows and is not backfilled over', async () => {
     const h = await open();
     const dump = await h.admin.exportDirectory(staff);
-    const op = `op-${ulid()}`;
     const withHistory = withTable(dump, '_substrat_admin_log', (t) => ({
       ...t,
       rows: [
         ...t.rows,
-        row(t, { id: `01BACKFILL${'3'.padStart(16, '0')}`, actor: 'staff', action: 'revokeFromSystem', tenant_id: tenant, scope_id: 's-2',
-          after: JSON.stringify({ operationId: op, moduleId: '@test/sched', phase: 'intent', reason: 'why' }), at: '2026-09-01T00:00:00.000Z' }),
-        row(t, { id: `01BACKFILL${'4'.padStart(16, '0')}`, actor: 'staff', action: 'revokeFromSystem', tenant_id: tenant, scope_id: 's-2',
-          after: JSON.stringify({ operationId: op, moduleId: '@test/sched', phase: 'applied' }), at: '2026-09-01T00:00:00.000Z' }),
+        ...switchedOff(t, 's-2'),
       ],
     }));
     expect(withHistory.tables.some((t) => t.name === '_substrat_system_switches')).toBe(true);

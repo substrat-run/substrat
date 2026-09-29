@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { referencedTables, orderTablesByForeignKeys } from '../src/dump-order.js';
+import { referencedTables } from '@substrat-run/contracts';
+import { orderTablesByForeignKeys } from '../src/dump-order.js';
 
 /** Minimal table shape the orderer needs: name + DDL. */
 const t = (name: string, ddl: string) => ({ name, ddl });

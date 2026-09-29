@@ -34,7 +34,7 @@
  * Multiple statements in one string are walked in full: the DO's `sql.exec` accepts
  * them, so a forge chained after a legitimate write must not slip past.
  */
-import { namesSpineTable, referencedTables, substratError, tokenizeSql, type SqlToken } from '@substrat-run/contracts';
+import { namesSpineTable, referencedTablesIn, substratError, tokenizeSql, type SqlToken } from '@substrat-run/contracts';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 
 /**
@@ -63,9 +63,6 @@ const MODIFIERS: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
 };
 
-/** True when any part of a (possibly dotted, possibly quoted) name is spine. */
-const namesSpine = (token: SqlToken): boolean => namesSpineTable(token.text);
-
 /**
  * A SECOND table a statement can reach, past the one it names first.
  *
@@ -81,13 +78,13 @@ const SECOND_TARGET: Readonly<Record<string, string>> = { create: 'on', alter: '
 /** The first token at or after `from` that names the spine, following this verb's grammar. */
 function spineTargetFrom(tokens: SqlToken[], from: number, verb: string): SqlToken | undefined {
   const first = tokens[from];
-  if (first && namesSpine(first)) return first;
+  if (first && namesSpineTable(first.text)) return first;
   const keyword = SECOND_TARGET[verb];
   if (!keyword) return undefined;
   for (let k = from; k < tokens.length; k += 1) {
     if (tokens[k]!.quoted || tokens[k]!.text.toLowerCase() !== keyword) continue;
     const after = tokens[k + 1];
-    return after && namesSpine(after) ? after : undefined;
+    return after && namesSpineTable(after.text) ? after : undefined;
   }
   return undefined;
 }
@@ -120,7 +117,7 @@ export function assertNoSpineWrite(sql: string): void {
       { reason: 'spine_write' },
     );
   }
-  assertNoSpineReference(sql, 'ctx.sql');
+  refuseSpineReference(referencedTablesIn(tokens), 'ctx.sql');
 }
 
 /**
@@ -135,7 +132,12 @@ export function assertNoSpineWrite(sql: string): void {
  * `ctx.sql`. A dump's replayed DDL is held to the same rule by `assertReplayableDump`.
  */
 export function assertNoSpineReference(sql: string, what: string): void {
-  const target = referencedTables(sql).find(namesSpineTable);
+  refuseSpineReference(referencedTablesIn(tokenizeSql(sql)), what);
+}
+
+/** The refusal itself, over a statement's `REFERENCES` targets. */
+function refuseSpineReference(referenced: readonly string[], what: string): void {
+  const target = referenced.find(namesSpineTable);
   if (target === undefined) return;
   throw substratError(
     'forbidden',

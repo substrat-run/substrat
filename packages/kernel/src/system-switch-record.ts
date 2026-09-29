@@ -111,6 +111,15 @@ export const SYSTEM_SWITCHES_BACKFILL_SQL = `
    WHERE latest = 1 AND ever_off = 1
 `;
 
+/**
+ * Does a dump carry the record table? A directory restore builds the table either way, and
+ * backfills it from the dump's own admin log only when the dump did not (#1898). Compared
+ * without case, as SQLite resolves a table name.
+ */
+export function dumpCarriesSystemSwitches(names: readonly string[]): boolean {
+  return names.some((n) => n.toLowerCase() === SYSTEM_SWITCHES_TABLE);
+}
+
 /** "Does the record table exist yet?" — asked BEFORE the DDL, so the backfill runs once. */
 export function systemSwitchesTableExists(db: SwitchSql): boolean {
   return (

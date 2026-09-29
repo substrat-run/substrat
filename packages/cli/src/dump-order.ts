@@ -17,14 +17,9 @@
  * self-references — so a cycle isn't an error here: we break it deterministically and
  * lean on the loader's deferral for the within-cycle rows.
  */
+// `REFERENCES` is read with the dump checks' own grammar, which skips comments and string
+// literals (a regex here did not).
 import { referencedTables } from '@substrat-run/contracts';
-
-/**
- * Table names referenced by this table's DDL (`... REFERENCES <name> ...`): the one reading of
- * that grammar in `@substrat-run/contracts`, which the dump checks use too. It skips comments
- * and string literals, which a regex here did not.
- */
-export { referencedTables };
 
 /**
  * Order tables so every FK target precedes the table referencing it. Stable

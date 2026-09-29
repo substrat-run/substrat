@@ -12,6 +12,7 @@ import {
   sweepRunsIntentHasKind,
   SYSTEM_SWITCHES_BACKFILL_SQL,
   SYSTEM_SWITCHES_TABLE,
+  dumpCarriesSystemSwitches,
   SYSTEM_SWITCHES_DDL,
   forgetSystemSwitchesOf,
   listSystemSwitchRecords,
@@ -1546,7 +1547,8 @@ export class ControlPlaneDO extends DurableObject {
    * forward: a copy taken before a directory migration carries the OLD shape, so replaying it
    * verbatim would silently roll the platform's schema backwards and the first read of a newer
    * column would fail with a bare `no such column`. After it, `applyDirectorySchema` runs as a
-   * construction does, which backfills the legacy rows just loaded. `DIRECTORY_DDL` is all IF
+   * construction does, which fills in the legacy rows just loaded (`scopes.slug`, `kind`, `name`
+   * where a pre-directory row left them NULL). `DIRECTORY_DDL` is all IF
    * NOT EXISTS and `ensureDirectoryColumns` is attempt-and-tolerate, so together they carry a
    * restored older directory forward to the running code's shape — the same contract a cold
    * start gets.
@@ -1575,13 +1577,15 @@ export class ControlPlaneDO extends DurableObject {
       this.buildDirectorySchema({ holdSwitchRecord: false });
       const columnsOf = (name: string) => doSpineColumnsOf(this.sql, name);
       // Every `_substrat*` name, the search index's namespace included: a directory has no index.
-      assertSpineTablesBuilt(tables.map((t) => t.name), columnsOf, namesSpineTable);
+      // So every spine table that gets past this is one `isSpineTable` below also calls spine.
+      assertSpineTablesBuilt(tables.map((t) => t.name), columnsOf);
       // A spine column this code does not know (a dump from a newer one) is kept, as a plain
       // untyped column nothing here reads.
       for (const t of tables) {
         if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
       }
       for (const t of tables) {
+        if (t.rows.length === 0) continue;
         const insert = dumpRowsInsert(t, columnsOf);
         for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
       }
@@ -1589,13 +1593,13 @@ export class ControlPlaneDO extends DurableObject {
       // before it gets the one-time backfill from its own admin log, now that those rows are in,
       // and inside this transaction, so a backfill that fails leaves the directory as it was. One
       // that carried it keeps its rows and is never backfilled over.
-      if (!tables.some((t) => t.name.toLowerCase() === SYSTEM_SWITCHES_TABLE)) {
+      if (!dumpCarriesSystemSwitches(tables.map((t) => t.name))) {
         this.sql.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
       }
     });
-    // Outside the transaction, like the constructor's own path: these are idempotent
-    // schema assertions, and an ALTER that has to be tolerated (duplicate column) must
-    // not take the restore's data down with it.
+    // The construction's pass again, now over the rows just loaded: its schema half finds
+    // nothing left to do, and its legacy-row UPDATEs reach the rows the pass inside the
+    // transaction ran before.
     this.applyDirectorySchema();
     // A restore is a new #1764 backfill episode. It replaced the data the old failure count and
     // backoff were about, so neither may delay or silence it: the count is cleared and the next

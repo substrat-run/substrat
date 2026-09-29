@@ -296,7 +296,7 @@ import {
   systemSwitchedOffMessage,
   tenantSystemSwitchedOffMessage,
   SYSTEM_SWITCHES_BACKFILL_SQL,
-  SYSTEM_SWITCHES_TABLE,
+  dumpCarriesSystemSwitches,
   SYSTEM_SWITCHES_DDL,
   forgetSystemSwitchesOf,
   listSystemSwitchRecords,
@@ -2140,8 +2140,9 @@ export class SqliteScopeHost implements ScopeHost {
    * `applyDirectorySchema`, plus the backfill of the schedule switch's record (#1674) from
    * the admin log. Whether the table exists is asked BEFORE the DDL creates it, so the
    * backfill runs only on an application that creates the table: once on a directory that
-   * never had it, and again after a directory restore whose dump predates it (from that
-   * dump's own log). A directory that already holds the table is never backfilled over.
+   * never had it. A directory that already holds the table is never backfilled over. (A
+   * restore whose dump predates the table builds it and backfills it inside its own
+   * transaction, #1898, so this pass finds it there.)
    *
    * One transaction (Copilot review, #1674): the table and its backfill commit together, so
    * a backfill that fails leaves no table behind, and the next start tries again rather than
@@ -8479,7 +8480,8 @@ export class SqliteScopeHost implements ScopeHost {
           this.buildDirectorySchema();
           const columnsOf = (name: string) => spineColumnsOf(this.directory, name);
           // Every `_substrat*` name, the search index's namespace included: a directory has no index.
-          assertSpineTablesBuilt(dump.tables.map((t) => t.name), columnsOf, namesSpineTable);
+          // So every spine table that gets past this is one `isSpineTable` below also calls spine.
+          assertSpineTablesBuilt(dump.tables.map((t) => t.name), columnsOf);
           // A spine column this code does not know (a dump from a newer one) is kept, as a plain
           // untyped column nothing here reads.
           for (const t of dump.tables) {
@@ -8495,7 +8497,7 @@ export class SqliteScopeHost implements ScopeHost {
           // #1674: the switch record is built above whether or not the dump carried it. A dump
           // from before it gets the one-time backfill from its own admin log, now that those
           // rows are in; one that carried it keeps its rows and is never backfilled over.
-          if (!dump.tables.some((t) => t.name.toLowerCase() === SYSTEM_SWITCHES_TABLE)) {
+          if (!dumpCarriesSystemSwitches(dump.tables.map((t) => t.name))) {
             this.directory.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
           }
         })();

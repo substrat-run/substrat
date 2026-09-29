@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { platformActorId, scopeId, tenantId, type ScopeDumpTable } from '@substrat-run/contracts';
+import { namesSpineTable, platformActorId, scopeId, tenantId, type ScopeDumpTable } from '@substrat-run/contracts';
 import { ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -25,7 +25,7 @@ const own: ScopeDumpTable[] = [
   { name: 'lists', ddl: 'CREATE TABLE lists (id TEXT PRIMARY KEY)', columns: ['id'], rows: [['l1']] },
   { name: 'notes', ddl: 'CREATE TABLE notes (t TEXT REFERENCES lists(id))', columns: ['t'], rows: [['l1']] },
 ];
-const vertical = (tables: ScopeDumpTable[]) => tables.filter((t) => !t.name.toLowerCase().startsWith('_substrat'));
+const vertical = (tables: ScopeDumpTable[]) => tables.filter((t) => !namesSpineTable(t.name));
 
 describe("a ScopeDO restore's replayed DDL naming the spine in REFERENCES (#1898)", () => {
   for (const ddl of [
