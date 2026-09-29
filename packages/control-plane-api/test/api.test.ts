@@ -2474,6 +2474,29 @@ describe('control-plane API', () => {
       expect((await w.create({ tag: 'pr-1' })).status).toBe(409);
     });
 
+    it('a leftover the GC sweep reaps between the lookup and the reap is taken as reaped (#1920)', async () => {
+      const w = await setup('swept');
+      const id = await w.leftover('pr-1');
+      await host.admin.setScopeExpiresAt(staff, w.t, id, new Date(Date.now() - 1000).toISOString());
+      // The sweep's own reap, landing after this create read the row and before it reaps it.
+      const list = host.admin.listScopes.bind(host.admin);
+      // The preview lookup is the read with no status filter (the route's own source lookup
+      // asks for `active` scopes only).
+      let swept = false;
+      vi.spyOn(host.admin, 'listScopes').mockImplementation(async (...args) => {
+        const rows = await list(...args);
+        if (!swept && args[1]?.status === undefined && rows.some((s) => s.id === id)) {
+          swept = true;
+          await host.deleteSnapshot(staff, w.t, id);
+        }
+        return rows;
+      });
+      const res = await w.create({ tag: 'pr-1' });
+      expect(swept).toBe(true);
+      expect(res.status).toBe(201);
+      expect(await w.rowOf(id)).toBeUndefined();
+    });
+
     it('refresh replaces a young provisioning row and an active one alike', async () => {
       const w = await setup('refresh');
       const young = await w.leftover('pr-1');

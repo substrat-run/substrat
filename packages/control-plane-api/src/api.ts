@@ -86,6 +86,7 @@ import {
   importCursorAcknowledgementMissing,
   REDRAIN_BATCH,
   migrationsOnTop,
+  errorCodeOf,
 } from '@substrat-run/contracts';
 import type {
   BindAcknowledgement,
@@ -6967,7 +6968,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // Free the tag: the slug is unique per tenant and the `--<tag>` hostname is still bound
     // to the old row, so the fresh fork below cannot be provisioned until this one is gone.
-    if (existing && stale) await reapPreview(c, existing);
+    // A marked row is also the GC sweep's to reap (its `expiresAt` has passed), so the sweep
+    // can get there between the lookup above and this reap. Gone is what the reap wanted.
+    if (existing && stale) {
+      await reapPreview(c, existing).catch((e: unknown) => {
+        if (errorCodeOf(e) !== 'not_found') throw e;
+      });
+    }
 
     const previewId = scopeIdSchema.parse(ulid());
     // The founding #559 case lands its durable row HERE, not in onError: the previews
