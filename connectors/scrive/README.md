@@ -135,9 +135,23 @@ ordinary signatory that keeps its own identity. A named signatory whose address 
 the account holder's stays a separate signing party rather than folding into the author — also
 verified live.
 
-`ScriveDispatchState.senderParty` records that the sender was sent, because the reconcile matches
-the Nth signatory to provider party N+1. State written before #852 has no `senderParty`, reads an
-offset of 0, and reconciles exactly as it did before.
+`ScriveDispatchState.senderParty` records that the sender was sent, because for a dispatch with no
+stored party ids the Nth signatory sits at provider party N+1. State written before #852 has no
+`senderParty` and reads an offset of 0.
+
+**A signature is matched by Scrive's party id** (#1927), which a dispatch records from `start`'s
+answer. The id survives the name and address edits a sender or signatory can make at Scrive.
+
+A dispatch recorded before ids were kept has its ids pinned by position on the first poll, but
+only when position is supported by evidence. The party count and roles must be unchanged. And
+every signing party's name must still be its label, or exactly one must differ. That one's label
+must be on no other signing party, and its new name must not be another party's label. Two
+parties that changed places, or two renamed at once, are therefore never pinned to each other's
+requests.
+
+Without pinned ids, a party is attributed by position only when its slot shows its exact label
+and no other signing party does. Everything else lands in `needsAttention`, which the
+connection's activity view shows.
 
 3. **The live BankID signing round-trip is unverified.** The outbound lifecycle is checked
    against `api-testbed.scrive.com`, but `se_bankid`-to-sign is **disabled on the testbed
