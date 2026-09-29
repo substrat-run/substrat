@@ -2430,6 +2430,38 @@ describe('control-plane API', () => {
       expect(w.deletes).toEqual([id]);
     });
 
+    /** The one `provisioning` preview row `w`'s tenant holds, and whether its own create marked it over. */
+    const strandedOf = async (w: Awaited<ReturnType<typeof setup>>) => {
+      const rows = (await host.admin.listScopes(staff, { tenantId: w.t })).filter((s) => s.kind === 'preview');
+      expect(rows.map((s) => s.status)).toEqual(['provisioning']);
+      const row = rows[0]!;
+      return { id: row.id, marked: row.expiresAt !== null && Date.parse(row.expiresAt) <= Date.now() };
+    };
+
+    it.each([
+      // The host writes the directory row, then fails in what follows it (migrate, project, seat).
+      ['a provision that throws after its row landed', 'provision'],
+    ] as const)('%s marks the row, so the retry re-forks at once', async (_, where) => {
+      const w = await setup(`dies-in-${where}`);
+      if (where === 'provision') {
+        const provision = host.provisionScope.bind(host);
+        vi.spyOn(host, 'provisionScope').mockImplementationOnce(async (...args) => {
+          await provision(...args);
+          throw new Error('scope migration failed');
+        });
+      } else {
+        vi.spyOn(host.admin, 'activateScope').mockRejectedValueOnce(new ControlPlaneError(502, 'activate blip'));
+      }
+      const failed = await w.create({ tag: 'pr-1' });
+      expect(failed.ok).toBe(false);
+      const stranded = await strandedOf(w);
+      expect(stranded.marked).toBe(true);
+
+      const retry = await w.create({ tag: 'pr-1' });
+      expect(retry.status).toBe(201);
+      expect(w.deletes).toEqual([stranded.id]);
+    });
+
     it('refresh replaces a young provisioning row and an active one alike', async () => {
       const w = await setup('refresh');
       const young = await w.leftover('pr-1');

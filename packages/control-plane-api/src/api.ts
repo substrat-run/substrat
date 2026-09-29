@@ -7045,8 +7045,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       };
       restore = target ? () => target.restoreScope(tenantId, previewId, []) : null;
     }
-    await options.host.provisionScope(actor, row);
     try {
+      // Inside the try: a host writes the directory row FIRST and then migrates, projects and
+      // seats, so a provision that throws can leave a `provisioning` row too. A provision
+      // that never wrote one (the tag's slug taken by a racing create) marks nothing: the
+      // write below targets this create's own id, which does not exist, and is swallowed.
+      await options.host.provisionScope(actor, row);
       if (restore) await restoreOrRecord(restore);
       await admin.activateScope(actor, tenantId, previewId);
     } catch (e) {
