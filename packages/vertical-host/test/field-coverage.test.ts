@@ -180,6 +180,61 @@ describe('the field walk (#1331)', () => {
     expect(second.touched).toEqual([]);
   });
 
+  it('leaves an accessor-backed page unobserved, and never calls its getter', async () => {
+    const ran: string[] = [];
+    const page = {
+      get entries() {
+        ran.push('entries');
+        return [{ id: 'c1', title: 'A', owner_email: 'x' }];
+      },
+      nextCursor: null,
+    };
+    const { record, call } = harness(
+      { output: card, input: z.object({ limit: z.number().optional() }), paged: { sortKey: 'id' } },
+      () => page,
+      { respond: blind },
+    );
+    await call(ARMED);
+    expect(record).not.toHaveProperty('outputFields');
+    expect(ran).toEqual([]);
+  });
+
+  it('a getter answering a different array each read cannot skew the record', async () => {
+    // What the walk would see first versus what the response would serialise next.
+    let reads = 0;
+    const page = {
+      get entries() {
+        reads++;
+        return reads === 1 ? [{ id: 'c1', title: 'A', note: 'n', owner_email: 'x' }] : [{ id: 'c2' }];
+      },
+      nextCursor: null,
+    };
+    const { record, call } = harness(
+      { output: card, input: z.object({ limit: z.number().optional() }), paged: { sortKey: 'id' } },
+      () => page,
+      { respond: blind },
+    );
+    await call(ARMED);
+    expect(reads).toBe(0);
+    expect(record).not.toHaveProperty('outputFields');
+  });
+
+  it('never runs a getter on a list entry index', async () => {
+    const ran: string[] = [];
+    const list: unknown[] = [];
+    Object.defineProperty(list, '0', {
+      get() {
+        ran.push('0');
+        return { id: 'c1' };
+      },
+      enumerable: true,
+    });
+    const { record, call } = harness({ output: z.array(card) }, () => list, { respond: blind });
+    await call(ARMED);
+    expect(record).not.toHaveProperty('outputFields');
+    expect(ran).toEqual([]);
+  });
+
   it('walks a paged read whose handler still answers a bare array', async () => {
     const { record, call } = harness(
       { output: card, input: z.object({ limit: z.number().optional() }), paged: { sortKey: 'id' } },

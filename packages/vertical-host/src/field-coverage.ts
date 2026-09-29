@@ -24,7 +24,7 @@
  * does not name is never recorded at all, because a key can be data — a map keyed by email
  * address is still a map.
  */
-import { DECLARED_OUTPUT_FIELDS_MAX, isPage } from '@substrat-run/contracts';
+import { DECLARED_OUTPUT_FIELDS_MAX } from '@substrat-run/contracts';
 import type { OutputFieldsReport } from '@substrat-run/kernel';
 import { defOf, transparentInner } from './zod-structural.js';
 
@@ -73,6 +73,12 @@ export function outputWalkOf(output: unknown, paged: boolean): OutputWalk | unde
   return undefined;
 }
 
+/** An own DATA property's value, read through its descriptor, so no getter runs. */
+function ownData(obj: object, key: string): { value: unknown } | undefined {
+  const desc = Object.getOwnPropertyDescriptor(obj, key);
+  return desc && 'value' in desc ? { value: desc.value } : undefined;
+}
+
 /**
  * Walk one operation result. `undefined` when there is nothing to observe — a result that is
  * not an object, or an empty list — so an unobserved response never counts a field absent.
@@ -84,11 +90,23 @@ export function observeOutputFields(result: unknown, walk: OutputWalk): OutputFi
   try {
     let subject: unknown = result;
     if (walk.list) {
-      // A paged read answers a `Page`; one whose handler has not adopted `pageOf` yet still
-      // answers a bare array, and is walked the same way — the mount's own `isPage` test.
-      const entries = walk.paged && isPage(subject) ? subject.entries : subject;
-      if (!Array.isArray(entries) || entries.length === 0) return undefined;
-      subject = entries[0];
+      // A paged read answers a `Page`, one whose handler has not adopted `pageOf` yet still
+      // answers a bare array, and both are walked. The page is recognised from OWN DATA
+      // properties (`isPage`'s shape, read without its gets), and `entries` is read once:
+      // a getter would run code during the walk, and one that answers a different array
+      // each time would have the record describe a row the response never sent. So an
+      // accessor-backed page is left unobserved. The first entry is read the same way.
+      let entries: unknown = subject;
+      if (walk.paged && !Array.isArray(subject)) {
+        if (subject === null || typeof subject !== 'object') return undefined;
+        const page = ownData(subject, 'entries');
+        if (!page || !ownData(subject, 'nextCursor')) return undefined;
+        entries = page.value;
+      }
+      if (!Array.isArray(entries)) return undefined;
+      const first = ownData(entries, '0');
+      if (!first) return undefined;
+      subject = first.value;
     }
     if (subject === null || typeof subject !== 'object' || Array.isArray(subject)) return undefined;
     const row = subject as Record<string, unknown>;
