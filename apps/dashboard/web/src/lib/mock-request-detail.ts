@@ -1,6 +1,7 @@
 import type { CausedTransition, FollowUp } from './request-detail';
 import type { HistoryEntry, ObservabilityLogEvent, RequestRecord } from './api';
 import { mockRequestById } from './mock-requests';
+import { mockCallLogs, mockInvocationEvents } from './mock-timeline';
 
 /**
  * The request slide-over's preview (#1752 §7a) — one request of the Requests fixture, told
@@ -17,7 +18,11 @@ export interface MockRequestDetail {
 
 export function mockRequestDetail(invocationId: string): MockRequestDetail {
   const record = mockRequestById(invocationId);
-  if (!record || record.timestamp === null) return { record, logs: [], events: [], followUps: [], transitions: [] };
+  // A call from the record-history fixtures (a transition card opens those): its events and
+  // lines are there, and it predates per-request records, so it has no stamped line.
+  if (!record || record.timestamp === null) {
+    return { record: null, logs: mockCallLogs(invocationId), events: mockInvocationEvents(invocationId).events, followUps: [], transitions: [] };
+  }
   const end = record.timestamp;
   const start = end - (record.durationMs ?? 0);
   const at = (f: number) => Math.round(start + f * (record.durationMs ?? 0));

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
+import { api, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle } from '../lib/api';
 import { diffRegistries, hasRegistryChange } from '../lib/registry-diff';
 import { timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
@@ -24,6 +24,8 @@ import { AppEdges } from './AppEdges';
 import { AppSchedulesCard } from './AppSchedulesCard';
 import { AppHeader } from './AppHeader';
 import { EntityTimeline } from './EventHistory';
+import { RequestSlideOver } from './RequestSlideOver';
+import { closeRequestInUrl, useRequestInUrl } from '../lib/request-url';
 import { useTenantMetrics } from '../lib/use-tenant-metrics';
 import { useAppSchedules, type SchedulesState } from '../lib/use-app-schedules';
 import { brokenAppLines, sendWithExportBreakAck, type BrokenApp } from '../lib/bind-ack';
@@ -168,9 +170,21 @@ export function AppDetail({
     };
   }, [app.app_scope_id]);
   const surfaceUrls = deriveSurfaceUrls(hostnames, app.hostname);
+  // #1916: a request opened from a record's timeline (Data tab) is part of the address, as
+  // on the Observability pages — linkable, kept on reload, closed by Back.
+  const openRequest = useRequestInUrl();
 
   return (
     <Page style={{ gap: 16 }}>
+      {openRequest && (
+        <RequestSlideOver
+          key={openRequest.invocationId}
+          scopeId={openRequest.scopeId ?? app.app_scope_id}
+          invocationId={openRequest.invocationId}
+          atMs={openRequest.atMs}
+          onClose={closeRequestInUrl}
+        />
+      )}
       <AppHeader
         app={app}
         statusKind={statusKind}
@@ -2186,7 +2200,7 @@ function DataBrowser({ app }: { app: AppRow }) {
   // switcher underneath an open timeline would otherwise re-ask the new scope for
   // an id it has never held — answering "no events recorded", confidently and
   // wrongly, about a record that has a history one scope over.
-  const [history, setHistory] = useState<{ scopeId: string; entityType: string; entityId: string; stateField?: string } | null>(null);
+  const [history, setHistory] = useState<{ scopeId: string; entityType: string; entityId: string; stateField?: string; lifecycle?: EmittedLifecycle } | null>(null);
 
   useEffect(() => {
     if (DEV_MOCK) {
@@ -2357,7 +2371,7 @@ function DataBrowser({ app }: { app: AppRow }) {
                 onNext={() => setOffset((o) => o + DATA_PAGE)}
                 target={tableEntity[page.table]}
                 onOpenHistory={(entityType, entityId) =>
-                  setHistory({ scopeId: activeScope, entityType, entityId, stateField: tableEntity[page.table]?.stateField })
+                  setHistory({ scopeId: activeScope, entityType, entityId, stateField: tableEntity[page.table]?.stateField, lifecycle: tableEntity[page.table]?.lifecycle })
                 }
               />
             )}
@@ -2370,6 +2384,7 @@ function DataBrowser({ app }: { app: AppRow }) {
           entityType={history.entityType}
           entityId={history.entityId}
           stateField={history.stateField}
+          lifecycle={history.lifecycle}
           onClose={() => setHistory(null)}
         />
       )}

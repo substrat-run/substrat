@@ -227,6 +227,8 @@ export interface TimelineTarget {
    * what lets the Event history tell a transition from any other change without guessing.
    */
   readonly stateField?: string;
+  /** #1916: the whole declaration, which the record's lifecycle is drawn against. */
+  readonly lifecycle?: EmittedLifecycle;
 }
 
 /**
@@ -258,8 +260,8 @@ export function timelineTargets(
     if (!table) continue;
     const key = def.primaryKey?.length ? def.primaryKey : ['id'];
     if (key.length !== 1) continue;
-    const stateField = lifecycles?.[entityType]?.field;
-    byTable[table] = stateField ? { entityType, idColumn: key[0]!, stateField } : { entityType, idColumn: key[0]! };
+    const lifecycle = lifecycles?.[entityType];
+    byTable[table] = lifecycle ? { entityType, idColumn: key[0]!, stateField: lifecycle.field, lifecycle } : { entityType, idColumn: key[0]! };
   }
   return byTable;
 }

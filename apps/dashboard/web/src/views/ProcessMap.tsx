@@ -177,6 +177,8 @@ export function ProcessMap({ app, entity, period, sel, compare, nonce, onChange 
           entityType={view.entity}
           entityId={history}
           stateField={view.lifecycle!.field}
+          lifecycle={view.lifecycle!}
+          medianMs={current.totals.medianLifecycleMs}
           onClose={() => setHistory(null)}
         />
       )}

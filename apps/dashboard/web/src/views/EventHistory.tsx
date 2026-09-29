@@ -7,6 +7,11 @@ import { shortId } from '../lib/format';
 import { DEV_MOCK } from '../lib/mock';
 import { mockEntityHistory, mockEventCause, mockEventEffects, mockInvocationEvents } from '../lib/mock-timeline';
 import { InvocationLogsStrip } from './InvocationLogsStrip';
+import { InstanceLifecycle } from './InstanceLifecycle';
+import type { EmittedLifecycle } from '../lib/api';
+
+/** Pages read ahead when a lifecycle is drawn: the to-scale bar needs the whole story, not its oldest page. */
+const LIFECYCLE_PAGES = 5;
 
 /**
  * A record's Event history (#1235, restyled for #1767) — opened from a row in the Data
@@ -353,6 +358,8 @@ export function EntityTimeline({
   entityType,
   entityId,
   stateField,
+  lifecycle,
+  medianMs,
   onClose,
 }: {
   scopeId: string;
@@ -360,6 +367,10 @@ export function EntityTimeline({
   entityId: string;
   /** The payload key the entity's lifecycle moves, when the model declares one. */
   stateField?: string;
+  /** #1916: the declared lifecycle, which draws the record's time to scale above its history. */
+  lifecycle?: EmittedLifecycle;
+  /** The lifecycle's median, when the opener already has it (the process map). */
+  medianMs?: number | null;
   onClose: () => void;
 }) {
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
@@ -385,18 +396,25 @@ export function EntityTimeline({
     setReading(false);
     setErr(null);
     setOpen(null);
-    reads
-      .history(scopeId, entityType, entityId)
-      .then((p) => {
+    // With a lifecycle to draw, read ahead: the pages come oldest first, and a to-scale bar
+    // of the first page alone would stop the record's story wherever that page happened to.
+    const pages = lifecycle ? LIFECYCLE_PAGES : 1;
+    (async () => {
+      let all: HistoryEntry[] = [];
+      let next: string | null | undefined;
+      for (let i = 0; i < pages && next !== null; i++) {
+        const p = await reads.history(scopeId, entityType, entityId, next ?? undefined);
         if (!live) return;
-        setEntries(p.entries);
-        setCursor(p.nextCursor);
-      })
-      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+        all = [...all, ...p.entries];
+        next = p.nextCursor;
+      }
+      setEntries(all);
+      setCursor(next ?? null);
+    })().catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [scopeId, entityType, entityId]);
+  }, [scopeId, entityType, entityId, lifecycle === undefined]);
 
   const readMore = () => {
     if (cursor === null || reading) return;
@@ -435,6 +453,16 @@ export function EntityTimeline({
         <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
       </div>
 
+      {lifecycle && entries !== null && entries.length > 0 && (
+        <InstanceLifecycle
+          scopeId={scopeId}
+          entityType={entityType}
+          lifecycle={lifecycle}
+          entries={entries}
+          complete={cursor === null}
+          {...(medianMs !== undefined ? { medianMs } : {})}
+        />
+      )}
       {err && <div style={{ padding: '10px 16px', fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{err}</div>}
       {!err && entries === null && <div style={{ padding: '10px 16px', ...quiet, fontSize: 12.5 }}>Reading…</div>}
       {entries !== null && entries.length === 0 && (
