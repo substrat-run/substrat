@@ -3258,7 +3258,7 @@ export class SqliteScopeHost implements ScopeHost {
       // spine from KERNEL_DDL (below). Only real tables (never `sqlite_*` internals, which
       // are auto-managed and un-droppable).
       const existing = db
-        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
         .all() as { name: string }[];
       // Search index tables are left alone here and rebuilt below (#827). Dropping a
       // shadow table directly is an error, and dropping them in `sqlite_master` order
@@ -8391,7 +8391,7 @@ export class SqliteScopeHost implements ScopeHost {
           db
             .prepare(
               `SELECT name, sql FROM sqlite_master
-                WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+                WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND sql IS NOT NULL
                 ORDER BY name`,
             )
             .all() as { name: string; sql: string }[]
@@ -8419,7 +8419,7 @@ export class SqliteScopeHost implements ScopeHost {
         const defs = this.directory
           .prepare(
             `SELECT name, sql FROM sqlite_master
-              WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+              WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND sql IS NOT NULL
               ORDER BY name`,
           )
           .all() as { name: string; sql: string }[];
@@ -8452,7 +8452,7 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory.pragma('defer_foreign_keys = ON');
         this.directory.transaction(() => {
           const existing = this.directory
-            .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+            .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
             .all() as { name: string }[];
           for (const { name } of existing) this.directory.exec(`DROP TABLE IF EXISTS "${name}"`);
           // `prepare` compiles only the first statement, as in `loadDump`. The check above

@@ -1501,7 +1501,7 @@ export class ControlPlaneDO extends DurableObject {
     const defs = this.sql
       .exec(
         `SELECT name, sql FROM sqlite_master
-          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*'
+          WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'
             AND sql IS NOT NULL
           ORDER BY name`,
       )
@@ -1543,7 +1543,7 @@ export class ControlPlaneDO extends DurableObject {
       const existing = this.sql
         .exec(
           `SELECT name FROM sqlite_master
-            WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*'`,
+            WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'`,
         )
         .toArray() as unknown as { name: string }[];
       for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
