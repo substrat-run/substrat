@@ -51,9 +51,18 @@ export function isSpineTable(name: string): boolean {
  * tables (`_substrat_roles`, `_substrat_tenant_tuples`, …) that a node scope keeps in its
  * directory instead. Loading one anyway would mean dropping its rows, which a restore does not
  * do silently.
+ *
+ * `isSpine` says which of `names` must be built. A scope restore passes nothing: its search-index
+ * tables are the spine's derived part, skipped before this and rebuilt after. A directory has no
+ * search index, so a directory restore passes `namesSpineTable`, and a table in that namespace is
+ * refused like any other spine table the directory does not build (#1898).
  */
-export function assertSpineTablesBuilt(names: readonly string[], columnsOf: KernelColumnsOf): void {
-  const missing = names.filter((n) => isSpineTable(n) && columnsOf(n) === undefined);
+export function assertSpineTablesBuilt(
+  names: readonly string[],
+  columnsOf: KernelColumnsOf,
+  isSpine: (name: string) => boolean = isSpineTable,
+): void {
+  const missing = names.filter((n) => isSpine(n) && columnsOf(n) === undefined);
   if (missing.length > 0) throw unbuiltSpineTables(missing);
 }
 

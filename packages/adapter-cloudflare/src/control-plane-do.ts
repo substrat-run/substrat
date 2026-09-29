@@ -59,7 +59,7 @@ import type {
   TenantStatus,
   VerticalResolution,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, opsFailureFingerprint } from '@substrat-run/contracts';
+import { assertReplayableDump, namesSpineTable, opsFailureFingerprint } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -1571,10 +1571,11 @@ export class ControlPlaneDO extends DurableObject {
       // `_substrat_roles.role_key` COLLATE NOCASE would decide how tenant-level grants and
       // roles match. The spine is built by the same pass a construction runs, before any row
       // goes in, and the dump contributes only rows, by column name (`dumpRowsInsert`).
-      for (const t of tables) if (!isSpineTable(t.name)) this.sql.exec(t.ddl);
+      for (const t of tables) if (!namesSpineTable(t.name)) this.sql.exec(t.ddl);
       this.buildDirectorySchema({ holdSwitchRecord: false });
       const columnsOf = (name: string) => doSpineColumnsOf(this.sql, name);
-      assertSpineTablesBuilt(tables.map((t) => t.name), columnsOf);
+      // Every `_substrat*` name, the search index's namespace included: a directory has no index.
+      assertSpineTablesBuilt(tables.map((t) => t.name), columnsOf, namesSpineTable);
       // A spine column this code does not know (a dump from a newer one) is kept, as a plain
       // untyped column nothing here reads.
       for (const t of tables) {

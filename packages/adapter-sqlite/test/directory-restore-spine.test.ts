@@ -225,6 +225,13 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
         (d) => ({ ...d, tables: [...d.tables, { name: '_Substrat_Smuggled', ddl: 'CREATE TABLE _Substrat_Smuggled (id TEXT)', columns: ['id'], rows: [['1']] }] }),
         /does not build: _Substrat_Smuggled/,
       ],
+      [
+        // A directory has no search index, so its namespace is a spine table this code does not
+        // build; a scope restore skips it instead, since there the index is rebuilt.
+        'a table in the search index’s namespace',
+        (d) => ({ ...d, tables: [...d.tables, { name: '_SUBSTRAT_SEARCH_evil', ddl: 'CREATE TABLE _SUBSTRAT_SEARCH_evil (t TEXT REFERENCES _substrat_tenant_tuples(subject))', columns: ['t'], rows: [] }] }),
+        /does not build: _SUBSTRAT_SEARCH_evil/,
+      ],
       ...(['rowid', 'OID', '_rowid_'] as const).map((alias): [string, (dump: DirectoryDump) => DirectoryDump, RegExp] => [
         `a spine column named ${alias}`,
         (d) =>

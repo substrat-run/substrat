@@ -194,6 +194,7 @@ import {
   listLimitOf,
   substratError,
   assertReplayableDump,
+  namesSpineTable,
   delegatedReadRecord,
   ownerTransferAudit,
   redrainEventsInput,
@@ -8474,10 +8475,11 @@ export class SqliteScopeHost implements ScopeHost {
           // COLLATE NOCASE would decide how tenant-level grants match. The spine is built by
           // the same pass a cold start runs, before any row goes in, and the dump contributes
           // only rows, by column name (`dumpRowsInsert`).
-          for (const t of dump.tables) if (!isSpineTable(t.name)) this.directory.prepare(t.ddl).run();
+          for (const t of dump.tables) if (!namesSpineTable(t.name)) this.directory.prepare(t.ddl).run();
           this.buildDirectorySchema();
           const columnsOf = (name: string) => spineColumnsOf(this.directory, name);
-          assertSpineTablesBuilt(dump.tables.map((t) => t.name), columnsOf);
+          // Every `_substrat*` name, the search index's namespace included: a directory has no index.
+          assertSpineTablesBuilt(dump.tables.map((t) => t.name), columnsOf, namesSpineTable);
           // A spine column this code does not know (a dump from a newer one) is kept, as a plain
           // untyped column nothing here reads.
           for (const t of dump.tables) {
