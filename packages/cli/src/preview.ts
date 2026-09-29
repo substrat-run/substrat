@@ -76,11 +76,12 @@ async function request<T>(
   url: string,
   header: Record<string, string>,
   init?: RequestInit,
-  opts: { retry?: boolean } = {},
+  opts: { retry?: Retry } = {},
 ): Promise<T> {
   // A transient platform fault (#1918) is one retry away from working, and a CI job nobody
   // watches turns it into a red build. Only the callers that are idempotent by contract opt
-  // in; a 4xx or any other status is a definite answer and is never retried.
+  // in; a 4xx or any other status is a definite answer and is never retried. `Retry` says
+  // how sure we must be that the first attempt is over before sending a second.
   const attempts = opts.retry ? 1 + RETRY_BACKOFF_MS.length : 1;
   for (let attempt = 1; ; attempt++) {
     let res: Response;
@@ -95,8 +96,8 @@ async function request<T>(
     warnIfStale(res.headers);
     const body = await res.text();
     if (!res.ok) {
-      if (TRANSIENT_STATUS.has(res.status) && attempt < attempts) {
-        const ref = /\breference\s*=\s*([a-z0-9]+)/i.exec(body)?.[1];
+      const ref = /\breference\s*=\s*([a-z0-9]+)/i.exec(body)?.[1];
+      if (attempt < attempts && shouldRetry(opts.retry, res.status, body)) {
         await backoff(action, attempt, attempts, `${res.status}${ref ? `, reference = ${ref}` : ''}`);
         continue;
       }
@@ -104,6 +105,26 @@ async function request<T>(
     }
     return parseJsonBody<T>(body, url);
   }
+}
+
+/**
+ * How sure a caller needs to be that the failed attempt is OVER before it sends another.
+ * - `idempotent`: the call is safe to repeat even while the first is still running (read,
+ *   delete) — any transient status will do.
+ * - `after-handler-ended`: repeating while the first is still running is NOT safe. A create
+ *   whose retry finds its row `provisioning` reaps it and re-forks (`orchestratedPreview`),
+ *   and nothing there tells a dead half-built row from one still being built. A bare 502/504
+ *   can be a gateway giving up on a handler that is still forking, so it is not enough.
+ */
+type Retry = 'idempotent' | 'after-handler-ended';
+
+function shouldRetry(retry: Retry | undefined, status: number, body: string): boolean {
+  if (!retry || !TRANSIENT_STATUS.has(status)) return false;
+  if (retry === 'idempotent') return true;
+  // 503: the request was refused, never handled. The redacted-fault shape is what Cloudflare
+  // answers when the Worker's own invocation threw — the handler that would still be forking
+  // has ended. Anything else (a bare 502/504) may be a timeout in front of a live handler.
+  return status === 503 || /\binternal error; reference\s*=\s*[a-z0-9]+/i.test(body);
 }
 
 /** The statuses `explainPlatformFault` calls momentary: the gateway or upstream, not the request. */
@@ -155,9 +176,10 @@ export async function createPreview(opts: {
         ...(opts.refresh ? { refresh: true } : {}),
       }),
     },
-    // Safe to retry: the control plane converges on the tag — a second call rebinds the same
-    // fork, and a create that died half-built is reaped and re-forked, never duplicated.
-    { retry: true },
+    // Converges on the tag: a second call rebinds the same fork, and a create that died
+    // half-built is reaped and re-forked, never duplicated. But that reap cannot tell a dead
+    // row from one still being built, so only retry once the first handler has ended.
+    { retry: 'after-handler-ended' },
   );
 }
 
@@ -175,7 +197,9 @@ export async function deletePreview(opts: {
     `${base}/verticals/${encodeURIComponent(opts.slug)}/previews/${encodeURIComponent(opts.tag)}`,
     opts.header,
     { method: 'DELETE' },
-    { retry: true },
+    // The route answers 200 `{ deleted: null }` for a preview already gone, so a retry after a
+    // delete that landed but whose response was lost succeeds rather than failing on a 404.
+    { retry: 'idempotent' },
   );
 }
 
@@ -190,7 +214,7 @@ export async function listPreviews(opts: {
     `${base}/verticals/${encodeURIComponent(opts.slug)}/previews`,
     opts.header,
     undefined,
-    { retry: true },
+    { retry: 'idempotent' },
   );
 }
 

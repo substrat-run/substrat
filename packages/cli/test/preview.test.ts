@@ -190,7 +190,7 @@ describe('preview create retries a transient platform fault (#1918)', () => {
   const script = (answers: Array<() => Response>) => {
     const bodies: unknown[] = [];
     globalThis.fetch = (async (_url: string, init: RequestInit = {}) => {
-      bodies.push(JSON.parse(init.body as string));
+      bodies.push(init.body ? JSON.parse(init.body as string) : null);
       return answers[Math.min(bodies.length, answers.length) - 1]!();
     }) as unknown as typeof fetch;
     return bodies;
@@ -240,6 +240,40 @@ describe('preview create retries a transient platform fault (#1918)', () => {
     expect(warn).toHaveBeenCalledTimes(2);
     expect(String(warn.mock.calls[0]![0])).toContain('r1');
     expect(String(warn.mock.calls[1]![0])).toContain('r2');
+  });
+
+  it.each([502, 504])('a bare %i (no Cloudflare fault reference) is not retried for a create: the handler may still be forking', async (status) => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bodies = script([() => new Response('upstream timed out', { status })]);
+    await expect(run(createPreview(args))).rejects.toThrow(new RegExp(`\\(${status}\\)`));
+    expect(bodies).toHaveLength(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('a 503 (refused before the handler ran) is retried for a create', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bodies = script([() => new Response('unavailable', { status: 503 }), () => Response.json(ok, { status: 201 })]);
+    await expect(run(createPreview(args))).resolves.toMatchObject({ scopeId: 'S1' });
+    expect(bodies).toHaveLength(2);
+  });
+
+  it('a delete whose first attempt landed but lost its response succeeds on retry: the route answers deleted:null, not 404', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bodies = script([() => new Response('upstream timed out', { status: 502 }), () => Response.json({ deleted: null })]);
+    const { slug, controlPlaneUrl, header, tag } = args;
+    await expect(run(deletePreview({ slug, controlPlaneUrl, header, tag }))).resolves.toEqual({ deleted: null });
+    expect(bodies).toHaveLength(2);
+  });
+
+  it('a delete 404 (unknown vertical) is a definite failure, never swallowed as success', async () => {
+    vi.useFakeTimers();
+    const bodies = script([() => new Response('{"error":"unknown vertical"}', { status: 404 })]);
+    const { slug, controlPlaneUrl, header, tag } = args;
+    await expect(run(deletePreview({ slug, controlPlaneUrl, header, tag }))).rejects.toThrow(/\(404\)/);
+    expect(bodies).toHaveLength(1);
   });
 
   it.each([400, 401, 403, 404, 409, 422, 500, 501])('a %i is a definite answer and is never retried', async (status) => {
