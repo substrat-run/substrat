@@ -68,7 +68,7 @@ const LIFECYCLE: EmittedLifecycle = {
   states: { new: { on: { 'desk/assign': 'open' } }, open: { on: { 'desk/resolve': 'resolved' } }, resolved: { terminal: true } },
 };
 const ev = (id: string, invocationId: string, payload: unknown): HistoryEntry =>
-  ({ id, type: 't', occurredAt: '2026-09-29T10:00:00.000Z', actor: 'p', payload, invocationId }) as unknown as HistoryEntry;
+  ({ id, type: 't', occurredAt: '2026-09-29T10:00:00.000Z', actor: 'p', payload, piiClass: 'none', invocationId }) as unknown as HistoryEntry;
 
 describe('causedTransition', () => {
   it('reads the move from the newest state before the call to the last state inside it', () => {
@@ -86,6 +86,11 @@ describe('causedTransition', () => {
 
   it('keeps the origin unknown rather than guessing when nothing before the call carries the state', () => {
     expect(causedTransition('conversation', 'C1', 'CALL1', LIFECYCLE, [ev('01', 'CALL1', { state: 'open' })])).toMatchObject({ from: null, to: 'open' });
+  });
+
+  it('does not read the state from a classified payload', () => {
+    const classified = { ...ev('02', 'CALL1', { state: 'resolved' }), piiClass: 'pseudonymous' } as HistoryEntry;
+    expect(causedTransition('conversation', 'C1', 'CALL1', LIFECYCLE, [classified, ev('01', 'CALL0', { state: 'open' })])).toBeNull();
   });
 
   it('ignores a state the lifecycle does not declare', () => {

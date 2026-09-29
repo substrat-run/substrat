@@ -14,7 +14,23 @@ import type { TimelineTarget } from './history';
 
 /** What the model would say about the mock tables: which entity, which key, which lifecycle field. */
 export const MOCK_TIMELINE_TARGETS: Record<string, TimelineTarget> = {
-  meridian_account: { entityType: 'account', idColumn: 'id', stateField: 'status' },
+  meridian_account: {
+    entityType: 'account',
+    idColumn: 'id',
+    stateField: 'status',
+    // #1916: the lifecycle the account's history is drawn against. `reactivate` is a
+    // consumer's move in the story below, so it arrives with no operation.
+    lifecycle: {
+      field: 'status',
+      initial: 'invited',
+      states: {
+        invited: { on: { 'meridian/accept-invite': 'active' } },
+        active: { on: { 'meridian/sweep-inactive': 'suspended', 'meridian/close-account': 'closed' } },
+        suspended: { on: { 'meridian/reactivate': 'active', 'meridian/close-account': 'closed' } },
+        closed: { terminal: true },
+      },
+    },
+  },
 };
 
 const OWNER = '01JZ0PRINCIPAL00000000OWNR';

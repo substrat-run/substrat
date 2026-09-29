@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from '@substrat-run/ui';
-import { ApiError, api, type EffectsTree, type HistoryEntry, type ObservabilityLogEvent, type RequestRecord } from '../lib/api';
+import { ApiError, api, type EffectsTree, type EmittedLifecycle, type HistoryEntry, type ObservabilityLogEvent, type RequestRecord } from '../lib/api';
 import { LogList } from '../components/LogList';
 import { callLogsWindow } from '../lib/history';
 import { shortId } from '../lib/format';
@@ -55,14 +55,16 @@ interface Detail {
   /** Some events' consumers could not be read — said beside the ones that could, never instead of them. */
   followUpsError: string | null;
   transitions: Part<CausedTransition[]>;
+  /** The running model's lifecycles, read for the transitions and handed on to a record's history. */
+  lifecycles: Record<string, EmittedLifecycle>;
 }
 
 function useRequestDetail(scopeId: string, invocationId: string, atMs: number): Detail {
-  const [d, setD] = useState<Detail>({ logs: loading, record: null, events: loading, followUps: loading, followUpsError: null, transitions: loading });
+  const [d, setD] = useState<Detail>({ logs: loading, record: null, events: loading, followUps: loading, followUpsError: null, transitions: loading, lifecycles: {} });
   useEffect(() => {
     let live = true;
     const set = (patch: Partial<Detail>) => live && setD((prev) => ({ ...prev, ...patch }));
-    setD({ logs: loading, record: null, events: loading, followUps: loading, followUpsError: null, transitions: loading });
+    setD({ logs: loading, record: null, events: loading, followUps: loading, followUpsError: null, transitions: loading, lifecycles: {} });
     if (DEV_MOCK) {
       const m = mockRequestDetail(invocationId);
       setD({
@@ -72,6 +74,7 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
         followUps: { state: 'ready', value: { flat: m.followUps } },
         followUpsError: null,
         transitions: { state: 'ready', value: m.transitions },
+        lifecycles: {},
       });
       return;
     }
@@ -91,6 +94,7 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
         }
         try {
           const lifecycles = (await api.appModel(scopeId)).running.model?.lifecycles ?? {};
+          set({ lifecycles });
           const withLifecycle = refs.filter((r) => lifecycles[r.entityType]).slice(0, ENTITIES_MAX);
           const found = await Promise.all(
             withLifecycle.map(async (r) => {
@@ -225,6 +229,7 @@ export function RequestSlideOver({
               entityType={history.entityType}
               entityId={history.entityId}
               stateField={history.field}
+              {...(d.lifecycles[history.entityType] ? { lifecycle: d.lifecycles[history.entityType]! } : {})}
               onClose={() => setHistory(null)}
             />
           )}
