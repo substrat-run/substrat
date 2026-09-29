@@ -126,10 +126,11 @@ async function request<T>(
  * How sure a caller needs to be that the failed attempt is OVER before it sends another.
  * - `idempotent`: the call is safe to repeat even while the first is still running (read,
  *   delete) — any transient status will do.
- * - `after-handler-ended`: repeating while the first is still running is NOT safe. A create
- *   whose retry finds its row `provisioning` reaps it and re-forks (`orchestratedPreview`),
- *   and nothing there tells a dead half-built row from one still being built. A bare 502/504
- *   can be a gateway giving up on a handler that is still forking, so it is not enough.
+ * - `after-handler-ended`: repeating while the first is still running is NOT useful. A create
+ *   whose retry finds its row `provisioning` re-forks only once that create is over — its
+ *   own frame marked it failed, or it is past the age bound (#1920) — and otherwise answers
+ *   409. A bare 502/504 can be a gateway giving up on a handler that is still forking, so a
+ *   retry on it would only read that 409.
  */
 type Retry = 'idempotent' | 'after-handler-ended';
 
@@ -192,8 +193,8 @@ export async function createPreview(opts: {
       }),
     },
     // Converges on the tag: a second call rebinds the same fork, and a create that died
-    // half-built is reaped and re-forked, never duplicated. But that reap cannot tell a dead
-    // row from one still being built, so only retry once the first handler has ended.
+    // half-built is reaped and re-forked, never duplicated. One still being built answers
+    // 409 (#1920), so only retry once the first handler has ended.
     { retry: 'after-handler-ended' },
   );
 }
