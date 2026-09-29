@@ -370,7 +370,7 @@ describe('outputWalkOf — the declared fields, read once at mount', () => {
     expect(outputWalkOf(z.object({}), false)).toBeUndefined();
     // A pipe: what the handler returns and what the declaration describes can differ.
     expect(outputWalkOf(card.transform((c) => ({ renamed: c.id })), false)).toBeUndefined();
-    expect(outputWalkOf(z.string().pipe(card), false)).toBeUndefined();
+    expect(outputWalkOf(z.unknown().pipe(card), false)).toBeUndefined();
     expect(outputWalkOf(card.transform((c) => c).optional(), false)).toBeUndefined();
   });
 
