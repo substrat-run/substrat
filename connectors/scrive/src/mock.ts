@@ -128,6 +128,18 @@ export class ScriveMock {
     this.fireCallback(doc);
   }
 
+  /**
+   * Edit a party the way a person can at Scrive (#1927): the sender correcting a
+   * pending party's name or address, or a signatory filling in their own. The
+   * party keeps its `id` — the one thing about it that does not move.
+   */
+  editParty(documentId: string, partyIndex: number, edit: { name?: string; email?: string }): void {
+    const party = this.mustGet(documentId).parties[partyIndex];
+    if (!party) throw new Error(`mock: no party ${partyIndex} on ${documentId}`);
+    if (edit.name !== undefined) party.name = edit.name;
+    if (edit.email !== undefined) party.email = edit.email;
+  }
+
   decline(documentId: string): void {
     const doc = this.mustGet(documentId);
     doc.status = 'rejected';
@@ -155,8 +167,13 @@ export class ScriveMock {
       title: doc.title,
       parties: doc.parties.map((p) => ({
         id: p.id,
+        is_author: p.isAuthor,
+        is_signatory: p.isSignatory,
         sign_time: p.signTime,
-        fields: [{ type: 'name', value: p.name }],
+        fields: [
+          { type: 'name', value: p.name },
+          ...(p.email !== null ? [{ type: 'email', value: p.email }] : []),
+        ],
       })),
     };
   }
@@ -303,7 +320,9 @@ export class ScriveMock {
             // also verified — so this substitution is deliberately limited to the
             // author party.
             return {
-              id: `party-${i}`,
+              // Unique across documents, like Scrive's own — a test that pinned the
+              // wrong document's ids must not match by coincidence.
+              id: `${doc.id}-party-${i}`,
               name: isAuthor
                 ? this.accountHolder.name
                 : String(p.fields.find((f) => f.type === 'name')?.value ?? ''),

@@ -217,10 +217,9 @@ export interface ScriveDispatchState {
    */
   contentHash: string;
   /**
-   * The dispatched parties, in the order sent to Scrive — which is the order
-   * Scrive returns them, so the Nth provider party is this Nth entry. Carries
-   * what `recordSignature` cannot get from the provider: the `requestId` to
-   * resolve and the substrat `ref`/`kind` to attribute the signature to.
+   * The dispatched parties, in the order sent to Scrive. Carries what
+   * `recordSignature` cannot get from the provider: the `requestId` to resolve and
+   * the substrat `ref`/`kind` to attribute the signature to.
    */
   parties: {
     requestId: string;
@@ -228,6 +227,20 @@ export interface ScriveDispatchState {
     kind: 'principal' | 'external';
     /** The substrat signatory, when known up front; null when identity is only learned at signing. */
     ref: string | null;
+    /**
+     * Scrive's own id for this party (#1927) — the key the return path matches a
+     * provider signature by. Taken from `start`'s answer at dispatch, or pinned by
+     * the first poll that finds the document's shape still lining up.
+     *
+     * Position and name used to be the key, and neither holds: a party's name and
+     * address are both editable at Scrive (the sender correcting a mistyped
+     * invitation, a signatory filling in their own), and an edit made the name
+     * cross-check refuse the signature on every poll, forever, with nothing but a
+     * `skipped` reason nobody read. The id survives those edits.
+     *
+     * Absent on a dispatch made before it existed, until a poll pins it.
+     */
+    providerPartyId?: string;
   }[];
   /**
    * The non-signing author party sent AHEAD of `parties` (#852), when one was.
@@ -253,6 +266,17 @@ export interface ScriveDispatchState {
   /** Requests already recorded by a prior poll — so a re-poll is a no-op, not a double. */
   recordedRequestIds?: string[];
   /**
+   * What the last poll could NOT record and a person has to look at (#1927): a
+   * party the provider reports signed that this connector could not attribute, or
+   * a pinned party the provider no longer shows. Rewritten by every poll, so it
+   * says what is wrong now; an entry clears itself once its request is recorded.
+   *
+   * An unattributed signature on a legal document needs a human. It used to be a
+   * `skipped` entry in a return value nothing read, so nobody ever found out — this
+   * is what the activity projection shows instead.
+   */
+  needsAttention?: ScriveAttention[];
+  /**
    * The capability token minted for this dispatch's callback URL (#96) — present
    * exactly when the connector was configured with `callbackUrl`. The ingress
    * compares a presented token against this in constant time and answers
@@ -269,6 +293,43 @@ export interface ScriveDispatchState {
    */
   sealedAttachmentId?: string;
   dispatchedAt: string;
+}
+
+/** One request a poll could not record, and why — see `ScriveDispatchState.needsAttention`. */
+export interface ScriveAttention {
+  requestId: string;
+  /** When the provider says the party signed; null when the provider no longer shows the party. */
+  signedAt: string | null;
+  reason: string;
+}
+
+/**
+ * Scrive's party ids for the dispatched signatories, by position — or `undefined`
+ * when the provider's party list does not have the shape the dispatch sent, in which
+ * case position is not evidence of anything and nothing is pinned (#1927).
+ *
+ * The shape is what the connector itself sent: the non-signing author first when the
+ * dispatch had one (#852), then exactly one signatory per request, none of them the
+ * author. A dispatch from before #852 has no sender and its issuing party WAS the
+ * author, so only the count and the signing role are asked of it.
+ */
+function providerPartyIdsByPosition(
+  provider: readonly { id: string; is_author?: boolean; is_signatory?: boolean }[] | undefined,
+  withSender: boolean,
+  count: number,
+): string[] | undefined {
+  if (!provider) return undefined;
+  const offset = withSender ? 1 : 0;
+  if (provider.length !== offset + count) return undefined;
+  if (withSender && (provider[0]!.is_author !== true || provider[0]!.is_signatory !== false)) {
+    return undefined;
+  }
+  const signatories = provider.slice(offset);
+  const aligned = signatories.every(
+    (p) => p.is_signatory === true && (!withSender || p.is_author !== true),
+  );
+  const ids = signatories.map((p) => p.id);
+  return aligned && new Set(ids).size === ids.length ? ids : undefined;
 }
 
 /**
@@ -596,7 +657,11 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
         ),
       ],
     });
-    await api.start(doc.id);
+    const started = await api.start(doc.id);
+    // #1927: Scrive's id per party, the one key that survives an edit at Scrive.
+    // `undefined` when the answer did not carry the shape sent — the first poll then
+    // pins them from `get`, so a surprise here never costs the dispatch.
+    const providerPartyIds = providerPartyIdsByPosition(started.parties, true, payload.parties.length);
 
     // Record the dispatch so a redelivery skips it. This is the write that
     // closes the duplicate hole for the common case (a retry after a fully
@@ -615,11 +680,12 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
       tenantId: ctx.tenantId,
       vertical: ctx.vertical,
       contentHash: payload.contentHash,
-      parties: payload.parties.map((p) => ({
+      parties: payload.parties.map((p, i) => ({
         requestId: p.requestId,
         label: p.label,
         kind: p.kind,
         ref: p.ref,
+        ...(providerPartyIds ? { providerPartyId: providerPartyIds[i]! } : {}),
       })),
       senderParty: { label: SENDER_PARTY_LABEL },
       ...(bound ? { documentAttachmentId: bound.record.id } : {}),
@@ -696,6 +762,12 @@ export interface ScriveReconcileResult {
   recorded: { requestId: string; signedAt: string }[];
   /** Parties the provider reports as signed that the driver could not record, and why. */
   skipped: { requestId: string; reason: string }[];
+  /**
+   * What a person has to look at, as this run left it in the ledger (#1927) — every
+   * signed-but-unrecorded party in `skipped`, plus a pinned party the provider no
+   * longer shows. Empty when nothing is wrong.
+   */
+  needsAttention: ScriveAttention[];
   /** True once every party in the set has been recorded into the scope. */
   complete: boolean;
   /**
@@ -774,54 +846,48 @@ export async function reconcileScriveDispatch(
 
   const recorded: { requestId: string; signedAt: string }[] = [];
   const skipped: { requestId: string; reason: string }[] = [];
+  const needsAttention: ScriveAttention[] = [];
   const done = new Set(state.recordedRequestIds ?? []);
+  const unrecorded = (requestId: string, signedAt: string | null, reason: string): void => {
+    if (signedAt) skipped.push({ requestId, reason });
+    needsAttention.push({ requestId, signedAt, reason });
+  };
 
   // Party 0 is the sender when this dispatch sent one (#852) — it does not sign and
   // carries no request, so the substrat signatories start one later. Absent on state
   // written by the previous version, where the issuing party WAS provider party 0.
   const partyOffset = state.senderParty ? 1 : 0;
 
-  for (const [i, party] of state.parties.entries()) {
-    if (done.has(party.requestId)) continue; // recorded on an earlier poll
-    const providerParty = doc.parties[i + partyOffset];
-    const signedAt = providerParty?.sign_time ?? null;
-    if (!signedAt) continue; // not signed yet
-
-    // Fail closed on a party-order mismatch rather than attributing a signature
-    // to the wrong request. The connector sends exactly the party set Scrive
-    // keeps, in order, so index alignment holds for this model; if a provider
-    // ever reorders, the name disagreeing is the signal to move to name-keyed
-    // matching — and until then this refuses to guess.
-    const providerName = providerParty?.fields?.find((f) => f.type === 'name')?.value;
-    if (providerName !== undefined && providerName !== party.label) {
-      skipped.push({
-        requestId: party.requestId,
-        reason: `provider party ${i + partyOffset} is '${String(providerName)}', dispatch expected '${party.label}' — refusing to attribute`,
-      });
-      continue;
+  // #1927: pin Scrive's party ids on a dispatch that has none yet — every dispatch
+  // made before the ledger kept them. Only when the document still has exactly the
+  // shape that was sent (see `providerPartyIdsByPosition`); from then on this row
+  // matches on the id and an edit at Scrive cannot unhook a party from its request.
+  let parties = state.parties;
+  let pinned = false;
+  if (parties.some((p) => p.providerPartyId === undefined)) {
+    const ids = providerPartyIdsByPosition(doc.parties, partyOffset === 1, parties.length);
+    if (ids) {
+      parties = parties.map((p, i) => (p.providerPartyId ? p : { ...p, providerPartyId: ids[i]! }));
+      pinned = true;
     }
+  }
 
-    if (!party.ref) {
-      // The request named no signatory up front and the connector does not
-      // extract the signer's identity from the provider (personnummer is direct
-      // PII we deliberately never persist), so there is no `ref` to attribute to.
-      skipped.push({
-        requestId: party.requestId,
-        reason: 'provider reports a signature but the request named no signatory ref to attribute it to',
-      });
-      continue;
-    }
-
+  const { contentHash, documentId } = state;
+  const record = async (
+    party: ScriveDispatchState['parties'][number],
+    ref: string,
+    signedAt: string,
+  ): Promise<void> => {
     try {
       await scope.invoke('protocol/record-signature', {
         requestId: party.requestId,
-        signatory: { kind: party.kind, ref: party.ref, label: party.label },
+        signatory: { kind: party.kind, ref, label: party.label },
         signedAt,
         // Reported verbatim; `recordSignature` checks it against the re-derived
         // frozen hash and fails closed on disagreement.
-        contentHash: state.contentHash,
+        contentHash,
         // Where the proof lives at the provider — the sealed document.
-        evidenceRef: `scrive:document:${state.documentId}`,
+        evidenceRef: `scrive:document:${documentId}`,
       });
       recorded.push({ requestId: party.requestId, signedAt });
       done.add(party.requestId);
@@ -832,13 +898,61 @@ export async function reconcileScriveDispatch(
       const msg = err instanceof Error ? err.message : String(err);
       if (/already/i.test(msg)) {
         done.add(party.requestId);
-        continue;
+        return;
       }
       throw err;
     }
+  };
+
+  for (const [i, party] of parties.entries()) {
+    if (done.has(party.requestId)) continue; // recorded on an earlier poll
+
+    // Matched on Scrive's party id whenever the row has one — position, name and
+    // address all ignored, because every one of them can move at the provider.
+    if (party.providerPartyId !== undefined) {
+      const providerParty = doc.parties.find((p) => p.id === party.providerPartyId);
+      if (!providerParty) {
+        unrecorded(
+          party.requestId,
+          null,
+          `provider party ${party.providerPartyId} is no longer on document ${state.documentId}`,
+        );
+        continue;
+      }
+      if (!providerParty.sign_time) continue; // not signed yet
+      if (!party.ref) {
+        unrecorded(party.requestId, providerParty.sign_time, NO_REF);
+        continue;
+      }
+      await record(party, party.ref, providerParty.sign_time);
+      continue;
+    }
+
+    // No id, and a document whose shape no longer lines up with the dispatch —
+    // position is the only key left, and the name is its last cross-check. A
+    // disagreement refuses rather than guesses, but it is no longer silent: the
+    // party lands in `needsAttention`, where the activity view shows it.
+    const providerParty = doc.parties[i + partyOffset];
+    const signedAt = providerParty?.sign_time ?? null;
+    if (!signedAt) continue; // not signed yet
+    const providerName = providerParty?.fields?.find((f) => f.type === 'name')?.value;
+    if (providerName !== undefined && providerName !== party.label) {
+      unrecorded(
+        party.requestId,
+        signedAt,
+        `provider party ${i + partyOffset} is '${String(providerName)}', dispatch expected '${party.label}', ` +
+          `and the document no longer has the dispatched shape — refusing to attribute`,
+      );
+      continue;
+    }
+    if (!party.ref) {
+      unrecorded(party.requestId, signedAt, NO_REF);
+      continue;
+    }
+    await record(party, party.ref, signedAt);
   }
 
-  const complete = state.parties.every((p) => done.has(p.requestId));
+  const complete = parties.every((p) => done.has(p.requestId));
 
   // The sealed document (#476 step 2). Once the provider closes the document and every
   // party is recorded in the scope, the signing evidence exists only at Scrive — pull the
@@ -879,10 +993,24 @@ export async function reconcileScriveDispatch(
   // Remember what is recorded — and whether the sealed PDF landed — so a re-poll skips both
   // without leaning on `recordSignature` throwing. Same row as the dispatch ledger, so the
   // dispatch idempotency guard still finds it.
-  if (recorded.length || sealedAttachmentId !== state.sealedAttachmentId) {
+  // Also written when ids were pinned or what needs attention changed — both are
+  // things a later poll and the activity view read — and when a racing record was
+  // found already done, which used to be re-learned on every poll.
+  const attentionChanged =
+    JSON.stringify(needsAttention) !== JSON.stringify(state.needsAttention ?? []);
+  if (
+    recorded.length ||
+    pinned ||
+    attentionChanged ||
+    done.size !== (state.recordedRequestIds?.length ?? 0) ||
+    sealedAttachmentId !== state.sealedAttachmentId
+  ) {
+    const { needsAttention: _previous, ...rest } = state;
     await admin.putConnectorState(connectionId, key, {
-      ...state,
+      ...rest,
+      parties,
       recordedRequestIds: [...done],
+      ...(needsAttention.length ? { needsAttention } : {}),
       ...(sealedAttachmentId ? { sealedAttachmentId } : {}),
     } satisfies ScriveDispatchState);
   }
@@ -892,10 +1020,18 @@ export async function reconcileScriveDispatch(
     documentStatus: doc.status,
     recorded,
     skipped,
+    needsAttention,
     complete,
     ...(sealedDocument ? { sealedDocument } : {}),
   };
 }
+
+/** Why a signed party with no signatory `ref` cannot be recorded. */
+const NO_REF =
+  // The request named no signatory up front and the connector does not extract the
+  // signer's identity from the provider (personnummer is direct PII we deliberately
+  // never persist), so there is no `ref` to attribute to.
+  'provider reports a signature but the request named no signatory ref to attribute it to';
 
 /**
  * The identity half of a connection, as the directory holds it — everything the two
@@ -1125,6 +1261,10 @@ export async function scriveConnectionActivity(
     const done = new Set(state.recordedRequestIds ?? []);
     const signed = state.parties.filter((p) => done.has(p.requestId)).length;
     const live = provider?.get(state.documentId);
+    // #1927: what the last poll could not record. It outranks every other status —
+    // a signature the provider holds and the instance does not is the one thing on
+    // this row that needs a person, and it used to be visible nowhere.
+    const attention = new Map((state.needsAttention ?? []).map((a) => [a.requestId, a]));
 
     // Ledger-derived status, used when there is no live read. It says what the PLATFORM
     // knows — signatures recorded, sealed copy stored — never what the provider has
@@ -1142,12 +1282,21 @@ export async function scriveConnectionActivity(
       key,
       title: live?.title && live.title !== '' ? live.title : `Signature request ${state.instanceId}`,
       reference: state.documentId,
-      status: live ? (DOCUMENT_STATUS[live.status] ?? live.status) : ledgerStatus,
+      status:
+        attention.size > 0
+          ? `needs attention — ${attention.size} ${attention.size === 1 ? 'party' : 'parties'} not recorded`
+          : live
+            ? (DOCUMENT_STATUS[live.status] ?? live.status)
+            : ledgerStatus,
       at: asInstant(state.dispatchedAt),
       facts: [
         ...state.parties.slice(0, 24).map((p) => ({
           label: p.label,
-          value: done.has(p.requestId) ? 'signature recorded' : 'awaiting signature',
+          value: done.has(p.requestId)
+            ? 'signature recorded'
+            : attention.has(p.requestId)
+              ? `${attention.get(p.requestId)!.signedAt ? 'signed at Scrive, not recorded' : 'not found at Scrive'}: ${attention.get(p.requestId)!.reason}`
+              : 'awaiting signature',
         })),
         { label: 'Content hash', value: state.contentHash },
         // #711: which paper went out. Worth a line of its own precisely because the
@@ -1285,6 +1434,12 @@ export interface ScriveSweepResult {
   outstanding: string[];
   /** Per-instance reconcile failures; the sweep continues past them. */
   failed: { instanceId: string; error: string }[];
+  /**
+   * Requests a person has to look at (#1927): signed at Scrive and not recorded
+   * here, or pinned to a party Scrive no longer shows. Also kept on each ledger row,
+   * which is where the activity view reads it; returned here so a sweeper can log it.
+   */
+  needsAttention: (ScriveAttention & { instanceId: string })[];
 }
 
 /**
@@ -1322,6 +1477,7 @@ export async function sweepScriveReconciliations(
     completed: [],
     outstanding: [],
     failed: [],
+    needsAttention: [],
   };
 
   for (const { value } of entries) {
@@ -1336,6 +1492,7 @@ export async function sweepScriveReconciliations(
       const r = await reconcileScriveDispatch(host, connectionId, state.instanceId, options);
       result.polled += 1;
       (r.complete ? result.completed : result.outstanding).push(state.instanceId);
+      for (const a of r.needsAttention) result.needsAttention.push({ instanceId: state.instanceId, ...a });
     } catch (err) {
       result.failed.push({
         instanceId: state.instanceId,
