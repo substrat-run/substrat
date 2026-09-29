@@ -1,5 +1,17 @@
 # @substrat-run/engine-booking
 
+## 0.8.12
+
+### Patch Changes
+
+- Updated dependencies [260fb5a]
+- Updated dependencies [4a53af7]
+- Updated dependencies [4ba2a52]
+- Updated dependencies [f79e8ba]
+- Updated dependencies [ba75c81]
+  - @substrat-run/contracts@0.128.0
+  - @substrat-run/kernel@0.128.0
+
 ## 0.8.11
 
 ### Patch Changes

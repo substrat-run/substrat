@@ -1,5 +1,27 @@
 # @substrat-run/demo-hr
 
+## 0.7.41
+
+### Patch Changes
+
+- 4ba2a52: An owner hand-over. Platform staff can now move an instance's owner seat to another member with `POST /tenants/:tenantId/scopes/:scopeId/owner-transfer`. The vertical moves its owner of record, seats the new owner, then revokes the old one. Before this, the owner of record never moved, so if the successor was later revoked and the scope locked out, the lockout repair re-seated the original owner. It now re-seats whoever the record names. The new owner must already be a member who holds a role in the instance, and a second hand-over is refused while one is unfinished; resending the unfinished one completes it, and a repeat after that changes nothing. One that can no longer finish, because the new owner was removed after it started, is refused on every resend; staff close it with `abandon: true`, which seats and revokes nothing. A re-provision now seats the owner of record rather than the principal the platform minted at install. A vertical opts in with vertical-host's new `transferOwner`, `completeOwnerTransfer` and `abandonOwnerTransfer` hooks (vertical-auth's `IdentityDO` methods are the reference); without them the route answers `501`. Every attempt is on the admin log as `transferOwner` rows naming both principals.
+- Updated dependencies [260fb5a]
+- Updated dependencies [4a53af7]
+- Updated dependencies [4ba2a52]
+- Updated dependencies [f79e8ba]
+- Updated dependencies [ba75c81]
+  - @substrat-run/contracts@0.128.0
+  - @substrat-run/kernel@0.128.0
+  - @substrat-run/adapter-sqlite@0.128.0
+  - @substrat-run/adapter-cloudflare@0.128.0
+  - @substrat-run/vertical-host@0.128.0
+  - @substrat-run/control-plane-api@0.128.0
+  - @substrat-run/vertical-auth@0.16.0
+  - @substrat-run/connector-scrive@0.14.33
+  - @substrat-run/engine-absence@0.6.12
+  - @substrat-run/engine-protocol@0.13.12
+  - @substrat-run/dev-issuer@0.2.10
+
 ## 0.7.40
 
 ### Patch Changes
