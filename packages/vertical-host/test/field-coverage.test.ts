@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import {
   z,
+  DECLARED_OUTPUT_FIELDS_MAX,
   encodeInvocationRecord,
   FIELD_COVERAGE_ARMED,
   FIELD_COVERAGE_BINDING,
@@ -17,7 +18,7 @@ import {
 } from '@substrat-run/contracts';
 import { INVOCATION_RECORD_KEY, withInvocationLog, type InvocationRecord } from '@substrat-run/kernel';
 import { mountOperations } from '../src/operations-routes.js';
-import { OUTPUT_FIELD_CAP, observeOutputFields, outputWalkOf } from '../src/field-coverage.js';
+import { observeOutputFields, outputWalkOf } from '../src/field-coverage.js';
 
 const ARMED = { [FIELD_COVERAGE_BINDING]: FIELD_COVERAGE_ARMED };
 
@@ -188,6 +189,11 @@ describe('the field walk (#1331)', () => {
 
   it('cannot fail a request: a result that throws when read is simply not observed', async () => {
     const hostile = new Proxy({}, {
+      get(_t, k) {
+        // `then` is read by the promise the stub resolves with, before the host sees it.
+        if (k === 'then') return undefined;
+        throw new Error('hostile');
+      },
       getOwnPropertyDescriptor() {
         throw new Error('hostile');
       },
@@ -301,7 +307,7 @@ describe('what reaches the line and the router (#1331)', () => {
 
 describe('outputWalkOf — the declared fields, read once at mount', () => {
   it('looks through the wrappers a declaration may put around its object', () => {
-    expect(outputWalkOf(card.optional().nullable(), false)).toEqual({ fields: ['id', 'title', 'note', 'owner_email'], list: false });
+    expect(outputWalkOf(card.optional().nullable(), false)).toEqual({ fields: ['id', 'title', 'note', 'owner_email'], list: false, paged: false });
     expect(outputWalkOf(z.array(card), false)?.list).toBe(true);
     expect(outputWalkOf(card, true)?.list).toBe(true);
   });
@@ -317,8 +323,8 @@ describe('outputWalkOf — the declared fields, read once at mount', () => {
   it('caps the declared names at the declared half’s own cap', () => {
     const wide = z.object(Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`f${i}`, z.string()])));
     const walk = outputWalkOf(wide, false)!;
-    expect(walk.fields).toHaveLength(OUTPUT_FIELD_CAP);
-    const report = observeOutputFields(Object.fromEntries(walk.fields.map((f) => [f, 'x'])), walk, false)!;
-    expect(report.present.length + report.absent.length).toBe(OUTPUT_FIELD_CAP);
+    expect(walk.fields).toHaveLength(DECLARED_OUTPUT_FIELDS_MAX);
+    const report = observeOutputFields(Object.fromEntries(walk.fields.map((f) => [f, 'x'])), walk)!;
+    expect(report.present.length + report.absent.length).toBe(DECLARED_OUTPUT_FIELDS_MAX);
   });
 });

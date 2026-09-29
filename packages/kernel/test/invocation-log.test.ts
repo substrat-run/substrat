@@ -542,7 +542,6 @@ describe('the line’s outputFields (#1331)', () => {
 
   it('omits the key — not null — when nothing was walked, so an unarmed line is unchanged', async () => {
     const line = await lineFor({ operation: 'acme/op' });
-    expect(Object.keys(line)).not.toContain('outputFields');
     expect(Object.keys(line)).toEqual([
       'substrat', 'tenantId', 'scopeId', 'vertical', 'surface', 'method', 'path', 'status', 'threw',
       'durationMs', 'invocationId', 'level', 'operation', 'problemCode', 'principalKind', 'eventCount',

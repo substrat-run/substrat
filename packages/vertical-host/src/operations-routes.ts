@@ -44,6 +44,7 @@ import {
 import { INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord, type ScopeStub } from '@substrat-run/kernel';
 import { classifyError } from './errors.js';
 import { observeOutputFields, outputWalkOf } from './field-coverage.js';
+import { defOf, transparentInner } from './zod-structural.js';
 import { mountMcp, type MountMcpOptions } from './mcp.js';
 
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
@@ -65,25 +66,6 @@ interface HttpDecl {
   readonly paged?: { readonly sortKey?: string; readonly total?: boolean };
   /** Declared by an operation participating in optimistic concurrency (#129). */
   readonly concurrency?: { readonly over: string; readonly idFrom: string };
-}
-
-/** Zod's internal definition, across the layouts this reads structurally. */
-interface ZodDef {
-  readonly type?: string;
-  readonly values?: unknown[];
-  readonly value?: unknown;
-  readonly innerType?: unknown;
-  readonly in?: unknown;
-}
-
-/**
- * Read a schema's definition without `instanceof`, which fails across duplicate
- * copies of the library — the same reason the rest of this file reads Zod
- * structurally.
- */
-function defOf(schema: unknown): ZodDef | undefined {
-  return ((schema as { _zod?: { def?: unknown } })?._zod?.def ??
-    (schema as { _def?: unknown })?._def) as ZodDef | undefined;
 }
 
 /**
@@ -167,19 +149,10 @@ function coercerFor(schema: unknown, depth = 0): ((raw: string) => unknown) | un
       // Only the two spellings a URL can mean unambiguously. `?flag` with no
       // value arrives as '' and stays '' — "present" is not "true" here.
       return (raw) => (raw === 'true' ? true : raw === 'false' ? false : raw);
-    case 'optional':
-    case 'nullable':
-    case 'nullish':
-    case 'default':
-    case 'prefault':
-    case 'catch':
-    case 'readonly':
-    case 'nonoptional':
-      return coercerFor(def.innerType, depth + 1);
-    case 'pipe':
-      return coercerFor(def.in, depth + 1);
-    default:
-      return undefined;
+    default: {
+      const inner = transparentInner(def);
+      return inner === undefined ? undefined : coercerFor(inner, depth + 1);
+    }
   }
 }
 
@@ -556,7 +529,7 @@ export function mountOperations(
         outputWalk &&
         (c.env as Record<string, unknown> | undefined)?.[FIELD_COVERAGE_BINDING] === FIELD_COVERAGE_ARMED
       ) {
-        const observed = observeOutputFields(result, outputWalk, op.paged !== undefined);
+        const observed = observeOutputFields(result, outputWalk);
         if (observed) record.outputFields = observed;
       }
       // Set BEFORE `respond`, so a vertical that owns its envelope still gets the

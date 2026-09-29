@@ -812,7 +812,6 @@ export const deployAssets = assetRouting.extend({
 });
 export type DeployAssets = z.infer<typeof deployAssets>;
 
-/** The JSON part a `substrat push` sends alongside the module files. */
 /**
  * The most output fields one operation contributes to the field-coverage surface — the
  * declared half (#1321) and the observed walk (#1331) both cap here, so they count the
@@ -820,6 +819,7 @@ export type DeployAssets = z.infer<typeof deployAssets>;
  */
 export const DECLARED_OUTPUT_FIELDS_MAX = 200;
 
+/** The JSON part a `substrat push` sends alongside the module files. */
 /**
  * One operation's DECLARED output fields (#1321) — the operation id as OpenAPI
  * knows it, and the property names of the response body. An operation whose

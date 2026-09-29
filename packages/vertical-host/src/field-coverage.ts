@@ -14,7 +14,7 @@
  *   reading the declared half takes from `openapi.json`), so there is no recursion to bound.
  * - **One entry per list.** A paged read's or an array output's entries are homogeneous by
  *   schema, so the first entry answers for the page.
- * - **Capped.** At most {@link OUTPUT_FIELD_CAP} declared names, the declared half's own cap.
+ * - **Capped.** At most `DECLARED_OUTPUT_FIELDS_MAX` declared names, the declared half's own cap.
  * - **Off unless armed** (`FIELD_COVERAGE_BINDING`), and resolved once per route at mount.
  *
  * ## What it records, and what it never does
@@ -24,32 +24,17 @@
  * does not name is never recorded at all, because a key can be data — a map keyed by email
  * address is still a map.
  */
-import { DECLARED_OUTPUT_FIELDS_MAX } from '@substrat-run/contracts';
+import { DECLARED_OUTPUT_FIELDS_MAX, isPage } from '@substrat-run/contracts';
 import type { OutputFieldsReport } from '@substrat-run/kernel';
-
-/** The most declared names one operation contributes — the declared half's own cap. */
-export const OUTPUT_FIELD_CAP = DECLARED_OUTPUT_FIELDS_MAX;
-
-/** Zod's definition, across the layouts read structurally (see `defOf` in operations-routes). */
-interface OutputDef {
-  readonly type?: string;
-  readonly shape?: unknown;
-  readonly element?: unknown;
-  readonly innerType?: unknown;
-  readonly in?: unknown;
-  readonly out?: unknown;
-}
-
-function defOf(schema: unknown): OutputDef | undefined {
-  return ((schema as { _zod?: { def?: unknown } })?._zod?.def ??
-    (schema as { _def?: unknown })?._def) as OutputDef | undefined;
-}
+import { defOf, transparentInner } from './zod-structural.js';
 
 /** How a response is walked: the names to ask about, and whether its first entry answers. */
 export interface OutputWalk {
   readonly fields: readonly string[];
   /** The declared output is a list (an array, or a paged read's entry schema). */
   readonly list: boolean;
+  /** Declared `paged`: the result is a `Page` whose entries are the list. */
+  readonly paged: boolean;
 }
 
 /**
@@ -62,39 +47,24 @@ export interface OutputWalk {
 export function outputWalkOf(output: unknown, paged: boolean): OutputWalk | undefined {
   let schema = output;
   let list = paged;
-  // The same wrapper set `coercerFor` looks through, plus the list wrapper; a bound because
-  // a bound is cheap, not because a Zod schema can cycle.
+  // A bound because a bound is cheap, not because a Zod schema can cycle.
   for (let depth = 0; depth < 8; depth++) {
     const def = defOf(schema);
-    switch (def?.type) {
-      case 'object': {
-        const shape = (schema as { shape?: unknown }).shape ?? def.shape;
-        const names = shape && typeof shape === 'object' ? Object.keys(shape).slice(0, OUTPUT_FIELD_CAP) : [];
-        return names.length > 0 ? { fields: names, list } : undefined;
-      }
-      case 'array':
-        // One level of list only: a list of lists has no fields of its own to count.
-        if (list) return undefined;
-        list = true;
-        schema = def.element;
-        break;
-      case 'optional':
-      case 'nullable':
-      case 'nullish':
-      case 'default':
-      case 'prefault':
-      case 'catch':
-      case 'readonly':
-      case 'nonoptional':
-        schema = def.innerType;
-        break;
-      case 'pipe':
-        // What a handler returns is the pipe's input; a transform's output is unknowable here.
-        schema = def.in;
-        break;
-      default:
-        return undefined;
+    if (def?.type === 'object') {
+      const shape = (schema as { shape?: unknown }).shape ?? def.shape;
+      const names = shape && typeof shape === 'object' ? Object.keys(shape).slice(0, DECLARED_OUTPUT_FIELDS_MAX) : [];
+      return names.length > 0 ? { fields: names, list, paged } : undefined;
     }
+    if (def?.type === 'array') {
+      // One level of list only: a list of lists has no fields of its own to count.
+      if (list) return undefined;
+      list = true;
+      schema = def.element;
+      continue;
+    }
+    // What a handler returns is a pipe's input; a transform's output is unknowable here.
+    schema = transparentInner(def);
+    if (schema === undefined) return undefined;
   }
   return undefined;
 }
@@ -106,14 +76,13 @@ export function outputWalkOf(output: unknown, paged: boolean): OutputWalk | unde
  * Never throws: a result whose property read throws (a Proxy, a hostile getter) is simply
  * not observed, and the request carries on to whatever its serialisation makes of it.
  */
-export function observeOutputFields(result: unknown, walk: OutputWalk, paged: boolean): OutputFieldsReport | undefined {
+export function observeOutputFields(result: unknown, walk: OutputWalk): OutputFieldsReport | undefined {
   try {
     let subject: unknown = result;
     if (walk.list) {
       // A paged read answers a `Page`; one whose handler has not adopted `pageOf` yet still
-      // answers a bare array, and is walked the same way.
-      const entries =
-        paged && !Array.isArray(subject) ? (subject as { entries?: unknown } | null | undefined)?.entries : subject;
+      // answers a bare array, and is walked the same way — the mount's own `isPage` test.
+      const entries = walk.paged && isPage(subject) ? subject.entries : subject;
       if (!Array.isArray(entries) || entries.length === 0) return undefined;
       subject = entries[0];
     }
@@ -124,7 +93,7 @@ export function observeOutputFields(result: unknown, walk: OutputWalk, paged: bo
     for (const field of walk.fields) {
       // Own properties only, as `JSON.stringify` serialises them, and `undefined` is what it
       // drops — so "present" means "on the wire".
-      if (Object.prototype.hasOwnProperty.call(row, field) && row[field] !== undefined) present.push(field);
+      if (row[field] !== undefined && Object.prototype.hasOwnProperty.call(row, field)) present.push(field);
       else absent.push(field);
     }
     return { present, absent };
