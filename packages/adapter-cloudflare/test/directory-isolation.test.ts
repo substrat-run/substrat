@@ -31,6 +31,16 @@ const SCOPES = [
   ['PC_V3_SCOPE', 'PC_CONTROL_PLANE'],
 ] as const;
 
+/**
+ * The scope bindings that read the worker's own `CONTROL_PLANE`, on purpose: no harness hands
+ * them a directory of their own. A new scope binding must land in `SCOPES` or here — the
+ * completeness test below refuses one in neither, so a harness cannot slip past this file.
+ */
+const SHARED_SCOPES = ['BROKEN_SCOPE', 'LIVE_SCOPE', 'LOCAL_SWEEP_SCOPE'] as const;
+
+/** Every binding in the worker's env whose name matches, read from env rather than typed out. */
+const bindingsNamed = (pattern: RegExp) => Object.keys(env).filter((name) => pattern.test(name)).sort();
+
 describe('each directory binding is its own directory (#1899)', () => {
   const staff = platformActorId.parse(ulid());
   const created = new Map<Directory, TenantId>();
@@ -48,6 +58,15 @@ describe('each directory binding is its own directory (#1899)', () => {
       created.set(name, t);
       await host.close();
     }
+  });
+
+  it('every scope binding in the worker is paired with a directory here, or declared shared', () => {
+    const accounted = [...SCOPES.map(([scope]) => scope), ...SHARED_SCOPES].sort();
+    expect(bindingsNamed(/(^|_)SCOPE$/)).toEqual(accounted);
+  });
+
+  it('every directory binding in the worker is one this file checks', () => {
+    expect(bindingsNamed(/(^|_)CONTROL_PLANE$/)).toEqual([...DIRECTORIES].sort());
   });
 
   for (const writer of DIRECTORIES) {
