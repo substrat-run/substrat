@@ -170,3 +170,63 @@ describe('funnelRows', () => {
     expect(rows.find((r) => r.state === 'resolved')).toMatchObject({ reached: 6, share: 0.6, previousShare: 0.6 });
   });
 });
+
+describe('refusalStubs (#1745)', () => {
+  it('draws each refused move out of the state the record was in, the busiest nearest its corner', async () => {
+    const { refusalStubs } = await import('../web/src/lib/process-layout.js');
+    const l = processLayout(CONVERSATION, null);
+    const closed = l.states.find((s) => s.state === 'closed')!;
+    const { stubs, unplaced } = refusalStubs(l, [
+      { from: 'closed', attempted: 'open', operation: 'ticket0/ingest-message', count: 12 },
+      { from: 'closed', attempted: null, operation: 'ticket0/snooze', count: 30 },
+      { from: 'archived', attempted: 'open', operation: 'x', count: 1 },
+    ]);
+    expect(stubs.map((s) => s.label)).toEqual(['closed → ? ×30', 'closed → open ×12']);
+    // Out of the top edge, going up; the second one further along that edge.
+    expect(stubs.every((s) => s.y1 === closed.y && s.y2 < s.y1)).toBe(true);
+    expect(stubs[1]!.x1).toBeLessThan(stubs[0]!.x1);
+ 
+    // A refusal out of a state the model does not declare is listed, never dropped.
+    expect(unplaced.map((u) => u.from)).toEqual(['archived']);
+    // Every pill inside the drawing, even out of the rightmost state.
+    const { stubPillWidth } = await import('../web/src/lib/process-layout.js');
+    for (const st of stubs) expect(st.labelX + stubPillWidth(st.label) / 2).toBeLessThanOrEqual(l.width);
+  });
+});
+
+describe('refusalStubs lanes and bounds (#1745 review)', () => {
+  it('gives each refusal out of one state its own height, and keeps every anchor on that state’s top edge', async () => {
+    const { refusalStubs, stubPillWidth, NODE_W } = await import('../web/src/lib/process-layout.js');
+    const l = processLayout(CONVERSATION, null);
+    const open = l.states.find((s) => s.state === 'open')!;
+    const many = Array.from({ length: 6 }, (_, i) => ({ from: 'open', attempted: null, operation: `op/${i}`, count: 10 - i }));
+    const { stubs } = refusalStubs(l, many);
+    // No two pills at one height.
+    expect(new Set(stubs.map((s) => s.labelY)).size).toBe(stubs.length);
+    for (const st of stubs) {
+      expect(st.x1).toBeGreaterThanOrEqual(open.x);
+      expect(st.x1).toBeLessThanOrEqual(open.x + NODE_W);
+    }
+    // And no two overlapping pills overall.
+    for (let i = 0; i < stubs.length; i++)
+      for (let j = i + 1; j < stubs.length; j++) {
+        const a = stubs[i]!, b = stubs[j]!;
+        const overlapX = Math.abs(a.labelX - b.labelX) < (stubPillWidth(a.label) + stubPillWidth(b.label)) / 2;
+        expect(overlapX && Math.abs(a.labelY - b.labelY) < 20).toBe(false);
+      }
+  });
+
+  it('reports how far above the layout the stubs reach, so the drawing can start there', async () => {
+    const { refusalStubs } = await import('../web/src/lib/process-layout.js');
+    // A side trip puts `snoozed` on the top row, near the top of the drawing.
+    const l = processLayout(
+      CONVERSATION,
+      flow([{ from: 'new', to: 'open', count: 9 }, { from: 'open', to: 'resolved', count: 9 }, { from: 'resolved', to: 'closed', count: 9 }, { from: 'open', to: 'snoozed', count: 1 }]),
+    );
+    const snoozed = l.states.find((s) => s.state === 'snoozed')!;
+    expect(snoozed.row).toBe(-1);
+    const { stubs, top } = refusalStubs(l, [{ from: 'snoozed', attempted: 'resolved', operation: 'x', count: 1 }]);
+    expect(top).toBeLessThanOrEqual(Math.min(...stubs.map((s) => Math.min(s.y2, s.labelY - 10))));
+    expect(top).toBeLessThan(0);
+  });
+});

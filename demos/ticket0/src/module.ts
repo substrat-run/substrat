@@ -639,6 +639,8 @@ function step(row: ConversationRow, operation: string): string {
     `conversation ${row.id}`,
     row.state,
     operation,
+    // #1745: the record, so a refused move is counted against it on the process map.
+    { entityType: 'conversation', entityId: row.id },
   );
   // `allowed` is not a degenerate transition: writing `state` after one would move
   // an entity the declaration says stays put.
@@ -658,6 +660,7 @@ function stepSignup(row: SignupRow, operation: string): string {
     `signup ${row.id}`,
     row.state,
     operation,
+    { entityType: 'signup', entityId: row.id },
   );
   return outcome.kind === 'transition' ? outcome.to : row.state;
 }

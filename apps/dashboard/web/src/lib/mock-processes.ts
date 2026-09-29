@@ -39,6 +39,13 @@ function flow(scale: number, since: string, until: string): LifecycleFlowResult 
       edge('resolved', 'closed', 'ticket0/close', 1016),
       edge('closed', 'open', 'ticket0/ingest-message', 12, { declared: false }),
     ],
+    // #1745: what the model refused — inbound mail re-opening closed conversations, and the
+    // wake-up job firing on conversations that were never snoozed.
+    refused: [
+      { from: 'closed', attempted: 'open', operation: 'ticket0/ingest-message', count: n(12), actors: { connection: n(12) } },
+      // Illegal from `new` in the lifecycle below: wake-snoozed only moves a snoozed one.
+      { from: 'new', attempted: 'open', operation: 'ticket0/wake-snoozed', count: n(7), actors: { system: n(7) } },
+    ],
     states: [
       { state: 'closed', declared: true, terminal: true, current: n(1016), entered: n(1047), dwell: null, stuck: [] },
       {

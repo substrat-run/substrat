@@ -16,6 +16,8 @@ import {
   IDEMPOTENCY_RESULT_LIMIT,
   permissionKey,
   principalId,
+  assertTransition,
+  type LifecycleDef,
   z,
   type EntityRef,
   type ListPage,
@@ -32,6 +34,17 @@ import {
   type OperationContext,
   type OperationHandler,
 } from '@substrat-run/kernel';
+
+/** #1745: the machine `test/refuse` asserts against — `test/move` is illegal from `done`. */
+const REFUSE_LIFECYCLE = {
+  field: 'state',
+  initial: 'draft',
+  states: {
+    draft: { on: { 'test/move': 'live' } },
+    live: { on: { 'test/move': 'done' } },
+    done: { terminal: true },
+  },
+} as unknown as LifecycleDef;
 
 // -- manifests ---------------------------------------------------------------
 
@@ -507,6 +520,15 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
       entity: { entityType: 'test-lifecycle', entityId: input.entityId },
       piiClass: 'none',
       payload: input.state === undefined ? { id: input.entityId } : { id: input.entityId, state: input.state },
+    });
+  }) as OperationHandler<never, unknown>,
+  // -- #1745: a move the lifecycle refuses, from a real operation --------------
+  // Thrown by the platform's own `assertTransition`, so the refusal the kernel records
+  // is the one every engine and vertical raises — not a stand-in shaped like it.
+  'test/refuse': ((_ctx, input: { entityId: string; from: string }) => {
+    assertTransition(REFUSE_LIFECYCLE, `thing ${input.entityId}`, input.from, 'test/move', {
+      entityType: 'test-lifecycle',
+      entityId: input.entityId,
     });
   }) as OperationHandler<never, unknown>,
   // -- #901: an entity's version is the last event's ULID ---------------------

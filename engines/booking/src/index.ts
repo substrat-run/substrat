@@ -474,7 +474,8 @@ function getRow(ctx: OperationContext, id: string): ReservationRow {
  * here would collapse those two refusals into one worse message.
  */
 function requireTransition(row: ReservationRow, operation: string): void {
-  assertTransition(bookingLifecycles.reservation, `reservation ${row.id}`, row.state, operation);
+  // #1745: the record, so a refused move is counted against it on the process map.
+  assertTransition(bookingLifecycles.reservation, `reservation ${row.id}`, row.state, operation, { entityType: 'reservation', entityId: row.id });
 }
 
 /** Participants who have not left — the count the fill target is measured against. */

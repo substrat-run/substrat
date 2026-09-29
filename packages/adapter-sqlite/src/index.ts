@@ -454,6 +454,9 @@ import {
   type EntityVersionRow,
   type InvokeOptions,
   IDEMPOTENCY_DDL,
+  REFUSALS_DDL,
+  refusalInsert,
+  refusedTransitionOf,
   assertIdempotencyKey,
   idempotencyLookupQuery,
   idempotencyPruneStatement,
@@ -825,6 +828,7 @@ const KERNEL_DDL = `
     drained_at TEXT
   );
   ${IDEMPOTENCY_DDL}
+  ${REFUSALS_DDL}
   -- #1672: capabilities — authority carried by a secret (a link share), and the sessions
   -- an exchange trades that secret for. Spine (kernel-written), shared with the DO adapter
   -- from @substrat-run/kernel so the two cannot part company; the column comments are there.
@@ -4588,6 +4592,9 @@ export class SqliteScopeHost implements ScopeHost {
             if (err instanceof PermissionDenied)
               // Inside the actor task that set it, so the field is this call's own (#1237).
               this.recordDenial(rt, subject, operation, err, rt.invocationId, session);
+            // #1745: a refused transition, recorded the same way and for the same reason —
+            // the rollback took every trace of the attempt with it.
+            this.recordRefusal(rt, subject, operation, err, rt.invocationId, session);
             throw err;
           }
           // #1746: read BEFORE the drain below, so the rows above the mark are this
@@ -5368,6 +5375,33 @@ export class SqliteScopeHost implements ScopeHost {
    * catch AFTER `ROLLBACK`, so this INSERT runs in autocommit and survives — the whole
    * point, since the denial is exactly the write the rolled-back operation could not make.
    */
+  /**
+   * #1745: record a refused transition the operation failed with, after its rollback — the
+   * denial's discipline (above), for the lifecycle's refusals. Anything else is not one.
+   */
+  private recordRefusal(
+    rt: ScopeRuntime,
+    subject: CheckSubject,
+    operation: string,
+    err: unknown,
+    invocationId: string | null,
+    impersonation?: ImpersonationSession,
+  ): void {
+    const refused = refusedTransitionOf(err);
+    if (!refused) return;
+    const q = refusalInsert({
+      tenantId: rt.tenantId,
+      scopeId: rt.scopeId,
+      refused,
+      invokedOperation: operation,
+      actor: JSON.stringify(actorOf(subject)),
+      impersonation: impersonation ? JSON.stringify(impersonationStampOf(impersonation)) : null,
+      invocationId,
+      at: new Date().toISOString(),
+    });
+    rt.db.prepare(q.sql).run(...q.params);
+  }
+
   private recordDenial(
     rt: ScopeRuntime,
     subject: CheckSubject,

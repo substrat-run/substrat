@@ -128,11 +128,30 @@ export const lifecycleFlowState = z.object({
   stuck: z.array(lifecycleFlowStuck),
 });
 
+/**
+ * Moves the lifecycle REFUSED inside the window (#1745): an operation attempted from a
+ * state it is not legal in, which `assertTransition` threw and the kernel recorded after
+ * the rollback. Grouped by where the record was and what was tried.
+ */
+export const lifecycleFlowRefusal = z.object({
+  from: z.string(),
+  /** Where the operation leads where it IS legal; null when that is not one state. */
+  attempted: z.string().nullable(),
+  operation: z.string(),
+  count: z.number().int().positive(),
+  actors: z.partialRecord(lifecycleActorKind, z.number().int().nonnegative()),
+});
+
 export const lifecycleFlowResult = z.object({
   entityType: z.string(),
   since: z.string(),
   until: z.string(),
   edges: z.array(lifecycleFlowEdge),
+  /**
+   * #1745. OPTIONAL because a vertical pushed before refusals were recorded answers without
+   * it — absent is "not reported by this app's version", never "none were refused".
+   */
+  refused: z.array(lifecycleFlowRefusal).optional(),
   states: z.array(lifecycleFlowState),
   /**
    * Of the instances that STARTED inside the window (first seen in the initial state),

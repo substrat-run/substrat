@@ -120,6 +120,16 @@ platform's own `conflict` with `reason: 'invalid_transition'` — which is also 
 that were throwing a bare `Error`, and returning a 500 where every engine returns a 409,
 came back onto the contract.
 
+**A refusal is recorded.** A refused move rolls its operation back, and used to leave no trace:
+the denial log holds permission refusals, the outbox holds what committed. Now the kernel
+writes the attempt — which record, the state it was in, the operation, where that operation
+leads when it is legal, who tried and in which call — to its own table after the rollback,
+the way a denied permission is recorded. Pass the record as `assertTransition`'s last
+argument, `{ entityType, entityId }`, so the attempt counts against it. Without it the
+refusal is still recorded, with the record unknown. The process map draws these as red
+stubs out of the state the record was in, and the details never reach the HTTP caller:
+the response is the same `conflict` it always was.
+
 **Review.** `pnpm lint:model` re-emits the machine into `model.json`, and CI re-emits with
 `--check`. A redirected edge or a state that stops admitting substates has to appear in a PR
 diff, the same way [`lint:permissions`](/concepts/permissions) makes a widened role appear

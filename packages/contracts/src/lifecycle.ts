@@ -312,19 +312,73 @@ export const INVALID_TRANSITION = 'invalid_transition';
  * The message names what WAS legal, because the failure a user hits is almost
  * never "this operation does not exist" — it is "someone else already moved it."
  */
-export function assertTransition(lc: LifecycleDef, entity: string, from: string, operation: string): Outcome {
+export function assertTransition(
+  lc: LifecycleDef,
+  entity: string,
+  from: string,
+  operation: string,
+  /**
+   * #1745: the record being moved. Optional and additive — without it the refusal is still
+   * recorded, with the record unknown, but the process map cannot count it against its
+   * entity. Every caller in the repo passes it.
+   */
+  ref?: { entityType: string; entityId: string },
+): Outcome {
   const outcome = transitionFor(lc, from, operation);
   if (outcome) return outcome;
   const legal = Object.keys(lc.states)
     .filter((s) => transitionFor(lc, s, operation) !== null)
     .sort();
-  throw substratError(
+  const err = substratError(
     'conflict',
     legal.length > 0
       ? `invalid transition: ${entity} is '${from}', but '${operation}' requires ${legal.join(' | ')}`
       : `invalid transition: '${operation}' is not legal in any state of ${entity}`,
     { reason: INVALID_TRANSITION },
   );
+  // Where the operation goes when it IS legal: one target is the move that was attempted;
+  // several (or none) leave it unknown rather than guessed.
+  const targets = new Set(
+    Object.values(lc.states).flatMap((s) => {
+      const t = (s as StateDef).on?.[operation as never];
+      return t === undefined ? [] : [t as string];
+    }),
+  );
+  (err as unknown as Record<symbol, RefusedTransition>)[REFUSED_TRANSITION] = {
+    entityType: ref?.entityType ?? null,
+    entityId: ref?.entityId ?? null,
+    from,
+    operation,
+    attempted: targets.size === 1 ? [...targets][0]! : null,
+  };
+  throw err;
+}
+
+/**
+ * A refused transition, as the kernel records it (#1745).
+ *
+ * Carried on the thrown error under a `Symbol.for` key rather than in its extensions: the
+ * extensions are the wire's problem document, and the record's id and state are the
+ * scope's to keep, not the HTTP caller's to be handed. A registered symbol is the same
+ * key in every copy of this package in a build, and is never serialised.
+ */
+export interface RefusedTransition {
+  /** Null when the caller of `assertTransition` did not name the record. */
+  entityType: string | null;
+  entityId: string | null;
+  from: string;
+  operation: string;
+  /** The state the operation leads to where it is legal — null when that is not one state. */
+  attempted: string | null;
+}
+
+const REFUSED_TRANSITION = Symbol.for('substrat.refused-transition');
+
+/** The refused transition an error carries, when `assertTransition` threw it. */
+export function refusedTransitionOf(err: unknown): RefusedTransition | null {
+  if (err === null || typeof err !== 'object') return null;
+  const r = (err as Record<symbol, unknown>)[REFUSED_TRANSITION];
+  return r !== null && typeof r === 'object' ? (r as RefusedTransition) : null;
 }
 
 /** Every operation the declaration mentions, sorted. The join key for guards and docs. */

@@ -1926,6 +1926,27 @@ export function scopeHostContractSuite(
       expect(flow.totals.finished).toBe(1);
     });
 
+    it('records a refused transition after the rollback, and the replay counts it (#1745)', async () => {
+      // The operation throws the platform's conflict, so its transaction rolls back — the
+      // refusal is the one write that must survive it, on both adapters.
+      const stub = await host.getScope(alice, t1, s1);
+      const since = new Date(Date.now() - 60_000).toISOString();
+      await expect(stub.invoke('test/refuse', { entityId: 'r1', from: 'done' })).rejects.toThrow(/invalid transition/);
+      await expect(stub.invoke('test/refuse', { entityId: 'r1', from: 'done' })).rejects.toThrow(/invalid transition/);
+      const flow = await host.admin.lifecycleFlow(staff, t1, s1, {
+        entityType: 'test-lifecycle',
+        lifecycle: {
+          field: 'state',
+          initial: 'draft',
+          states: { draft: { on: { 'test/move': 'live' } }, live: { on: { 'test/move': 'done' } }, done: { terminal: true } },
+        },
+        since,
+        until: new Date(Date.now() + 60_000).toISOString(),
+      });
+      // `test/move` leads to two states where it is legal, so the attempt is not one of them.
+      expect(flow.refused).toEqual([{ from: 'done', attempted: null, operation: 'test/move', count: 2, actors: { principal: 2 } }]);
+    });
+
     // -- scope data introspection: the §5.4 admin-query RPC --------------------
     //
     // A read-only window into a scope's OWN database (the console/dashboard Data

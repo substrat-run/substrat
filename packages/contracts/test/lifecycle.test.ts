@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { errorCodeOf } from '../src/errors.js';
 import {
   assertTransition,
+  refusedTransitionOf,
   defineLifecycles,
   emitLifecycles,
   operationsOf,
@@ -270,6 +271,30 @@ describe('the evaluator', () => {
       expect(errorCodeOf(err)).toBe('conflict');
       expect((err as { extensions?: { reason?: string } }).extensions?.reason).toBe('invalid_transition');
     }
+  });
+
+  it('carries the refused move for the kernel to record, and never on the wire (#1745)', () => {
+    let caught: unknown;
+    try {
+      assertTransition(order, 'order', 'closed', 'shop/complete', { entityType: 'order', entityId: 'o1' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(refusedTransitionOf(caught)).toEqual({ entityType: 'order', entityId: 'o1', from: 'closed', operation: 'shop/complete', attempted: 'completed' });
+    // The problem document stays what it was: the record's id and state are the scope's.
+    expect((caught as { extensions: Record<string, unknown> }).extensions).toEqual({ reason: 'invalid_transition' });
+    expect(JSON.stringify(caught)).not.toContain('o1');
+  });
+
+  it('still records a refusal from a caller that did not name the record — with the record unknown', () => {
+    let caught: unknown;
+    try {
+      assertTransition(order, 'order', 'closed', 'shop/complete');
+    } catch (err) {
+      caught = err;
+    }
+    expect(refusedTransitionOf(caught)).toMatchObject({ entityType: null, entityId: null, from: 'closed' });
+    expect(refusedTransitionOf(new Error('anything else'))).toBeNull();
   });
 
   it('says so plainly when an operation is legal nowhere', () => {

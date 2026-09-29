@@ -131,6 +131,9 @@ import {
   type SearchIndexPlan,
   type SearchOptions,
   IDEMPOTENCY_DDL,
+  REFUSALS_DDL,
+  refusalInsert,
+  refusedTransitionOf,
   assertIdempotencyKey,
   assertPermissionKey,
   idempotencyLookupQuery,
@@ -653,6 +656,8 @@ const KERNEL_DDL = `
   ${OUTBOX_ENTITY_INDEX}
   -- #116: the request-dedupe table, kernel-owned so no vertical migrates for it.
   ${IDEMPOTENCY_DDL}
+  -- #1745: refused transitions, recorded after the rollback like a denial. Kernel-owned.
+  ${REFUSALS_DDL}
   -- #1672: capabilities — authority carried by a secret (a link share), and the sessions
   -- an exchange trades that secret for. Shared with the pure adapter from
   -- @substrat-run/kernel so the two cannot part company; the column comments are there.
@@ -2375,6 +2380,9 @@ export function defineScopeDO(
               impersonation,
             );
           }
+          // #1745: a refused transition, recorded the same way — the rollback took the
+          // attempt with it, and nothing else would remember it.
+          this.recordRefusal(idempotencySubjectRef, tenantId, scopeId, operation, err, this.invocationId, impersonation);
           // The ORIGINAL error, deliberately: `invoke` flattens it for the envelope
           // (which keeps its code and extensions) or rewraps it for the legacy throw
           // path. Collapsing it here would lose the structure before either can look.
@@ -5054,6 +5062,31 @@ export function defineScopeDO(
      * survives — the whole point, since the denial is the write the operation could not make.
      */
     /** K-42: the session a refused call ran under travels with the denial row. */
+    /** #1745: a refused transition the operation failed with, written after its rollback. */
+    private recordRefusal(
+      subject: CheckSubject,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      operation: string,
+      err: unknown,
+      invocationId: string | null,
+      impersonation?: ImpersonationSession,
+    ): void {
+      const refused = refusedTransitionOf(err);
+      if (!refused) return;
+      const q = refusalInsert({
+        tenantId,
+        scopeId,
+        refused,
+        invokedOperation: operation,
+        actor: JSON.stringify(actorOf(subject)),
+        impersonation: impersonation ? JSON.stringify(impersonationStampOf(impersonation)) : null,
+        invocationId,
+        at: new Date().toISOString(),
+      });
+      this.sql.exec(q.sql, ...q.params);
+    }
+
     private recordDenial(
       subject: CheckSubject,
       tenantId: TenantId,
