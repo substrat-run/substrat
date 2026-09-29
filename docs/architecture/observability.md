@@ -269,6 +269,20 @@ cap. It runs on the operation's result before `respond`, so a vertical that owns
 is observed too. It records names from the declaration only, never a value and never a
 response key the declaration does not name, since a key can be data.
 
+Names only is not the same as saying nothing. `outputFields` is derived from ONE response's
+data. It sits on a line that also carries the tenant, the scope and the path, and a path can
+name a record (`/customers/{id}`). So the line can disclose a fact about one identified
+record: that its `phone` is null, or that it has no `terminated_at`. The line is read under
+the same tenant filter as everything else on it, which keeps that fact inside the tenant
+it came from. Any store built from it must still **aggregate per (operation, field)**, as
+counts over a window, and never keep the per-request buckets. The question field coverage
+asks is "is this field ever returned", and a count answers it without holding a fact about
+any one record.
+
+**Known gap: the MCP door is not walked.** Only the routes `mountOperations` derives record
+`outputFields`. A call through the MCP mount leaves it unrecorded, so a field that only an MCP
+client reads looks unread.
+
 `entities` and `eventTypes` are distinct values from at most `EMITTED_REPORT_CAP` events,
 in emission order; `eventCount` is the uncapped count. Only the operation's own emits are
 named. Its consumers' follow-on events share the invocation id on the spine but are their
