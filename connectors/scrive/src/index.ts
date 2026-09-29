@@ -987,7 +987,7 @@ export async function reconcileScriveDispatch(
         providerName !== party.label
           ? `provider party ${i + partyOffset} is ${providerName === undefined ? 'unnamed' : `'${providerName}'`}, ` +
               `dispatch expected '${party.label}', and nothing else ties it to this request — refusing to attribute`
-          : `provider party ${i + partyOffset} is '${party.label}', but so is another provider party, and ` +
+          : `provider party ${i + partyOffset} is '${party.label}', but so is another signing party, and ` +
               `nothing else tells them apart — refusing to attribute`,
       );
       continue;
