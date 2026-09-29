@@ -22,6 +22,7 @@ import { CloudflareScopeHost } from '../src/host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
 import { defineScopeSweeperDO } from '../src/scope-sweeper-do.js';
 import { defineKickCoalescerDO } from '../src/kick-coalescer-do.js';
+import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { DurableObject } from 'cloudflare:workers';
 
 export const ScopeDO = defineScopeDO(contractTestModules, contractTestBareOps);
@@ -62,13 +63,29 @@ export const PreviewV1ScopeDO = defineScopeDO([], {});
 export const PreviewV2ScopeDO = defineScopeDO([], {});
 export const PreviewV3ScopeDO = defineScopeDO([], {});
 
-export { ControlPlaneDO } from '../src/control-plane-do.js';
+export { ControlPlaneDO };
+
+/**
+ * #1899: a directory per harness that counts. Two bindings to ONE class share one namespace,
+ * and every host addresses the directory as `idFromName('control-plane')`, so every binding to
+ * `ControlPlaneDO` reached the same object: one file's tenants, scopes, schedules and access
+ * rows were in every other file's counts. A class of its own is a namespace of its own — the
+ * reason `PreviewV1ScopeDO`…`V3` exist. The classes are identical, and that is the point.
+ *
+ * What they do NOT separate: a scope DO whose permission source is still `control-plane`
+ * reads tenant tuples through its own `env.CONTROL_PLANE`, never the host's binding. Every
+ * harness below provisions scopes that project to `local`, so none reads through it.
+ */
+export class SweepControlPlaneDO extends ControlPlaneDO {}
+export class VeControlPlaneDO extends ControlPlaneDO {}
+export class PcControlPlaneDO extends ControlPlaneDO {}
+export class SchedControlPlaneDO extends ControlPlaneDO {}
 
 // -- the platform-sweep trigger (platform-sweeper.test.ts) --------------------
 
 interface SweeperEnv {
-  // The sweeper tests' OWN namespaces (same DO classes as the contract suites'
-  // SCOPE/CONTROL_PLANE — see the wrangler.jsonc comment for why they are split).
+  // The sweeper tests' OWN namespaces: ScopeDO, and the directory's own subclass
+  // (#1899) — see the wrangler.jsonc comment for why they are split.
   SWEEP_SCOPE: DurableObjectNamespace;
   SWEEP_CONTROL_PLANE: DurableObjectNamespace;
 }

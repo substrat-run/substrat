@@ -137,8 +137,8 @@ describe('#1525: _substrat_schedule_state ALTERs invocation_id in on a DO create
       // (#1591), and `runPlatformSweep` enumerates every ACTIVE scope in it
       // regardless of which host provisioned one. Left active, this scope's live
       // `sched:tick` grant would be due again on the next sweep any OTHER suite
-      // runs — including `schedule-suite.ts`'s own — inflating counts asserted as
-      // exact numbers there. Guarded by `provisioned`: archiving a scope that was
+      // runs over `CONTROL_PLANE`. (`schedule-suite.ts`, whose counts are exact, has
+      // a directory of its own since #1899.) Guarded by `provisioned`: archiving a scope that was
       // never provisioned throws its own error, masking whatever failed above.
       if (provisioned) await host.admin.archiveScope(staff, t, s);
       await host.close();

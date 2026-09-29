@@ -16,10 +16,11 @@ const noFetch = (() => {
 /**
  * The sweep's errors that belong to one scope (#1591).
  *
- * `runPlatformSweep` enumerates every active scope in the directory it is handed, and
- * the Cloudflare contract file hands every suite the SAME control plane
- * (`isolatedStorage: false`), so `report.errors` is the whole file's accumulated
- * state, not the schedule phase's. A scope is named two ways: `<scope>` on the
+ * `runPlatformSweep` enumerates every active scope in the directory it is handed, so
+ * `report.errors` is that whole directory's accumulated state, not this scope's. On
+ * the Cloudflare mount the directory is the suite's own class (#1899), but the filter
+ * is what keeps an assertion about one scope from depending on that — a harness that
+ * shares its directory (#1591) stays correct. A scope is named two ways: `<scope>` on the
  * phases that fail per scope, and `<scope>:<operation | module>` on the schedule
  * phase, hence the two arms — matching only the second would drop this scope's own
  * `freshness` error.
@@ -49,15 +50,6 @@ export function scheduleContractSuite(
     // re-minted would still pass a shape check.
     let pass1Ids: { tick: string; collision: string };
 
-    /**
-     * The tests that sweep get longer than vitest's 5 s default. The sweep walks every scope
-     * in the control plane, and on adapter-cloudflare that one control plane is shared by
-     * every test file in the worker (#1591, #1899), so its cost is the whole suite's, not
-     * this one's. Locally that is a fraction of a second; on a CI shard running other suites
-     * beside it, it has run past 5 s. Nothing asserted here depends on time. Remove once
-     * #1899 gives each harness its own control plane.
-     */
-    const SWEEP_TIMEOUT_MS = 30_000;
     const sweep = () =>
       runPlatformSweep(host, {
         actor: staff,
@@ -90,9 +82,8 @@ export function scheduleContractSuite(
       expect(report.schedules).not.toBeNull();
       // Two: `sched/tick`, and #1288's collision fixture `freshness:sched.ticked`.
       expect(report.schedules!.fired).toBe(2);
-      // Only THIS scope's errors: the sweep also walks every other suite's scopes in
-      // a shared control plane (#1591). The foreign ones are printed, not dropped
-      // silently — if one is a real defect, a red CI log names it.
+      // Only THIS scope's errors (see `errorsOfScope`). Any foreign ones are printed,
+      // not dropped silently — if one is a real defect, a red CI log names it.
       const foreign = report.errors.filter((e) => !errorsOfScope([e], s).length);
       if (foreign.length > 0) {
         console.warn(`schedule contract: ignoring ${foreign.length} error(s) from other scopes:`, foreign);
@@ -136,7 +127,7 @@ export function scheduleContractSuite(
       );
       expect(collisionRow?.invocation_id).not.toBe(firedRow!.invocation_id);
       pass1Ids = { tick: firedRow!.invocation_id!, collision: collisionRow!.invocation_id! };
-    }, SWEEP_TIMEOUT_MS);
+    });
 
     it('skips a schedule still inside its cadence window', async () => {
       const report = await sweep();
@@ -178,7 +169,7 @@ export function scheduleContractSuite(
           invocation_id: pass1Ids.tick,
         },
       ]);
-    }, SWEEP_TIMEOUT_MS);
+    });
 
     it('lets ctx.check gate what the schedule may do — an ungranted op is denied', async () => {
       // The system principal holds `sched:tick` (scheduled) but NOT `sched:admin`
@@ -255,7 +246,7 @@ export function scheduleContractSuite(
       // restore either) — still null, since it invoked nothing.
       const freshnessRow = state.find((r) => r.kind === 'freshness');
       expect(freshnessRow?.invocation_id).toBeNull();
-    }, SWEEP_TIMEOUT_MS);
+    });
 
     /**
      * The failure twin of "fires a due schedule" above: a FAILED run still records a

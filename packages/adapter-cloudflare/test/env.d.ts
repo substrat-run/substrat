@@ -3,13 +3,15 @@ declare module 'cloudflare:test' {
   interface ProvidedEnv {
     SCOPE: DurableObjectNamespace;
     CONTROL_PLANE: DurableObjectNamespace;
+    /** #1899: the schedule suite's own directory — its sweep counts every active scope in it. */
+    SCHED_CONTROL_PLANE: DurableObjectNamespace;
     /** Scopes whose migration fails closed — migration-failure.test.ts. */
     BROKEN_SCOPE: DurableObjectNamespace;
     /** The alarm-driven platform-sweep trigger — platform-sweeper.test.ts. */
     SWEEPER: DurableObjectNamespace;
     /** …and one whose every pass throws whole. */
     BROKEN_SWEEPER: DurableObjectNamespace;
-    /** The sweeper tests' own directory + scope namespaces (same classes). */
+    /** The sweeper tests' own directory + scope namespaces (the directory its own class, #1899). */
     SWEEP_SCOPE: DurableObjectNamespace;
     SWEEP_CONTROL_PLANE: DurableObjectNamespace;
     /** #1242: the version identity the deploy would inject — version-stamp.test.ts. */
