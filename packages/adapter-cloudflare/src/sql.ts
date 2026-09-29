@@ -54,6 +54,14 @@ export function doSpineSql(sql: SqlStorage): ScopedSql {
  * the kernel's tuples table.
  */
 export function doSpineColumnsOf(sql: SqlStorage, name: string): string[] | undefined {
-  const built = sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE`, name).toArray();
+  // SQLite's own tables and workerd's (`_cf_*`) are never ones this DO built, and an export never
+  // dumps them, so a dump naming one is refused by name rather than failing on its SELECT (#1912).
+  const built = sql
+    .exec(
+      `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE
+          AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'`,
+      name,
+    )
+    .toArray();
   return built.length === 0 ? undefined : sql.exec(`SELECT * FROM "${name}" LIMIT 0`).columnNames;
 }

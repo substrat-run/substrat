@@ -278,6 +278,13 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
           ],
           /this directory does not build: tenant_mirror, sqlitedata\b/,
         ],
+        ...(['sqlite_master', 'SQLITE_SCHEMA', 'sqlite_sequence', '_cf_METADATA', '_cf_KV'] as const).map(
+          (reserved): [string, (tables: ScopeDumpTable[]) => ScopeDumpTable[], RegExp] => [
+            `a table named like one SQLite or workerd keeps for itself: ${reserved}`,
+            (tables) => [...tables, { name: reserved, ddl: `CREATE TABLE ${reserved} (name TEXT)`, columns: ['name'], rows: [['x']] }],
+            new RegExp(`this directory does not build: ${reserved}\\b`),
+          ],
+        ),
         ...(['rowid', 'OID', '_rowid_'] as const).map((alias): [string, (tables: ScopeDumpTable[]) => ScopeDumpTable[], RegExp] => [
           `a registry column named ${alias}`,
           (tables) =>

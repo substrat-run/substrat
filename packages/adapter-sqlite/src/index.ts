@@ -534,6 +534,13 @@ export const DO_SCOPE_ONLY_SPINE_TABLES: ReadonlySet<string> = new Set([
  * (#1883, #1898), and on the directory every other table too (#1912).
  */
 const spineColumnsOf = (db: Database.Database, name: string): string[] | undefined => {
+  // SQLite's own tables are never ones this code built, and an export never dumps them, so a dump
+  // naming one is refused by name rather than failing on its write (#1912). `pragma_table_info`
+  // alone would call `sqlite_master` built.
+  const built = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE AND name NOT GLOB 'sqlite_*'`)
+    .get(name);
+  if (built === undefined) return undefined;
   const cols = db.prepare(`SELECT name FROM pragma_table_info(?)`).all(name) as { name: string }[];
   return cols.length === 0 ? undefined : cols.map((c) => c.name);
 };
