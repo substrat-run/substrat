@@ -2785,3 +2785,43 @@ export const brokenMod: ModuleRegistration = {
     'broken/act': (() => 'ran') as OperationHandler<never, unknown>,
   },
 };
+
+/**
+ * #1898: a module whose migration declares a foreign key to a spine table, and its twin whose
+ * foreign key names its own table. The first must be refused wherever a migration is applied
+ * (the migration runs on the kernel's own handle, not `ctx.sql`); the second must apply. Like
+ * `brokenMod`, neither is in `contractTestModules`, so an adapter hosts each on a scope host of
+ * its own. Each migration's first statement is harmless, so a refusal that let part of it run
+ * would leave `lists` behind.
+ */
+const foreignKeyModManifest = (id: string) =>
+  moduleManifest.parse({
+    id,
+    version: '1.0.0',
+    kernelContract: '^0.0.1',
+    permissions: [{ key: 'notes:use', description: 'use notes' }],
+    events: { emits: [], consumes: [] },
+    migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+    attachmentTargets: [],
+    entitlementKey: 'notes',
+  });
+
+export const spineParentMod: ModuleRegistration = {
+  manifest: foreignKeyModManifest('@test/spine-parent'),
+  migrations: [
+    {
+      version: '0001-init',
+      // Quoted, in another case, behind a comment: the grammar SQLite reads, not a regex's.
+      sql: 'CREATE TABLE lists (id TEXT PRIMARY KEY);\nCREATE TABLE notes (t TEXT REFERENCES/**/"_Substrat_Tuples"(subject));',
+    },
+  ],
+  operations: {},
+};
+
+export const ownParentMod: ModuleRegistration = {
+  manifest: foreignKeyModManifest('@test/own-parent'),
+  migrations: [
+    { version: '0001-init', sql: 'CREATE TABLE lists (id TEXT PRIMARY KEY);\nCREATE TABLE notes (t TEXT REFERENCES lists(id));' },
+  ],
+  operations: {},
+};

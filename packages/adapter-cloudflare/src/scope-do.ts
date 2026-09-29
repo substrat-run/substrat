@@ -213,7 +213,7 @@ import {
   type LiveSubscription,
 } from './live-reads.js';
 import { OperationQueue } from './serialization.js';
-import { doScopedSql, doSpineSql } from './sql.js';
+import { doScopedSql, doSpineColumnsOf, doSpineSql } from './sql.js';
 import {
   actorOf,
   admitPeer,
@@ -260,7 +260,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -3986,6 +3986,9 @@ export function defineScopeDO(
                 )
                 .toArray()[0];
               if (!already) {
+                // #1898: a migration runs on this DO's own handle, not `ctx.sql`, so the
+                // spine guard's REFERENCES rule is applied here.
+                assertNoSpineReference(migration.sql, `migration ${key}`);
                 for (const stmt of splitSqlStatements(migration.sql)) {
                   this.sql.exec(stmt);
                 }
@@ -4002,6 +4005,10 @@ export function defineScopeDO(
             // re-parsing the thrown message. The throw stays: `invoke` awaits
             // `ensureMigrations` on every operation and relies on the rejection to
             // fail closed, so resolving here would serve a half-migrated schema.
+            // workerd logs this throw as `Uncaught (in promise)` when it leaves an RPC method,
+            // as it does every exception an RPC call returns (a dump refusal, a denied check).
+            // It is not an unhandled rejection: every caller awaits the memoised promise, and
+            // the coordinator records the failure it receives (#1898 review).
             this.lastFailure = { version: key, error: (err as Error).message };
             throw new Error(
               `migration failed for ${key} — scope fails closed: ${(err as Error).message}`,
@@ -4707,7 +4714,7 @@ export function defineScopeDO(
         // leaves to it.
         for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
         this.applySpineColumnAdditions();
-        const columnsOf = (name: string) => this.spineColumnsOf(name);
+        const columnsOf = (name: string) => doSpineColumnsOf(this.sql, name);
         assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
         // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
         // untyped column the checker never reads.
@@ -4807,19 +4814,6 @@ export function defineScopeDO(
      */
     private rewriteScopeTuples(destScopeId: ScopeId, source: RepointSource | undefined, now: string): void {
       repointScopeGrants(this.switchSql(), destScopeId, source, now);
-    }
-
-    /**
-     * The columns of spine table `name` as KERNEL_DDL built it here, or `undefined` when it built
-     * no such table — what `spineRowsInsert` judges a dump's columns against (#1883). Read off an
-     * empty `SELECT`, because DO SQLite restricts PRAGMA. The name is matched without case, as
-     * SQLite resolves a table name: a dump's `_Substrat_tuples` is the kernel's tuples table.
-     */
-    private spineColumnsOf(name: string): string[] | undefined {
-      const built = this.sql
-        .exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE`, name)
-        .toArray();
-      return built.length === 0 ? undefined : this.sql.exec(`SELECT * FROM "${name}" LIMIT 0`).columnNames;
     }
 
     /**

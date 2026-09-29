@@ -18,7 +18,8 @@
  * What is refused: a statement whose write TARGET is a `_substrat_*` table —
  * `INSERT`/`REPLACE INTO`, `UPDATE`, `DELETE FROM`, `DROP`, `ALTER`, `CREATE` — and
  * the second table a statement can reach past the one it names first: `CREATE
- * TRIGGER … ON`, `CREATE INDEX … ON`, `ALTER TABLE … RENAME TO`.
+ * TRIGGER … ON`, `CREATE INDEX … ON`, `ALTER TABLE … RENAME TO`, and a `REFERENCES` clause
+ * naming the spine (`assertNoSpineReference`, #1898).
  * What is allowed, deliberately: every read of the spine, including one that feeds
  * a write — `INSERT INTO my_timeline SELECT … FROM _substrat_events` is the
  * projection pattern CLAUDE.md explicitly blesses, and only the target is judged.
@@ -27,29 +28,14 @@
  * runtime refuses them outright, and widening this guard to cover them would make
  * it a second read-only console rather than a rule about forging.
  *
- * The scan tokenises OUTSIDE comments and string literals but KEEPS quoted
- * identifiers as tokens — `INSERT INTO "_substrat_tuples"` is the first thing
- * anyone tries, and a scanner that skips quotes hands it through. Dotted names
- * (`main._substrat_tuples`) merge into one token, and every part is checked.
+ * The scan is `tokenizeSql` from `@substrat-run/contracts`, the one reading of the grammar
+ * the dump checks share: comments and string literals skipped, quoted identifiers kept as
+ * tokens, dotted names merged into one, and every part of one checked.
  * Multiple statements in one string are walked in full: the DO's `sql.exec` accepts
  * them, so a forge chained after a legitimate write must not slip past.
  */
-import { substratError } from '@substrat-run/contracts';
+import { namesSpineTable, referencedTablesIn, substratError, tokenizeSql, type SqlToken } from '@substrat-run/contracts';
 import type { ScopedSql, SqlValue } from './scope-host.js';
-
-/**
- * The platform spine's table prefix — the same one `isSystemTable` groups on, and the one a
- * restore builds from the kernel's DDL (`isSpineTable`, #1883). Compared lowercased: SQLite
- * matches table names without regard to case, so `_SUBSTRAT_TUPLES` is the tuples table.
- */
-export const SPINE_PREFIX = '_substrat';
-
-interface Token {
-  /** The identifier text, unquoted; dotted names joined with `.`. */
-  readonly text: string;
-  /** A quoted identifier or string literal — never read as a keyword. */
-  readonly quoted: boolean;
-}
 
 /**
  * Tokens that may stand between a write verb and the table it names. The first
@@ -77,116 +63,6 @@ const MODIFIERS: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
 };
 
-function tokenize(sql: string): Token[] {
-  const tokens: Token[] = [];
-  const n = sql.length;
-  let i = 0;
-  // Set when the previous token ended on a `.`, so `main . tbl` folds into one name.
-  let continues = false;
-
-  const push = (text: string, quoted: boolean): void => {
-    const prev = tokens[tokens.length - 1];
-    if (continues && prev) {
-      tokens[tokens.length - 1] = { text: `${prev.text}.${text}`, quoted: prev.quoted || quoted };
-    } else {
-      tokens.push({ text, quoted });
-    }
-    // Look ahead for the dot that joins this name to the next part. SQLite treats a
-    // COMMENT as whitespace, so `main /* … */ . _substrat_tuples` is one qualified
-    // name — skipping only spaces here would record `main` as the target and miss it.
-    let j = i;
-    for (;;) {
-      if (j < n && /\s/.test(sql[j]!)) {
-        j += 1;
-        continue;
-      }
-      if (sql[j] === '-' && sql[j + 1] === '-') {
-        while (j < n && sql[j] !== '\n') j += 1;
-        continue;
-      }
-      if (sql[j] === '/' && sql[j + 1] === '*') {
-        j += 2;
-        while (j < n && !(sql[j] === '*' && sql[j + 1] === '/')) j += 1;
-        j += 2;
-        continue;
-      }
-      break;
-    }
-    if (sql[j] === '.') {
-      continues = true;
-      i = j + 1;
-    } else {
-      continues = false;
-    }
-  };
-
-  while (i < n) {
-    const c = sql[i]!;
-    const c2 = sql[i + 1];
-    if (c === '-' && c2 === '-') {
-      while (i < n && sql[i] !== '\n') i += 1;
-      continue;
-    }
-    if (c === '/' && c2 === '*') {
-      i += 2;
-      while (i < n && !(sql[i] === '*' && sql[i + 1] === '/')) i += 1;
-      i += 2;
-      continue;
-    }
-    if (c === "'" || c === '"' || c === '`') {
-      // A quoted identifier, or a string literal SQLite would still accept as one
-      // in a table position. The closing quote doubles to escape itself.
-      i += 1;
-      let text = '';
-      while (i < n) {
-        if (sql[i] === c) {
-          if (sql[i + 1] === c) {
-            text += c;
-            i += 2;
-            continue;
-          }
-          i += 1;
-          break;
-        }
-        text += sql[i];
-        i += 1;
-      }
-      push(text, true);
-      continue;
-    }
-    if (c === '[') {
-      i += 1;
-      let text = '';
-      while (i < n && sql[i] !== ']') {
-        text += sql[i];
-        i += 1;
-      }
-      i += 1;
-      push(text, true);
-      continue;
-    }
-    if (/[A-Za-z_]/.test(c)) {
-      let j = i;
-      while (j < n && /[A-Za-z0-9_$]/.test(sql[j]!)) j += 1;
-      const text = sql.slice(i, j);
-      i = j;
-      push(text, false);
-      continue;
-    }
-    // Whitespace does not break a dotted name (`main . tbl` is one); anything else does.
-    if (!/\s/.test(c)) continues = false;
-    i += 1;
-  }
-  return tokens;
-}
-
-/** True when any part of a (possibly dotted, possibly quoted) name is spine. */
-function namesSpine(token: Token): boolean {
-  return token.text
-    .split('.')
-    .some((part) => part.toLowerCase().startsWith(SPINE_PREFIX));
-}
-
 /**
  * A SECOND table a statement can reach, past the one it names first.
  *
@@ -200,15 +76,15 @@ function namesSpine(token: Token): boolean {
 const SECOND_TARGET: Readonly<Record<string, string>> = { create: 'on', alter: 'to' };
 
 /** The first token at or after `from` that names the spine, following this verb's grammar. */
-function spineTargetFrom(tokens: Token[], from: number, verb: string): Token | undefined {
+function spineTargetFrom(tokens: SqlToken[], from: number, verb: string): SqlToken | undefined {
   const first = tokens[from];
-  if (first && namesSpine(first)) return first;
+  if (first && namesSpineTable(first.text)) return first;
   const keyword = SECOND_TARGET[verb];
   if (!keyword) return undefined;
   for (let k = from; k < tokens.length; k += 1) {
     if (tokens[k]!.quoted || tokens[k]!.text.toLowerCase() !== keyword) continue;
     const after = tokens[k + 1];
-    return after && namesSpine(after) ? after : undefined;
+    return after && namesSpineTable(after.text) ? after : undefined;
   }
   return undefined;
 }
@@ -221,7 +97,7 @@ function spineTargetFrom(tokens: Token[], from: number, verb: string): Token | u
  * the table so the author sees which line to delete.
  */
 export function assertNoSpineWrite(sql: string): void {
-  const tokens = tokenize(sql);
+  const tokens = tokenizeSql(sql);
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i]!;
     if (token.quoted) continue;
@@ -241,6 +117,34 @@ export function assertNoSpineWrite(sql: string): void {
       { reason: 'spine_write' },
     );
   }
+  refuseSpineReference(referencedTablesIn(tokens), 'ctx.sql');
+}
+
+/**
+ * Refuse a statement whose `REFERENCES` clause names a `_substrat_*` table (#1898), for the
+ * same reason `CREATE TRIGGER … ON` is refused above: the spine's rows become the parent of a
+ * module's, and with foreign keys enforced the kernel's own writes to that table (a revoke, a
+ * restore's re-point, an outbox prune) then fail on the module's rows. That denies the spine
+ * rather than forging it. `what` names the SQL's source in the message.
+ *
+ * `ctx.sql` passes through here (`assertNoSpineWrite`), and so does every migration a scope
+ * applies, which reaches the database on the kernel's own handle rather than through
+ * `ctx.sql`. A dump's replayed DDL is held to the same rule by `assertReplayableDump`.
+ */
+export function assertNoSpineReference(sql: string, what: string): void {
+  refuseSpineReference(referencedTablesIn(tokenizeSql(sql)), what);
+}
+
+/** The refusal itself, over a statement's `REFERENCES` targets. */
+function refuseSpineReference(referenced: readonly string[], what: string): void {
+  const target = referenced.find(namesSpineTable);
+  if (target === undefined) return;
+  throw substratError(
+    'forbidden',
+    `${what} cannot declare a foreign key to the platform spine: REFERENCES '${target}'. ` +
+      'A module table may reference its own tables; spine rows are reached through the kernel, never as a parent.',
+    { reason: 'spine_write' },
+  );
 }
 
 /**

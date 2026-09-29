@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { referencedTables, orderTablesByForeignKeys } from '../src/dump-order.js';
+import { referencedTables } from '@substrat-run/contracts';
+import { orderTablesByForeignKeys } from '../src/dump-order.js';
 
 /** Minimal table shape the orderer needs: name + DDL. */
 const t = (name: string, ddl: string) => ({ name, ddl });
@@ -27,6 +28,13 @@ describe('referencedTables — FK targets parsed from DDL', () => {
       'CREATE TABLE a (p TEXT REFERENCES "P"(id), q TEXT REFERENCES `Q`(id), ' +
       'r TEXT REFERENCES [R](id), s TEXT REFERENCES S(id))';
     expect(referencedTables(ddl)).toEqual(['P', 'Q', 'R', 'S']);
+  });
+
+  // #1898: the contracts grammar the dump checks read with, which a regex expecting whitespace
+  // after REFERENCES was not — so a comment there hid the parent, and a string literal made one up.
+  it('reads the target past a comment, and not inside a string literal', () => {
+    expect(referencedTables('CREATE TABLE a (v TEXT REFERENCES/**/crm_vendors(id))')).toEqual(['crm_vendors']);
+    expect(referencedTables("CREATE TABLE a (v TEXT DEFAULT 'REFERENCES crm_vendors(id)')")).toEqual([]);
   });
 
   it('returns [] when there are no foreign keys', () => {

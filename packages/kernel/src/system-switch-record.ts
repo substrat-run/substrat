@@ -27,6 +27,9 @@
 import type { ListPage } from '@substrat-run/contracts';
 import type { SwitchSql, SwitchedOff, SystemScheduleState } from './system-switch.js';
 
+/** The record's table name, as the DDL below spells it. */
+export const SYSTEM_SWITCHES_TABLE = '_substrat_system_switches';
+
 /**
  * The table. Interpolated into both adapters' directory DDL, so `lint:spine-ddl` sees the
  * one spelling on each side. No CHECK on `position`: the drift gate does not compare
@@ -108,10 +111,19 @@ export const SYSTEM_SWITCHES_BACKFILL_SQL = `
    WHERE latest = 1 AND ever_off = 1
 `;
 
+/**
+ * Does a dump carry the record table? A directory restore builds the table either way, and
+ * backfills it from the dump's own admin log only when the dump did not (#1898). Compared
+ * without case, as SQLite resolves a table name.
+ */
+export function dumpCarriesSystemSwitches(names: readonly string[]): boolean {
+  return names.some((n) => n.toLowerCase() === SYSTEM_SWITCHES_TABLE);
+}
+
 /** "Does the record table exist yet?" — asked BEFORE the DDL, so the backfill runs once. */
 export function systemSwitchesTableExists(db: SwitchSql): boolean {
   return (
-    db.all(`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = '_substrat_system_switches'`)
+    db.all(`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?`, SYSTEM_SWITCHES_TABLE)
       .length > 0
   );
 }

@@ -11,6 +11,8 @@ import {
   SWEEP_RUNS_INTENT_INDEX,
   sweepRunsIntentHasKind,
   SYSTEM_SWITCHES_BACKFILL_SQL,
+  SYSTEM_SWITCHES_TABLE,
+  dumpCarriesSystemSwitches,
   SYSTEM_SWITCHES_DDL,
   forgetSystemSwitchesOf,
   listSystemSwitchRecords,
@@ -35,9 +37,14 @@ import {
   ulid,
   isPrimaryScope,
   resolveVerticalInstanceFrom,
+  assertSpineTablesBuilt,
+  dumpRowsInsert,
+  isSpineTable,
+  spineColumnAdditions,
   type ImpersonationRow,
 } from '@substrat-run/kernel';
 import { splitSqlStatements, switchSqlOver } from './scope-do.js';
+import { doSpineColumnsOf } from './sql.js';
 import type {
   AdminLogEntry,
   DeclaredMigration,
@@ -53,7 +60,7 @@ import type {
   TenantStatus,
   VerticalResolution,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, opsFailureFingerprint } from '@substrat-run/contracts';
+import { assertReplayableDump, namesSpineTable, opsFailureFingerprint } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -1239,19 +1246,30 @@ export class ControlPlaneDO extends DurableObject {
    */
   private applyDirectorySchema(): void {
     const switchRecordIsNew = !systemSwitchesTableExists(this.kernelSql);
-    for (const stmt of DIRECTORY_DDL_PLAN.loop) {
-      if (switchRecordIsNew && stmt.includes('_substrat_system_switches')) continue;
-      this.sql.exec(stmt);
-    }
-    this.ensureDirectoryColumns();
-    // #1764's, held back by `planDirectoryDdl`: its index names a column added just above.
-    for (const stmt of DIRECTORY_DDL_PLAN.afterColumns) this.sql.exec(stmt);
+    this.buildDirectorySchema({ holdSwitchRecord: switchRecordIsNew });
     if (switchRecordIsNew) {
       this.ctx.storage.transactionSync(() => {
         for (const stmt of splitSqlStatements(SYSTEM_SWITCHES_DDL)) this.sql.exec(stmt);
         this.sql.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
       });
     }
+  }
+
+  /**
+   * The directory's tables as this code builds them, carrying whatever the directory already
+   * holds forward to that shape: the construction's pass, and a restore's (#1898), which runs
+   * it inside its transaction after replaying the dump's non-spine tables and before loading
+   * any row. `holdSwitchRecord` leaves the #1674 record's statements to the caller, which
+   * creates the table with its backfill.
+   */
+  private buildDirectorySchema({ holdSwitchRecord }: { holdSwitchRecord: boolean }): void {
+    for (const stmt of DIRECTORY_DDL_PLAN.loop) {
+      if (holdSwitchRecord && stmt.includes(SYSTEM_SWITCHES_TABLE)) continue;
+      this.sql.exec(stmt);
+    }
+    this.ensureDirectoryColumns();
+    // #1764's, held back by `planDirectoryDdl`: its index names a column added just above.
+    for (const stmt of DIRECTORY_DDL_PLAN.afterColumns) this.sql.exec(stmt);
   }
 
   /**
@@ -1289,8 +1307,9 @@ export class ControlPlaneDO extends DurableObject {
    * refuses a manual BEGIN through `sql.exec`, and this body has no `await`, which is
    * the one case the sync API is for. The caller is the constructor, so it must be
    * synchronous anyway. Each list leads with `DROP TABLE IF EXISTS <table>_new` to absorb
-   * a scratch table arriving from BELOW the transaction (a restored backup that captured
-   * one mid-rebuild) — belt, not the fix.
+   * a scratch table arriving from BELOW the transaction — belt, not the fix. A restore no
+   * longer brings one: since #1898 a dump's `_substrat_*_new` is an unbuilt spine table, and
+   * refused, and since this rebuild became atomic a consistent dump cannot capture one.
    */
   private rebuildAtomically(statements: readonly string[]): void {
     this.ctx.storage.transactionSync(() => {
@@ -1524,12 +1543,15 @@ export class ControlPlaneDO extends DurableObject {
    * refuse. Deferral holds every check to commit, by which point the old rows are gone
    * and the new ones are all in.
    *
-   * Then the schema is re-asserted, and that is not belt-and-braces: a copy taken
-   * before a directory migration carries the OLD shape, so replaying it verbatim would
-   * silently roll the platform's schema backwards and the first read of a newer column
-   * would fail with a bare `no such column`. `DIRECTORY_DDL` is all IF NOT EXISTS and
-   * `ensureDirectoryColumns` is attempt-and-tolerate, so together they carry a restored
-   * older directory forward to the running code's shape — the same contract a cold
+   * The schema is asserted twice, and that is not belt-and-braces. Inside the transaction,
+   * before any row, it builds the spine (#1898) and carries the dump's older non-spine tables
+   * forward: a copy taken before a directory migration carries the OLD shape, so replaying it
+   * verbatim would silently roll the platform's schema backwards and the first read of a newer
+   * column would fail with a bare `no such column`. After it, `applyDirectorySchema` runs as a
+   * construction does, which fills in the legacy rows just loaded (`scopes.slug`, `kind`, `name`
+   * where a pre-directory row left them NULL). `DIRECTORY_DDL` is all IF
+   * NOT EXISTS and `ensureDirectoryColumns` is attempt-and-tolerate, so together they carry a
+   * restored older directory forward to the running code's shape — the same contract a cold
    * start gets.
    */
   async importDump(tables: ScopeDumpTable[]): Promise<void> {
@@ -1547,18 +1569,41 @@ export class ControlPlaneDO extends DurableObject {
         )
         .toArray() as unknown as { name: string }[];
       for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
-      for (const t of tables) this.sql.exec(t.ddl);
+      // The directory's non-spine tables take the dump's own DDL. Its spine never does (#1898,
+      // as #1883 for a scope): a dump declaring `_substrat_tenant_tuples.object` or
+      // `_substrat_roles.role_key` COLLATE NOCASE would decide how tenant-level grants and
+      // roles match. The spine is built by the same pass a construction runs, before any row
+      // goes in, and the dump contributes only rows, by column name (`dumpRowsInsert`).
+      for (const t of tables) if (!namesSpineTable(t.name)) this.sql.exec(t.ddl);
+      // Inside this async transaction, so the pass must never reach `rebuildAtomically`'s
+      // `transactionSync` for a table the dump built: today every rebuild targets a spine
+      // table, which the pass's own DDL has just created on the current shape, so none fires.
+      this.buildDirectorySchema({ holdSwitchRecord: false });
+      const columnsOf = (name: string) => doSpineColumnsOf(this.sql, name);
+      // Every `_substrat*` name, the search index's namespace included: a directory has no index.
+      // So every spine table that gets past this is one `isSpineTable` below also calls spine.
+      assertSpineTablesBuilt(tables.map((t) => t.name), columnsOf);
+      // A spine column this code does not know (a dump from a newer one) is kept, as a plain
+      // untyped column nothing here reads.
+      for (const t of tables) {
+        if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
+      }
       for (const t of tables) {
         if (t.rows.length === 0) continue;
-        const cols = t.columns.map((c) => `"${c}"`).join(', ');
-        const placeholders = t.columns.map(() => '?').join(', ');
-        const insert = `INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`;
+        const insert = dumpRowsInsert(t, columnsOf);
         for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
       }
+      // #1674: the switch record is built above whether or not the dump carried it. A dump from
+      // before it gets the one-time backfill from its own admin log, now that those rows are in,
+      // and inside this transaction, so a backfill that fails leaves the directory as it was. One
+      // that carried it keeps its rows and is never backfilled over.
+      if (!dumpCarriesSystemSwitches(tables.map((t) => t.name))) {
+        this.sql.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      }
     });
-    // Outside the transaction, like the constructor's own path: these are idempotent
-    // schema assertions, and an ALTER that has to be tolerated (duplicate column) must
-    // not take the restore's data down with it.
+    // The construction's pass again, now over the rows just loaded: its schema half finds
+    // nothing left to do, and its legacy-row UPDATEs reach the rows the pass inside the
+    // transaction ran before.
     this.applyDirectorySchema();
     // A restore is a new #1764 backfill episode. It replaced the data the old failure count and
     // backoff were about, so neither may delay or silence it: the count is cleared and the next

@@ -1,7 +1,6 @@
-import { substratError } from '@substrat-run/contracts';
+import { SPINE_PREFIX, namesSpineTable, substratError } from '@substrat-run/contracts';
 import { SCHEDULE_STATE_KIND_OF_OP } from './platform-sweep.js';
 import { isSearchIndexTable } from './search-index.js';
-import { SPINE_PREFIX } from './spine-guard.js';
 
 /**
  * How a restore, fork or carry loads a dump's `_substrat_*` spine tables (#1883). One
@@ -52,9 +51,14 @@ export function isSpineTable(name: string): boolean {
  * tables (`_substrat_roles`, `_substrat_tenant_tuples`, …) that a node scope keeps in its
  * directory instead. Loading one anyway would mean dropping its rows, which a restore does not
  * do silently.
+ *
+ * Every `_substrat*` name is judged, the search index's namespace included (`namesSpineTable`,
+ * not `isSpineTable`): a scope restore has skipped its index tables before this, since it
+ * rebuilds them, and a directory has no search index, so there such a table is one more spine
+ * table the directory does not build (#1898).
  */
 export function assertSpineTablesBuilt(names: readonly string[], columnsOf: KernelColumnsOf): void {
-  const missing = names.filter((n) => isSpineTable(n) && columnsOf(n) === undefined);
+  const missing = names.filter((n) => namesSpineTable(n) && columnsOf(n) === undefined);
   if (missing.length > 0) throw unbuiltSpineTables(missing);
 }
 
