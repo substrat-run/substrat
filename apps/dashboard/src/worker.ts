@@ -2518,6 +2518,32 @@ app.get('/api/apps/:scopeId/invocation', async (c) => {
  * #1525: every delivery in one app's scope that gave up — "which deliveries in this app
  * gave up?", which names no record and so no walk can answer.
  */
+/**
+ * #1828: one app's refused permission checks, newest first — the K-35 denial log's rows,
+ * for Audit's Refused rows and Outcome filter. Gated like every per-app read: the scope is
+ * resolved from the team's own apps, so a foreign id 404s before the plane is asked.
+ *
+ * Paged by time rather than a cursor, because that is the read the log offers: the next
+ * page is `until` the oldest row already held. `limit` is capped at the log's own maximum.
+ */
+app.get('/api/apps/:scopeId/denials', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const until = c.req.query('until');
+  if (until !== undefined && Number.isNaN(Date.parse(until))) throw new HTTPException(400, { message: 'until is not an instant' });
+  const asked = Number(c.req.query('limit') ?? DENIAL_LIMIT_MAX);
+  if (!Number.isInteger(asked) || asked < 1) throw new HTTPException(400, { message: 'limit must be a positive integer' });
+  const limit = Math.min(asked, DENIAL_LIMIT_MAX);
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const entries = await cp.listDenials(scope, { limit, ...(until ? { until } : {}) });
+  // `limit` travels back so the page can tell a full page (there may be more) from the end.
+  return c.json({ entries, limit });
+});
+
 app.get('/api/apps/:scopeId/dead-letters', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));

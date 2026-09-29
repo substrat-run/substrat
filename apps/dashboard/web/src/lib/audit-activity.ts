@@ -190,3 +190,91 @@ export function entryDiff(before: unknown, after: unknown): DiffRow[] {
   if (same(before, after)) return [];
   return [row('value', before, after, before != null, after != null)];
 }
+
+// -- #1828: refused permission checks, beside the actions -----------------------------
+
+/** A refused permission check, as far as the page reads one (the K-35 denial log's row). */
+export interface Refusal {
+  id: string;
+  /** The contracts `Actor`: a principal id, or `{ system }` / `{ connection }` / `{ capability }` / `{ vertical }`. */
+  actor: unknown;
+  permission: string;
+  operation: string | null;
+  invocationId: string | null;
+  /** The K-42 stamp when a staff member was acting as someone; null the ordinary case. */
+  impersonation: unknown;
+  at: string;
+}
+
+/**
+ * Who a refusal's actor is, in this page's words. A principal id is named the way an
+ * action's actor id is (`actorOf`), so the same actor reads the same in both kinds of row;
+ * the kinds only a refusal can carry are the platform acting, so they read as jobs.
+ */
+export function refusalActorOf(actor: unknown): Actor {
+  if (typeof actor === 'string') return actorOf(actor);
+  if (actor && typeof actor === 'object') {
+    const a = actor as Record<string, unknown>;
+    const job = (name: string): Actor => ({ kind: 'job', name, initials: initialsOf(name) });
+    if (typeof a['system'] === 'string') return job(`${a['system']} (a consumer)`);
+    if (typeof a['connection'] === 'string') return job('A connector');
+    if (typeof a['capability'] === 'string') return job('Someone with a shared link');
+    if (typeof a['vertical'] === 'string') return job(`The ${a['vertical']} app`);
+  }
+  return { kind: 'unknown', name: 'An unrecorded actor', initials: '?' };
+}
+
+/** "was refused workorder:complete on workorder/complete" — after the actor's bold name. */
+export function refusalSentence(r: Pick<Refusal, 'permission' | 'operation'>): string {
+  return `was refused ${r.permission}${r.operation ? ` on ${r.operation}` : ''}`;
+}
+
+export type OutcomeFilter = 'all' | 'allowed' | 'refused';
+
+export type ActivityItem = { kind: 'action'; at: string; id: string; entry: AuditEntry } | { kind: 'refusal'; at: string; id: string; refusal: Refusal };
+
+/**
+ * The two logs as one list, newest first — WITHOUT inventing an order the reads did not give.
+ *
+ * Each log is read a page at a time, and each page stops somewhere. Past the point where a
+ * log has more to give, its next page could hold rows newer than anything already read of
+ * the other one; showing the other log's older rows there would be showing them out of
+ * order, with the gap filled in later. So the list stops at the NEWEST such point (its
+ * `floor`), and what is read below it waits. `older` says which log the next "Load older"
+ * reads: the one whose boundary is holding the list back.
+ */
+export function mergeActivity(
+  actions: { entries: AuditEntry[]; more: boolean } | null,
+  refusals: { entries: Refusal[]; more: boolean } | null,
+): { items: ActivityItem[]; floor: string | null; older: 'actions' | 'refusals' | null } {
+  const oldest = (xs: { at: string }[]) => xs.reduce<string | null>((m, x) => (m === null || x.at < m ? x.at : m), null);
+  const bounds: { log: 'actions' | 'refusals'; at: string }[] = [];
+  if (actions?.more) bounds.push({ log: 'actions', at: oldest(actions.entries) ?? '9999' });
+  if (refusals?.more) bounds.push({ log: 'refusals', at: oldest(refusals.entries) ?? '9999' });
+  const hold = bounds.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))[0] ?? null;
+  const all: ActivityItem[] = [
+    ...(actions?.entries ?? []).map((entry) => ({ kind: 'action' as const, at: entry.at, id: entry.id, entry })),
+    ...(refusals?.entries ?? []).map((refusal) => ({ kind: 'refusal' as const, at: refusal.at, id: refusal.id, refusal })),
+  ];
+  const items = all
+    .filter((i) => hold === null || i.at >= hold.at)
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : -1));
+  return { items, floor: hold?.at ?? null, older: hold?.log ?? null };
+}
+
+/** The Outcome, kind and text filters over the merged list. */
+export function filterActivity(
+  items: ActivityItem[],
+  opts: { outcome: OutcomeFilter; kind: KindFilter; text: string; appName: (scopeId: string) => string | null },
+): ActivityItem[] {
+  const q = opts.text.trim().toLowerCase();
+  return items.filter((i) => {
+    if (opts.outcome === 'allowed' && i.kind !== 'action') return false;
+    if (opts.outcome === 'refused' && i.kind !== 'refusal') return false;
+    if (i.kind === 'action') return filterEntries([i.entry], opts).length === 1;
+    const who = refusalActorOf(i.refusal.actor);
+    if (opts.kind !== 'all' && who.kind !== opts.kind) return false;
+    if (!q) return true;
+    return [who.name, refusalSentence(i.refusal), i.refusal.permission, 'refused'].join(' ').toLowerCase().includes(q);
+  });
+}
