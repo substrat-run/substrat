@@ -88,8 +88,10 @@ async function request<T>(
     try {
       res = await fetch(url, { ...init, headers: { 'content-type': 'application/json', ...header } });
     } catch (e) {
-      // A network-level failure (no response at all) is the same transient class as a 502.
-      if (attempt >= attempts) throw e;
+      // A network-level failure (no response at all) is the same transient class as a 502 —
+      // for a call that is safe to repeat while the first is still running. A dropped
+      // connection can come after the handler started, so a create does not retry on it.
+      if (attempt >= attempts || opts.retry !== 'idempotent') throw e;
       await backoff(action, attempt, attempts, `network error: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }

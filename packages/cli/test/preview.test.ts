@@ -219,16 +219,37 @@ describe('preview create retries a transient platform fault (#1918)', () => {
     expect(String(warn.mock.calls[0]![0])).toMatch(/502.*reference = abc123.*attempt 2 of 3/);
   });
 
-  it('a network error is retried the same way', async () => {
+  it('a network error is retried for a delete and a list, which are safe to repeat', async () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     let n = 0;
     globalThis.fetch = (async () => {
       if (++n === 1) throw new TypeError('fetch failed');
-      return Response.json(ok, { status: 201 });
+      return Response.json({ deleted: null });
     }) as unknown as typeof fetch;
-    await expect(run(createPreview(args))).resolves.toMatchObject({ scopeId: 'S1' });
+    const { slug, controlPlaneUrl, header, tag } = args;
+    await expect(run(deletePreview({ slug, controlPlaneUrl, header, tag }))).resolves.toEqual({ deleted: null });
     expect(n).toBe(2);
+    n = 0;
+    globalThis.fetch = (async () => {
+      if (++n === 1) throw new TypeError('fetch failed');
+      return Response.json([]);
+    }) as unknown as typeof fetch;
+    await expect(run(listPreviews({ slug, controlPlaneUrl, header }))).resolves.toEqual([]);
+    expect(n).toBe(2);
+  });
+
+  it('a network error on a create is sent once: the handler may already be forking', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let n = 0;
+    globalThis.fetch = (async () => {
+      n++;
+      throw new TypeError('fetch failed');
+    }) as unknown as typeof fetch;
+    await expect(run(createPreview(args))).rejects.toThrow(/fetch failed/);
+    expect(n).toBe(1);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('three 502s fail with the infrastructure-fault text and the last reference', async () => {
