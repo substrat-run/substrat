@@ -15,7 +15,9 @@ import {
   crmExportMod,
   freshnessMod,
   liveMod,
+  ownParentMod,
   scheduleMod,
+  spineParentMod,
 } from '@substrat-run/contract-tests';
 import { defineScopeDO, type ScopeDoEnv } from '../src/scope-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
@@ -88,6 +90,14 @@ export const BoardScopeDO = onDirectory(defineScopeDO([boardImportMod], {}), 'VE
 export const PreviewV1ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
 export const PreviewV2ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
 export const PreviewV3ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
+
+/**
+ * #1898: a module whose migration declares a foreign key to the spine, and its twin whose
+ * foreign key names its own table. One class each, for the reason `BrokenScopeDO` has one.
+ * See spine-references.test.ts.
+ */
+export const SpineParentScopeDO = defineScopeDO([spineParentMod], {});
+export const OwnParentScopeDO = defineScopeDO([ownParentMod], {});
 
 export { ControlPlaneDO };
 

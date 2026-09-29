@@ -310,7 +310,7 @@ function schemaOf(ddl, additions, label) {
   const indexes = new Map();
   const fks = new Map();
   for (const { name } of db
-    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
     .all()) {
     tables.set(
       name,
@@ -520,7 +520,8 @@ function skipListDrift(sqliteSrc, nodeOnly, doOnly) {
 }
 
 /**
- * #1883: every column a scope's spine ALTERs in must be nullable, with no DEFAULT. A restore of
+ * #1883: every column a scope's spine ALTERs in must be nullable, with no DEFAULT, and since #1898
+ * the directory's spine too, whose restore follows the same rules. A restore of
  * a newer kernel's dump adds a column this kernel does not know as a bare, untyped column; when
  * a later kernel then ALTERs the same column in for real, the ALTER meets the bare one and is
  * skipped as a duplicate. So the later kernel only ever gets what a bare column gives it: NULL
@@ -529,13 +530,16 @@ function skipListDrift(sqliteSrc, nodeOnly, doOnly) {
  * grandfathered: its DEFAULT 0 reads as "terminal", which is also what a NULL there reads as.
  */
 const ADDITIVE_RULE_GRANDFATHERED = new Set(['_substrat_deliveries.attempts']);
-function additiveRuleBreaks(side, additions) {
+function additiveRuleBreaks(store, side, additions) {
   return additions
+    // The directory's own registries (`scopes`, `verticals`, …) are not spine: a restore replays
+    // their DDL, so none of them is ever added to bare.
+    .filter(({ table }) => table.toLowerCase().startsWith('_substrat'))
     .filter(({ table, ddl }) => /\bNOT\s+NULL\b|\bDEFAULT\b/i.test(ddl))
     .filter(({ table, ddl }) => !ADDITIVE_RULE_GRANDFATHERED.has(`${table}.${ddl.trim().split(/\s+/)[0]}`))
     .map(
       ({ table, ddl }) =>
-        `scope/${table}: the additive column \`${ddl}\` (${side.label}) is NOT NULL or has a DEFAULT. ` +
+        `${store}/${table}: the additive column \`${ddl}\` (${side.label}) is NOT NULL or has a DEFAULT. ` +
         'An additive spine column must be nullable with no DEFAULT, since a restore may have added it bare first.',
     );
 }
@@ -608,10 +612,8 @@ function main() {
         notes.push(`${pair.name}/${table}: built by ${side.label}, not by ${other.label}`);
       }
     }
-    if (pair.name === 'scope') {
-      failures.push(...skipListDrift(sources.get(SQLITE), onlyA, onlyB));
-      for (const side of pair.sides) failures.push(...additiveRuleBreaks(side, sideSchemas.get(side).additions));
-    }
+    if (pair.name === 'scope') failures.push(...skipListDrift(sources.get(SQLITE), onlyA, onlyB));
+    for (const side of pair.sides) failures.push(...additiveRuleBreaks(pair.name, side, sideSchemas.get(side).additions));
   }
 
   if (VERBOSE && notes.length > 0) {

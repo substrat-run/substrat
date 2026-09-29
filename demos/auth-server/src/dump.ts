@@ -23,7 +23,7 @@ export function exportDump(sql: SqlExec): ScopeDumpTable[] {
   const defs = sql
     .exec(
       `SELECT name, sql FROM sqlite_master
-        WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+        WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND sql IS NOT NULL
         ORDER BY name`,
     )
     .toArray() as { name: string; sql: string }[];

@@ -62,7 +62,10 @@
       { "name": "KICK_THROW", "class_name": "KickThrowDO" },
       { "name": "KICK_REAL", "class_name": "KickRealDO" },
       { "name": "KICK_LOG", "class_name": "KickLogDO" },
-      { "name": "KICK_SLOW", "class_name": "KickSlowDO" }
+      { "name": "KICK_SLOW", "class_name": "KickSlowDO" },
+      // #1898: a migration with a foreign key to the spine, and its twin — see test/worker.ts.
+      { "name": "SPINE_PARENT_SCOPE", "class_name": "SpineParentScopeDO" },
+      { "name": "OWN_PARENT_SCOPE", "class_name": "OwnParentScopeDO" }
     ]
   },
   "migrations": [
@@ -100,6 +103,10 @@
     },
     {
       "tag": "v9",
+      "new_sqlite_classes": ["SpineParentScopeDO", "OwnParentScopeDO"]
+    },
+    {
+      "tag": "v10",
       "new_sqlite_classes": [
         "SweepControlPlaneDO", "VeControlPlaneDO", "PcControlPlaneDO", "SchedControlPlaneDO",
         "SchedScopeDO", "SweepScopeDO", "PcScopeDO"

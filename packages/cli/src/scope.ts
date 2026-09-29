@@ -176,7 +176,7 @@ async function readDump(file: string): Promise<{ tables: DumpTable[] }> {
   try {
     const tables: DumpTable[] = [];
     const rows = db
-      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
       .all() as { name: string; sql: string }[];
     for (const t of rows) {
       // `sqlite_master` is data in the file we were handed, so its names are as

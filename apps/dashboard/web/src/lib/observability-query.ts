@@ -25,6 +25,9 @@ export interface ObsQuery {
   period?: string;
   sel?: string;
   compare?: string;
+  /** #1752 §7a: the request slide-over — the call's id and when it happened (epoch ms). */
+  req?: string;
+  reqAt?: string;
 }
 export const OBS_KEYS = [
   'app',
@@ -49,6 +52,8 @@ export const OBS_KEYS = [
   'period',
   'sel',
   'compare',
+  'req',
+  'reqAt',
 ] as const;
 export function readObsQuery(search: string): ObsQuery {
   const p = new URLSearchParams(search);

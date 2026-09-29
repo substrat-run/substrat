@@ -971,19 +971,22 @@ describe('#1674 — the switch record is backfilled from the admin log, once, on
     ]);
   });
 
-  it('a backfill that fails leaves no table behind, so it is retried rather than read as done (Copilot review)', async () => {
+  it('a backfill that fails rolls the whole restore back, and the directory keeps what it held (Copilot review)', async () => {
     const dir = directory();
-    // A pre-table dump whose admin log keeps its payload under an old column name: the
-    // backfill's read of \`after\` fails outright.
-    const tables = (await withHistory(false)).map((t) =>
-      t.name === '_substrat_admin_log'
-        ? { ...t, ddl: t.ddl.replace(/\bafter TEXT\b/, 'payload TEXT'), columns: t.columns.map((c) => (c === 'after' ? 'payload' : c)) }
-        : t,
-    );
-    await expect(dir.importDump(tables)).rejects.toThrow(/after/);
-    const names = (await dir.exportDump()).map((t) => t.name);
-    expect(names).toContain('_substrat_admin_log');
-    expect(names).not.toContain('_substrat_system_switches');
+    // A pre-table dump with a switch row whose payload is not JSON: the backfill's read of
+    // `after` fails outright. (#1898: it runs inside the restore's transaction now, since the
+    // dump's admin log no longer brings its own DDL, so a renamed column cannot fail it.)
+    const tables = (await withHistory(false)).map((t) => {
+      if (t.name !== '_substrat_admin_log') return t;
+      const at = (c: string) => t.columns.indexOf(c);
+      const bad = t.columns.map(() => null as unknown);
+      [bad[at('id')], bad[at('actor')], bad[at('action')], bad[at('after')], bad[at('at')]] =
+        ['01BACKFILLBAD000000000000000', 'staff', 'revokeFromSystem', 'not json', '2026-09-01T00:00:00.000Z'];
+      return { ...t, rows: [...t.rows, bad] };
+    });
+    const before = await dir.exportDump();
+    await expect(dir.importDump(tables)).rejects.toThrow(/JSON/i);
+    expect(await dir.exportDump()).toEqual(before);
   });
 
   it('twin: a dump that already carries the table is not backfilled — it runs once, when the table is created', async () => {

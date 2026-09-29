@@ -45,3 +45,15 @@ export function doSpineSql(sql: SqlStorage): ScopedSql {
     },
   };
 }
+
+/**
+ * The columns of spine table `name` as this DO built it, or `undefined` when it built no such
+ * table — what a restore judges a dump's spine tables against (#1883), on a scope and on the
+ * directory (#1898) alike. Read off an empty `SELECT`, because DO SQLite restricts PRAGMA. The
+ * name is matched without case, as SQLite resolves a table name: a dump's `_Substrat_tuples` is
+ * the kernel's tuples table.
+ */
+export function doSpineColumnsOf(sql: SqlStorage, name: string): string[] | undefined {
+  const built = sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE`, name).toArray();
+  return built.length === 0 ? undefined : sql.exec(`SELECT * FROM "${name}" LIMIT 0`).columnNames;
+}

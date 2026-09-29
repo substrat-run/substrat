@@ -41,5 +41,8 @@ declare module 'cloudflare:test' {
     KICK_REAL: DurableObjectNamespace;
     KICK_LOG: DurableObjectNamespace;
     KICK_SLOW: DurableObjectNamespace;
+    /** #1898: a migration with a foreign key to the spine, and its twin — spine-references.test.ts. */
+    SPINE_PARENT_SCOPE: DurableObjectNamespace;
+    OWN_PARENT_SCOPE: DurableObjectNamespace;
   }
 }

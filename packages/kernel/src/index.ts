@@ -226,7 +226,7 @@ export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidCeiling, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
-export { assertNoSpineWrite, guardSpine } from './spine-guard.js';
+export { assertNoSpineReference, assertNoSpineWrite, guardSpine } from './spine-guard.js';
 export {
   DO_SQL_LIMITS,
   tooManyResultColumns,
@@ -311,6 +311,8 @@ export type {
 export {
   SYSTEM_SWITCHES_BACKFILL_SQL,
   SYSTEM_SWITCHES_DDL,
+  SYSTEM_SWITCHES_TABLE,
+  dumpCarriesSystemSwitches,
   forgetSystemSwitchesOf,
   inUnitMovesToAudit,
   listSystemSwitchRecords,

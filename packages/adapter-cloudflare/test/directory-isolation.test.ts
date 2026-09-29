@@ -36,7 +36,7 @@ const SCOPES = [
  * them a directory of their own. A new scope binding must land in `SCOPES` or here — the
  * completeness test below refuses one in neither, so a harness cannot slip past this file.
  */
-const SHARED_SCOPES = ['BROKEN_SCOPE', 'LIVE_SCOPE', 'LOCAL_SWEEP_SCOPE'] as const;
+const SHARED_SCOPES = ['BROKEN_SCOPE', 'LIVE_SCOPE', 'LOCAL_SWEEP_SCOPE', 'OWN_PARENT_SCOPE', 'SPINE_PARENT_SCOPE'] as const;
 
 /** Every binding in the worker's env whose name matches, read from env rather than typed out. */
 const bindingsNamed = (pattern: RegExp) => Object.keys(env).filter((name) => pattern.test(name)).sort();

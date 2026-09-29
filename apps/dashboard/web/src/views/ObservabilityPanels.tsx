@@ -54,6 +54,7 @@ function cursorLabel(w: { from: string; to: string }): string {
 export function TenantLogs({
   filters = {},
   onFilters,
+  onOpenRequest,
   scopeId,
   hours,
   nonce,
@@ -64,6 +65,8 @@ export function TenantLogs({
   scopeId: string;
   filters?: ObsQuery;
   onFilters?: (filters: Partial<ObsQuery>) => void;
+  /** #1752 §7a: a line's request id opens the request slide-over. */
+  onOpenRequest?: (invocationId: string, atMs: number) => void;
   hours: number;
   nonce: number;
   /** Whether the app served any request over the page's range. It decides which of two
@@ -173,7 +176,7 @@ export function TenantLogs({
             : 'No log events in this window.'}
         </div>
       ) : (
-        <LogList events={logs} {...(onFilters ? { onFilter: onFilters } : {})} />
+        <LogList events={logs} {...(onFilters ? { onFilter: onFilters } : {})} {...(onOpenRequest ? { onOpenRequest } : {})} />
       )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '10px 16px', fontSize: 12, color: 'var(--text-tertiary)', borderTop: logs?.length ? undefined : '1px solid var(--border-subtle)' }}>
         {/* The read has no total to report, so the footer says what it holds and where

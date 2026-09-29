@@ -953,7 +953,14 @@ restore → keep serving), which is what turns this from a claim into a procedur
 3. `POST /api/directory/restore` with `{ capturedAt, overwrite }`. The directory is replaced,
    the schema is re-asserted forward (a copy taken before a directory migration is carried to
    the running code's shape, never rolled back to the old one), and the restore is audited as
-   `restoreDirectory` in the log it just replaced.
+   `restoreDirectory` in the log it just replaced. The `_substrat_*` tables are built from the
+   running code's schema and take only the dump's rows (#1898), so a dump cannot decide how the
+   tenant-level tuples and roles the checker reads compare; a dump that names a spine table this
+   code does not build, or a replayed table with a foreign key to the spine, is refused whole.
+   A refusal naming `_substrat_identities_new` or `_substrat_admin_log_new` means the dump was
+   taken from a directory a torn pre-#1573 rebuild left behind, whose rows may exist only in
+   that scratch table: move them into the real table's rows in the dump, drop the scratch
+   table from it, and restore again.
 4. **Then re-check what the directory does not hold.** A restored directory brings back the map;
    it does not bring back what was never in it, and a recovery that stops at step 3 is only
    partly done:
