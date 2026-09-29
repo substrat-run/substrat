@@ -59,3 +59,20 @@ export function mockAuditLogAll(opts?: PageOpts & { scopeId?: string }): Promise
   const to = from + PAGE;
   return Promise.resolve({ entries: all.slice(from, to), nextCursor: to < all.length ? String(to) : null });
 }
+
+/**
+ * #1828: one app's refused permission checks, newest first, paged by `until` like the real
+ * read — a support agent refused a refund twice, a consumer refused a write, and one refusal
+ * while staff acted as someone.
+ */
+export function mockDenials(_scopeId: string, opts: { until?: string; limit: number }): { entries: import('./audit-activity').Refusal[]; limit: number } {
+  const now = Date.now();
+  const at = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+  const all = [
+    { id: '01JZREFUSAL000000000000004', actor: 'sara@acme.test', permission: 'refunds:issue', operation: 'shop/refund-order', invocationId: '01J8Z000000000000000000401', impersonation: null, at: at(12) },
+    { id: '01JZREFUSAL000000000000003', actor: { system: 'invoicing' }, permission: 'orders:write', operation: 'shop/mark-invoiced', invocationId: null, impersonation: null, at: at(95) },
+    { id: '01JZREFUSAL000000000000002', actor: 'sara@acme.test', permission: 'refunds:issue', operation: 'shop/refund-order', invocationId: '01J8Z000000000000000000402', impersonation: { session: 'S1', by: 'staff' }, at: at(60 * 26) },
+    { id: '01JZREFUSAL000000000000001', actor: { connection: 'fortnox' }, permission: 'invoices:export', operation: 'shop/export-invoices', invocationId: null, impersonation: null, at: at(60 * 50) },
+  ];
+  return { entries: all.filter((d) => opts.until === undefined || d.at < opts.until).slice(0, opts.limit), limit: opts.limit };
+}

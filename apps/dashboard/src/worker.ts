@@ -2518,6 +2518,40 @@ app.get('/api/apps/:scopeId/invocation', async (c) => {
  * #1525: every delivery in one app's scope that gave up — "which deliveries in this app
  * gave up?", which names no record and so no walk can answer.
  */
+/**
+ * #1828: one app's refused permission checks, newest first — the K-35 denial log's rows,
+ * for Audit's Refused rows and Outcome filter. Gated like every per-app read: the scope is
+ * resolved from the team's own apps, so a foreign id 404s before the plane is asked.
+ *
+ * Paged by time rather than a cursor, because that is the read the log offers: the next
+ * page is `until` the oldest row already held. `limit` is capped at the log's own maximum.
+ */
+app.get('/api/apps/:scopeId/denials', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  // The log compares `at` and `until` as ISO text, so only an ISO 8601 instant with a zone
+  // is accepted, and it is forwarded in the log's own spelling (UTC, milliseconds): a
+  // `Date.parse`-able "September 29, 2026" would otherwise compare as text and let later
+  // rows through.
+  const rawUntil = c.req.query('until');
+  const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+  if (rawUntil !== undefined && (!ISO_INSTANT.test(rawUntil) || Number.isNaN(Date.parse(rawUntil)))) {
+    throw new HTTPException(400, { message: 'until must be an ISO 8601 instant with a zone' });
+  }
+  const until = rawUntil === undefined ? undefined : new Date(Date.parse(rawUntil)).toISOString();
+  const asked = Number(c.req.query('limit') ?? DENIAL_LIMIT_MAX);
+  if (!Number.isInteger(asked) || asked < 1) throw new HTTPException(400, { message: 'limit must be a positive integer' });
+  const limit = Math.min(asked, DENIAL_LIMIT_MAX);
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const entries = await cp.listDenials(scope, { limit, ...(until ? { until } : {}) });
+  // `limit` travels back so the page can tell a full page (there may be more) from the end.
+  return c.json({ entries, limit });
+});
+
 app.get('/api/apps/:scopeId/dead-letters', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));

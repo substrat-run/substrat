@@ -2013,6 +2013,15 @@ export const api = {
     ),
 
   /** Every delivery in one app that gave up (#1525), newest event first. */
+  /** #1828: one app's refused permission checks, newest first; the next page is `until` the oldest held. */
+  appDenials: (scopeId: string, opts: { until?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.until) q.set('until', opts.until);
+    if (opts.limit !== undefined) q.set('limit', String(opts.limit));
+    return call<{ entries: import('./audit-activity').Refusal[]; limit: number }>(
+      `/apps/${encodeURIComponent(scopeId)}/denials${q.size ? `?${q}` : ''}`,
+    );
+  },
   appDeadLetters: (scopeId: string, cursor?: string) =>
     call<Page<DeadLetter>>(
       `/apps/${encodeURIComponent(scopeId)}/dead-letters${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,

@@ -255,7 +255,10 @@ with an **app filter** rather than tabs on each app. The app page links into bot
   All-apps line chart carries no cursor, because a cursor is a fact about one scope.
 - **Audit** — the platform's control-plane admin log for this team: every privileged action against
   its apps, append-only, newest first; an entry opens to its before/after state where the platform
-  captured one, and the domain event that caused it when one did. It is a team page
+  captured one, and the domain event that caused it when one did. Narrowed to one app, it also
+  shows the permission checks that app **refused** — who was refused which permission on which
+  operation, and a link to the request — with an Outcome filter (All · Allowed · Refused). With
+  All apps, Refused asks you to pick one: refusals are kept in each app's own log. It is a team page
   because the log is written at the tenant grain and some entries — role changes, entitlements —
   name no app at all, which a per-app tab could never show.
 

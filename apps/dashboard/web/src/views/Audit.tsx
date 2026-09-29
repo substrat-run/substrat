@@ -5,7 +5,24 @@ import { DEV_MOCK } from '../lib/mock';
 import { mockAuditLogAll } from '../lib/mock-audit';
 import { shortDate, shortId } from '../lib/format';
 import { isPlainClick, navigate, teamPath } from '../lib/router';
-import { actionWords, actorOf, clockTime, entryDiff, entrySentence, filterEntries, groupByDay, type ActorKind, type KindFilter } from '../lib/audit-activity';
+import {
+  actionWords,
+  actorOf,
+  clockTime,
+  entryDiff,
+  entrySentence,
+  filterActivity,
+  groupByDay,
+  mergeActivity,
+  refusalActorOf,
+  refusalSentence,
+  type ActorKind,
+  type KindFilter,
+  type OutcomeFilter,
+  type Refusal,
+} from '../lib/audit-activity';
+import { mockDenials } from '../lib/mock-audit';
+import { obsPath } from '../lib/router';
 import { Page } from '../components/layout';
 
 /** How many pages a deep link walks looking for its entry before saying it is not there. */
@@ -25,9 +42,11 @@ type Read = (opts?: PageOpts & { scopeId?: string }) => Promise<ListPage<AuditEn
  * narrowed, which is the entrance an app owner actually wanted. `?entry=` opens one entry
  * in place, which is how the Overview's Recent activity rows land here.
  *
- * The design's Outcome filter and refused rows are not here: the dashboard reads the
- * permission-denial log only as a per-operation summary, never as rows. Its Person lookup
- * and Data requests tabs, and the Why / How of an entry, wait on #1751.
+ * Narrowed to one app, the app's refused permission checks (the K-35 denial log, #1828)
+ * are rows in the same list, with the design's Outcome filter — All · Allowed · Refused.
+ * The two logs are paged separately and merged without inventing an order
+ * (`mergeActivity`). With All apps there is no per-app fan-out, and Refused says to pick
+ * one. Its Person lookup and Data requests tabs, and the Why / How of an entry, wait on #1751.
  *
  * The control plane serves this, so embedded mode has nothing to show and the page says so.
  */
@@ -52,6 +71,10 @@ export function AuditLog({
   const [unavailable, setUnavailable] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [kind, setKind] = useState<KindFilter>('all');
+  const [outcome, setOutcome] = useState<OutcomeFilter>('all');
+  // #1828: the app's refusals — null with All apps (nothing is read), or while reading.
+  const [refusals, setRefusals] = useState<{ entries: Refusal[]; more: boolean } | null>(null);
+  const [refusalsFailed, setRefusalsFailed] = useState<string | null>(null);
   const [text, setText] = useState('');
   // Set when a deep link's entry was not in what the walk read: how many pages it read,
   // and whether the log went on past them.
@@ -78,6 +101,9 @@ export function AuditLog({
     setLoadingOlder(false);
     setMissing(null);
     pending.current = entryId;
+    setRefusals(null);
+    setRefusalsFailed(null);
+    if (scopeId) void readRefusals(gen, scopeId);
     const scope = scopeId ? { scopeId } : {};
     void (async () => {
       let first: ListPage<AuditEntry>;
@@ -118,6 +144,24 @@ export function AuditLog({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `read` is fixed for the page's life (mock or live)
   }, [scopeId, entryId]);
 
+  /** One page of the app's refusals, appended; the next is `until` the oldest held (+1 ms, deduped). */
+  const readRefusals = async (gen: number, scope: string, until?: string) => {
+    try {
+      const page = DEV_MOCK ? mockDenials(scope, { until, limit: REFUSALS_PAGE }) : await api.appDenials(scope, { until, limit: REFUSALS_PAGE });
+      if (gen !== generation.current) return;
+      setRefusals((prev) => {
+        const held = until ? prev?.entries ?? [] : [];
+        const fresh = page.entries.filter((e) => !held.some((h) => h.id === e.id));
+        return { entries: [...held, ...fresh], more: page.entries.length >= page.limit };
+      });
+    } catch (e) {
+      if (gen !== generation.current) return;
+      // The actions still show; the page says the refusals are missing rather than implying none.
+      setRefusalsFailed(e instanceof ApiError ? `${e.status}: ${e.message}` : String(e));
+      setRefusals({ entries: [], more: false });
+    }
+  };
+
   /** A page landed: show it, and open the deep link's entry if it is now among them. */
   const landed = (all: AuditEntry[], next: string | null) => {
     setEntries(all);
@@ -133,12 +177,14 @@ export function AuditLog({
   };
 
   useEffect(() => {
-    if (!scrollTo.current || !entries) return;
+    // Not while the list is still waiting on the app's first page of refusals: its rows
+    // are not drawn yet, and a scroll now would find nothing and be spent.
+    if (!scrollTo.current || !entries || (scopeId !== null && refusals === null)) return;
     const id = scrollTo.current;
     scrollTo.current = null;
     const row = [...document.querySelectorAll<HTMLElement>('[data-entry-id]')].find((el) => el.dataset.entryId === id);
     row?.scrollIntoView?.({ block: 'center' });
-  }, [entries]);
+  }, [entries, refusals]);
 
   const loadOlder = async () => {
     if (loadingOlder || !cursor) return;
@@ -160,8 +206,27 @@ export function AuditLog({
   // scope still has audit rows).
   const appName = (id: string): string => apps.find((a) => a.app_scope_id === id)?.name ?? shortId(id);
 
-  const shown = entries ? filterEntries(entries, { kind, text, appName }) : [];
+  // Narrowed to an app, the list waits for its first page of refusals (or their failure):
+  // drawing the actions alone first, then slotting newer refusals in among them, would be
+  // exactly the invented order the merge exists to prevent.
+  const refusalsPending = scopeId !== null && refusals === null;
+  const merged = mergeActivity(entries ? { entries, more: cursor !== null } : null, scopeId ? refusals : null);
+  const shown = entries ? filterActivity(merged.items, { outcome, kind, text, appName }) : [];
   const days = groupByDay(shown);
+  const canLoadOlder = cursor !== null || (scopeId !== null && !!refusals?.more);
+  const older = async () => {
+    // Whichever log is holding the merged list back is the one to read further.
+    if (merged.older === 'refusals' && scopeId && refusals) {
+      const oldest = refusals.entries.reduce((m, x) => (x.at < m ? x.at : m), refusals.entries[0]!.at);
+      setLoadingOlder(true);
+      const gen = generation.current;
+      try {
+        await readRefusals(gen, scopeId, new Date(Date.parse(oldest) + 1).toISOString());
+      } finally {
+        if (gen === generation.current) setLoadingOlder(false);
+      }
+    } else await loadOlder();
+  };
 
   return (
     <Page>
@@ -169,7 +234,8 @@ export function AuditLog({
         <div style={{ flex: 1 }}>
           <h1 style={{ margin: 0, fontSize: 22, lineHeight: '29px', fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>Audit</h1>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 2 }}>
-            Every control-plane action on this team&rsquo;s apps, by people and by the platform&rsquo;s own jobs. Append-only, newest first.
+            Every control-plane action on this team&rsquo;s apps, by people and by the platform&rsquo;s own jobs
+            {scopeId ? <>, and the permission checks this app refused</> : null}. Append-only, newest first.
           </div>
         </div>
         <Select
@@ -211,14 +277,27 @@ export function AuditLog({
                 </button>
               ))}
             </div>
+            <div role="group" aria-label="Outcome" style={{ display: 'flex', gap: 2, padding: 2, border: '1px solid var(--border-default)', borderRadius: 8, background: 'var(--surface-inset)' }}>
+              {OUTCOMES.map(([v, label]) => (
+                <button key={v} type="button" aria-pressed={outcome === v} onClick={() => setOutcome(v)} style={seg(outcome === v)}>
+                  {label}
+                </button>
+              ))}
+            </div>
             <span style={{ flex: 1 }} />
-            {entries !== null && (
+            {entries !== null && !refusalsPending && (
               <span data-testid="audit-count" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                {shown.length} of {entries.length} {cursor !== null ? 'loaded ' : ''}
-                {entries.length === 1 ? 'entry' : 'entries'}
+                {shown.length} of {merged.items.length} {canLoadOlder ? 'loaded ' : ''}
+                {merged.items.length === 1 ? 'entry' : 'entries'}
               </span>
             )}
           </div>
+
+          {refusalsFailed && (
+            <div role="status" style={{ ...panel, padding: '10px 16px', fontSize: 13, color: 'var(--status-danger-fg)' }}>
+              This app&rsquo;s refused checks could not be read ({refusalsFailed}); only its actions are shown.
+            </div>
+          )}
 
           {missing && (
             <div role="status" style={{ ...panel, padding: '10px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>
@@ -230,9 +309,12 @@ export function AuditLog({
           )}
 
           <div style={panel}>
-            {entries === null ? (
+            {entries === null || refusalsPending ? (
               <div style={{ padding: 20, fontSize: 12.5, color: 'var(--text-tertiary)' }}>{entryId ? 'Finding the linked entry…' : 'Loading audit log…'}</div>
-            ) : entries.length === 0 ? (
+            ) : outcome === 'refused' && !scopeId ? (
+              // No per-app fan-out: refusals live in each app's own log.
+              <div style={{ padding: 40, textAlign: 'center', fontSize: 13, color: 'var(--text-tertiary)' }}>Pick an app to see refusals.</div>
+            ) : merged.items.length === 0 ? (
               <div style={{ padding: 40, textAlign: 'center', fontSize: 13, color: 'var(--text-tertiary)' }}>No audited actions yet.</div>
             ) : shown.length === 0 ? (
               <div style={{ padding: 40, textAlign: 'center', fontSize: 13, color: 'var(--text-tertiary)' }}>No activity matches these filters.</div>
@@ -242,17 +324,21 @@ export function AuditLog({
                   <div style={{ padding: '8px 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', background: 'var(--surface-inset)', borderBottom: '1px solid var(--border-subtle)' }}>
                     {d.label}
                   </div>
-                  {d.items.map((e) => (
-                    <EntryRow key={e.id} entry={e} appName={appName} open={open === e.id} onToggle={() => setOpen(open === e.id ? null : e.id)} />
-                  ))}
+                  {d.items.map((i) =>
+                    i.kind === 'action' ? (
+                      <EntryRow key={i.id} entry={i.entry} appName={appName} open={open === i.id} onToggle={() => setOpen(open === i.id ? null : i.id)} />
+                    ) : (
+                      <RefusalRow key={i.id} refusal={i.refusal} scopeId={scopeId!} />
+                    ),
+                  )}
                 </section>
               ))
             )}
           </div>
 
-          {entries !== null && cursor !== null && (
+          {entries !== null && !refusalsPending && canLoadOlder && (
             <div style={{ display: 'flex', justifyContent: 'center' }}>
-              <Button variant="secondary" onClick={() => void loadOlder()} disabled={loadingOlder}>
+              <Button variant="secondary" onClick={() => void older()} disabled={loadingOlder}>
                 {loadingOlder ? 'Loading…' : 'Load older entries'}
               </Button>
             </div>
@@ -270,6 +356,15 @@ const panel: CSSProperties = {
   boxShadow: 'var(--shadow-sm)',
   overflow: 'hidden',
 };
+
+/** How many refusals one read asks for. */
+const REFUSALS_PAGE = 100;
+
+const OUTCOMES: [OutcomeFilter, string][] = [
+  ['all', 'All'],
+  ['allowed', 'Allowed'],
+  ['refused', 'Refused'],
+];
 
 // The design's "AI assistant" kind is left out: nothing records an AI actor yet.
 const KINDS: [KindFilter, string][] = [
@@ -321,6 +416,58 @@ const tag: CSSProperties = {
 };
 
 const caps: CSSProperties = { fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)' };
+
+/**
+ * A refused permission check (#1828): who, what was refused, when — and the request it
+ * refused, which opens in Logs' request panel. Not expandable: the row IS the record.
+ */
+function RefusalRow({ refusal: r, scopeId }: { refusal: Refusal; scopeId: string }) {
+  const who = refusalActorOf(r.actor);
+  const actingAs = r.impersonation !== null && r.impersonation !== undefined;
+  return (
+    <div
+      data-refusal-id={r.id}
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '28px minmax(0,1fr) 200px 60px',
+        gap: '0 12px',
+        alignItems: 'center',
+        minHeight: 48,
+        padding: '6px 16px',
+        borderBottom: '1px solid var(--border-subtle)',
+      }}
+    >
+      <span aria-hidden style={avatar(who.kind)}>{who.initials}</span>
+      <span style={{ fontSize: 13.5, lineHeight: '20px', color: 'var(--text-secondary)' }}>
+        <span style={{ color: 'var(--text-primary)', fontWeight: 500 }} title={typeof r.actor === 'string' ? r.actor : JSON.stringify(r.actor)}>
+          {who.name}
+        </span>{' '}
+        {refusalSentence(r)}
+        {actingAs && <span style={{ color: 'var(--status-warning-fg)' }}> · while staff acted as them</span>}
+      </span>
+      <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', minWidth: 0 }}>
+        <span style={{ ...tag, color: 'var(--status-danger-fg)', borderColor: 'var(--status-danger-fg)' }}>✕ refused</span>
+        {r.invocationId && (
+          <a
+            href={teamPath(obsPath({ app: scopeId, view: 'logs', req: r.invocationId, reqAt: String(Date.parse(r.at)) }))}
+            onClick={(e) => {
+              if (!isPlainClick(e)) return;
+              e.preventDefault();
+              navigate(obsPath({ app: scopeId, view: 'logs', req: r.invocationId!, reqAt: String(Date.parse(r.at)) }));
+            }}
+            style={{ ...tag, color: 'var(--text-link)', textDecoration: 'none' }}
+            title="Open the request that was refused"
+          >
+            request {shortId(r.invocationId)}
+          </a>
+        )}
+      </span>
+      <span title={r.at} style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-tertiary)', textAlign: 'right' }}>
+        {clockTime(r.at)}
+      </span>
+    </div>
+  );
+}
 
 function EntryRow({ entry: e, appName, open, onToggle }: { entry: AuditEntry; appName: (id: string) => string; open: boolean; onToggle: () => void }) {
   const [hover, setHover] = useState(false);
