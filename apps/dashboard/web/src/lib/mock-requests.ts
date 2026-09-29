@@ -146,3 +146,8 @@ export function mockRequests(where: Where, window: { from: number; to: number },
     .filter((r) => matches(r, where, window))
     .slice(0, limit);
 }
+
+/** One request of the fixture, by its call id — what the slide-over's preview opens (#1752 §7a). */
+export function mockRequestById(invocationId: string): RequestRecord | null {
+  return fixture().find((r) => r.invocationId === invocationId) ?? null;
+}

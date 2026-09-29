@@ -1469,26 +1469,8 @@ export interface RequestFacets {
 }
 
 /** #1746: one request, as its stamped invocation line recorded it. `null` = not recorded. */
-export interface RequestRecord {
-  timestamp: number | null;
-  invocationId: string | null;
-  scopeId: string | null;
-  vertical: string | null;
-  surface: string | null;
-  method: string | null;
-  path: string | null;
-  status: number | null;
-  threw: boolean;
-  durationMs: number | null;
-  level: string | null;
-  operation: string | null;
-  problemCode: string | null;
-  principalKind: string | null;
-  eventCount: number | null;
-  eventTypes: string[];
-  entities: string[];
-  versionId: string | null;
-}
+import type { RequestRecord } from './request-detail';
+export type { RequestRecord };
 
 /** #1747: one template and the lines written from it. */
 export interface LogPattern {

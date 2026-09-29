@@ -235,7 +235,13 @@ with an **app filter** rather than tabs on each app. The app page links into bot
   moves per transition and who made them, how many instances sit in each state and how long they
   stay (median and p90), the ones stuck longest, and the share of starts that reached each state,
   optionally against the previous period. A transition the model declares but nobody took is
-  dashed, and one the model does not declare is drawn apart. *Flow* is the app's wiring. A sub-view
+  dashed, and one the model does not declare is drawn apart. *Flow* is the app's wiring. A request
+  — a row in Logs › Requests, or a log line's request id — opens in a **panel over the page**:
+  the request and its result, the state change it made (linked to the process map and to that
+  record's history), its log lines and emitted events on a time axis, the consumers that
+  handled what it emitted and how long after the response, and its full log lines. Database,
+  connector and model calls are not recorded as timings yet, so they do not appear on that
+  axis. The panel is part of the address, so a request can be linked to. A sub-view
   never carries its own window, so two panels always answer about the same slice. On the one-app
   bar chart, clicking a bucket sets a **cursor** — one instant worth looking at — which rides the
   URL beside the app and the sub-view and narrows the panels below to the minutes around it; the
