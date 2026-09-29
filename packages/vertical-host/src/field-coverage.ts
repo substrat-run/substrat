@@ -92,12 +92,18 @@ export function observeOutputFields(result: unknown, walk: OutputWalk): OutputFi
     const empty: string[] = [];
     const absent: string[] = [];
     for (const field of walk.fields) {
-      // Own properties only, as `JSON.stringify` serialises them, and `undefined` is what it
-      // drops — so "present" and "empty" both mean "on the wire". `null` is its own bucket:
-      // a column that is always null is on the wire and still never carries anything.
-      const value = row[field];
-      if (value === undefined || !Object.prototype.hasOwnProperty.call(row, field)) absent.push(field);
-      else if (value === null) empty.push(field);
+      // Own ENUMERABLE properties only, which is what `JSON.stringify` serialises, and
+      // `undefined` is what it drops, so "present" and "empty" both mean "on the wire".
+      // Read through the descriptor rather than `row[field]`, so an inherited getter never
+      // runs, and neither does a Proxy's `get`. An own accessor is on the wire too, but its
+      // value is not the walk's to compute, so it counts as present without being called.
+      // `null` is its own bucket: a column that is always null is on the wire and still
+      // never carries anything.
+      const desc = Object.getOwnPropertyDescriptor(row, field);
+      if (!desc || !desc.enumerable) absent.push(field);
+      else if (!('value' in desc)) present.push(field);
+      else if (desc.value === undefined) absent.push(field);
+      else if (desc.value === null) empty.push(field);
       else present.push(field);
     }
     return { present, empty, absent };

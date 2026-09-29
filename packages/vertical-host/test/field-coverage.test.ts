@@ -113,6 +113,39 @@ describe('the field walk (#1331)', () => {
     expect(record.outputFields).toEqual({ present: ['id', 'title', 'owner_email'], empty: [], absent: ['note'] });
   });
 
+  it('reads own properties only: an inherited field is absent, and an inherited getter never runs', async () => {
+    const ran: string[] = [];
+    const proto = {
+      title: 'inherited',
+      get owner_email() {
+        ran.push('owner_email');
+        return 'from a getter';
+      },
+    };
+    const row = Object.create(proto) as Record<string, unknown>;
+    row['id'] = 'c1';
+    Object.defineProperty(row, 'note', { value: 'hidden', enumerable: false });
+    const { record, call } = harness({ output: card }, () => row, { respond: blind });
+    await call(ARMED);
+    expect(record.outputFields).toEqual({ present: ['id'], empty: [], absent: ['title', 'note', 'owner_email'] });
+    expect(ran).toEqual([]);
+  });
+
+  it('counts an own accessor as present without calling it', async () => {
+    const ran: string[] = [];
+    const row = {
+      id: 'c1',
+      get title() {
+        ran.push('title');
+        return 'computed';
+      },
+    };
+    const { record, call } = harness({ output: card }, () => row, { respond: blind });
+    await call(ARMED);
+    expect(record.outputFields).toEqual({ present: ['id', 'title'], empty: [], absent: ['note', 'owner_email'] });
+    expect(ran).toEqual([]);
+  });
+
   it('asks about declared names only — it never enumerates the response', async () => {
     const huge: Record<string, unknown> = { id: 'c1' };
     for (let i = 0; i < 100_000; i++) huge[`k${i}`] = i;
@@ -120,6 +153,8 @@ describe('the field walk (#1331)', () => {
     const { record, call } = harness({ output: card }, () => proxy, { respond: blind });
     await call(ARMED);
     expect(touched).not.toContain('ownKeys');
+    // Not even a Proxy's `get`: the walk reads descriptors, never values through the trap.
+    expect(touched.filter((t) => t.startsWith('get:'))).toEqual([]);
     const asked = new Set(touched.map((t) => t.split(':')[1]));
     expect([...asked].sort()).toEqual(['id', 'note', 'owner_email', 'title']);
     expect(record.outputFields).toEqual({ present: ['id'], empty: [], absent: ['title', 'note', 'owner_email'] });
