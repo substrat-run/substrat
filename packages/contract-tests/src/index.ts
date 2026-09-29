@@ -74,6 +74,8 @@ export {
   listModManifest,
   parseMod,
   parseModManifest,
+  spineParentMod,
+  ownParentMod,
 } from './modules.js';
 export {
   connectorCalls,

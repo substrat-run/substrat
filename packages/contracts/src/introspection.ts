@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { eventId } from './ids.js';
+import { namesSpineTable, referencedTables } from './sql-tokens.js';
 
 /**
  * Read-only introspection of a scope's own database — the console/dashboard "Data"
@@ -560,8 +561,30 @@ export function assertSingleCreateTable(ddl: string, name: string): void {
 }
 
 /**
- * Everything a dump must satisfy before any of it reaches SQL: its identifiers, and
- * one `CREATE TABLE` per table. The single entry point a replay site calls, so a new
+ * A replayed table's DDL names no `_substrat_*` table in a `REFERENCES` clause (#1898).
+ *
+ * A restore replays a vertical table's `CREATE TABLE` verbatim, so a dump declaring
+ * `notes (t TEXT REFERENCES _substrat_tuples(subject))` made the spine a parent of the
+ * vertical's rows. With foreign keys enforced, the kernel's own writes to that spine table
+ * (a revoke, the restore's re-point, an outbox prune) then fail on them: the dump denies its
+ * scope's spine. The same rule holds a module's own SQL (`assertNoSpineReference` in the
+ * kernel). A spine table's DDL is exempt, because a loader builds the spine from its own DDL
+ * and never replays the dump's; the name is compared without case, as SQLite compares it.
+ */
+function assertNoSpineParent(ddl: string, name: string): void {
+  if (namesSpineTable(name)) return;
+  const spine = referencedTables(ddl).filter(namesSpineTable);
+  if (spine.length === 0) return;
+  throw new Error(
+    `refusing this dump: table ${JSON.stringify(name)} declares a foreign key to the platform spine ` +
+      `(REFERENCES ${spine.join(', ')}). The kernel writes those tables itself, and a vertical row ` +
+      'depending on one would make those writes fail, so the dump is not loaded. Nothing was changed.',
+  );
+}
+
+/**
+ * Everything a dump must satisfy before any of it reaches SQL: its identifiers, one
+ * `CREATE TABLE` per table, and no foreign key from a replayed table to the spine. The single entry point a replay site calls, so a new
  * one cannot pick up half the rules.
  */
 export function assertReplayableDump(
@@ -570,6 +593,7 @@ export function assertReplayableDump(
 ): void {
   assertDumpIdentifiers(tables);
   for (const t of tables) assertSingleCreateTable(t.ddl, t.name);
+  for (const t of tables) assertNoSpineParent(t.ddl, t.name);
   // #1811: a Durable Object cannot hold a table past its column cap, and no change to the replay
   // can help — the `CREATE TABLE` itself is refused. Said here, before any of it runs, so a
   // restore or fork onto one fails with a sentence instead of a bare SQLITE_ERROR partway

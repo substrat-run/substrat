@@ -25,6 +25,7 @@ export * from './invocation-record.js';
 export * from './hostnames.js';
 export * from './tenancy.js';
 export * from './introspection.js';
+export * from './sql-tokens.js';
 export * from './lifecycle-flow.js';
 export * from './pagination.js';
 export * from './concurrency.js';

@@ -27,6 +27,9 @@
 import type { ListPage } from '@substrat-run/contracts';
 import type { SwitchSql, SwitchedOff, SystemScheduleState } from './system-switch.js';
 
+/** The record's table name, as the DDL below spells it. */
+export const SYSTEM_SWITCHES_TABLE = '_substrat_system_switches';
+
 /**
  * The table. Interpolated into both adapters' directory DDL, so `lint:spine-ddl` sees the
  * one spelling on each side. No CHECK on `position`: the drift gate does not compare
@@ -111,7 +114,7 @@ export const SYSTEM_SWITCHES_BACKFILL_SQL = `
 /** "Does the record table exist yet?" — asked BEFORE the DDL, so the backfill runs once. */
 export function systemSwitchesTableExists(db: SwitchSql): boolean {
   return (
-    db.all(`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = '_substrat_system_switches'`)
+    db.all(`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?`, SYSTEM_SWITCHES_TABLE)
       .length > 0
   );
 }

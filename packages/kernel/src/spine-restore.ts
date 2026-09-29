@@ -1,7 +1,6 @@
-import { substratError } from '@substrat-run/contracts';
+import { SPINE_PREFIX, substratError } from '@substrat-run/contracts';
 import { SCHEDULE_STATE_KIND_OF_OP } from './platform-sweep.js';
 import { isSearchIndexTable } from './search-index.js';
-import { SPINE_PREFIX } from './spine-guard.js';
 
 /**
  * How a restore, fork or carry loads a dump's `_substrat_*` spine tables (#1883). One

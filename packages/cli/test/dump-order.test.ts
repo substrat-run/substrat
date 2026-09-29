@@ -29,6 +29,13 @@ describe('referencedTables — FK targets parsed from DDL', () => {
     expect(referencedTables(ddl)).toEqual(['P', 'Q', 'R', 'S']);
   });
 
+  // #1898: the contracts grammar the dump checks read with, which a regex expecting whitespace
+  // after REFERENCES was not — so a comment there hid the parent, and a string literal made one up.
+  it('reads the target past a comment, and not inside a string literal', () => {
+    expect(referencedTables('CREATE TABLE a (v TEXT REFERENCES/**/crm_vendors(id))')).toEqual(['crm_vendors']);
+    expect(referencedTables("CREATE TABLE a (v TEXT DEFAULT 'REFERENCES crm_vendors(id)')")).toEqual([]);
+  });
+
   it('returns [] when there are no foreign keys', () => {
     expect(referencedTables('CREATE TABLE a (id TEXT PRIMARY KEY, name TEXT)')).toEqual([]);
   });

@@ -17,19 +17,14 @@
  * self-references — so a cycle isn't an error here: we break it deterministically and
  * lean on the loader's deferral for the within-cycle rows.
  */
+import { referencedTables } from '@substrat-run/contracts';
 
-/** Table names referenced by this table's DDL (`... REFERENCES <name> ...`). */
-export function referencedTables(ddl: string): string[] {
-  // SQLite identifiers after REFERENCES may be bare or quoted with " ` [] or '.
-  const re = /\bREFERENCES\s+(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|'([^']+)'|([A-Za-z_][\w$]*))/gi;
-  const out: string[] = [];
-  for (let m = re.exec(ddl); m; m = re.exec(ddl)) {
-    // Exactly one alternation group captures the identifier; the last is a bare word,
-    // so the coalesced result is always a string (the `!` satisfies the checker).
-    out.push((m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5])!);
-  }
-  return out;
-}
+/**
+ * Table names referenced by this table's DDL (`... REFERENCES <name> ...`): the one reading of
+ * that grammar in `@substrat-run/contracts`, which the dump checks use too. It skips comments
+ * and string literals, which a regex here did not.
+ */
+export { referencedTables };
 
 /**
  * Order tables so every FK target precedes the table referencing it. Stable
