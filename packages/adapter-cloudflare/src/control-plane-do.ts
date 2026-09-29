@@ -1575,6 +1575,9 @@ export class ControlPlaneDO extends DurableObject {
       // roles match. The spine is built by the same pass a construction runs, before any row
       // goes in, and the dump contributes only rows, by column name (`dumpRowsInsert`).
       for (const t of tables) if (!namesSpineTable(t.name)) this.sql.exec(t.ddl);
+      // Inside this async transaction, so the pass must never reach `rebuildAtomically`'s
+      // `transactionSync` for a table the dump built: today every rebuild targets a spine
+      // table, which the pass's own DDL has just created on the current shape, so none fires.
       this.buildDirectorySchema({ holdSwitchRecord: false });
       const columnsOf = (name: string) => doSpineColumnsOf(this.sql, name);
       // Every `_substrat*` name, the search index's namespace included: a directory has no index.
