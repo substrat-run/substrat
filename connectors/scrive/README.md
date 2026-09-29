@@ -145,9 +145,10 @@ answer. The id survives the name and address edits a sender or signatory can mak
 A dispatch recorded before ids were kept has its ids pinned by position on the first poll, but
 only when position is supported by evidence. The party count and roles must be unchanged. And
 every signing party's name must still be its label, or exactly one must differ. That one's label
-must be on no other signing party, and its new name must not be another party's label. Two
-parties that changed places, or two renamed at once, are therefore never pinned to each other's
-requests.
+must be on no other signing party, and its new name must not be another party's label. Nothing
+is pinned when two dispatched parties share a label, because their names cannot tell a swap from
+no change. Two parties that changed places, or two renamed at once, are therefore never pinned to
+each other's requests.
 
 Without pinned ids, a party is attributed by position only when its slot shows its exact label
 and no other signing party does. Everything else lands in `needsAttention`, which the

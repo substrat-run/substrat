@@ -350,6 +350,9 @@ const providerNameOf = (party: ScriveDocument['parties'][number] | undefined): s
  * party, and its slot's new name is not another dispatched party's label, since a
  * swap followed by one rename leaves exactly that.
  *
+ * Never when two dispatched parties share a label. Their names are evidence of
+ * nothing between the two of them, so a swap looks exactly like no change.
+ *
  * Names are compared among the SIGNING parties only. The sender slot (#852) never
  * signs, and Scrive rewrites it to the account holder, who may well be the party the
  * vertical named as issuer. A party with no name field counts as differing: no
@@ -360,6 +363,7 @@ function namesSupportPosition(
   offset: number,
   labels: readonly string[],
 ): boolean {
+  if (new Set(labels).size !== labels.length) return false;
   const names = provider.map(providerNameOf);
   const differing = labels.flatMap((label, i) => (names[i + offset] === label ? [] : [i]));
   if (differing.length === 0) return true;

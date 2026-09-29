@@ -561,6 +561,30 @@ describe('scrive connector — return path (record signatures back)', () => {
         expect(result.recorded.map((r) => r.requestId)).toEqual([requestIds[0]]);
       });
 
+      it('does not pin two parties that share a label, even with every name unchanged', async () => {
+        await grantRecordSignature();
+        const { instanceId, requestIds, docId } = await issue();
+        await asLegacy(instanceId);
+        // Both dispatched as 'Anställd' — rewritten onto the row, since the point is the
+        // ledger's view — and both still show it. Had they swapped places, nothing here
+        // would differ, so position cannot say which request is which.
+        const row = await ledger(instanceId);
+        await host.admin.putConnectorState(connId, ledgerKey(instanceId), {
+          ...row,
+          parties: row.parties.map((p) => ({ ...p, label: 'Anställd' })),
+        });
+        scrive.editParty(docId, 1, { name: 'Anställd' });
+        scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
+
+        const result = await reconcile(instanceId);
+        expect(result.recorded).toEqual([]);
+        expect(await stored(instanceId)).toEqual([undefined, undefined]);
+        expect(result.needsAttention).toEqual([
+          expect.objectContaining({ requestId: requestIds[1], signedAt: '2026-07-21T10:30:00.000Z' }),
+        ]);
+        expect((await ledger(instanceId)).needsAttention).toHaveLength(1);
+      });
+
       it('does not pin a rename when another signing party still shows the same label', async () => {
         await grantRecordSignature();
         const { instanceId, requestIds, docId } = await issue();
