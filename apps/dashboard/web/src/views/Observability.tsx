@@ -11,6 +11,7 @@ import { LogQueryBar } from '../components/LogQueryBar';
 import { Flow } from './Flow';
 import { ProcessMap } from './ProcessMap';
 import { RequestSlideOver } from './RequestSlideOver';
+import { closeRequestInUrl, openRequestInUrl, requestInUrl } from '../lib/request-url';
 import { Tabs } from '@substrat-run/ui';
 import { Pulse } from './Pulse';
 import { EventExplorer, TenantLogs } from './ObservabilityPanels';
@@ -109,13 +110,14 @@ export function Observability({
   const pickApp = (next: string | null) => onNav({ ...(next ? { app: next } : {}), invocationId: undefined, ...(view ? { view } : {}) });
   // #1752 §7a: one request, over whichever page is open. In the URL, so a request can be
   // linked to, and closing it is a step back to the page exactly as it was.
-  const openRequest = (invocationId: string, atMs: number) => navigateQuery({ ...q, req: invocationId, reqAt: String(Math.round(atMs)) });
-  const reqAt = Number(q.reqAt);
-  // A hand-edited `reqAt` outside what a Date can hold would throw inside the panel and
-  // take the page with it; such a link simply opens nothing.
+  const openRequest = (invocationId: string, atMs: number) => openRequestInUrl(invocationId, atMs);
+  // One reading of the address for every page that hosts the panel (`lib/request-url.ts`):
+  // a request named by a transition card deep in a record's timeline opens here too, and in
+  // the scope it belongs to when that is not the page's own.
+  const open = requestInUrl(query);
   const slideOver =
-    scopeId && q.req && Number.isFinite(reqAt) && !Number.isNaN(new Date(reqAt).getTime()) ? (
-      <RequestSlideOver key={q.req} scopeId={scopeId} invocationId={q.req} atMs={reqAt} onClose={() => navigateQuery({ ...q, req: undefined, reqAt: undefined })} />
+    open && (open.scopeId ?? scopeId) ? (
+      <RequestSlideOver key={open.invocationId} scopeId={(open.scopeId ?? scopeId)!} invocationId={open.invocationId} atMs={open.atMs} onClose={closeRequestInUrl} />
     ) : null;
 
   /**
