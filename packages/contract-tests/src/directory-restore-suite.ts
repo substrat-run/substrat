@@ -289,6 +289,17 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
           ],
           /this directory does not build: tenant_mirror, sqlitedata\b/,
         ],
+        // Both entries would load into the one table SQLite resolves them to, and the second could
+        // carry what the first's checks never saw. `assertDumpIdentifiers` folds case, as SQLite does.
+        ...(['tenants', '_substrat_roles'] as const).map((table): Refusal => [
+          `a table listed twice, differing only in case: ${table}`,
+          (tables) => {
+            const t = find(tables, table);
+            const twin = { ...t, name: table.toUpperCase(), ddl: t.ddl.replace(new RegExp(`^(CREATE TABLE\\s+)"?${table}"?`, 'i'), `$1${table.toUpperCase()}`) };
+            return [...tables, twin];
+          },
+          new RegExp(`"${table.toUpperCase()}" is listed twice`),
+        ]),
         ...(['sqlite_master', 'SQLITE_SCHEMA', 'sqlite_sequence', '_cf_METADATA', '_cf_KV'] as const).map(
           (reserved): Refusal => [
             `a table named like one SQLite or workerd keeps for itself: ${reserved}`,
