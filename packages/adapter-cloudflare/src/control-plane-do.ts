@@ -12,7 +12,6 @@ import {
   sweepRunsIntentHasKind,
   SYSTEM_SWITCHES_BACKFILL_SQL,
   SYSTEM_SWITCHES_TABLE,
-  dumpCarriesSystemSwitches,
   SYSTEM_SWITCHES_DDL,
   forgetSystemSwitchesOf,
   listSystemSwitchRecords,
@@ -37,13 +36,12 @@ import {
   ulid,
   isPrimaryScope,
   resolveVerticalInstanceFrom,
-  assertDirectoryTablesBuilt,
-  spineColumnAdditions,
-  spineRowsInsert,
+  LEGACY_SCOPE_ROWS_BACKFILL,
+  loadDirectoryDump,
   type ImpersonationRow,
 } from '@substrat-run/kernel';
 import { splitSqlStatements, switchSqlOver } from './scope-do.js';
-import { doSpineColumnsOf } from './sql.js';
+import { doBuiltColumnsOf } from './sql.js';
 import type {
   AdminLogEntry,
   DeclaredMigration,
@@ -1235,7 +1233,8 @@ export class ControlPlaneDO extends DurableObject {
 
   /**
    * The DDL, then the migrations for a directory that predates part of it. Run on every
-   * construction and after a directory restore, which may land a dump from before a table.
+   * construction. A directory restore runs `buildDirectorySchema` inside its own transaction
+   * instead (`importDump`).
    *
    * The schedule switch's record (#1674) is backfilled from the admin log on a run that
    * creates its table, and its table is created in the SAME transaction as the backfill
@@ -1478,7 +1477,7 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('_substrat_entitlements', 'plan TEXT');
     this.addColumn('_substrat_entitlements', 'granted_at TEXT');
     this.addColumn('_substrat_entitlements', 'granted_by TEXT');
-    this.backfillLegacyScopeRows();
+    for (const stmt of LEGACY_SCOPE_ROWS_BACKFILL) this.sql.exec(stmt);
     // After the backfill: a UNIQUE index over NULL slugs would permit the
     // duplicates it exists to forbid (SQLite treats NULLs as distinct).
     //
@@ -1497,17 +1496,6 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS orgs_tenant_slug ON orgs (tenant_id, slug)',
     );
-  }
-
-  /**
-   * The naming columns a scope row from before the directory left NULL, filled with the defaults
-   * `resolveScopeRecord` applies. Run by every construction's schema pass, and by a restore after
-   * its rows are in, inside its transaction (#1912).
-   */
-  private backfillLegacyScopeRows(): void {
-    this.sql.exec("UPDATE scopes SET slug = lower(scope_id) WHERE slug IS NULL");
-    this.sql.exec("UPDATE scopes SET kind = 'scope' WHERE kind IS NULL");
-    this.sql.exec('UPDATE scopes SET name = slug WHERE name IS NULL');
   }
 
   // -- disaster recovery (#40) -----------------------------------------------
@@ -1580,26 +1568,15 @@ export class ControlPlaneDO extends DurableObject {
       // rebuilds fires (each would reach `transactionSync`, which this async transaction cannot
       // hold): every table is created on the current shape.
       this.buildDirectorySchema({ holdSwitchRecord: false });
-      const columnsOf = (name: string) => doSpineColumnsOf(this.sql, name);
-      // A table this code does not build, spine or not, is refused, every one named at once.
-      assertDirectoryTablesBuilt(tables.map((t) => t.name), columnsOf);
-      // A column this code does not know (a dump from a newer one) is kept, as a plain untyped
-      // column nothing here reads. One named for the rowid is refused.
-      for (const t of tables) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
-      for (const t of tables) {
-        if (t.rows.length === 0) continue;
-        const insert = spineRowsInsert(t, columnsOf(t.name));
-        for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
-      }
-      // A pre-directory dump's scope rows, now that they are in.
-      this.backfillLegacyScopeRows();
-      // #1674: the switch record is built above whether or not the dump carried it. A dump from
-      // before it gets the one-time backfill from its own admin log, now that those rows are in,
-      // and inside this transaction, so a backfill that fails leaves the directory as it was. One
-      // that carried it keeps its rows and is never backfilled over.
-      if (!dumpCarriesSystemSwitches(tables.map((t) => t.name))) {
-        this.sql.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
-      }
+      // Refuses a table this code does not build, adds unknown columns bare, loads the rows by
+      // name, then the legacy scope and #1674 backfills, all inside this transaction.
+      loadDirectoryDump(tables, {
+        columnsOf: (name) => doBuiltColumnsOf(this.sql, name),
+        exec: (sql) => this.sql.exec(sql),
+        insert: (sql, rows) => {
+          for (const row of rows) this.sql.exec(sql, ...(row as unknown[]));
+        },
+      });
     });
     // A restore is a new #1764 backfill episode. It replaced the data the old failure count and
     // backoff were about, so neither may delay or silence it: the count is cleared and the next

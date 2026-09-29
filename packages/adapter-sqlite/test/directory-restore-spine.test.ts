@@ -7,6 +7,7 @@ import { platformActorId, tenantId, type DirectoryDump, type PrincipalId, type S
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 import { createTupleChecker } from '../src/checker.js';
+import { readDirectoryFile } from './directory-file.js';
 
 /**
  * #1898 on the pure adapter: a directory restore builds the directory's `_substrat_*` tables
@@ -38,21 +39,7 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
     return host;
   };
 
-  /** The directory as its file holds it: every table's DDL and rows, in name order. */
-  const snapshot = (): { name: string; ddl: string; columns: string[]; rows: unknown[][] }[] => {
-    const db = new Database(join(dir!, '_directory.sqlite'), { readonly: true });
-    try {
-      const defs = db
-        .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND sql IS NOT NULL ORDER BY name`)
-        .all() as { name: string; sql: string }[];
-      return defs.map(({ name, sql }) => {
-        const stmt = db.prepare(`SELECT * FROM "${name}"`).raw(true);
-        return { name, ddl: sql, rows: stmt.all() as unknown[][], columns: stmt.columns().map((c) => c.name) };
-      });
-    } finally {
-      db.close();
-    }
-  };
+  const snapshot = () => readDirectoryFile(dir!);
   const ddlOf = (name: string) => snapshot().find((t) => t.name === name)?.ddl;
 
   const withTable = (dump: DirectoryDump, name: string, edit: (t: ScopeDumpTable) => ScopeDumpTable): DirectoryDump => ({

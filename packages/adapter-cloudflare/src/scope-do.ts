@@ -213,7 +213,7 @@ import {
   type LiveSubscription,
 } from './live-reads.js';
 import { OperationQueue } from './serialization.js';
-import { doScopedSql, doSpineColumnsOf, doSpineSql } from './sql.js';
+import { doScopedSql, doBuiltColumnsOf, doSpineSql } from './sql.js';
 import {
   actorOf,
   admitPeer,
@@ -4714,7 +4714,7 @@ export function defineScopeDO(
         // leaves to it.
         for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
         this.applySpineColumnAdditions();
-        const columnsOf = (name: string) => doSpineColumnsOf(this.sql, name);
+        const columnsOf = (name: string) => doBuiltColumnsOf(this.sql, name);
         assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
         // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
         // untyped column the checker never reads.

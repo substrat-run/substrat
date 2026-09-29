@@ -53,7 +53,7 @@ export function doSpineSql(sql: SqlStorage): ScopedSql {
  * because DO SQLite restricts PRAGMA. The name is matched without case, as SQLite resolves a
  * table name: a dump's `_Substrat_tuples` is the kernel's tuples table.
  */
-export function doSpineColumnsOf(sql: SqlStorage, name: string): string[] | undefined {
+export function doBuiltColumnsOf(sql: SqlStorage, name: string): string[] | undefined {
   // SQLite's own tables and workerd's (`_cf_*`) are never ones this DO built, and an export never
   // dumps them, so a dump naming one is refused by name rather than failing on its SELECT (#1912).
   const built = sql

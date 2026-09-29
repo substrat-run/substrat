@@ -295,7 +295,6 @@ import {
   systemSwitchedOffMessage,
   tenantSystemSwitchedOffMessage,
   SYSTEM_SWITCHES_BACKFILL_SQL,
-  dumpCarriesSystemSwitches,
   SYSTEM_SWITCHES_DDL,
   forgetSystemSwitchesOf,
   listSystemSwitchRecords,
@@ -482,7 +481,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
-import { assertDirectoryTablesBuilt, assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, spineColumnAdditions, spineRowsInsert } from '@substrat-run/kernel';
+import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
@@ -533,14 +532,11 @@ export const DO_SCOPE_ONLY_SPINE_TABLES: ReadonlySet<string> = new Set([
  * `undefined` when it built no such table — what a restore judges a dump's spine tables against
  * (#1883, #1898), and on the directory every other table too (#1912).
  */
-const spineColumnsOf = (db: Database.Database, name: string): string[] | undefined => {
+const builtColumnsOf = (db: Database.Database, name: string): string[] | undefined => {
   // SQLite's own tables are never ones this code built, and an export never dumps them, so a dump
   // naming one is refused by name rather than failing on its write (#1912). `pragma_table_info`
-  // alone would call `sqlite_master` built.
-  const built = db
-    .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE AND name NOT GLOB 'sqlite_*'`)
-    .get(name);
-  if (built === undefined) return undefined;
+  // alone would call `sqlite_master` built. SQLite reserves the prefix without regard to case.
+  if (/^sqlite_/i.test(name)) return undefined;
   const cols = db.prepare(`SELECT name FROM pragma_table_info(?)`).all(name) as { name: string }[];
   return cols.length === 0 ? undefined : cols.map((c) => c.name);
 };
@@ -1543,7 +1539,8 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
-   * The directory schema, applied on every open — and again after a restore (#40).
+   * The directory schema, applied on every open, and inside a restore's transaction onto an
+   * emptied directory (#40, #1912).
    *
    * Extracted from the constructor so the two callers cannot drift: a dump taken before
    * a directory migration carries the OLD shape, so replaying it verbatim would roll the
@@ -2129,8 +2126,8 @@ export class SqliteScopeHost implements ScopeHost {
 
   /**
    * The directory's tables as this code builds them, carrying whatever the directory already
-   * holds forward to that shape: a cold start's pass, and a restore's (#1898), which runs it
-   * after replaying the dump's non-spine tables and before loading any row.
+   * holds forward to that shape: a cold start's pass, and a restore's (#1898, #1912), which runs
+   * it inside its transaction onto an emptied directory, before loading any row.
    */
   private buildDirectorySchema(): void {
     // #1764: `VERSION_MIGRATIONS_DDL` indexes these two columns, so a directory created
@@ -2160,11 +2157,17 @@ export class SqliteScopeHost implements ScopeHost {
       this.buildDirectorySchema();
       if (switchRecordIsNew) this.directory.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
     })();
-    // #1764: move the SQL out of every version stored before the split. A batch per
-    // transaction, the same resumable step the Durable-Object adapter runs per alarm. This
-    // adapter has no constructor budget to protect, so it runs them all on open. A batch that
-    // fails is logged and the rest left for the next open: the host must still open, and a
-    // version the backfill has not reached reads from its manifest.
+    this.splitVersionMigrations();
+  }
+
+  /**
+   * #1764: move the SQL out of every version stored before the split, on open and after a
+   * restore. A batch per transaction, the same resumable step the Durable-Object adapter runs
+   * per alarm. This adapter has no constructor budget to protect, so it runs them all at once.
+   * A batch that fails is logged and the rest left for the next open: the host must still open,
+   * and a version the backfill has not reached reads from its manifest.
+   */
+  private splitVersionMigrations(): void {
     const sql = switchSqlOf(this.directory);
     try {
       while (this.directory.transaction(() => splitVersionMigrationsBatch(sql))().more);
@@ -3307,7 +3310,7 @@ export class SqliteScopeHost implements ScopeHost {
       for (const t of loadable) if (!isSpineTable(t.name)) db.prepare(t.ddl).run();
       db.exec(KERNEL_DDL);
       this.ensureSpineColumns(db);
-      const columnsOf = (name: string) => spineColumnsOf(db, name);
+      const columnsOf = (name: string) => builtColumnsOf(db, name);
       assertSpineTablesBuilt(loadable.map((t) => t.name), columnsOf);
       // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
       // untyped column the checker never reads.
@@ -8482,31 +8485,19 @@ export class SqliteScopeHost implements ScopeHost {
           // after the restore. A copy taken before a directory migration carries the OLD shape;
           // its rows go in by column name, so a column it lacks takes the running code's default.
           this.buildDirectorySchema();
-          const columnsOf = (name: string) => spineColumnsOf(this.directory, name);
-          // A table this code does not build, spine or not, is refused, every one named at once.
-          assertDirectoryTablesBuilt(dump.tables.map((t) => t.name), columnsOf);
-          // A column this code does not know (a dump from a newer one) is kept, as a plain untyped
-          // column nothing here reads. One named for the rowid is refused.
-          for (const t of dump.tables) {
-            for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.directory.exec(alter);
-          }
-          for (const t of dump.tables) {
-            if (t.rows.length === 0) continue;
-            const insert = this.directory.prepare(spineRowsInsert(t, columnsOf(t.name)));
-            for (const row of t.rows) insert.run(...(row as unknown[]));
-          }
-          // A pre-directory dump's scope rows, now that they are in.
-          this.backfillLegacyScopeRows();
-          // #1674: the switch record is built above whether or not the dump carried it. A dump
-          // from before it gets the one-time backfill from its own admin log, now that those
-          // rows are in; one that carried it keeps its rows and is never backfilled over.
-          if (!dumpCarriesSystemSwitches(dump.tables.map((t) => t.name))) {
-            this.directory.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
-          }
+          // Refuses a table this code does not build, adds unknown columns bare, loads the rows
+          // by name, then the legacy scope and #1674 backfills, all inside this transaction.
+          loadDirectoryDump(dump.tables, {
+            columnsOf: (name) => builtColumnsOf(this.directory, name),
+            exec: (sql) => this.directory.exec(sql),
+            insert: (sql, rows) => {
+              const insert = this.directory.prepare(sql);
+              for (const row of rows) insert.run(...(row as unknown[]));
+            },
+          });
         })();
-        // The cold start's pass: its schema half finds nothing left to do, and it runs #1764's
-        // split over any version the dump stored before it, a batch per transaction.
-        this.ensureDirectorySchema();
+        // #1764's split, over any version the dump stored before it.
+        this.splitVersionMigrations();
         // Roles are held in memory (`loadRoles`), so a restore that only rewrote the
         // table would leave every permission check reading the PRE-restore roles until
         // the process restarted — the exact silent-divergence a recovery must not have.
@@ -10288,7 +10279,7 @@ export class SqliteScopeHost implements ScopeHost {
     ] as const) {
       if (!existing.has(column)) this.directory.exec(`ALTER TABLE scopes ADD COLUMN ${ddl}`);
     }
-    this.backfillLegacyScopeRows();
+    for (const stmt of LEGACY_SCOPE_ROWS_BACKFILL) this.directory.exec(stmt);
     // Created after the backfill: a UNIQUE index over NULL slugs would permit the
     // duplicates it exists to forbid (SQLite treats NULLs as distinct).
     //
@@ -10307,21 +10298,6 @@ export class SqliteScopeHost implements ScopeHost {
     this.directory.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS orgs_tenant_slug ON orgs (tenant_id, slug)',
     );
-  }
-
-  /**
-   * The naming columns a scope row from before the directory left NULL, filled with the defaults
-   * `resolveScopeRecord` applies. Run by every open's schema pass, and by a restore after its
-   * rows are in, inside its transaction (#1912).
-   */
-  private backfillLegacyScopeRows(): void {
-    // A ULID lowercases into a valid slug, so the placeholder is unique by
-    // construction — the same default provisionScope resolves.
-    this.directory.exec(`
-      UPDATE scopes SET slug = lower(scope_id) WHERE slug IS NULL;
-      UPDATE scopes SET kind = 'scope' WHERE kind IS NULL;
-      UPDATE scopes SET name = slug WHERE name IS NULL;
-    `);
   }
 
   private loadRoles(): void {

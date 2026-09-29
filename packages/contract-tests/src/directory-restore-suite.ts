@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ScopeDumpTable } from '@substrat-run/contracts';
+import { namesSpineTable, type ScopeDumpTable } from '@substrat-run/contracts';
 import { ALTERED_SHAPES, CREATED_SHAPES, type DirectoryShape } from './directory-shapes.js';
 
 /**
@@ -42,9 +42,11 @@ const DEFAULTS: Record<string, unknown> = {
   tenant_provisioner: 0,
   email_sender: 0,
 };
+const INTEGER_COLUMNS = new Set([...Object.keys(DEFAULTS).filter((c) => typeof DEFAULTS[c] === 'number'), 'ordinal']);
+/** A live tenant row's NOT NULL columns. */
+const LIVE_TENANT = { tenant_id: 't-0', status: 'active', created_at: 'c' };
 /** A live pre-directory scope row: its NOT NULL columns, and a NULL slug for the backfill to fill. */
 const LIVE_SCOPE = { tenant_id: 't-0', storage_shape: 'A', status: 'active', schema_version: '0', created_at: 'c' };
-const INTEGER_COLUMNS = new Set(['canonical', 'listed', 'installs_blocked', 'tenant_provisioner', 'email_sender', 'migration_attempts', 'ordinal']);
 
 /**
  * The value a crafted row carries in `column`: distinct per table and column, so a value that
@@ -58,7 +60,6 @@ const valueFor = (table: string, column: string): unknown => {
   return INTEGER_COLUMNS.has(column) ? 1 : `${table}.${column}`;
 };
 
-const isRegistry = (name: string) => !name.toLowerCase().startsWith('_substrat');
 const find = (tables: ScopeDumpTable[], name: string) => {
   const t = tables.find((x) => x.name === name);
   if (!t) throw new Error(`no table ${name} in the directory`);
@@ -69,7 +70,7 @@ const withTable = (tables: ScopeDumpTable[], name: string, edit: (t: ScopeDumpTa
 const rowOf = (columns: readonly string[], values: Record<string, unknown>) => columns.map((c) => values[c] ?? null);
 /** One table's rows as objects, keyed by column name. */
 const recordsOf = (t: ScopeDumpTable) => t.rows.map((r) => Object.fromEntries(t.columns.map((c, i) => [c, r[i]])));
-const crafted = (table: string, columns: readonly string[]) => rowOf(columns, Object.fromEntries(columns.map((c) => [c, valueFor(table, c)])));
+const crafted = (table: string, columns: readonly string[]) => columns.map((c) => valueFor(table, c));
 /** A table in one of its older shapes, holding one crafted row. */
 const inShape = (shape: DirectoryShape): Pick<ScopeDumpTable, 'ddl' | 'columns' | 'rows'> => ({
   ddl: shape.ddl,
@@ -91,13 +92,24 @@ const expectedRow = (shape: DirectoryShape, columns: readonly string[]): Record<
     out[c] = dumped.has(c) ? valueFor(shape.table, c) : (DEFAULTS[c] ?? null);
   }
   if (shape.table === 'scopes') {
-    const slug = dumped.has('slug') ? out.slug : String(out.scope_id).toLowerCase();
-    if (!dumped.has('slug')) out.slug = slug;
+    if (!dumped.has('slug')) out.slug = String(out.scope_id).toLowerCase();
     if (!dumped.has('kind')) out.kind = 'scope';
-    if (!dumped.has('name')) out.name = slug;
+    if (!dumped.has('name')) out.name = out.slug;
   }
   return out;
 };
+
+/** The scopes table as the directory's first day built it, before its naming columns. */
+const OLDEST_SCOPES = CREATED_SHAPES.find((s) => s.table === 'scopes')!;
+/** That table holding one live pre-directory row per id, each with a NULL slug. */
+const oldScopes = (ids: string[]): ScopeDumpTable => ({
+  name: 'scopes',
+  ddl: OLDEST_SCOPES.ddl,
+  columns: OLDEST_SCOPES.columns,
+  rows: ids.map((id) => rowOf(OLDEST_SCOPES.columns, { ...LIVE_SCOPE, scope_id: id })),
+});
+
+type Refusal = [what: string, craft: (tables: ScopeDumpTable[]) => ScopeDumpTable[], message: RegExp];
 
 export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHarness): void {
   const using = async <T>(fn: (dir: RestorableDirectory, fresh: ScopeDumpTable[]) => Promise<T>): Promise<T> => {
@@ -142,7 +154,7 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
         let tables = withTable(fresh, 'tenants', (t) => ({
           ...t,
           ddl: nocase(t.ddl, 'slug'),
-          rows: ['Acme', 'acme'].map((slug, i) => rowOf(t.columns, { tenant_id: `t-${i}`, slug, name: slug, status: 'active', created_at: 'c' })),
+          rows: ['Acme', 'acme'].map((slug, i) => rowOf(t.columns, { ...LIVE_TENANT, tenant_id: `t-${i}`, slug, name: slug })),
         }));
         tables = withTable(tables, 'hostnames', (t) => ({
           ...t,
@@ -183,7 +195,7 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
             ...t,
             ddl: t.ddl.replace(/\)\s*$/, ", Future_Note TEXT NOT NULL COLLATE NOCASE DEFAULT 'x')"),
             columns,
-            rows: [rowOf(columns, { tenant_id: 't-0', slug: 'acme', name: 'Acme', status: 'active', created_at: 'c', Future_Note: 'kept' })],
+            rows: [rowOf(columns, { ...LIVE_TENANT, slug: 'acme', name: 'Acme', Future_Note: 'kept' })],
           };
         });
         await dir.restore(tables);
@@ -229,11 +241,10 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
 
       it('a directory from before the tenant registry, holding only its scopes', async () => {
         await using(async (dir, fresh) => {
-          const scopes = CREATED_SHAPES.find((s) => s.table === 'scopes')!;
-          await dir.restore([{ name: 'scopes', ...inShape(scopes) }]);
+          await dir.restore([{ name: 'scopes', ...inShape(OLDEST_SCOPES) }]);
           const after = await dir.snapshot();
           expect(shapeOf(after)).toEqual(shapeOf(fresh));
-          expect(recordsOf(find(after, 'scopes'))).toEqual([expect.objectContaining(expectedRow(scopes, find(fresh, 'scopes').columns))]);
+          expect(recordsOf(find(after, 'scopes'))).toEqual([expect.objectContaining(expectedRow(OLDEST_SCOPES, find(fresh, 'scopes').columns))]);
           expect(find(after, 'tenants').rows).toEqual([]);
         });
       });
@@ -241,11 +252,11 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
 
     it('export → restore → export round-trips, every registry holding a row', async () => {
       await using(async (dir, fresh) => {
-        await dir.restore(fresh.map((t) => (isRegistry(t.name) ? { ...t, rows: [crafted(t.name, t.columns)] } : t)));
+        await dir.restore(fresh.map((t) => (!namesSpineTable(t.name) ? { ...t, rows: [crafted(t.name, t.columns)] } : t)));
         // The crafted version is one the #1764 split has not reached; it moves before the copy.
         await dir.settle();
         const before = await dir.snapshot();
-        expect(before.filter((t) => isRegistry(t.name) && t.rows.length !== 1)).toEqual([]);
+        expect(before.filter((t) => !namesSpineTable(t.name) && t.rows.length !== 1)).toEqual([]);
         await dir.restore(before);
         await dir.settle();
         const after = await dir.snapshot();
@@ -266,7 +277,7 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
     });
 
     describe('refused, and the directory is left exactly as it was', () => {
-      const refusals: [string, (tables: ScopeDumpTable[]) => ScopeDumpTable[], RegExp][] = [
+      const refusals: Refusal[] = [
         [
           // The issue's second case: with foreign keys enforced, a row here would fail the delete
           // of the tenant it names. Named with a second unbuilt table, to show both are named.
@@ -279,13 +290,13 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
           /this directory does not build: tenant_mirror, sqlitedata\b/,
         ],
         ...(['sqlite_master', 'SQLITE_SCHEMA', 'sqlite_sequence', '_cf_METADATA', '_cf_KV'] as const).map(
-          (reserved): [string, (tables: ScopeDumpTable[]) => ScopeDumpTable[], RegExp] => [
+          (reserved): Refusal => [
             `a table named like one SQLite or workerd keeps for itself: ${reserved}`,
             (tables) => [...tables, { name: reserved, ddl: `CREATE TABLE ${reserved} (name TEXT)`, columns: ['name'], rows: [['x']] }],
             new RegExp(`this directory does not build: ${reserved}\\b`),
           ],
         ),
-        ...(['rowid', 'OID', '_rowid_'] as const).map((alias): [string, (tables: ScopeDumpTable[]) => ScopeDumpTable[], RegExp] => [
+        ...(['rowid', 'OID', '_rowid_'] as const).map((alias): Refusal => [
           `a registry column named ${alias}`,
           (tables) =>
             withTable(tables, 'tenants', (t) => ({
@@ -318,15 +329,7 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
           // Two pre-directory scope rows whose ids differ only in case: the legacy backfill gives
           // them one slug, which the live-slug index refuses. It runs inside the transaction.
           'a legacy scope backfill that fails',
-          (tables) => {
-            const oldest = CREATED_SHAPES.find((s) => s.table === 'scopes')!;
-            return withTable(tables, 'scopes', () => ({
-              name: 'scopes',
-              ddl: oldest.ddl,
-              columns: oldest.columns,
-              rows: ['Dup', 'dup'].map((id) => rowOf(oldest.columns, { ...LIVE_SCOPE, scope_id: id })),
-            }));
-          },
+          (tables) => withTable(tables, 'scopes', () => oldScopes(['Dup', 'dup'])),
           /UNIQUE/,
         ],
       ];
@@ -334,7 +337,7 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
         it(what, async () => {
           await using(async (dir, fresh) => {
             // A directory holding something, so a restore that went through would show.
-            await dir.restore(withTable(fresh, 'tenants', (t) => ({ ...t, rows: [rowOf(t.columns, { tenant_id: 't-0', slug: 'kept', name: 'Kept', status: 'active', created_at: 'c' })] })));
+            await dir.restore(withTable(fresh, 'tenants', (t) => ({ ...t, rows: [rowOf(t.columns, { ...LIVE_TENANT, slug: 'kept', name: 'Kept' })] })));
             const before = await dir.snapshot();
             const attempt = craft(withTable(before, 'tenants', (t) => ({ ...t, rows: t.rows.map((r) => r.map((v) => (v === 'Kept' ? 'Changed' : v))) })));
             await expect(dir.restore(attempt)).rejects.toThrow(message);
@@ -345,14 +348,7 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
 
       it('twin: the same dump without the refused parts restores', async () => {
         await using(async (dir, fresh) => {
-          const oldest = CREATED_SHAPES.find((s) => s.table === 'scopes')!;
-          const tables = withTable(fresh, 'scopes', () => ({
-            name: 'scopes',
-            ddl: oldest.ddl,
-            columns: oldest.columns,
-            rows: ['Dup', 'other'].map((id) => rowOf(oldest.columns, { ...LIVE_SCOPE, scope_id: id })),
-          }));
-          await dir.restore(tables);
+          await dir.restore(withTable(fresh, 'scopes', () => oldScopes(['Dup', 'other'])));
           expect(recordsOf(find(await dir.snapshot(), 'scopes')).map((r) => r.slug).sort()).toEqual(['dup', 'other']);
         });
       });
