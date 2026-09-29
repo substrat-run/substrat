@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button, openSupport } from '@substrat-run/ui';
 import { Ic, type IconName } from '../lib/icons';
+import { useEscapeLayer } from '../lib/escape-stack';
 import { paletteItems, type PaletteContext, type PaletteGo, type PaletteGroup, type PaletteItem } from '../lib/palette';
 
 /**
@@ -64,12 +65,11 @@ export function CommandPalette({
     setSupport(typeof window !== 'undefined' && window.ticket0 ? 'bubble' : 'none');
   };
 
+  // Above any open panel, so Escape closes the overlay and leaves the panel open.
+  useEscapeLayer(onClose);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      } else if (e.key === 'Tab') {
+      if (e.key === 'Tab') {
         e.preventDefault();
         setMode((m) => (m === 'jump' ? 'support' : 'jump'));
         input.current?.focus();

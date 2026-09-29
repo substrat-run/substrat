@@ -9,7 +9,7 @@ import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
 import { sectionLabel, sectionOf, sectionQuery } from './lib/obs-sections';
 import { CommandPalette } from './components/CommandPalette';
-import type { PaletteContext, PaletteGo } from './lib/palette';
+import { mergePaletteModels, type PaletteContext, type PaletteGo } from './lib/palette';
 import { openRecordInUrl, openRequestInUrl } from './lib/request-url';
 import { MOCK_TIMELINE_TARGETS } from './lib/mock-timeline';
 import { NotificationsPopover } from './components/NotificationsPopover';
@@ -184,19 +184,9 @@ export function App() {
       }));
       return;
     }
-    void Promise.allSettled(missing.map((a) => api.appModel(a.app_scope_id))).then((answers) => {
+    void Promise.allSettled(missing.map((a) => api.appModel(a.app_scope_id).then((v) => v.running.model))).then((answers) => {
       if (!live) return;
-      setPaletteModels((m) => {
-        const next = { ...m };
-        answers.forEach((ans, i) => {
-          const model = ans.status === 'fulfilled' ? ans.value.running.model : null;
-          next[missing[i]!.app_scope_id] = {
-            lifecycles: Object.keys(model?.lifecycles ?? {}),
-            entities: Object.keys(model?.entities ?? {}),
-          };
-        });
-        return next;
-      });
+      setPaletteModels((m) => mergePaletteModels(m, missing.map((a) => a.app_scope_id), answers));
     });
     return () => {
       live = false;

@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, type EmittedLifecycle } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { MOCK_TIMELINE_TARGETS } from '../lib/mock-timeline';
 import { EntityTimeline } from './EventHistory';
+import { useEscapeLayer } from '../lib/escape-stack';
 
 /**
  * One record's timeline over the page (#1921), opened by its address (`rec=<type>:<id>`) —
@@ -22,8 +23,6 @@ export function RecordPanel({
   onClose: () => void;
 }) {
   const [lifecycle, setLifecycle] = useState<EmittedLifecycle | null | undefined>(undefined);
-  const close = useRef(onClose);
-  close.current = onClose;
   useEffect(() => {
     let live = true;
     setLifecycle(undefined);
@@ -40,11 +39,7 @@ export function RecordPanel({
       live = false;
     };
   }, [scopeId, entityType]);
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === 'Escape' && close.current();
-    window.addEventListener('keydown', esc);
-    return () => window.removeEventListener('keydown', esc);
-  }, []);
+  useEscapeLayer(onClose);
 
   return (
     <>

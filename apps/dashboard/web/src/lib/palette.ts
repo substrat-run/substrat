@@ -42,6 +42,24 @@ export interface PaletteContext {
   models: Record<string, { lifecycles: string[]; entities: string[] }>;
 }
 
+/**
+ * Fold a round of model reads into what the overlay knows. A read that FAILED is left out
+ * rather than kept as "declares nothing": the key's absence is what makes the next opening
+ * ask again, and an empty entry would hide that app's maps and records until a reload.
+ */
+export function mergePaletteModels(
+  known: PaletteContext['models'],
+  asked: string[],
+  answers: PromiseSettledResult<{ lifecycles?: Record<string, unknown>; entities?: Record<string, unknown> } | null>[],
+): PaletteContext['models'] {
+  const next = { ...known };
+  answers.forEach((ans, i) => {
+    if (ans.status === 'rejected') return;
+    next[asked[i]!] = { lifecycles: Object.keys(ans.value?.lifecycles ?? {}), entities: Object.keys(ans.value?.entities ?? {}) };
+  });
+  return next;
+}
+
 /** Crockford base32 — the alphabet a ULID is written in. */
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';

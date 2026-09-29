@@ -71,3 +71,25 @@ describe('ulidTime', () => {
     expect(ulidTime('not-a-ulid')).toBeNull();
   });
 });
+
+describe('mergePaletteModels', () => {
+  it('keeps what was read, and leaves a failed read out so the next opening asks again', async () => {
+    const { mergePaletteModels } = await import('../src/lib/palette');
+    const next = mergePaletteModels(
+      { A0: { lifecycles: ['x'], entities: ['x'] } },
+      ['A1', 'A2', 'A3'],
+      [
+        { status: 'fulfilled', value: { lifecycles: { ticket: {} }, entities: { ticket: {}, contact: {} } } },
+        { status: 'rejected', reason: new Error('503') },
+        { status: 'fulfilled', value: null },
+      ],
+    );
+    expect(next).toEqual({
+      A0: { lifecycles: ['x'], entities: ['x'] },
+      A1: { lifecycles: ['ticket'], entities: ['ticket', 'contact'] },
+      // A model-less version declares nothing — a fact, kept.
+      A3: { lifecycles: [], entities: [] },
+    });
+    expect('A2' in next).toBe(false);
+  });
+});

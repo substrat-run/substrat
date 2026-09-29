@@ -21,6 +21,7 @@ import {
   type RequestTimeline,
 } from '../lib/request-detail';
 import { EntityTimeline } from './EventHistory';
+import { useEscapeLayer } from '../lib/escape-stack';
 
 /**
  * One request, opened from anywhere that holds its call id (#1752, design §7a): a Requests
@@ -142,16 +143,11 @@ export function RequestSlideOver({
   const d = useRequestDetail(scopeId, invocationId, atMs);
   const panel = useRef<HTMLDivElement>(null);
   const [history, setHistory] = useState<CausedTransition | null>(null);
-  // The caller's close is a new function every render; the key handler reads the latest
-  // through a ref, so focus is taken once on open rather than on every render.
-  const close = useRef(onClose);
-  close.current = onClose;
+  // Focus once on open; Escape closes this panel only while it is the topmost layer.
   useEffect(() => {
     panel.current?.focus();
-    const esc = (e: KeyboardEvent) => e.key === 'Escape' && close.current();
-    window.addEventListener('keydown', esc);
-    return () => window.removeEventListener('keydown', esc);
   }, []);
+  useEscapeLayer(onClose);
 
   const r = d.record;
   const events = d.events.state === 'ready' ? d.events.value : [];
