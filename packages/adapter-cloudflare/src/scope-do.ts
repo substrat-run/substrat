@@ -4005,6 +4005,10 @@ export function defineScopeDO(
             // re-parsing the thrown message. The throw stays: `invoke` awaits
             // `ensureMigrations` on every operation and relies on the rejection to
             // fail closed, so resolving here would serve a half-migrated schema.
+            // workerd logs this throw as `Uncaught (in promise)` when it leaves an RPC method,
+            // as it does every exception an RPC call returns (a dump refusal, a denied check).
+            // It is not an unhandled rejection: every caller awaits the memoised promise, and
+            // the coordinator records the failure it receives (#1898 review).
             this.lastFailure = { version: key, error: (err as Error).message };
             throw new Error(
               `migration failed for ${key} — scope fails closed: ${(err as Error).message}`,
