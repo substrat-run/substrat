@@ -27,7 +27,10 @@ import { isSearchIndexTable } from './search-index.js';
  * - a spine table the kernel does not build is refused (`assertSpineTablesBuilt`), every such
  *   table named at once.
  *
- * Tables outside the spine keep the dump's own DDL: a vertical's schema is the dump's to say.
+ * In a scope, tables outside the spine keep the dump's own DDL: a vertical's schema is the
+ * dump's to say. A directory has no vertical tables, so there every table is built by the
+ * host and loaded by these same rules, and a table it does not build is refused
+ * (`assertDirectoryTablesBuilt`, #1912).
  */
 
 /**
@@ -65,6 +68,26 @@ export function assertSpineTablesBuilt(names: readonly string[], columnsOf: Kern
 /** A table's columns as the kernel built it here, or `undefined` when it built no such table. */
 export type KernelColumnsOf = (name: string) => readonly string[] | undefined;
 
+/**
+ * Refuse a directory dump carrying any table the directory does not build, spine or not, naming
+ * every one of them (#1912). A directory holds only the platform's own tables, so there is no
+ * vertical table whose DDL the dump could have a say in: an extra table would keep the dump's
+ * DDL, and with it whatever that declares, such as a `REFERENCES tenants` that fails the
+ * delete of a referenced row. Called where `assertSpineTablesBuilt` is in a scope restore, with
+ * the same `columnsOf`.
+ */
+export function assertDirectoryTablesBuilt(names: readonly string[], columnsOf: KernelColumnsOf): void {
+  const missing = names.filter((n) => columnsOf(n) === undefined);
+  if (missing.length > 0) {
+    throw substratError(
+      'validation_failed',
+      `restore refused: the dump carries table(s) this directory does not build: ${missing.join(', ')}. ` +
+        'A directory holds only the platform\'s own tables, each built by this code, and a table it does not ' +
+        'build would keep the dump\'s own schema. Nothing was changed.',
+    );
+  }
+}
+
 const unbuiltSpineTables = (names: readonly string[]) =>
   substratError(
     'validation_failed',
@@ -85,7 +108,8 @@ const DERIVED_COLUMNS: Record<string, Record<string, string>> = {
 /**
  * The `INSERT` that loads one dumped table's rows, one row of positional parameters per
  * execution, in the dump's column order: `spineRowsInsert` for a spine table, and the dump's
- * own columns for a vertical one. The names are quoted as given: the loader has already passed
+ * own columns for a vertical one. A directory builds every table, so it calls
+ * `spineRowsInsert` directly. The names are quoted as given: the loader has already passed
  * the dump through `assertReplayableDump`.
  */
 export function dumpRowsInsert(table: { name: string; columns: readonly string[] }, columnsOf: KernelColumnsOf): string {
@@ -100,12 +124,13 @@ const plainInsert = (table: { name: string; columns: readonly string[] }): strin
 const lowered = (columns: readonly string[]) => new Set(columns.map((c) => c.toLowerCase()));
 
 /**
- * The statements that add to a kernel-built spine table each column the dump carries and the
- * kernel does not, as a plain untyped column: `ADD COLUMN "<name>"`, lowercased, and nothing after it, so it
- * has no type, collation, constraint or default. Run after `assertSpineTablesBuilt` and before
- * the table's rows go in, inside the load's transaction. The names are the dump's, which
- * `assertReplayableDump` has already held to the identifier rule. Empty for a table the kernel
- * did not build, which `assertSpineTablesBuilt` has refused.
+ * The statements that add to a table the host built (a spine table, or any directory table,
+ * #1912) each column the dump carries and the host's table does not, as a plain untyped column:
+ * `ADD COLUMN "<name>"`, lowercased, and nothing after it, so it has no type, collation,
+ * constraint or default. Run after `assertSpineTablesBuilt` / `assertDirectoryTablesBuilt` and
+ * before the table's rows go in, inside the load's transaction. The names are the dump's, which
+ * `assertReplayableDump` has already held to the identifier rule. Empty for a table the host
+ * did not build, which those have refused.
  */
 export function spineColumnAdditions(
   table: { name: string; columns: readonly string[] },
@@ -116,7 +141,8 @@ export function spineColumnAdditions(
   const unknown = table.columns.filter((c) => !known.has(c.toLowerCase()));
   // A real column named for the rowid shadows SQLite's alias. On the outbox, `rowid` is the mark
   // the #1705 and #1746 since-queries read (`OUTBOX_MARK_SQL`), so a dump's value would silence
-  // them from then on, and survive every later export.
+  // them from then on, and survive every later export. A directory table is held to the same
+  // rule: whatever reads its rowid, now or later, reads the dump's value instead.
   const aliased = unknown.filter((c) => ROWID_ALIASES.has(c.toLowerCase()));
   if (aliased.length > 0) {
     throw substratError(
@@ -134,10 +160,11 @@ export function spineColumnAdditions(
 const ROWID_ALIASES: ReadonlySet<string> = new Set(['rowid', 'oid', '_rowid_']);
 
 /**
- * The `INSERT` that loads one dumped spine table's rows into the table the kernel built.
+ * The `INSERT` that loads one dumped table's rows into the table the host built: a spine table,
+ * or any directory table (#1912).
  *
- * `kernelColumns` is the kernel table's column list as the loader reads it back after
- * `spineColumnAdditions`, or `undefined` when the kernel built no such table. Either refusal
+ * `kernelColumns` is the built table's column list as the loader reads it back after
+ * `spineColumnAdditions`, or `undefined` when the host built no such table. Either refusal
  * below is a backstop the loader's order makes unreachable, and throws `validation_failed`
  * inside the load's transaction, so the target keeps what it held.
  */
@@ -145,7 +172,7 @@ export function spineRowsInsert(
   table: { name: string; columns: readonly string[] },
   kernelColumns: readonly string[] | undefined,
 ): string {
-  // `assertSpineTablesBuilt` has refused this already, naming every such table.
+  // `assertSpineTablesBuilt` / `assertDirectoryTablesBuilt` has refused this already, naming every such table.
   if (kernelColumns === undefined) throw unbuiltSpineTables([table.name]);
   const known = lowered(kernelColumns);
   // `spineColumnAdditions` has added every such column already.

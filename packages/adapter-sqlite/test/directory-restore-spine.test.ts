@@ -126,14 +126,6 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
     }
   });
 
-  it('twin: a vertical-shaped (non-spine) table keeps the dump’s own DDL, NOCASE and all', async () => {
-    const h = await open();
-    const dump = await h.admin.exportDirectory(staff);
-    const probe = { name: 'directory_probe', ddl: 'CREATE TABLE directory_probe (k TEXT COLLATE NOCASE PRIMARY KEY)', columns: ['k'], rows: [['A']] };
-    await h.admin.restoreDirectory(staff, { ...dump, tables: [...dump.tables, probe] });
-    expect(ddlOf('directory_probe')).toBe(probe.ddl);
-  });
-
   it('export → restore → export round-trips: every table’s DDL and rows, plus the restore’s own audit row', async () => {
     const h = await open();
     const before = snapshot();
@@ -283,12 +275,14 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
       });
     }
 
-    it('twin: a directory table referencing another directory table restores', async () => {
+    // Since #1912 a directory table this code does not build is refused whatever it references
+    // (`directory-restore-tables.test.ts`), so the twin is a registry the directory does build.
+    it('twin: a directory table whose DDL references another directory table restores', async () => {
       const h = await open();
       const dump = await h.admin.exportDirectory(staff);
-      const probe = { name: 'directory_probe', ddl: 'CREATE TABLE directory_probe (t TEXT REFERENCES tenants(tenant_id))', columns: ['t'], rows: [[tenant]] };
-      await h.admin.restoreDirectory(staff, { ...dump, tables: [...dump.tables, probe] });
-      expect(snapshot().find((t) => t.name === 'directory_probe')!.rows).toEqual([[tenant]]);
+      expect(dump.tables.find((t) => t.name === 'tenants')!.ddl).toMatch(/REFERENCES tenants\(tenant_id\)/);
+      await h.admin.restoreDirectory(staff, dump);
+      expect(snapshot().find((t) => t.name === 'tenants')!.rows.map((r) => r[0])).toEqual([tenant]);
     });
   });
 });

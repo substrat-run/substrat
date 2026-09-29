@@ -70,7 +70,14 @@ describe('tables named like the sqlite_ prefix, in the directory DO (#1881)', ()
   it('exportDump keeps sqlitedata, importDump replaces it, sqlite_sequence stays out', async () => {
     const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`prefix-${ulid()}`));
     const base = await inCp(stub, (i) => i.exportDump());
-    await inCp(stub, (i) => i.importDump([...base, SQLITEDATA, AUTO]));
+    // Planted in storage: since #1912 a directory restore refuses a table the directory does not
+    // build (below), so no restore can put one there.
+    await runInDurableObject(stub, (_, state) => {
+      for (const t of [SQLITEDATA, AUTO]) {
+        state.storage.sql.exec(t.ddl);
+        for (const r of t.rows) state.storage.sql.exec(`INSERT INTO ${t.name} (${t.columns.join(', ')}) VALUES (?, ?)`, ...r);
+      }
+    });
     const withIt = await inCp(stub, (i) => i.exportDump());
     expect(mine(withIt).map((t) => t.name)).toEqual(['sqlitedata']);
     expect(withIt.map((t) => t.name)).toContain('sqlitecounter');
@@ -78,5 +85,13 @@ describe('tables named like the sqlite_ prefix, in the directory DO (#1881)', ()
     await inCp(stub, (i) => i.importDump(base));
     const gone = await inCp(stub, (i) => i.exportDump());
     expect(mine(gone)).toEqual([]);
+    expect(gone.map((t) => t.name)).not.toContain('sqlitecounter');
+  });
+
+  it('a dump carrying sqlitedata is refused by name, not passed over as an internal table (#1912)', async () => {
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`prefix-${ulid()}`));
+    const base = await inCp(stub, (i) => i.exportDump());
+    await expect(inCp(stub, (i) => i.importDump([...base, SQLITEDATA]))).rejects.toThrow(/does not build: sqlitedata\b/);
+    expect(await inCp(stub, (i) => i.exportDump())).toEqual(base);
   });
 });

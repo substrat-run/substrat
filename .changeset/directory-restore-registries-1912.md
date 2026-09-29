@@ -1,0 +1,12 @@
+---
+'@substrat-run/kernel': minor
+'@substrat-run/adapter-sqlite': minor
+'@substrat-run/adapter-cloudflare': minor
+'@substrat-run/contract-tests': minor
+---
+
+A directory restore now builds every directory table from the running code's own schema, and takes only the rows from the dump (#1912). Since #1898 that held for the `_substrat_*` tables; the platform's registries (`tenants`, `scopes`, `hostnames`, `verticals`, `vertical_versions`, `vertical_version_migrations`, `vertical_channels`, `vertical_channel_history`, `orgs`, `tenant_stores`, `blob_stores`) still took the dump's own `CREATE TABLE`. So a dump declaring `verticals.tenant_provisioner … DEFAULT 1` gave every vertical registered after the restore the tenant-provisioner capability without a staff grant, since registration does not name that column (the same for `email_sender` and `installs_blocked`), and a `COLLATE NOCASE` on `tenants.slug` or `hostnames.hostname` changed how those lookups match.
+
+The rules are the spine's: a column the dump lacks takes the running code's default, so a dump taken before a directory migration still restores; a column this code does not know is kept as a plain untyped column, lowercased, with its values; a column named for SQLite's rowid is refused. A table the directory does not build is now refused, spine or not, naming every such table: an extra table would keep the dump's own DDL, and one declaring `REFERENCES tenants(tenant_id)` would make the delete of a referenced row fail. The legacy backfill of a pre-directory scope row's `slug`, `kind` and `name` now runs inside the restore's transaction, so a refusal anywhere leaves the directory as it was.
+
+New kernel export: `assertDirectoryTablesBuilt`. `spineColumnAdditions` and `spineRowsInsert` now serve any table the host built. New `@substrat-run/contract-tests` export: `directoryRestoreSuite`, which restores every shape each directory table has had.

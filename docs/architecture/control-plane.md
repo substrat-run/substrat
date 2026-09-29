@@ -953,10 +953,14 @@ restore → keep serving), which is what turns this from a claim into a procedur
 3. `POST /api/directory/restore` with `{ capturedAt, overwrite }`. The directory is replaced,
    the schema is re-asserted forward (a copy taken before a directory migration is carried to
    the running code's shape, never rolled back to the old one), and the restore is audited as
-   `restoreDirectory` in the log it just replaced. The `_substrat_*` tables are built from the
-   running code's schema and take only the dump's rows (#1898), so a dump cannot decide how the
-   tenant-level tuples and roles the checker reads compare; a dump that names a spine table this
-   code does not build, or a replayed table with a foreign key to the spine, is refused whole.
+   `restoreDirectory` in the log it just replaced. Every directory table is built from the
+   running code's schema and takes only the dump's rows, by column name: the `_substrat_*` tables
+   since #1898, so a dump cannot decide how the tenant-level tuples and roles the checker reads
+   compare, and the registries (`tenants`, `scopes`, `verticals`, …) since #1912, so a dump cannot
+   decide a default such as `verticals.tenant_provisioner`'s either. A dump that names a table
+   this code does not build, spine or not, is refused whole, naming each such table; so is a
+   column named for SQLite's rowid, or a table with a foreign key to the spine. A column this
+   code does not know is kept as a plain untyped column, with its values.
    A refusal naming `_substrat_identities_new` or `_substrat_admin_log_new` means the dump was
    taken from a directory a torn pre-#1573 rebuild left behind, whose rows may exist only in
    that scratch table: move them into the real table's rows in the dump, drop the scratch

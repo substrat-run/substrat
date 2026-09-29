@@ -627,9 +627,16 @@ describe('a dump with a table over the column cap (#1811)', () => {
   it('a directory restore holds to the same cap', async () => {
     const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('do-dump-columns-1811-cp'));
     const [ok, past] = await runInDurableObject(stub, async (i) => {
-      const cp = i as unknown as Importer;
+      const cp = i as unknown as Importer & { exportDump(): { name: string; columns: string[] }[] };
+      // A directory builds every table it holds (#1912), so the wide table is `tenants`, its own
+      // columns and then unknown ones, which the restore adds bare.
+      const own = cp.exportDump().find((t) => t.name === 'tenants')!.columns;
+      const wide = (n: number) => {
+        const columns = [...own, ...names(n - own.length)];
+        return { name: 'tenants', ddl: `CREATE TABLE tenants (${columns.join(', ')})`, columns, rows: [] };
+      };
       const attempt = (n: number) =>
-        cp.importDump([table('wide_dir', n)]).then(
+        cp.importDump([wide(n)]).then(
           () => 'ok',
           (e: Error) => e.message,
         );

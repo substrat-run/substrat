@@ -196,11 +196,14 @@ describe('ControlPlaneDO.importDump builds the spine from its own DDL (#1898)', 
       });
     }
 
-    it('twin: a directory table referencing another directory table restores', async () => {
+    // Since #1912 a directory table this code does not build is refused whatever it references
+    // (`directory-restore-tables.test.ts`), so the twin is a registry the directory does build.
+    it('twin: a directory table whose DDL references another directory table restores', async () => {
       const dir = directory();
-      const probe = { name: 'directory_probe', ddl: 'CREATE TABLE directory_probe (t TEXT REFERENCES tenants(tenant_id))', columns: ['t'], rows: [] };
-      await dir.importDump([...(await dir.exportDump()), probe]);
-      expect(ddlOf(await dir.exportDump(), 'directory_probe')).toBe(probe.ddl);
+      const dump = await dir.exportDump();
+      expect(ddlOf(dump, 'tenants')).toMatch(/REFERENCES tenants\(tenant_id\)/);
+      await dir.importDump(dump);
+      expect(ddlOf(await dir.exportDump(), 'tenants')).toBe(ddlOf(dump, 'tenants'));
     });
   });
 });

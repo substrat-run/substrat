@@ -37,10 +37,9 @@ import {
   ulid,
   isPrimaryScope,
   resolveVerticalInstanceFrom,
-  assertSpineTablesBuilt,
-  dumpRowsInsert,
-  isSpineTable,
+  assertDirectoryTablesBuilt,
   spineColumnAdditions,
+  spineRowsInsert,
   type ImpersonationRow,
 } from '@substrat-run/kernel';
 import { splitSqlStatements, switchSqlOver } from './scope-do.js';
@@ -60,7 +59,7 @@ import type {
   TenantStatus,
   VerticalResolution,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, namesSpineTable, opsFailureFingerprint } from '@substrat-run/contracts';
+import { assertReplayableDump, opsFailureFingerprint } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -1257,9 +1256,8 @@ export class ControlPlaneDO extends DurableObject {
 
   /**
    * The directory's tables as this code builds them, carrying whatever the directory already
-   * holds forward to that shape: the construction's pass, and a restore's (#1898), which runs
-   * it inside its transaction after replaying the dump's non-spine tables and before loading
-   * any row. `holdSwitchRecord` leaves the #1674 record's statements to the caller, which
+   * holds forward to that shape: the construction's pass, and a restore's (#1898, #1912), which
+   * runs it inside its transaction onto an emptied directory, before loading any row. `holdSwitchRecord` leaves the #1674 record's statements to the caller, which
    * creates the table with its backfill.
    */
   private buildDirectorySchema({ holdSwitchRecord }: { holdSwitchRecord: boolean }): void {
@@ -1479,9 +1477,7 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('_substrat_entitlements', 'plan TEXT');
     this.addColumn('_substrat_entitlements', 'granted_at TEXT');
     this.addColumn('_substrat_entitlements', 'granted_by TEXT');
-    this.sql.exec("UPDATE scopes SET slug = lower(scope_id) WHERE slug IS NULL");
-    this.sql.exec("UPDATE scopes SET kind = 'scope' WHERE kind IS NULL");
-    this.sql.exec('UPDATE scopes SET name = slug WHERE name IS NULL');
+    this.backfillLegacyScopeRows();
     // After the backfill: a UNIQUE index over NULL slugs would permit the
     // duplicates it exists to forbid (SQLite treats NULLs as distinct).
     //
@@ -1500,6 +1496,17 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS orgs_tenant_slug ON orgs (tenant_id, slug)',
     );
+  }
+
+  /**
+   * The naming columns a scope row from before the directory left NULL, filled with the defaults
+   * `resolveScopeRecord` applies. Run by every construction's schema pass, and by a restore after
+   * its rows are in, inside its transaction (#1912).
+   */
+  private backfillLegacyScopeRows(): void {
+    this.sql.exec("UPDATE scopes SET slug = lower(scope_id) WHERE slug IS NULL");
+    this.sql.exec("UPDATE scopes SET kind = 'scope' WHERE kind IS NULL");
+    this.sql.exec('UPDATE scopes SET name = slug WHERE name IS NULL');
   }
 
   // -- disaster recovery (#40) -----------------------------------------------
@@ -1536,28 +1543,27 @@ export class ControlPlaneDO extends DurableObject {
   /**
    * Replace the directory with a dump — the break-glass write half (#40).
    *
-   * Drop-then-replay in one transaction, exactly as `ScopeDO.importDump` does it, with
-   * `defer_foreign_keys` for the same two hazards: the dump is ordered by table NAME
-   * (which says nothing about foreign keys — `scopes` references `tenants`), and the
-   * DROPs themselves perform an implicit DELETE that a populated child table would
-   * refuse. Deferral holds every check to commit, by which point the old rows are gone
-   * and the new ones are all in.
+   * Drop-then-load in one transaction, with `defer_foreign_keys` as `ScopeDO.importDump` has it:
+   * the dump is ordered by table NAME (which says nothing about foreign keys — a `tenants` row
+   * can name another as `provisioned_by_tenant`), and the DROPs themselves perform an implicit
+   * DELETE that a populated child table would refuse. Deferral holds every check to commit, by
+   * which point the old rows are gone and the new ones are all in.
    *
-   * The schema is asserted twice, and that is not belt-and-braces. Inside the transaction,
-   * before any row, it builds the spine (#1898) and carries the dump's older non-spine tables
-   * forward: a copy taken before a directory migration carries the OLD shape, so replaying it
-   * verbatim would silently roll the platform's schema backwards and the first read of a newer
-   * column would fail with a bare `no such column`. After it, `applyDirectorySchema` runs as a
-   * construction does, which fills in the legacy rows just loaded (`scopes.slug`, `kind`, `name`
-   * where a pre-directory row left them NULL). `DIRECTORY_DDL` is all IF
-   * NOT EXISTS and `ensureDirectoryColumns` is attempt-and-tolerate, so together they carry a
-   * restored older directory forward to the running code's shape — the same contract a cold
-   * start gets.
+   * The dump contributes rows only (#1912, extending #1898's spine rule to every table). Every
+   * directory table is built by the pass a construction runs, from `DIRECTORY_DDL`, and never
+   * from the dump's DDL: these are the platform's own registries, so a dump's `DEFAULT 1` on
+   * `verticals.tenant_provisioner`, a `COLLATE NOCASE` on `tenants.slug` or an extra table that
+   * `REFERENCES tenants` would otherwise decide how the platform behaves after the restore. A
+   * copy taken before a directory migration carries the OLD shape; its rows go in by column
+   * name, so a column it lacks takes the running code's default, and the legacy rows it may hold
+   * are filled in afterwards, inside the same transaction. A refusal anywhere in it leaves the
+   * directory as it was.
    */
   async importDump(tables: ScopeDumpTable[]): Promise<void> {
-    // Same untrusted dump, same two holes as the scope path (#1143): names reaching
-    // SQL as identifiers, and `exec` running everything a `ddl` contains. Pure input
-    // validation, so it runs before the first DROP: a refused dump touches nothing.
+    // Same untrusted dump, same two holes as the scope path (#1143): names reaching SQL as
+    // identifiers, and a `ddl` that is never executed here but is still held to one CREATE
+    // TABLE. Pure input validation, so it runs before the first DROP: a refused dump touches
+    // nothing.
     assertReplayableDump(tables, { maxColumns: DO_SQL_LIMITS.columns });
     await this.ctx.storage.transaction(async () => {
       this.sql.exec('PRAGMA defer_foreign_keys = ON');
@@ -1569,30 +1575,23 @@ export class ControlPlaneDO extends DurableObject {
         )
         .toArray() as unknown as { name: string }[];
       for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
-      // The directory's non-spine tables take the dump's own DDL. Its spine never does (#1898,
-      // as #1883 for a scope): a dump declaring `_substrat_tenant_tuples.object` or
-      // `_substrat_roles.role_key` COLLATE NOCASE would decide how tenant-level grants and
-      // roles match. The spine is built by the same pass a construction runs, before any row
-      // goes in, and the dump contributes only rows, by column name (`dumpRowsInsert`).
-      for (const t of tables) if (!namesSpineTable(t.name)) this.sql.exec(t.ddl);
-      // Inside this async transaction, so the pass must never reach `rebuildAtomically`'s
-      // `transactionSync` for a table the dump built: today every rebuild targets a spine
-      // table, which the pass's own DDL has just created on the current shape, so none fires.
+      // Every table from this code's DDL, onto an empty directory, so none of the pass's
+      // rebuilds fires (each would reach `transactionSync`, which this async transaction cannot
+      // hold): every table is created on the current shape.
       this.buildDirectorySchema({ holdSwitchRecord: false });
       const columnsOf = (name: string) => doSpineColumnsOf(this.sql, name);
-      // Every `_substrat*` name, the search index's namespace included: a directory has no index.
-      // So every spine table that gets past this is one `isSpineTable` below also calls spine.
-      assertSpineTablesBuilt(tables.map((t) => t.name), columnsOf);
-      // A spine column this code does not know (a dump from a newer one) is kept, as a plain
-      // untyped column nothing here reads.
-      for (const t of tables) {
-        if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
-      }
+      // A table this code does not build, spine or not, is refused, every one named at once.
+      assertDirectoryTablesBuilt(tables.map((t) => t.name), columnsOf);
+      // A column this code does not know (a dump from a newer one) is kept, as a plain untyped
+      // column nothing here reads. One named for the rowid is refused.
+      for (const t of tables) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
       for (const t of tables) {
         if (t.rows.length === 0) continue;
-        const insert = dumpRowsInsert(t, columnsOf);
+        const insert = spineRowsInsert(t, columnsOf(t.name));
         for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
       }
+      // A pre-directory dump's scope rows, now that they are in.
+      this.backfillLegacyScopeRows();
       // #1674: the switch record is built above whether or not the dump carried it. A dump from
       // before it gets the one-time backfill from its own admin log, now that those rows are in,
       // and inside this transaction, so a backfill that fails leaves the directory as it was. One
@@ -1601,10 +1600,6 @@ export class ControlPlaneDO extends DurableObject {
         this.sql.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
       }
     });
-    // The construction's pass again, now over the rows just loaded: its schema half finds
-    // nothing left to do, and its legacy-row UPDATEs reach the rows the pass inside the
-    // transaction ran before.
-    this.applyDirectorySchema();
     // A restore is a new #1764 backfill episode. It replaced the data the old failure count and
     // backoff were about, so neither may delay or silence it: the count is cleared and the next
     // batch armed outright, a pause away. (An ordinary construction keeps a pending alarm; this
