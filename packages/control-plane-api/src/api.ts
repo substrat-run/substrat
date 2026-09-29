@@ -6616,6 +6616,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    *  create (provision + reuse-match) and delete (reap-match) run through here, so they agree. */
   const previewSlug = (slug: string, tag: string): string => `${slug.split('/').at(-1)}--${tag}`;
 
+  /** How long a `provisioning` preview row is presumed to belong to a create still running
+   *  (#1920). A create lives only as long as the request that carries it, and the CLI's
+   *  `fetch` gives up on a response after five minutes (undici's headers timeout) and never
+   *  retries a dropped create; the in-request retries add seconds. Fifteen minutes is three
+   *  times that. A create that fails in its own frame does not wait this out: it expires its
+   *  row on the way out (see `orchestratedPreview`), so this bound only covers a frame that
+   *  died without a chance to say so. */
+  const PREVIEW_CREATE_BOUND_MS = 15 * 60_000;
+
+  /** Whether a `provisioning` preview row is a create that is OVER, and may be reaped. It is
+   *  when its own frame expired it on failure, or it is older than the bound. A `createdAt`
+   *  that does not parse is read as old: reaping a corpse is what the row did before #1920,
+   *  and refusing forever over a value nobody can age is worse. */
+  const previewCreateIsOver = (row: Scope, now: number): boolean => {
+    if (row.expiresAt !== null && Date.parse(row.expiresAt) <= now) return true;
+    const born = Date.parse(row.createdAt);
+    return Number.isNaN(born) || now - born >= PREVIEW_CREATE_BOUND_MS;
+  };
+
   /** Reap one preview: wipe the DO in its own deployment, then drop the directory row and
    *  its hostnames. Storage-before-row, the same ordering the DELETE route uses — a crash
    *  between the two converges on retry. Shared by that route and by the create path, which
@@ -6857,6 +6876,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // goes green. Instead, reap the leftover and fall through to a fresh fork below —
     // which is what the retry was asking for. Same for an explicit `refresh`, whose fresh
     // scope would otherwise collide with the old row's still-bound `--<tag>` hostname.
+    //
+    // Except while that create may still be running (#1920): a `provisioning` row is also
+    // what a create in flight looks like, and reaping it wipes the scope that create is
+    // restoring into. So a young one, not marked dead by its own frame, is refused instead.
+    // `refresh` is the explicit ask to replace whatever is there, and still reaps.
+    if (existing && !opts.refresh && existing.status === 'provisioning') {
+      const now = Date.now();
+      if (!previewCreateIsOver(existing, now)) {
+        const reclaimAt = Date.parse(existing.createdAt) + PREVIEW_CREATE_BOUND_MS;
+        const minutes = Math.max(1, Math.ceil((reclaimAt - now) / 60_000));
+        throw new ControlPlaneError(
+          409,
+          `a create for preview '${opts.tag}' is in progress (started ${existing.createdAt}). ` +
+            `Retry once it finishes; if it died, the tag can be reclaimed in ${minutes} min, ` +
+            `or now with refresh (substrat preview create --refresh), which replaces it`,
+        );
+      }
+    }
     const stale = existing !== undefined && (opts.refresh || existing.status !== 'active');
     if (existing && !stale) {
       // Data first, pointer last (#1710): move the preview's data into this push's script
@@ -6955,56 +6992,74 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         throw e;
       }
     };
-    if (source) {
-      // A fresh fork. Export from where the prod data lives TODAY. The canonical
-      // `admin.exportScope` first — it writes the K-24 audit entry (and the co-located
-      // bytes); the vertical dump then overlays it, exactly as the governed export route.
-      const sourceClient = await verticalForScope(c, source);
-      if (!target) {
-        throw new ControlPlaneError(501, 'preview needs dispatch resolution for the PR version');
+    // Set once this create's own row has landed, until it is active: a failure in between
+    // leaves a `provisioning` row, and this frame is the one that knows the create is over.
+    let rowLanded = false;
+    try {
+      if (source) {
+        // A fresh fork. Export from where the prod data lives TODAY. The canonical
+        // `admin.exportScope` first — it writes the K-24 audit entry (and the co-located
+        // bytes); the vertical dump then overlays it, exactly as the governed export route.
+        const sourceClient = await verticalForScope(c, source);
+        if (!target) {
+          throw new ControlPlaneError(501, 'preview needs dispatch resolution for the PR version');
+        }
+        const canonical = await admin.exportScope(actor, tenantId, source.id);
+        const tables = sourceClient ? await sourceClient.exportScope(source.id) : canonical.tables;
+        // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the data
+        // copy leaves an inert row that — carrying `forkedFrom` + `expiresAt` — the GC sweep
+        // reaps, never copied data with no record.
+        await options.host.provisionScope(actor, {
+          tenantId,
+          scopeId: previewId,
+          kind: 'preview',
+          slug: previewSlug(slug, opts.tag),
+          name: `${source.name ?? slug} (${opts.tag})`,
+          vertical: slug,
+          jurisdiction: source.jurisdiction,
+          forkedFrom: source.id,
+          forkedAt: new Date().toISOString(),
+          // Directory models "absent = pinned", so a pinned preview passes no horizon at all.
+          expiresAt: expiresAt ?? undefined,
+        });
+        rowLanded = true;
+        // Load the fork into the PR version's deployment (materializes the preview scope DO
+        // there; restore re-projects the vertical's roles from the dump's tuples). A one-shot
+        // DO storage blip heals on the in-request retry WITHOUT burning a CI attempt (which
+        // pushes a fresh version per try) — #559 (2).
+        await restoreOrRecord(() => target.restoreScope(tenantId, previewId, tables, { sourceScopeId: source.id, exact: true }));
+      } else {
+        // A clean-room preview (#509 (b)): an EMPTY scope, no source to export. No `forkedFrom`
+        // — the reap sweep and `deleteSnapshot` reap it by `kind === 'preview'` instead. The
+        // co-located host migrates the module tables at `provisionScope`; a dispatch deployment
+        // materializes the empty DO via `restoreScope([])` (its `ensureMigrations` creates the
+        // schema on first access), so a source-less preview needs no export/restore of data.
+        await options.host.provisionScope(actor, {
+          tenantId,
+          scopeId: previewId,
+          kind: 'preview',
+          slug: previewSlug(slug, opts.tag),
+          name: `${slug.split('/').at(-1)} (${opts.tag})`,
+          vertical: slug,
+          jurisdiction: 'global',
+          expiresAt: expiresAt ?? undefined,
+        });
+        rowLanded = true;
+        if (target) await restoreOrRecord(() => target.restoreScope(tenantId, previewId, []));
       }
-      const canonical = await admin.exportScope(actor, tenantId, source.id);
-      const tables = sourceClient ? await sourceClient.exportScope(source.id) : canonical.tables;
-      // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the data
-      // copy leaves an inert row that — carrying `forkedFrom` + `expiresAt` — the GC sweep
-      // reaps, never copied data with no record.
-      await options.host.provisionScope(actor, {
-        tenantId,
-        scopeId: previewId,
-        kind: 'preview',
-        slug: previewSlug(slug, opts.tag),
-        name: `${source.name ?? slug} (${opts.tag})`,
-        vertical: slug,
-        jurisdiction: source.jurisdiction,
-        forkedFrom: source.id,
-        forkedAt: new Date().toISOString(),
-        // Directory models "absent = pinned", so a pinned preview passes no horizon at all.
-        expiresAt: expiresAt ?? undefined,
-      });
-      // Load the fork into the PR version's deployment (materializes the preview scope DO
-      // there; restore re-projects the vertical's roles from the dump's tuples). A one-shot
-      // DO storage blip heals on the in-request retry WITHOUT burning a CI attempt (which
-      // pushes a fresh version per try) — #559 (2).
-      await restoreOrRecord(() => target.restoreScope(tenantId, previewId, tables, { sourceScopeId: source.id, exact: true }));
-    } else {
-      // A clean-room preview (#509 (b)): an EMPTY scope, no source to export. No `forkedFrom`
-      // — the reap sweep and `deleteSnapshot` reap it by `kind === 'preview'` instead. The
-      // co-located host migrates the module tables at `provisionScope`; a dispatch deployment
-      // materializes the empty DO via `restoreScope([])` (its `ensureMigrations` creates the
-      // schema on first access), so a source-less preview needs no export/restore of data.
-      await options.host.provisionScope(actor, {
-        tenantId,
-        scopeId: previewId,
-        kind: 'preview',
-        slug: previewSlug(slug, opts.tag),
-        name: `${slug.split('/').at(-1)} (${opts.tag})`,
-        vertical: slug,
-        jurisdiction: 'global',
-        expiresAt: expiresAt ?? undefined,
-      });
-      if (target) await restoreOrRecord(() => target.restoreScope(tenantId, previewId, []));
+      await admin.activateScope(actor, tenantId, previewId);
+    } catch (e) {
+      // Expire the row this create left behind, so the next create reaps it at once rather
+      // than refusing it as in flight for the whole bound (#1920) — that next create is the
+      // CLI's retry after a known-dead attempt (#1918). The row itself stays, for the console
+      // to explain (#559). Best-effort: if this write fails too, the age bound still frees it.
+      if (rowLanded) {
+        await admin
+          .setScopeExpiresAt(actor, tenantId, previewId, new Date().toISOString())
+          .catch(() => undefined);
+      }
+      throw e;
     }
-    await admin.activateScope(actor, tenantId, previewId);
     // Bind the PR version. A private vertical's push self-admitted, so this is accepted; a
     // preview scope also admits a pending version (#513), which is what a clean-room rehearsal
     // of not-yet-admitted code needs.
