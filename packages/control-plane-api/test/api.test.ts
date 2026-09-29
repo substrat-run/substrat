@@ -2441,6 +2441,7 @@ describe('control-plane API', () => {
     it.each([
       // The host writes the directory row, then fails in what follows it (migrate, project, seat).
       ['a provision that throws after its row landed', 'provision'],
+      ['an activation that throws', 'activate'],
     ] as const)('%s marks the row, so the retry re-forks at once', async (_, where) => {
       const w = await setup(`dies-in-${where}`);
       if (where === 'provision') {
@@ -2460,6 +2461,17 @@ describe('control-plane API', () => {
       const retry = await w.create({ tag: 'pr-1' });
       expect(retry.status).toBe(201);
       expect(w.deletes).toEqual([stranded.id]);
+    });
+
+    it('a failed mark still answers with the original error, and the age bound is then what frees the tag', async () => {
+      const w = await setup('mark-fails');
+      vi.spyOn(host.admin, 'activateScope').mockRejectedValueOnce(new ControlPlaneError(502, 'activate blip'));
+      vi.spyOn(host.admin, 'setScopeExpiresAt').mockRejectedValueOnce(new Error('directory unreachable'));
+      const failed = await w.create({ tag: 'pr-1' });
+      expect(failed.status).toBe(502);
+      expect(((await failed.json()) as { error: string }).error).toBe('activate blip');
+      expect((await strandedOf(w)).marked).toBe(false);
+      expect((await w.create({ tag: 'pr-1' })).status).toBe(409);
     });
 
     it('refresh replaces a young provisioning row and an active one alike', async () => {
