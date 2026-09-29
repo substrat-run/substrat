@@ -362,12 +362,16 @@ describe('outputWalkOf — the declared fields, read once at mount', () => {
     expect(outputWalkOf(card, true)?.list).toBe(true);
   });
 
-  it('declares nothing for a scalar, a union, a list of lists or no output at all', () => {
+  it('declares nothing for a scalar, a union, a list of lists, a pipe or no output at all', () => {
     expect(outputWalkOf(undefined, false)).toBeUndefined();
     expect(outputWalkOf(z.string(), false)).toBeUndefined();
     expect(outputWalkOf(z.union([card, z.object({ other: z.string() })]), false)).toBeUndefined();
     expect(outputWalkOf(z.array(z.array(card)), false)).toBeUndefined();
     expect(outputWalkOf(z.object({}), false)).toBeUndefined();
+    // A pipe: what the handler returns and what the declaration describes can differ.
+    expect(outputWalkOf(card.transform((c) => ({ renamed: c.id })), false)).toBeUndefined();
+    expect(outputWalkOf(z.string().pipe(card), false)).toBeUndefined();
+    expect(outputWalkOf(card.transform((c) => c).optional(), false)).toBeUndefined();
   });
 
   it('caps the declared names at the declared half’s own cap', () => {

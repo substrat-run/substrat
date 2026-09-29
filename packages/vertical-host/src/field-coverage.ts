@@ -62,7 +62,11 @@ export function outputWalkOf(output: unknown, paged: boolean): OutputWalk | unde
       schema = def.element;
       continue;
     }
-    // What a handler returns is a pipe's input; a transform's output is unknowable here.
+    // A pipe in an OUTPUT schema stops the walk. Its input is what the handler returns, but
+    // its output is what the declaration (and the declared half, from OpenAPI) describes,
+    // and a transform between the two can rename or reshape anything. Neither side is safe
+    // to count against the other, so the operation declares no walkable fields.
+    if (def?.type === 'pipe') return undefined;
     schema = transparentInner(def);
     if (schema === undefined) return undefined;
   }
