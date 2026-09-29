@@ -229,11 +229,26 @@ const SCRIVE: ConnectorRegistration = {
           }
         : {}),
     })(ctx, event),
-  sweep: (env) => async (h, id, o) =>
-    sweepScriveReconciliations(h, id, {
+  sweep: (env) => async (h, id, o) => {
+    const result = await sweepScriveReconciliations(h, id, {
       ...o,
       baseUrl: required(env.SCRIVE_BASE_URL, 'SCRIVE_BASE_URL'),
-    }),
+    });
+    // #1927: a signature Scrive holds and the instance does not needs a person. The
+    // ledger row carries it for the activity view; this puts it in the worker's logs
+    // too. Ids only — the reasons name the parties.
+    if (result.needsAttention.length > 0) {
+      console.warn('scrive-sweep: needs attention', {
+        connectionId: id,
+        requests: result.needsAttention.map(({ instanceId, requestId, signedAt }) => ({
+          instanceId,
+          requestId,
+          signedAt,
+        })),
+      });
+    }
+    return result;
+  },
   callback: {
     route: SCRIVE_CALLBACK_ROUTE,
     handle: async (env, host, ref) => {
