@@ -25,9 +25,51 @@
  */
 defineProps<{ desk: string }>();
 
+import { onMounted, ref } from 'vue';
+
 // The ebook's own cover (the EPUB's cover.png), imported so Vite fingerprints it
 // rather than the page naming a path the build does not publish.
 import cover from '../../../assets/book-cover.png';
+
+// The console tour: one support conversation followed from its declared process down
+// to the request that moved it, recorded from the observability console design
+// (#1752). Every name in it is invented. Imported for the same reason as the cover:
+// fingerprinted, same origin, so the CSP's `default-src 'self'` already admits it.
+import tourVideo from '../../../assets/tour/tour.mp4';
+import tourMap from '../../../assets/tour/process-map.webp';
+import tourRequest from '../../../assets/tour/request-waterfall.webp';
+import tourFinding from '../../../assets/tour/finding.webp';
+import tourAudit from '../../../assets/tour/audit.webp';
+
+const tourStills = [
+  { src: tourMap, title: 'Process map', body: 'The state machine you declared, with a week of traffic on it: time in each state against its target, and the transitions the model refused.' },
+  { src: tourRequest, title: 'Request waterfall', body: 'The one request behind a transition: the permission check, the rows it read, the AI call and what it cost, and the slow connector.' },
+  { src: tourFinding, title: 'Findings', body: 'Anomalies against a baseline, explained in plain words and traced to their likely cause, down to the deploy that shipped it.' },
+  { src: tourAudit, title: 'Audit', body: 'Who touched whose data, by person, AI assistant or job, with the purpose recorded next to the change.' },
+];
+
+// The hero explainer: why Substrat, in 42 s. Rendered from an HTML animation, not
+// the product; every line the "agent" types is a real call, and each verdict is what
+// the platform does with it (a scoped read, the spine guard, boundary-lint R3, the
+// event schema's required piiClass, the permission-diff gate).
+import heroVideo from '../../../assets/hero/hero.mp4';
+import heroPoster from '../../../assets/hero/poster.webp';
+
+// A looping video is motion the visitor did not ask for. Under reduced motion both
+// videos go back to their posters with controls, so playing one is a choice.
+// `load()` after clearing `autoplay` is what returns a started video to its poster.
+const hero = ref<HTMLVideoElement | null>(null);
+const tour = ref<HTMLVideoElement | null>(null);
+const reducedMotion = ref(false);
+onMounted(() => {
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  reducedMotion.value = true;
+  for (const v of [hero.value, tour.value]) {
+    if (!v) continue;
+    v.autoplay = false;
+    v.load();
+  }
+});
 
 // The eight demo verticals, in the order they make the argument. `kernel` marks the
 // four whose CORE domain no engine matched: Manyfold, Todo and Tock compose nothing at
@@ -241,19 +283,23 @@ const bookTakeaways = [
 
 <template>
   <div class="mkt">
-    <!-- Hero. Breadth first: the guarantees are a clause at the end of the lede,
-         not the pitch. -->
+    <!-- Hero. The promise is safety at AI speed, and it is stated as a mechanism
+         (the platform refuses) rather than as advice (the model is told). Breadth
+         follows as evidence: the demos section right below is what "any business
+         app" rests on, and the video under the calls to action tells the whole
+         argument for anyone who reads no further. -->
     <section class="bleed hero">
       <div class="wrap hero-inner">
         <span class="badge badge-info">
           <span class="dot" />Private beta — the hosted platform is invite-only
         </span>
-        <h1>Build almost any business app.</h1>
+        <h1>Build at AI speed.<br />Without the expensive mistakes.</h1>
         <p class="lede">
-          Field service, HR, a bike workshop, a CMS, a coffee shop, a support desk —
-          eight demo verticals on one kernel, and four of them run their core domain
-          on the kernel alone. Tenancy, identity, permissions, audit and GDPR come
-          with the foundation instead of with your discipline.
+          Your agent writes the app: the model, the operations, the screens.
+          Substrat holds the parts that are catastrophic when wrong — tenancy,
+          identity, permissions, audit and GDPR — and enforces them at runtime, below
+          the code the AI writes. The mistakes that cost the most aren’t discouraged
+          there. They’re unreachable.
         </p>
         <div class="cta-row">
           <a class="btn btn-primary" href="#beta">Request an invite</a>
@@ -262,6 +308,20 @@ const bookTakeaways = [
         <div class="cmdline">
           <span class="mono-xs">no invite needed to start</span>
           <code class="cmd">npm create substrat my-app</code>
+        </div>
+        <div class="screen hero-screen">
+          <video
+            ref="hero"
+            :src="heroVideo"
+            :poster="heroPoster"
+            :controls="reducedMotion"
+            autoplay
+            muted
+            loop
+            playsinline
+            preload="auto"
+            aria-label="Why Substrat, in 42 seconds. AI writes software faster than anyone can review it. Today you pick a trap: too open, where the AI invents the foundation and forgets part of it, or too closed, where a fixed API rejects what you need. Substrat is the middle: your app is open, engines are reused, and the kernel enforces tenancy, permissions, audit and GDPR. An agent tries five risky lines and each is scoped, refused, blocked, rejected or held for review. Not because you told it not to. Because it can't."
+          />
         </div>
       </div>
       <div class="rule3"><span class="lv" /><span class="le" /><span class="lk" /></div>
@@ -345,6 +405,42 @@ const bookTakeaways = [
             </span>
           </li>
         </ul>
+      </div>
+    </section>
+
+    <!-- What you see. The previous section declares; this one shows what declaring
+         buys: because the platform holds the model, its telemetry speaks the
+         business's vocabulary. Always dark, because the console it shows is. -->
+    <section class="bleed showcase">
+      <div class="wrap section">
+        <div class="kicker">What you see</div>
+        <h2>See the business, not just the servers.</h2>
+        <p class="muted lede-narrow">
+          The platform knows your model: every entity, operation and process. So it
+          can show what your business is doing, and connect that to what the code
+          did. From a process map to the one slow call behind a transition, and back.
+        </p>
+        <div class="screen">
+          <video
+            ref="tour"
+            :src="tourVideo"
+            :poster="tourMap"
+            :controls="reducedMotion"
+            autoplay
+            muted
+            loop
+            playsinline
+            preload="metadata"
+            aria-label="A tour of the Substrat console: a declared support-conversation process, its live process map, one conversation's timeline, the request that resolved it, the anomaly findings and the audit log."
+          />
+        </div>
+        <div class="stills">
+          <a v-for="s in tourStills" :key="s.title" class="still" :href="s.src" target="_blank" rel="noopener">
+            <img :src="s.src" :alt="`The Substrat console: ${s.title.toLowerCase()}`" loading="lazy" width="1440" height="900" />
+            <span class="still-title">{{ s.title }}</span>
+            <span class="still-body">{{ s.body }}</span>
+          </a>
+        </div>
       </div>
     </section>
 
@@ -446,6 +542,7 @@ const bookTakeaways = [
     <section class="bleed linkband">
       <div class="wrap linkband-in">
         <span class="linkband-l">Straight answers</span>
+        <a href="/guide/ai-guardrails">Where AI mistakes stop</a>
         <a href="/guide/comparisons">How Substrat compares</a>
         <a href="/guide/what-substrat-lacks">What Substrat doesn’t have (yet)</a>
         <a href="/guide/faq">FAQ</a>
@@ -586,7 +683,7 @@ h1 {
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-display);
   margin: 0;
-  max-width: 780px;
+  max-width: 920px;
   text-wrap: balance;
   border: 0;
   padding: 0;
@@ -755,6 +852,79 @@ h2 {
   background: var(--status-info-bg);
   border-top: 1px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Console tour. Dark in both themes: the recording is of the dark console, and a
+   dark screen on a light band reads as a hole in the page. The dark theme's own
+   token values are restated here so .muted and .kicker follow without new classes. */
+.showcase {
+  --text-primary: #f2f3f7;
+  --text-secondary: #a7adbe;
+  --text-tertiary: #7c8397;
+  --text-brand: #a8abf5;
+  background: radial-gradient(120% 60% at 50% 0%, #1e1947 0%, #0e1017 62%);
+  color: var(--text-primary);
+  border-top: 1px solid #1e2230;
+  border-bottom: 1px solid #1e2230;
+}
+.showcase h2 {
+  color: var(--text-primary);
+}
+.screen {
+  margin-top: 36px;
+  border: 1px solid #343a50;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0e1017;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 24px 64px rgba(0, 0, 0, 0.55);
+  aspect-ratio: 1440 / 900;
+}
+.hero-screen {
+  width: 100%;
+  margin-top: 28px;
+  aspect-ratio: 16 / 9;
+}
+.screen video {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.stills {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+.still {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: inherit;
+  text-decoration: none;
+}
+.still img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid #262b3c;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+.still:hover {
+  text-decoration: none;
+}
+.still:hover img {
+  border-color: #483abc;
+}
+.still-title {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+}
+.still-body {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
 }
 
 /* Layer accents */
@@ -1418,7 +1588,8 @@ h2 {
    things that cannot survive a phone, so they collapse rather than scroll. */
 @media (max-width: 960px) {
   .grid-4,
-  .inv {
+  .inv,
+  .stills {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .split,
@@ -1477,6 +1648,9 @@ h2 {
   }
   .section {
     padding: 56px 24px;
+  }
+  .still-body {
+    display: none;
   }
   .ebook,
   .ebook-list {

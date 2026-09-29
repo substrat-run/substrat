@@ -1,0 +1,233 @@
+<!doctype html>
+<!--
+  The landing-page hero explainer, as an animation. tools/landing-video/render-hero.mjs
+  records it into apps/docs/assets/hero/ (hero.mp4 + poster.webp); edit here, then re-render.
+  1440x810 stage, recorded at 2x. window.play() runs the timeline once and resolves;
+  window.posterAt marks the frame the poster is taken from.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --page:#0E1017; --card:#141721; --raised:#1A1E2B; --inset:#10131C;
+    --t1:#F2F3F7; --t2:#A7ADBE; --t3:#7C8397; --t4:#5A6175;
+    --b1:#1E2230; --b2:#262B3C; --b3:#343A50; --bb:#483ABC;
+    --brand:#A8ABF5; --brand5:#6A63E6; --brandbg:#232047;
+    --ok:#4ADE80; --okbg:#12291B; --warn:#FBBF24; --warnbg:#2C2210; --bad:#F87171; --badbg:#301717;
+    --kernel:#5749D8; --engine:#0891B2; --vertical:#D97708;
+    --ease:cubic-bezier(.16,1,.3,1);
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--page); }
+  body { width:1440px; height:810px; overflow:hidden; font-family:Geist,system-ui,sans-serif; color:var(--t1); -webkit-font-smoothing:antialiased; }
+  #stage { position:relative; width:1440px; height:810px; overflow:hidden;
+    background:radial-gradient(90% 70% at 50% -10%, #1E1947 0%, var(--page) 60%); }
+  .scene { position:absolute; inset:0; opacity:0; transition:opacity .6s ease; pointer-events:none; }
+  .scene.on { opacity:1; }
+  .in { opacity:0; transform:translateY(14px); transition:opacity .6s var(--ease), transform .7s var(--ease); }
+  .in.on { opacity:1; transform:none; }
+  .mono { font-family:"Geist Mono",ui-monospace,monospace; }
+  .big { font-size:62px; line-height:70px; font-weight:600; letter-spacing:-.035em; }
+  .h { font-size:44px; line-height:52px; font-weight:600; letter-spacing:-.03em; }
+  .accent { color:var(--brand); }
+  .caps { font-family:"Geist Mono",monospace; font-size:15px; letter-spacing:.08em; text-transform:uppercase; color:var(--t3); font-weight:600; }
+
+  /* 1 · hook */
+  #stream { position:absolute; left:0; right:0; top:-40px; height:3300px; overflow:hidden; columns:3; column-gap:60px; padding:0 80px; font:400 15px/24px "Geist Mono",monospace; color:var(--t2); opacity:0; transition:opacity 1s; white-space:pre; }
+  #s1.on #stream { opacity:.13; animation:scroll 9s linear forwards; }
+  @keyframes scroll { to { transform:translateY(-900px); } }
+  #s1 .copy { position:absolute; left:120px; top:250px; width:1100px; }
+  #s1 .copy .sub { margin-top:26px; font-size:34px; line-height:44px; color:var(--t2); font-weight:500; letter-spacing:-.02em; }
+
+  /* 2 · the trap */
+  #s2 .title { position:absolute; left:120px; top:78px; }
+  .panel { position:absolute; top:190px; width:580px; height:520px; border:1px solid var(--b2); border-radius:18px; background:rgba(20,23,33,.9); padding:30px 34px; }
+  #open { left:120px; } #closed { left:740px; }
+  .panel .ph { font-size:30px; font-weight:600; letter-spacing:-.02em; }
+  .panel .ps { font-size:18px; line-height:26px; color:var(--t2); margin-top:6px; }
+  .rows { margin-top:28px; display:flex; flex-direction:column; gap:14px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:16px; height:56px; padding:0 18px; border-radius:10px; background:var(--inset); border:1px solid var(--b1); }
+  .row .code { font:500 18px "Geist Mono",monospace; color:var(--t1); }
+  .flag { font-size:15px; font-weight:500; padding:4px 10px; border-radius:6px; white-space:nowrap; }
+  .flag.bad { color:var(--bad); background:var(--badbg); }
+  .flag.warn { color:var(--warn); background:var(--warnbg); }
+  .flag.ok { color:var(--ok); background:var(--okbg); }
+  .flag.hold { color:var(--brand); background:var(--brandbg); }
+  .blocks { margin-top:30px; display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .block { height:74px; border-radius:10px; border:1px solid var(--b3); background:var(--raised); display:flex; align-items:center; gap:12px; padding:0 20px; font-size:19px; font-weight:500; color:var(--t2); }
+  .block svg { flex-shrink:0; opacity:.7; }
+  #wall { position:absolute; left:34px; right:34px; top:318px; height:3px; border-radius:2px; background:var(--b3); }
+  #ask { position:absolute; left:50%; top:430px; transform:translate(-50%,0); padding:12px 18px; border-radius:999px; border:1px solid var(--bb); background:var(--brandbg); color:var(--t1); font-size:18px; font-weight:500; white-space:nowrap; transition:transform .5s var(--ease), border-color .3s, background .3s; }
+  #ask.hit { transform:translate(-50%,-78px); }
+  #ask.back { transform:translate(-50%,0); border-color:var(--bad); background:var(--badbg); }
+  #nope { position:absolute; left:0; right:0; top:486px; text-align:center; font-size:17px; color:var(--bad); font-weight:500; }
+
+  /* 3 · the middle */
+  #s3 .title { position:absolute; left:120px; top:92px; }
+  .layers { position:absolute; left:120px; top:236px; width:1200px; display:flex; flex-direction:column; gap:18px; }
+  .layer { display:grid; grid-template-columns:18px 270px 1fr; align-items:center; gap:0 26px; height:124px; padding:0 34px 0 0; border-radius:16px; background:rgba(20,23,33,.92); border:1px solid var(--b2); overflow:hidden;
+    opacity:0; transform:translateX(-40px); transition:opacity .6s var(--ease), transform .8s var(--ease); }
+  .layer.on { opacity:1; transform:none; }
+  .layer .bar { height:100%; }
+  .layer .ln { font-size:34px; font-weight:600; letter-spacing:-.025em; }
+  .layer .ld { font-size:22px; line-height:31px; color:var(--t2); }
+  .layer .ld b { color:var(--t1); font-weight:600; }
+
+  /* 4 · let the AI try */
+  #s4 .title { position:absolute; left:120px; top:66px; }
+  .editor { position:absolute; left:120px; top:160px; width:1200px; border:1px solid var(--b2); border-radius:16px; background:var(--card); overflow:hidden; box-shadow:0 24px 64px rgba(0,0,0,.5); }
+  .etab { height:48px; display:flex; align-items:center; gap:12px; padding:0 22px; border-bottom:1px solid var(--b1); background:var(--inset); font:500 15px "Geist Mono",monospace; color:var(--t3); }
+  .etab .ai { font:600 12px "Geist Mono",monospace; color:var(--brand); border:1px solid var(--bb); border-radius:4px; padding:1px 6px; }
+  .lines { padding:14px 0; }
+  .ln2 { display:grid; grid-template-columns:52px 1fr 470px; align-items:center; height:66px; padding-right:22px; }
+  .ln2 .no { font:400 15px "Geist Mono",monospace; color:var(--t4); text-align:right; padding-right:18px; }
+  .ln2 .src { font:400 18px "Geist Mono",monospace; color:var(--t1); white-space:pre; overflow:hidden; }
+  .ln2 .src .s { color:var(--brand); } .ln2 .src .k { color:var(--t2); }
+  .caret { display:inline-block; width:10px; height:22px; background:var(--brand); vertical-align:-4px; margin-left:2px; animation:blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  .verdict { display:flex; align-items:center; gap:12px; opacity:0; transform:translateX(12px); transition:opacity .45s var(--ease), transform .6s var(--ease); }
+  .verdict.on { opacity:1; transform:none; }
+  .verdict .flag { font-size:17px; font-weight:600; }
+  .verdict .why { font-size:18px; line-height:23px; color:var(--t2); }
+  #punch { position:absolute; left:0; right:0; top:690px; text-align:center; font-size:40px; line-height:48px; font-weight:600; letter-spacing:-.03em; }
+
+  /* 5 · close */
+  #s5 .wrap { position:absolute; left:0; right:0; top:200px; text-align:center; }
+  .mark { display:inline-flex; align-items:center; gap:16px; font-size:40px; font-weight:600; letter-spacing:-.03em; }
+  #s5 .big { margin-top:40px; }
+  .cmd { display:inline-block; margin-top:44px; font:500 24px "Geist Mono",monospace; color:var(--t2); padding:14px 26px; border:1px solid var(--b3); border-radius:12px; background:var(--card); }
+  .cmd span { color:var(--t4); margin-right:12px; }
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!-- 1 · hook -->
+  <section class="scene" id="s1">
+    <div id="stream"></div>
+    <div class="copy">
+      <div class="big in" id="s1a">AI writes software faster<br>than anyone can review it.</div>
+      <div class="sub in" id="s1b">So what stops the expensive mistakes?</div>
+    </div>
+  </section>
+
+  <!-- 2 · the trap -->
+  <section class="scene" id="s2">
+    <div class="title h in" id="s2t">Today you pick a trap.</div>
+    <div class="panel in" id="open">
+      <div class="ph">Too open</div>
+      <div class="ps">A blank canvas. The AI invents the foundation, and forgets part of it.</div>
+      <div class="rows">
+        <div class="row in" id="o1"><span class="code">auth.ts</span><span class="flag warn">invented</span></div>
+        <div class="row in" id="o2"><span class="code">WHERE tenant_id = ?</span><span class="flag bad">missing in 1 of 40 queries</span></div>
+        <div class="row in" id="o3"><span class="code">audit_log</span><span class="flag bad">never written</span></div>
+        <div class="row in" id="o4"><span class="code">policy: allow all</span><span class="flag bad">shipped</span></div>
+      </div>
+    </div>
+    <div class="panel in" id="closed">
+      <div class="ph">Too closed</div>
+      <div class="ps">A platform of fixed APIs. Safe, until you need something it didn't predict.</div>
+      <div class="blocks">
+        <div class="block"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Forms</div>
+        <div class="block"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Tables</div>
+        <div class="block"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Workflows</div>
+        <div class="block"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Reports</div>
+      </div>
+      <div id="wall" class="in"></div>
+      <div id="ask" class="in">Snooze a ticket until the customer replies</div>
+      <div id="nope" class="in">✕ not in the API</div>
+    </div>
+  </section>
+
+  <!-- 3 · the middle -->
+  <section class="scene" id="s3">
+    <div class="title h in" id="s3t">Substrat is the middle: <span class="accent">open where it's yours,<br>closed where it's dangerous.</span></div>
+    <div class="layers">
+      <div class="layer" id="l1"><span class="bar" style="background:var(--vertical)"></span><span class="ln">Your app</span><span class="ld"><b>Anything you want.</b> Your model, your operations, your screens, in plain TypeScript you own.</span></div>
+      <div class="layer" id="l2"><span class="bar" style="background:var(--engine)"></span><span class="ln">Engines</span><span class="ld"><b>Proven logic, reused.</b> Work orders, invoicing, booking, protocols. Composed, never forked.</span></div>
+      <div class="layer" id="l3"><span class="bar" style="background:var(--kernel)"></span><span class="ln">Kernel</span><span class="ld"><b>Tenancy, permissions, audit, GDPR.</b> Enforced at runtime, below the code the AI writes.</span></div>
+    </div>
+  </section>
+
+  <!-- 4 · let the AI try -->
+  <section class="scene" id="s4">
+    <div class="title h in" id="s4t">Let the AI try.</div>
+    <div class="editor in" id="ed">
+      <div class="etab"><span class="ai">AI</span>agent · editing the vertical</div>
+      <div class="lines" id="lines"></div>
+    </div>
+    <div id="punch" class="in">Not because you told it not to. <span class="accent">Because it can't.</span></div>
+  </section>
+
+  <!-- 5 · close -->
+  <section class="scene" id="s5">
+    <div class="wrap">
+      <div class="mark in" id="m5"><svg width="44" height="44" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="4.5" rx="2.25" fill="#D97708"/><rect x="3" y="9.75" width="18" height="4.5" rx="2.25" fill="#0891B2"/><rect x="3" y="15" width="18" height="4.5" rx="2.25" fill="#5749D8"/></svg>substrat</div>
+      <div class="big in" id="t5">Build what you want. Reuse what's proven.<br><span class="accent">Ship at AI speed, safely.</span></div>
+      <div class="in" id="c5"><div class="cmd"><span>$</span>npm create substrat my-app</div></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const on = (...ids) => ids.forEach((i) => $(i).classList.add('on'));
+const scene = (id) => { document.querySelectorAll('.scene').forEach((s) => s.classList.toggle('on', s.id === id)); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// background code stream for the hook
+const snippets = ['const invoice = await db.insert(invoices).values(row)', 'if (user.role !== "admin") return res.status(403)', 'SELECT * FROM customers WHERE email = $1', 'app.post("/api/orders", async (req, res) => {', '  const total = items.reduce((s, i) => s + i.price, 0)', 'await sendEmail(customer.email, template)', 'export async function handler(event) {', '  const token = jwt.sign({ sub: user.id }, SECRET)', 'UPDATE orders SET status = "paid" WHERE id = ?', 'router.get("/tenants/:id/users", listUsers)', '  try { await stripe.charges.create(opts) } catch {}', 'const rows = await sql`SELECT * FROM tickets`'];
+let s = ''; for (let i = 0; i < 400; i++) s += snippets[(i * 7) % snippets.length].slice(0, 38) + '\n';
+$('stream').textContent = s;
+
+// the agent's five lines: [source html, flag class, flag text, why]
+const tries = [
+  ['ctx.sql.query(<span class="s">\'SELECT id, total FROM invoices\'</span>)', 'ok', 'scoped', 'Only this tenant\'s rows. No other tenant exists here.'],
+  ['ctx.sql.exec(<span class="s">\'DELETE FROM _substrat_outbox\'</span>)', 'bad', '✕ refused', 'The audit trail is write-protected.'],
+  ['<span class="k">await</span> fetch(<span class="s">\'https://api.example.com\'</span>)', 'bad', '✕ blocked', 'Module code has no network. Connectors do.'],
+  ['ctx.emit({ type: <span class="s">\'contact.updated\'</span>, payload: { email } })', 'bad', '✕ rejected', 'Every event must classify its personal data.'],
+  ['{ key: <span class="s">\'agent\'</span>, permissions: [INVOICE.export] }', 'hold', '→ held', 'A wider role becomes a permission diff a human reviews.'],
+];
+async function typeLine(i) {
+  const [src, cls, flag, why] = tries[i];
+  const row = document.createElement('div'); row.className = 'ln2';
+  row.innerHTML = `<span class="no">${i + 1}</span><span class="src"></span><span class="verdict"><span class="flag ${cls}">${flag}</span><span class="why">${why}</span></span>`;
+  $('lines').append(row);
+  const el = row.querySelector('.src');
+  // type the text, keeping the span markup whole
+  const tmp = document.createElement('div'); tmp.innerHTML = src; const text = tmp.textContent;
+  for (let n = 1; n <= text.length; n += 2) {
+    let left = n; const clone = tmp.cloneNode(true);
+    const walk = (node) => { for (const c of [...node.childNodes]) { if (c.nodeType === 3) { if (left <= 0) c.remove(); else { c.textContent = c.textContent.slice(0, left); left -= c.textContent.length; } } else walk(c); } };
+    walk(clone); el.innerHTML = clone.innerHTML + '<span class="caret"></span>';
+    await sleep(22);
+  }
+  el.innerHTML = src; await sleep(260);
+  row.querySelector('.verdict').classList.add('on');
+}
+
+window.play = async () => {
+  // 1 · hook (0 – 5.2 s)
+  scene('s1'); await sleep(300); on('s1a'); await sleep(1900); on('s1b'); await sleep(3000);
+  // 2 · the trap (– 15 s)
+  scene('s2'); await sleep(400); on('s2t'); await sleep(500); on('open', 'closed'); await sleep(700);
+  for (const r of ['o1', 'o2', 'o3', 'o4']) { on(r); await sleep(620); }
+  on('wall', 'ask'); await sleep(700); $('ask').classList.add('hit'); await sleep(450); $('ask').classList.add('back'); on('nope');
+  await sleep(3200);
+  // 3 · the middle (– 23 s)
+  scene('s3'); await sleep(400); on('s3t'); await sleep(900);
+  for (const l of ['l3', 'l2', 'l1']) { on(l); await sleep(750); }
+  await sleep(4000);
+  // 4 · let the AI try (– 37 s)
+  scene('s4'); await sleep(400); on('s4t', 'ed'); await sleep(700);
+  for (let i = 0; i < tries.length; i++) { await typeLine(i); await sleep(1250); }
+  on('punch'); await sleep(1200); window.posterAt = Date.now() / 1000; await sleep(2400);
+  // 5 · close (– 43 s)
+  scene('s5'); await sleep(400); on('m5'); await sleep(500); on('t5'); await sleep(900); on('c5'); await sleep(3800);
+  return 'done';
+};
+</script>
+</body>
+</html>
