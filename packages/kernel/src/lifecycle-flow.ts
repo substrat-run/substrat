@@ -356,6 +356,25 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
   // lower bound like every other count once `complete` is false.
   if (walk !== null) settle(walk);
 
+  // #1745: the moves the lifecycle refused in the window — recorded after each rollback, so
+  // they are a separate, bounded read rather than part of the replay (nothing committed).
+  const refusedRows = ctx.sql.query<{ from_state: string; attempted_state: string | null; operation: string; actor: string }>(
+    `SELECT from_state, attempted_state, operation, actor FROM _substrat_refusals
+      WHERE entity_type = ? AND at >= ? AND at < ?
+      ORDER BY at LIMIT ?`,
+    [input.entityType, since, until, LIFECYCLE_FLOW_EVENT_BUDGET],
+  );
+  const refusedBy = new Map<string, NonNullable<LifecycleFlowResult['refused']>[number]>();
+  for (const r of refusedRows) {
+    const key = `${r.from_state}\u0000${r.attempted_state ?? ''}\u0000${r.operation}`;
+    const g = refusedBy.get(key) ?? { from: r.from_state, attempted: r.attempted_state, operation: r.operation, count: 0, actors: {} };
+    g.count += 1;
+    const kind = actorKindOf(r.actor);
+    g.actors[kind] = (g.actors[kind] ?? 0) + 1;
+    refusedBy.set(key, g);
+  }
+  if (refusedRows.length >= LIFECYCLE_FLOW_EVENT_BUDGET) complete = false;
+
   const medianOf = (xs: number[]): number | null => {
     if (xs.length === 0) return null;
     const sorted = [...xs].sort((a, b) => a - b);
@@ -369,6 +388,7 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
     edges: [...edges.values()].sort(
       (a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to) || (a.operation ?? '').localeCompare(b.operation ?? ''),
     ),
+    refused: [...refusedBy.values()].sort((a, b) => b.count - a.count || a.from.localeCompare(b.from) || a.operation.localeCompare(b.operation)),
     states: [...Object.keys(states), ...undeclared]
       .sort()
       .map((state) => {

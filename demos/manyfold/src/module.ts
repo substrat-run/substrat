@@ -243,6 +243,7 @@ function transition(ctx: OperationContext, entry: EntryRow, operation: string, n
     `${entry.type_key} entry`,
     entry.status,
     operation,
+    { entityType: 'manyfold-entry', entityId: entry.id },
   );
   // Every caller here performs a move; `allow` entries never reach this function.
   if (outcome.kind !== 'transition') return;
@@ -390,7 +391,10 @@ const publishOp: OperationHandler<z.infer<typeof entryIdInput>, EntryRow> = asyn
   const entry = getEntry(ctx, input.entryId);
   // Checked before the freeze/hash work below, so a refusal costs nothing. The
   // legal source states come from the declaration, not from a second sentence.
-  assertTransition(manyfoldLifecycles['manyfold-entry'], `${entry.type_key} entry`, entry.status, 'manyfold/publish');
+  assertTransition(manyfoldLifecycles['manyfold-entry'], `${entry.type_key} entry`, entry.status, 'manyfold/publish', {
+    entityType: 'manyfold-entry',
+    entityId: entry.id,
+  });
   const rev = currentDraft(ctx, entry);
   const hash = await contentHash(entry.type_key, rev.rev_no, rev.body_json);
   // Freeze the revision: immutable-after-export. Any later edit targets a new revision.

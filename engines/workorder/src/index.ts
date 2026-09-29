@@ -331,7 +331,8 @@ function getRow(ctx: OperationContext, orderId: string): OrderRow {
  * one place for every module that adopts a lifecycle.
  */
 function requireTransition(row: OrderRow, operation: string): void {
-  assertTransition(workorderLifecycle, `work order ${row.number}`, row.status, operation);
+  // #1745: the record, so a refused move is counted against it on the process map.
+  assertTransition(workorderLifecycle, `work order ${row.number}`, row.status, operation, { entityType: 'workorder', entityId: row.id });
 }
 
 // ---------------------------------------------------------------------------

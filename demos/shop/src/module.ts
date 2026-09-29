@@ -1056,7 +1056,7 @@ const myCustomerOp: OperationHandler<undefined, { id: string; number: string; na
  * read off the declaration rather than restated at each call site.
  */
 function requireTransition(order: OrderRow, operation: string): void {
-  assertTransition(shopLifecycles.order, `order ${order.number}`, order.status, operation);
+  assertTransition(shopLifecycles.order, `order ${order.number}`, order.status, operation, { entityType: 'order', entityId: order.id });
 }
 
 const fulfilOrderOp: OperationHandler<{ orderId: string }, OrderRow> = async (ctx, input) => {

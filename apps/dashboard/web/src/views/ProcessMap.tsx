@@ -4,7 +4,7 @@ import { api, type AppRow, type LifecycleFlowResult, type ProcessMapView, type P
 import { card } from '../components/ui';
 import { DEV_MOCK } from '../lib/mock';
 import { mockProcessView } from '../lib/mock-processes';
-import { NODE_H, NODE_W, formatDuration, funnelRows, pairId, processLayout, type LaidPair, type LaidState, type ProcessLayout } from '../lib/process-layout';
+import { NODE_H, NODE_W, formatDuration, funnelRows, pairId, processLayout, refusalStubs, stubId, stubPillWidth, type LaidPair, type LaidState, type LaidStub, type ProcessLayout } from '../lib/process-layout';
 import { navigate, obsPath } from '../lib/router';
 import { shortId } from '../lib/format';
 import { EntityTimeline } from './EventHistory';
@@ -26,15 +26,17 @@ const PERIODS: { value: ProcessPeriod; label: string }[] = [
   { value: '30d', label: '30 days' },
 ];
 
-export type ProcessSelection = { kind: 'pair'; id: string } | { kind: 'state'; state: string };
+export type ProcessSelection = { kind: 'pair'; id: string } | { kind: 'state'; state: string } | { kind: 'refused'; id: string };
 
 export function parseSelection(sel: string | undefined): ProcessSelection | null {
   if (!sel) return null;
   if (sel.startsWith('edge:')) return { kind: 'pair', id: sel.slice(5) };
   if (sel.startsWith('state:')) return { kind: 'state', state: sel.slice(6) };
+  if (sel.startsWith('refused:')) return { kind: 'refused', id: sel.slice(8) };
   return null;
 }
-const selectionParam = (s: ProcessSelection) => (s.kind === 'pair' ? `edge:${s.id}` : `state:${s.state}`);
+const selectionParam = (s: ProcessSelection) =>
+  s.kind === 'pair' ? `edge:${s.id}` : s.kind === 'state' ? `state:${s.state}` : `refused:${s.id}`;
 
 const ACTOR_LABEL: Record<string, string> = {
   principal: 'person',
@@ -238,6 +240,13 @@ function Legend() {
         <svg width="26" height="8" aria-hidden><line x1="0" y1="4" x2="26" y2="4" stroke="var(--status-warning-fg)" strokeWidth="2.5" /></svg>
         not in the model
       </span>
+      <span style={item}>
+        <svg width="18" height="14" aria-hidden>
+          <line x1="2" y1="13" x2="12" y2="3" stroke="var(--status-danger-fg)" strokeWidth="2.5" />
+          <path d="M 9 0 L 15 6 M 15 0 L 9 6" stroke="var(--status-danger-fg)" strokeWidth="1.8" />
+        </svg>
+        refused attempt
+      </span>
       <span style={{ marginLeft: 'auto' }}>time in state: median · p90</span>
     </div>
   );
@@ -255,6 +264,7 @@ function Diagram({
   onSelect: (s: ProcessSelection) => void;
 }) {
   const stateOf = new Map(current.states.map((s) => [s.state, s]));
+  const stubs = refusalStubs(layout, current.refused ?? []);
   return (
     <div style={{ padding: 12, overflowX: 'auto' }}>
       <svg
@@ -283,6 +293,10 @@ function Diagram({
             selected={selection?.kind === 'state' && selection.state === s.state}
             onSelect={() => onSelect({ kind: 'state', state: s.state })}
           />
+        ))}
+        {/* Above the states: a refusal leaves one, and must not be hidden under it. */}
+        {stubs.map((st) => (
+          <Stub key={st.id} stub={st} selected={selection?.kind === 'refused' && selection.id === st.id} onSelect={() => onSelect({ kind: 'refused', id: st.id })} />
         ))}
       </svg>
     </div>
@@ -395,12 +409,52 @@ function StateNode({
   );
 }
 
+/**
+ * A refused move (#1745): a short stroke out of the state the record was in, ending in a
+ * cross — it goes nowhere, which is the point — and a count beyond it.
+ */
+function Stub({ stub, selected, onSelect }: { stub: LaidStub; selected: boolean; onSelect: () => void }) {
+  const w = stubPillWidth(stub.label);
+  const k = 4;
+  return (
+    <g
+      onClick={onSelect}
+      onKeyDown={(e: KeyboardEvent) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onSelect())}
+      tabIndex={0}
+      role="button"
+      aria-pressed={selected}
+      aria-label={`Refused: ${stub.label}, by ${stub.operation}`}
+      style={{ cursor: 'pointer' }}
+    >
+      <title>{`Refused ${stub.count} times: ${stub.operation} from ${stub.from}`}</title>
+      <line x1={stub.x1} y1={stub.y1} x2={stub.x2} y2={stub.y2} stroke="transparent" strokeWidth={14} />
+      <line x1={stub.x1} y1={stub.y1} x2={stub.x2} y2={stub.y2} stroke="var(--status-danger-fg)" strokeWidth={selected ? 3.5 : 2.5} />
+      <path d={`M ${stub.x2 - k} ${stub.y2 - k} L ${stub.x2 + k} ${stub.y2 + k} M ${stub.x2 + k} ${stub.y2 - k} L ${stub.x2 - k} ${stub.y2 + k}`} stroke="var(--status-danger-fg)" strokeWidth={2} />
+      <rect
+        x={stub.labelX - w / 2}
+        y={stub.labelY - 10}
+        width={w}
+        height={20}
+        rx={10}
+        fill="var(--status-danger-bg)"
+        stroke={selected ? 'var(--status-danger-fg)' : 'transparent'}
+      />
+      <text x={stub.labelX} y={stub.labelY + 4} textAnchor="middle" fontSize={11} fontFamily="var(--font-mono)" fill="var(--status-danger-fg)">
+        {stub.label}
+      </text>
+    </g>
+  );
+}
+
 function Footnote({ flow }: { flow: LifecycleFlowResult }) {
   const o = flow.observation;
   const bits = [`Replayed ${num(o.events)} events across ${num(o.entities)} instances.`];
   if (o.inferred > 0) bits.push(`${num(o.inferred)} moves were read from the operation because the event did not carry the state.`);
   if (o.seenLate > 0) bits.push(`${num(o.seenLate)} were only seen on a later event: the operation that made them recorded nothing on this entity.`);
   if (o.unexplained > 0) bits.push(`${num(o.unexplained)} events named an operation that cannot move the entity from where it was.`);
+  // #1745: an app on a version from before refusals were recorded answers without them —
+  // no stubs then means "not reported", and the reader is told which.
+  if (flow.refused === undefined) bits.push('This app’s version does not report refused moves; they appear after it is pushed again.');
   return (
     <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border-default)', fontSize: 12.5, color: 'var(--text-secondary)' }}>
       {!o.complete && (
@@ -476,6 +530,52 @@ function SidePanel({
   onInstance: (entityId: string) => void;
 }) {
   if (!selection) return <div style={{ ...card, padding: 16, fontSize: 13, color: 'var(--text-secondary)' }}>Nothing moved in this period. Pick a state to see what is in it.</div>;
+  if (selection.kind === 'refused') {
+    const r = (current.refused ?? []).find((x) => stubId(x) === selection.id);
+    if (!r) return null;
+    return (
+      <div style={card}>
+        <div style={panelHead}>
+          <div style={kicker}>Refused attempt</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+            <span style={{ ...mono, fontSize: 15, fontWeight: 600 }}>
+              {r.from} → {r.attempted ?? '?'}
+            </span>
+            <span style={{ ...mono, fontSize: 13 }}>×{num(r.count)}</span>
+          </div>
+        </div>
+        <div style={{ margin: 12, padding: 12, borderRadius: 8, background: 'var(--status-danger-bg)', color: 'var(--status-danger-fg)', fontSize: 12.5 }}>
+          <strong style={{ fontWeight: 600 }}>Invariant.</strong> The model does not allow <span style={mono}>{r.operation}</span> from{' '}
+          <span style={mono}>{r.from}</span>, and every attempt was refused with a conflict — nothing moved.
+          {r.attempted === null && ' The operation leads to more than one state elsewhere, so which move was meant is not known.'}
+        </div>
+        <div style={{ ...row, ...kicker }}>
+          <span style={{ flex: 1 }}>Attempted by</span>
+          <span>Count</span>
+        </div>
+        {Object.entries(r.actors)
+          .sort(([, a], [, b]) => (b ?? 0) - (a ?? 0))
+          .map(([k, n]) => (
+            <div key={k} style={row}>
+              <span style={{ flex: 1, fontSize: 12.5 }}>{ACTOR_LABEL[k] ?? k}</span>
+              <span style={{ ...mono, fontSize: 12.5 }}>{num(n ?? 0)}</span>
+            </div>
+          ))}
+        <div style={{ padding: '10px 16px' }}>
+          <a
+            href="#"
+            onClick={(ev) => {
+              ev.preventDefault();
+              navigate(obsPath({ app: app.app_scope_id, view: 'requests', op: r.operation, code: 'conflict' }));
+            }}
+            style={{ fontSize: 12.5, color: 'var(--text-link, var(--brand-400))' }}
+          >
+            The refused requests →
+          </a>
+        </div>
+      </div>
+    );
+  }
   if (selection.kind === 'state') {
     const s = current.states.find((x) => x.state === selection.state);
     if (!s) return null;

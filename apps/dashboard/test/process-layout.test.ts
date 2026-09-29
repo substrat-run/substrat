@@ -170,3 +170,24 @@ describe('funnelRows', () => {
     expect(rows.find((r) => r.state === 'resolved')).toMatchObject({ reached: 6, share: 0.6, previousShare: 0.6 });
   });
 });
+
+describe('refusalStubs (#1745)', () => {
+  it('draws each refused move out of the state the record was in, the busiest nearest its corner', async () => {
+    const { refusalStubs } = await import('../web/src/lib/process-layout.js');
+    const l = processLayout(CONVERSATION, null);
+    const closed = l.states.find((s) => s.state === 'closed')!;
+    const stubs = refusalStubs(l, [
+      { from: 'closed', attempted: 'open', operation: 'ticket0/ingest-message', count: 12 },
+      { from: 'closed', attempted: null, operation: 'ticket0/snooze', count: 30 },
+      { from: 'archived', attempted: 'open', operation: 'x', count: 1 },
+    ]);
+    expect(stubs.map((s) => s.label)).toEqual(['closed → ? ×30', 'closed → open ×12']);
+    // Out of the top edge, going up; the second one further along that edge.
+    expect(stubs.every((s) => s.y1 === closed.y && s.y2 < s.y1)).toBe(true);
+    expect(stubs[1]!.x1).toBeLessThan(stubs[0]!.x1);
+ 
+    // Every pill inside the drawing, even out of the rightmost state.
+    const { stubPillWidth } = await import('../web/src/lib/process-layout.js');
+    for (const st of stubs) expect(st.labelX + stubPillWidth(st.label) / 2).toBeLessThanOrEqual(l.width);
+  });
+});

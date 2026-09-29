@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { LIFECYCLE_FLOW_EVENT_BUDGET, type LifecycleFlowInput } from '@substrat-run/contracts';
-import { readLifecycleFlow, type ScopedSql } from '../src/index.js';
+import { readLifecycleFlow, REFUSALS_DDL, refusalInsert, type ScopedSql } from '../src/index.js';
 
 /**
  * The process map's replay (#1744), against a real outbox: the read is a keyset walk over
@@ -50,9 +50,33 @@ interface Ev {
 }
 
 let seq = 0;
-function readerOver(evs: Ev[]): Pick<ScopedSql, 'query'> {
+interface Refusal {
+  at: string;
+  from: string;
+  operation: string;
+  attempted?: string | null;
+  entityType?: string;
+  actor?: string;
+}
+
+function readerOver(evs: Ev[], refusals: Refusal[] = []): Pick<ScopedSql, 'query'> {
   const db = new DatabaseSync(':memory:');
   db.exec(DDL);
+  // #1745: the kernel's own table, through its own INSERT — what both adapters write.
+  db.exec(REFUSALS_DDL);
+  for (const f of refusals) {
+    const q = refusalInsert({
+      tenantId: 't',
+      scopeId: 's',
+      refused: { entityType: f.entityType ?? 'conversation', entityId: 'c1', from: f.from, operation: f.operation, attempted: f.attempted ?? null },
+      invokedOperation: f.operation,
+      actor: f.actor ?? '"prin_ada"',
+      impersonation: null,
+      invocationId: null,
+      at: f.at,
+    });
+    db.prepare(q.sql).run(...(q.params as never[]));
+  }
   const ins = db.prepare(
     `INSERT INTO _substrat_outbox (id, type, occurred_at, actor, entity_type, entity_id, payload, pii_class, operation, invocation_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -79,9 +103,9 @@ function readerOver(evs: Ev[]): Pick<ScopedSql, 'query'> {
   } as Pick<ScopedSql, 'query'>;
 }
 
-const read = (evs: Ev[], over: Partial<LifecycleFlowInput> = {}) =>
+const read = (evs: Ev[], over: Partial<LifecycleFlowInput> = {}, refusals: Refusal[] = []) =>
   readLifecycleFlow(
-    { sql: readerOver(evs) },
+    { sql: readerOver(evs, refusals) },
     { entityType: 'conversation', lifecycle: LIFECYCLE, since: '2026-09-01T00:00:00Z', until: '2026-09-08T00:00:00Z', ...over },
   );
 
@@ -347,6 +371,29 @@ describe('readLifecycleFlow (#1744)', () => {
     ];
     expect(edge(read(evs, { since: '2026-09-01T00:00:00Z' }), 'new', 'open', 'desk/assign')!.count).toBe(1);
     expect(() => read(evs, { since: 'last tuesday' })).toThrow(/not an ISO 8601 instant/);
+  });
+
+  it('counts the refused moves in the window, grouped by where the record was and what was tried (#1745)', () => {
+    const r = read(
+      [{ entity: 'c1', at: at(1), op: 'desk/create', state: 'new' }],
+      {},
+      [
+        { at: at(2), from: 'closed', operation: 'desk/ingest', attempted: 'open' },
+        { at: at(3), from: 'closed', operation: 'desk/ingest', attempted: 'open', actor: '{"system":"mail"}' },
+        { at: at(3), from: 'new', operation: 'desk/wake', attempted: 'open' },
+        // Outside the window, and another entity type: neither is counted.
+        { at: '2026-08-01T00:00:00.000Z', from: 'closed', operation: 'desk/ingest', attempted: 'open' },
+        { at: at(3), from: 'closed', operation: 'desk/ingest', attempted: 'open', entityType: 'contact' },
+      ],
+    );
+    expect(r.refused).toEqual([
+      { from: 'closed', attempted: 'open', operation: 'desk/ingest', count: 2, actors: { principal: 1, system: 1 } },
+      { from: 'new', attempted: 'open', operation: 'desk/wake', count: 1, actors: { principal: 1 } },
+    ]);
+  });
+
+  it('reports no refusals as an empty list, not as absent', () => {
+    expect(read([{ entity: 'c1', at: at(1), op: 'desk/create', state: 'new' }]).refused).toEqual([]);
   });
 
   it('reads only the entity type asked for', () => {

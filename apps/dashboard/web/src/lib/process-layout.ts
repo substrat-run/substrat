@@ -349,3 +349,72 @@ export function funnelRows(
       previousShare: share(previous, s.state),
     }));
 }
+
+/** One refused move drawn as a stub (#1745): where the record was, what was tried, how often. */
+export interface LaidStub {
+  /** `from|attempted|operation` — the stub's id in a selection. */
+  id: string;
+  from: string;
+  attempted: string | null;
+  operation: string;
+  count: number;
+  /** The stroke: out of the state's top edge, up and to the right. */
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  labelX: number;
+  labelY: number;
+  label: string;
+}
+
+/** The pill a stub's label is drawn in — one width, for the layout that places it and the screen that draws it. */
+export const stubPillWidth = (label: string) => 14 + label.length * 6.4;
+
+export const stubId = (r: { from: string; attempted: string | null; operation: string }) => `${r.from}|${r.attempted ?? ''}|${r.operation}`;
+
+/**
+ * Where each refused move is drawn. A short stroke leaves the top edge of the state the
+ * record was in and ends in a cross — it goes nowhere, which is the point — with its count
+ * in a pill beyond it. Several out of one state fan left along that edge, the busiest
+ * rightmost. A refusal from a state the model does not declare has no node to leave, and
+ * is left to the side panel's list rather than drawn somewhere misleading.
+ */
+export function refusalStubs(
+  layout: ProcessLayout,
+  refused: { from: string; attempted: string | null; operation: string; count: number }[],
+): LaidStub[] {
+  const at = new Map(layout.states.map((s) => [s.state, s]));
+  const perState = new Map<string, number>();
+  const out: LaidStub[] = [];
+  for (const r of [...refused].sort((a, b) => b.count - a.count || a.operation.localeCompare(b.operation))) {
+    const s = at.get(r.from);
+    if (!s) continue;
+    const i = perState.get(r.from) ?? 0;
+    perState.set(r.from, i + 1);
+    const x1 = s.x + NODE_W - 22 - i * 34;
+    const y1 = s.y;
+    const x2 = x1 + 14;
+    const y2 = y1 - 30;
+    const label = `${r.from} → ${r.attempted ?? '?'} ×${r.count.toLocaleString('en-US')}`;
+    // Kept inside the drawing: a refusal out of the rightmost state (typically the terminal
+    // one — "closed → open") would otherwise put its pill past the edge.
+    const w = stubPillWidth(label);
+    const labelX = Math.min(Math.max(x2, w / 2 + 4), layout.width - w / 2 - 4);
+    out.push({
+      id: stubId(r),
+      from: r.from,
+      attempted: r.attempted,
+      operation: r.operation,
+      count: r.count,
+      x1,
+      y1,
+      x2,
+      y2,
+      labelX,
+      labelY: y2 - 14,
+      label,
+    });
+  }
+  return out;
+}

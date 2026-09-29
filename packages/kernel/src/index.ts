@@ -396,6 +396,7 @@ export {
   type ImpersonationRow,
 } from './impersonation.js';
 export { readLifecycleFlow } from './lifecycle-flow.js';
+export { REFUSALS_DDL, refusalInsert, refusedTransitionOf, type RefusalRow } from './refusals.js';
 export { readTimeline, readHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters } from './timeline.js';
 export type { TimelineReader } from './timeline.js';
 // #1636: one undecodable spine row no longer takes a list — or a delivery loop — with it.
