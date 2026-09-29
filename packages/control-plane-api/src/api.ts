@@ -111,7 +111,7 @@ import type {
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
-import type { CrossVerticalOptions, OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
+import type { CrossVerticalOptions, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import {
   BIND_EXPORT_BREAK_REFUSAL,
@@ -6625,14 +6625,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    *  died without a chance to say so. */
   const PREVIEW_CREATE_BOUND_MS = 15 * 60_000;
 
-  /** Whether a `provisioning` preview row is a create that is OVER, and may be reaped. It is
-   *  when its own frame expired it on failure, or it is older than the bound. A `createdAt`
-   *  that does not parse is read as old: reaping a corpse is what the row did before #1920,
-   *  and refusing forever over a value nobody can age is worse. */
-  const previewCreateIsOver = (row: Scope, now: number): boolean => {
-    if (row.expiresAt !== null && Date.parse(row.expiresAt) <= now) return true;
+  /** When a `provisioning` preview row's create counts as OVER, so the row may be reaped: at
+   *  once if its own frame expired it on failure, else `createdAt` plus the bound. A
+   *  `createdAt` that does not parse is read as over: reaping a corpse is what the row did
+   *  before #1920, and refusing forever over a value nobody can age is worse. */
+  const previewReclaimAt = (row: Scope, now: number): number => {
+    if (row.expiresAt !== null && Date.parse(row.expiresAt) <= now) return now;
     const born = Date.parse(row.createdAt);
-    return Number.isNaN(born) || now - born >= PREVIEW_CREATE_BOUND_MS;
+    return Number.isNaN(born) ? now : born + PREVIEW_CREATE_BOUND_MS;
   };
 
   /** Reap one preview: wipe the DO in its own deployment, then drop the directory row and
@@ -6799,6 +6799,45 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     }
 
+    // Idempotent on (tenant, vertical, tag): a PR *synchronize* rebinds the new version
+    // onto the SAME preview, unless `refresh` asks for a fresh one. On a hosted vertical
+    // every push is its own script, so the rebind first CARRIES the preview's data into
+    // the new version's script (#1710). The preview's data then follows it from push to
+    // push, and each push's migrations run forward over it (§4's rehearsal case).
+    const existing = (await admin.listScopes(actor, { tenantId, vertical: slug })).find(
+      (s) => s.kind === 'preview' && s.slug === previewSlug(slug, opts.tag),
+    );
+    // A preview only HAS data once its two-phase create finished: the directory row lands
+    // first as `provisioning` (K-31), the fork's export→restore runs, and `activateScope`
+    // is the last step. So a row still at `provisioning` is a create that DIED mid-fork —
+    // its DO is empty. Reuse must never adopt one: reuse carries whatever the preview holds
+    // and never re-forks from the source, so adopting a half-built row hands back a
+    // permanently EMPTY preview and reports `reused: true` — success for a URL that shows
+    // a reviewer no data at all. That is exactly what a CI retry does (the generated
+    // workflow retries `preview create` on a transient), so the failure mode is the
+    // COMMON one, not a corner: attempt 1 forks and dies, attempt 2 adopts its corpse and
+    // goes green. Instead, reap the leftover and fall through to a fresh fork below —
+    // which is what the retry was asking for. Same for an explicit `refresh`, whose fresh
+    // scope would otherwise collide with the old row's still-bound `--<tag>` hostname.
+    //
+    // Except while that create may still be running (#1920): a `provisioning` row is also
+    // what a create in flight looks like, and reaping it wipes the scope that create is
+    // restoring into. So a young one, not marked dead by its own frame, is refused instead.
+    // `refresh` is the explicit ask to replace whatever is there, and still reaps.
+    if (existing && !opts.refresh && existing.status === 'provisioning') {
+      const now = Date.now();
+      const reclaimAt = previewReclaimAt(existing, now);
+      if (now < reclaimAt) {
+        const minutes = Math.max(1, Math.ceil((reclaimAt - now) / 60_000));
+        throw new ControlPlaneError(
+          409,
+          `a create for preview '${opts.tag}' is in progress (started ${existing.createdAt}). ` +
+            `Retry once it finishes; if it died, the tag can be reclaimed in ${minutes} min, ` +
+            `or now with refresh (substrat preview create --refresh), which replaces it`,
+        );
+      }
+    }
+
     // The PR version's deployment (its own dispatch script) — where the fork must land so
     // the preview actually runs the PR's code. Falls back to prod/static resolution only
     // when a version resolver is not wired (co-located host / tests).
@@ -6856,44 +6895,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // convention (clean-room). Computed once so reuse and fresh mint the same URL.
     const baseHostname = await previewBaseHostname(actor, source, tenantId, slug, surface);
 
-    // Idempotent on (tenant, vertical, tag): a PR *synchronize* rebinds the new version
-    // onto the SAME preview, unless `refresh` asks for a fresh one. On a hosted vertical
-    // every push is its own script, so the rebind first CARRIES the preview's data into
-    // the new version's script (#1710). The preview's data then follows it from push to
-    // push, and each push's migrations run forward over it (§4's rehearsal case).
-    const existing = (await admin.listScopes(actor, { tenantId, vertical: slug })).find(
-      (s) => s.kind === 'preview' && s.slug === previewSlug(slug, opts.tag),
-    );
-    // A preview only HAS data once its two-phase create finished: the directory row lands
-    // first as `provisioning` (K-31), the fork's export→restore runs, and `activateScope`
-    // is the last step. So a row still at `provisioning` is a create that DIED mid-fork —
-    // its DO is empty. Reuse must never adopt one: reuse carries whatever the preview holds
-    // and never re-forks from the source, so adopting a half-built row hands back a
-    // permanently EMPTY preview and reports `reused: true` — success for a URL that shows
-    // a reviewer no data at all. That is exactly what a CI retry does (the generated
-    // workflow retries `preview create` on a transient), so the failure mode is the
-    // COMMON one, not a corner: attempt 1 forks and dies, attempt 2 adopts its corpse and
-    // goes green. Instead, reap the leftover and fall through to a fresh fork below —
-    // which is what the retry was asking for. Same for an explicit `refresh`, whose fresh
-    // scope would otherwise collide with the old row's still-bound `--<tag>` hostname.
-    //
-    // Except while that create may still be running (#1920): a `provisioning` row is also
-    // what a create in flight looks like, and reaping it wipes the scope that create is
-    // restoring into. So a young one, not marked dead by its own frame, is refused instead.
-    // `refresh` is the explicit ask to replace whatever is there, and still reaps.
-    if (existing && !opts.refresh && existing.status === 'provisioning') {
-      const now = Date.now();
-      if (!previewCreateIsOver(existing, now)) {
-        const reclaimAt = Date.parse(existing.createdAt) + PREVIEW_CREATE_BOUND_MS;
-        const minutes = Math.max(1, Math.ceil((reclaimAt - now) / 60_000));
-        throw new ControlPlaneError(
-          409,
-          `a create for preview '${opts.tag}' is in progress (started ${existing.createdAt}). ` +
-            `Retry once it finishes; if it died, the tag can be reclaimed in ${minutes} min, ` +
-            `or now with refresh (substrat preview create --refresh), which replaces it`,
-        );
-      }
-    }
+    // Found above, before any remote read, so an in-flight refusal costs one directory read.
     const stale = existing !== undefined && (opts.refresh || existing.status !== 'active');
     if (existing && !stale) {
       // Data first, pointer last (#1710): move the preview's data into this push's script
@@ -6992,72 +6994,70 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         throw e;
       }
     };
-    // Set once this create's own row has landed, until it is active: a failure in between
-    // leaves a `provisioning` row, and this frame is the one that knows the create is over.
-    let rowLanded = false;
-    try {
-      if (source) {
-        // A fresh fork. Export from where the prod data lives TODAY. The canonical
-        // `admin.exportScope` first — it writes the K-24 audit entry (and the co-located
-        // bytes); the vertical dump then overlays it, exactly as the governed export route.
-        const sourceClient = await verticalForScope(c, source);
-        if (!target) {
-          throw new ControlPlaneError(501, 'preview needs dispatch resolution for the PR version');
-        }
-        const canonical = await admin.exportScope(actor, tenantId, source.id);
-        const tables = sourceClient ? await sourceClient.exportScope(source.id) : canonical.tables;
-        // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the data
-        // copy leaves an inert row that — carrying `forkedFrom` + `expiresAt` — the GC sweep
-        // reaps, never copied data with no record.
-        await options.host.provisionScope(actor, {
-          tenantId,
-          scopeId: previewId,
-          kind: 'preview',
-          slug: previewSlug(slug, opts.tag),
-          name: `${source.name ?? slug} (${opts.tag})`,
-          vertical: slug,
-          jurisdiction: source.jurisdiction,
-          forkedFrom: source.id,
-          forkedAt: new Date().toISOString(),
-          // Directory models "absent = pinned", so a pinned preview passes no horizon at all.
-          expiresAt: expiresAt ?? undefined,
-        });
-        rowLanded = true;
-        // Load the fork into the PR version's deployment (materializes the preview scope DO
-        // there; restore re-projects the vertical's roles from the dump's tuples). A one-shot
-        // DO storage blip heals on the in-request retry WITHOUT burning a CI attempt (which
-        // pushes a fresh version per try) — #559 (2).
-        await restoreOrRecord(() => target.restoreScope(tenantId, previewId, tables, { sourceScopeId: source.id, exact: true }));
-      } else {
-        // A clean-room preview (#509 (b)): an EMPTY scope, no source to export. No `forkedFrom`
-        // — the reap sweep and `deleteSnapshot` reap it by `kind === 'preview'` instead. The
-        // co-located host migrates the module tables at `provisionScope`; a dispatch deployment
-        // materializes the empty DO via `restoreScope([])` (its `ensureMigrations` creates the
-        // schema on first access), so a source-less preview needs no export/restore of data.
-        await options.host.provisionScope(actor, {
-          tenantId,
-          scopeId: previewId,
-          kind: 'preview',
-          slug: previewSlug(slug, opts.tag),
-          name: `${slug.split('/').at(-1)} (${opts.tag})`,
-          vertical: slug,
-          jurisdiction: 'global',
-          expiresAt: expiresAt ?? undefined,
-        });
-        rowLanded = true;
-        if (target) await restoreOrRecord(() => target.restoreScope(tenantId, previewId, []));
+    let row: ProvisionScopeInput;
+    let restore: (() => Promise<unknown>) | null;
+    if (source) {
+      // A fresh fork. Export from where the prod data lives TODAY. The canonical
+      // `admin.exportScope` first — it writes the K-24 audit entry (and the co-located
+      // bytes); the vertical dump then overlays it, exactly as the governed export route.
+      const sourceClient = await verticalForScope(c, source);
+      if (!target) {
+        throw new ControlPlaneError(501, 'preview needs dispatch resolution for the PR version');
       }
+      const canonical = await admin.exportScope(actor, tenantId, source.id);
+      const tables = sourceClient ? await sourceClient.exportScope(source.id) : canonical.tables;
+      // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the data
+      // copy leaves an inert row that — carrying `forkedFrom` + `expiresAt` — the GC sweep
+      // reaps, never copied data with no record.
+      row = {
+        tenantId,
+        scopeId: previewId,
+        kind: 'preview',
+        slug: previewSlug(slug, opts.tag),
+        name: `${source.name ?? slug} (${opts.tag})`,
+        vertical: slug,
+        jurisdiction: source.jurisdiction,
+        forkedFrom: source.id,
+        forkedAt: new Date().toISOString(),
+        // Directory models "absent = pinned", so a pinned preview passes no horizon at all.
+        expiresAt: expiresAt ?? undefined,
+      };
+      // Load the fork into the PR version's deployment (materializes the preview scope DO
+      // there; restore re-projects the vertical's roles from the dump's tuples). A one-shot
+      // DO storage blip heals on the in-request retry WITHOUT burning a CI attempt (which
+      // pushes a fresh version per try) — #559 (2).
+      restore = () => target.restoreScope(tenantId, previewId, tables, { sourceScopeId: source.id, exact: true });
+    } else {
+      // A clean-room preview (#509 (b)): an EMPTY scope, no source to export. No `forkedFrom`
+      // — the reap sweep and `deleteSnapshot` reap it by `kind === 'preview'` instead. The
+      // co-located host migrates the module tables at `provisionScope`; a dispatch deployment
+      // materializes the empty DO via `restoreScope([])` (its `ensureMigrations` creates the
+      // schema on first access), so a source-less preview needs no export/restore of data.
+      row = {
+        tenantId,
+        scopeId: previewId,
+        kind: 'preview',
+        slug: previewSlug(slug, opts.tag),
+        name: `${slug.split('/').at(-1)} (${opts.tag})`,
+        vertical: slug,
+        jurisdiction: 'global',
+        expiresAt: expiresAt ?? undefined,
+      };
+      restore = target ? () => target.restoreScope(tenantId, previewId, []) : null;
+    }
+    await options.host.provisionScope(actor, row);
+    try {
+      if (restore) await restoreOrRecord(restore);
       await admin.activateScope(actor, tenantId, previewId);
     } catch (e) {
       // Expire the row this create left behind, so the next create reaps it at once rather
       // than refusing it as in flight for the whole bound (#1920) — that next create is the
-      // CLI's retry after a known-dead attempt (#1918). The row itself stays, for the console
-      // to explain (#559). Best-effort: if this write fails too, the age bound still frees it.
-      if (rowLanded) {
-        await admin
-          .setScopeExpiresAt(actor, tenantId, previewId, new Date().toISOString())
-          .catch(() => undefined);
-      }
+      // CLI's retry after a known-dead attempt (#1918). The row stays until then, or until
+      // the GC sweep's next pass reaps it as expired; the #559 ops-failure row outlives both.
+      // Best-effort: if this write fails too, the age bound still frees the tag.
+      await admin
+        .setScopeExpiresAt(actor, tenantId, previewId, new Date().toISOString())
+        .catch(() => undefined);
       throw e;
     }
     // Bind the PR version. A private vertical's push self-admitted, so this is accepted; a

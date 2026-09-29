@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
-import { assetHash, deployManifest, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
+import { assetHash, deployManifest, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeId, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
 import { denialLogQuery } from '../src/api.js';
 import {
   createControlPlaneApi,
@@ -2361,18 +2361,21 @@ describe('control-plane API', () => {
         get exports() { return exports; }, restores, deletes,
       };
     };
-    type ScopeId = ReturnType<typeof scopeId.parse>;
 
     afterEach(() => {
       vi.useRealTimers();
+      vi.restoreAllMocks();
     });
 
-    it('a second create while the first is still forking answers 409 and leaves it alone', async () => {
-      const w = await setup('inflight');
+    it.each([
+      ['a fork', {}],
+      ['a clean room', { empty: true }],
+    ] as const)('a second create while %s is still being built answers 409 and leaves it alone', async (_, kind) => {
+      const w = await setup(`inflight${'empty' in kind ? '-clean' : ''}`);
       const held = w.holdNextRestore();
-      const first = w.create({ tag: 'pr-1' });
+      const first = w.create({ tag: 'pr-1', ...kind });
       await held.parked; // A's row has landed as `provisioning`; its restore is in progress
-      const second = await w.create({ tag: 'pr-1' });
+      const second = await w.create({ tag: 'pr-1', ...kind });
       expect(second.status).toBe(409);
       const { error } = (await second.json()) as { error: string };
       // Readable, and says both ways out: wait (with how long) or replace it now.
@@ -2381,7 +2384,7 @@ describe('control-plane API', () => {
       expect(error).toMatch(/--refresh/);
       // Nothing was reaped and nothing was forked a second time.
       expect(w.deletes).toEqual([]);
-      expect(w.exports).toBe(1);
+      expect(w.exports).toBe('empty' in kind ? 0 : 1);
       held.release();
       const res = await first;
       expect(res.status).toBe(201);
@@ -2390,32 +2393,24 @@ describe('control-plane API', () => {
       expect((await w.rowOf(p.scopeId))?.status).toBe('active');
     });
 
-    it('a clean-room create in flight is refused the same way — both paths are aged', async () => {
-      const w = await setup('inflight-clean');
-      const held = w.holdNextRestore();
-      const first = w.create({ tag: 'pr-1', empty: true });
-      await held.parked;
-      const second = await w.create({ tag: 'pr-1', empty: true });
-      expect(second.status).toBe(409);
-      expect(w.deletes).toEqual([]);
-      held.release();
-      expect((await first).status).toBe(201);
-    });
-
-    it('a young leftover nobody marked is refused; the same row past the bound is reaped', async () => {
-      const w = await setup('aged');
+    it.each([
+      ['fork', {}],
+      ['clean-room', { empty: true }],
+    ] as const)('a young %s leftover nobody marked is refused; the same row past the bound is reaped', async (_, kind) => {
+      const clean = 'empty' in kind;
+      const w = await setup(`aged${clean ? '-clean' : ''}`);
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date('2026-09-29T10:00:00.000Z'));
-      const id = await w.leftover('pr-1');
+      const id = await w.leftover('pr-1', { clean });
       vi.setSystemTime(new Date('2026-09-29T10:14:00.000Z'));
-      const young = await w.create({ tag: 'pr-1' });
+      const young = await w.create({ tag: 'pr-1', ...kind });
       expect(young.status).toBe(409);
       expect(((await young.json()) as { error: string }).error).toMatch(/reclaimed in 1 min/);
       expect((await w.rowOf(id))?.status).toBe('provisioning');
       expect(w.deletes).toEqual([]);
 
       vi.setSystemTime(new Date('2026-09-29T10:15:00.000Z'));
-      const old = await w.create({ tag: 'pr-1' });
+      const old = await w.create({ tag: 'pr-1', ...kind });
       expect(old.status).toBe(201);
       const p = (await old.json()) as { scopeId: string; reused: boolean };
       expect(p.reused).toBe(false);
@@ -2423,31 +2418,16 @@ describe('control-plane API', () => {
       expect(await w.rowOf(id)).toBeUndefined();
     });
 
-    it('a clean-room leftover is aged by the same stamp', async () => {
-      const w = await setup('aged-clean');
-      vi.useFakeTimers({ toFake: ['Date'] });
-      vi.setSystemTime(new Date('2026-09-29T10:00:00.000Z'));
-      const id = await w.leftover('pr-1', { clean: true });
-      expect((await w.create({ tag: 'pr-1', empty: true })).status).toBe(409);
-      vi.setSystemTime(new Date('2026-09-29T10:16:00.000Z'));
-      expect((await w.create({ tag: 'pr-1', empty: true })).status).toBe(201);
-      expect(w.deletes).toEqual([id]);
-    });
-
     it('a row whose age cannot be read is treated as a corpse and reaped', async () => {
       const w = await setup('unaged');
       const id = await w.leftover('pr-1');
       const list = host.admin.listScopes.bind(host.admin);
-      const spy = vi.spyOn(host.admin, 'listScopes').mockImplementation(async (...args) =>
+      vi.spyOn(host.admin, 'listScopes').mockImplementation(async (...args) =>
         (await list(...args)).map((s) => (s.id === id ? { ...s, createdAt: '' } : s)),
       );
-      try {
-        const res = await w.create({ tag: 'pr-1' });
-        expect(res.status).toBe(201);
-        expect(w.deletes).toEqual([id]);
-      } finally {
-        spy.mockRestore();
-      }
+      const res = await w.create({ tag: 'pr-1' });
+      expect(res.status).toBe(201);
+      expect(w.deletes).toEqual([id]);
     });
 
     it('refresh replaces a young provisioning row and an active one alike', async () => {
