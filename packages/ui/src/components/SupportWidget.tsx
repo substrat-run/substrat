@@ -42,8 +42,21 @@ interface SupportIdentity {
 
 declare global {
   interface Window {
-    ticket0?: { unmount(): void };
+    /** `open`/`close` arrived with #1921; a desk serving an older widget.js offers only `unmount`. */
+    ticket0?: { unmount(): void; open?(): void; close?(): void };
   }
+}
+
+/**
+ * Open the support conversation (#1921), for a host with its own way in (the dashboard's ⌘K
+ * overlay). False when there is no widget on the page, or its desk serves a widget.js from
+ * before the verb existed — the caller then points at the bubble instead.
+ */
+export function openSupport(): boolean {
+  const open = typeof window === 'undefined' ? undefined : window.ticket0?.open;
+  if (typeof open !== 'function') return false;
+  open();
+  return true;
 }
 
 export function SupportWidget({ endpoint = '/api/support/identity' }: SupportWidgetProps = {}) {

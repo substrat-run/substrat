@@ -9,6 +9,9 @@ import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
 import { sectionLabel, sectionOf, sectionQuery } from './lib/obs-sections';
 import { CommandPalette } from './components/CommandPalette';
+import { mergePaletteModels, type PaletteContext, type PaletteGo } from './lib/palette';
+import { openRecordInUrl, openRequestInUrl } from './lib/request-url';
+import { MOCK_TIMELINE_TARGETS } from './lib/mock-timeline';
 import { NotificationsPopover } from './components/NotificationsPopover';
 import { PromoteDialog } from './components/PromoteDialog';
 import { SignIn, Interstitial, InviteBlocked } from './views/SignIn';
@@ -142,6 +145,10 @@ export function App() {
     return localStorage.getItem('substrat.dash.theme') === 'dark';
   });
   const [palette, setPalette] = useState(false);
+  // #1921: each app's declared lifecycles and entities, read the first time the overlay
+  // opens and kept for the session — what lets it offer process maps and open a pasted id
+  // as a record. Absent until read; an app whose model cannot be read offers neither.
+  const [paletteModels, setPaletteModels] = useState<PaletteContext['models']>({});
   const [notifs, setNotifs] = useState(false);
   const [unread, setUnread] = useState(true);
   const [toast, setToast] = useState<{ status: 'success' | 'danger'; title: string; detail?: string }>();
@@ -162,6 +169,29 @@ export function App() {
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
+
+  useEffect(() => {
+    if (!palette) return;
+    let live = true;
+    // Bounded: a team with many apps reads the first dozen; the rest still jump by name.
+    const missing = apps.filter((a) => a.status === 'active' && !(a.app_scope_id in paletteModels)).slice(0, 12);
+    if (missing.length === 0) return;
+    if (DEV_MOCK) {
+      const account = Object.values(MOCK_TIMELINE_TARGETS)[0]!;
+      setPaletteModels((m) => ({
+        ...m,
+        ...Object.fromEntries(missing.map((a) => [a.app_scope_id, { lifecycles: [account.entityType], entities: [account.entityType] }])),
+      }));
+      return;
+    }
+    void Promise.allSettled(missing.map((a) => api.appModel(a.app_scope_id).then((v) => v.running.model))).then((answers) => {
+      if (!live) return;
+      setPaletteModels((m) => mergePaletteModels(m, missing.map((a) => a.app_scope_id), answers));
+    });
+    return () => {
+      live = false;
+    };
+  }, [palette, apps]);
 
   // ⌘K opens the palette.
   useEffect(() => {
@@ -982,15 +1012,27 @@ export function App() {
 
       {palette && (
         <CommandPalette
-          apps={apps.map((a) => {
-            const m = verticalMeta(a.vertical_slug);
-            return { name: a.name, accent: m.accent, status: a.status, host: a.hostname, onOpen: () => go(`/apps/${a.app_scope_id}/overview`) };
-          })}
+          ctx={{
+            apps: apps.map((a) => ({ scopeId: a.app_scope_id, name: a.name, host: a.hostname, status: a.status })),
+            // The app the page is about: an app's own page, or a team page narrowed to one.
+            currentApp: route.section === 'apps' || route.section === 'observability' || route.section === 'audit' ? route.app ?? null : null,
+            models: paletteModels,
+          }}
           onClose={() => setPalette(false)}
-          onAction={(label) => {
-            if (label === 'Create app') go('/apps/new');
-            else if (label === 'Invite member') go('/team');
-            else if (label === 'Add domain') go('/domains');
+          onGo={(g: PaletteGo) => {
+            // An app's page and Observability host the request and record panels; anywhere
+            // else, go to the app first, with the panel's address attached.
+            const hosts = (route.section === 'apps' && !!route.app) || route.section === 'observability';
+            if (g.kind === 'path') go(g.path);
+            else if (g.kind === 'request') {
+              if (hosts) openRequestInUrl(g.invocationId, g.atMs, g.scopeId);
+              else go(`/apps/${g.scopeId}/overview?req=${encodeURIComponent(g.invocationId)}&reqAt=${Math.round(g.atMs)}`);
+            } else if (g.kind === 'record') {
+              if (hosts) openRecordInUrl(g.entityType, g.entityId, g.scopeId);
+              else go(`/apps/${g.scopeId}/overview?rec=${encodeURIComponent(`${g.entityType}:${g.entityId}`)}`);
+            } else if (g.label === 'Create app') go('/apps/new');
+            else if (g.label === 'Invite member') go('/team');
+            else if (g.label === 'Add domain') go('/domains');
           }}
         />
       )}

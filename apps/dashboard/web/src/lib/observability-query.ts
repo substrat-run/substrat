@@ -29,6 +29,9 @@ export interface ObsQuery {
   req?: string;
   reqAt?: string;
   reqScope?: string;
+  /** #1921: a record's timeline over the page — `<entityType>:<id>`, and its scope when not the page's. */
+  rec?: string;
+  recScope?: string;
 }
 export const OBS_KEYS = [
   'app',
@@ -56,6 +59,8 @@ export const OBS_KEYS = [
   'req',
   'reqAt',
   'reqScope',
+  'rec',
+  'recScope',
 ] as const;
 export function readObsQuery(search: string): ObsQuery {
   const p = new URLSearchParams(search);

@@ -46,13 +46,56 @@ export function closeRequestInUrl(): void {
   push(url);
 }
 
-/** The open request, kept current across navigation — for a page that hosts the panel. */
-export function useRequestInUrl(): RequestInUrl | null {
+/** The page's query string, kept current across navigation. */
+function useSearch(): string {
   const [search, setSearch] = useState(() => window.location.search);
   useEffect(() => {
     const sync = () => setSearch(window.location.search);
     window.addEventListener('popstate', sync);
     return () => window.removeEventListener('popstate', sync);
   }, []);
-  return requestInUrl(search);
+  return search;
+}
+
+/** The open request, kept current across navigation — for a page that hosts the panel. */
+export function useRequestInUrl(): RequestInUrl | null {
+  return requestInUrl(useSearch());
+}
+
+/**
+ * A record's timeline, addressed the same way (#1921): `rec=<entityType>:<id>`, and
+ * `recScope` when it lives in a scope other than the page's. What the ⌘K overlay opens for
+ * a pasted record id, and what makes a record linkable from anywhere.
+ */
+export interface RecordInUrl {
+  entityType: string;
+  entityId: string;
+  scopeId: string | null;
+}
+
+export function recordInUrl(search: string): RecordInUrl | null {
+  const p = new URLSearchParams(search);
+  const rec = p.get('rec');
+  const i = rec ? rec.indexOf(':') : -1;
+  // The type is before the FIRST colon: an id may hold colons, a type does not.
+  if (!rec || i <= 0 || i === rec.length - 1) return null;
+  return { entityType: rec.slice(0, i), entityId: rec.slice(i + 1), scopeId: p.get('recScope') || null };
+}
+
+export function openRecordInUrl(entityType: string, entityId: string, scopeId?: string): void {
+  const url = new URL(window.location.href);
+  url.searchParams.set('rec', `${entityType}:${entityId}`);
+  if (scopeId) url.searchParams.set('recScope', scopeId);
+  else url.searchParams.delete('recScope');
+  push(url);
+}
+
+export function closeRecordInUrl(): void {
+  const url = new URL(window.location.href);
+  for (const k of ['rec', 'recScope']) url.searchParams.delete(k);
+  push(url);
+}
+
+export function useRecordInUrl(): RecordInUrl | null {
+  return recordInUrl(useSearch());
 }
