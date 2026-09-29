@@ -1573,6 +1573,7 @@ export class ControlPlaneDO extends DurableObject {
       loadDirectoryDump(tables, {
         columnsOf: (name) => doBuiltColumnsOf(this.sql, name),
         exec: (sql) => this.sql.exec(sql),
+        maxColumns: DO_SQL_LIMITS.columns,
         insert: (sql, rows) => {
           for (const row of rows) this.sql.exec(sql, ...(row as unknown[]));
         },

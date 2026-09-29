@@ -211,12 +211,33 @@ export const LEGACY_SCOPE_ROWS_BACKFILL: readonly string[] = [
   'UPDATE scopes SET name = slug WHERE name IS NULL',
 ];
 
+/** Refuse a table whose built columns plus the dump's unknown ones would pass `max`. */
+function assertWithinColumnCap(
+  tables: readonly { name: string; columns: readonly string[] }[],
+  columnsOf: KernelColumnsOf,
+  max: number,
+): void {
+  for (const t of tables) {
+    const built = columnsOf(t.name) ?? [];
+    const known = lowered(built);
+    const width = built.length + new Set(t.columns.map((c) => c.toLowerCase()).filter((c) => !known.has(c))).size;
+    if (width > max) {
+      throw substratError(
+        'validation_failed',
+        `restore refused: the dump's ${t.name} would hold ${width} columns once the ones this code does not ` +
+          `know are added to its own, and a table here holds at most ${max}. Nothing was changed.`,
+      );
+    }
+  }
+}
+
 /**
  * Load a directory dump's rows into the tables the host has just built from its own schema
  * (#1912): the one sequence both adapters' directory restores run, inside their transaction,
  * after dropping the old directory and running the schema pass.
  *
- * 1. refuse a table the directory does not build (`assertDirectoryTablesBuilt`);
+ * 1. refuse a table the directory does not build (`assertDirectoryTablesBuilt`), and one that
+ *    would pass `maxColumns` once the dump's unknown columns join this code's own;
  * 2. add each column the dump carries and this code does not know, bare and lowercased, and
  *    refuse one named for the rowid (`spineColumnAdditions`);
  * 3. insert every row by column name, against the columns read back after step 2
@@ -233,9 +254,16 @@ export function loadDirectoryDump(
     columnsOf: KernelColumnsOf;
     exec: (sql: string) => void;
     insert: (sql: string, rows: readonly (readonly unknown[])[]) => void;
+    /**
+     * The most columns a table here may hold: a Durable Object's cap. `assertReplayableDump`
+     * holds the dump's own column list to it, but a table grows by this code's columns plus the
+     * dump's unknown ones, which can pass it while each list alone does not.
+     */
+    maxColumns?: number;
   },
 ): void {
   assertDirectoryTablesBuilt(tables.map((t) => t.name), host.columnsOf);
+  if (host.maxColumns !== undefined) assertWithinColumnCap(tables, host.columnsOf, host.maxColumns);
   for (const t of tables) for (const alter of spineColumnAdditions(t, host.columnsOf(t.name))) host.exec(alter);
   for (const t of tables) {
     if (t.rows.length > 0) host.insert(spineRowsInsert(t, host.columnsOf(t.name)), t.rows);
