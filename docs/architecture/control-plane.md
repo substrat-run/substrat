@@ -961,6 +961,11 @@ restore → keep serving), which is what turns this from a claim into a procedur
    this code does not build, spine or not, is refused whole, naming each such table; so is a
    column named for SQLite's rowid, or a table with a foreign key to the spine. A column this
    code does not know is kept as a plain untyped column, with its values.
+   A refusal that says `does not build: <table>` means the dump holds a table this version of
+   the control plane has no schema for, so it could not read those rows even if it loaded them.
+   Two ways on: roll the control plane forward to the version that took the dump (a newer
+   release builds the table) and restore again; or, when the named tables are not ones any
+   release built (a hand-made or foreign table), remove them from the dump and restore again.
    A refusal naming `_substrat_identities_new` or `_substrat_admin_log_new` means the dump was
    taken from a directory a torn pre-#1573 rebuild left behind, whose rows may exist only in
    that scratch table: move them into the real table's rows in the dump, drop the scratch
