@@ -22,7 +22,7 @@ import type {
   ScopeHost,
 } from '@substrat-run/kernel';
 import { settleConnectionUse } from '@substrat-run/kernel';
-import { ScriveApi, ScriveApiError, SCRIVE_TESTBED, scriveSecret, type ScriveParty } from './api.js';
+import { ScriveApi, ScriveApiError, SCRIVE_TESTBED, scriveSecret, type ScriveDocument, type ScriveParty } from './api.js';
 import { renderPdf } from './pdf.js';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
@@ -330,6 +330,45 @@ function providerPartyIdsByPosition(
   );
   const ids = signatories.map((p) => p.id);
   return aligned && new Set(ids).size === ids.length ? ids : undefined;
+}
+
+/** The name a provider party shows, when it carries a string one. */
+const providerNameOf = (party: ScriveDocument['parties'][number] | undefined): string | undefined => {
+  const value = party?.fields?.find((f) => f.type === 'name')?.value;
+  return typeof value === 'string' ? value : undefined;
+};
+
+/**
+ * Whether the provider's NAMES let position stand for identity on a dispatch that has
+ * no party ids — the evidence `providerPartyIdsByPosition` does not ask for.
+ *
+ * The shape alone is not enough. Two parties that changed places keep the count and
+ * the roles, so pinning by position would credit each one's signature to the other.
+ * Two parties renamed at once look exactly like that swap. So position is trusted only
+ * when every party's name is still its label, or when exactly ONE differs (the edit
+ * #1927 was about) and nothing points elsewhere:
+ *
+ * - each label that matches appears on no other provider party;
+ * - the one that differs appears on no provider party at all, and its slot's new name
+ *   is not another dispatched party's label, since a swap followed by one rename leaves
+ *   exactly that.
+ *
+ * A party with no name field counts as differing: no evidence is not agreement.
+ */
+function namesSupportPosition(
+  provider: ScriveDocument['parties'],
+  offset: number,
+  labels: readonly string[],
+): boolean {
+  const names = provider.map(providerNameOf);
+  const shown = (label: string) => names.filter((n) => n === label).length;
+  const differing = labels.filter((label, i) => names[i + offset] !== label).length;
+  if (differing > 1) return false;
+  return labels.every((label, i) => {
+    const name = names[i + offset];
+    if (name === label) return shown(label) === 1;
+    return shown(label) === 0 && !labels.some((other, j) => j !== i && other === name);
+  });
 }
 
 /**
@@ -860,13 +899,15 @@ export async function reconcileScriveDispatch(
 
   // #1927: pin Scrive's party ids on a dispatch that has none yet — every dispatch
   // made before the ledger kept them. Only when the document still has exactly the
-  // shape that was sent (see `providerPartyIdsByPosition`); from then on this row
-  // matches on the id and an edit at Scrive cannot unhook a party from its request.
+  // shape that was sent (see `providerPartyIdsByPosition`) AND the names bear position
+  // out (`namesSupportPosition`); from then on this row matches on the id and an edit
+  // at Scrive cannot unhook a party from its request.
   let parties = state.parties;
   let pinned = false;
   if (parties.some((p) => p.providerPartyId === undefined)) {
     const ids = providerPartyIdsByPosition(doc.parties, partyOffset === 1, parties.length);
-    if (ids) {
+    const labels = parties.map((p) => p.label);
+    if (ids && namesSupportPosition(doc.parties, partyOffset, labels)) {
       parties = parties.map((p, i) => (p.providerPartyId ? p : { ...p, providerPartyId: ids[i]! }));
       pinned = true;
     }
@@ -928,20 +969,26 @@ export async function reconcileScriveDispatch(
       continue;
     }
 
-    // No id, and a document whose shape no longer lines up with the dispatch —
-    // position is the only key left, and the name is its last cross-check. A
-    // disagreement refuses rather than guesses, but it is no longer silent: the
-    // party lands in `needsAttention`, where the activity view shows it.
+    // No id, and nothing was pinned: the document no longer has the dispatched shape,
+    // or its names do not bear position out. Position is the only key left, so the
+    // slot's name must BE the label and no other provider party may carry it. A party
+    // showing no name is not evidence either way, so it is refused like a mismatch.
+    // A refusal is never silent: the party lands in `needsAttention`, where the
+    // activity view shows it.
     const providerParty = doc.parties[i + partyOffset];
     const signedAt = providerParty?.sign_time ?? null;
     if (!signedAt) continue; // not signed yet
-    const providerName = providerParty?.fields?.find((f) => f.type === 'name')?.value;
-    if (providerName !== undefined && providerName !== party.label) {
+    const providerName = providerNameOf(providerParty);
+    const elsewhere = doc.parties.filter((p) => p !== providerParty && providerNameOf(p) === party.label);
+    if (providerName !== party.label || elsewhere.length > 0) {
       unrecorded(
         party.requestId,
         signedAt,
-        `provider party ${i + partyOffset} is '${String(providerName)}', dispatch expected '${party.label}', ` +
-          `and the document no longer has the dispatched shape — refusing to attribute`,
+        providerName !== party.label
+          ? `provider party ${i + partyOffset} is ${providerName === undefined ? 'unnamed' : `'${providerName}'`}, ` +
+              `dispatch expected '${party.label}', and nothing else ties it to this request — refusing to attribute`
+          : `provider party ${i + partyOffset} is '${party.label}', but so is another provider party, and ` +
+              `nothing else tells them apart — refusing to attribute`,
       );
       continue;
     }
