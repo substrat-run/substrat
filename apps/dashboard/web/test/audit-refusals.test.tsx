@@ -62,6 +62,8 @@ describe('refusal wording', () => {
     expect(refusalActorOf({ connection: 'c1' })).toMatchObject({ kind: 'job', name: 'A connector' });
     expect(refusalActorOf({ vertical: 'acme/crm', scope: 's' })).toMatchObject({ kind: 'job', name: 'The acme/crm app' });
     expect(refusalActorOf(null)).toMatchObject({ kind: 'unknown' });
+    // The kernel's marker for an actor it could not decode is not a consumer.
+    expect(refusalActorOf({ system: 'undecodable' })).toMatchObject({ kind: 'unknown', name: 'An actor that could not be read' });
     expect(refusalSentence({ permission: 'refunds:issue', operation: 'shop/refund-order' })).toBe('was refused refunds:issue on shop/refund-order');
   });
 });
@@ -98,6 +100,18 @@ describe('Audit page with refusals', () => {
     expect(container.querySelector('[data-refusal-id="R1"]')).not.toBeNull();
     await press('Allowed');
     expect(container.querySelector('[data-refusal-id]')).toBeNull();
+  });
+
+  it('waits for the first page of refusals before drawing, so nothing is slotted in afterwards', async () => {
+    vi.spyOn(api, 'auditLogAll').mockResolvedValue({ entries: [action('A1', 30)], nextCursor: null });
+    let answer!: (v: { entries: Refusal[]; limit: number }) => void;
+    vi.spyOn(api, 'appDenials').mockReturnValue(new Promise((r) => (answer = r)));
+    await render('a');
+    expect(container.querySelector('[data-entry-id="A1"]')).toBeNull();
+    expect(container.textContent).toContain('Loading audit log');
+    await act(async () => answer({ entries: [refusal('R1', 5)], limit: 100 }));
+    const order = [...container.querySelectorAll('[data-entry-id], [data-refusal-id]')].map((el) => el.getAttribute('data-entry-id') ?? el.getAttribute('data-refusal-id'));
+    expect(order).toEqual(['R1', 'A1']);
   });
 
   it('with All apps reads no refusals, and Refused asks for an app', async () => {

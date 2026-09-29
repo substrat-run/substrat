@@ -132,8 +132,16 @@ describe('the refusals route (#1828)', () => {
     expect(((await res.json()) as { limit: number }).limit).toBe(DENIAL_LIMIT_MAX);
   });
 
+  it('forwards `until` in the log’s own spelling, whatever zone it arrived in', async () => {
+    await get(appScope, `?until=${encodeURIComponent('2026-09-29T14:00:00+02:00')}`);
+    expect(asks[0]!.searchParams.get('until')).toBe('2026-09-29T12:00:00.000Z');
+  });
+
   it('refuses a bad window or page size, and another team’s app, before asking the plane', async () => {
     expect((await get(appScope, '?until=yesterday')).status).toBe(400);
+    // `Date.parse` reads this, but the log compares ISO text: it would let later rows through.
+    expect((await get(appScope, `?until=${encodeURIComponent('September 29, 2026')}`)).status).toBe(400);
+    expect((await get(appScope, '?until=2026-09-29T12:00:00')).status).toBe(400);
     expect((await get(appScope, '?limit=0')).status).toBe(400);
     expect((await get(scopeId.parse(ulid()))).status).toBe(404);
     expect(asks).toHaveLength(0);

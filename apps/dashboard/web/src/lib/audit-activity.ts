@@ -216,6 +216,10 @@ export function refusalActorOf(actor: unknown): Actor {
   if (actor && typeof actor === 'object') {
     const a = actor as Record<string, unknown>;
     const job = (name: string): Actor => ({ kind: 'job', name, initials: initialsOf(name) });
+    // The kernel's tolerant decoder writes this marker for an actor it could not read
+    // (#1636, `UNDECODED_ACTOR`). It is not a consumer, and naming it one would attribute a
+    // corrupt or legacy row to a job that never acted.
+    if (a['system'] === 'undecodable') return { kind: 'unknown', name: 'An actor that could not be read', initials: '?' };
     if (typeof a['system'] === 'string') return job(`${a['system']} (a consumer)`);
     if (typeof a['connection'] === 'string') return job('A connector');
     if (typeof a['capability'] === 'string') return job('Someone with a shared link');

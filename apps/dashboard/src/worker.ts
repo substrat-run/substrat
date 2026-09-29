@@ -2533,8 +2533,16 @@ app.get('/api/apps/:scopeId/denials', async (c) => {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
-  const until = c.req.query('until');
-  if (until !== undefined && Number.isNaN(Date.parse(until))) throw new HTTPException(400, { message: 'until is not an instant' });
+  // The log compares `at` and `until` as ISO text, so only an ISO 8601 instant with a zone
+  // is accepted, and it is forwarded in the log's own spelling (UTC, milliseconds): a
+  // `Date.parse`-able "September 29, 2026" would otherwise compare as text and let later
+  // rows through.
+  const rawUntil = c.req.query('until');
+  const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+  if (rawUntil !== undefined && (!ISO_INSTANT.test(rawUntil) || Number.isNaN(Date.parse(rawUntil)))) {
+    throw new HTTPException(400, { message: 'until must be an ISO 8601 instant with a zone' });
+  }
+  const until = rawUntil === undefined ? undefined : new Date(Date.parse(rawUntil)).toISOString();
   const asked = Number(c.req.query('limit') ?? DENIAL_LIMIT_MAX);
   if (!Number.isInteger(asked) || asked < 1) throw new HTTPException(400, { message: 'limit must be a positive integer' });
   const limit = Math.min(asked, DENIAL_LIMIT_MAX);

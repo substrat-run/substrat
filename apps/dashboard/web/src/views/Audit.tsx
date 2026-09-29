@@ -177,12 +177,14 @@ export function AuditLog({
   };
 
   useEffect(() => {
-    if (!scrollTo.current || !entries) return;
+    // Not while the list is still waiting on the app's first page of refusals: its rows
+    // are not drawn yet, and a scroll now would find nothing and be spent.
+    if (!scrollTo.current || !entries || (scopeId !== null && refusals === null)) return;
     const id = scrollTo.current;
     scrollTo.current = null;
     const row = [...document.querySelectorAll<HTMLElement>('[data-entry-id]')].find((el) => el.dataset.entryId === id);
     row?.scrollIntoView?.({ block: 'center' });
-  }, [entries]);
+  }, [entries, refusals]);
 
   const loadOlder = async () => {
     if (loadingOlder || !cursor) return;
@@ -204,6 +206,10 @@ export function AuditLog({
   // scope still has audit rows).
   const appName = (id: string): string => apps.find((a) => a.app_scope_id === id)?.name ?? shortId(id);
 
+  // Narrowed to an app, the list waits for its first page of refusals (or their failure):
+  // drawing the actions alone first, then slotting newer refusals in among them, would be
+  // exactly the invented order the merge exists to prevent.
+  const refusalsPending = scopeId !== null && refusals === null;
   const merged = mergeActivity(entries ? { entries, more: cursor !== null } : null, scopeId ? refusals : null);
   const shown = entries ? filterActivity(merged.items, { outcome, kind, text, appName }) : [];
   const days = groupByDay(shown);
@@ -279,7 +285,7 @@ export function AuditLog({
               ))}
             </div>
             <span style={{ flex: 1 }} />
-            {entries !== null && (
+            {entries !== null && !refusalsPending && (
               <span data-testid="audit-count" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
                 {shown.length} of {merged.items.length} {canLoadOlder ? 'loaded ' : ''}
                 {merged.items.length === 1 ? 'entry' : 'entries'}
@@ -303,7 +309,7 @@ export function AuditLog({
           )}
 
           <div style={panel}>
-            {entries === null ? (
+            {entries === null || refusalsPending ? (
               <div style={{ padding: 20, fontSize: 12.5, color: 'var(--text-tertiary)' }}>{entryId ? 'Finding the linked entry…' : 'Loading audit log…'}</div>
             ) : outcome === 'refused' && !scopeId ? (
               // No per-app fan-out: refusals live in each app's own log.
@@ -330,7 +336,7 @@ export function AuditLog({
             )}
           </div>
 
-          {entries !== null && canLoadOlder && (
+          {entries !== null && !refusalsPending && canLoadOlder && (
             <div style={{ display: 'flex', justifyContent: 'center' }}>
               <Button variant="secondary" onClick={() => void older()} disabled={loadingOlder}>
                 {loadingOlder ? 'Loading…' : 'Load older entries'}
