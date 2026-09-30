@@ -601,8 +601,12 @@ mountInvites(app, {
    * this desk's own grants rather than from a second role table out here.
    *
    * No assignment bound (`host.canAssign`, #1931) is applied here, and none is needed while
-   * `desk-admin` holds every permission of every role in HUMAN_ROLES. Adding an invitable
-   * role that `desk-admin` does not cover makes this gate an escalation, so add the bound then.
+   * `desk-admin` holds every permission of every role in HUMAN_ROLES (`test/invites.test.ts`
+   * holds that). Adding an invitable role that `desk-admin` does not cover makes this gate an
+   * escalation, so add the bound then. The one grant outside that role check is a customer
+   * invite's portal grant, `conversation:read-own` narrowed to ONE contact. `desk-admin` does
+   * not hold that key, and it is justified separately: it is strictly narrower than the
+   * `contact:read` and `conversation:read` that `desk-admin` holds over every contact.
    */
   requireAdmin: async (c) => {
     await (await stub(c)).invoke('ticket0/get-desk', {});
