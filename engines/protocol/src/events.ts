@@ -118,6 +118,17 @@ export interface ProtocolSignaturesRequestedPayload {
   instanceId: string;
   templateKey: string;
   templateVersion: number;
+  /**
+   * What the signatory is shown the document as (#1926): the caller's `title`,
+   * else the template's. Every event emitted since #1926 carries it, resolved.
+   *
+   * Optional all the same: it was added at schemaVersion 1, and an event emitted
+   * before it — still deliverable on a retry or a replay — has none. A newly
+   * required field at an unchanged version is the break D-22 forbids, so a
+   * consumer handles its absence (the Scrive connector names the document by
+   * `templateKey` then).
+   */
+  title?: string;
   entity: ProtocolSubjectRef;
   /** 'scrive', 'bankid' — the provider a connector will dispatch to. */
   method: string;

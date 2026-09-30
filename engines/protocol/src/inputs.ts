@@ -302,6 +302,18 @@ export const requestSignaturesInput = z.object({
   /** 'scrive', 'bankid' — the provider a connector will dispatch to. */
   method: z.string().min(1),
   parties: z.array(signatureRequestParty).min(1),
+  /**
+   * What the signatory is shown this document as (#1926) — the provider's
+   * document title, the subject of the invitation. Per instance, so a vertical
+   * can name the actual paper ("Avtal 2026-0001") where the template's own
+   * `title` is the same for every instance. Absent → the template's `title`.
+   *
+   * Display text, not content: it is NOT part of the content hash, which covers
+   * what is signed, not what the envelope is called. It rides the event in the
+   * clear (`piiClass: 'none'`), so name the paper, not the person — a contract
+   * number, never a private individual's name.
+   */
+  title: z.string().trim().min(1).max(200).optional(),
 });
 export type RequestSignaturesInput = z.input<typeof requestSignaturesInput>;
 
