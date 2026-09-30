@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   moduleId,
   permissionKey,
+  platformActorId,
   principalId,
   scopeId,
   tenantId,
@@ -74,6 +75,7 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
   const READ = permissionKey.parse('perm:read');
   const t = tenantId.parse(ulid());
   const owner = principalId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
   const sA = scopeId.parse(ulid());
   const sB = scopeId.parse(ulid());
 
@@ -104,6 +106,15 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
         ownerRoleKey: 'office-admin',
       });
     }
+  });
+
+  it('accepts an explicit system grant on a CP-less scope', async () => {
+    await host().admin.grantToSystem(staff, {
+      moduleId: SCHED, permission: READ,
+      node: { tenantId: t, scopeId: sA }, grantedBy: staff,
+    });
+    const stub = await host().getSystemScope(SCHED, t, sA);
+    await expect(stub.invoke('sched/count')).resolves.toBe(0);
   });
 
   it('noteScope registers the scope and arms the loop', async () => {
@@ -174,6 +185,26 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
     expect(sweeps.every((r) => JSON.stringify(r.requestedBy) === JSON.stringify({ system: 'scope-sweeper' }))).toBe(
       true,
     );
+  });
+
+  it('drives a due job through the same roster and reports its completion', async () => {
+    await host().startJobRun(t, sA, { moduleId: SCHED, job: 'noop' });
+    const report = asReport(await sweeperStub().sweepNow());
+    expect(report.jobs).toEqual({ attempted: 1, advanced: 0, completed: 1, retrying: 0, failed: 0 });
+    expect((await host().jobRuns(t, sA, { job: 'noop' }))[0]?.status).toBe('done');
+  });
+
+  it('paces recurring job starts per scope and retries after the interval', async () => {
+    const stub = sweeperStub();
+    const key = `job-start:${sA}`;
+    const first = await runInDurableObject(stub, (_instance, state) => state.storage.get<number>(key));
+    expect(first).toBeTypeOf('number');
+    await stub.sweepNow();
+    expect(await runInDurableObject(stub, (_instance, state) => state.storage.get<number>(key))).toBe(first);
+    await runInDurableObject(stub, (_instance, state) => state.storage.put(key, 1));
+    await stub.sweepNow();
+    expect(await runInDurableObject(stub, (_instance, state) => state.storage.get<number>(key)))
+      .toBeGreaterThan(first!);
   });
 
   it('the alarm runs a pass and re-arms itself while scopes remain', async () => {

@@ -4215,6 +4215,18 @@ export interface ScopeHost {
   ): Promise<ScopeAttachments>;
 
   /**
+   * Read attachment bytes as a registered module's system principal. Jobs need
+   * the same attachment target gate as a person, without borrowing a person's
+   * identity or sending bytes through invoke. Only open is exposed: a background
+   * extraction job has no reason to mutate attachment metadata or bytes.
+   */
+  getSystemAttachments(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<Pick<ScopeAttachments, 'open'>>;
+
+  /**
    * Provision a NEW scope and load a `ScopeDump` into it — the write side of
    * `exportScope` and the fork primitive (docs/architecture/preview-and-snapshots.md §3):
    * a preview/snapshot is a fresh scope carrying a copy of another's data.

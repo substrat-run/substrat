@@ -2966,6 +2966,26 @@ export class SqliteScopeHost implements ScopeHost {
     return this.buildAttachments(rt, asPrincipal(principal), store);
   }
 
+  async getSystemAttachments(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<Pick<ScopeAttachments, 'open'>> {
+    // The same registered-module and lifecycle gate as a system invoke. The
+    // attachment surface checks the target's read key as system:<moduleId>.
+    await this.getSystemScope(moduleId, tenantId, scopeId);
+    const rt = this.runtime(tenantId, scopeId);
+    const row = this.directory
+      .prepare('SELECT vertical FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { vertical: string | null } | undefined;
+    const surface = this.buildAttachments(
+      rt,
+      { kind: 'system', id: moduleId },
+      this.attachmentStore(tenantId, row?.vertical ?? null),
+    );
+    return { open: surface.open };
+  }
+
   /**
    * The attachment surface (#473) — `attachmentTargets` consumed at last. Metadata facts
    * live in `_substrat_attachments` inside the scope DB and move under the scope's strict

@@ -2968,6 +2968,35 @@ export function defineScopeDO(
       return record;
     }
 
+    /** Authorize a job's read as its registered module, never as a person. */
+    async systemAttachmentAuthorize(
+      attachmentId: string,
+      moduleId: ModuleId,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+    ): Promise<AttachmentRecord | null> {
+      await this.ensureMigrations();
+      if (!this.modules.has(moduleId)) {
+        throw toRpcError(substratError('not_found', `module not registered in this scope: ${moduleId}`));
+      }
+      const record = this.attachmentRow(attachmentId);
+      if (!record) return null;
+      const gate = this.attachmentGate(record.entity.entityType);
+      try {
+        const ctx = this.operationContext(
+          this.systemPrincipal, tenantId, scopeId, undefined, undefined,
+          moduleId, undefined, undefined, 'attachments.open',
+        );
+        assertAllowed(await ctx.check(gate.read, record.entity));
+      } catch (err) {
+        if (err instanceof PermissionDenied) {
+          this.recordDenial({ kind: 'system', id: moduleId }, tenantId, 'attachments.open', err, null);
+        }
+        throw toRpcError(err);
+      }
+      return record;
+    }
+
     /** Remove an attachment's metadata fact: write gate + delete + `attachment.removed`. */
     async attachmentRemove(
       attachmentId: string,
