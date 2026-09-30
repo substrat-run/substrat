@@ -355,8 +355,9 @@ const providerNameOf = (party: ScriveDocument['parties'][number] | undefined): s
  *
  * Names are compared among the SIGNING parties only. The sender slot (#852) never
  * signs, and Scrive rewrites it to the account holder, who may well be the party the
- * vertical named as issuer. A party with no name field counts as differing: no
- * evidence is not agreement.
+ * vertical named as issuer. A party with no name field counts as differing, and is
+ * never the one rename allowed: no evidence is not agreement, and an absent name
+ * matches no other label, so it would otherwise slip through the rename exception.
  */
 function namesSupportPosition(
   provider: ScriveDocument['parties'],
@@ -369,6 +370,7 @@ function namesSupportPosition(
   if (differing.length === 0) return true;
   if (differing.length > 1) return false;
   const i = differing[0]!;
+  if (names[i + offset] === undefined) return false;
   const signing = provider.filter((p) => p.is_signatory !== false).map(providerNameOf);
   return !signing.includes(labels[i]) && !labels.some((other, j) => j !== i && other === names[i + offset]);
 }

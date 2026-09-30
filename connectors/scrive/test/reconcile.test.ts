@@ -673,6 +673,23 @@ describe('scrive connector — return path (record signatures back)', () => {
         expect(await signers(instanceId)).toEqual([[requestIds[1], employeeRef]]);
       });
 
+      it('does not pin an intact shape whose one differing slot shows no name', async () => {
+        await grantRecordSignature();
+        const { instanceId, requestIds, docId } = await issue();
+        await asLegacy(instanceId);
+        // Shape intact and only one slot differs — but it differs by showing no name,
+        // which is no evidence it is still the party dispatched there.
+        scrive.editParty(docId, 2, { name: null });
+        scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
+
+        const result = await reconcile(instanceId);
+        expect(result.recorded).toEqual([]);
+        expect(await stored(instanceId)).toEqual([undefined, undefined]);
+        expect(result.needsAttention).toEqual([
+          expect.objectContaining({ requestId: requestIds[1], signedAt: '2026-07-21T10:30:00.000Z' }),
+        ]);
+      });
+
       it('does not attribute an unnamed party by position when the shape has changed', async () => {
         await grantRecordSignature();
         const { instanceId, requestIds, docId } = await issue();
