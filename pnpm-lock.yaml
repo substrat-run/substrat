@@ -1695,6 +1695,9 @@ importers:
       '@substrat-run/control-plane-api':
         specifier: workspace:^
         version: link:../control-plane-api
+      '@substrat-run/vertical-auth':
+        specifier: workspace:^
+        version: link:../vertical-auth
       '@substrat-run/vertical-host':
         specifier: workspace:^
         version: link:../vertical-host
@@ -1735,9 +1738,15 @@ importers:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../contract-tests
+      '@substrat-run/vertical-auth':
+        specifier: workspace:^
+        version: link:../vertical-auth
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
+      hono:
+        specifier: 4.13.8
+        version: 4.13.8
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
