@@ -542,6 +542,15 @@ not need to: the initial owner is seeded platform-side during provisioning, whic
 out-of-band host code that already holds the authority. Self-service begins at the second
 member.
 
+**Outside an operation, the host asks it.** A harness route that grants a role without an
+operation around it asks the host instead: `host.canAssign(tenantId, scopeId, principal,
+roleKey)` gives the answer `ctx.canAssign` would give that principal, from the same role
+table and the same comparison, narrowing included. The member invite routes a vertical mounts
+from `@substrat-run/vertical-auth/invite-routes` do exactly that: after the vertical's own
+admin gate, an invite is created only at a role the inviter already covers, and revoked only
+at one — the role the stored invite confers. A vertical offering two invitable roles no longer
+lets every admin its gate admits confer the higher one.
+
 ## Defaults
 
 - `denyAllChecker` — the secure default. A host without an explicit checker allows
