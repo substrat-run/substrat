@@ -23,7 +23,7 @@ import type {
 } from '@substrat-run/kernel';
 import { settleConnectionUse } from '@substrat-run/kernel';
 import { ScriveApi, ScriveApiError, SCRIVE_TESTBED, scriveSecret, type ScriveParty } from './api.js';
-import { renderPdf } from './pdf.js';
+import { renderPdf, representableInWinAnsi } from './pdf.js';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
 // connector pulls in no platform typings, exactly as `api.ts`/`mock.ts` do.
@@ -570,7 +570,12 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     const pdf =
       bound?.body ??
       renderPdf({
-        title,
+        // The title is any Unicode a vertical chose; the attestation sheet is
+        // WinAnsi. A title it cannot set heads the sheet with the template key —
+        // other true text, never an approximation — while the provider's title,
+        // which carries Unicode, keeps the name. Rendering it anyway would throw
+        // after the instance froze, and dead-letter every retry.
+        title: representableInWinAnsi(title) ? title : payload.templateKey,
         lines: [
           `Instans: ${payload.instanceId}`,
           `Innehållshash (SHA-256): ${payload.contentHash}`,

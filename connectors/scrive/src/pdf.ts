@@ -56,6 +56,21 @@ function encodeWinAnsi(text: string): string {
     .join('');
 }
 
+/**
+ * Whether `renderPdf` can set this text. For a caller holding text it did not
+ * write — a vertical's document title — that must pick different TRUE text
+ * rather than have the render throw (#1926), since the encoder above will not
+ * approximate.
+ */
+export function representableInWinAnsi(text: string): boolean {
+  try {
+    encodeWinAnsi(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 
 export interface PdfPage {

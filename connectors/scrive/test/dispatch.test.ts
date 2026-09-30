@@ -217,6 +217,16 @@ describe('scrive connector — outbound dispatch', () => {
     expect(doc!.title).toBe('Anställningsavtal 2026-0001');
   });
 
+  it('dispatches a title the attestation sheet cannot set, keeping it on the provider (#1926)', async () => {
+    // The sheet is WinAnsi and refuses to approximate; the title is any Unicode.
+    // Rendering it would throw after the instance froze and dead-letter every retry.
+    await issue({ title: '契約 2026-0001 ✍️' });
+    const [doc] = [...scrive.documents.values()];
+    expect(doc!.status).toBe('pending');
+    expect(doc!.title).toBe('契約 2026-0001 ✍️');
+    expect(doc!.file!.bytes).toBeGreaterThan(0);
+  });
+
   it('turns a signature request into a started Scrive document', async () => {
     const sent = await issue();
 
