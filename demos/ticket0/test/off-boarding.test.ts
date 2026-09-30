@@ -346,14 +346,16 @@ describe('the one predicate: the same person is judged the same way at every doo
     expect(held.map((r) => r.assignee)).toEqual([on]);
 
     const probe = await kit.mail(d);
-    for (const [who, accepted] of [
-      [on, true],
-      [off, false],
-      [assistant, false],
+    // Each is refused FOR ITS OWN REASON: matching the message is what tells the two
+    // refusals apart, so an assistant refused as "off the desk" would not pass for the right one.
+    for (const [who, refusal] of [
+      [on, null],
+      [off, /not on this desk any more/],
+      [assistant, /the assistant cannot be an assignee/],
     ] as const) {
       const attempt = admin.invoke('ticket0/assign', { conversationId: probe, assignee: who });
-      if (accepted) await expect(attempt).resolves.toBeDefined();
-      else await expect(attempt).rejects.toThrow();
+      if (refusal === null) await expect(attempt).resolves.toBeDefined();
+      else await expect(attempt).rejects.toThrow(refusal);
     }
     await admin.invoke('ticket0/assign', { conversationId: probe, assignee: null });
 
@@ -455,7 +457,10 @@ describe('idempotent, and the trail carries the principal and the instant only',
     expect(JSON.parse(event!.actor)).toBe(d.admin);
   });
 
-  it('a profile that predates the column reads as on the desk', async () => {
+  // A profile made after the column exists starts on the desk. A row that PREDATES the column
+  // is `test/health-indexes.test.ts`'s: it upgrades a populated scope and asserts every added
+  // column reads NULL, which is what "on the desk" is.
+  it('a profile written by set-agent-profile starts on the desk', async () => {
     const d = await kit.freshDesk({ agents: 1 });
     expect((await directory(d)).every((p) => p.offboarded_at === null)).toBe(true);
   });
