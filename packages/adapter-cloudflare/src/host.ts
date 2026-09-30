@@ -342,6 +342,7 @@ import {
   splitManifestMigrations,
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
+  unknownRoleError,
 } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -3520,9 +3521,17 @@ export class CloudflareScopeHost implements ScopeHost {
    * `peerCovers`: the (tenant, scope) pair, the lifecycle, and the served-here refusal.
    */
   async canAssign(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage> {
+    // CP-less, the gate below has no directory to hold the (tenant, scope) pair against, and a
+    // scope asked under the wrong tenant would read that tenant's (empty) role table and answer
+    // "no such role" — which the invite revoke treats as "confers nothing". The scope's own
+    // provisioning receipt is K-3 here (#1738), read before anything migrates the DO, and the
+    // refusal reads as the pure host's does: an unknown scope, not an unknown role.
+    if (this.cpLess && !(await this.scopeStub(scopeId).servesTenant(tenantId))) {
+      throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    }
     await this.peerScopeGate(tenantId, scopeId, 'canAssign');
     const bound = await this.scopeStub(scopeId).canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey);
-    if (!bound) throw substratError('not_found', `no such role in this tenant: ${roleKey}`);
+    if (!bound) throw unknownRoleError(roleKey);
     return coverage.parse(bound);
   }
 

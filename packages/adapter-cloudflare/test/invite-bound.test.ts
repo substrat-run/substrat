@@ -42,6 +42,8 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
   let app: Hono<{ Bindings: Record<string, never> }>;
   let directory: MemoryDirectory;
   let grants: string[];
+  /** Which tenant the bound is asked under — another one makes it a `not_found` about the scope. */
+  let boundTenant: typeof t;
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
   const MANAGE = permissionKey.parse('perm:admin'); // what the vertical's admin gate asks for
@@ -78,6 +80,7 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
   beforeEach(() => {
     directory = new MemoryDirectory();
     grants = [];
+    boundTenant = t;
     app = new Hono<{ Bindings: Record<string, never> }>();
     app.onError((err, c) => (err instanceof HTTPException ? err.getResponse() : c.json({ error: err.message }, 500)));
     mountInviteRoutes(app, {
@@ -95,7 +98,7 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
         await host.assignScopeRole(scopeId.parse(scope), principal, roleKey);
       },
       revokeScopeRole: (_env, scope, principal, roleKey) => host.revokeScopeRole(scopeId.parse(scope), principal, roleKey),
-      canAssign: (_env, node, principal, roleKey) => host.canAssign(node.tenantId, node.scopeId, principal, roleKey),
+      canAssign: (_env, node, principal, roleKey) => host.canAssign(boundTenant, node.scopeId, principal, roleKey),
       authProvider: async () => {
         throw new Error('accept is not exercised here');
       },
@@ -158,6 +161,38 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
     expect(directory.rows.has(principal)).toBe(false);
   });
 
+  /**
+   * An invite stored at a role the tenant does not define (#1931 review): the host's `not_found`
+   * for that role confers nothing, so the revoke goes through. A `not_found` about anything else
+   * still refuses.
+   */
+  const seeded = async (roleKey: string) => {
+    const principal = principalId.parse(ulid());
+    await directory.createInvite(s, principal, roleKey, null);
+    return principal;
+  };
+
+  it('revokes an invite at a role the tenant does not define — the invite is gone', async () => {
+    const principal = await seeded('retired');
+    expect((await revoke(manager, principal)).status).toBe(204);
+    expect(directory.rows.has(principal)).toBe(false);
+  });
+
+  it('...while a non-admin is still refused by the gate, and the invite stays', async () => {
+    const principal = await seeded('retired');
+    const res = await revoke(principalId.parse(ulid()), principal);
+    expect([res.status, await res.text()]).toEqual([403, 'only an admin can manage invites']);
+    expect(directory.rows.has(principal)).toBe(true);
+  });
+
+  it('refuses when the bound\'s not_found is about the scope, not the role — the invite stays', async () => {
+    const principal = await seeded('retired');
+    boundTenant = tenantId.parse(ulid());
+    await expect(host.canAssign(boundTenant, s, manager, 'retired')).rejects.toThrow(/unknown scope/);
+    expect((await revoke(manager, principal)).status).toBe(500);
+    expect(directory.rows.has(principal)).toBe(true);
+  });
+
   it('a non-admin is refused by the gate before the bound is asked', async () => {
     const stranger = principalId.parse(ulid());
     const res = await invite(stranger, 'reader');
@@ -167,5 +202,29 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
 
   it('host.canAssign throws not_found on a role this scope never projected', async () => {
     await expect(host.canAssign(t, s, owner, 'not-a-projected-role')).rejects.toThrow(/no such role/);
+  });
+
+  /**
+   * The real drop, and last because it re-projects this scope's roles: an invite made while
+   * `reader` existed, then `reader` removed by a re-provision. Its grant now confers nothing,
+   * and an admin can still withdraw the link.
+   */
+  it('revokes an invite whose role was dropped after it was made; the grant it held confers nothing', async () => {
+    const { principal } = (await (await invite(owner, 'reader')).json()) as { principal: PrincipalId };
+    expect(await probe(principal, READ)).toBe(true);
+    await host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles: [
+        { key: 'office-admin', permissions: [MANAGE, READ, BILL], source: 'vertical' },
+        { key: 'manager', permissions: [MANAGE, READ], source: 'vertical' },
+        { key: 'gatekeeper', permissions: [MANAGE], source: 'vertical' },
+      ],
+      ownerRoleKey: 'office-admin',
+    });
+    expect(await probe(principal, READ)).toBe(false);
+    expect((await revoke(manager, principal)).status).toBe(204);
+    expect(directory.rows.has(principal)).toBe(false);
   });
 });

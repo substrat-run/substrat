@@ -14,8 +14,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, type Coverage, type PermissionKey, type PrincipalId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { principalId, substratError, type Coverage, type PermissionKey, type PrincipalId } from '@substrat-run/contracts';
+import { ulid, unknownRoleError } from '@substrat-run/kernel';
 import { mountInviteRoutes, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
 import { sha256Hex } from '../src/owner-claim-link.js';
 import type { AuthProvider, AuthSubject } from '../src/provider.js';
@@ -419,6 +419,63 @@ describe('mountInviteRoutes — the canAssign bound', () => {
       expect(reads).toBe(0);
       expect(log).toEqual([]);
       expect(directory.invites.has(created.principal)).toBe(true);
+    });
+  });
+
+  /**
+   * An invite at a role the tenant no longer defines (#1931 review). Such a role confers
+   * nothing, so removing the invite narrows nothing, and the host's `not_found` for THAT role
+   * lets the revoke through. Every other error, including a `not_found` about something else,
+   * still refuses. Create is unchanged: it never gets that far with an unknown role.
+   */
+  describe('a revoke at a role the tenant no longer defines', () => {
+    const seeded = async (roleKey: string) => {
+      const principal = ulid();
+      await directory.createInvite('scope-1', principal, roleKey, null, 'hash');
+      log.length = 0;
+      return principal;
+    };
+    const boundThrows = (err: unknown) => {
+      app = mount({
+        canAssign: async (_env, _node, _principal, roleKey) => {
+          log.push(`canAssign ${roleKey}`);
+          throw typeof err === 'function' ? (err as (r: string) => unknown)(roleKey) : err;
+        },
+      });
+    };
+
+    it('goes through for an admin, and the invite is gone', async () => {
+      const principal = await seeded('retired');
+      boundThrows((roleKey: string) => unknownRoleError(roleKey));
+      expect((await revoke(principal, junior)).status).toBe(204);
+      expect(directory.invites.has(principal)).toBe(false);
+    });
+
+    it('...but a non-admin is still refused by the gate, and the bound is never asked', async () => {
+      const principal = await seeded('retired');
+      boundThrows((roleKey: string) => unknownRoleError(roleKey));
+      const res = await revoke(principal, { authorization: 'Bearer tok-owner' });
+      expect([res.status, await res.text()]).toEqual([403, 'only an admin can manage invites']);
+      expect(log).toEqual([]);
+      expect(directory.invites.has(principal)).toBe(true);
+    });
+
+    it.each([
+      ['a not_found about a different role', unknownRoleError('some-other-role')],
+      ['a not_found about the scope', substratError('not_found', 'unknown scope for tenant: (t, s)')],
+      ['an untyped error carrying the same words', new Error('no such role in this tenant: retired')],
+    ])('still refuses on %s, and the invite stays', async (_case, err) => {
+      const principal = await seeded('retired');
+      boundThrows(err);
+      expect((await revoke(principal, junior)).status).toBe(500);
+      expect(directory.invites.has(principal)).toBe(true);
+    });
+
+    it('create is unchanged: the same refusal from the bound refuses the invite', async () => {
+      boundThrows((roleKey: string) => unknownRoleError(roleKey));
+      expect((await create('editor')).status).toBe(500);
+      expect(writes()).toEqual([]);
+      expect(directory.invites.size).toBe(0);
     });
   });
 

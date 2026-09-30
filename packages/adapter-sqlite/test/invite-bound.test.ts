@@ -46,6 +46,8 @@ describe('invite routes over the SQLite host — the canAssign bound (#1931)', (
   let app: Hono<{ Bindings: Record<string, never> }>;
   let directory: MemoryDirectory;
   let grants: string[];
+  /** Which tenant the bound is asked under — another one makes it a `not_found` about the scope. */
+  let boundTenant: typeof t;
   const staff = platformActorId.parse(ulid());
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
@@ -97,6 +99,7 @@ describe('invite routes over the SQLite host — the canAssign bound (#1931)', (
   beforeEach(() => {
     directory = new MemoryDirectory();
     grants = [];
+    boundTenant = t;
     app = new Hono<{ Bindings: Record<string, never> }>();
     app.onError((err, c) => (err instanceof HTTPException ? err.getResponse() : c.json({ error: err.message }, 500)));
     mountInviteRoutes(app, {
@@ -114,7 +117,7 @@ describe('invite routes over the SQLite host — the canAssign bound (#1931)', (
         await host.admin.assignRole(staff, { principalId: principal, roleKey, node });
       },
       revokeScopeRole: (_env, _scope, principal, roleKey) => host.admin.unassignRole(staff, { principalId: principal, roleKey, node }),
-      canAssign: (_env, n, principal, roleKey) => host.canAssign(n.tenantId, n.scopeId, principal, roleKey),
+      canAssign: (_env, n, principal, roleKey) => host.canAssign(boundTenant, n.scopeId, principal, roleKey),
       authProvider: async () => {
         throw new Error('accept is not exercised here');
       },
@@ -175,6 +178,38 @@ describe('invite routes over the SQLite host — the canAssign bound (#1931)', (
     expect(directory.rows.has(principal)).toBe(true);
     expect((await revoke(owner, principal)).status).toBe(204);
     expect(directory.rows.has(principal)).toBe(false);
+  });
+
+  /**
+   * An invite stored at a role the tenant does not define (#1931 review): the host's `not_found`
+   * for that role confers nothing, so the revoke goes through. A `not_found` about anything else
+   * still refuses.
+   */
+  const seeded = async (roleKey: string) => {
+    const principal = principalId.parse(ulid());
+    await directory.createInvite(s, principal, roleKey, null);
+    return principal;
+  };
+
+  it('revokes an invite at a role the tenant does not define — the invite is gone', async () => {
+    const principal = await seeded('retired');
+    expect((await revoke(manager, principal)).status).toBe(204);
+    expect(directory.rows.has(principal)).toBe(false);
+  });
+
+  it('...while a non-admin is still refused by the gate, and the invite stays', async () => {
+    const principal = await seeded('retired');
+    const res = await revoke(principalId.parse(ulid()), principal);
+    expect([res.status, await res.text()]).toEqual([403, 'only an admin can manage invites']);
+    expect(directory.rows.has(principal)).toBe(true);
+  });
+
+  it('refuses when the bound\'s not_found is about the scope, not the role — the invite stays', async () => {
+    const principal = await seeded('retired');
+    boundTenant = tenantId.parse(ulid());
+    await expect(host.canAssign(boundTenant, s, manager, 'retired')).rejects.toThrow(/unknown scope/);
+    expect((await revoke(manager, principal)).status).toBe(500);
+    expect(directory.rows.has(principal)).toBe(true);
   });
 
   it('a non-admin is refused by the gate before the bound is asked', async () => {

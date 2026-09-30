@@ -56,6 +56,7 @@ import {
 import {
   ulid,
   DO_SQL_LIMITS,
+  unknownRoleError,
   createUlid,
   type UlidMint,
   assertAllowed,
@@ -5316,7 +5317,7 @@ export function defineScopeDO(
       const runCanAssign = async (roleKey: string) => {
         const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
         if (!bound) {
-          throw substratError('not_found', `no such role in this tenant: ${roleKey}`);
+          throw unknownRoleError(roleKey);
         }
         return bound;
       };

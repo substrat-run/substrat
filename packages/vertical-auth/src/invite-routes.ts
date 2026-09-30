@@ -34,7 +34,7 @@
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { coverage, principalId, z, type Coverage, type PrincipalId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { isUnknownRoleError, ulid } from '@substrat-run/kernel';
 import type { IdentityStub } from './identity-do.js';
 import { claimToken, invitePath, sha256Hex } from './owner-claim-link.js';
 import type { AuthProvider } from './provider.js';
@@ -211,7 +211,15 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     // nothing to remove, answered as before.
     const invite = await directory.getInvite(node.scopeId, principal);
     if (invite) {
-      await assertCanAssign(c.env, node, caller, invite.roleKey, 'revoke an invite at');
+      try {
+        await assertCanAssign(c.env, node, caller, invite.roleKey, 'revoke an invite at');
+      } catch (err) {
+        // A role the tenant no longer defines confers nothing (a role expands only through its
+        // definition), so removing an invite at it narrows nothing. Refusing would leave a
+        // claimable link nobody can withdraw, which revives if the role is ever defined again.
+        // Only that refusal, for THIS role, is let through: any other error still refuses.
+        if (!isUnknownRoleError(err, invite.roleKey)) throw err;
+      }
       await directory.revokeInvite(node.scopeId, principal);
     }
     return c.body(null, 204);

@@ -484,6 +484,7 @@ import {
   settleConnectionUse,
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
+  unknownRoleError,
 } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
@@ -4115,7 +4116,7 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<Coverage> {
     const role = this.roles.get(`${tenantId}/${roleKey}`);
     if (!role) {
-      throw substratError('not_found', `no such role in this tenant: ${roleKey}`);
+      throw unknownRoleError(roleKey);
     }
     return this.checker.covers(subject, role.permissions, { tenantId, scopeId });
   }
