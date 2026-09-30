@@ -96,8 +96,13 @@ overrides:
   # Do not delete it; RAISE it. (#761 only relocated the line here.)
   #
   # Dependabot does not bump `overrides`, so this line is invisible to the
-  # scanner added in #1599: a human has to move it. `pnpm audit` is the check —
-  # raise to the latest 4.x that clears it (#1601).
+  # scanner added in #1599: a human has to move it. The check is
+  # `tools/override-advisories.mjs`, run by audit.yml: an advisory of ANY severity
+  # against a version pinned in this block fails it (the rest of the tree only fails
+  # on critical). When it goes red, raise the pin to the latest release that clears
+  # it (#1601). Pin EXACTLY — a range cannot be judged against an advisory and the
+  # check refuses it. A consciously accepted advisory goes in package.json's
+  # `pnpm.auditConfig.ignoreGhsas`, one id, reason in the PR.
   hono: 4.13.8
   better-sqlite3: 13.0.3
 

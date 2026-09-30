@@ -28,6 +28,12 @@ name: Dependency audit
 # Measured on pnpm 10.10.0: that key is honoured in package.json and NOT in
 # pnpm-workspace.yaml, which is where the rest of this repo's pnpm settings live.
 #
+# Overrides are the exception to "high and below is only reported" (#1601). Dependabot reads
+# package.json ranges and the catalog blocks and nothing under `overrides:` in
+# pnpm-workspace.yaml, so a vulnerable pin there has no other actor: for those packages ANY
+# severity fails, per package (`tools/override-advisories.mjs`). The GHSA-id escape above
+# applies to it too.
+#
 # It reads the lockfile, so it needs no install and no build.
 on:
   push:
@@ -84,3 +90,12 @@ jobs:
       # cannot reach its database must not report the tree clean.
       - name: Fail on critical
         run: pnpm audit --audit-level critical
+
+      # Every severity, but only for the packages pnpm-workspace.yaml pins in `overrides:` —
+      # the pins Dependabot structurally cannot move (#1601). Reads the report written above;
+      # a missing or failed lookup fails here too rather than reading as clean. The tool's own
+      # tests run first, so a check that stopped refusing is red rather than quiet.
+      - name: Fail on any advisory against an override
+        run: |
+          node --test tools/override-advisories.test.mjs
+          node tools/override-advisories.mjs audit.json

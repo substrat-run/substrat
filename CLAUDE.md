@@ -128,6 +128,14 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   instead of a deployed scope (#1776). Wired beside the LIKE preload in the root `pnpm test`
   and CI's test step; it reads the kernel's built `dist`. No opt-out exists yet: add one, with the
   reason at its call, when a node-only path legitimately exceeds a limit.
+- **`overrides:` in `pnpm-workspace.yaml` are checked at every severity** (#1601).
+  Dependabot reads package.json ranges and the catalog blocks, never `overrides`, so a
+  pin there has no updater. `tools/override-advisories.mjs` (a step in
+  `.github/workflows/audit.yml`, tests via `pnpm test:override-advisories`) reads the
+  keys and the `pnpm audit --json` report and fails on any advisory whose
+  `vulnerable_versions` contains the pinned version; the rest of the tree keeps the
+  critical-only gate. Pin exactly (a range exits 2), and a consciously accepted
+  advisory is a GHSA id in `pnpm.auditConfig.ignoreGhsas`, same as the critical gate.
 - `pnpm lint:permissions` — emit each vertical's `PERMISSIONS.md` (the permission-diff
   checkpoint below); CI runs it with `--check` and fails on drift
 - `pnpm lint:changelog` — the published weekly changelog (`apps/docs/changelog/`).
