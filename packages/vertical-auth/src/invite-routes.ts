@@ -42,12 +42,10 @@ import type { AuthProvider } from './provider.js';
 /** The slice of the identity directory the invite routes touch. */
 export type InviteDirectory = Pick<IdentityStub, 'listInvites' | 'getInvite' | 'createInvite' | 'revokeInvite' | 'claimInvite'>;
 
-/** Who the admin gate admitted — the principal the assignment bound is asked about. */
-export interface InviteCaller {
-  principal: PrincipalId;
-}
-
 const inviteCaller = z.object({ principal: principalId });
+
+/** Who the admin gate admitted — the principal the assignment bound is asked about. */
+export type InviteCaller = z.infer<typeof inviteCaller>;
 
 /** The body `POST /api/invites` takes. */
 export const inviteBody = z.object({
@@ -70,17 +68,13 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
   /**
    * Gate the three admin routes: throw 401 for nobody, 403 for a caller who may not manage
    * members. The vertical decides what "admin" means — a role, a permission, a whoami — and
-   * returns the principal it admitted, which is who `canAssign` is then asked about. It runs
-   * before the body is read, so a caller it refuses learns nothing from a malformed body.
+   * returns the principal it admitted, which is who `canAssign` is then asked about.
    */
   requireAdmin: (c: Context<{ Bindings: E }>) => Promise<InviteCaller>;
   /**
-   * The assignment bound (#1931): may `principal` confer `roleKey` at this node — does it
-   * already hold every permission the role carries there? The host's `canAssign`, which is
-   * `ctx.canAssign`'s answer for a principal the host names. Asked before an invite is
-   * created (the role it would confer) and before one is revoked (the role it confers):
-   * removal takes the same bound. Required, and applied fail-closed — a mount without it, or
-   * an answer that is not a coverage, refuses both routes rather than running unbounded.
+   * The assignment bound (#1931): may `principal` confer `roleKey` at this node? The host's
+   * `canAssign` — `ctx.canAssign`'s answer for a principal the host names. Required: a mount
+   * without it, or an answer that is not a coverage, refuses create and revoke.
    */
   canAssign: (env: E, node: N, principal: PrincipalId, roleKey: string) => Promise<Coverage>;
   /** The role keys a teammate may be invited at — the vertical's own ROLES. */
@@ -145,10 +139,6 @@ async function bodyOf<T>(c: Context, schema: z.ZodType<T>): Promise<T> {
  * envelope `mountPlatformSurface` installs, renders them exactly as it renders its own,
  * and needs no branch for this mount. What the vertical's OWN deps throw (`requireAdmin`,
  * the directory, the host) is passed through untouched: those are its errors to shape.
- *
- * Create and revoke apply the assignment bound after the admin gate: a caller the gate admits
- * who does not hold every permission of the role is refused 403, naming what they lack, and
- * nothing is granted, recorded or removed.
  */
 export function mountInviteRoutes<E extends object, N extends { scopeId: string }>(
   app: Hono<{ Bindings: E }>,
@@ -156,11 +146,7 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
 ): void {
   const originOf = (req: Request): string => (deps.origin?.(req) ?? new URL(req.url).origin).replace(/\/$/, '');
 
-  /**
-   * Who the gate admitted, checked before anything else runs. Fail-closed on the two ways a
-   * mount can be wired short — no bound at all, or a gate that names no caller (the shape
-   * every gate had before #1931) — because either one would otherwise leave nothing to bound.
-   */
+  /** Who the gate admitted — refusing a mount wired short: no bound, or a gate naming no caller. */
   const admitted = (caller: unknown): InviteCaller => {
     if (typeof deps.canAssign !== 'function') {
       throw new HTTPException(500, { message: 'invites are mounted without the canAssign bound — refusing to confer an unbounded role' });
@@ -191,8 +177,7 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
 
   app.post('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
-    // The gate first, before the body exists: a caller it refuses gets the same answer
-    // whatever they sent.
+    // The gate first, before the body exists: a refused caller learns nothing from what they sent.
     const caller = admitted(await deps.requireAdmin(c));
     const { email, roleKey } = await bodyOf(c, inviteBody);
     if (!deps.roles.includes(roleKey)) throw new HTTPException(400, { message: `unknown role '${roleKey}'` });
@@ -222,9 +207,8 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     const caller = admitted(await deps.requireAdmin(c));
     const directory = deps.directory(c.env, node);
     const principal = c.req.param('principal');
-    // Removal takes the same bound as assignment, and the role is the one the invite confers
-    // — read from the stored row, since the request does not (and must not) name it. No open
-    // invite is nothing to remove, and answers as a revoke always has.
+    // Removal takes the same bound, on the role the STORED invite confers. No open invite:
+    // nothing to remove, answered as before.
     const invite = await directory.getInvite(node.scopeId, principal);
     if (invite) {
       await assertCanAssign(c.env, node, caller, invite.roleKey, 'revoke an invite at');

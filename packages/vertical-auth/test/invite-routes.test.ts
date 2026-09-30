@@ -72,7 +72,7 @@ const ROLE_PERMS: Record<string, PermissionKey[]> = {
 const OWNER = principalId.parse(ulid());
 const JUNIOR = principalId.parse(ulid());
 const HELD: Record<string, PermissionKey[]> = {
-  [OWNER]: ['doc:read', 'doc:write', 'member:manage', 'billing:manage'] as PermissionKey[],
+  [OWNER]: ROLE_PERMS.admin!,
   [JUNIOR]: ['doc:read', 'doc:write', 'member:manage'] as PermissionKey[],
 };
 
@@ -104,14 +104,21 @@ const provider = (env: Env): AuthProvider => ({
 beforeEach(() => {
   log = [];
   directory = new MemoryDirectory(log);
-  app = new Hono<{ Bindings: Env }>();
-  // A deliberately naive envelope: an HTTPException keeps its status and ANYTHING else is a
-  // 500. That is what pins the mount's promise — every error it raises itself is an
-  // HTTPException — because a `ZodError` or a `SyntaxError` escaping would show up here as
-  // a 500, where a vertical's own envelope might have papered over it.
-  app.onError((err, c) => (err instanceof HTTPException ? err.getResponse() : c.json({ error: err.message }, 500)));
-  mountInviteRoutes(app, deps());
+  app = mount();
 });
+
+/**
+ * A fresh app with the routes mounted. A deliberately naive envelope: an HTTPException keeps
+ * its status and ANYTHING else is a 500. That is what pins the mount's promise — every error
+ * it raises itself is an HTTPException — because a `ZodError` or a `SyntaxError` escaping
+ * would show up here as a 500, where a vertical's own envelope might have papered over it.
+ */
+function mount(overrides: Partial<InviteRouteDeps<Env, typeof NODE>> = {}): Hono<{ Bindings: Env }> {
+  const fresh = new Hono<{ Bindings: Env }>();
+  fresh.onError((err, c) => (err instanceof HTTPException ? err.getResponse() : c.json({ error: err.message }, 500)));
+  mountInviteRoutes(fresh, deps(overrides));
+  return fresh;
+}
 
 /** The deps this suite mounts with; a case that wires one short overrides it. */
 function deps(overrides: Partial<InviteRouteDeps<Env, typeof NODE>> = {}): InviteRouteDeps<Env, typeof NODE> {
@@ -421,9 +428,7 @@ describe('mountInviteRoutes — the canAssign bound', () => {
    */
   describe('a mount wired short refuses, never runs unbounded', () => {
     const remount = (overrides: Partial<InviteRouteDeps<Env, typeof NODE>>) => {
-      app = new Hono<{ Bindings: Env }>();
-      app.onError((err, c) => (err instanceof HTTPException ? err.getResponse() : c.json({ error: err.message }, 500)));
-      mountInviteRoutes(app, deps(overrides));
+      app = mount(overrides);
     };
 
     it('no canAssign dep (a JS caller, or a cast) — create and revoke refuse, nothing written', async () => {
