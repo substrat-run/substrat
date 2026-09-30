@@ -434,4 +434,30 @@ export const ticket0Migrations: SqlMigration[] = [
         WHERE no_reply_candidate_at IS NOT NULL AND state IN ('new', 'open') AND merged_into IS NULL;
     `,
   },
+  {
+    // backfill-snoozed-no-reply-candidates
+    version: '0018',
+    sql: `
+      -- 0017 already ran on PR previews; fill the snoozed backlog when they upgrade.
+      -- The candidate index still excludes snoozed rows until wake-snoozed opens them.
+      UPDATE ticket0_conversations AS c
+         SET no_reply_waiting_since = (
+           SELECT q.created_at FROM ticket0_messages q
+            WHERE q.conversation_id = c.id AND q.visibility = 'public'
+              AND q.id > COALESCE((
+                SELECT a.id FROM ticket0_messages a
+                 WHERE a.conversation_id = c.id AND a.visibility = 'public'
+                   AND (a.author_kind IN ('agent', 'assistant')
+                        OR (a.author_kind = 'system' AND a.body_text != 'Passing this to a person now — someone from the team will reply here.'))
+                 ORDER BY a.id DESC LIMIT 1), '')
+            ORDER BY q.id LIMIT 1)
+       WHERE c.state = 'snoozed' AND c.merged_into IS NULL AND c.no_reply_waiting_since IS NULL;
+
+      UPDATE ticket0_conversations
+         SET no_reply_candidate_at = no_reply_waiting_since
+       WHERE state = 'snoozed' AND merged_into IS NULL
+         AND no_reply_waiting_since IS NOT NULL AND no_reply_candidate_at IS NULL
+         AND no_reply_notified_at IS NULL;
+    `,
+  },
 ];

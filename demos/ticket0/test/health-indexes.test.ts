@@ -14,6 +14,7 @@ import {
   REAP_ABANDONED_SQL, ASSISTANT_HEALTH_COUNTS_SQL, ASSISTANT_HEALTH_RECENT_SQL,
   ASSISTANT_HEALTH_WAITING_SQL, ASSISTANT_HEALTH_WAITING_TOTAL_SQL,
 } from '../src/health-queries.js';
+import { NO_REPLY_WAITING } from '../src/module.js';
 
 type Query = { sql: string; args: (string | number)[] };
 const queries = {
@@ -161,6 +162,24 @@ it('preserves every populated pre-0015 row and every production read result acro
   expect(db.prepare(queries.reap.sql).all(...queries.reap.args)).toHaveLength(169);
   expect(db.prepare(queries.recent.sql).all(...queries.recent.args)).toHaveLength(10);
   expect(db.prepare(queries.waiting.sql).all(...queries.waiting.args)).toHaveLength(10);
+});
+
+it('backfills a snoozed unanswered conversation so wake makes it a due candidate', () => {
+  const snoozed = db.prepare(`SELECT id, no_reply_waiting_since, no_reply_candidate_at
+    FROM ticket0_conversations
+    WHERE state = 'snoozed' AND merged_into IS NULL AND no_reply_waiting_since IS NOT NULL
+    LIMIT 1`).get() as { id: string; no_reply_waiting_since: string; no_reply_candidate_at: string } | undefined;
+  expect(snoozed).toBeDefined();
+  expect(snoozed!.no_reply_candidate_at).toBe(snoozed!.no_reply_waiting_since);
+
+  db.exec('SAVEPOINT wake_probe');
+  try {
+    db.prepare("UPDATE ticket0_conversations SET state = 'open' WHERE id = ?").run(snoozed!.id);
+    const due = db.prepare(NO_REPLY_WAITING).all('2026-10-01T00:00:00.000Z', 2000) as { id: string }[];
+    expect(due.map((row) => row.id)).toContain(snoozed!.id);
+  } finally {
+    db.exec('ROLLBACK TO wake_probe; RELEASE wake_probe');
+  }
 });
 
 const cases: { index: string; query: keyof typeof queries; seek: RegExp }[] = [
