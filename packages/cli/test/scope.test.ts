@@ -5,6 +5,100 @@ import { join } from 'node:path';
 import { assertDumpIdentifiers } from '@substrat-run/contracts';
 import { adoptScopeServing, bindScopeVersion, pullScope, restoreScope } from '../src/scope.js';
 
+describe('scope restore backup provenance (#1880)', () => {
+  const originalFetch = globalThis.fetch;
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-restore-origin-'));
+  const sourceTenant = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+  const sourceScope = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
+  const targetTenant = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
+  const targetScope = '01ARZ3NDEKTSV4RRFFQ69G5FAY';
+  const capturedAt = '2026-09-01T00:00:00.000Z';
+  const tables = [{ name: 'notes', ddl: 'CREATE TABLE notes (id TEXT PRIMARY KEY)', columns: ['id'], rows: [['n1']] }];
+  const opts = (file: string) => ({
+    controlPlaneUrl: 'http://cp', header: {}, tenantId: targetTenant, scopeId: targetScope, file,
+  });
+  const writeSqlite = async (file: string) => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(file);
+    db.exec("CREATE TABLE notes (id TEXT PRIMARY KEY); INSERT INTO notes VALUES ('n1')");
+    db.close();
+  };
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  const capturePost = () => {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      posts.push({ url, body: JSON.parse(init.body as string) as Record<string, unknown> });
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+    return posts;
+  };
+
+  it('sends a JSON dump’s source IDs and capture time, not the destination’s', async () => {
+    const file = join(dir, 'source.dump.json');
+    writeFileSync(file, JSON.stringify({ tenantId: sourceTenant, scopeId: sourceScope, capturedAt, tables }));
+    const posts = capturePost();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await restoreScope(opts(file));
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.url).toBe(`http://cp/tenants/${targetTenant}/scopes/${targetScope}/restore`);
+    expect(posts[0]!.body).toMatchObject({ tenantId: sourceTenant, scopeId: sourceScope, capturedAt, tables });
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('backup origin is unknown'));
+  });
+
+  it('reads source IDs from a standard SQLite backup filename', async () => {
+    const file = join(dir, `${sourceTenant}__${sourceScope}.sqlite`);
+    await writeSqlite(file);
+    const posts = capturePost();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await restoreScope(opts(file));
+
+    expect(posts[0]!.body).toMatchObject({ tenantId: sourceTenant, scopeId: sourceScope, tables });
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('backup origin is unknown'));
+  });
+
+  it('reports the target fallback for a SQLite file without source IDs in its name', async () => {
+    const file = join(dir, 'renamed-backup.sqlite');
+    await writeSqlite(file);
+    const posts = capturePost();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await restoreScope(opts(file));
+
+    expect(posts[0]!.body).toMatchObject({ tenantId: targetTenant, scopeId: targetScope });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('backup origin is unknown'));
+  });
+
+  it('reports when a legacy JSON dump has no source IDs', async () => {
+    const file = join(dir, 'legacy.dump.json');
+    writeFileSync(file, JSON.stringify({ capturedAt, tables }));
+    const posts = capturePost();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await restoreScope(opts(file));
+
+    expect(posts[0]!.body).toMatchObject({ tenantId: targetTenant, scopeId: targetScope, capturedAt });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('backup origin is unknown'));
+  });
+
+  it('refuses a JSON dump with only half of its source IDs', async () => {
+    const file = join(dir, 'partial.dump.json');
+    writeFileSync(file, JSON.stringify({ tenantId: sourceTenant, tables }));
+    const posts = capturePost();
+
+    await expect(restoreScope(opts(file))).rejects.toThrow(/incomplete backup provenance/);
+    expect(posts).toHaveLength(0);
+  });
+});
+
 describe('bindScopeVersion — the per-scope rollout primitive (#509 (c))', () => {
   const orig = globalThis.fetch;
   afterEach(() => {
