@@ -1508,7 +1508,10 @@ const AUTO_TAG_BODY_CHARS = 10_000;
 
 /**
  * The conversations auto-tag has not looked at yet, oldest first (#1083). Binds
- * `[limit]`. The WHERE is textually the partial index's (`ticket0_conversations_untagged`
+ * `[limit]`. Oldest first and bounded by `AUTO_TAG_BATCH`: a conversation the desk
+ * permanently may not act on stays unstamped at the head, and enough of them could starve
+ * the batch (theoretical today; the sweep logs how many it refused, and a keyset cursor on
+ * `(created_at, id)` is the fix). The WHERE is textually the partial index's (`ticket0_conversations_untagged`
  * in migration 0016), which is why it is exported: `test/automation.test.ts` holds the
  * PLAN to it. Live work only: a resolved or closed conversation is done.
  */
@@ -1520,7 +1523,10 @@ export const AUTO_TAG_PENDING = `SELECT * FROM ticket0_conversations
 
 /**
  * The resolved conversations left alone since `cutoff`, longest-idle first (#1083).
- * Binds `[cutoff, limit]`. `<=` is the boundary: idle EXACTLY the window is closed, a
+ * Binds `[cutoff, limit]`. Bounded by `AUTO_CLOSE_BATCH`, longest-idle first: a conversation the
+ * desk permanently may not act on stays at the head and enough of them could starve the
+ * batch (theoretical today; the sweep logs how many it refused, and a keyset cursor on
+ * `(updated_at, id)` is the fix). `<=` is the boundary: idle EXACTLY the window is closed, a
  * second short is not.
  *
  * No index of its own, and that is measured rather than assumed: the kernel already
@@ -1537,7 +1543,7 @@ export const AUTO_CLOSE_DUE = `SELECT * FROM ticket0_conversations
 
 /**
  * The customers who have waited since `cutoff` with nobody answering, longest first
- * (#1083). Binds `[HANDED_TO_A_PERSON, HANDED_TO_A_PERSON, cutoff, limit]`.
+ * (#1083). Binds `[HANDED_TO_A_PERSON, HANDED_TO_A_PERSON, cutoff, cutoff, limit]`.
  *
  * Two messages matter, and they answer different questions:
  *
@@ -1559,9 +1565,15 @@ export const AUTO_CLOSE_DUE = `SELECT * FROM ticket0_conversations
  * `no_reply_notified_at < m.created_at` is the idempotency and the re-arm: an
  * announcement made for this stretch of waiting is stamped later than the newest message,
  * so the conversation drops out of the scan. A customer who writes AGAIN makes `m` newer
- * than the stamp, and — since the wait behind it is older than the window — the desk is
- * told again at the next sweep. Live, unparked conversations only (`snoozed` was put
+ * than the stamp and re-arms it — but only once the last notice is itself a whole window
+ * old (`no_reply_notified_at <= cutoff`), so a customer who keeps chasing is one notice
+ * per window and not one per sweep. Live, unparked conversations only (`snoozed` was put
  * aside on purpose).
+ *
+ * Bounded by `NO_REPLY_BATCH`, oldest wait first. A conversation the desk permanently may
+ * not act on (the per-row check refuses it) stays at the head of that order, and enough of
+ * them could starve the batch. Theoretical today — the sweep logs how many it refused — and
+ * a keyset cursor on `(waiting_since, id)` is the fix if it ever matters.
  */
 export const NO_REPLY_WAITING = `SELECT c.*, w.created_at AS waiting_since
         FROM ticket0_conversations c
@@ -1583,7 +1595,8 @@ export const NO_REPLY_WAITING = `SELECT c.*, w.created_at AS waiting_since
           AND c.merged_into IS NULL
           AND (m.author_kind = 'contact' OR (m.author_kind = 'system' AND m.body_text = ?))
           AND w.created_at <= ?
-          AND (c.no_reply_notified_at IS NULL OR c.no_reply_notified_at < m.created_at)
+          AND (c.no_reply_notified_at IS NULL
+               OR (c.no_reply_notified_at < m.created_at AND c.no_reply_notified_at <= ?))
         ORDER BY w.created_at, c.id LIMIT ?`;
 
 /**
@@ -3917,7 +3930,7 @@ const operations = {
    * so a customer who chases is not forgiven for it. IDEMPOTENT by a stamp:
    * `no_reply_notified_at` is written when the desk was told, and the scan skips a
    * conversation stamped after its newest message, so a customer who waits a week is one
-   * notification, and one who writes again is told to the desk again. A run that found nobody to tell stamps nothing and counts
+   * notification, and one who keeps writing is announced again at most once per window. A run that found nobody to tell stamps nothing and counts
    * nothing, so the day somebody joins the desk is the day it is told.
    *
    * Emits `ticket0.no-reply-notified` per conversation, carrying ids, the state, the
@@ -3931,10 +3944,12 @@ const operations = {
     const hours = noReplyHours(desk(ctx));
     if (hours === null) return { notified: 0 };
     const now = ctx.now();
+    const cutoff = shiftInstant(now, -hours * 3_600_000);
     const waiting = ctx.sql.query<ConversationRow & { waiting_since: string }>(NO_REPLY_WAITING, [
       HANDED_TO_A_PERSON,
       HANDED_TO_A_PERSON,
-      shiftInstant(now, -hours * 3_600_000),
+      cutoff,
+      cutoff,
       NO_REPLY_BATCH,
     ]);
     let notified = 0;

@@ -466,16 +466,35 @@ describe('no-reply notify: the desk hears once about a customer who has waited t
     expect(kit.events(desk, 'ticket0.no-reply-notified', id)).toHaveLength(1);
   });
 
-  it('a customer who writes again after the desk was told is announced again at the next sweep — the re-arm', async () => {
-    const [id] = (await kit.notifications(desk, agentA)).map((n) => n.conversation_id!);
-    const before = await told(agentA, id!);
-    expect(await sweepNotify(desk)).toBe(0);
-    await kit.mail(desk, { into: id, body: 'Hello? Anyone?' });
-    // The wait behind the chase is the customer's whole wait, which is older than the
-    // window, so there is nothing to wait for: the desk hears the moment they chase.
-    expect(await sweepNotify(desk)).toBe(1);
-    expect(await told(agentA, id!)).toBe(before + 1);
-    expect(await sweepNotify(desk)).toBe(0);
+  it('a customer who keeps chasing is announced again at most once a window — both sides of it', async () => {
+    const d = await kit.freshDesk({ agents: 1 });
+    await kit.configure(d, { noReplyNotify: { afterHours: 4 } });
+    const id = await kit.mail(d);
+    kit.clock.advance(4 * HOUR);
+    expect(await sweepNotify(d)).toBe(1);
+    const noticeAt = (await kit.read(d, id)).no_reply_notified_at!;
+    expect(await sweepNotify(d)).toBe(0); // nothing new: the notice stands
+
+    // The customer chases. That re-arms the scan, but the notice is not yet a window old, so
+    // a sweep every quarter of an hour stays quiet instead of announcing them each time.
+    kit.clock.advance(MINUTE);
+    await kit.mail(d, { into: id, body: 'Hello? Anyone?' });
+    for (let i = 0; i < 3; i++) {
+      kit.clock.advance(15 * MINUTE);
+      expect(await sweepNotify(d)).toBe(0);
+    }
+    // A second short of a whole window since the notice: still quiet. Exactly a window: told.
+    kit.clock.set(new Date(Date.parse(noticeAt) + 4 * HOUR - 1000).toISOString());
+    expect(await sweepNotify(d)).toBe(0);
+    kit.clock.set(new Date(Date.parse(noticeAt) + 4 * HOUR).toISOString());
+    expect(await sweepNotify(d)).toBe(1);
+    expect(await kit.escalations(d, d.agents[0]!, id)).toBe(2);
+    expect(await sweepNotify(d)).toBe(0); // and that notice stands until the next chase
+    // The window is measured from the notice, so a chase does not pull a later one forward.
+    kit.clock.advance(MINUTE);
+    await kit.mail(d, { into: id, body: 'Please?' });
+    kit.clock.advance(HOUR);
+    expect(await sweepNotify(d)).toBe(0);
   });
 
   it('the wait runs from the OLDEST unanswered message: a nudge does not restart the clock', async () => {
@@ -718,7 +737,14 @@ describe('the scans are indexed, because they run on every tick', () => {
     expect(close).toContainEqual(expect.stringMatching(/USING INDEX \S*conversation_state_updated_at \(state=\? AND updated_at<\?\)/));
     expect(close.filter((x) => /^SCAN\b|TEMP B-TREE/.test(x))).toEqual([]);
 
-    const notify = plan(NO_REPLY_WAITING, HANDED_TO_A_PERSON, HANDED_TO_A_PERSON, '2026-01-01T00:00:00.000Z', 200);
+    const notify = plan(
+      NO_REPLY_WAITING,
+      HANDED_TO_A_PERSON,
+      HANDED_TO_A_PERSON,
+      '2026-01-01T00:00:00.000Z',
+      '2026-01-01T00:00:00.000Z',
+      200,
+    );
     // No index of its own, and that is measured: the kernel's `state` list index already seeks
     // the live conversations, and a partial one duplicated it at a write cost on every
     // conversation. Every table is SEARCHed — the conversations by that index, each

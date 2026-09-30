@@ -961,7 +961,7 @@ function Desk() {
       </Field>
       <Field
         label="No-reply notice"
-        hint={`Tell the desk when a customer has waited this many hours (${NO_REPLY_MIN_HOURS}–${NO_REPLY_MAX_HOURS}) with nobody answering, counted from the oldest message the desk has not answered, so a customer who chases does not restart the wait. Whoever holds the conversation is told, or everyone still on the desk when nobody does, or when the holder has left it. A customer who writes again after the desk was told is told to the desk again. A public reply ends the wait; an internal note does not. Parked and finished conversations are left alone. Nothing is sent to the customer. Leave it empty to switch it off.`}
+        hint={`Tell the desk when a customer has waited this many hours (${NO_REPLY_MIN_HOURS}–${NO_REPLY_MAX_HOURS}) with nobody answering, counted from the oldest message the desk has not answered, so a customer who chases does not restart the wait. Whoever holds the conversation is told, or everyone still on the desk when nobody does, or when the holder has left it. A customer who keeps writing after the desk was told is announced again at most once per window. A public reply ends the wait; an internal note does not. Parked and finished conversations are left alone. Nothing is sent to the customer. Leave it empty to switch it off.`}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input
