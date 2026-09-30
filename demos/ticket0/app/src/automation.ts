@@ -49,7 +49,7 @@ export interface AutomationForm {
 export interface AutomationSettings {
   autoClose: { afterDays: number } | null;
   noReplyNotify: { afterHours: number } | null;
-  autoTag: { rules: { in: RulePlace; contains: string; tag: string }[] } | null;
+  autoTag: { rules: RuleRow[] } | null;
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
@@ -94,25 +94,26 @@ export function automationFormOf(settings: string | null): AutomationForm {
 
 const isBlank = (r: RuleRow): boolean => r.contains.trim() === '' && r.tag.trim() === '';
 
+/** Why one window box cannot be saved, or null: empty is off, and everything else is a whole number in bounds. */
+function windowProblem(raw: string, label: string, unit: string, min: number, max: number): string | null {
+  const text = raw.trim();
+  if (text === '') return null;
+  const n = Number(text);
+  if (!Number.isInteger(n)) return `${label}: whole ${unit}s only.`;
+  if (n < min) return `${label}: at least ${min} ${unit}${min === 1 ? '' : 's'}. Leave it empty to switch it off.`;
+  if (n > max) return `${label}: at most ${max} ${unit}s.`;
+  return null;
+}
+
 /**
  * Why the form cannot be saved, or null when it can — judged here as well as at the
  * door, because a refusal from the desk names no field. This names the box.
  */
 export function automationErrorOf(form: AutomationForm): string | null {
-  const days = form.autoCloseDays.trim();
-  if (days !== '') {
-    const n = Number(days);
-    if (!Number.isInteger(n)) return 'Auto-close: whole days only.';
-    if (n < AUTO_CLOSE_MIN_DAYS) return 'Auto-close: at least 1 day. Leave it empty to switch it off.';
-    if (n > AUTO_CLOSE_MAX_DAYS) return `Auto-close: at most ${AUTO_CLOSE_MAX_DAYS} days.`;
-  }
-  const hours = form.noReplyHours.trim();
-  if (hours !== '') {
-    const n = Number(hours);
-    if (!Number.isInteger(n)) return 'No-reply notice: whole hours only.';
-    if (n < NO_REPLY_MIN_HOURS) return 'No-reply notice: at least 1 hour. Leave it empty to switch it off.';
-    if (n > NO_REPLY_MAX_HOURS) return `No-reply notice: at most ${NO_REPLY_MAX_HOURS} hours.`;
-  }
+  const windowError =
+    windowProblem(form.autoCloseDays, 'Auto-close', 'day', AUTO_CLOSE_MIN_DAYS, AUTO_CLOSE_MAX_DAYS) ??
+    windowProblem(form.noReplyHours, 'No-reply notice', 'hour', NO_REPLY_MIN_HOURS, NO_REPLY_MAX_HOURS);
+  if (windowError) return windowError;
   const rules = form.rules.filter((r) => !isBlank(r));
   if (rules.length > AUTO_TAG_RULES_MAX) return `Auto-tag: at most ${AUTO_TAG_RULES_MAX} rules.`;
   for (const [i, r] of rules.entries()) {
@@ -133,16 +134,26 @@ export function automationPayloadOf(form: AutomationForm): AutomationSettings {
   const rules = form.rules
     .filter((r) => !isBlank(r))
     .map((r) => ({ in: r.in, contains: r.contains.trim(), tag: r.tag.trim() }));
+  // `Number('')` is 0, so empty is tested first: an empty box is off, never a window of zero.
+  const num = (text: string): number | null => (text.trim() === '' ? null : Number(text));
+  const days = num(form.autoCloseDays);
+  const hours = num(form.noReplyHours);
   return {
-    autoClose: form.autoCloseDays.trim() === '' ? null : { afterDays: Number(form.autoCloseDays.trim()) },
-    noReplyNotify: form.noReplyHours.trim() === '' ? null : { afterHours: Number(form.noReplyHours.trim()) },
+    autoClose: days === null ? null : { afterDays: days },
+    noReplyNotify: hours === null ? null : { afterHours: hours },
     autoTag: rules.length === 0 ? null : { rules },
   };
 }
 
-/** `fired 3h ago`, or `has not fired yet` — the answer a switch that may have stopped matching needs. */
+/** `Last fired 3h ago, on 2 conversations.`, or `Has not fired yet.` — what a switch that may have stopped matching needs to say. */
+export interface BehaviourRun {
+  behaviour: string;
+  last_fired_at: string;
+  last_count: number;
+}
+
 export function lastFiredLabel(
-  runs: readonly { behaviour: string; last_fired_at: string; last_count: number }[],
+  runs: readonly BehaviourRun[],
   behaviour: string,
   now: number,
 ): string {

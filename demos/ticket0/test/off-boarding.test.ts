@@ -24,10 +24,8 @@ beforeAll(() => {
 });
 afterAll(() => kit.dispose());
 
-const sweepRing = async (d: Desk) =>
-  ((await (await kit.system(d)).invoke('ticket0/assign-round-robin')) as { assigned: number }).assigned;
-const sweepNotify = async (d: Desk) =>
-  ((await (await kit.system(d)).invoke('ticket0/notify-no-reply')) as { notified: number }).notified;
+const sweepRing = (d: Desk) => kit.sweep(d, 'ticket0/assign-round-robin', 'assigned');
+const sweepNotify = (d: Desk) => kit.sweep(d, 'ticket0/notify-no-reply', 'notified');
 
 const setOff = async (d: Desk, principal: PrincipalId, offboarded: boolean) =>
   (await (await kit.as(d, d.admin)).invoke('ticket0/set-agent-offboarded', { principal, offboarded })) as {
@@ -36,9 +34,7 @@ const setOff = async (d: Desk, principal: PrincipalId, offboarded: boolean) =>
     display_name: string;
   };
 
-const escalations = async (d: Desk, who: PrincipalId, conversationId: string) =>
-  (await kit.notifications(d, who)).filter((n) => n.kind === 'escalated' && n.conversation_id === conversationId)
-    .length;
+const escalations = (d: Desk, who: PrincipalId, conversationId: string) => kit.escalations(d, who, conversationId);
 
 const directory = async (d: Desk) =>
   (

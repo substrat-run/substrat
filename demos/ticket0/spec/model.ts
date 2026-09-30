@@ -438,6 +438,9 @@ export const deskSettingsBlob = z
   })
   .strict();
 
+/** The blob's keys — the built-in behaviours a desk switches on, one name each. */
+export type DeskSetting = keyof z.infer<typeof deskSettingsBlob>;
+
 export const ticket0Entities = defineEntities({
   /**
    * A person who asked something.

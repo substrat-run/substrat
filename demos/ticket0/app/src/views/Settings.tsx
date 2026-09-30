@@ -31,6 +31,8 @@ import {
   NO_REPLY_MIN_HOURS,
   RULE_PLACES,
   type AutomationForm,
+  type BehaviourRun,
+  type RuleRow,
   type RulePlace,
 } from '../automation.js';
 import { contacts } from '../contacts.js';
@@ -683,7 +685,7 @@ function Desk() {
   const [automation, setAutomation] = useState<AutomationForm>(() => automationFormOf(null));
   // When each behaviour last did something. A failed read is an absent answer, not a broken
   // screen: the switches work without it.
-  const [runs, setRuns] = useState<{ behaviour: string; last_fired_at: string; last_count: number }[]>([]);
+  const [runs, setRuns] = useState<BehaviourRun[]>([]);
 
   useEffect(() => {
     void api
@@ -697,7 +699,7 @@ function Desk() {
     void api
       .listBehaviourRuns()
       .then((r) => setRuns(r.runs))
-      .catch(() => setRuns([]));
+      .catch(() => undefined);
   }, []);
   // A rejected request is not a slow one. Saying "Loading…" forever is the screen
   // lying about which of the two happened.
@@ -768,6 +770,11 @@ function Desk() {
   const slaError = slaErrorOf(sla);
   const automationError = automationErrorOf(automation);
   const fired = (behaviour: string) => lastFiredLabel(runs, behaviour, Date.now());
+  const patchRule = (i: number, patch: Partial<RuleRow>) =>
+    setAutomation({
+      ...automation,
+      rules: automation.rules.map((x, j) => (j === i ? { ...x, ...patch } : x)),
+    });
 
   const save = async () => {
     // Refused here rather than sent and refused there: the message is already on
@@ -987,12 +994,7 @@ function Desk() {
               className="input"
               aria-label={`Rule ${i + 1}: where to look`}
               value={r.in}
-              onChange={(e) =>
-                setAutomation({
-                  ...automation,
-                  rules: automation.rules.map((x, j) => (j === i ? { ...x, in: e.target.value as RulePlace } : x)),
-                })
-              }
+              onChange={(e) => patchRule(i, { in: e.target.value as RulePlace })}
             >
               {RULE_PLACES.map((p) => (
                 <option key={p.value} value={p.value}>
@@ -1006,12 +1008,7 @@ function Desk() {
               style={{ width: 160 }}
               aria-label={`Rule ${i + 1}: text to look for`}
               value={r.contains}
-              onChange={(e) =>
-                setAutomation({
-                  ...automation,
-                  rules: automation.rules.map((x, j) => (j === i ? { ...x, contains: e.target.value } : x)),
-                })
-              }
+              onChange={(e) => patchRule(i, { contains: e.target.value })}
             />
             <span className="t-small">tag it</span>
             <input
@@ -1019,12 +1016,7 @@ function Desk() {
               style={{ width: 130 }}
               aria-label={`Rule ${i + 1}: tag to put on`}
               value={r.tag}
-              onChange={(e) =>
-                setAutomation({
-                  ...automation,
-                  rules: automation.rules.map((x, j) => (j === i ? { ...x, tag: e.target.value } : x)),
-                })
-              }
+              onChange={(e) => patchRule(i, { tag: e.target.value })}
             />
             <button
               className="btn"

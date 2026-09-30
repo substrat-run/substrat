@@ -79,6 +79,7 @@ import {
   ticket0Lifecycles,
   ticket0Operations,
   type AutoTagRule,
+  type DeskSetting,
   type MacroAction,
 } from '../spec/model.js';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
@@ -483,11 +484,14 @@ async function runMacroPart(
  * handed to; `assignableStaffOrThrow` below is that second question, and it is the
  * one `assign` asks.
  */
+function profileOf(ctx: OperationContext, principal: string): AgentProfileRow | undefined {
+  return ctx.sql.query<AgentProfileRow>('SELECT * FROM ticket0_agent_profiles WHERE principal = ?', [
+    principal,
+  ])[0];
+}
+
 function staffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
-  const row = ctx.sql.query<AgentProfileRow>(
-    'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
-    [principal],
-  )[0];
+  const row = profileOf(ctx, principal);
   if (!row) {
     throw substratError(
       'validation_failed',
@@ -574,7 +578,9 @@ const ASSIGNABLE_STAFF_SQL = `display_name != ? AND ${ON_THE_DESK_SQL}`;
  * Somebody this desk can put ON a conversation — the follower directory (#1086).
  *
  * The same directory `assign` reads and the same assistant rule, because a watcher
- * and an assignee are drawn from the same people. The refusal differs because the act
+ * and an assignee are drawn from the same people. It does not ask `onTheDesk`: following
+ * hands nobody work, and whether a NEW follow of somebody an admin has taken off the desk
+ * should be refused is a decision nobody has made (#1083). The refusal differs because the act
  * does: the assistant is not refused here for holding a queue it never works, but for
  * already reading every conversation in the scope, which makes following it a grant
  * that confers nothing and a record that says something untrue.
@@ -1263,13 +1269,11 @@ function notifyStaff(
   // is not there is telling nobody, which is the failure the rest of this function exists
   // to refuse, so a conversation held by a departed colleague is the desk's to hear about.
   // The conversation itself is not moved (`onTheDesk` says why).
-  const holder = conversation.assignee
-    ? ctx.sql.query<AgentProfileRow>('SELECT * FROM ticket0_agent_profiles WHERE principal = ?', [
-        conversation.assignee,
-      ])[0]
-    : undefined;
-  if (conversation.assignee && (holder === undefined || onTheDesk(holder)))
-    return notify(ctx, conversation.assignee, kind, conversation.id) ? 1 : 0;
+  if (conversation.assignee) {
+    const holder = profileOf(ctx, conversation.assignee);
+    if (holder === undefined || onTheDesk(holder))
+      return notify(ctx, conversation.assignee, kind, conversation.id) ? 1 : 0;
+  }
   // Not the assistant's own accounts, which are in this directory because they need a
   // byline — and only for that, since #1154: `assignableStaffOrThrow` refuses them as
   // an assignee too. Telling the assistant that the assistant gave up is a notification
@@ -1283,6 +1287,37 @@ function notifyStaff(
   let told = 0;
   for (const row of staff) if (notify(ctx, row.principal, kind, conversation.id)) told++;
   return told;
+}
+
+// ---------------------------------------------------------------------------
+// Closing — one body, three doors
+// ---------------------------------------------------------------------------
+
+/**
+ * Close a conversation — everything a closing operation does after its permission check.
+ *
+ * Three operations run this: a person's `ticket0/close`, the reaper's
+ * `ticket0/reap-abandoned` and the desk's `ticket0/auto-close`. The event is the promise
+ * they share, and it is written once so it cannot drift: nothing downstream should have to
+ * know which door a conversation left through, and the trail already names the operation.
+ * `edge` is the operation's own name because the lifecycle declares each door's edge
+ * separately — the reaper's only out of `new`, auto-close's only out of `resolved` — so a
+ * caller that widened its query is refused by the machine and not by this function.
+ */
+function closeConversation(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  edge: 'ticket0/close' | 'ticket0/reap-abandoned' | 'ticket0/auto-close',
+): ConversationRow {
+  const row = settle(ctx, conversation, step(conversation, edge));
+  ctx.emit({
+    type: 'ticket0.conversation-closed',
+    schemaVersion: 1,
+    entity: conversationRef(row.id),
+    piiClass: 'none',
+    payload: { id: row.id },
+  });
+  return row;
 }
 
 // ---------------------------------------------------------------------------
@@ -1805,14 +1840,15 @@ function isAutonomous(ctx: OperationContext): boolean {
 function storedSettings(row: DeskRow): Record<string, unknown> {
   if (row.settings === null) return {};
   try {
-    const parsed: unknown = JSON.parse(row.settings);
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
+    return asRecord(JSON.parse(row.settings) as unknown) ?? {};
   } catch {
     return {};
   }
 }
+
+/** A JSON object, or null for anything else — an array, a scalar, null. */
+const asRecord = (v: unknown): Record<string, unknown> | null =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 
 /**
  * Has this desk switched round-robin on? Only an explicit `true` counts — the rule
@@ -1833,9 +1869,7 @@ function roundRobinOn(row: DeskRow): boolean {
  * rule is an empty list, which is off.
  */
 function autoTagRules(row: DeskRow): AutoTagRule[] {
-  const raw = storedSettings(row).autoTag;
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return [];
-  const rules = (raw as Record<string, unknown>).rules;
+  const rules = asRecord(storedSettings(row).autoTag)?.rules;
   if (!Array.isArray(rules)) return [];
   const usable: AutoTagRule[] = [];
   for (const candidate of rules.slice(0, AUTO_TAG_RULES_MAX)) {
@@ -1851,9 +1885,7 @@ function autoTagRules(row: DeskRow): AutoTagRule[] {
  * become "close everything resolved yesterday" (`closed` is terminal).
  */
 function switchNumber(row: DeskRow, key: string, field: string, min: number, max: number): number | null {
-  const raw = storedSettings(row)[key];
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const value = (raw as Record<string, unknown>)[field];
+  const value = asRecord(storedSettings(row)[key])?.[field];
   return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
     ? value
     : null;
@@ -1872,7 +1904,7 @@ const noReplyHours = (row: DeskRow): number | null =>
  * `ticket0_behaviour_runs.behaviour` holds. Not a CHECK in the table, so the next
  * behaviour costs no migration; this type is where the set is closed.
  */
-type Behaviour = 'roundRobin' | 'sla' | 'autoTag' | 'autoClose' | 'noReplyNotify';
+type Behaviour = DeskSetting;
 
 /**
  * A behaviour ACTED: stamp when, and how many things it did (#1083).
@@ -3721,31 +3753,33 @@ const operations = {
    */
   'ticket0/auto-tag': async (ctx) => {
     assertAllowed(await ctx.check(T0_PERM.conversationAssign));
-    const rules = autoTagRules(desk(ctx));
+    const rules = autoTagRules(desk(ctx)).map((r) => ({ ...r, needle: r.contains.toLowerCase() }));
     if (rules.length === 0) return { tagged: 0 };
+    // A desk whose rules all read the subject never needs a message read.
+    const readsBody = rules.some((r) => r.in !== 'subject');
     const pending = ctx.sql.query<ConversationRow>(AUTO_TAG_PENDING, [AUTO_TAG_BATCH]);
     let tagged = 0;
     for (const conversation of pending) {
       assertAllowed(
         await ctx.check(T0_PERM.conversationAssign, conversationRef(conversation.id)),
       );
-      const first = ctx.sql.query<{ body: string }>(
-        `SELECT substr(body_text, 1, ?) AS body FROM ticket0_messages
-          WHERE conversation_id = ? AND author_kind = 'contact' AND visibility = 'public'
-          ORDER BY id LIMIT 1`,
-        [AUTO_TAG_BODY_CHARS, conversation.id],
-      )[0];
+      const first = readsBody
+        ? ctx.sql.query<{ body: string }>(
+            `SELECT substr(body_text, 1, ?) AS body FROM ticket0_messages
+              WHERE conversation_id = ? AND author_kind = 'contact' AND visibility = 'public'
+              ORDER BY id LIMIT 1`,
+            [AUTO_TAG_BODY_CHARS, conversation.id],
+          )[0]
+        : undefined;
       const subject = conversation.subject.toLowerCase();
       const body = (first?.body ?? '').toLowerCase();
-      const tags = new Set<string>();
+      // Two rules naming one tag put it on once: `putTag` finds the row the first left.
       for (const rule of rules) {
-        const needle = rule.contains.toLowerCase();
         const hit =
-          (rule.in !== 'body' && subject.includes(needle)) ||
-          (rule.in !== 'subject' && body.includes(needle));
-        if (hit) tags.add(rule.tag);
+          (rule.in !== 'body' && subject.includes(rule.needle)) ||
+          (rule.in !== 'subject' && body.includes(rule.needle));
+        if (hit && putTag(ctx, conversation, rule.tag).added) tagged++;
       }
-      for (const tag of tags) if (putTag(ctx, conversation, tag).added) tagged++;
       ctx.sql.exec('UPDATE ticket0_conversations SET auto_tagged_at = ? WHERE id = ?', [
         ctx.now(),
         conversation.id,
@@ -3792,14 +3826,7 @@ const operations = {
       assertAllowed(
         await ctx.check(T0_PERM.conversationResolve, conversationRef(conversation.id)),
       );
-      const row = settle(ctx, conversation, step(conversation, 'ticket0/auto-close'));
-      ctx.emit({
-        type: 'ticket0.conversation-closed',
-        schemaVersion: 1,
-        entity: conversationRef(row.id),
-        piiClass: 'none',
-        payload: { id: row.id },
-      });
+      closeConversation(ctx, conversation, 'ticket0/auto-close');
       closed++;
     }
     recordFired(ctx, 'autoClose', closed);
@@ -3837,20 +3864,16 @@ const operations = {
     const now = ctx.now();
     const waiting = ctx.sql.query<ConversationRow & { waiting_since: string }>(NO_REPLY_WAITING, [
       HANDED_TO_A_PERSON,
-      new Date(Date.parse(now) - hours * 3_600_000).toISOString(),
+      shiftInstant(now, -hours * 3_600_000),
       NO_REPLY_BATCH,
     ]);
     let notified = 0;
-    let nobody = 0;
     for (const conversation of waiting) {
       assertAllowed(
         await ctx.check(T0_PERM.conversationEscalate, conversationRef(conversation.id)),
       );
       const told = notifyStaff(ctx, conversation, 'escalated');
-      if (told === 0) {
-        nobody++;
-        continue;
-      }
+      if (told === 0) continue;
       ctx.sql.exec('UPDATE ticket0_conversations SET no_reply_notified_at = ? WHERE id = ?', [
         now,
         conversation.id,
@@ -3871,9 +3894,9 @@ const operations = {
       notified++;
     }
     recordFired(ctx, 'noReplyNotify', notified);
-    if (nobody > 0) {
+    if (notified < waiting.length) {
       ctx.log.warn('{waiting} waiting customers could not be announced: nobody is on the desk', {
-        waiting: nobody,
+        waiting: waiting.length - notified,
       });
     }
     if (notified > 0) ctx.log.info('told the desk about {notified} waiting customers', { notified });
@@ -4082,17 +4105,7 @@ const operations = {
     assertAllowed(
       await ctx.check(T0_PERM.conversationResolve, conversationRef(input.conversationId)),
     );
-    const conversation = conversationOrThrow(ctx, input.conversationId);
-    const next = step(conversation, 'ticket0/close');
-    const row = settle(ctx, conversation, next);
-    ctx.emit({
-      type: 'ticket0.conversation-closed',
-      schemaVersion: 1,
-      entity: conversationRef(row.id),
-      piiClass: 'none',
-      payload: { id: row.id },
-    });
-    return row;
+    return closeConversation(ctx, conversationOrThrow(ctx, input.conversationId), 'ticket0/close');
   },
 
   /**
@@ -4152,20 +4165,10 @@ const operations = {
       REAP_ABANDONED_SQL,
       [cutoff, REAP_BATCH],
     );
-    for (const conversation of abandoned) {
-      const next = step(conversation, 'ticket0/reap-abandoned');
-      const row = settle(ctx, conversation, next);
-      // The same event `ticket0/close` publishes. A consumer must not have to know
-      // which of the two doors a conversation was closed through — and `resolved_at`
-      // stays null either way, so the reports go on counting only what was answered.
-      ctx.emit({
-        type: 'ticket0.conversation-closed',
-        schemaVersion: 1,
-        entity: conversationRef(row.id),
-        piiClass: 'none',
-        payload: { id: row.id },
-      });
-    }
+    // The same body `ticket0/close` runs, so the same event: a consumer must not have to
+    // know which door a conversation was closed through — and `resolved_at` stays null
+    // either way, so the reports go on counting only what was answered.
+    for (const conversation of abandoned) closeConversation(ctx, conversation, 'ticket0/reap-abandoned');
     if (abandoned.length > 0) {
       ctx.log.info('closed {reaped} abandoned conversations', { reaped: abandoned.length });
     }

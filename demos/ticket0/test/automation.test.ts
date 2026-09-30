@@ -35,22 +35,9 @@ beforeAll(() => {
 });
 afterAll(() => kit.dispose());
 
-const sweepTag = async (d: Desk) =>
-  ((await (await kit.system(d)).invoke('ticket0/auto-tag')) as { tagged: number }).tagged;
-const sweepClose = async (d: Desk) =>
-  ((await (await kit.system(d)).invoke('ticket0/auto-close')) as { closed: number }).closed;
-const sweepNotify = async (d: Desk) =>
-  ((await (await kit.system(d)).invoke('ticket0/notify-no-reply')) as { notified: number }).notified;
-
-/** Take the schedule principal's grant for `permission` away — the desk's off switch of last resort. */
-function revokeSystemGrant(d: Desk, permission: string): void {
-  const removed = kit.sql(d, (db) =>
-    db
-      .prepare(`DELETE FROM _substrat_tuples WHERE subject = ? AND relation = ?`)
-      .run(`system:${ticket0Manifest.id}`, `granted:${permission}`),
-  );
-  expect(removed.changes).toBeGreaterThanOrEqual(1);
-}
+const sweepTag = (d: Desk) => kit.sweep(d, 'ticket0/auto-tag', 'tagged');
+const sweepClose = (d: Desk) => kit.sweep(d, 'ticket0/auto-close', 'closed');
+const sweepNotify = (d: Desk) => kit.sweep(d, 'ticket0/notify-no-reply', 'notified');
 
 const RULES = [
   { in: 'subject', contains: 'Refund', tag: 'billing' },
@@ -237,11 +224,7 @@ describe('auto-tag: each new conversation is read once against the desk’s rule
     const done = await kit.mail(d, { subject: 'Refund', body: 'x' });
     await kit.resolve(d, done);
     const parked = await kit.mail(d, { subject: 'Refund too', body: 'x' });
-    await (await kit.as(d, d.admin)).invoke('ticket0/post-public-reply', { conversationId: parked, body: 'Looking.' });
-    await (await kit.as(d, d.admin)).invoke('ticket0/snooze', {
-      conversationId: parked,
-      until: new Date(Date.parse(kit.clock.read()) + 7 * DAY).toISOString(),
-    });
+    await kit.park(d, parked, 7 * DAY);
     await kit.configure(d, { autoTag: { rules: [{ in: 'subject', contains: 'refund', tag: 'billing' }] } });
     expect(await sweepTag(d)).toBe(1);
     expect(await kit.tags(d, parked)).toEqual(['billing']);
@@ -285,7 +268,7 @@ describe('auto-tag: each new conversation is read once against the desk’s rule
     await kit.configure(d, { autoTag: { rules: [{ in: 'subject', contains: 'refund', tag: 'billing' }] } });
     await expect((await kit.as(d, d.relay)).invoke('ticket0/auto-tag')).rejects.toThrow(/denied/i);
     const c = await kit.mail(d, { subject: 'Refund', body: 'x' });
-    revokeSystemGrant(d, 'conversation:assign');
+    kit.revokeSystemGrant(d, 'conversation:assign');
     await expect(sweepTag(d)).rejects.toThrow(/denied/i);
     expect(await kit.tags(d, c)).toEqual([]);
   });
@@ -364,11 +347,7 @@ describe('auto-close: a resolved conversation left alone for the window is close
     const open = await kit.mail(d);
     await (await kit.as(d, d.admin)).invoke('ticket0/post-public-reply', { conversationId: open, body: 'Looking.' });
     const parked = await kit.mail(d);
-    await (await kit.as(d, d.admin)).invoke('ticket0/post-public-reply', { conversationId: parked, body: 'Looking.' });
-    await (await kit.as(d, d.admin)).invoke('ticket0/snooze', {
-      conversationId: parked,
-      until: new Date(Date.parse(kit.clock.read()) + 90 * DAY).toISOString(),
-    });
+    await kit.park(d, parked, 90 * DAY);
     const done = await kit.mail(d);
     await kit.resolve(d, done);
 
@@ -434,7 +413,7 @@ describe('auto-close: a resolved conversation left alone for the window is close
     const id = await kit.mail(d);
     await kit.resolve(d, id);
     kit.clock.advance(2 * DAY);
-    revokeSystemGrant(d, 'conversation:resolve');
+    kit.revokeSystemGrant(d, 'conversation:resolve');
     await expect(sweepClose(d)).rejects.toThrow(/denied/i);
     expect((await kit.read(d, id)).state).toBe('resolved');
   });
@@ -450,9 +429,7 @@ describe('no-reply notify: the desk hears once about a customer who has waited t
     await kit.configure(desk, { noReplyNotify: { afterHours: 4 } });
   });
 
-  const told = async (who: PrincipalId, conversationId: string) =>
-    (await kit.notifications(desk, who)).filter((n) => n.kind === 'escalated' && n.conversation_id === conversationId)
-      .length;
+  const told = (who: PrincipalId, conversationId: string) => kit.escalations(desk, who, conversationId);
 
   it('tells everybody when nobody holds it — at the window, not a second before', async () => {
     const id = await kit.mail(desk);
@@ -507,11 +484,7 @@ describe('no-reply notify: the desk hears once about a customer who has waited t
 
   it('leaves parked and finished conversations alone', async () => {
     const parked = await kit.mail(desk);
-    await (await kit.as(desk, desk.admin)).invoke('ticket0/post-public-reply', { conversationId: parked, body: 'Looking.' });
-    await (await kit.as(desk, desk.admin)).invoke('ticket0/snooze', {
-      conversationId: parked,
-      until: new Date(Date.parse(kit.clock.read()) + 30 * DAY).toISOString(),
-    });
+    await kit.park(desk, parked, 30 * DAY);
     const done = await kit.mail(desk);
     await kit.resolve(desk, done);
     kit.clock.advance(10 * HOUR);
@@ -612,7 +585,7 @@ describe('no-reply notify: the desk hears once about a customer who has waited t
     await expect((await kit.as(d, d.relay)).invoke('ticket0/notify-no-reply')).rejects.toThrow(/denied/i);
     await kit.mail(d);
     kit.clock.advance(2 * HOUR);
-    revokeSystemGrant(d, 'conversation:escalate');
+    kit.revokeSystemGrant(d, 'conversation:escalate');
     await expect(sweepNotify(d)).rejects.toThrow(/denied/i);
   });
 });

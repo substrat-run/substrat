@@ -66,6 +66,14 @@ export interface Kit {
   /** The schedule's own principal, as the platform sweep invokes an operation. */
   system(desk: Desk): Promise<ScopeStub>;
   configure(desk: Desk, settings: Record<string, unknown>): Promise<void>;
+  /** Run one schedule's operation as the schedule's own principal, and read one count off its answer. */
+  sweep(desk: Desk, operation: string, count: string): Promise<number>;
+  /** Take the schedule principal's grant for `permission` away — the desk's off switch of last resort. */
+  revokeSystemGrant(desk: Desk, permission: string): void;
+  /** How many `escalated` notices `who` holds for a conversation. */
+  escalations(desk: Desk, who: PrincipalId, conversationId: string): Promise<number>;
+  /** An agent answers in public, then parks the conversation until `ms` from now. */
+  park(desk: Desk, id: string, ms: number): Promise<void>;
   /** A customer writes in — a new conversation, or a new message into `into`. A minute after the last. */
   mail(desk: Desk, opts?: { subject?: string; body?: string; into?: string; from?: string }): Promise<string>;
   /** A visitor opens the widget and says something, a minute after the last thing. */
@@ -155,6 +163,35 @@ export function createKit(prefix: string): Kit {
       });
       desk.agents.push(p);
       return p;
+    },
+
+    async sweep(desk, operation, count) {
+      const answer = (await (await kit.system(desk)).invoke(operation)) as Record<string, number>;
+      return answer[count]!;
+    },
+
+    revokeSystemGrant(desk, permission) {
+      const removed = kit.sql(desk, (db) =>
+        db
+          .prepare(`DELETE FROM _substrat_tuples WHERE subject = ? AND relation = ?`)
+          .run(`system:${ticket0Manifest.id}`, `granted:${permission}`),
+      );
+      if (removed.changes < 1) throw new Error(`the schedule principal held no grant for ${permission}`);
+    },
+
+    async escalations(desk, who, conversationId) {
+      return (await kit.notifications(desk, who)).filter(
+        (n) => n.kind === 'escalated' && n.conversation_id === conversationId,
+      ).length;
+    },
+
+    async park(desk, id, ms) {
+      const agent = await as(desk, desk.admin);
+      await agent.invoke('ticket0/post-public-reply', { conversationId: id, body: 'Looking.' });
+      await agent.invoke('ticket0/snooze', {
+        conversationId: id,
+        until: new Date(Date.parse(clock.read()) + ms).toISOString(),
+      });
     },
 
     async configure(desk, settings) {
