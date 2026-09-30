@@ -23,7 +23,7 @@ import type {
 } from '@substrat-run/kernel';
 import { settleConnectionUse } from '@substrat-run/kernel';
 import { ScriveApi, ScriveApiError, SCRIVE_TESTBED, scriveSecret, type ScriveDocument, type ScriveParty } from './api.js';
-import { renderPdf } from './pdf.js';
+import { renderPdf, representableInWinAnsi } from './pdf.js';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
 // connector pulls in no platform typings, exactly as `api.ts`/`mock.ts` do.
@@ -407,6 +407,10 @@ const signaturesRequested = z.object({
   instanceId: z.string().min(1),
   templateKey: z.string().min(1),
   templateVersion: z.number().int(),
+  // #1926: what the signatory is shown the document as. Optional — an engine
+  // older than the field emits none, and falls back to the template KEY: an
+  // identifier, but never with the internal `v<version>` appended to it.
+  title: z.string().min(1).optional(),
   contentHash: z.string().min(1),
   boundHash: z.string().nullable().optional(),
   // #711: which attachment holds the bytes to send. Optional as well as nullable —
@@ -602,10 +606,19 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
         );
       }
     }
+    // The name a signatory reads in the invitation and the provider UI (#1926).
+    // Never `v${templateVersion}`: the version is pinned by the content hash, and
+    // to the person signing it is noise.
+    const title = payload.title ?? payload.templateKey;
     const pdf =
       bound?.body ??
       renderPdf({
-        title: `${payload.templateKey} v${payload.templateVersion}`,
+        // The title is any Unicode a vertical chose; the attestation sheet is
+        // WinAnsi. A title it cannot set heads the sheet with the template key —
+        // other true text, never an approximation — while the provider's title,
+        // which carries Unicode, keeps the name. Rendering it anyway would throw
+        // after the instance froze, and dead-letter every retry.
+        title: representableInWinAnsi(title) ? title : payload.templateKey,
         lines: [
           `Instans: ${payload.instanceId}`,
           `Innehållshash (SHA-256): ${payload.contentHash}`,
@@ -629,7 +642,7 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     const doc = await api.createDocument();
     await api.setFile(doc.id, filename, pdf);
     await api.update(doc.id, {
-      title: `${payload.templateKey} v${payload.templateVersion}`,
+      title,
       ...(options.callbackUrl && webhookToken
         ? {
             callbackUrl: options.callbackUrl({

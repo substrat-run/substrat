@@ -1469,6 +1469,10 @@ export async function requestSignatures(
       instanceId: instance.id,
       templateKey: instance.template_key,
       templateVersion: instance.template_version,
+      // #1926: resolved here so the connector has a NAME to show the signatory —
+      // before this field it built one from `templateKey v<version>`, which is two
+      // identifiers. Not hashed: it names the envelope, not what is signed.
+      title: input.title ?? getTemplateRow(ctx, instance.template_key, instance.template_version).title,
       entity: { entityType: instance.entity_type, entityId: instance.entity_id },
       method: input.method,
       contentHash,

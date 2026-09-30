@@ -184,7 +184,7 @@ describe('scrive connector — outbound dispatch', () => {
     >;
 
   /** Instantiate → bind → request signatures for two parties of different kinds. */
-  const issue = async () => {
+  const issue = async (request: { title?: string } = {}) => {
     const inst = await stub.invoke<{ id: string }>('protocol/instantiate', {
       templateKey: 'anstallningsavtal',
       entityType: EMPLOYEE.entityType,
@@ -204,9 +204,28 @@ describe('scrive connector — outbound dispatch', () => {
           { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
           { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
         ],
+        ...request,
       },
     );
   };
+
+  it('titles the Scrive document with the name the request gives it (#1926)', async () => {
+    // Per instance: the template's title is the same for every contract, and the
+    // signatory needs to know WHICH one is in front of them.
+    await issue({ title: 'Anställningsavtal 2026-0001' });
+    const [doc] = [...scrive.documents.values()];
+    expect(doc!.title).toBe('Anställningsavtal 2026-0001');
+  });
+
+  it('dispatches a title the attestation sheet cannot set, keeping it on the provider (#1926)', async () => {
+    // The sheet is WinAnsi and refuses to approximate; the title is any Unicode.
+    // Rendering it would throw after the instance froze and dead-letter every retry.
+    await issue({ title: '契約 2026-0001 ✍️' });
+    const [doc] = [...scrive.documents.values()];
+    expect(doc!.status).toBe('pending');
+    expect(doc!.title).toBe('契約 2026-0001 ✍️');
+    expect(doc!.file!.bytes).toBeGreaterThan(0);
+  });
 
   it('turns a signature request into a started Scrive document', async () => {
     const sent = await issue();
@@ -218,7 +237,9 @@ describe('scrive connector — outbound dispatch', () => {
     expect(doc!.status).toBe('pending');
     // A file was uploaded (Scrive does not echo the filename, so assert bytes).
     expect(doc!.file!.bytes).toBeGreaterThan(0);
-    expect(doc!.title).toContain('anstallningsavtal');
+    // #1926: the signatory reads a document NAME — the template's title when the
+    // request names none — never `anstallningsavtal v1`, which is two identifiers.
+    expect(doc!.title).toBe('Anställningsavtal');
 
     // #620: BOTH parties authenticate with `standard`, because neither request
     // asked for more. This assertion used to read `se_bankid` for the external

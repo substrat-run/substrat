@@ -1,5 +1,17 @@
 # @substrat-run/engine-protocol
 
+## 0.13.15
+
+### Patch Changes
+
+- d827f61: A document sent for signing through Scrive is now titled with a name instead of `<templateKey> v<templateVersion>`. The signatory sees that title in the invitation and in Scrive.
+
+  - `requestSignatures` accepts an optional `title` for the instance, such as a contract number. `protocol.signatures-requested` carries it as `title`, and when no title is given it carries the template's own title.
+  - The Scrive connector uses that title for the document and for the attestation sheet it renders when no document is bound. If an event from an older engine has no title, the connector uses the template key. It no longer appends the template version.
+  - The title is not part of the content hash.
+  - @substrat-run/contracts@0.130.1
+  - @substrat-run/kernel@0.130.1
+
 ## 0.13.14
 
 ### Patch Changes
@@ -2083,7 +2095,7 @@ immutable)` instead of naming the Swedish _fakturaunderlag_, and the protocol
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

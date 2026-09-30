@@ -17,7 +17,7 @@ events: {
 | `protocol.instantiated` | 1 | none | instance id, template `(key, version)`, entity |
 | `protocol.response-recorded` | 1 | pseudonymous | instance id, response id, item key, value |
 | `protocol.content-bound` | 1 | none | instance id, document type, content ref, bound hash |
-| `protocol.signatures-requested` | 1 | none | content hash, method, parties (label, kind, request id) |
+| `protocol.signatures-requested` | 1 | none | title, content hash, method, parties (label, kind, request id) |
 | `protocol.signature-declined` | 1 | none | request id, party label, outcome, reason |
 | `protocol.signatures-cancelled` | 1 | none | instance id, how many were withdrawn, reason |
 | `protocol.signed` | 1 | pseudonymous | signatory, content hash, **frozen answers** |
@@ -26,7 +26,12 @@ events: {
 
 `protocol.signatures-requested` is the connector's dispatch order: it carries the hash, the
 parties and the content ref, so an executor never needs a read back into the scope to know
-what to send where.
+what to send where. Its `title` is what the signatory sees the document called: the `title`
+passed to `requestSignatures`, or the template's own title when none is passed. An event
+emitted before the field existed has no `title`, so a consumer must handle its absence. Pass one to
+name the actual paper ("Avtal 2026-0001"). It is display text, so it is not part of the
+content hash, and since it travels in the event in the clear it should name the document,
+never a private person.
 
 ## The signature events carry the whole document
 
