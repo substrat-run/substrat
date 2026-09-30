@@ -78,7 +78,7 @@
     {
       "version": "0016",
       "slug": "add-ticket0_agent_profiles-offboarded_at-and-3-more",
-      "sql": "ALTER TABLE ticket0_agent_profiles ADD COLUMN offboarded_at TEXT;\n\nCREATE TABLE ticket0_behaviour_runs (\n  behaviour TEXT PRIMARY KEY NOT NULL,\n  last_fired_at TEXT NOT NULL,\n  last_count INTEGER NOT NULL\n);\n\nALTER TABLE ticket0_conversations ADD COLUMN auto_tagged_at TEXT;\n\nALTER TABLE ticket0_conversations ADD COLUMN no_reply_notified_at TEXT;\n\nCREATE INDEX ticket0_conversations_untagged ON ticket0_conversations (auto_tagged_at, created_at, id)\n  WHERE auto_tagged_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL;\n\nCREATE INDEX ticket0_conversations_live ON ticket0_conversations (state, created_at, id)\n  WHERE state IN ('new', 'open') AND merged_into IS NULL;"
+      "sql": "ALTER TABLE ticket0_agent_profiles ADD COLUMN offboarded_at TEXT;\n\nCREATE TABLE ticket0_behaviour_runs (\n  behaviour TEXT PRIMARY KEY NOT NULL,\n  last_fired_at TEXT NOT NULL,\n  last_count INTEGER NOT NULL\n);\n\nALTER TABLE ticket0_conversations ADD COLUMN auto_tagged_at TEXT;\n\nALTER TABLE ticket0_conversations ADD COLUMN no_reply_notified_at TEXT;\n\nCREATE INDEX ticket0_conversations_untagged ON ticket0_conversations (auto_tagged_at, created_at, id)\n  WHERE auto_tagged_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL;"
     }
   ]
 }

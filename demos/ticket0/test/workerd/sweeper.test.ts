@@ -1211,8 +1211,8 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
  *
  * The node suites (`test/automation.test.ts`, `test/off-boarding.test.ts`) hold every
  * behavioural claim. What only a Durable Object can answer is whether the SQL those
- * behaviours run is SQL the DO accepts — a correlated subquery in a join, an upsert, three
- * partial indexes from one migration — and whether the schedules the manifest declares
+ * behaviours run is SQL the DO accepts — a correlated subquery in a join, an upsert, a
+ * partial index from one migration — and whether the schedules the manifest declares
  * are wired to the sweeper, since a schedule the host never fires is the failure #1646
  * was. So this drives all three new schedules and the ring through one pass of the real
  * sweeper, and reads the outcome back through the operations the app calls.
@@ -1261,16 +1261,12 @@ describe('ticket0 on workerd — the built-in behaviours run on a Durable Object
       [
         ...state.storage.sql.exec(
           `SELECT name FROM sqlite_master
-            WHERE name IN ('ticket0_conversations_untagged', 'ticket0_conversations_live', 'ticket0_behaviour_runs')
+            WHERE name IN ('ticket0_conversations_untagged', 'ticket0_behaviour_runs')
             ORDER BY name`,
         ),
       ].map((r) => String(r.name)),
     );
-    expect(names).toEqual([
-      'ticket0_behaviour_runs',
-      'ticket0_conversations_live',
-      'ticket0_conversations_untagged',
-    ]);
+    expect(names).toEqual(['ticket0_behaviour_runs', 'ticket0_conversations_untagged']);
   });
 
   it('one sweeper pass tags, closes and announces — and stamps when each last fired', async () => {

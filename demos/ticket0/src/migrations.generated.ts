@@ -398,9 +398,6 @@ export const ticket0Migrations: SqlMigration[] = [
 
       CREATE INDEX ticket0_conversations_untagged ON ticket0_conversations (auto_tagged_at, created_at, id)
         WHERE auto_tagged_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL;
-
-      CREATE INDEX ticket0_conversations_live ON ticket0_conversations (state, created_at, id)
-        WHERE state IN ('new', 'open') AND merged_into IS NULL;
     `,
   },
 ];

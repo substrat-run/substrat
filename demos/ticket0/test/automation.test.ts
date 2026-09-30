@@ -673,7 +673,7 @@ describe('last fired: every behaviour says when it last did something', () => {
 });
 
 describe('the scans are indexed, because they run on every tick', () => {
-  it('seeks the partial index each one was written against, and sorts nothing', async () => {
+  it('each scan is an index seek and never a table scan; the two ordered by their index sort nothing', async () => {
     // A real scope's database, as the adapter built it: the module's migrations AND the
     // kernel's own list indexes. Those are the competition.
     const d = await kit.freshDesk({ agents: 0 });
@@ -693,10 +693,14 @@ describe('the scans are indexed, because they run on every tick', () => {
     expect(close.filter((x) => /^SCAN\b|TEMP B-TREE/.test(x))).toEqual([]);
 
     const notify = plan(NO_REPLY_WAITING, HANDED_TO_A_PERSON, HANDED_TO_A_PERSON, '2026-01-01T00:00:00.000Z', 200);
-    // The live set through its partial index, and each conversation's newest public
-    // message through the messages index that already exists — never a walk of every message.
-    expect(notify).toContainEqual(expect.stringMatching(/USING INDEX ticket0_conversations_live\b/));
-    expect(notify.filter((x) => /^SCAN (p|m)\b/.test(x))).toEqual([]);
+    // No index of its own, and that is measured: the kernel's `state` list index already seeks
+    // the live conversations, and a partial one duplicated it at a write cost on every
+    // conversation. Every table is SEARCHed — the conversations by that index, each
+    // message lookup by the messages index or its primary key — and nothing is walked end
+    // to end. The one sort is the `ORDER BY` over the LIVE set, which cannot arrive in
+    // order (the wait is a subquery's), and which the batch bounds on the way out.
+    expect(notify).toContainEqual(expect.stringMatching(/^SEARCH c USING INDEX \S*conversation_state_\w+ \(state=\?\)/));
+    expect(notify.filter((x) => /^SCAN\b/.test(x))).toEqual([]);
   });
 });
 
