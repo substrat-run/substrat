@@ -1,5 +1,7 @@
 import {
+  errorCodeOf,
   objectRef,
+  substratError,
   SubstratError,
   type Actor,
   type Coverage,
@@ -65,6 +67,18 @@ export interface PermissionChecker {
     node: Node,
   ): Promise<Coverage>;
 }
+
+/**
+ * What `canAssign` throws, in an operation and on the host, for a role the tenant does not
+ * define (#1931). One builder and one recogniser: a caller that must tell "no such role" apart
+ * from every other `not_found` (the invite revoke route) matches the thrower, not a copy of its
+ * words. The recogniser names the role, so a `not_found` about anything else, including a
+ * different role, is not mistaken for it.
+ */
+const unknownRoleMessage = (roleKey: string): string => `no such role in this tenant: ${roleKey}`;
+export const unknownRoleError = (roleKey: string): SubstratError => substratError('not_found', unknownRoleMessage(roleKey));
+export const isUnknownRoleError = (err: unknown, roleKey: string): boolean =>
+  err instanceof Error && errorCodeOf(err) === 'not_found' && err.message === unknownRoleMessage(roleKey);
 
 /** Convenience for the overwhelmingly common case. */
 export const asPrincipal = (id: PrincipalId): CheckSubject => ({ kind: 'principal', id });

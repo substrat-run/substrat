@@ -196,6 +196,7 @@ import {
   outboundOfManifestJson,
   substratError,
   redrainEventsInput,
+  coverage,
   peerCoverage,
   peerGrantsEntry,
   peerSwitch,
@@ -204,6 +205,7 @@ import {
   verticalResolution,
   verticalSlug,
   entityObjectRef,
+  type Coverage,
   type PeerCoverage,
   type PeerSpec,
   type PeerSwitch,
@@ -341,6 +343,7 @@ import {
   splitManifestMigrations,
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
+  unknownRoleError,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -1059,6 +1062,11 @@ interface ScopeStubRpc {
     vertical: string,
     permissions: PermissionKey[],
   ): Promise<PeerCoverage[]>;
+  /** `ctx.canAssign`'s bound for a named principal (#1931); `null` for a role the tenant lacks. */
+  canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage | null>;
+  assignScopeRoleBoundedFor(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
+  ): Promise<Coverage | null>;
   /** Every module this scope holds or has held system authority for, and where each
    *  stands (#1674) — the kernel's `systemGrantsStatus`, run in the scope's own storage. */
   systemGrantsStatus(): Promise<SystemGrantsEntry[]>;
@@ -3517,6 +3525,40 @@ export class CloudflareScopeHost implements ScopeHost {
     return peerCoverage
       .array()
       .parse(await this.scopeStub(scopeId).peerCovers(tenantId, scopeId, verticalSlug.parse(vertical), [...permissions]));
+  }
+
+  /**
+   * `ctx.canAssign`'s bound for a principal the host names (#1931) — the ScopeDO's own role read
+   * and checker, so it answers what that principal's operation would be told. Gated like
+   * `peerCovers`: the (tenant, scope) pair, the lifecycle, and the served-here refusal.
+   */
+  async canAssign(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage> {
+    // CP-less, the gate below has no directory to hold the (tenant, scope) pair against, and a
+    // scope asked under the wrong tenant would read that tenant's (empty) role table and answer
+    // "no such role" — which the invite revoke treats as "confers nothing". The scope's own
+    // provisioning receipt is K-3 here (#1738), read before anything migrates the DO, and the
+    // refusal reads as the pure host's does: an unknown scope, not an unknown role.
+    if (this.cpLess && !(await this.scopeStub(scopeId).servesTenant(tenantId))) {
+      throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    }
+    await this.peerScopeGate(tenantId, scopeId, 'canAssign');
+    const bound = await this.scopeStub(scopeId).canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey);
+    if (!bound) throw unknownRoleError(roleKey);
+    return coverage.parse(bound);
+  }
+
+  async assignScopeRoleBounded(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
+  ): Promise<Coverage> {
+    if (this.cpLess && !(await this.scopeStub(scopeId).servesTenant(tenantId))) {
+      throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    }
+    await this.peerScopeGate(tenantId, scopeId, 'assignScopeRoleBounded');
+    const bound = await this.scopeStub(scopeId).assignScopeRoleBoundedFor(
+      tenantId, scopeId, principalId.parse(caller), principalId.parse(assignee), roleKey,
+    );
+    if (!bound) throw unknownRoleError(roleKey);
+    return coverage.parse(bound);
   }
 
   /**

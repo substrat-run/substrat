@@ -17,6 +17,14 @@
  * and the directory then resolves them as that member. Revoking removes the invite row;
  * the scope-level grant on a principal nobody was ever bound to is inert.
  *
+ * Who may invite, and at which role, are two questions (#1931). The vertical's admin gate
+ * answers the first — may this caller manage members at all. The second is the kernel's
+ * assignment bound (`ctx.canAssign`): a caller may confer a role only if they already hold
+ * every permission it carries at this scope, and removing one takes the same bound. The
+ * gate runs before the body is read, so it cannot know the role; the bound is applied here,
+ * after the role is parsed, by the platform rather than by each vertical remembering it —
+ * otherwise a vertical offering two roles lets anyone its gate admits confer the higher one.
+ *
  * Deliberately NOT here: the dashboard-side members view over an installed vertical's
  * directory — that widens the platform's reach into a vertical's identity and is a
  * separate decision — and the richer invite a support desk runs (contact-bound roles,
@@ -25,14 +33,19 @@
 
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, z, type PrincipalId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { coverage, principalId, z, type Coverage, type PrincipalId } from '@substrat-run/contracts';
+import { isUnknownRoleError, ulid } from '@substrat-run/kernel';
 import type { IdentityStub } from './identity-do.js';
 import { claimToken, invitePath, sha256Hex } from './owner-claim-link.js';
 import type { AuthProvider } from './provider.js';
 
 /** The slice of the identity directory the invite routes touch. */
-export type InviteDirectory = Pick<IdentityStub, 'listInvites' | 'createInvite' | 'revokeInvite' | 'claimInvite'>;
+export type InviteDirectory = Pick<IdentityStub, 'listInvites' | 'getInvite' | 'createInvite' | 'revokeInvite' | 'claimInvite'>;
+
+const inviteCaller = z.object({ principal: principalId });
+
+/** Who the admin gate admitted — the principal the assignment bound is asked about. */
+export type InviteCaller = z.infer<typeof inviteCaller>;
 
 /** The body `POST /api/invites` takes. */
 export const inviteBody = z.object({
@@ -54,15 +67,24 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
   nodeFor: (req: Request, env: E) => N | Promise<N>;
   /**
    * Gate the three admin routes: throw 401 for nobody, 403 for a caller who may not manage
-   * members. The vertical decides what "admin" means — a role, a permission, a whoami.
+   * members. The vertical decides what "admin" means — a role, a permission, a whoami — and
+   * returns the principal it admitted, which is who `canAssign` is then asked about.
    */
-  requireAdmin: (c: Context<{ Bindings: E }>) => Promise<unknown>;
+  requireAdmin: (c: Context<{ Bindings: E }>) => Promise<InviteCaller>;
+  /**
+   * The assignment bound (#1931): may `principal` confer `roleKey` at this node? The host's
+   * `canAssign` — `ctx.canAssign`'s answer for a principal the host names. Required: a mount
+   * without it, or an answer that is not a coverage, refuses create and revoke.
+   */
+  canAssign: (env: E, node: N, principal: PrincipalId, roleKey: string) => Promise<Coverage>;
+  /** Check the bound and grant in one scope task. A refusal returns coverage and writes nothing. */
+  assignScopeRoleBounded: (
+    env: E, node: N, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
+  ) => Promise<Coverage>;
   /** The role keys a teammate may be invited at — the vertical's own ROLES. */
   roles: readonly string[];
   /** The tenant's identity directory — the invite rows and the sub → principal binding. */
   directory: (env: E, node: N) => InviteDirectory;
-  /** Grant the pre-minted principal its role at scope level — the host's `assignScopeRole`. */
-  assignScopeRole: (env: E, scopeId: N['scopeId'], principal: PrincipalId, roleKey: string) => Promise<void>;
   /**
    * Take that grant back — the host's `revokeScopeRole`. The grant and the invite row live
    * in two different Durable Objects, so the create has no transaction across them: when
@@ -126,6 +148,35 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
 ): void {
   const originOf = (req: Request): string => (deps.origin?.(req) ?? new URL(req.url).origin).replace(/\/$/, '');
 
+  /** Who the gate admitted — refusing a mount wired short or a gate naming no caller. */
+  const admitted = (caller: unknown): InviteCaller => {
+    if (typeof deps.canAssign !== 'function') {
+      throw new HTTPException(500, { message: 'invites are mounted without the canAssign bound — refusing to confer an unbounded role' });
+    }
+    if (typeof deps.assignScopeRoleBounded !== 'function') {
+      throw new HTTPException(500, { message: 'invites are mounted without the bounded grant — refusing to confer an unbounded role' });
+    }
+    const parsed = inviteCaller.safeParse(caller);
+    if (!parsed.success) {
+      throw new HTTPException(500, { message: 'the admin gate named no caller — refusing to confer a role the bound cannot be asked about' });
+    }
+    return parsed.data;
+  };
+
+  /** Refuse unless the bound says `caller` holds every permission of `roleKey`. */
+  const assertCoverage = (answer: unknown, roleKey: string, act: string): void => {
+    const bound = coverage.safeParse(answer);
+    if (!bound.success) {
+      throw new HTTPException(500, { message: 'the canAssign bound did not answer with a coverage — refusing' });
+    }
+    if (!bound.data.covered) {
+      throw new HTTPException(403, { message: `you cannot ${act} '${roleKey}': you do not hold ${bound.data.missing.join(', ')}` });
+    }
+  };
+
+  const assertCanAssign = async (env: E, node: N, caller: InviteCaller, roleKey: string, act: string): Promise<void> =>
+    assertCoverage(await deps.canAssign(env, node, caller.principal, roleKey), roleKey, act);
+
   app.get('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
     await deps.requireAdmin(c);
@@ -134,7 +185,8 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
 
   app.post('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
-    await deps.requireAdmin(c);
+    // The gate first, before the body exists: a refused caller learns nothing from what they sent.
+    const caller = admitted(await deps.requireAdmin(c));
     const { email, roleKey } = await bodyOf(c, inviteBody);
     if (!deps.roles.includes(roleKey)) throw new HTTPException(400, { message: `unknown role '${roleKey}'` });
     const principal = principalId.parse(ulid());
@@ -142,7 +194,11 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     const token = claimToken();
     // The grant first: an invite row whose principal holds nothing is a link that binds a
     // teammate to no access, whereas a grant with no row is inert — nobody can bind to it.
-    await deps.assignScopeRole(c.env, node.scopeId, principal, roleKey);
+    assertCoverage(
+      await deps.assignScopeRoleBounded(c.env, node, caller.principal, principal, roleKey),
+      roleKey,
+      'invite at',
+    );
     try {
       await deps.directory(c.env, node).createInvite(node.scopeId, principal, roleKey, email ?? null, await sha256Hex(token));
     } catch (err) {
@@ -159,8 +215,24 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
 
   app.post('/api/invites/:principal/revoke', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
-    await deps.requireAdmin(c);
-    await deps.directory(c.env, node).revokeInvite(node.scopeId, c.req.param('principal'));
+    const caller = admitted(await deps.requireAdmin(c));
+    const directory = deps.directory(c.env, node);
+    const principal = c.req.param('principal');
+    // Removal takes the same bound, on the role the STORED invite confers. No open invite:
+    // nothing to remove, answered as before.
+    const invite = await directory.getInvite(node.scopeId, principal);
+    if (invite) {
+      try {
+        await assertCanAssign(c.env, node, caller, invite.roleKey, 'revoke an invite at');
+      } catch (err) {
+        // A role the tenant no longer defines confers nothing (a role expands only through its
+        // definition), so removing an invite at it narrows nothing. Refusing would leave a
+        // claimable link nobody can withdraw, which revives if the role is ever defined again.
+        // Only that refusal, for THIS role, is let through: any other error still refuses.
+        if (!isUnknownRoleError(err, invite.roleKey)) throw err;
+      }
+      await directory.revokeInvite(node.scopeId, principal);
+    }
     return c.body(null, 204);
   });
 

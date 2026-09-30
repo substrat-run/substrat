@@ -39,6 +39,7 @@
     "@cloudflare/workers-types": "catalog:",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
+    "@substrat-run/vertical-auth": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
     "hono": "^4.13.9",
     "typescript": "catalog:",

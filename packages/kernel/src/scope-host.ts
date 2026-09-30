@@ -4575,6 +4575,37 @@ export interface ScopeHost {
   ): Promise<PeerCoverage[]>;
 
   /**
+   * May `principal` confer `roleKey` at this scope's node (#1931)? `ctx.canAssign`'s bound for a
+   * caller the HOST names — what a harness route asks before it grants a role, or takes one
+   * back, outside any operation. The platform's invite routes are that harness: they resolve who
+   * is inviting and at which role, and there is no operation context to ask from.
+   *
+   * The same answer `ctx.canAssign` gives that principal, by construction rather than by a
+   * second copy: the tenant's projected role, then the checker's own `covers` at the scope node.
+   * So it is narrowing-aware (an entity-narrowed grant does not satisfy it), membership expands,
+   * and an expired grant confers nothing. Throws `not_found` when `roleKey` names no role in
+   * this tenant, as `ctx.canAssign` does.
+   *
+   * It is a READ and records nothing — neither a denial nor an admin-log row. The caller that
+   * refuses on it is the one that knows what was refused.
+   */
+  canAssign(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage>;
+
+  /**
+   * Check the caller's assignment bound and grant `assignee` the scope role in one scope
+   * task. A refused bound writes nothing and returns its missing permissions. The role
+   * definition and permission tuples used by the check are the same ones used by
+   * `canAssign`; an unknown role throws `not_found`.
+   */
+  assignScopeRoleBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    assignee: PrincipalId,
+    roleKey: string,
+  ): Promise<Coverage>;
+
+  /**
    * The recurring-work declarations of every module registered on this host (#383)
    * — each module's id, the vertical it belongs to, and its `schedules`. Sync like
    * `migrationFrontier`: code-time bookkeeping derived from the registered

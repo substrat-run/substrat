@@ -215,6 +215,75 @@ export function permissionContractSuite(
       it('throws on a role this tenant does not define', async () => {
         await expect(bound(alice, s1, 'no-such-role')).rejects.toThrow(/no such role/);
       });
+
+      /**
+       * The host's `canAssign` (#1931) — the bound for a principal the HOST names, which a
+       * harness route (the platform's invite routes) asks outside any operation. It must be
+       * the same answer, not a second evaluator's: every case above, asked both ways.
+       */
+      describe('host.canAssign gives the same answer for a principal the host names', () => {
+        const hostBound = async (who: PrincipalId, scope: typeof s1, roleKey: string) =>
+          coverage.parse(await host.canAssign(t1, scope, who, roleKey));
+
+        it.each([
+          ['a covered role', () => alice, () => s1, 'tech'],
+          ['a role equal to the caller’s own', () => alice, () => s1, 'admin'],
+          ['a role carrying more than the caller holds', () => bob, () => s1, 'admin'],
+          ['an entity-narrowed grant (must NOT satisfy it)', () => carol, () => s1, 'tech'],
+          ['authority held through an org', () => erin, () => s1, 'tech'],
+          ['the node the role is held at', () => bob, () => s1, 'tech'],
+          ['a node the role is not held at', () => bob, () => s2, 'tech'],
+          ['an expired grant', () => dave, () => s1, 'tech'],
+          ['an expired grant written at +14:00', () => dora, () => s1, 'tech'],
+          ['a principal holding nothing', () => principalId.parse(ulid()), () => s1, 'tech'],
+        ] as const)('%s', async (_case, who, scope, roleKey) => {
+          const principal = who();
+          expect(await hostBound(principal, scope(), roleKey)).toEqual(await bound(principal, scope(), roleKey));
+        });
+
+        /** The load-bearing case, stated rather than only agreed on. */
+        it('refuses an entity-narrowed holder, naming the permission', async () => {
+          expect(await hostBound(carol, s1, 'tech')).toEqual({ covered: false, missing: [PERM_READ] });
+          expect(await hostBound(bob, s1, 'admin')).toEqual({ covered: false, missing: [PERM_USE] });
+          expect(await hostBound(alice, s1, 'admin')).toEqual({ covered: true, missing: [] });
+        });
+
+        it('throws not_found, typed, on a role this tenant does not define', async () => {
+          await expectRefusal(host.canAssign(t1, s1, alice, 'no-such-role'), 'not_found', /no such role/);
+        });
+
+        /** K-3: the (tenant, scope) pair is checked here too — another tenant's scope is unknown. */
+        it('refuses a scope named under another tenant, as one that does not exist', async () => {
+          await expectRefusal(host.canAssign(tenantId.parse(ulid()), s1, alice, 'tech'), 'not_found', /unknown scope/);
+        });
+      });
+
+      describe('host.assignScopeRoleBounded checks and grants in one scope task', () => {
+        it('refuses an overreaching caller without assigning the role', async () => {
+          const assignee = principalId.parse(ulid());
+          expect(await host.assignScopeRoleBounded(t1, s1, bob, assignee, 'admin'))
+            .toEqual({ covered: false, missing: [PERM_USE] });
+          expect((await probe(assignee, s1, PERM_USE)).allowed).toBe(false);
+          expect((await probe(assignee, s1, PERM_READ)).allowed).toBe(false);
+        });
+
+        it('grants the requested role when the caller covers it', async () => {
+          const assignee = principalId.parse(ulid());
+          expect(await host.assignScopeRoleBounded(t1, s1, alice, assignee, 'tech'))
+            .toEqual({ covered: true, missing: [] });
+          expect((await probe(assignee, s1, PERM_READ)).allowed).toBe(true);
+        });
+
+        it('refuses an unknown role or another tenant’s scope without a grant', async () => {
+          const assignee = principalId.parse(ulid());
+          await expectRefusal(host.assignScopeRoleBounded(t1, s1, alice, assignee, 'no-such-role'), 'not_found', /no such role/);
+          await expectRefusal(
+            host.assignScopeRoleBounded(tenantId.parse(ulid()), s1, alice, assignee, 'tech'),
+            'not_found', /unknown scope/,
+          );
+          expect((await probe(assignee, s1, PERM_READ)).allowed).toBe(false);
+        });
+      });
     });
 
     // -- runtime delegation: ctx.grant / ctx.revoke ---------------------------

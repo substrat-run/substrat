@@ -469,15 +469,20 @@ app.get('/internal/export', async (c) => {
   return c.json(await hostFor(c.env).exportScopeLocal(scope));
 });
 
-/** Resolve the caller (any provider) → the routed node → a scope stub. 401 if nobody. */
-async function stub(c: { env: Env; req: { raw: Request } }) {
+/** Resolve the caller (any provider) → the routed node → who they are and a scope stub. 401 if nobody. */
+async function caller(c: { env: Env; req: { raw: Request } }) {
   const node = nodeFor(c.req.raw, c.env);
   const principal = await principalFor(c.env, c.req.raw);
   if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
   // CP-less (scope-local-permissions.md Phase 3): lifecycle is the router's gate — it
   // forwards only an active scope and asserts the node. The vertical trusts that node and
   // opens the scope; permissions evaluate from the scope's own storage.
-  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
+  return { principal, scope: await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId) };
+}
+
+/** The caller's scope stub. 401 if nobody. */
+async function stub(c: { env: Env; req: { raw: Request } }) {
+  return (await caller(c)).scope;
 }
 
 /**
@@ -487,10 +492,10 @@ async function stub(c: { env: Env; req: { raw: Request } }) {
  * permission model, not a second source of truth. Throws 401 (no session) / 403 (not admin).
  */
 async function requireAdmin(c: { env: Env; req: { raw: Request } }) {
-  const scope = await stub(c);
+  const { principal, scope } = await caller(c);
   const who = (await scope.invoke('callout/whoami', undefined)) as { role: string };
   if (who.role !== 'office-admin') throw new HTTPException(403, { message: 'only an admin can manage invites' });
-  return scope;
+  return { principal };
 }
 
 /**
@@ -530,15 +535,18 @@ app.get('/api/me', async (c) => {
  * Invites (the post-setup join path — invite-only). Admin-only.
  * The four routes — list, create, revoke, accept — are `@substrat-run/vertical-auth`'s
  * (#1150); this vertical supplies what is its own: the roles a teammate can be invited at
- * (office-admin | technician), what "admin" means, and the host that grants the role.
+ * (office-admin | technician), what "admin" means, and the host that grants the role and
+ * answers the assignment bound (#1931) — an admin confers only what they hold.
  */
 mountInviteRoutes(app, {
   nodeFor,
   requireAdmin,
   roles: ROLES.map((r) => r.key),
   directory: identityDo,
-  assignScopeRole: (env, scope, principal, roleKey) => hostFor(env).assignScopeRole(scope, principal, roleKey),
+  assignScopeRoleBounded: (env, node, caller, assignee, roleKey) =>
+    hostFor(env).assignScopeRoleBounded(node.tenantId, node.scopeId, caller, assignee, roleKey),
   revokeScopeRole: (env, scope, principal, roleKey) => hostFor(env).revokeScopeRole(scope, principal, roleKey),
+  canAssign: (env, node, principal, roleKey) => hostFor(env).canAssign(node.tenantId, node.scopeId, principal, roleKey),
   authProvider: authProviderFor,
 });
 

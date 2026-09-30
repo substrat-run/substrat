@@ -212,6 +212,8 @@ interface OperationContext {
 - **`canAssign`** is the bound on handing out a role: the caller may assign (or remove) a
   role only if it already holds every permission that role carries here. It is not the
   permission check. The operation still opens with its own `ctx.check`, then asks this.
+  Host code outside any operation asks the same thing of the host for a principal it names:
+  `host.canAssign(tenantId, scopeId, principal, roleKey)`, one answer by construction.
 - **`capabilities`** mints authority carried by a secret rather than held by a principal
   ("anyone with this link may read this folder until Friday"). The rule is `grant`'s:
   narrowed onto one entity, from keys the caller holds, and re-checked every time the

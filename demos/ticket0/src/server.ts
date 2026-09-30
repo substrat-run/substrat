@@ -177,7 +177,12 @@ async function boot() {
     appOrigin: () => webOrigin,
     subjectOf: (c) => login.subject(c.req.raw.headers),
     // `get-desk` IS the check: it asserts `desk:configure` inside the operation, so
-    // the authority is the desk's own grants and not a role list out here.
+    // the authority is the desk's own grants and not a role list out here. No assignment
+    // bound (#1931) is applied: `desk-admin` covers every role in HUMAN_ROLES
+    // (`test/invites.test.ts` holds that), so add `host.canAssign` if a role it does not
+    // cover becomes invitable. A customer invite's portal grant (`conversation:read-own`
+    // on ONE contact) is justified separately: strictly narrower than the `contact:read`
+    // and `conversation:read` `desk-admin` holds over every contact.
     requireAdmin: async (c) => {
       await (await staffStub(c)).invoke('ticket0/get-desk', {});
     },

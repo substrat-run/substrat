@@ -30,6 +30,7 @@ import {
   type PlatformRequestId,
   type PlatformRequest,
   type PlatformRequestFilter,
+  type Coverage,
   type EntitlementView,
   type EntityRef,
   type EventAuthorization,
@@ -55,6 +56,7 @@ import {
 import {
   ulid,
   DO_SQL_LIMITS,
+  unknownRoleError,
   createUlid,
   type UlidMint,
   assertAllowed,
@@ -3256,6 +3258,63 @@ export function defineScopeDO(
     }
 
     /**
+     * `ctx.canAssign`'s bound for a principal the host names (#1931), queued like `peerCovers`
+     * so no invoke's open transaction is read half-done. `null` when the tenant defines no such
+     * role: a typed error thrown here would reach the host flattened, so the host types it.
+     */
+    async canAssignFor(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      principal: PrincipalId,
+      roleKey: string,
+    ): Promise<Coverage | null> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(() =>
+        this.assignmentBound({ kind: 'principal', id: principal }, tenantId, scopeId, roleKey),
+      );
+    }
+
+    /** Check and grant in one serialized scope task; a refusal never writes a tuple. */
+    async assignScopeRoleBoundedFor(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      caller: PrincipalId,
+      assignee: PrincipalId,
+      roleKey: string,
+    ): Promise<Coverage | null> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () => {
+        const bound = await this.assignmentBound({ kind: 'principal', id: caller }, tenantId, scopeId, roleKey);
+        if (bound?.covered) {
+          this.sql.exec(
+            `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
+             VALUES (?, ?, ?, NULL)`,
+            `principal:${assignee}`, `role:${roleKey}`, `scope:${scopeId}`,
+          );
+        }
+        return bound;
+      });
+    }
+
+    /**
+     * §5.1's assignment bound, resolved against the SAME role table the checker
+     * expands — the tenant's projected role, not a vertical's compile-time `ROLES`
+     * array, because the projected role is what assignment would actually confer.
+     * The one resolution both `ctx.canAssign` and `canAssignFor` answer from; `null`
+     * when the tenant defines no such role.
+     */
+    private async assignmentBound(
+      subject: CheckSubject,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      roleKey: string,
+    ): Promise<Coverage | null> {
+      const role = await this.controlPlaneReader().getRole(tenantId, roleKey);
+      if (!role) return null;
+      return this.checker.covers(subject, role.permissions, { tenantId, scopeId });
+    }
+
+    /**
      * Every module this scope holds or has held system authority for, and where each
      * stands (#1674) — the kernel's `systemGrantsStatus`, over this DO's own storage. A
      * plain read like `systemScheduleState` above, not queued: nothing here decides a
@@ -5277,17 +5336,12 @@ export function defineScopeDO(
         return decision;
       };
 
-      /**
-       * §5.1's assignment bound, resolved against the SAME role table the checker
-       * expands — the tenant's projected role, not a vertical's compile-time `ROLES`
-       * array, because the projected role is what assignment would actually confer.
-       */
       const runCanAssign = async (roleKey: string) => {
-        const role = await this.controlPlaneReader().getRole(tenantId, roleKey);
-        if (!role) {
-          throw substratError('not_found', `no such role in this tenant: ${roleKey}`);
+        const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
+        if (!bound) {
+          throw unknownRoleError(roleKey);
         }
-        return checker.covers(subject, role.permissions, { tenantId, scopeId });
+        return bound;
       };
 
       // ctx.emit's writer, and the kernel's own events' (#1864): one path to the outbox, with the

@@ -295,36 +295,44 @@ mountPlatformSurface<Env>(app, {
 // Resolve the caller + selected site → a scope stub. 401 if nobody. Shared route table.
 // The stub carries the #458 drain hint: any operation that enqueues a platform intent
 // flags this response, and the router kicks an immediate drain (#381) — no per-route wiring.
-async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
+async function caller(c: Context<{ Bindings: Env }>): Promise<{ principal: PrincipalId; scope: ScopeStub }> {
   const node = await nodeFor(c.req.raw, c.env);
   const principal = await principalFor(c.env, c.req.raw);
   if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
-  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
+  const scope = await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
     ...kickFlags((name, value) => c.header(name, value)),
   });
+  return { principal, scope };
+}
+
+async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
+  return (await caller(c)).scope;
 }
 
 // ── Members & invites (the post-setup join path — admin-only) ────────────────
 
-/** Gate an admin-only action: resolve the caller's scope, then require content:admin. */
-async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
-  const scope = await stub(c);
+/** Gate an admin-only action: resolve the caller's scope, then require content:admin. Returns who was admitted. */
+async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<{ principal: PrincipalId }> {
+  const { principal, scope } = await caller(c);
   const who = (await scope.invoke('manyfold/whoami', undefined)) as { can: { admin: boolean } };
   if (!who.can.admin) throw new HTTPException(403, { message: 'only an admin can manage members' });
-  return scope;
+  return { principal };
 }
 
 /** The four invite routes — list, create, revoke, accept — are `@substrat-run/vertical-auth`'s
  *  (#1150). Create mints a member principal, grants it the chosen role at scope level and
  *  records the invite by token HASH; accept binds the invitee's login to that principal. This
- *  vertical supplies only its roles, its "admin", and the host that grants the role. */
+ *  vertical supplies only its roles, its "admin", and the host that grants the role and answers
+ *  the assignment bound (#1931) — an admin confers only what they hold. */
 mountInviteRoutes(app, {
   nodeFor,
   requireAdmin,
   roles: ROLES.map((r) => r.key),
   directory: identityDo,
-  assignScopeRole: (env, scope, principal, roleKey) => hostFor(env).assignScopeRole(scope, principal, roleKey),
+  assignScopeRoleBounded: (env, node, caller, assignee, roleKey) =>
+    hostFor(env).assignScopeRoleBounded(node.tenantId, node.scopeId, caller, assignee, roleKey),
   revokeScopeRole: (env, scope, principal, roleKey) => hostFor(env).revokeScopeRole(scope, principal, roleKey),
+  canAssign: (env, node, principal, roleKey) => hostFor(env).canAssign(node.tenantId, node.scopeId, principal, roleKey),
   authProvider: authProviderFor,
 });
 

@@ -315,11 +315,23 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /** The scope's outstanding (unclaimed) invites — for the admin's pending-invites list. No token. */
-  async listInvites(scopeId: string): Promise<Array<{ principal: string; roleKey: string; email: string | null; createdAt: number }>> {
+  async listInvites(scopeId: string): Promise<InviteRow[]> {
     return [...this.ctx.storage.sql.exec(
       'SELECT principal, role_key, email, created_at FROM invite WHERE scope_id = ? AND claimed = 0 ORDER BY created_at DESC',
       scopeId,
-    )].map((r) => ({ principal: r.principal as string, roleKey: r.role_key as string, email: (r.email as string | null) ?? null, createdAt: r.created_at as number }));
+    )].map(inviteRowOf);
+  }
+
+  /**
+   * One outstanding (unclaimed) invite by its pre-minted principal, or null (#1931). What the
+   * revoke route reads first: the role an invite confers is the role its removal is bounded by.
+   */
+  async getInvite(scopeId: string, principal: string): Promise<InviteRow | null> {
+    const r = [...this.ctx.storage.sql.exec(
+      'SELECT principal, role_key, email, created_at FROM invite WHERE scope_id = ? AND principal = ? AND claimed = 0',
+      scopeId, principal,
+    )][0];
+    return r ? inviteRowOf(r) : null;
   }
 
   /** Is there an unclaimed invite for this token hash? (the sign-up gate consults this post-setup). */
@@ -417,6 +429,16 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 }
 
+/** An outstanding invite as the directory returns it — never its token. */
+export type InviteRow = { principal: string; roleKey: string; email: string | null; createdAt: number };
+
+const inviteRowOf = (r: Record<string, SqlStorageValue>): InviteRow => ({
+  principal: r.principal as string,
+  roleKey: r.role_key as string,
+  email: (r.email as string | null) ?? null,
+  createdAt: r.created_at as number,
+});
+
 /** A minimal stub shape — the identity DO's callable surface (avoids leaking the full class type). */
 export type IdentityStub = {
   fetch(request: Request): Promise<Response>;
@@ -438,7 +460,8 @@ export type IdentityStub = {
   mintOwnerClaim(scopeId: string, tokenHash: string): Promise<{ expiresAt: string } | null>;
   claimOwner(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
   createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void>;
-  listInvites(scopeId: string): Promise<Array<{ principal: string; roleKey: string; email: string | null; createdAt: number }>>;
+  listInvites(scopeId: string): Promise<InviteRow[]>;
+  getInvite(scopeId: string, principal: string): Promise<InviteRow | null>;
   inviteExists(scopeId: string, tokenHash: string): Promise<boolean>;
   revokeInvite(scopeId: string, principal: string): Promise<void>;
   claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
