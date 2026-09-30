@@ -334,6 +334,16 @@ describe("the directory's removal half, and the whole set a repair sends", () =>
     expect(resolvePrincipal(sql, SCOPE, 'sub-ann-alt', 2)).toBeNull();
   });
 
+  it('clears a cached present observation for every removed login', async () => {
+    const iss = issuer();
+    const reporter = placesReporter({ identity, fetch: iss.fetch });
+    const directory = { unbindPrincipal: async (scope: string, principal: string) => unbindPrincipal(sql, scope, principal) };
+    await observePlace(reporter, SCOPE, 'sub-ann', 'principal-ann');
+    await unbindPrincipalMember(directory, reporter, SCOPE, 'principal-ann');
+    await observePlace(reporter, SCOPE, 'sub-ann', null);
+    expect(iss.reports().map((r) => (r.body as { op: string }).op)).toEqual(['present', 'absent', 'absent']);
+  });
+
   it('reportScopeMembers sends the whole set, and refuses (logged) a scope over the cap', async () => {
     const iss = issuer();
     const reporter = placesReporter({ identity, fetch: iss.fetch });
