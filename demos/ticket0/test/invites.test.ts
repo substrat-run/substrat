@@ -24,7 +24,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { Page } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { T0_PERM } from '../src/manifest.js';
-import { CONTACT_BOUND_ROLE, HUMAN_ROLES, STAFF_ROLES } from '../src/provision.js';
+import { CONTACT_BOUND_ROLE, HUMAN_ROLES, ROLES, STAFF_ROLES } from '../src/provision.js';
 import { buildHost, linkDevPersonas, seed, type World } from '../src/seed.js';
 import { mountApi } from '../src/routes.js';
 import { mountInvites } from '../harness/invites.js';
@@ -268,5 +268,27 @@ describe('inviting somebody onto the desk', () => {
 
     asNobody();
     expect((await post('/api/accept-invite', { token })).status).toBe(401);
+  });
+});
+
+/**
+ * This harness applies no assignment bound (#1931): the gate is `desk:configure`, and the
+ * worker's comment at that gate says why none is needed. It is safe only while every role that
+ * passes the gate already holds every permission of every role an invite can confer. This case
+ * is what makes that claim a fact rather than a comment. When it fails, the new role needs the
+ * bound (`host.canAssign`) in the harness, not an exemption here.
+ */
+describe('the invite gate covers every invitable role', () => {
+  const perms = (key: string) => ROLES.find((r) => r.key === key)?.permissions ?? [];
+  const gateRoles = ROLES.filter((r) => r.permissions.includes(T0_PERM.deskConfigure));
+
+  it('some role passes the gate (the control)', () => {
+    expect(gateRoles.map((r) => r.key)).toContain('desk-admin');
+  });
+
+  it.each(HUMAN_ROLES.map((h) => [h]))('every role passing the gate holds all of %s', (invitable) => {
+    for (const gate of gateRoles) {
+      expect(perms(invitable).filter((p) => !gate.permissions.includes(p)), `${gate.key} → ${invitable}`).toEqual([]);
+    }
   });
 });
