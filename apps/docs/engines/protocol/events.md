@@ -27,7 +27,8 @@ events: {
 `protocol.signatures-requested` is the connector's dispatch order: it carries the hash, the
 parties and the content ref, so an executor never needs a read back into the scope to know
 what to send where. Its `title` is what the signatory sees the document called: the `title`
-passed to `requestSignatures`, or the template's own title when none is passed. Pass one to
+passed to `requestSignatures`, or the template's own title when none is passed. An event
+emitted before the field existed has no `title`, so a consumer must handle its absence. Pass one to
 name the actual paper ("Avtal 2026-0001"). It is display text, so it is not part of the
 content hash, and since it travels in the event in the clear it should name the document,
 never a private person.
