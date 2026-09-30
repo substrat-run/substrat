@@ -316,19 +316,25 @@ app.all('/internal/*', (c) =>
   c.json({ error: `meridian does not implement ${c.req.method} ${new URL(c.req.url).pathname}` }, 501),
 );
 
-/** Resolve the caller (any provider) → the routed node → a scope stub. 401 if nobody. */
-async function stub(c: { env: Env; req: { raw: Request }; header?: (name: string, value: string) => void }) {
+/** Resolve the caller (any provider) → the routed node → who they are and a scope stub. 401 if nobody. */
+async function caller(c: { env: Env; req: { raw: Request }; header?: (name: string, value: string) => void }) {
   const node = nodeFor(c.req.raw, c.env);
   const principal = await principalFor(c.env, c.req.raw);
   if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
   // CP-less: lifecycle is the router's gate — it forwards only an active scope and asserts
   // the node. The vertical trusts that node and opens the scope; permissions evaluate locally.
-  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
+  const scope = await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
     // #458/#574: an invoke that enqueued platform intents — including a connector
     // delivery the inline drain just routed — flags the response so the router kicks
     // an immediate platform drain instead of waiting for the sweep.
     ...kickFlags((name, value) => c.header?.(name, value)),
   });
+  return { principal, scope };
+}
+
+/** The caller's scope stub. 401 if nobody. */
+async function stub(c: { env: Env; req: { raw: Request }; header?: (name: string, value: string) => void }) {
+  return (await caller(c)).scope;
 }
 
 /**
@@ -338,10 +344,10 @@ async function stub(c: { env: Env; req: { raw: Request }; header?: (name: string
  * second source of truth. Throws 401 (no session) / 403 (not an admin).
  */
 async function requireAdmin(c: { env: Env; req: { raw: Request } }) {
-  const scope = await stub(c);
+  const { principal, scope } = await caller(c);
   const who = (await scope.invoke('hr/whoami', undefined)) as { role: string };
   if (who.role !== 'hr-admin') throw new HTTPException(403, { message: 'only an admin can manage invites' });
-  return scope;
+  return { principal };
 }
 
 /**
@@ -391,7 +397,8 @@ app.get('/api/me', async (c) => {
  * The four routes — list, create, revoke, accept — are `@substrat-run/vertical-auth`'s
  * (#1150); this vertical supplies what is its own: the roles a teammate can be invited at
  * (hr-admin | manager | payroll — employees are added separately), what "admin" means, and
- * the host that grants the role.
+ * the host that grants the role and answers the assignment bound (#1931) — an admin confers
+ * only what they hold.
  */
 mountInviteRoutes(app, {
   nodeFor,
@@ -400,6 +407,7 @@ mountInviteRoutes(app, {
   directory: identityDo,
   assignScopeRole: (env, scope, principal, roleKey) => hostFor(env).assignScopeRole(scope, principal, roleKey),
   revokeScopeRole: (env, scope, principal, roleKey) => hostFor(env).revokeScopeRole(scope, principal, roleKey),
+  canAssign: (env, node, principal, roleKey) => hostFor(env).canAssign(node.tenantId, node.scopeId, principal, roleKey),
   authProvider: authProviderFor,
 });
 

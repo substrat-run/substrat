@@ -195,6 +195,7 @@ import {
   outboundOfManifestJson,
   substratError,
   redrainEventsInput,
+  coverage,
   peerCoverage,
   peerGrantsEntry,
   peerSwitch,
@@ -203,6 +204,7 @@ import {
   verticalResolution,
   verticalSlug,
   entityObjectRef,
+  type Coverage,
   type PeerCoverage,
   type PeerSpec,
   type PeerSwitch,
@@ -1055,6 +1057,8 @@ interface ScopeStubRpc {
     vertical: string,
     permissions: PermissionKey[],
   ): Promise<PeerCoverage[]>;
+  /** `ctx.canAssign`'s bound for a named principal (#1931); `null` for a role the tenant lacks. */
+  canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage | null>;
   /** Every module this scope holds or has held system authority for, and where each
    *  stands (#1674) — the kernel's `systemGrantsStatus`, run in the scope's own storage. */
   systemGrantsStatus(): Promise<SystemGrantsEntry[]>;
@@ -3508,6 +3512,18 @@ export class CloudflareScopeHost implements ScopeHost {
     return peerCoverage
       .array()
       .parse(await this.scopeStub(scopeId).peerCovers(tenantId, scopeId, verticalSlug.parse(vertical), [...permissions]));
+  }
+
+  /**
+   * `ctx.canAssign`'s bound for a principal the host names (#1931) — the ScopeDO's own role read
+   * and checker, so it answers what that principal's operation would be told. Gated like
+   * `peerCovers`: the (tenant, scope) pair, the lifecycle, and the served-here refusal.
+   */
+  async canAssign(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage> {
+    await this.peerScopeGate(tenantId, scopeId, 'canAssign');
+    const bound = await this.scopeStub(scopeId).canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey);
+    if (!bound) throw substratError('not_found', `no such role in this tenant: ${roleKey}`);
+    return coverage.parse(bound);
   }
 
   /**

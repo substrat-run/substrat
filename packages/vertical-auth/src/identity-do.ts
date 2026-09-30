@@ -322,6 +322,18 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     )].map((r) => ({ principal: r.principal as string, roleKey: r.role_key as string, email: (r.email as string | null) ?? null, createdAt: r.created_at as number }));
   }
 
+  /**
+   * One outstanding (unclaimed) invite by its pre-minted principal, or null (#1931). What the
+   * revoke route reads first: the role an invite confers is the role its removal is bounded by.
+   */
+  async getInvite(scopeId: string, principal: string): Promise<{ principal: string; roleKey: string; email: string | null; createdAt: number } | null> {
+    const r = [...this.ctx.storage.sql.exec(
+      'SELECT principal, role_key, email, created_at FROM invite WHERE scope_id = ? AND principal = ? AND claimed = 0',
+      scopeId, principal,
+    )][0];
+    return r ? { principal: r.principal as string, roleKey: r.role_key as string, email: (r.email as string | null) ?? null, createdAt: r.created_at as number } : null;
+  }
+
   /** Is there an unclaimed invite for this token hash? (the sign-up gate consults this post-setup). */
   async inviteExists(scopeId: string, tokenHash: string): Promise<boolean> {
     const r = [...this.ctx.storage.sql.exec('SELECT 1 FROM invite WHERE scope_id = ? AND token_hash = ? AND claimed = 0', scopeId, tokenHash)][0];
@@ -439,6 +451,7 @@ export type IdentityStub = {
   claimOwner(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
   createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void>;
   listInvites(scopeId: string): Promise<Array<{ principal: string; roleKey: string; email: string | null; createdAt: number }>>;
+  getInvite(scopeId: string, principal: string): Promise<{ principal: string; roleKey: string; email: string | null; createdAt: number } | null>;
   inviteExists(scopeId: string, tokenHash: string): Promise<boolean>;
   revokeInvite(scopeId: string, principal: string): Promise<void>;
   claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;

@@ -17,6 +17,14 @@
  * and the directory then resolves them as that member. Revoking removes the invite row;
  * the scope-level grant on a principal nobody was ever bound to is inert.
  *
+ * Who may invite, and at which role, are two questions (#1931). The vertical's admin gate
+ * answers the first — may this caller manage members at all. The second is the kernel's
+ * assignment bound (`ctx.canAssign`): a caller may confer a role only if they already hold
+ * every permission it carries at this scope, and removing one takes the same bound. The
+ * gate runs before the body is read, so it cannot know the role; the bound is applied here,
+ * after the role is parsed, by the platform rather than by each vertical remembering it —
+ * otherwise a vertical offering two roles lets anyone its gate admits confer the higher one.
+ *
  * Deliberately NOT here: the dashboard-side members view over an installed vertical's
  * directory — that widens the platform's reach into a vertical's identity and is a
  * separate decision — and the richer invite a support desk runs (contact-bound roles,
@@ -25,14 +33,21 @@
 
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, z, type PrincipalId } from '@substrat-run/contracts';
+import { coverage, principalId, z, type Coverage, type PrincipalId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import type { IdentityStub } from './identity-do.js';
 import { claimToken, invitePath, sha256Hex } from './owner-claim-link.js';
 import type { AuthProvider } from './provider.js';
 
 /** The slice of the identity directory the invite routes touch. */
-export type InviteDirectory = Pick<IdentityStub, 'listInvites' | 'createInvite' | 'revokeInvite' | 'claimInvite'>;
+export type InviteDirectory = Pick<IdentityStub, 'listInvites' | 'getInvite' | 'createInvite' | 'revokeInvite' | 'claimInvite'>;
+
+/** Who the admin gate admitted — the principal the assignment bound is asked about. */
+export interface InviteCaller {
+  principal: PrincipalId;
+}
+
+const inviteCaller = z.object({ principal: principalId });
 
 /** The body `POST /api/invites` takes. */
 export const inviteBody = z.object({
@@ -54,9 +69,20 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
   nodeFor: (req: Request, env: E) => N | Promise<N>;
   /**
    * Gate the three admin routes: throw 401 for nobody, 403 for a caller who may not manage
-   * members. The vertical decides what "admin" means — a role, a permission, a whoami.
+   * members. The vertical decides what "admin" means — a role, a permission, a whoami — and
+   * returns the principal it admitted, which is who `canAssign` is then asked about. It runs
+   * before the body is read, so a caller it refuses learns nothing from a malformed body.
    */
-  requireAdmin: (c: Context<{ Bindings: E }>) => Promise<unknown>;
+  requireAdmin: (c: Context<{ Bindings: E }>) => Promise<InviteCaller>;
+  /**
+   * The assignment bound (#1931): may `principal` confer `roleKey` at this node — does it
+   * already hold every permission the role carries there? The host's `canAssign`, which is
+   * `ctx.canAssign`'s answer for a principal the host names. Asked before an invite is
+   * created (the role it would confer) and before one is revoked (the role it confers):
+   * removal takes the same bound. Required, and applied fail-closed — a mount without it, or
+   * an answer that is not a coverage, refuses both routes rather than running unbounded.
+   */
+  canAssign: (env: E, node: N, principal: PrincipalId, roleKey: string) => Promise<Coverage>;
   /** The role keys a teammate may be invited at — the vertical's own ROLES. */
   roles: readonly string[];
   /** The tenant's identity directory — the invite rows and the sub → principal binding. */
@@ -119,12 +145,43 @@ async function bodyOf<T>(c: Context, schema: z.ZodType<T>): Promise<T> {
  * envelope `mountPlatformSurface` installs, renders them exactly as it renders its own,
  * and needs no branch for this mount. What the vertical's OWN deps throw (`requireAdmin`,
  * the directory, the host) is passed through untouched: those are its errors to shape.
+ *
+ * Create and revoke apply the assignment bound after the admin gate: a caller the gate admits
+ * who does not hold every permission of the role is refused 403, naming what they lack, and
+ * nothing is granted, recorded or removed.
  */
 export function mountInviteRoutes<E extends object, N extends { scopeId: string }>(
   app: Hono<{ Bindings: E }>,
   deps: InviteRouteDeps<E, N>,
 ): void {
   const originOf = (req: Request): string => (deps.origin?.(req) ?? new URL(req.url).origin).replace(/\/$/, '');
+
+  /**
+   * Who the gate admitted, checked before anything else runs. Fail-closed on the two ways a
+   * mount can be wired short — no bound at all, or a gate that names no caller (the shape
+   * every gate had before #1931) — because either one would otherwise leave nothing to bound.
+   */
+  const admitted = (caller: unknown): InviteCaller => {
+    if (typeof deps.canAssign !== 'function') {
+      throw new HTTPException(500, { message: 'invites are mounted without the canAssign bound — refusing to confer an unbounded role' });
+    }
+    const parsed = inviteCaller.safeParse(caller);
+    if (!parsed.success) {
+      throw new HTTPException(500, { message: 'the admin gate named no caller — refusing to confer a role the bound cannot be asked about' });
+    }
+    return parsed.data;
+  };
+
+  /** Refuse unless `caller` already holds every permission `roleKey` carries at `node`. */
+  const assertCanAssign = async (env: E, node: N, caller: InviteCaller, roleKey: string, act: string): Promise<void> => {
+    const bound = coverage.safeParse(await deps.canAssign(env, node, caller.principal, roleKey));
+    if (!bound.success) {
+      throw new HTTPException(500, { message: 'the canAssign bound did not answer with a coverage — refusing' });
+    }
+    if (!bound.data.covered) {
+      throw new HTTPException(403, { message: `you cannot ${act} '${roleKey}': you do not hold ${bound.data.missing.join(', ')}` });
+    }
+  };
 
   app.get('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
@@ -134,9 +191,12 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
 
   app.post('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
-    await deps.requireAdmin(c);
+    // The gate first, before the body exists: a caller it refuses gets the same answer
+    // whatever they sent.
+    const caller = admitted(await deps.requireAdmin(c));
     const { email, roleKey } = await bodyOf(c, inviteBody);
     if (!deps.roles.includes(roleKey)) throw new HTTPException(400, { message: `unknown role '${roleKey}'` });
+    await assertCanAssign(c.env, node, caller, roleKey, 'invite at');
     const principal = principalId.parse(ulid());
     // A long, URL-safe token; only its hash is stored. Two UUIDs = 256 bits of entropy.
     const token = claimToken();
@@ -159,8 +219,17 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
 
   app.post('/api/invites/:principal/revoke', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
-    await deps.requireAdmin(c);
-    await deps.directory(c.env, node).revokeInvite(node.scopeId, c.req.param('principal'));
+    const caller = admitted(await deps.requireAdmin(c));
+    const directory = deps.directory(c.env, node);
+    const principal = c.req.param('principal');
+    // Removal takes the same bound as assignment, and the role is the one the invite confers
+    // — read from the stored row, since the request does not (and must not) name it. No open
+    // invite is nothing to remove, and answers as a revoke always has.
+    const invite = await directory.getInvite(node.scopeId, principal);
+    if (invite) {
+      await assertCanAssign(c.env, node, caller, invite.roleKey, 'revoke an invite at');
+      await directory.revokeInvite(node.scopeId, principal);
+    }
     return c.body(null, 204);
   });
 

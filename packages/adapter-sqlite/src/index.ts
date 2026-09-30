@@ -55,6 +55,7 @@ import {
   peerSwitch,
   verticalCaller,
   verticalSlug as verticalSlugOf,
+  type Coverage,
   type PeerCoverage,
   type PeerSpec,
   type PeerSwitch,
@@ -4088,6 +4089,35 @@ export class SqliteScopeHost implements ScopeHost {
     );
     const missing = new Set<string>(coverage.covered ? [] : coverage.missing);
     return permissions.map((permission) => ({ permission, held: !missing.has(permission) }));
+  }
+
+  /**
+   * `ctx.canAssign`'s bound for a principal the host names (#1931) — the same resolution, inside
+   * the scope's actor task so no invoke's open transaction is read half-done.
+   */
+  async canAssign(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const subject = asPrincipal(principalId.parse(principal));
+    return rt.actor.enqueue(() => this.assignmentBound(subject, tenantId, scopeId, roleKey));
+  }
+
+  /**
+   * §5.1's assignment bound, resolved against the SAME role table the checker expands
+   * — not a vertical's compile-time `ROLES` array. A tenant's projected role is what
+   * assignment would actually confer, and that is what has to be bounded. The one
+   * resolution both `ctx.canAssign` and the host's `canAssign` answer from.
+   */
+  private async assignmentBound(
+    subject: CheckSubject,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    roleKey: string,
+  ): Promise<Coverage> {
+    const role = this.roles.get(`${tenantId}/${roleKey}`);
+    if (!role) {
+      throw substratError('not_found', `no such role in this tenant: ${roleKey}`);
+    }
+    return this.checker.covers(subject, role.permissions, { tenantId, scopeId });
   }
 
   /** #1705: what this deployment imports — the sweep's reason to call no scope when it is empty. */
@@ -10487,21 +10517,8 @@ export class SqliteScopeHost implements ScopeHost {
       return decision;
     };
 
-    /**
-     * §5.1's assignment bound, resolved against the SAME role table the checker expands
-     * — not a vertical's compile-time `ROLES` array. A tenant's projected role is what
-     * assignment would actually confer, and that is what has to be bounded.
-     */
-    const runCanAssign: OperationContext['canAssign'] = async (roleKey) => {
-      const role = this.roles.get(`${rt.tenantId}/${roleKey}`);
-      if (!role) {
-        throw substratError('not_found', `no such role in this tenant: ${roleKey}`);
-      }
-      return checker.covers(subject, role.permissions, {
-        tenantId: rt.tenantId,
-        scopeId: rt.scopeId,
-      });
-    };
+    const runCanAssign: OperationContext['canAssign'] = (roleKey) =>
+      this.assignmentBound(subject, rt.tenantId, rt.scopeId, roleKey);
 
     // ctx.emit's writer, and the kernel's own events' (#1864): one path to the outbox, with the
     // reserved-type refusal applied to module code only. Never handed to module code as-is.
