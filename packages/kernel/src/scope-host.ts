@@ -1,5 +1,6 @@
 import type { ModuleLog } from './module-log.js';
 import type {
+  OnBehalfOf,
   ExportReadInput,
   ExportedBatch,
   ImportBatch,
@@ -4091,6 +4092,18 @@ export interface AuditLogFilter {
 }
 
 export interface ScopeHost {
+  /**
+   * The same host, with every admin-log row written through it — by `admin` or by a
+   * host-level write such as `provisionScope` — carrying `onBehalfOf` (#977). `actor`
+   * stays the credential that executed: a service acting for a signed-in person is
+   * recorded as both, not as whichever one the transport happened to hold. The view
+   * is independent, so two concurrent requests attributed to different people never
+   * see each other's person.
+   *
+   * Optional so a host that predates it still satisfies the interface; a transport
+   * that finds it absent writes unattributed rows, which is what every row was before.
+   */
+  attributed?(onBehalfOf: OnBehalfOf): ScopeHost;
   /**
    * Mint a capability stub for a principal. Validates the (tenantId, scopeId)
    * pair against the directory — a mismatched pair fails closed (K-3), it never

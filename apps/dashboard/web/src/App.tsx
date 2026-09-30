@@ -131,6 +131,11 @@ export function App() {
   const [appsCursor, setAppsCursor] = useState<string | null>(null);
   const [appsLoadingMore, setAppsLoadingMore] = useState(false);
   const [members, setMembers] = useState<Member[]>([]);
+  // #977: the admin log names a member by principal; the page names them by email.
+  const personName = useCallback(
+    (principal: string) => members.find((m) => m.principal === principal)?.email ?? null,
+    [members],
+  );
   const [membersCursor, setMembersCursor] = useState<string | null>(null);
   const [membersLoadingMore, setMembersLoadingMore] = useState(false);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
@@ -950,7 +955,7 @@ export function App() {
           <NotFound label="That app could not be found." onBack={() => go('/apps')} />
         )
       ) : route.section === 'overview' ? (
-        <Overview apps={apps} loading={appsLoading} teamName={org} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={loadMoreApps} />
+        <Overview apps={apps} loading={appsLoading} teamName={org} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={loadMoreApps} personName={personName} />
       ) : route.section === 'apps' ? (
         <Apps apps={apps} loading={appsLoading} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
       ) : route.section === 'verticals' && openVertical ? (
@@ -993,7 +998,7 @@ export function App() {
       ) : route.section === 'billing' ? (
         <Billing />
       ) : route.section === 'audit' ? (
-        <AuditLog apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} entryId={route.entry ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} />
+        <AuditLog apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} entryId={route.entry ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} personName={personName} />
       ) : route.section === 'observability' ? (
         <Observability
           query={window.location.search}

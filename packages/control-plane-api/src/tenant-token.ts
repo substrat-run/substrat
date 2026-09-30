@@ -1,4 +1,13 @@
-import { tenantId as tenantIdSchema, type PlatformActorId, type TenantId } from '@substrat-run/contracts';
+import {
+  impersonationStamp,
+  principalId,
+  tenantId as tenantIdSchema,
+  type ImpersonationStamp,
+  type OnBehalfOf,
+  type PlatformActorId,
+  type PrincipalId,
+  type TenantId,
+} from '@substrat-run/contracts';
 import { SERVICE_TOKEN_HEADER, type TenantServiceAuth } from './auth.js';
 import { hasTokenPrefix, openToken, signToken } from './token-codec.js';
 
@@ -26,11 +35,16 @@ import { hasTokenPrefix, openToken, signToken } from './token-codec.js';
  *
  * **The claim carries no actor, deliberately.** Who a row is audited as stays the
  * host's decision (`tenantTokenAuth(secret, actor)`, exactly as `serviceTokenAuth`
- * takes it), so a minted token can never name its own audit subject — and the audit
- * row keeps naming what it named before this existed. Making the audit row carry the
- * customer's own `PrincipalId` is the SECOND half of #977 and is deliberately not
- * here: it makes `PlatformActorId` stop being the type of an audit actor, which is
- * kernel-facing and gets its own diff and its own review.
+ * takes it), so a minted token can never name its own audit subject.
+ *
+ * **It may carry the person, beside the actor (#977's second half).** `principal` is
+ * the signed-in user the dashboard minted this token for, and `impersonation` the K-42
+ * stamp when a staff member was acting as them. Neither is authority — the tenant pin
+ * is the whole of what the token may do, with or without them — they are attribution:
+ * the admin row names the service that executed (`actor`) AND the person it acted for
+ * (`onBehalfOf`), rather than retyping `actor` into one or the other. Only the staff
+ * mint writes them, so a tenant credential cannot re-attribute itself; a token minted
+ * without a principal writes unattributed rows, exactly as every row was before.
  *
  * **A dedicated secret**, never `pushTokenSecret` and never `PLATFORM_SECRET`. A
  * shared signing key would make a compromised CI push token and a compromised
@@ -53,6 +67,10 @@ const PREFIX = 'stt1';
 interface TenantTokenClaim {
   v: 1;
   tenantId: string;
+  /** The person this token acts for (#977) — attribution, never authority. */
+  principal?: string;
+  /** K-42: the staff member acting as `principal`, when one was. */
+  impersonation?: ImpersonationStamp;
   /** Informational — no expiry in v1, exactly as push tokens have none. */
   iat: number;
 }
@@ -73,8 +91,17 @@ interface TenantTokenClaim {
  * reads one is the builder's bare-slug prefixing (#417), and a tenant principal
  * resolves a slug through the `x-substrat-tenant` header the plane already pins.
  */
-export async function mintTenantToken(secret: string, identity: { tenantId: TenantId }): Promise<string> {
-  const claim: TenantTokenClaim = { v: 1, tenantId: identity.tenantId, iat: Date.now() };
+export async function mintTenantToken(
+  secret: string,
+  identity: { tenantId: TenantId; principal?: PrincipalId; impersonation?: ImpersonationStamp },
+): Promise<string> {
+  const claim: TenantTokenClaim = {
+    v: 1,
+    tenantId: identity.tenantId,
+    ...(identity.principal ? { principal: identity.principal } : {}),
+    ...(identity.principal && identity.impersonation ? { impersonation: identity.impersonation } : {}),
+    iat: Date.now(),
+  };
   return signToken(PREFIX, secret, claim);
 }
 
@@ -88,6 +115,12 @@ export async function verifyTenantToken(secret: string, token: string): Promise<
     // Parse, don't trust: the signature proves WE minted it, the parse proves the
     // fields are still the ones a pin is made of (a format bump fails closed).
     tenantIdSchema.parse(claim.tenantId);
+    if (claim.principal !== undefined) principalId.parse(claim.principal);
+    if (claim.impersonation !== undefined) {
+      // A stamp names who was being impersonated; without the person it means nothing.
+      if (claim.principal === undefined) return null;
+      impersonationStamp.parse(claim.impersonation);
+    }
     return claim;
   } catch {
     return null;
@@ -109,6 +142,13 @@ export function tenantTokenAuth(secret: string, actor: PlatformActorId): TenantS
     if (!presented || !hasTokenPrefix(PREFIX, presented)) return null;
     const claim = await verifyTenantToken(secret, presented);
     if (!claim) return null;
-    return { actor, tenantId: tenantIdSchema.parse(claim.tenantId) };
+    const tenantId = tenantIdSchema.parse(claim.tenantId);
+    if (claim.principal === undefined) return { actor, tenantId };
+    const onBehalfOf: OnBehalfOf = {
+      principal: principalId.parse(claim.principal),
+      tenantId,
+      ...(claim.impersonation ? { impersonation: impersonationStamp.parse(claim.impersonation) } : {}),
+    };
+    return { actor, tenantId, onBehalfOf };
   };
 }

@@ -1,4 +1,4 @@
-import { platformActorId, type PlatformActorId, type TenantId } from '@substrat-run/contracts';
+import { platformActorId, type OnBehalfOf, type PlatformActorId, type TenantId } from '@substrat-run/contracts';
 
 /**
  * The identity seam for the control plane (control-plane.md §6).
@@ -220,6 +220,11 @@ export function firstBuilderAuth(...auths: BuilderAuth[]): BuilderAuth {
 export interface TenantServiceIdentity {
   actor: PlatformActorId;
   tenantId: TenantId;
+  /**
+   * The person the credential was minted for (#977), when it was minted for one. The
+   * audit row records it beside `actor`; it widens nothing — the pin is `tenantId`.
+   */
+  onBehalfOf?: OnBehalfOf;
 }
 
 /**
@@ -247,7 +252,7 @@ export type Principal =
   // prefixing (#417), and a tenant principal resolves a slug through the
   // `x-substrat-tenant` header instead — which the plane pins to this same tenant.
   // Carrying one would be a copy that can go stale for no reader's benefit.
-  | { kind: 'tenant'; actor: PlatformActorId; tenantId: TenantId };
+  | { kind: 'tenant'; actor: PlatformActorId; tenantId: TenantId; onBehalfOf?: OnBehalfOf };
 
 /**
  * The tenant a principal is CONFINED to, or null when it is fleet-wide staff.

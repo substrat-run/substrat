@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, type AppRow, type AuditEntry } from '../src/lib/api';
 import { adminAction } from '@substrat-run/contracts';
-import { actionKeyWords, actionWords, actorOf, entryDiff, filterEntries, groupByDay } from '../src/lib/audit-activity';
+import { actionKeyWords, actionWords, actorOf, entryActorOf, entryDiff, entryVia, filterEntries, groupByDay } from '../src/lib/audit-activity';
 import { actionWords as overviewActionWords, activityRows } from '../src/lib/overview-status';
 import { AuditLog, DEEP_LINK_PAGES } from '../src/views/Audit';
 
@@ -53,6 +53,26 @@ describe('audit activity derivations (#1825)', () => {
     expect(filterEntries(list, { kind: 'all', text: 'bound scope', appName }).map((e) => e.id)).toEqual(['j']);
     expect(filterEntries(list, { kind: 'all', text: 'acme hr', appName }).map((e) => e.id)).toEqual(['p', 'j']);
     expect(filterEntries(list, { kind: 'all', text: 'DANA', appName }).map((e) => e.id)).toEqual(['p']);
+  });
+
+  it('names the person a service acted for, with the service beside them (#977)', () => {
+    const DASH = '01JZ000000000000000000DASH';
+    const ann = '01K0ANNANNANNANNANNANNANN1';
+    const onBehalfOf = { principal: ann, tenantId: 't' };
+    const personName = (p: string) => (p === ann ? 'ann@acme.com' : null);
+    const attributed = entry('a', { actor: DASH, onBehalfOf });
+    // The person, not the dashboard: the service is how the act reached the plane.
+    expect(entryActorOf(attributed, personName)).toMatchObject({ kind: 'person', name: 'ann@acme.com', initials: 'AN' });
+    expect(entryVia(attributed)).toBe('Dashboard');
+    // A member the roster cannot name yet is still a person, never the service.
+    expect(entryActorOf(attributed)).toMatchObject({ kind: 'person', name: 'Member 01K0…ANN1' });
+    // A row that names nobody reads exactly as before.
+    const bare = entry('b', { actor: DASH });
+    expect(entryActorOf(bare, personName)).toMatchObject({ kind: 'job', name: 'Dashboard' });
+    expect(entryVia(bare)).toBeNull();
+    // So the People filter finds them, and so does their email.
+    expect(filterEntries([attributed, bare], { kind: 'person', text: '', appName, personName }).map((e) => e.id)).toEqual(['a']);
+    expect(filterEntries([attributed, bare], { kind: 'all', text: 'ann@', appName, personName }).map((e) => e.id)).toEqual(['a']);
   });
 
   it('diffs the changed keys, and never reads an unrecorded side as a value', () => {
@@ -127,6 +147,30 @@ describe('Audit page', () => {
     await click([...container.querySelectorAll('button')].find((b) => b.textContent === 'Jobs & integrations')!);
     expect(rows()).toEqual(['2']);
     expect(container.querySelector('[data-testid="audit-count"]')!.textContent).toBe('1 of 2 entries');
+  });
+
+  it('reads an attributed row as the person, via the dashboard, and says when staff acted as them (#977)', async () => {
+    const ann = '01K0ANNANNANNANNANNANNANN1';
+    vi.spyOn(api, 'auditLogAll').mockResolvedValue({
+      entries: [
+        entry('1', { actor: '01JZ000000000000000000DASH', onBehalfOf: { principal: ann, tenantId: 't' } }),
+        entry('2', {
+          actor: '01JZ000000000000000000DASH',
+          onBehalfOf: { principal: ann, tenantId: 't', impersonation: { session: 's', by: '01K0STAFFSTAFFSTAFFSTAFF01' } },
+        }),
+      ],
+      nextCursor: null,
+    });
+    await act(async () =>
+      root.render(
+        <AuditLog apps={apps} appsComplete scopeId={null} onScope={() => {}} personName={(p) => (p === ann ? 'ann@acme.com' : null)} />,
+      ),
+    );
+    expect(container.textContent).toContain('ann@acme.com assigned role on Acme HR · via Dashboard');
+    expect(container.textContent).toContain('· while staff acted as them');
+    await click(container.querySelector('[data-entry-id="1"] [role="button"]')!);
+    expect(container.textContent).toContain('On behalf of');
+    expect(container.textContent).toContain(ann);
   });
 
   it('expands an entry in place with its words, the app it touched and the diff', async () => {

@@ -180,6 +180,12 @@ export interface AuditEntry {
   before: unknown;
   after: unknown;
   causedBy: string | null;
+  /**
+   * The person the actor acted for (#977): a team member's principal, and the K-42 stamp
+   * when staff were acting as them. Null or absent when the actor acted for itself — a
+   * job, or a row written before the dashboard named who clicked.
+   */
+  onBehalfOf?: { principal: string; tenantId: string; impersonation?: { session: string; by: string } } | null;
   at: string;
 }
 

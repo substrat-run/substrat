@@ -70,11 +70,19 @@ describe('the tenant credential reaches every route the authority seam calls', (
         continue;
       }
       const path = raw
-        // `${…}` is an id or a slug — one path segment either way.
-        .replace(/\$\{[^}]*\}/g, 'x')
+        // `${…}` after a `/` is an id or a slug — one path segment either way.
+        .replace(/\/\$\{[^}]*\}/g, '/x')
+        // Anywhere else it is a query string appended to the path (`edges${q}`), and so is
+        // an interpolation this literal cuts off half-way (`connections${qs ? `?${qs}` …`).
+        // Read as a segment, those used to pass only because the allowlist was a catch-all.
+        .replace(/\$\{[^}]*\}/g, '')
+        .replace(/\$\{.*$/, '')
         .replace(/\?.*$/, '');
-      const method = m[1] === 'post' ? 'POST' : (/method:\s*'(\w+)'/.exec(args)?.[1] ?? 'GET');
-      out.push({ method, path, line });
+      // A method chosen at run time (`to === 'off' ? 'DELETE' : 'POST'`) is a site per
+      // method it can be: reading only the first literal took the peer switch for a GET.
+      const methodExpr = /method:\s*([^,\n]+)/.exec(args)?.[1] ?? '';
+      const methods = m[1] === 'post' ? ['POST'] : [...methodExpr.matchAll(/'(GET|POST|PUT|PATCH|DELETE)'/g)].map((x) => x[1]!);
+      for (const method of methods.length > 0 ? methods : ['GET']) out.push({ method, path, line });
     }
     return out;
   })();

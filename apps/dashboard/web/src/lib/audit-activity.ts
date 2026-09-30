@@ -91,6 +91,28 @@ export function actorOf(actor: string): Actor {
   return { kind: 'unknown', name: `Actor ${shortId(actor)}`, initials: '?' };
 }
 
+/** A team member's principal → their email, or null for one this page cannot name. */
+export type PersonName = (principal: string) => string | null;
+
+/**
+ * Who an ENTRY names (#977): the person the actor acted for when the row recorded one, and
+ * the actor otherwise. A row a service wrote for somebody is that somebody's act — the
+ * service is how it reached the plane, shown beside it (`entryVia`), never in its place.
+ */
+export function entryActorOf(e: Pick<AuditEntry, 'actor' | 'onBehalfOf'>, personName: PersonName = () => null): Actor {
+  const p = e.onBehalfOf?.principal;
+  if (!p) return actorOf(e.actor);
+  const email = personName(p);
+  return email
+    ? { kind: 'person', name: email, initials: initialsOf(email) }
+    : { kind: 'person', name: `Member ${shortId(p)}`, initials: '?' };
+}
+
+/** "Dashboard" — the service that carried an attributed entry, or null when the actor acted for itself. */
+export function entryVia(e: Pick<AuditEntry, 'actor' | 'onBehalfOf'>): string | null {
+  return e.onBehalfOf ? actorOf(e.actor).name : null;
+}
+
 /** "assigned role on Acme HR" — the sentence after the actor's bold name. */
 export function entrySentence(e: Pick<AuditEntry, 'action' | 'scopeId'>, appName: (scopeId: string) => string | null): string {
   const app = e.scopeId ? appName(e.scopeId) : null;
@@ -145,14 +167,21 @@ export function groupByDay<T extends { at: string }>(entries: T[], now = Date.no
 export type KindFilter = 'all' | 'person' | 'job';
 
 /** Kind and free-text filters. Text matches the actor, the sentence, the app and the raw action key. */
-export function filterEntries(entries: AuditEntry[], opts: { kind: KindFilter; text: string; appName: (scopeId: string) => string | null }): AuditEntry[] {
+export function filterEntries(
+  entries: AuditEntry[],
+  opts: { kind: KindFilter; text: string; appName: (scopeId: string) => string | null; personName?: PersonName },
+): AuditEntry[] {
   const q = opts.text.trim().toLowerCase();
   return entries.filter((e) => {
-    const who = actorOf(e.actor);
+    const who = entryActorOf(e, opts.personName);
     if (opts.kind !== 'all' && who.kind !== opts.kind) return false;
     if (!q) return true;
     const app = e.scopeId ? opts.appName(e.scopeId) ?? '' : '';
-    return [who.name, e.actor, entrySentence(e, opts.appName), app, e.action].join(' ').toLowerCase().includes(q);
+    const via = entryVia(e) ?? '';
+    return [who.name, e.actor, e.onBehalfOf?.principal ?? '', via, entrySentence(e, opts.appName), app, e.action]
+      .join(' ')
+      .toLowerCase()
+      .includes(q);
   });
 }
 
@@ -269,7 +298,7 @@ export function mergeActivity(
 /** The Outcome, kind and text filters over the merged list. */
 export function filterActivity(
   items: ActivityItem[],
-  opts: { outcome: OutcomeFilter; kind: KindFilter; text: string; appName: (scopeId: string) => string | null },
+  opts: { outcome: OutcomeFilter; kind: KindFilter; text: string; appName: (scopeId: string) => string | null; personName?: PersonName },
 ): ActivityItem[] {
   const q = opts.text.trim().toLowerCase();
   return items.filter((i) => {

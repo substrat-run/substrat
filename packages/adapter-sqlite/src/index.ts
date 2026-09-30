@@ -148,6 +148,7 @@ import {
   type OrgId,
   type PermissionKey,
   type PlatformActorId,
+  type OnBehalfOf,
   type PrincipalId,
   type PromotionAcknowledgement,
   type BindHostnameInput,
@@ -484,6 +485,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
+import { attributedHost } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -1196,6 +1198,7 @@ interface AdminLogRow {
   before: string | null;
   after: string | null;
   caused_by: string | null;
+  on_behalf_of: string | null;
   at: string;
 }
 
@@ -1504,6 +1507,12 @@ export class SqliteScopeHost implements ScopeHost {
    * so there is no window where it belongs to a different event.
    */
   private causedBy: string | null = null;
+  /**
+   * #977: the person an attributed admin view's actions are taken for. Only ever set on a
+   * VIEW (`attributed`, a Proxy whose `onBehalfOf` answers from the view), so a host shared across
+   * requests never carries one request's person into another's audit row.
+   */
+  private readonly onBehalfOf: OnBehalfOf | null = null;
   private readonly systemPrincipal: PrincipalId = principalId.parse(ulid());
   private readonly secretBox: SecretBox;
   private readonly fetchImpl: FetchLike;
@@ -2008,6 +2017,10 @@ export class SqliteScopeHost implements ScopeHost {
         -- what joins the connector seam's two halves: the module's emit and the
         -- executor's effect. Null for a staff member acting directly.
         caused_by TEXT,
+        -- #977: the person the action was taken for (JSON OnBehalfOf: principal, tenant,
+        -- K-42 impersonation), read off a verified credential. Null when no customer
+        -- session carried the call.
+        on_behalf_of TEXT,
         at TEXT NOT NULL
       );
       -- Read-path indexes for the console (control-plane.md §4.5). The admin log
@@ -5733,8 +5746,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.directory
       .prepare(
         `INSERT INTO _substrat_admin_log
-           (id, actor, action, tenant_id, scope_id, vertical, before, after, caused_by, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, actor, action, tenant_id, scope_id, vertical, before, after, caused_by, on_behalf_of, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         ulid(),
@@ -5746,6 +5759,8 @@ export class SqliteScopeHost implements ScopeHost {
         before == null ? null : JSON.stringify(before),
         after == null ? null : JSON.stringify(after),
         this.causedBy,
+        // #977: set only on an attributed view (`attributed`), never on the host itself.
+        this.onBehalfOf === null ? null : JSON.stringify(this.onBehalfOf),
         new Date().toISOString(),
       );
   }
@@ -5778,7 +5793,17 @@ export class SqliteScopeHost implements ScopeHost {
     ).map((r) => ({ key: r.entitlement_key, expired: r.expires_at !== null && r.expires_at <= now }));
   }
 
+  /** #977: this host, with every admin row it writes naming who the actor acted for. */
+  attributed(onBehalfOf: OnBehalfOf): this {
+    return attributedHost(this, onBehalfOf, this.buildAdmin);
+  }
+
   private buildAdmin(): HostAdmin {
+    // #977: an admin whose audit rows say on whose behalf it acts. Built over a VIEW of this
+    // host rather than by setting a field on it: the view inherits every method and every
+    // shared structure (the directory, the maps), and owns only the attribution — plus its
+    // own `admin`, so a host helper that calls `this.admin.…` from inside the view stays
+    // attributed. Race-free by construction, whoever else is using the host.
     const mapTenant = (r: TenantRow): Tenant =>
       tenantSchema.parse({
         id: r.tenant_id,
@@ -9684,6 +9709,7 @@ export class SqliteScopeHost implements ScopeHost {
             before: r.before === null ? null : JSON.parse(r.before),
             after: r.after === null ? null : JSON.parse(r.after),
             causedBy: r.caused_by,
+            onBehalfOf: r.on_behalf_of ? JSON.parse(r.on_behalf_of) : null,
             at: r.at,
           }),
         );
@@ -10222,6 +10248,8 @@ export class SqliteScopeHost implements ScopeHost {
     // under several accounts. Existing data always satisfies the wider key.
     this.directory.exec('DROP INDEX IF EXISTS _substrat_connections_live');
     this.ensureColumn(this.directory, '_substrat_admin_log', 'caused_by', 'caused_by TEXT');
+    // #977: after the rebuild above, like `caused_by`.
+    this.ensureColumn(this.directory, '_substrat_admin_log', 'on_behalf_of', 'on_behalf_of TEXT');
     // #1172: which version this scope's provision hook last ran against. Null on every
     // existing row, which reads as "unknown, reconcile once" rather than "up to date".
     this.ensureColumn(this.directory, 'scopes', 'provisioned_version_id', 'provisioned_version_id TEXT');

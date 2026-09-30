@@ -126,7 +126,9 @@ describe('the owner hand-over route (#1665)', () => {
     const s = await newScope();
     const res = await send(route(s), asTenant);
     expect(res.status).toBe(403);
-    expect(((await res.json()) as { error: string }).error).toMatch(/staff-only/);
+    // Refused at the credential's allowlist since #977 named the dashboard's routes one by
+    // one; the handler's own staff-only check stays, behind it, for any other confined caller.
+    expect(((await res.json()) as { error: string }).error).toMatch(/staff-only|forbidden/);
     expect(asked).toEqual([]);
     expect(await rows(s)).toEqual([]);
     expect((await send(route(s), asStaff)).status).toBe(200);

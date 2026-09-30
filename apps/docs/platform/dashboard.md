@@ -49,10 +49,11 @@ Provisioning an app is `assertAllowed(ctx.check('dashboard:provision-app'))` the
 kernel's: a caller without the key is refused before anything is created. The tenant half is the
 credential's: the Dashboard presents a **tenant token** the control plane mints per tenant, and the
 plane refuses a request that names another — so the narrowing is the server's, not a promise the
-Dashboard keeps about itself. What is still the Dashboard's own is the *attribution*: an action is
-audited as the Dashboard rather than as the customer's admin. The
+Dashboard keeps about itself. The token also names the team member it was minted for, so the audit
+log records the person who acted beside the Dashboard that carried it, and **Audit › Activity**
+shows them by name ("via Dashboard"). The
 [design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/dashboard.md)
-§4 says exactly where that line falls and what closes it.
+§4 has the detail.
 
 ## Auth
 
@@ -271,7 +272,5 @@ surface is now shipped: the app lifecycle, builder **Deployments**, a read-only 
 export/import, **Previews**, per-app **Environment**, custom **Domains**, team **members** (invite /
 accept / remove / leave, with a Team view), and third-party **connections** (an Integrations view).
 Billing and the plan are the main pieces still on the roadmap the
-[design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/dashboard.md) lays out,
-alongside naming the customer's own admin in the audit row (the seam's tenant narrowing is now
-server-enforced; its attribution is not).
+[design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/dashboard.md) lays out.
 It is served as a React SPA bundled into its worker; the account menu lives in the sidebar footer.
