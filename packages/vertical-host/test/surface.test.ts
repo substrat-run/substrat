@@ -868,23 +868,36 @@ describe('mountPlatformSurface — flavored routes and their hooks', () => {
 
   it('delete-scope runs the host then the onDeleteScope hook', async () => {
     const host = fakeHost();
-    let forgotten: string | null = null;
+    let forgotten: { scopeId: string; tenantId: string | undefined } | null = null;
     const res = await appWith(host, {
-      onDeleteScope: async (_env, s) => {
-        forgotten = s;
+      onDeleteScope: async (_env, scopeId, tenantId) => {
+        forgotten = { scopeId, tenantId };
       },
     }).request(
       '/internal/delete-scope',
       {
         method: 'POST',
         headers: authed({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ scopeId: SCOPE }),
+        body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE }),
       },
       ENV,
     );
     expect(res.status).toBe(200);
     expect(host.calls).toContain('deleteScopeLocal');
-    expect(forgotten).toBe(SCOPE);
+    expect(forgotten).toEqual({ scopeId: SCOPE, tenantId: TENANT });
+  });
+
+  it('still accepts delete-scope requests from older control planes', async () => {
+    let tenant: string | undefined = 'not called';
+    const res = await appWith(fakeHost(), {
+      onDeleteScope: async (_env, _scopeId, tenantId) => { tenant = tenantId; },
+    }).request('/internal/delete-scope', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ scopeId: SCOPE }),
+    }, ENV);
+    expect(res.status).toBe(200);
+    expect(tenant).toBeUndefined();
   });
 
   it('configure 501s when no onConfigure is supplied', async () => {

@@ -39,11 +39,15 @@ mountPlatformSurface(app, {
   transferOwner,   // hand the owner of record to another member (omit ⇒ 501)
   completeOwnerTransfer, // close that hand-over once seated and revoked (required with it)
   abandonOwnerTransfer,  // close an open hand-over without finishing it (omit ⇒ an abandon 501s)
-  onDeleteScope,   // e.g. drop the scope from a sweep roster (optional)
+  onDeleteScope,   // (env, scopeId, tenantId?) — e.g. drop a scope from a registry (optional)
 });
 
 export default app;
 ```
+
+`onDeleteScope(env, scopeId, tenantId?)` receives the tenant ID from current control planes,
+so a vertical can remove the scope from a tenant-specific registry. Older delete requests
+omit the tenant ID; handle `undefined` if the hook must support them.
 
 ### What it owns vs. what you supply
 

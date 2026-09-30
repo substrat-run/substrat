@@ -652,9 +652,10 @@ export interface PlatformSurfaceDeps<Env> {
   /**
    * Vertical-specific delete-scope side effect — e.g. drop the scope from a deployment
    * sweep roster (#461) so its alarm never wakes a reaped scope. Runs after the host has
-   * wiped the scope's storage. Optional.
+   * wiped the scope's storage. The tenant is supplied by current control planes;
+   * older callers omit it, so hooks that need it should handle that case. Optional.
    */
-  onDeleteScope?: (env: Env, scopeId: ScopeId) => Promise<void>;
+  onDeleteScope?: (env: Env, scopeId: ScopeId, tenantId?: TenantId) => Promise<void>;
 
   /**
    * Extra error mapping, tried BEFORE the default envelope. Return a `{status, message}`
@@ -916,9 +917,9 @@ export function mountPlatformSurface<Env extends object>(
   });
 
   app.post('/internal/delete-scope', async (c) => {
-    const body = z.object({ scopeId: scopeIdOf }).parse(await c.req.json());
+    const body = z.object({ scopeId: scopeIdOf, tenantId: tenantIdOf.optional() }).parse(await c.req.json());
     await deps.hostFor(c.env).deleteScopeLocal(body.scopeId);
-    await deps.onDeleteScope?.(c.env, body.scopeId);
+    await deps.onDeleteScope?.(c.env, body.scopeId, body.tenantId);
     return c.json({ deleted: body.scopeId });
   });
 
