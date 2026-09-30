@@ -8,6 +8,10 @@ import { actionWords as overviewActionWords, activityRows } from '../src/lib/ove
 import { AuditLog, DEEP_LINK_PAGES } from '../src/views/Audit';
 
 const at = (y: number, m: number, d: number, h = 12) => new Date(y, m - 1, d, h).toISOString();
+// One instant for every fixture that does not set its own. Stamping each entry with the
+// clock as it is built made the newest-first order depend on whether a millisecond ticked
+// between two `entry()` calls — green locally, red in CI.
+const FIXTURE_AT = new Date().toISOString();
 const entry = (id: string, over: Partial<AuditEntry> = {}): AuditEntry => ({
   id,
   actor: 'dana@acme.com',
@@ -18,7 +22,7 @@ const entry = (id: string, over: Partial<AuditEntry> = {}): AuditEntry => ({
   before: null,
   after: null,
   causedBy: null,
-  at: new Date().toISOString(),
+  at: FIXTURE_AT,
   ...over,
 });
 const appName = (s: string) => (s === 'a' ? 'Acme HR' : null);
