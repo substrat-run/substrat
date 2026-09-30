@@ -755,3 +755,72 @@ describe('the platform sweep is the caller', () => {
     expect((await kit.runs(d)).map((r) => r.behaviour).sort()).toEqual(['autoClose', 'autoTag', 'noReplyNotify']);
   });
 });
+
+describe('the per-conversation check is real: a refusal on one conversation skips it and the pass goes on', () => {
+  // The schedule's principal holds a node-wide grant, so the real checker cannot refuse one
+  // conversation and allow its neighbour. The kit's wrapped checker can, and that is what
+  // makes the per-row check observable rather than assumed.
+  it('auto-tag leaves the refused conversation unread, tags the rest, and reads it once the refusal is lifted', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    await kit.configure(d, { autoTag: { rules: [{ in: 'subject', contains: 'refund', tag: 'billing' }] } });
+    const [a, victim, c] = [
+      await kit.mail(d, { subject: 'Refund A', body: 'x' }),
+      await kit.mail(d, { subject: 'Refund B', body: 'x' }),
+      await kit.mail(d, { subject: 'Refund C', body: 'x' }),
+    ] as [string, string, string];
+    kit.denyEntities([victim]);
+    expect(await sweepTag(d)).toBe(2);
+    expect(await kit.tags(d, a)).toEqual(['billing']);
+    expect(await kit.tags(d, c)).toEqual(['billing']);
+    expect(await kit.tags(d, victim)).toEqual([]);
+    expect((await kit.read(d, victim)).auto_tagged_at).toBeNull();
+    kit.denyEntities([]);
+    expect(await sweepTag(d)).toBe(1);
+    expect(await kit.tags(d, victim)).toEqual(['billing']);
+  });
+
+  it('auto-close leaves the refused conversation resolved, closes the rest, and takes it once lifted', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    await kit.configure(d, { autoClose: { afterDays: 1 } });
+    const ids = [await kit.mail(d), await kit.mail(d), await kit.mail(d)] as [string, string, string];
+    for (const id of ids) await kit.resolve(d, id);
+    kit.clock.advance(2 * DAY);
+    kit.denyEntities([ids[1]]);
+    expect(await sweepClose(d)).toBe(2);
+    expect((await kit.read(d, ids[0])).state).toBe('closed');
+    expect((await kit.read(d, ids[1])).state).toBe('resolved');
+    expect((await kit.read(d, ids[2])).state).toBe('closed');
+    kit.denyEntities([]);
+    expect(await sweepClose(d)).toBe(1);
+    expect((await kit.read(d, ids[1])).state).toBe('closed');
+  });
+
+  it('no-reply notify does not announce the refused conversation, announces the rest, and does it once lifted', async () => {
+    const d = await kit.freshDesk({ agents: 1 });
+    await kit.configure(d, { noReplyNotify: { afterHours: 1 } });
+    const ids = [await kit.mail(d), await kit.mail(d), await kit.mail(d)] as [string, string, string];
+    kit.clock.advance(2 * HOUR);
+    kit.denyEntities([ids[1]]);
+    expect(await sweepNotify(d)).toBe(2);
+    expect(await kit.escalations(d, d.agents[0]!, ids[0])).toBe(1);
+    expect(await kit.escalations(d, d.agents[0]!, ids[1])).toBe(0);
+    expect(await kit.escalations(d, d.agents[0]!, ids[2])).toBe(1);
+    expect((await kit.read(d, ids[1])).no_reply_notified_at).toBeNull();
+    kit.denyEntities([]);
+    expect(await sweepNotify(d)).toBe(1);
+    expect(await kit.escalations(d, d.agents[0]!, ids[1])).toBe(1);
+  });
+
+  it('the node-level check still stops a sweep outright — the refusal above is per row, not per behaviour', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    await kit.configure(d, { autoClose: { afterDays: 1 } });
+    const id = await kit.mail(d);
+    await kit.resolve(d, id);
+    kit.clock.advance(2 * DAY);
+    kit.denyEntities([id]);
+    expect(await sweepClose(d)).toBe(0); // skipped, not thrown
+    kit.denyEntities([]);
+    kit.revokeSystemGrant(d, 'conversation:resolve');
+    await expect(sweepClose(d)).rejects.toThrow(/denied/i);
+  });
+});

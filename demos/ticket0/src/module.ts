@@ -3813,10 +3813,16 @@ const operations = {
     const pending = ctx.sql.query<ConversationRow>(AUTO_TAG_PENDING, [AUTO_TAG_BATCH]);
     let tagged = 0;
     let conversationsTagged = 0;
+    let refused = 0;
     for (const conversation of pending) {
-      assertAllowed(
-        await ctx.check(T0_PERM.conversationAssign, conversationRef(conversation.id)),
-      );
+      // A refusal on ONE conversation leaves that one alone and the pass goes on: the
+      // node check above is what stops the behaviour, and a row the desk may not act on
+      // must not take the rest of the batch down with it. It is not stamped, so it is
+      // looked at again once the desk may act on it.
+      if (!(await ctx.check(T0_PERM.conversationAssign, conversationRef(conversation.id))).allowed) {
+        refused++;
+        continue;
+      }
       const first = readsBody
         ? ctx.sql.query<{ body: string }>(
             `SELECT substr(body_text, 1, ?) AS body FROM ticket0_messages
@@ -3842,6 +3848,7 @@ const operations = {
       ]);
     }
     recordFired(ctx, 'autoTag', conversationsTagged);
+    if (refused > 0) ctx.log.warn('auto-tag skipped {refused} conversations it may not act on', { refused });
     if (tagged > 0) ctx.log.info('auto-tagged {tagged} tags', { tagged });
     return { tagged };
   },
@@ -3878,14 +3885,18 @@ const operations = {
       AUTO_CLOSE_BATCH,
     ]);
     let closed = 0;
+    let refused = 0;
     for (const conversation of due) {
-      assertAllowed(
-        await ctx.check(T0_PERM.conversationResolve, conversationRef(conversation.id)),
-      );
+      // A refusal on one conversation skips it and the pass goes on (see `auto-tag`).
+      if (!(await ctx.check(T0_PERM.conversationResolve, conversationRef(conversation.id))).allowed) {
+        refused++;
+        continue;
+      }
       closeConversation(ctx, conversation, 'ticket0/auto-close');
       closed++;
     }
     recordFired(ctx, 'autoClose', closed);
+    if (refused > 0) ctx.log.warn('auto-close skipped {refused} conversations it may not act on', { refused });
     if (closed > 0) ctx.log.info('auto-closed {closed} resolved conversations', { closed });
     return { closed };
   },
@@ -3926,10 +3937,13 @@ const operations = {
       NO_REPLY_BATCH,
     ]);
     let notified = 0;
+    let refused = 0;
     for (const conversation of waiting) {
-      assertAllowed(
-        await ctx.check(T0_PERM.conversationEscalate, conversationRef(conversation.id)),
-      );
+      // A refusal on one conversation skips it and the pass goes on (see `auto-tag`).
+      if (!(await ctx.check(T0_PERM.conversationEscalate, conversationRef(conversation.id))).allowed) {
+        refused++;
+        continue;
+      }
       const told = notifyStaff(ctx, conversation, 'escalated');
       if (told === 0) continue;
       ctx.sql.exec('UPDATE ticket0_conversations SET no_reply_notified_at = ? WHERE id = ?', [
@@ -3952,9 +3966,10 @@ const operations = {
       notified++;
     }
     recordFired(ctx, 'noReplyNotify', notified);
-    if (notified < waiting.length) {
+    if (refused > 0) ctx.log.warn('notify-no-reply skipped {refused} conversations it may not act on', { refused });
+    if (notified + refused < waiting.length) {
       ctx.log.warn('{waiting} waiting customers could not be announced: nobody is on the desk', {
-        waiting: waiting.length - notified,
+        waiting: waiting.length - notified - refused,
       });
     }
     if (notified > 0) ctx.log.info('told the desk about {notified} waiting customers', { notified });

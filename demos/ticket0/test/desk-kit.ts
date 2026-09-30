@@ -26,7 +26,14 @@ import {
   type Page,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { manualClock, ulid, type ManualClock, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
+import {
+  manualClock,
+  ulid,
+  type ManualClock,
+  type PermissionChecker,
+  type ScopeHost,
+  type ScopeStub,
+} from '@substrat-run/kernel';
 import { ticket0Manifest } from '../src/manifest.js';
 import { ASSISTANT_NAME } from '../src/module.js';
 import { ROLES } from '../src/provision.js';
@@ -97,6 +104,15 @@ export interface Kit {
     type: string,
     entityId?: string,
   ): { actor: string; operation: string | null; authorization: string | null; payload: string }[];
+  /**
+   * Make the host's permission checker refuse any PER-ENTITY check the schedule's own
+   * principal makes on these conversations — and nothing else, so a node-level check and a
+   * person's read still pass. The only way to see a
+   * per-conversation check at all: a schedule's principal holds a node-wide grant, so with
+   * the real checker a per-row check and a node check cannot be told apart. Pass an empty
+   * list to lift it.
+   */
+  denyEntities(ids: readonly string[]): void;
   /** Run harness SQL on a desk's own database (a stand-in for a row this version never wrote). */
   sql<T>(desk: Desk, fn: (db: Database.Database) => T): T;
   dispose(): void;
@@ -108,6 +124,19 @@ export function createKit(prefix: string): Kit {
   const host = buildHost(dir, clock.read);
   let desks = 0;
   let mails = 0;
+  const denied = new Set<string>();
+  // Wrap the checker the host built. It is read again for every invocation's context, so
+  // swapping it here takes effect on the next call. Node-level checks carry no entity and
+  // fall through to the real checker untouched.
+  const wrapped = host as unknown as { checker: PermissionChecker };
+  const inner = wrapped.checker;
+  wrapped.checker = {
+    covers: (...args) => inner.covers(...args),
+    check: async (subject, permission, node, entity) =>
+      entity && denied.has(entity.entityId) && subject.kind === 'system'
+        ? { allowed: false, checked: permission, node }
+        : inner.check(subject, permission, node, entity),
+  };
 
   const as = (desk: Desk, who: PrincipalId): Promise<ScopeStub> => host.getScope(who, desk.tenant, desk.scope);
   const dbPath = (desk: Desk) => join(dir, `${desk.tenant}__${desk.scope}.sqlite`);
@@ -310,6 +339,11 @@ export function createKit(prefix: string): Kit {
       } finally {
         db.close();
       }
+    },
+
+    denyEntities(ids) {
+      denied.clear();
+      for (const id of ids) denied.add(id);
     },
 
     dispose() {
