@@ -471,6 +471,13 @@ async function runMacroPart(
   return handler(ctx, declared.input ? declared.input.parse(input) : input);
 }
 
+/** A colleague's directory row, or nothing. The one read of `ticket0_agent_profiles` by principal. */
+function profileOf(ctx: OperationContext, principal: string): AgentProfileRow | undefined {
+  return ctx.sql.query<AgentProfileRow>('SELECT * FROM ticket0_agent_profiles WHERE principal = ?', [
+    principal,
+  ])[0];
+}
+
 /**
  * Somebody who is on this desk at all — membership, and only that.
  *
@@ -484,12 +491,6 @@ async function runMacroPart(
  * handed to; `assignableStaffOrThrow` below is that second question, and it is the
  * one `assign` asks.
  */
-function profileOf(ctx: OperationContext, principal: string): AgentProfileRow | undefined {
-  return ctx.sql.query<AgentProfileRow>('SELECT * FROM ticket0_agent_profiles WHERE principal = ?', [
-    principal,
-  ])[0];
-}
-
 function staffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
   const row = profileOf(ctx, principal);
   if (!row) {
