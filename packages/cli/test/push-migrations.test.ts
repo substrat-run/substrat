@@ -132,7 +132,11 @@ describe.runIf(built)('push carries each module’s SQL migrations (#1677)', () 
   it('leaves the field OFF, and still pushes, when the set is over the manifest’s cap', () => {
     const many = Array.from({ length: DECLARED_MIGRATIONS_MAX + 1 }, (_, i) => ({ version: String(i), sql: 'SELECT 1;' }));
     // `pushed` throws unless the upload happened, so reaching the assertion is the push succeeding.
-    expect(pushed(vertical([{ id: 'helpdesk', migrations: many }])).migrations).toBeUndefined();
+    const before = pushed(vertical([{ id: 'helpdesk', migrations: many }]));
+    const after = pushed(vertical([{ id: 'helpdesk', migrations: [...many, { version: 'next', sql: 'SELECT 2;' }] }]));
+    expect(before.migrations).toBeUndefined();
+    expect(after.migrations).toBeUndefined();
+    expect(after.digests.migration).not.toBe(before.digests.migration);
   });
 
   it('leaves the field OFF when escaping takes the MANIFEST past what the platform stores, though the SQL is under its cap', () => {
@@ -144,19 +148,18 @@ describe.runIf(built)('push carries each module’s SQL migrations (#1677)', () 
     expect(stderr).toMatch(/not carried in this version's manifest \(the manifest would be \d+ bytes/);
   });
 
-  /**
-   * The finding this issue surfaced, pinned as it stands: `digests.migration` is a hash of
-   * the Durable-Object classes, not of the SQL. A push whose ONLY change is a new SQL
-   * migration moves no digest, so the promotion gate's migration acknowledgement never
-   * fires for it. The dialog shows the migrations either way; whether the digest should
-   * cover them is a gate change and a separate decision.
-   */
-  it('TODAY: a push whose only change is a new SQL migration leaves every digest where it was', () => {
+  it('moves the migration digest when a SQL migration is added', () => {
     const before = pushed(vertical([{ id: 'helpdesk', migrations: [INIT] }]));
     const after = pushed(vertical([{ id: 'helpdesk', migrations: [INIT, ADD] }]));
     expect(after.migrations).not.toEqual(before.migrations);
-    expect(after.digests.migration).toBe(before.digests.migration);
+    expect(after.digests.migration).not.toBe(before.digests.migration);
     expect(after.digests.permission).toBe(before.digests.permission);
+  });
+
+  it('moves the migration digest when existing SQL changes under the same version', () => {
+    const before = pushed(vertical([{ id: 'helpdesk', migrations: [INIT] }]));
+    const after = pushed(vertical([{ id: 'helpdesk', migrations: [{ ...INIT, sql: 'CREATE TABLE ticket (id TEXT, title TEXT);' }] }]));
+    expect(after.digests.migration).not.toBe(before.digests.migration);
   });
 
   it('and the digest DOES move for a new Durable-Object class — the one change it covers', () => {
@@ -190,6 +193,7 @@ describe.runIf(built && kernelBuilt)('push carries the derived index migrations 
     const diff = migrationsOnTop(after.migrations!, before.migrations!);
     expect(diff.total).toBeGreaterThan(0);
     expect(diff.added.map((a) => a.version)).toEqual([expect.stringMatching(/^list\/ticket:/)]);
+    expect(after.digests.migration).not.toBe(before.digests.migration);
   });
 
   it('and one that changes ONLY `searchables` likewise', () => {
@@ -202,12 +206,21 @@ describe.runIf(built && kernelBuilt)('push carries the derived index migrations 
     expect(migrationsOnTop(after.migrations!, before.migrations!).added.map((a) => a.version)).toEqual([
       expect.stringMatching(/^search\/ticket:/),
     ]);
+    expect(after.digests.migration).not.toBe(before.digests.migration);
   });
 
   it('without a kernel to derive them, a module declaring lists carries NO migrations — never a short set', () => {
     const { manifest, stderr } = pushedWith(vertical([{ id: 'helpdesk', migrations: [TABLE], lists }]));
     expect(manifest.migrations).toBeUndefined();
     expect(stderr).toMatch(/declares searchables or lists/);
+  });
+
+  it('tracks unresolved index declarations when an older kernel cannot derive their SQL', () => {
+    const before = pushed(vertical([{ id: 'helpdesk', migrations: [TABLE], lists }]));
+    const after = pushed(vertical([{ id: 'helpdesk', migrations: [TABLE], lists: [{ ...lists[0], filterable: ['title'] }] }]));
+    expect(before.migrations).toBeUndefined();
+    expect(after.migrations).toBeUndefined();
+    expect(after.digests.migration).not.toBe(before.digests.migration);
   });
 });
 

@@ -62,8 +62,12 @@ function pushOrigin(): VersionOrigin {
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
+  return (await fullSha256(bytes)).slice(0, 32);
+}
+
+async function fullSha256(bytes: Uint8Array): Promise<string> {
   const digest = await webcrypto.subtle.digest('SHA-256', bytes);
-  return Buffer.from(digest).toString('hex').slice(0, 32);
+  return Buffer.from(digest).toString('hex');
 }
 
 /** Deterministic JSON: object keys sorted recursively, array order preserved. Makes the
@@ -187,20 +191,21 @@ export type ModuleMigrationsFn = (registration: PermissionsInput['modules'][numb
  * `migrations` is undefined (and `omitted` says why) when the set is over the manifest's caps,
  * or incomplete as above. The field is then left off, which the promote dialog reads as "SQL
  * not available" and still asks for the acknowledgement: metadata must never fail a push.
+ * `digestMigrations` retains the complete SQL set even when the manifest omits it, so the
+ * promotion gate still sees a change. Without a kernel, `unresolvedIndexes` records the
+ * declarations whose derived SQL cannot be computed by this CLI.
  */
 export function flattenDeclaredMigrations(
   permissions: PermissionsInput,
   moduleMigrations?: ModuleMigrationsFn,
-): { migrations?: DeclaredMigration[]; omitted?: string } {
+): {
+  migrations?: DeclaredMigration[];
+  omitted?: string;
+  digestMigrations: DeclaredMigration[];
+  unresolvedIndexes?: { moduleId: string; searchables: unknown[]; lists: unknown[] }[];
+} {
   const derives = (m: PermissionsInput['modules'][number]) =>
     (m.manifest.searchables?.length ?? 0) > 0 || (m.manifest.lists?.length ?? 0) > 0;
-  if (!moduleMigrations && permissions.modules.some(derives)) {
-    return {
-      omitted:
-        "a module declares searchables or lists, and the vertical's @substrat-run/kernel has no moduleMigrations " +
-        'to derive their index migrations with (upgrade the kernel)',
-    };
-  }
   const migrations = permissions.modules.flatMap((m) =>
     (moduleMigrations ? moduleMigrations(m) : (m.migrations ?? [])).map((s) => ({
       moduleId: m.manifest.id,
@@ -208,14 +213,58 @@ export function flattenDeclaredMigrations(
       sql: s.sql,
     })),
   );
+  const unresolvedIndexes = !moduleMigrations
+    ? permissions.modules.filter(derives).map((m) => ({
+        moduleId: m.manifest.id,
+        searchables: m.manifest.searchables ?? [],
+        lists: m.manifest.lists ?? [],
+      }))
+    : [];
+  if (unresolvedIndexes.length > 0) {
+    return {
+      digestMigrations: migrations,
+      unresolvedIndexes,
+      omitted:
+        "a module declares searchables or lists, and the vertical's @substrat-run/kernel has no moduleMigrations " +
+        'to derive their index migrations with (upgrade the kernel)',
+    };
+  }
   if (migrations.length > DECLARED_MIGRATIONS_MAX) {
-    return { omitted: `${migrations.length} migrations, over the ${DECLARED_MIGRATIONS_MAX} a manifest carries` };
+    return {
+      digestMigrations: migrations,
+      omitted: `${migrations.length} migrations, over the ${DECLARED_MIGRATIONS_MAX} a manifest carries`,
+    };
   }
   const bytes = sqlBytes(migrations);
   if (bytes > DECLARED_MIGRATIONS_SQL_BYTES_MAX) {
-    return { omitted: `${bytes} bytes of SQL, over the ${DECLARED_MIGRATIONS_SQL_BYTES_MAX} a manifest carries` };
+    return {
+      digestMigrations: migrations,
+      omitted: `${bytes} bytes of SQL, over the ${DECLARED_MIGRATIONS_SQL_BYTES_MAX} a manifest carries`,
+    };
   }
-  return { migrations };
+  return { migrations, digestMigrations: migrations };
+}
+
+/** The promotion gate covers store classes and every SQL migration the host would apply.
+ * Hash SQL separately so the digest input stays small even for an omitted manifest list. */
+async function migrationDigest(
+  doClasses: string[],
+  declared: ReturnType<typeof flattenDeclaredMigrations>,
+): Promise<string> {
+  const sql = await Promise.all(
+    declared.digestMigrations.map(async ({ moduleId, version, sql }) => ({
+      moduleId,
+      version,
+      sqlHash: await fullSha256(Buffer.from(sql)),
+    })),
+  );
+  return sha256(
+    Buffer.from(stableStringify({
+      doClasses,
+      sql,
+      ...(declared.unresolvedIndexes ? { unresolvedIndexes: declared.unresolvedIndexes } : {}),
+    })),
+  );
 }
 
 /**
@@ -1416,7 +1465,7 @@ export async function push(
     digests: {
       manifest: await sha256(concat),
       permission: await permissionDigest(registry),
-      migration: await sha256(Buffer.from(JSON.stringify(doClasses))),
+      migration: await migrationDigest(doClasses, migrations),
     },
   }));
 
