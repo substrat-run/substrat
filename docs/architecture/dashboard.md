@@ -6,8 +6,8 @@ description: The tenant-facing self-service surface. apps/dashboard.
 
 # The Dashboard — the tenant-facing self-service surface
 
-**Status:** **built** — `apps/dashboard`. One half of §4's authority model is enforced in the
-caller rather than by the control plane (#977); §4 says exactly where. Sibling to
+**Status:** **built** — `apps/dashboard`. §4's authority model is enforced by the control plane,
+and the audit row names the customer's own member beside the service that carried it (#977). Sibling to
 [control-plane.md](control-plane.md) (the operator console) and
 [kernel-design.md](kernel-design.md) (tenancy, permissions, provisioning). The prompt:
 *"Vercel, but for Substrat."*
@@ -164,7 +164,7 @@ API. It is: the kernel's permission model deciding *can they*, and a **tenant-na
 actor** deciding *where* — the two halves the kernel already enforces for every scope operation and
 every connection.
 
-### Move 1 is built; move 2's narrowing is built, its audit half is not (#977)
+### Move 1 is built; move 2 is built — narrowing and attribution (#977)
 
 The seam exists and has the right shape. `TenantNarrowedControlPlane`
 (`apps/dashboard/src/authority.ts`) takes `tenantId` as a **constructor** argument, fixed from the
@@ -188,7 +188,14 @@ with a claim that carries the tenant and nothing else. It resolves to a third pr
 Confinement is the plane's, in one place (`createControlPlaneApi`):
 
 - a **default-deny route allowlist**, the same reflex `BUILDER_ROUTES` uses — a route not listed
-  403s, so forgetting one costs a Dashboard feature and never reach;
+  403s, so forgetting one costs a Dashboard feature and never reach. It names the Dashboard's
+  routes **one by one**, including under `/tenants/<own>/…`: a path confined to one tenant is not a
+  harmless route, and a catch-all there reached entitlement self-grant, the tenant's own status and
+  the staff-only redrain doors. The Dashboard's `credential-reach` test reads its authority seam's
+  call sites and holds the list to them;
+- **what a route may do, where the pin alone would allow too much**: an entitlement grant is
+  limited to a key a vertical the tenant can see declares (what an install grants — never
+  `builder`, never plan fields), and a rebind's target vertical must be one the tenant can read;
 - every listed route declares **how its tenant is named** — the `/tenants/:tenantId/…` path, a
   forced `?tenantId=`, a body field, or ownership of the vertical/hostname it addresses — and the
   pin must be **present**, because a missing filter is exactly what made these routes answer
@@ -202,14 +209,20 @@ tenant token (`POST /tenant-tokens`, staff-only and on neither allowlist, so a t
 never mint another). That is the one fleet-wide capability a multi-tenant dashboard cannot avoid,
 and it is now a single audited route rather than ambient staff reach across sixty.
 
-**The audit half is still open.** Writes are stamped with the fixed `SERVICE_ACTOR`
-(`apps/control-plane/src/worker.ts`), so the admin log records *the Dashboard did this*, not *this
-customer's admin did this*. The tenant token deliberately carries no actor — the host supplies it,
-exactly as `serviceTokenAuth` does — so nothing about a minted credential can change what a row
-names. Carrying the customer's own `PrincipalId` that far is the second half of #977 and its own
-change: it makes `PlatformActorId` stop being the type of an audit actor, which is kernel-facing.
-Until it lands, read the *attribution* clause of move 2 as the target rather than as a property of
-the deployed system; the *narrowing* clause is now real.
+**The audit half records the chain, not one of its links.** The first design retyped the audit
+actor into the customer's `PrincipalId`. It was dropped for recording both: a service acting for a
+person is two facts, and a staff member impersonating that person (K-42) is a third, so any one
+field names somebody and hides the rest. An admin row keeps `actor` — the credential that executed,
+still a `PlatformActorId` — and gains `onBehalfOf`: the member's principal, their tenant, and the
+impersonation stamp when there was one. Additive, so no reader of `actor` changes.
+
+The person comes from the **token**, never a header or a body: the Dashboard mints one per (tenant,
+signed-in member), the staff-only mint writes `principal` into the signed claim, and the plane
+writes through `host.attributed(onBehalfOf)` — a view of the host, per request, whose every admin
+row (the `admin` surface and host-level writes such as `provisionScope` alike) carries it. It is
+attribution, not authority: the tenant pin is the whole of what the token may do, with or without a
+person. A token minted for nobody — a webhook, a background reap — writes a row that names nobody,
+which is true. Audit › Activity reads the row as the member, "via Dashboard".
 
 ### The privileged seam, concretely
 
@@ -225,9 +238,9 @@ proposes a third answer — **neither**, because a sandbox-clean Dashboard needs
 a read-only, tenant-scoped seam for the platform-owned facts it displays — and is awaiting
 ratification. Either way the
 safety rests on three things already true elsewhere: the permission check runs first, the tenant is
-ambient not supplied, and the action is audited — subject to the qualification above, since the
-third still names `SERVICE_ACTOR`. The second is no longer a qualification: since #977 the tenant
-is carried by the credential and enforced by the plane.
+ambient not supplied, and the action is audited — and the audit row names the member beside
+`SERVICE_ACTOR`. Neither is a qualification any more: since #977
+the tenant is carried by the credential and enforced by the plane, and the row names who clicked.
 
 This also settles the recursion cleanly: the Dashboard vertical is *deployed once* (like Meridian),
 and each customer runs a *scope* of it. The bootstrap (creating the customer's tenant + first
@@ -266,12 +279,11 @@ caller-side qualification §4 records).
   provision a Meridian app-scope → My apps + URL. Proves the bootstrap, the catalog, and the
   provisioning authority end to end — the *narrowing* half of that authority only as far as the
   caller, per §4.
-- **M0.1 — close §4's server half, in two pieces (#977).** The first is **built**: a tenant-scoped
-  credential class on the control-plane side (`tenant-token.ts`), so a request naming another
-  tenant is refused by the server rather than by the Dashboard. The second is **not**: the audit
-  row still names `SERVICE_ACTOR` rather than the customer's principal, which needs
-  `PlatformActorId` to stop being the type of an audit actor and is its own checkpoint. Until it
-  lands, read §4's move 2 as target for *attribution* and as built for *narrowing*.
+- **M0.1 — close §4's server half (#977). Built.** A tenant-scoped credential class on the
+  control-plane side (`tenant-token.ts`), so a request naming another tenant is refused by the
+  server rather than by the Dashboard, over an allowlist that names the Dashboard's routes one by
+  one; and the audit row records the member the Dashboard acted for (`onBehalfOf`) beside the
+  service actor, rather than replacing it.
 - **M1 — team:** invite members, roles, roster (grant/revoke).
 - **M2 — ops:** custom domains, connections (connect Scrive from the Dashboard), settings.
 - **M3 — plan:** entitlements surfaced read-only. **Billing stays out** (control-plane.md is

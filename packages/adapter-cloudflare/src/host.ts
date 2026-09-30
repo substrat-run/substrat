@@ -147,6 +147,7 @@ import {
   type OrgId,
   type PermissionKey,
   type PlatformActorId,
+  type OnBehalfOf,
   type BecomeCapabilityInput,
   type CapabilityExchange,
   type CapabilityId,
@@ -341,6 +342,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
 } from '@substrat-run/kernel';
+import { attributedHost } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
   isUpgradeRequest,
@@ -849,6 +851,8 @@ interface AdminEntry {
   tenantId: string | null;
   /** The event that caused this action, when one did (K-22 §4.2). */
   causedBy: string | null;
+  /** Who the actor acted for (#977), when an attributed view wrote the row. */
+  onBehalfOf: OnBehalfOf | null;
   scopeId: string | null;
   vertical: string | null;
   before: unknown;
@@ -1844,6 +1848,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * where it belongs to a different event.
    */
   private causedBy: string | null = null;
+  /**
+   * The person the actor acted for (#977). Never set on the host itself: only an
+   * `attributed(…)` view answers it, so it cannot leak between requests.
+   */
+  private readonly onBehalfOf: OnBehalfOf | null = null;
   private readonly withdrawn = new Map<string, string>(); // operation → module
   private readonly operationEntitlement = new Map<string, string>();
   /** #574: remote connector write-back for scopes served by another deployment. */
@@ -3976,6 +3985,11 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   // -- admin surface --------------------------------------------------------
+
+  /** #977: this host, with every admin row it writes naming who the actor acted for. */
+  attributed(onBehalfOf: OnBehalfOf): this {
+    return attributedHost(this, onBehalfOf, this.buildAdmin);
+  }
 
   private buildAdmin(): HostAdmin {
     // The directory row → the `scope` contract. Parsed, not cast: the columns are
@@ -7114,6 +7128,7 @@ export class CloudflareScopeHost implements ScopeHost {
       action,
       tenantId: target.tenantId,
       causedBy: this.causedBy,
+      onBehalfOf: this.onBehalfOf,
       scopeId: target.scopeId ?? null,
       vertical: target.vertical ?? null,
       before: before ?? null,

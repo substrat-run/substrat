@@ -5,6 +5,7 @@ import { DEV_MOCK, MOCK_FLEET_HEALTH } from '../lib/mock';
 import { MOCK_OVERVIEW_AUDIT, MOCK_OVERVIEW_INTEGRATIONS } from '../lib/mock-overview';
 import { VERDICTS, fleetRows, type FleetRow } from '../lib/fleet-rows';
 import { activityRows, appHref, attentionRows, clock, filterApps, integrationRows, statusSentence, type AppsFilter, type Read } from '../lib/overview-status';
+import type { PersonName } from '../lib/audit-activity';
 import { isPlainClick, navigate, obsPath, teamPath } from '../lib/router';
 import { Ic } from '../lib/icons';
 import { AppCard } from '../components/AppCard';
@@ -43,6 +44,7 @@ export function Overview({
   hasMore,
   loadingMore,
   onLoadMore,
+  personName,
 }: {
   apps: AppRow[];
   loading?: boolean;
@@ -56,6 +58,8 @@ export function Overview({
   loadingMore?: boolean;
   /** Loads the next page; a rejection is how the Overview learns the walk failed. */
   onLoadMore?: () => Promise<void> | void;
+  /** #977: a member's principal → their email, so Recent activity names who clicked. */
+  personName?: PersonName;
 }) {
   const [health, setHealth] = useState<Read<AppHealthRow[]>>(null);
   const [integrations, setIntegrations] = useState<Read<AccountIntegration[]>>(null);
@@ -252,7 +256,7 @@ export function Overview({
           ) : audit.length === 0 ? (
             <div style={quiet}>No audited actions yet.</div>
           ) : (
-            activityRows(audit, (s) => byScope.get(s)?.name ?? null).map((e) => (
+            activityRows(audit, (s) => byScope.get(s)?.name ?? null, Date.now(), personName).map((e) => (
               <Go key={e.id} href={e.href} style={{ display: 'grid', gridTemplateColumns: '24px minmax(0,1fr) 84px', gap: '0 10px', alignItems: 'center', minHeight: 40, padding: '4px 16px', borderTop: '1px solid var(--border-subtle)' }}>
                 <span aria-hidden style={{ width: 24, height: 24, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 600, background: 'var(--surface-active)', color: 'var(--text-secondary)' }}>{e.initials}</span>
                 <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--text-secondary)', textWrap: 'pretty' } as CSSProperties}>

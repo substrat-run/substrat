@@ -44,6 +44,7 @@ import { splitSqlStatements, switchSqlOver } from './scope-do.js';
 import { doBuiltColumnsOf } from './sql.js';
 import type {
   AdminLogEntry,
+  OnBehalfOf,
   DeclaredMigration,
   ListPage,
   OpsFailureEntry,
@@ -342,6 +343,7 @@ interface AdminLogRow {
   before: string | null;
   after: string | null;
   caused_by: string | null;
+  on_behalf_of: string | null;
   at: string;
 }
 
@@ -548,6 +550,8 @@ export interface AdminEntryInput {
   tenantId: string | null;
   /** The event that caused this action, when one did (K-22 §4.2). */
   causedBy?: string | null;
+  /** The person a service credential acted for (#977), when the transport knew one. */
+  onBehalfOf?: OnBehalfOf | null;
   scopeId: string | null;
   vertical: string | null;
   before: unknown;
@@ -941,6 +945,9 @@ const DIRECTORY_DDL = `
     -- The event that caused this action, when one did (K-22 §4.2) — the join
     -- between the connector seam's emit half and its effect half.
     caused_by TEXT,
+    -- The person the actor acted for, as JSON (#977) - principal, tenant and any
+    -- K-42 impersonation stamp. NULL when the actor acted for itself.
+    on_behalf_of TEXT,
     at TEXT NOT NULL
   );
   -- Read-path indexes for the console (control-plane.md §4.5). The admin log is
@@ -1424,6 +1431,8 @@ export class ControlPlaneDO extends DurableObject {
     // K-21's tombstone on tenant-level tuples (membership lives here).
     this.addColumn('_substrat_tenant_tuples', 'revoked_at TEXT');
     this.addColumn('_substrat_admin_log', 'caused_by TEXT');
+    // #977: who a service credential acted for.
+    this.addColumn('_substrat_admin_log', 'on_behalf_of TEXT');
     // The signals `version` stamp (#1231): a DO that predates the column ALTERs it in.
     this.addColumn('_substrat_ops_failures', 'version TEXT');
     // The error shape (#1233): who refused + the taxonomy code, on a DO that predates them.
@@ -3970,8 +3979,8 @@ export class ControlPlaneDO extends DurableObject {
   recordAdmin(entry: AdminEntryInput): void {
     this.sql.exec(
       `INSERT INTO _substrat_admin_log
-         (id, actor, action, tenant_id, scope_id, vertical, before, after, caused_by, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, actor, action, tenant_id, scope_id, vertical, before, after, caused_by, on_behalf_of, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       entry.id,
       entry.actor,
       entry.action,
@@ -3981,6 +3990,7 @@ export class ControlPlaneDO extends DurableObject {
       entry.before == null ? null : JSON.stringify(entry.before),
       entry.after == null ? null : JSON.stringify(entry.after),
       entry.causedBy ?? null,
+      entry.onBehalfOf == null ? null : JSON.stringify(entry.onBehalfOf),
       entry.at,
     );
   }
@@ -4042,6 +4052,7 @@ export class ControlPlaneDO extends DurableObject {
           before: r.before === null ? null : JSON.parse(r.before),
           after: r.after === null ? null : JSON.parse(r.after),
           causedBy: r.caused_by,
+          onBehalfOf: r.on_behalf_of ? JSON.parse(r.on_behalf_of) : null,
           at: r.at,
         }) as AdminLogEntry,
     );

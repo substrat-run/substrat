@@ -7,10 +7,11 @@ import { shortDate, shortId } from '../lib/format';
 import { isPlainClick, navigate, teamPath } from '../lib/router';
 import {
   actionWords,
-  actorOf,
   clockTime,
+  entryActorOf,
   entryDiff,
   entrySentence,
+  entryVia,
   filterActivity,
   groupByDay,
   mergeActivity,
@@ -19,6 +20,7 @@ import {
   type ActorKind,
   type KindFilter,
   type OutcomeFilter,
+  type PersonName,
   type Refusal,
 } from '../lib/audit-activity';
 import { mockDenials } from '../lib/mock-audit';
@@ -56,6 +58,7 @@ export function AuditLog({
   scopeId,
   entryId = null,
   onScope,
+  personName,
 }: {
   apps: AppRow[];
   /** False while the app index is still being walked — the filter and the app tags are then partial. */
@@ -64,6 +67,8 @@ export function AuditLog({
   /** The entry a deep link opens (`?entry=`). */
   entryId?: string | null;
   onScope: (s: string | null) => void;
+  /** #977: a member's principal → their email, so a row the dashboard wrote for them names them. */
+  personName?: PersonName;
 }) {
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -211,7 +216,7 @@ export function AuditLog({
   // exactly the invented order the merge exists to prevent.
   const refusalsPending = scopeId !== null && refusals === null;
   const merged = mergeActivity(entries ? { entries, more: cursor !== null } : null, scopeId ? refusals : null);
-  const shown = entries ? filterActivity(merged.items, { outcome, kind, text, appName }) : [];
+  const shown = entries ? filterActivity(merged.items, { outcome, kind, text, appName, personName }) : [];
   const days = groupByDay(shown);
   const canLoadOlder = cursor !== null || (scopeId !== null && !!refusals?.more);
   const older = async () => {
@@ -326,7 +331,7 @@ export function AuditLog({
                   </div>
                   {d.items.map((i) =>
                     i.kind === 'action' ? (
-                      <EntryRow key={i.id} entry={i.entry} appName={appName} open={open === i.id} onToggle={() => setOpen(open === i.id ? null : i.id)} />
+                      <EntryRow key={i.id} entry={i.entry} appName={appName} personName={personName} open={open === i.id} onToggle={() => setOpen(open === i.id ? null : i.id)} />
                     ) : (
                       <RefusalRow key={i.id} refusal={i.refusal} scopeId={scopeId!} />
                     ),
@@ -469,9 +474,24 @@ function RefusalRow({ refusal: r, scopeId }: { refusal: Refusal; scopeId: string
   );
 }
 
-function EntryRow({ entry: e, appName, open, onToggle }: { entry: AuditEntry; appName: (id: string) => string; open: boolean; onToggle: () => void }) {
+function EntryRow({
+  entry: e,
+  appName,
+  personName,
+  open,
+  onToggle,
+}: {
+  entry: AuditEntry;
+  appName: (id: string) => string;
+  personName?: PersonName;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const [hover, setHover] = useState(false);
-  const who = actorOf(e.actor);
+  // #977: the person, when the row names one; the service that carried it rides beside.
+  const who = entryActorOf(e, personName);
+  const via = entryVia(e);
+  const actingAs = e.onBehalfOf?.impersonation != null;
   const diff = entryDiff(e.before, e.after);
   const onKey = (ev: KeyboardEvent) => {
     if (ev.key !== 'Enter' && ev.key !== ' ') return;
@@ -487,7 +507,9 @@ function EntryRow({ entry: e, appName, open, onToggle }: { entry: AuditEntry; ap
     // addresses one event by id yet, so it is shown rather than linked.
     ...(e.causedBy ? [{ label: 'Caused by event', value: e.causedBy, mono: true }] : []),
     { label: 'When', value: <span title={e.at}>{shortDate(e.at)} · {clockTime(e.at)}</span> },
-    { label: 'Actor', value: e.actor, mono: true },
+    ...(e.onBehalfOf ? [{ label: 'On behalf of', value: e.onBehalfOf.principal, mono: true }] : []),
+    ...(e.onBehalfOf?.impersonation ? [{ label: 'Staff acting as them', value: e.onBehalfOf.impersonation.by, mono: true }] : []),
+    { label: via ? 'Carried by' : 'Actor', value: via ? `${via} · ${e.actor}` : e.actor, mono: !via },
     { label: 'Entry', value: e.id, mono: true },
   ];
   return (
@@ -513,7 +535,9 @@ function EntryRow({ entry: e, appName, open, onToggle }: { entry: AuditEntry; ap
       >
         <span aria-hidden style={avatar(who.kind)}>{who.initials}</span>
         <span style={{ fontSize: 13.5, lineHeight: '20px', color: 'var(--text-secondary)', textWrap: 'pretty' } as CSSProperties}>
-          <span title={e.actor} style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{who.name}</span> {entrySentence(e, appName)}
+          <span title={e.onBehalfOf?.principal ?? e.actor} style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{who.name}</span> {entrySentence(e, appName)}
+          {via && <span style={{ color: 'var(--text-tertiary)' }}> · via {via}</span>}
+          {actingAs && <span style={{ color: 'var(--status-warning-fg)' }}> · while staff acted as them</span>}
         </span>
         <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', minWidth: 0 }}>
           {/* An entry that names no scope is a team-level action — a role, an entitlement. */}

@@ -585,3 +585,4 @@ export {
   type ExportRow,
   type RegisteredImport,
 } from './vertical-events.js';
+export { attributedHost } from './attribution.js';

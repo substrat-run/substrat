@@ -1,7 +1,7 @@
 import type { AccountIntegration, AuditEntry, ConnectionView } from './api';
 import { VERDICTS, type FleetRow, type FleetVerdict } from './fleet-rows';
 import { relativeTime } from './format';
-import { actorOf, entryHref, entrySentence } from './audit-activity';
+import { entryActorOf, entryHref, entrySentence, type PersonName } from './audit-activity';
 import { obsPath } from './router';
 
 /**
@@ -321,9 +321,15 @@ export function activityTime(iso: string, now = Date.now()): string {
   return t.toLocaleDateString('en', { month: 'short', day: 'numeric' });
 }
 
-export function activityRows(entries: AuditEntry[], appName: (scopeId: string) => string | null, now = Date.now()): ActivityRow[] {
+export function activityRows(
+  entries: AuditEntry[],
+  appName: (scopeId: string) => string | null,
+  now = Date.now(),
+  personName?: PersonName,
+): ActivityRow[] {
   return entries.slice(0, 6).map((e) => {
-    const who = actorOf(e.actor);
+    // #977: the person the dashboard acted for, where the row records one.
+    const who = entryActorOf(e, personName);
     return {
       id: e.id,
       initials: who.initials,

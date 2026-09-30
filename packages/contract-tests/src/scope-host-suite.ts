@@ -1193,6 +1193,48 @@ export function scopeHostContractSuite(
       });
     });
 
+    it('an attributed host records who the actor acted for, and only on its own rows (#977)', async () => {
+      const t = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug: 'attribution', name: 'Attribution' });
+      const person = principalId.parse(ulid());
+      const impersonator = platformActorId.parse(ulid());
+      const viewed = host.attributed!({ principal: person, tenantId: t }).admin;
+      const impersonated = host.attributed!({
+        principal: person,
+        tenantId: t,
+        impersonation: { session: 'imp-977', by: impersonator } as never,
+      }).admin;
+      // Interleaved on purpose: a view is not a mode the host is switched into.
+      await Promise.all([
+        viewed.grantEntitlement(staff, t, 'attr-a'),
+        host.admin.grantEntitlement(staff, t, 'attr-b'),
+        impersonated.grantEntitlement(staff, t, 'attr-c'),
+      ]);
+      const rows = await host.admin.auditLog(staff, { tenantId: t });
+      const byKey = (key: string) =>
+        rows.find((r) => r.action === 'grantEntitlement' && JSON.stringify(r.after ?? '').includes(key));
+      // The actor stays the credential that executed; the person is beside it.
+      expect(byKey('attr-a')?.actor).toBe(staff);
+      expect(byKey('attr-a')?.onBehalfOf).toEqual({ principal: person, tenantId: t });
+      expect(byKey('attr-b')?.onBehalfOf ?? null).toBeNull();
+      expect(byKey('attr-c')?.onBehalfOf).toEqual({
+        principal: person,
+        tenantId: t,
+        impersonation: { session: 'imp-977', by: impersonator },
+      });
+      // The view reads the same log the host does.
+      expect((await viewed.auditLog(staff, { tenantId: t })).length).toBe(rows.length);
+
+      // A HOST-level write is attributed too, not only the `admin` surface: the dashboard's
+      // provisioning, restore and snapshot routes reach the host directly.
+      const sc = scopeId.parse(ulid());
+      await host.attributed!({ principal: person, tenantId: t }).provisionScope(staff, { tenantId: t, scopeId: sc, jurisdiction: 'eu' });
+      const provisioned = (await host.admin.auditLog(staff, { tenantId: t })).find(
+        (r) => r.action === 'provisionScope' && r.scopeId === sc,
+      );
+      expect(provisioned?.onBehalfOf).toEqual({ principal: person, tenantId: t });
+    });
+
     it('isolates scope storage: a write in one scope is invisible in another', async () => {
       const stub1 = await host.getScope(alice, t1, s1);
       const stub2 = await host.getScope(alice, t2, s2);

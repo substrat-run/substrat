@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
+import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   firstBuilderAuth,
@@ -57,6 +57,28 @@ describe('tenant tokens', () => {
       new Request('http://cp/tenants', { headers: { [SERVICE_TOKEN_HEADER]: token } }),
     );
     expect(identity).toEqual({ actor: serviceActor, tenantId: tA });
+  });
+
+  it('may carry the PERSON beside the pin — attribution, handed back as onBehalfOf (#977)', async () => {
+    const person = principalId.parse(ulid());
+    const by = platformActorId.parse(ulid());
+    const token = await mintTenantToken(SECRET, {
+      tenantId: tA,
+      principal: person,
+      impersonation: { session: 'imp-1', by } as never,
+    });
+    const identity = await tenantTokenAuth(SECRET, serviceActor)(
+      new Request('http://cp/tenants', { headers: { [SERVICE_TOKEN_HEADER]: token } }),
+    );
+    // The actor is still the host's. The person rides beside it, never in its place.
+    expect(identity).toEqual({
+      actor: serviceActor,
+      tenantId: tA,
+      onBehalfOf: { principal: person, tenantId: tA, impersonation: { session: 'imp-1', by } },
+    });
+    // A stamp with nobody impersonated is dropped at the mint, and refused if forged.
+    const bare = await mintTenantToken(SECRET, { tenantId: tA, impersonation: { session: 'imp-1', by } as never });
+    expect(Object.keys((await verifyTenantToken(SECRET, bare))!).sort()).toEqual(['iat', 'tenantId', 'v']);
   });
 
   it('refuses a tampered payload, a wrong secret, and a foreign prefix', async () => {
@@ -439,6 +461,98 @@ describe('tenant tokens', () => {
       });
       expect(bootstrap.status).toBe(201);
       expect((await app.request(`/tenants/${fresh}`, { headers: asFresh })).status).toBe(200);
+    });
+
+    // -- #977's second half: the allowlist names acts, and rows name the person ----
+
+    const mintPerson = async (t: string, principal: string): Promise<Record<string, string>> => {
+      const res = await app.request('/tenant-tokens', {
+        method: 'POST', headers: staffHeaders, body: JSON.stringify({ tenantId: t, principal }),
+      });
+      expect(res.status).toBe(201);
+      const { token } = (await res.json()) as { token: string };
+      return { [SERVICE_TOKEN_HEADER]: token, 'content-type': 'application/json' };
+    };
+    const put = (path: string, headers: Record<string, string>, body?: unknown) =>
+      app.request(path, { method: 'PUT', headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+
+    it('writes the person beside the service actor — and two people at once each get their own row', async () => {
+      const ann = principalId.parse(ulid());
+      const bo = principalId.parse(ulid());
+      const [asAnn, asBo] = await Promise.all([mintPerson(tA, ann), mintPerson(tA, bo)]);
+      // Interleaved on ONE app: the person is per request, never a mode the app is left in.
+      const [renamed, granted, bare] = await Promise.all([
+        app.request(`/tenants/${tA}`, { method: 'PATCH', headers: asAnn, body: JSON.stringify({ name: 'Acme, renamed' }) }),
+        put(`/tenants/${tA}/entitlements/app`, asBo),
+        app.request(`/tenants/${tA}`, { method: 'PATCH', headers: asA, body: JSON.stringify({ name: 'Acme' }) }),
+      ]);
+      expect([renamed.status, granted.status, bare.status]).toEqual([200, 200, 200]);
+
+      const log = await host.admin.auditLog(staff, { tenantId: tA });
+      const of = (p: string) => log.filter((r) => r.onBehalfOf?.principal === p);
+      expect(of(ann).map((r) => r.action)).toEqual(['setTenantName']);
+      expect(of(bo).map((r) => r.action)).toEqual(['grantEntitlement']);
+      for (const r of [...of(ann), ...of(bo)]) {
+        expect(r.actor).toBe(serviceActor);
+        expect(r.onBehalfOf?.tenantId).toBe(tA);
+      }
+      // A token minted for nobody still writes an unattributed row, as before #977.
+      expect(log.filter((r) => r.action === 'setTenantName' && r.onBehalfOf == null)).not.toHaveLength(0);
+    });
+
+    it('refuses a mint whose impersonation names nobody', async () => {
+      const res = await app.request('/tenant-tokens', {
+        method: 'POST',
+        headers: staffHeaders,
+        body: JSON.stringify({ tenantId: tA, impersonation: { session: 's', by: staff } }),
+      });
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBeLessThan(500);
+    });
+
+    it('grants itself only what an install would — never `builder`, never a plan', async () => {
+      // `acme/app` declares nothing, so it gates on its bare slug: an install grants `app`.
+      expect((await put(`/tenants/${tA}/entitlements/app`, asA)).status).toBe(200);
+      // The escalation the catch-all allowed: any key, `builder` included.
+      expect((await put(`/tenants/${tA}/entitlements/builder`, asA)).status).toBe(403);
+      // Pricing is the platform's, even on a key the tenant may hold.
+      expect((await put(`/tenants/${tA}/entitlements/app`, asA, { plan: 'pro' })).status).toBe(403);
+      // Staff still grant anything — the rule is the tenant credential's, not the route's.
+      expect((await put(`/tenants/${tA}/entitlements/builder`, staffHeaders)).status).toBe(200);
+      await app.request(`/tenants/${tA}/entitlements/builder`, { method: 'DELETE', headers: staffHeaders });
+    });
+
+    it('does not reach the tenant-level acts the dashboard never issues', async () => {
+      const refused = [
+        ['PATCH', `/tenants/${tA}/status`, { status: 'suspended' }],
+        ['DELETE', `/tenants/${tA}/entitlements/app`, undefined],
+        ['POST', `/tenants/${tA}/scopes/${scopeA}/redrain-events`, {}],
+        ['POST', `/tenants/${tA}/scopes/${scopeA}/redrain-count`, {}],
+        ['POST', `/tenants/${tA}/scopes/${scopeA}/unsuspend`, undefined],
+      ] as const;
+      for (const [method, path, body] of refused) {
+        const res = await app.request(path, {
+          method,
+          headers: asA,
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+        expect(`${method} ${path} → ${res.status}`).toBe(`${method} ${path} → 403`);
+      }
+      // The twin: its own tenant row, on the route it does issue.
+      expect((await app.request(`/tenants/${tA}`, { headers: asA })).status).toBe(200);
+    });
+
+    it('cannot rebind its scope onto another tenant’s PRIVATE vertical — which reads as absent', async () => {
+      const foreign = await app.request(`/tenants/${tA}/scopes/${scopeA}/rebind-vertical`, {
+        method: 'POST', headers: asA, body: JSON.stringify({ vertical: 'rival/app' }),
+      });
+      expect(foreign.status).toBe(404);
+      // The twin: its own vertical passes this check (whatever the rebind then decides).
+      const own = await app.request(`/tenants/${tA}/scopes/${scopeA}/rebind-vertical`, {
+        method: 'POST', headers: asA, body: JSON.stringify({ vertical: 'acme/app' }),
+      });
+      expect(own.status).not.toBe(404);
+      expect(own.status).not.toBe(403);
     });
 
     it('501s the mint when no secret is configured', async () => {

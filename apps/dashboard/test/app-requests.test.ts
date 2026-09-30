@@ -64,6 +64,9 @@ describe('the app request reads (#1746)', () => {
   const appScope = scopeId.parse(ulid());
   /** Every request read that reached the plane, as a URL. */
   let reads: URL[];
+  /** Every tenant-token mint's body — who the dashboard asked the credential to act for. */
+  let mints: unknown[];
+  let owner: ReturnType<typeof principalId.parse>;
   let env: Record<string, unknown>;
 
   beforeEach(async () => {
@@ -72,8 +75,9 @@ describe('the app request reads (#1746)', () => {
     shared.host = host;
     for (const m of MODULES) host.registerModule(m);
     reads = [];
+    mints = [];
 
-    const owner = principalId.parse(ulid());
+    owner = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'requests', name: 'Requests' });
     await host.admin.registerIdentityPool(staff, { provider: PROVIDER, topology: 'central', tenantId: null });
     await host.admin.linkIdentity(staff, {
@@ -88,10 +92,13 @@ describe('the app request reads (#1746)', () => {
       SESSION_SECRET: 'test-session-secret',
       CP_SERVICE_TOKEN: 'service-token',
       CONTROL_PLANE_SVC: {
-        fetch: async (url: string | URL | Request) => {
+        fetch: async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));
           const path = u.pathname.replace(/^\/api/, '');
-          if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
+          if (path === '/tenant-tokens') {
+            mints.push(JSON.parse(String(init?.body)));
+            return Response.json({ token: 'tenant-token' });
+          }
           if (path.startsWith('/observability/tenant-request') || path === '/observability/tenant-log-patterns' || path === '/observability/tenant-logs') {
             reads.push(u);
             if (u.searchParams.get('hours') === '501') return Response.json({ error: 'not configured' }, { status: 501 });
@@ -125,6 +132,12 @@ describe('the app request reads (#1746)', () => {
       expect(ask.searchParams.get('tenantId')).toBe(tenant);
       expect(ask.searchParams.get('scopeId')).toBe(appScope);
     }
+  });
+
+  it('mints the credential for the signed-in member, so the plane can name them (#977)', async () => {
+    await read(appScope, 'volume');
+    // Once per (tenant, person) per isolate — this tenant is fresh, so this read minted it.
+    expect(mints).toEqual([{ tenantId: tenant, principal: owner }]);
   });
 
   it('never lets the query name the tenant or the scope', async () => {

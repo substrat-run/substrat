@@ -38,6 +38,7 @@ import {
 import type { DenialFilter } from './denial.js';
 import type { LifecycleFlowInput } from './lifecycle-flow.js';
 import { errorCode } from './errors.js';
+import { impersonationStamp } from './impersonation.js';
 import { platformRequestFailureOrigin } from './platform-request.js';
 
 // The control plane — the shared layer across N per-vertical deployments (D-30,
@@ -1005,6 +1006,30 @@ export const sweepRunsPayload = z.object({
 export type SweepRunsPayload = z.infer<typeof sweepRunsPayload>;
 
 /**
+ * On whose behalf a control-plane action was taken (#977) — the person, where the executing
+ * `actor` is the client that carried it out.
+ *
+ * "Who did this" is a chain of up to three parties, and the audit row keeps all of them:
+ * the platform identity that EXECUTED it (`actor`: the dashboard's service, a CI token, the
+ * sweep, a staff member in the console), the customer principal whose session and authority
+ * it ran under (`principal` + `tenantId`), and — when the two differ — the staff member who
+ * was really at the keyboard (`impersonation`, the K-42 stamp the outbox and the denial log
+ * already carry). Collapsing the chain into one actor would drop which client acted, and
+ * leave impersonation nowhere to go.
+ *
+ * Never supplied by a caller: it is read off a credential the control plane verified — the
+ * dashboard's tenant token carries it, signed at mint — exactly as `actor` is stamped
+ * platform-side.
+ */
+export const onBehalfOf = z.object({
+  principal: principalId,
+  tenantId,
+  /** K-42: a staff member acting as `principal`. Absent the ordinary case. */
+  impersonation: impersonationStamp.optional(),
+});
+export type OnBehalfOf = z.infer<typeof onBehalfOf>;
+
+/**
  * An append-only admin audit row (control-plane.md §4.4). Every field except
  * `before`/`after` is stamped platform-side — never supplied by the caller —
  * for the same reason the kernel is trusted at all (K-4): a surface that can act
@@ -1041,6 +1066,13 @@ export const adminLogEntry = z.object({
    * themselves.
    */
   causedBy: eventId.nullable(),
+  /**
+   * #977: the person the action was taken for, when a credential said so — see
+   * `onBehalfOf`. Null for an action no customer session carried (staff in the console,
+   * a sweep, a CI push). OPTIONAL on the wire: a row, or a store, from before the column
+   * reads as "not recorded", never as a parse failure.
+   */
+  onBehalfOf: onBehalfOf.nullable().optional(),
   at: instant,
 });
 export type AdminLogEntry = z.infer<typeof adminLogEntry>;

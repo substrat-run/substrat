@@ -280,14 +280,15 @@ describe('the bind gate route (#1756)', () => {
       expect(storeOf(SERVING).get(s)?.[0]?.rows).toEqual([['legacy-row']]);
     });
 
-    it('a tenant can adopt, so a tenant is asked too', async () => {
+    it('a tenant credential does not reach adopt at all — the dashboard never issues it (#977)', async () => {
+      // It did while the tenant allowlist was a `/tenants/<own>/…` catch-all, and this case
+      // asserted the gate asked it too. The list now names the dashboard's own routes, and
+      // adopting is the console's and the CLI's act: refused before the gate, moving nothing.
       await serve(dropped);
       const s = await legacy();
-      const refused = await post(`/tenants/${t}/scopes/${s}/adopt-serving`, asTenant);
-      expect(refused.status).toBe(409);
+      const refused = await post(`/tenants/${t}/scopes/${s}/adopt-serving`, asTenant, { acknowledge: { exportBreak: true } });
+      expect(refused.status).toBe(403);
       expect(await recordOf(s)).toMatchObject({ servingRef: null });
-      const acked = await post(`/tenants/${t}/scopes/${s}/adopt-serving`, asTenant, { acknowledge: { exportBreak: true } });
-      expect(acked.status).toBe(200);
     });
 
     it('rebind-vertical within one lineage is an adopt, and refused the same way', async () => {
