@@ -277,9 +277,17 @@ describe('inviting somebody onto the desk', () => {
  * passes the gate already holds every permission of every role an invite can confer. This case
  * is what makes that claim a fact rather than a comment. When it fails, the new role needs the
  * bound (`host.canAssign`) in the harness, not an exemption here.
+ *
+ * It reads the compile-time `ROLES`, as a proxy for the roles provisioning projects into a
+ * desk: the harness grants by key, and a desk's projected role is what `provisionScopeLocal`
+ * wrote from this same array. A key missing from `ROLES` fails rather than counting as empty.
  */
 describe('the invite gate covers every invitable role', () => {
-  const perms = (key: string) => ROLES.find((r) => r.key === key)?.permissions ?? [];
+  const perms = (key: string) => {
+    const role = ROLES.find((r) => r.key === key);
+    if (!role) throw new Error(`'${key}' is invitable but no role in ROLES defines it`);
+    return role.permissions;
+  };
   const gateRoles = ROLES.filter((r) => r.permissions.includes(T0_PERM.deskConfigure));
 
   it('some role passes the gate (the control)', () => {
