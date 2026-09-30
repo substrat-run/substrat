@@ -1,5 +1,27 @@
 # @substrat-run/connector-scrive
 
+## 0.14.36
+
+### Patch Changes
+
+- d827f61: A document sent for signing through Scrive is now titled with a name instead of `<templateKey> v<templateVersion>`. The signatory sees that title in the invitation and in Scrive.
+
+  - `requestSignatures` accepts an optional `title` for the instance, such as a contract number. `protocol.signatures-requested` carries it as `title`, and when no title is given it carries the template's own title.
+  - The Scrive connector uses that title for the document and for the attestation sheet it renders when no document is bound. If an event from an older engine has no title, the connector uses the template key. It no longer appends the template version.
+  - The title is not part of the content hash.
+
+- 20138d3: A dispatch made before Scrive party ids were stored is now pinned to its parties by position only when the parties' names bear that position out. Until now, the first poll pinned the ids whenever the party count and roles still lined up, and never read a name. Two parties that changed places at Scrive, or two parties renamed at once, were pinned to each other's requests, so each signature was recorded against the other party.
+
+  Pinning now also requires one of two things: every signing party's name is still its dispatched label, or exactly one name differs, its label is on no other signing party, and its new name is not another party's label. Nothing is pinned when two dispatched parties share a label. The sender slot is not compared, because Scrive rewrites it to the account holder. When no ids are pinned, the position fallback now also refuses a party that shows no name, or whose name another signing party also shows. Every refusal is reported under "needs attention" instead of being recorded.
+
+- 2ebcce8: The return path now attributes a Scrive signature by Scrive's own party id, which survives an edit made at Scrive. Before, it matched by list position with the party's name as a cross-check, so correcting a party's name or address at Scrive after sending made every later poll skip that party's signature without any report. The protocol instance stayed `pending_signature` while Scrive showed the document as signed.
+
+  - A dispatch stores each party's `providerPartyId`, read from `start`'s response.
+  - A dispatch made before this change gets its ids pinned by the first poll that finds the document still has the shape that was sent. Its stuck signatures are then recorded on that poll.
+  - A signature that still cannot be attributed is no longer dropped. It is kept on the ledger row as `needsAttention` and returned from both the reconcile and the sweep. The connection's activity view flags the row as "needs attention" and shows the reason next to the party.
+  - @substrat-run/contracts@0.130.1
+  - @substrat-run/kernel@0.130.1
+
 ## 0.14.35
 
 ### Patch Changes
