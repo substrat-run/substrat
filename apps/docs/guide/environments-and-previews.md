@@ -61,7 +61,10 @@ properties do the heavy lifting:
   **rebinds the new version onto the same fork, and moves the fork's data with it**. Successive
   pushes roll their migrations *forward* on the same data, which is the rehearsal that actually
   de-risks a release: the fork accumulates schema changes exactly the way prod will. `--refresh`
-  starts over from a clean fork of prod.
+  starts over from a clean fork of prod. While a create for a tag is still forking, a second
+  create for that tag answers **409** rather than wiping it. If the first create failed, the retry
+  normally forks again at once. If it died without reporting back (or could not record its own
+  failure), the tag frees itself 15 minutes after that create started. `--refresh` replaces it sooner, and stops a create still running.
 - **A prerelease label never steals a release coordinate.** A default preview push is labelled
   `<pkg>-<tag>.<n>` (a semver *prerelease*), and the registry's `nextVersion` only counts anchored
   `x.y.z` releases — so preview pushes are free: they never collide with, and never advance, the

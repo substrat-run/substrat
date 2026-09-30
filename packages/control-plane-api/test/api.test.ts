@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
-import { assetHash, deployManifest, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
+import { assetHash, deployManifest, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeId, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
 import { denialLogQuery } from '../src/api.js';
 import {
   createControlPlaneApi,
@@ -2178,6 +2178,10 @@ describe('control-plane API', () => {
       entries: { id: string; kind: string; status: string }[];
     }).entries.find((s) => s.kind === 'preview');
     expect(stranded?.status).toBe('provisioning');
+    // The failed frame expired its own row (#1920), which is what lets the retry below reap it
+    // at once instead of refusing it as a create still in flight.
+    const marked = await host.admin.getScopeRecord(staff, tR, scopeId.parse(stranded!.id));
+    expect(Date.parse(marked!.expiresAt!)).toBeLessThanOrEqual(Date.now());
 
     // Attempt 2 — what CI's retry does. It must FORK AGAIN, not adopt: a fresh scope id, a
     // second export, and a restore that actually carried the dump.
@@ -2273,6 +2277,261 @@ describe('control-plane API', () => {
       status: string;
     };
     expect(row.status).toBe('active');
+  });
+
+  describe('a provisioning preview row is reaped only once its create is over (#1920)', () => {
+    // A `provisioning` row is what a dead create leaves AND what a live one looks like. The
+    // create path may reap only the first: reaping a live one wipes the scope it is restoring
+    // into, under it. Each case gets its own tenant + vertical so rows never leak between them.
+    const MIN = 60_000;
+    const setup = async (name: string) => {
+      const t = tenantId.parse(ulid());
+      const slug = `${name}-vert`;
+      await host.admin.createTenant(staff, { id: t, slug: `${name}-co`, name });
+      await host.admin.registerVertical(staff, { slug, name, source: 'cli', ownerTenant: t });
+      const v = ulid();
+      await host.admin.publishVersion(staff, {
+        id: v, verticalSlug: slug, version: '1.0.0',
+        manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+      });
+      await host.admin.admitVersion(staff, v);
+      const prod = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: prod, vertical: slug });
+      await host.admin.activateScope(staff, t, prod);
+      await host.admin.bindScopeVersion(staff, t, prod, v);
+      await host.admin.bindHostname(staff, {
+        hostname: `${name}-acme.global.substrat.run`,
+        tenantId: t, scopeId: prod, surface: 'app', region: null, canonical: true,
+      });
+      let exports = 0;
+      const restores: string[] = [];
+      const deletes: string[] = [];
+      // `hold` parks the next restore until released — a create caught mid-fork.
+      let hold: { reached: () => void; release: Promise<void> } | null = null;
+      const fakeVertical = {
+        exportScope: async (): Promise<ScopeDumpTable[]> => {
+          exports += 1;
+          return [{ name: 't', ddl: 'CREATE TABLE t(id TEXT)', columns: ['id'], rows: [['a']] }];
+        },
+        restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[]) => {
+          restores.push(sid);
+          const h = hold;
+          hold = null;
+          if (h) {
+            h.reached();
+            await h.release;
+          }
+          return { tables: tables.length };
+        },
+        deleteScope: async (input: { scopeId: string }) => {
+          deletes.push(input.scopeId);
+        },
+      } as unknown as VerticalClient;
+      const dapp = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { [slug]: fakeVertical },
+        platformBaseDomains: ['global.substrat.run'],
+      });
+      const create = (body: Record<string, unknown>) =>
+        dapp.request(`/verticals/${slug}/previews`, {
+          method: 'POST', headers: auth, body: JSON.stringify({ versionId: v, ...body }),
+        });
+      /** Arm `hold`: resolves once a restore is parked; call the returned function to let it go. */
+      const holdNextRestore = () => {
+        let release!: () => void;
+        let reached!: () => void;
+        const parked = new Promise<void>((r) => (reached = r));
+        hold = { reached, release: new Promise<void>((r) => (release = r)) };
+        return { parked, release: () => release() };
+      };
+      /** A leftover `provisioning` preview row for `tag`, as a create that died unmarked leaves it. */
+      const leftover = async (tag: string, opts: { clean?: boolean } = {}): Promise<ScopeId> => {
+        const id = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t, scopeId: id, kind: 'preview', slug: `${slug}--${tag}`, vertical: slug,
+          ...(opts.clean ? {} : { forkedFrom: prod, forkedAt: new Date().toISOString() }),
+          expiresAt: new Date(Date.now() + 72 * 60 * MIN).toISOString(),
+        });
+        return id;
+      };
+      const rowOf = (id: string) => host.admin.getScopeRecord(staff, t, scopeId.parse(id));
+      return {
+        t, prod, create, holdNextRestore, leftover, rowOf,
+        get exports() { return exports; }, restores, deletes,
+      };
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it.each([
+      ['a fork', {}],
+      ['a clean room', { empty: true }],
+    ] as const)('a second create while %s is still being built answers 409 and leaves it alone', async (_, kind) => {
+      const w = await setup(`inflight${'empty' in kind ? '-clean' : ''}`);
+      const held = w.holdNextRestore();
+      const first = w.create({ tag: 'pr-1', ...kind });
+      await held.parked; // A's row has landed as `provisioning`; its restore is in progress
+      const second = await w.create({ tag: 'pr-1', ...kind });
+      expect(second.status).toBe(409);
+      const { error } = (await second.json()) as { error: string };
+      // Readable, and says both ways out: wait (with how long) or replace it now.
+      expect(error).toMatch(/a create for preview 'pr-1' is in progress/);
+      expect(error).toMatch(/reclaimed in 15 min/);
+      expect(error).toMatch(/--refresh\), which replaces it and stops a create still running/);
+      // Nothing was reaped and nothing was forked a second time.
+      expect(w.deletes).toEqual([]);
+      expect(w.exports).toBe('empty' in kind ? 0 : 1);
+      held.release();
+      const res = await first;
+      expect(res.status).toBe(201);
+      const p = (await res.json()) as { scopeId: string };
+      expect(w.restores).toEqual([p.scopeId]);
+      expect((await w.rowOf(p.scopeId))?.status).toBe('active');
+    });
+
+    it.each([
+      ['fork', {}],
+      ['clean-room', { empty: true }],
+    ] as const)('a young %s leftover nobody marked is refused; the same row past the bound is reaped', async (_, kind) => {
+      const clean = 'empty' in kind;
+      const w = await setup(`aged${clean ? '-clean' : ''}`);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-09-29T10:00:00.000Z'));
+      const id = await w.leftover('pr-1', { clean });
+      vi.setSystemTime(new Date('2026-09-29T10:14:00.000Z'));
+      const young = await w.create({ tag: 'pr-1', ...kind });
+      expect(young.status).toBe(409);
+      expect(((await young.json()) as { error: string }).error).toMatch(/reclaimed in 1 min/);
+      expect((await w.rowOf(id))?.status).toBe('provisioning');
+      expect(w.deletes).toEqual([]);
+
+      vi.setSystemTime(new Date('2026-09-29T10:15:00.000Z'));
+      const old = await w.create({ tag: 'pr-1', ...kind });
+      expect(old.status).toBe(201);
+      const p = (await old.json()) as { scopeId: string; reused: boolean };
+      expect(p.reused).toBe(false);
+      expect(w.deletes).toEqual([id]);
+      expect(await w.rowOf(id)).toBeUndefined();
+    });
+
+    /** The one `provisioning` preview row `w`'s tenant holds, and whether its own create marked it over. */
+    const strandedOf = async (w: Awaited<ReturnType<typeof setup>>) => {
+      const rows = (await host.admin.listScopes(staff, { tenantId: w.t })).filter((s) => s.kind === 'preview');
+      expect(rows.map((s) => s.status)).toEqual(['provisioning']);
+      const row = rows[0]!;
+      return { id: row.id, marked: row.expiresAt !== null && Date.parse(row.expiresAt) <= Date.now() };
+    };
+
+    it.each([
+      // The host writes the directory row, then fails in what follows it (migrate, project, seat).
+      ['a provision that throws after its row landed', 'provision'],
+      ['an activation that throws', 'activate'],
+    ] as const)('%s marks the row, so the retry re-forks at once', async (_, where) => {
+      const w = await setup(`dies-in-${where}`);
+      if (where === 'provision') {
+        const provision = host.provisionScope.bind(host);
+        vi.spyOn(host, 'provisionScope').mockImplementationOnce(async (...args) => {
+          await provision(...args);
+          throw new Error('scope migration failed');
+        });
+      } else {
+        vi.spyOn(host.admin, 'activateScope').mockRejectedValueOnce(new ControlPlaneError(502, 'activate blip'));
+      }
+      const failed = await w.create({ tag: 'pr-1' });
+      expect(failed.ok).toBe(false);
+      const stranded = await strandedOf(w);
+      expect(stranded.marked).toBe(true);
+
+      const retry = await w.create({ tag: 'pr-1' });
+      expect(retry.status).toBe(201);
+      expect(w.deletes).toEqual([stranded.id]);
+    });
+
+    it('a failed mark still answers with the original error, and the age bound is then what frees the tag', async () => {
+      const w = await setup('mark-fails');
+      vi.spyOn(host.admin, 'activateScope').mockRejectedValueOnce(new ControlPlaneError(502, 'activate blip'));
+      vi.spyOn(host.admin, 'setScopeExpiresAt').mockRejectedValueOnce(new Error('directory unreachable'));
+      const failed = await w.create({ tag: 'pr-1' });
+      expect(failed.status).toBe(502);
+      expect(((await failed.json()) as { error: string }).error).toBe('activate blip');
+      expect((await strandedOf(w)).marked).toBe(false);
+      expect((await w.create({ tag: 'pr-1' })).status).toBe(409);
+    });
+
+    it('a leftover the GC sweep reaps between the lookup and the reap is taken as reaped (#1920)', async () => {
+      const w = await setup('swept');
+      const id = await w.leftover('pr-1');
+      await host.admin.setScopeExpiresAt(staff, w.t, id, new Date(Date.now() - 1000).toISOString());
+      // The sweep's own reap, landing after this create read the row and before it reaps it.
+      const list = host.admin.listScopes.bind(host.admin);
+      // The preview lookup is the read with no status filter (the route's own source lookup
+      // asks for `active` scopes only).
+      let swept = false;
+      vi.spyOn(host.admin, 'listScopes').mockImplementation(async (...args) => {
+        const rows = await list(...args);
+        if (!swept && args[1]?.status === undefined && rows.some((s) => s.id === id)) {
+          swept = true;
+          await host.deleteSnapshot(staff, w.t, id);
+        }
+        return rows;
+      });
+      const res = await w.create({ tag: 'pr-1' });
+      expect(swept).toBe(true);
+      expect(res.status).toBe(201);
+      expect(await w.rowOf(id)).toBeUndefined();
+    });
+
+    it('refresh replaces a young provisioning row and an active one alike', async () => {
+      const w = await setup('refresh');
+      const young = await w.leftover('pr-1');
+      const res = await w.create({ tag: 'pr-1', refresh: true });
+      expect(res.status).toBe(201);
+      const first = (await res.json()) as { scopeId: string };
+      expect(w.deletes).toEqual([young]);
+      // …and the active preview it just made, which a plain create would reuse.
+      const again = await w.create({ tag: 'pr-1', refresh: true });
+      expect(again.status).toBe(201);
+      const second = (await again.json()) as { scopeId: string; reused: boolean };
+      expect(second.reused).toBe(false);
+      expect(second.scopeId).not.toBe(first.scopeId);
+      expect(w.deletes).toEqual([young, first.scopeId]);
+    });
+
+    it('an active preview is still rebound, never refused or reaped', async () => {
+      const w = await setup('active');
+      const made = (await (await w.create({ tag: 'pr-1' })).json()) as { scopeId: string };
+      const res = await w.create({ tag: 'pr-1' });
+      expect(res.status).toBe(200);
+      const p = (await res.json()) as { scopeId: string; reused: boolean };
+      expect(p).toMatchObject({ scopeId: made.scopeId, reused: true });
+      expect(w.deletes).toEqual([]);
+    });
+
+    it('two creates racing for one tag leave exactly one preview', async () => {
+      // Whichever way they interleave — the second sees the first's row and is refused, or
+      // neither sees a row and the directory's unique slug stops the second fork — the loser
+      // must not touch the winner's row on its way out.
+      const w = await setup('race');
+      const held = w.holdNextRestore();
+      const first = w.create({ tag: 'pr-1' });
+      const second = w.create({ tag: 'pr-1' });
+      await held.parked;
+      held.release();
+      const [a, b] = await Promise.all([first, second]);
+      const statuses = [a.status, b.status].sort();
+      const winner = (await (a.status === 201 ? a : b).json()) as { scopeId: string };
+      expect(statuses[0]).toBe(201);
+      expect(statuses[1]).toBe(409);
+      const previews = (await host.admin.listScopes(staff, { tenantId: w.t })).filter((s) => s.kind === 'preview');
+      expect(previews.map((s) => [s.id, s.status])).toEqual([[winner.scopeId, 'active']]);
+      // Its deadline is the 72h default, not the loser's "this create is over" mark.
+      expect(Date.parse((await w.rowOf(winner.scopeId))!.expiresAt!)).toBeGreaterThan(Date.now() + 60 * MIN);
+      expect(w.deletes).toEqual([]);
+    });
   });
 
   it('a persistent restore fault lands a durable ops-failure row keyed to the stranded preview (#559 (3))', async () => {
