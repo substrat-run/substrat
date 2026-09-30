@@ -46,6 +46,17 @@ test('names the package an override key selects', () => {
   assert.equal(overriddenName('b@<2'), 'b');
   assert.equal(overriddenName('@s/p@1'), '@s/p');
   assert.equal(overriddenName('@s/p'), '@s/p');
+  // a `>` that opens a comparator is not the parent separator
+  assert.equal(overriddenName('hono@>4'), 'hono');
+  assert.equal(overriddenName('parent>hono@>=4'), 'hono');
+  assert.equal(overriddenName('@s/parent@1>hono@>=4 <5'), 'hono');
+});
+
+test('an exact pin under a comparator selector is still judged against its package', () => {
+  for (const key of ['hono@>4', 'parent>hono@>=4']) {
+    const { hits } = check({ [key]: '4.13.8' }, report(adv()));
+    assert.deepEqual(hits.map((h) => [h.name, h.key]), [['hono', key]]);
+  }
 });
 
 test('range matching', () => {
@@ -55,6 +66,15 @@ test('range matching', () => {
   assert.ok(inRange('1.0.0', '<1.0.0 || >=1.0.0 <1.1.0'));
   assert.ok(!inRange('2.0.0', '<1.0.0 || >=1.0.0 <1.1.0'));
   assert.ok(inRange('1.0.0-rc.1', '<1.0.0'));
+  // SemVer prerelease precedence, not string order
+  assert.ok(inRange('1.0.0-rc.2', '<1.0.0-rc.10'));
+  assert.ok(!inRange('1.0.0-rc.10', '<1.0.0-rc.2'));
+  assert.ok(inRange('1.0.0-1', '<1.0.0-alpha'));
+  assert.ok(inRange('1.0.0-alpha', '<1.0.0-alpha.1'));
+  assert.ok(inRange('1.0.0-rc.1', '=1.0.0-rc.1'));
+  // the whole suffix survives a second hyphen
+  assert.ok(!inRange('1.0.0-rc-1.2', '=1.0.0-rc-1.1'));
+  assert.ok(inRange('1.0.0-rc-1.1', '<1.0.0-rc-1.2'));
   assert.throws(() => inRange('1.0.0', '^1.0.0'));
 });
 

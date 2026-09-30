@@ -40,9 +40,14 @@ export function parseOverrides(yaml) {
   return out;
 }
 
-/** The package an override key names: `a>b` -> `b`, `b@<2` -> `b`, `@s/p@1` -> `@s/p`. */
+/**
+ * The package an override key names: `a>b` -> `b`, `b@<2` -> `b`, `@s/p@1` -> `@s/p`,
+ * `b@>4` -> `b`, `a>b@>=4` -> `b`. A `>` is the parent separator only when it does not open a
+ * comparator — pnpm's own rule (`[^ |@]>` in @pnpm/parse-overrides) — so `@>` and ` >` stay
+ * part of the version selector.
+ */
 export function overriddenName(key) {
-  const last = key.split('>').pop();
+  const last = key.split(/(?<=[^ |@])>/).pop();
   const at = last.indexOf('@', 1);
   return at === -1 ? last : last.slice(0, at);
 }
@@ -50,17 +55,30 @@ export function overriddenName(key) {
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 function parse(v) {
-  const [core, pre] = v.split('-', 2);
-  return { n: core.split('.').map(Number), pre: pre ?? null };
+  const dash = v.indexOf('-'); // the first one only: `1.0.0-rc-1.2` has prerelease `rc-1.2`
+  const core = dash === -1 ? v : v.slice(0, dash);
+  return { n: core.split('.').map(Number), pre: dash === -1 ? null : v.slice(dash + 1).split('.') };
+}
+/** SemVer §11 prerelease precedence: numeric ids numerically and below alphanumeric ones, then length. */
+function cmpPre(a, b) {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] === b[i]) continue;
+    const an = /^\d+$/.test(a[i]);
+    const bn = /^\d+$/.test(b[i]);
+    if (an && bn) return Number(a[i]) < Number(b[i]) ? -1 : 1;
+    if (an !== bn) return an ? -1 : 1;
+    return a[i] < b[i] ? -1 : 1;
+  }
+  return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
 }
 function cmp(a, b) {
   const x = parse(a);
   const y = parse(b);
   for (let i = 0; i < 3; i++) if (x.n[i] !== y.n[i]) return x.n[i] < y.n[i] ? -1 : 1;
-  if (x.pre === y.pre) return 0;
+  if (x.pre === null && y.pre === null) return 0;
   if (x.pre === null) return 1;
   if (y.pre === null) return -1;
-  return x.pre < y.pre ? -1 : 1;
+  return cmpPre(x.pre, y.pre);
 }
 
 /**
