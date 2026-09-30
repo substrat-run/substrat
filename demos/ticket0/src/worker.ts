@@ -599,6 +599,10 @@ mountInvites(app, {
    * Gate an admin-only action. `get-desk` IS the check — it asserts `desk:configure`
    * inside the operation, which only `desk-admin` holds — so the authority comes from
    * this desk's own grants rather than from a second role table out here.
+   *
+   * No assignment bound (`host.canAssign`, #1931) is applied here, and none is needed while
+   * `desk-admin` holds every permission of every role in HUMAN_ROLES. Adding an invitable
+   * role that `desk-admin` does not cover makes this gate an escalation, so add the bound then.
    */
   requireAdmin: async (c) => {
     await (await stub(c)).invoke('ticket0/get-desk', {});
