@@ -642,11 +642,17 @@ export const ticket0Entities = defineEntities({
       auto_tagged_at: z.string().nullable(),
       /**
        * When `ticket0/notify-no-reply` last told the desk this customer was waiting.
-       * The conversation is announced again only when the customer has written since
-       * (`src/module.ts` says how that is compared), so a customer who waits a week is
+       * The conversation is announced again only after a newer customer message and
+       * another full window (`src/module.ts` maintains the indexed candidate), so a customer who waits a week is
        * one notification and not one per sweep. Null is never announced.
        */
       no_reply_notified_at: z.string().nullable(),
+      /** Oldest unanswered public message, retained so the sweep can seek due work. */
+      no_reply_waiting_since: z.string().nullable(),
+      /** Indexed candidate time; cleared after a notice until another customer message. */
+      no_reply_candidate_at: z.string().nullable(),
+      /** The public message current when the last notice was sent. */
+      no_reply_notified_message_id: z.string().nullable(),
       merged_into: z.string().nullable(),
       follows: z.string().nullable(),
       created_at: z.string(),

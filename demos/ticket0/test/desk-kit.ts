@@ -62,6 +62,7 @@ export interface ConversationRead {
   resolved_at: string | null;
   auto_tagged_at: string | null;
   no_reply_notified_at: string | null;
+  no_reply_notified_message_id: string | null;
 }
 
 export interface Kit {

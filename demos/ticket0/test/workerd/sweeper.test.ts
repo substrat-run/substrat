@@ -1261,12 +1261,12 @@ describe('ticket0 on workerd — the built-in behaviours run on a Durable Object
       [
         ...state.storage.sql.exec(
           `SELECT name FROM sqlite_master
-            WHERE name IN ('ticket0_conversations_untagged', 'ticket0_behaviour_runs')
+            WHERE name IN ('ticket0_conversations_untagged', 'ticket0_conversations_no_reply_candidate', 'ticket0_behaviour_runs')
             ORDER BY name`,
         ),
       ].map((r) => String(r.name)),
     );
-    expect(names).toEqual(['ticket0_behaviour_runs', 'ticket0_conversations_untagged']);
+    expect(names).toEqual(['ticket0_behaviour_runs', 'ticket0_conversations_no_reply_candidate', 'ticket0_conversations_untagged']);
   });
 
   it('one sweeper pass tags, closes and announces — and stamps when each last fired', async () => {
@@ -1285,6 +1285,8 @@ describe('ticket0 on workerd — the built-in behaviours run on a Durable Object
     await owner_.invoke('ticket0/resolve', { conversationId: finished });
     // Age what the windows measure: the customer's message, and the resolved conversation.
     await sql('UPDATE ticket0_messages SET created_at = ? WHERE conversation_id = ?', LONG_AGO, waiting);
+    await sql('UPDATE ticket0_conversations SET no_reply_waiting_since = ?, no_reply_candidate_at = ? WHERE id = ?',
+      LONG_AGO, LONG_AGO, waiting);
     await sql('UPDATE ticket0_conversations SET updated_at = ? WHERE id = ?', LONG_AGO, finished);
 
     const report = await sweep();

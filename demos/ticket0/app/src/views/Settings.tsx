@@ -683,9 +683,15 @@ function Desk() {
   // The three newer behaviours' boxes (#1083), for the same reason: a half-typed number is
   // not a setting, and `automationPayloadOf` turns the boxes into one only at Save.
   const [automation, setAutomation] = useState<AutomationForm>(() => automationFormOf(null));
-  // When each behaviour last did something. A failed read is an absent answer, not a broken
-  // screen: the switches work without it.
-  const [runs, setRuns] = useState<BehaviourRun[]>([]);
+  // Keep a failed read distinct from a behaviour that has never fired.
+  const [runs, setRuns] = useState<BehaviourRun[] | null>(null);
+  const [runsFailed, setRunsFailed] = useState(false);
+  const loadRuns = () => {
+    setRunsFailed(false);
+    void api.listBehaviourRuns()
+      .then((r) => setRuns(r.runs))
+      .catch(() => setRunsFailed(true));
+  };
 
   useEffect(() => {
     void api
@@ -696,10 +702,7 @@ function Desk() {
         setAutomation(automationFormOf(d.settings));
       })
       .catch((e: Error) => setLoadFailed(e.message));
-    void api
-      .listBehaviourRuns()
-      .then((r) => setRuns(r.runs))
-      .catch(() => undefined);
+    loadRuns();
   }, []);
   // A rejected request is not a slow one. Saying "Loading…" forever is the screen
   // lying about which of the two happened.
@@ -769,7 +772,9 @@ function Desk() {
 
   const slaError = slaErrorOf(sla);
   const automationError = automationErrorOf(automation);
-  const fired = (behaviour: string) => lastFiredLabel(runs, behaviour, Date.now());
+  const fired = (behaviour: string) => runsFailed
+    ? <>Last-fired status unavailable. <button type="button" onClick={loadRuns}>Retry</button></>
+    : runs === null ? 'Loading last-fired status…' : lastFiredLabel(runs, behaviour, Date.now());
   const patchRule = (i: number, patch: Partial<RuleRow>) =>
     setAutomation({
       ...automation,

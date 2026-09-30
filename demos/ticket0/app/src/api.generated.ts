@@ -106,6 +106,9 @@ export interface Conversation {
   resolution_breached_at: string | null;
   auto_tagged_at: string | null;
   no_reply_notified_at: string | null;
+  no_reply_waiting_since: string | null;
+  no_reply_candidate_at: string | null;
+  no_reply_notified_message_id: string | null;
   merged_into: string | null;
   follows: string | null;
   created_at: string;

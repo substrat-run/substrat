@@ -84,9 +84,14 @@ export function automationFormOf(settings: string | null): AutomationForm {
         isObject(r) &&
         (r.in === 'subject' || r.in === 'body' || r.in === 'either') &&
         typeof r.contains === 'string' &&
-        typeof r.tag === 'string'
+        typeof r.tag === 'string' &&
+        r.contains.trim().length > 0 &&
+        r.contains.trim().length <= AUTO_TAG_TEXT_MAX &&
+        r.tag.trim().length > 0 &&
+        r.tag.trim().length <= AUTO_TAG_TEXT_MAX &&
+        Object.keys(r).every((key) => key === 'in' || key === 'contains' || key === 'tag')
       )
-        form.rules.push({ in: r.in, contains: r.contains, tag: r.tag });
+        form.rules.push({ in: r.in, contains: r.contains.trim(), tag: r.tag.trim() });
     }
   }
   return form;

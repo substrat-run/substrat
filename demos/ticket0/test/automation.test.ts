@@ -18,7 +18,6 @@ import {
   AUTO_CLOSE_DUE,
   AUTO_TAG_BATCH,
   AUTO_TAG_PENDING,
-  HANDED_TO_A_PERSON,
   NO_REPLY_BATCH,
   NO_REPLY_WAITING,
 } from '../src/module.js';
@@ -206,6 +205,14 @@ describe('auto-tag: each new conversation is read once against the desk’s rule
     const later = await kit.mail(desk, { subject: 'Where is the export?', body: 'and it might crash' });
     expect(await sweepTag(desk)).toBe(2);
     expect((await kit.tags(desk, later)).sort()).toEqual(['bug', 'howto']);
+  });
+
+  it('finds a phrase beyond the first 10,000 characters of the first message', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    await kit.configure(d, { autoTag: { rules: [{ in: 'body', contains: 'refund please', tag: 'billing' }] } });
+    const id = await kit.mail(d, { subject: 'Order', body: `${'x'.repeat(10_001)} refund please` });
+    expect(await sweepTag(d)).toBe(1);
+    expect(await kit.tags(d, id)).toEqual(['billing']);
   });
 
   it('is the manual door’s act: the same event, on the trail as the desk’s, under the same key', async () => {
@@ -497,6 +504,20 @@ describe('no-reply notify: the desk hears once about a customer who has waited t
     expect(await sweepNotify(d)).toBe(0);
   });
 
+  it('re-arms a message written in the same millisecond as the notice', async () => {
+    const d = await kit.freshDesk({ agents: 1 });
+    await kit.configure(d, { noReplyNotify: { afterHours: 1 } });
+    const id = await kit.mail(d);
+    kit.clock.advance(HOUR);
+    expect(await sweepNotify(d)).toBe(1);
+    const firstId = (await kit.read(d, id)).no_reply_notified_message_id;
+    await kit.mail(d, { into: id, body: 'Still waiting' });
+    expect(await sweepNotify(d)).toBe(0);
+    kit.clock.advance(HOUR);
+    expect(await sweepNotify(d)).toBe(1);
+    expect((await kit.read(d, id)).no_reply_notified_message_id).not.toBe(firstId);
+  });
+
   it('the wait runs from the OLDEST unanswered message: a nudge does not restart the clock', async () => {
     const d = await kit.freshDesk({ agents: 1 });
     await kit.configure(d, { noReplyNotify: { afterHours: 4 } });
@@ -737,22 +758,9 @@ describe('the scans are indexed, because they run on every tick', () => {
     expect(close).toContainEqual(expect.stringMatching(/USING INDEX \S*conversation_state_updated_at \(state=\? AND updated_at<\?\)/));
     expect(close.filter((x) => /^SCAN\b|TEMP B-TREE/.test(x))).toEqual([]);
 
-    const notify = plan(
-      NO_REPLY_WAITING,
-      HANDED_TO_A_PERSON,
-      HANDED_TO_A_PERSON,
-      '2026-01-01T00:00:00.000Z',
-      '2026-01-01T00:00:00.000Z',
-      200,
-    );
-    // No index of its own, and that is measured: the kernel's `state` list index already seeks
-    // the live conversations, and a partial one duplicated it at a write cost on every
-    // conversation. Every table is SEARCHed — the conversations by that index, each
-    // message lookup by the messages index or its primary key — and nothing is walked end
-    // to end. The one sort is the `ORDER BY` over the LIVE set, which cannot arrive in
-    // order (the wait is a subquery's), and which the batch bounds on the way out.
-    expect(notify).toContainEqual(expect.stringMatching(/^SEARCH c USING INDEX \S*conversation_state_\w+ \(state=\?\)/));
-    expect(notify.filter((x) => /^SCAN\b/.test(x))).toEqual([]);
+    const notify = plan(NO_REPLY_WAITING, '2026-01-01T00:00:00.000Z', 200);
+    expect(notify).toContainEqual(expect.stringMatching(/USING INDEX ticket0_conversations_no_reply_candidate \(no_reply_candidate_at>\? AND no_reply_candidate_at<\?\)/));
+    expect(notify.filter((x) => /^SCAN\b|TEMP B-TREE/.test(x))).toEqual([]);
   });
 });
 

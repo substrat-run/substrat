@@ -90,6 +90,19 @@ describe('the form restates the desk’s bounds, and agrees with the schema that
     }
   });
 
+  it('omits stored rules the desk rejects and trims the accepted ones', () => {
+    const valid = { in: 'body', contains: ' refund ', tag: ' billing ' };
+    const invalid = [
+      { in: 'body', contains: ' ', tag: 'billing' },
+      { in: 'body', contains: 'refund', tag: '' },
+      { in: 'body', contains: 'x'.repeat(AUTO_TAG_TEXT_MAX + 1), tag: 'billing' },
+      { in: 'body', contains: 'refund', tag: 'billing', extra: true },
+    ];
+    const loaded = form.automationFormOf(JSON.stringify({ autoTag: { rules: [valid, ...invalid] } }));
+    expect(loaded.rules).toEqual([{ in: 'body', contains: 'refund', tag: 'billing' }]);
+    expect(form.automationErrorOf(loaded)).toBeNull();
+  });
+
   it('says when a behaviour last fired, and says so when it never has', () => {
     const now = Date.parse('2026-09-30T12:00:00.000Z');
     const runs = [{ behaviour: 'autoClose', last_fired_at: '2026-09-30T09:00:00.000Z', last_count: 3 }];

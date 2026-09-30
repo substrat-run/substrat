@@ -1020,6 +1020,7 @@ interface WriteMessage {
 
 function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
   const id = ulid();
+  const now = ctx.now();
   ctx.sql.exec(
     `INSERT INTO ticket0_messages
        (id, conversation_id, author_kind, author_principal, visibility, body_text, body_html,
@@ -1038,9 +1039,30 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
       m.citedArticleIds && m.citedArticleIds.length > 0
         ? JSON.stringify(m.citedArticleIds)
         : null,
-      ctx.now(),
+      now,
     ],
   );
+  if (m.visibility === 'public') {
+    if (m.authorKind === 'contact' || (m.authorKind === 'system' && m.bodyText === HANDED_TO_A_PERSON)) {
+      // A nudge keeps the oldest unanswered instant. A new message after a notice
+      // re-arms the candidate even if both writes have the same millisecond timestamp.
+      ctx.sql.exec(
+        `UPDATE ticket0_conversations
+            SET no_reply_candidate_at = CASE
+                  WHEN no_reply_notified_at > COALESCE(no_reply_waiting_since, ?) THEN no_reply_notified_at
+                  ELSE COALESCE(no_reply_waiting_since, ?) END,
+                no_reply_waiting_since = COALESCE(no_reply_waiting_since, ?)
+          WHERE id = ?`,
+        [now, now, now, m.conversationId],
+      );
+    } else {
+      // A public desk answer ends this stretch of waiting. Internal notes never do.
+      ctx.sql.exec(
+        'UPDATE ticket0_conversations SET no_reply_waiting_since = NULL, no_reply_candidate_at = NULL WHERE id = ?',
+        [m.conversationId],
+      );
+    }
+  }
   ctx.link({ entityType: 'message', entityId: id }, conversationRef(m.conversationId));
   return messageOrThrow(ctx, id);
 }
@@ -1503,8 +1525,6 @@ export const AUTO_TAG_BATCH = 200;
 export const AUTO_CLOSE_BATCH = 200;
 /** How many customers one run of `ticket0/notify-no-reply` announces. `WAKE_BATCH`'s bargain. */
 export const NO_REPLY_BATCH = 200;
-/** How much of a customer's first message a rule may read. A rule looks for a phrase, not a novel. */
-const AUTO_TAG_BODY_CHARS = 10_000;
 
 /**
  * The conversations auto-tag has not looked at yet, oldest first (#1083). Binds
@@ -1542,62 +1562,25 @@ export const AUTO_CLOSE_DUE = `SELECT * FROM ticket0_conversations
         ORDER BY updated_at, id LIMIT ?`;
 
 /**
- * The customers who have waited since `cutoff` with nobody answering, longest first
- * (#1083). Binds `[HANDED_TO_A_PERSON, HANDED_TO_A_PERSON, cutoff, cutoff, limit]`.
+ * Indexed candidates whose wait and notice throttle have both reached `cutoff` (#1083).
+ * Binds `[cutoff, limit]`. `writeMessage` maintains the oldest unanswered instant and
+ * re-arms a candidate on a new public customer message. A notice clears the candidate;
+ * merely waiting longer never re-announces it. The candidate is the later of the oldest
+ * unanswered message and the previous notice, so one window must pass on both clocks.
+ * This also re-arms messages written in the notice's millisecond: the message write,
+ * rather than a timestamp comparison, makes the candidate eligible again.
  *
- * Two messages matter, and they answer different questions:
- *
- *   - `w`, the OLDEST public message after the desk's last public answer, says HOW LONG
- *     the customer has waited. Counted from the oldest and not the newest, because a
- *     customer who chases — a second message an hour before the window closes — must not
- *     be forgiven for it: measuring from the newest made the most impatient customer the
- *     one who never reached the desk.
- *   - `m`, the NEWEST public message, says whether anybody has answered since, and is
- *     what re-arms an announcement (below).
- *
- * "Nobody answering" is a fact about `m`: it is the customer's, or it is the
- * acknowledgement `request-human` writes (a request for a person that still stands —
- * `handoffStandsSql` says why that counts). An answer is a public message from an agent
- * or the assistant, or any system message that is not that acknowledgement; an internal
- * note (never public) is neither. A customer who writes after an answer starts a NEW
- * wait, from that message.
- *
- * `no_reply_notified_at < m.created_at` is the idempotency and the re-arm: an
- * announcement made for this stretch of waiting is stamped later than the newest message,
- * so the conversation drops out of the scan. A customer who writes AGAIN makes `m` newer
- * than the stamp and re-arms it — but only once the last notice is itself a whole window
- * old (`no_reply_notified_at <= cutoff`), so a customer who keeps chasing is one notice
- * per window and not one per sweep. Live, unparked conversations only (`snoozed` was put
- * aside on purpose).
- *
- * Bounded by `NO_REPLY_BATCH`, oldest wait first. A conversation the desk permanently may
- * not act on (the per-row check refuses it) stays at the head of that order, and enough of
- * them could starve the batch. Theoretical today — the sweep logs how many it refused — and
- * a keyset cursor on `(waiting_since, id)` is the fix if it ever matters.
+ * The partial index excludes finished and parked conversations and orders due work.
+ * A permanently refused candidate can still occupy the bounded batch repeatedly; a
+ * cursor or retry time for refusals would address that separately.
  */
-export const NO_REPLY_WAITING = `SELECT c.*, w.created_at AS waiting_since
-        FROM ticket0_conversations c
-        JOIN ticket0_messages m
-          ON m.id = (SELECT p.id FROM ticket0_messages p
-                      WHERE p.conversation_id = c.id AND p.visibility = 'public'
-                      ORDER BY p.id DESC LIMIT 1)
-        JOIN ticket0_messages w
-          ON w.id = (SELECT q.id FROM ticket0_messages q
-                      WHERE q.conversation_id = c.id AND q.visibility = 'public'
-                        AND q.id > COALESCE(
-                              (SELECT a.id FROM ticket0_messages a
-                                WHERE a.conversation_id = c.id AND a.visibility = 'public'
-                                  AND (a.author_kind IN ('agent', 'assistant')
-                                       OR (a.author_kind = 'system' AND a.body_text != ?))
-                                ORDER BY a.id DESC LIMIT 1), '')
-                      ORDER BY q.id LIMIT 1)
-        WHERE c.state IN ('new', 'open')
+export const NO_REPLY_WAITING = `SELECT c.*, c.no_reply_waiting_since AS waiting_since
+        FROM ticket0_conversations c INDEXED BY ticket0_conversations_no_reply_candidate
+        WHERE c.no_reply_candidate_at IS NOT NULL
+          AND c.state IN ('new', 'open')
           AND c.merged_into IS NULL
-          AND (m.author_kind = 'contact' OR (m.author_kind = 'system' AND m.body_text = ?))
-          AND w.created_at <= ?
-          AND (c.no_reply_notified_at IS NULL
-               OR (c.no_reply_notified_at < m.created_at AND c.no_reply_notified_at <= ?))
-        ORDER BY w.created_at, c.id LIMIT ?`;
+          AND c.no_reply_candidate_at <= ?
+        ORDER BY c.no_reply_candidate_at, c.id LIMIT ?`;
 
 /**
  * Who is next, after `after` — or who is first, when nobody has been handed anything
@@ -3839,10 +3822,10 @@ const operations = {
       }
       const first = readsBody
         ? ctx.sql.query<{ body: string }>(
-            `SELECT substr(body_text, 1, ?) AS body FROM ticket0_messages
+            `SELECT body_text AS body FROM ticket0_messages
               WHERE conversation_id = ? AND author_kind = 'contact' AND visibility = 'public'
               ORDER BY id LIMIT 1`,
-            [AUTO_TAG_BODY_CHARS, conversation.id],
+            [conversation.id],
           )[0]
         : undefined;
       const subject = conversation.subject.toLowerCase();
@@ -3927,11 +3910,11 @@ const operations = {
    *
    * WHO is waiting is `NO_REPLY_WAITING`'s predicate, and it says why each clause is
    * there. The wait is counted from the OLDEST customer message the desk has not answered,
-   * so a customer who chases is not forgiven for it. IDEMPOTENT by a stamp:
-   * `no_reply_notified_at` is written when the desk was told, and the scan skips a
-   * conversation stamped after its newest message, so a customer who waits a week is one
-   * notification, and one who keeps writing is announced again at most once per window. A run that found nobody to tell stamps nothing and counts
-   * nothing, so the day somebody joins the desk is the day it is told.
+   * so a customer who chases is not forgiven for it. A notice clears the indexed
+   * candidate until another public customer message re-arms it. The notice time then
+   * holds the next candidate back for a whole window, including when that message has
+   * the same timestamp as the notice. A run that found nobody to tell stamps nothing,
+   * so the day somebody joins the desk is the day it is told.
    *
    * Emits `ticket0.no-reply-notified` per conversation, carrying ids, the state, the
    * holder and when the wait began — never a word of the customer's. It does not touch
@@ -3945,13 +3928,7 @@ const operations = {
     if (hours === null) return { notified: 0 };
     const now = ctx.now();
     const cutoff = shiftInstant(now, -hours * 3_600_000);
-    const waiting = ctx.sql.query<ConversationRow & { waiting_since: string }>(NO_REPLY_WAITING, [
-      HANDED_TO_A_PERSON,
-      HANDED_TO_A_PERSON,
-      cutoff,
-      cutoff,
-      NO_REPLY_BATCH,
-    ]);
+    const waiting = ctx.sql.query<ConversationRow & { waiting_since: string }>(NO_REPLY_WAITING, [cutoff, NO_REPLY_BATCH]);
     let notified = 0;
     let refused = 0;
     for (const conversation of waiting) {
@@ -3962,10 +3939,17 @@ const operations = {
       }
       const told = notifyStaff(ctx, conversation, 'escalated');
       if (told === 0) continue;
-      ctx.sql.exec('UPDATE ticket0_conversations SET no_reply_notified_at = ? WHERE id = ?', [
-        now,
-        conversation.id,
-      ]);
+      const latest = ctx.sql.query<{ id: string }>(
+        `SELECT id FROM ticket0_messages WHERE conversation_id = ? AND visibility = 'public'
+         ORDER BY id DESC LIMIT 1`,
+        [conversation.id],
+      )[0];
+      ctx.sql.exec(
+        `UPDATE ticket0_conversations
+            SET no_reply_notified_at = ?, no_reply_notified_message_id = ?, no_reply_candidate_at = NULL
+          WHERE id = ?`,
+        [now, latest?.id ?? null, conversation.id],
+      );
       ctx.emit({
         type: 'ticket0.no-reply-notified',
         schemaVersion: 1,
