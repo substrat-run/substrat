@@ -27,6 +27,8 @@ import type { IdentityStub } from './identity-do.js';
  *     sign-in claiming the owner seat, a claim link, an accepted invite) at the next request
  *     the person makes, without wiring each of those paths.
  *   - **`unbindMember`**, which removes a binding and reports it gone in the same call.
+ *   - **`unbindPrincipalMember`**, which removes every binding for a principal and reports
+ *     each removed subject gone.
  *   - **`reportScopeMembers`**, the repair: the whole set bound in the scope, which drops every
  *     entry it does not name. Run it from the platform's reconcile.
  *
@@ -245,6 +247,28 @@ export async function unbindMember(
   // Whatever this isolate remembered about the subject is now wrong.
   if (reporter) observed.delete(`${reporter.issuer}|${scopeId}|${sub}`);
   return { unbound, report };
+}
+
+/**
+ * Remove every login for a principal before reporting each place absent. The directory
+ * operation is complete before any issuer request, so a failed report cannot leave a
+ * still-authorized subject behind. The next scope repair heals lost reports.
+ */
+export async function unbindPrincipalMember(
+  directory: Pick<IdentityStub, 'unbindPrincipal'>,
+  reporter: PlacesReporter | null,
+  scopeId: string,
+  principal: string,
+): Promise<{ unbound: number; reports: PlaceReportResult[] }> {
+  const subs = await directory.unbindPrincipal(scopeId, principal);
+  const reports: PlaceReportResult[] = [];
+  for (const sub of subs) {
+    if (reporter) {
+      reports.push(await reporter.absent(scopeId, sub));
+      observed.delete(`${reporter.issuer}|${scopeId}|${sub}`);
+    }
+  }
+  return { unbound: subs.length, reports };
 }
 
 /**

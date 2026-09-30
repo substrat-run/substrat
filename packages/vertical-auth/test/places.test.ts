@@ -8,6 +8,7 @@ import {
   reportScopeMembers,
   resetPlacesMemo,
   unbindMember,
+  unbindPrincipalMember,
 } from '../src/places.js';
 import { OWNER_SEAT_DDL, migrateOwnerSeat, recordOwnerSeat, resolvePrincipal, subjectsOf, unbindSubject, unbindPrincipal } from '../src/owner-seat.js';
 import type { RegistrySql } from '../src/site-registry.js';
@@ -317,6 +318,20 @@ describe("the directory's removal half, and the whole set a repair sends", () =>
     expect(iss.reports().map((r) => r.body)).toEqual([
       expect.objectContaining({ op: 'absent', sub: 'sub-ann', scope_id: SCOPE }),
     ]);
+  });
+
+  it('unbindPrincipalMember removes every login before reporting each place absent', async () => {
+    sql.exec('INSERT INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', SCOPE, 'sub-ann-alt', 'principal-ann');
+    const iss = issuer();
+    const directory = { unbindPrincipal: async (scope: string, principal: string) => unbindPrincipal(sql, scope, principal) };
+    const result = await unbindPrincipalMember(directory, placesReporter({ identity, fetch: iss.fetch }), SCOPE, 'principal-ann');
+    expect(result).toEqual({ unbound: 2, reports: [{ outcome: 'sent' }, { outcome: 'sent' }] });
+    expect(iss.reports().map((r) => r.body)).toEqual([
+      expect.objectContaining({ op: 'absent', sub: 'sub-ann', scope_id: SCOPE }),
+      expect.objectContaining({ op: 'absent', sub: 'sub-ann-alt', scope_id: SCOPE }),
+    ]);
+    expect(resolvePrincipal(sql, SCOPE, 'sub-ann', 2)).toBeNull();
+    expect(resolvePrincipal(sql, SCOPE, 'sub-ann-alt', 2)).toBeNull();
   });
 
   it('reportScopeMembers sends the whole set, and refuses (logged) a scope over the cap', async () => {

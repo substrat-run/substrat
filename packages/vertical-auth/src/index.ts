@@ -29,6 +29,7 @@ export {
   reportScopeMembers,
   resetPlacesMemo,
   unbindMember,
+  unbindPrincipalMember,
   type PlaceReportResult,
   type PlacesReporter,
 } from './places.js';
