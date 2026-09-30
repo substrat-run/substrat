@@ -4579,6 +4579,20 @@ export interface ScopeHost {
   canAssign(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage>;
 
   /**
+   * Check the caller's assignment bound and grant `assignee` the scope role in one scope
+   * task. A refused bound writes nothing and returns its missing permissions. The role
+   * definition and permission tuples used by the check are the same ones used by
+   * `canAssign`; an unknown role throws `not_found`.
+   */
+  assignScopeRoleBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    assignee: PrincipalId,
+    roleKey: string,
+  ): Promise<Coverage>;
+
+  /**
    * The recurring-work declarations of every module registered on this host (#383)
    * — each module's id, the vertical it belongs to, and its `schedules`. Sync like
    * `migrationFrontier`: code-time bookkeeping derived from the registered

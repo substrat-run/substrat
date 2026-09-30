@@ -4102,6 +4102,28 @@ export class SqliteScopeHost implements ScopeHost {
     return rt.actor.enqueue(() => this.assignmentBound(subject, tenantId, scopeId, roleKey));
   }
 
+  async assignScopeRoleBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    assignee: PrincipalId,
+    roleKey: string,
+  ): Promise<Coverage> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const subject = asPrincipal(principalId.parse(caller));
+    const target = principalId.parse(assignee);
+    return rt.actor.turn(async () => {
+      const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
+      if (bound.covered) {
+        rt.db.prepare(
+          `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
+           VALUES (?, ?, ?, NULL)`,
+        ).run(`principal:${target}`, `role:${roleKey}`, `scope:${scopeId}`);
+      }
+      return bound;
+    });
+  }
+
   /**
    * §5.1's assignment bound, resolved against the SAME role table the checker expands
    * — not a vertical's compile-time `ROLES` array. A tenant's projected role is what

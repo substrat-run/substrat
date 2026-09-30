@@ -257,6 +257,33 @@ export function permissionContractSuite(
           await expectRefusal(host.canAssign(tenantId.parse(ulid()), s1, alice, 'tech'), 'not_found', /unknown scope/);
         });
       });
+
+      describe('host.assignScopeRoleBounded checks and grants in one scope task', () => {
+        it('refuses an overreaching caller without assigning the role', async () => {
+          const assignee = principalId.parse(ulid());
+          expect(await host.assignScopeRoleBounded(t1, s1, bob, assignee, 'admin'))
+            .toEqual({ covered: false, missing: [PERM_USE] });
+          expect((await probe(assignee, s1, PERM_USE)).allowed).toBe(false);
+          expect((await probe(assignee, s1, PERM_READ)).allowed).toBe(false);
+        });
+
+        it('grants the requested role when the caller covers it', async () => {
+          const assignee = principalId.parse(ulid());
+          expect(await host.assignScopeRoleBounded(t1, s1, alice, assignee, 'tech'))
+            .toEqual({ covered: true, missing: [] });
+          expect((await probe(assignee, s1, PERM_READ)).allowed).toBe(true);
+        });
+
+        it('refuses an unknown role or another tenant’s scope without a grant', async () => {
+          const assignee = principalId.parse(ulid());
+          await expectRefusal(host.assignScopeRoleBounded(t1, s1, alice, assignee, 'no-such-role'), 'not_found', /no such role/);
+          await expectRefusal(
+            host.assignScopeRoleBounded(tenantId.parse(ulid()), s1, alice, assignee, 'tech'),
+            'not_found', /unknown scope/,
+          );
+          expect((await probe(assignee, s1, PERM_READ)).allowed).toBe(false);
+        });
+      });
     });
 
     // -- runtime delegation: ctx.grant / ctx.revoke ---------------------------

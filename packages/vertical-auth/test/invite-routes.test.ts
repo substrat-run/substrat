@@ -133,8 +133,9 @@ function deps(overrides: Partial<InviteRouteDeps<Env, typeof NODE>> = {}): Invit
     },
     roles: ROLES,
     directory: () => directory,
-    assignScopeRole: async (_env, scopeId, principal, roleKey) => {
-      log.push(`assignScopeRole ${scopeId} ${principal} ${roleKey}`);
+    assignScopeRoleBounded: async (_env, node, caller, principal, roleKey) => {
+      log.push(`assignScopeRoleBounded ${node.scopeId} ${caller} ${principal} ${roleKey}`);
+      return boundOf(caller, roleKey);
     },
     revokeScopeRole: async (_env, scopeId, principal, roleKey) => {
       log.push(`revokeScopeRole ${scopeId} ${principal} ${roleKey}`);
@@ -188,11 +189,10 @@ describe('mountInviteRoutes', () => {
     expect(row.tokenHash).toBe(await sha256Hex(token));
     expect(row.tokenHash).not.toBe(token);
 
-    // The bound first, then grant before row: an invite whose principal holds nothing would
+    // The bounded grant first, then the row: an invite whose principal holds nothing would
     // bind a teammate to no access.
     expect(log).toEqual([
-      `canAssign scope-1 ${OWNER} editor`,
-      `assignScopeRole scope-1 ${body.principal} editor`,
+      `assignScopeRoleBounded scope-1 ${OWNER} ${body.principal} editor`,
       `createInvite scope-1 ${body.principal} editor`,
     ]);
 
@@ -213,7 +213,7 @@ describe('mountInviteRoutes', () => {
     const res = await app.request('http://app.example/api/invites', json({ roleKey: 'admin' }), env());
     expect(res.status).toBe(201);
     expect(((await res.json()) as { email: string | null }).email).toBeNull();
-    expect(log).toHaveLength(3); // one bound, one grant, one row
+    expect(log).toHaveLength(2); // bounded grant, then row
 
     // A schema miss and a body that is not JSON at all both come out as an HTTPException
     // 400 naming the problem — under this suite's envelope a bare ZodError or SyntaxError
@@ -228,7 +228,7 @@ describe('mountInviteRoutes', () => {
     }, env());
     expect(notJson.status).toBe(400);
     expect(await notJson.text()).toMatch(/must be JSON/);
-    expect(log).toHaveLength(3);
+    expect(log).toHaveLength(2);
   });
 
   it('takes the grant back when the invite row cannot be written, so a retry mints no orphan', async () => {
@@ -241,10 +241,11 @@ describe('mountInviteRoutes', () => {
     const res = await app.request('http://app.example/api/invites', json({ roleKey: 'admin' }), env());
     expect(res.status).toBe(500);
     expect(await res.text()).toMatch(/directory unavailable/); // the ORIGINAL failure, not the revoke's
-    expect(log.map((l) => l.split(' ')[0])).toEqual(['canAssign', 'assignScopeRole', 'revokeScopeRole']);
-    const [, grant, revoke] = log;
+    expect(log.map((l) => l.split(' ')[0])).toEqual(['assignScopeRoleBounded', 'revokeScopeRole']);
+    const [grant, revoke] = log;
     // The same (scope, principal, role) the grant named.
-    expect(revoke!.replace('revokeScopeRole', 'assignScopeRole')).toBe(grant);
+    const [, grantScope, , grantPrincipal, grantRole] = grant!.split(' ');
+    expect(revoke).toBe(`revokeScopeRole ${grantScope} ${grantPrincipal} ${grantRole}`);
     expect(directory.invites.size).toBe(0);
   });
 
@@ -319,13 +320,13 @@ describe('mountInviteRoutes — the canAssign bound', () => {
   const revoke = (principal: string, headers: Record<string, string> = admin) =>
     app.request(`http://app.example/api/invites/${principal}/revoke`, { method: 'POST', headers }, env());
   /** What reached the host or the directory's writers — the bound's own reads excluded. */
-  const writes = () => log.filter((l) => !l.startsWith('canAssign'));
+  const writes = () => log.filter((l) => !l.startsWith('canAssign') && !l.startsWith('assignScopeRoleBounded'));
 
   it('refuses an admin who lacks what the role carries — 403 naming it, nothing granted or recorded', async () => {
     const res = await create('admin', junior);
     expect(res.status).toBe(403);
     expect(await res.text()).toMatch(/cannot invite at 'admin': you do not hold billing:manage/);
-    expect(log).toEqual([`canAssign scope-1 ${JUNIOR} admin`]); // asked about the caller the gate admitted
+    expect(log[0]).toMatch(new RegExp(`^assignScopeRoleBounded scope-1 ${JUNIOR} [A-Z0-9]+ admin$`));
     expect(writes()).toEqual([]);
     expect(directory.invites.size).toBe(0);
   });
@@ -339,7 +340,7 @@ describe('mountInviteRoutes — the canAssign bound', () => {
   it('lets an owner, who holds everything, invite at the highest role', async () => {
     const res = await create('admin');
     expect(res.status).toBe(201);
-    expect(log[0]).toBe(`canAssign scope-1 ${OWNER} admin`);
+    expect(log[0]).toMatch(new RegExp(`^assignScopeRoleBounded scope-1 ${OWNER} [A-Z0-9]+ admin$`));
   });
 
   it('bounds revoke by the role the STORED invite confers — refused, and the invite stays', async () => {
@@ -471,8 +472,10 @@ describe('mountInviteRoutes — the canAssign bound', () => {
       expect(directory.invites.has(principal)).toBe(true);
     });
 
-    it('create is unchanged: the same refusal from the bound refuses the invite', async () => {
-      boundThrows((roleKey: string) => unknownRoleError(roleKey));
+    it('create refuses an unknown role from the bounded grant', async () => {
+      app = mount({ assignScopeRoleBounded: async (_env, _node, _caller, _assignee, roleKey) => {
+        throw unknownRoleError(roleKey);
+      } });
       expect((await create('editor')).status).toBe(500);
       expect(writes()).toEqual([]);
       expect(directory.invites.size).toBe(0);
@@ -501,6 +504,15 @@ describe('mountInviteRoutes — the canAssign bound', () => {
       expect(directory.invites.size).toBe(1); // the seeded one, untouched
     });
 
+    it('no bounded grant dep refuses create before anything is written', async () => {
+      remount({ assignScopeRoleBounded: undefined as never });
+      const res = await create('editor');
+      expect(res.status).toBe(500);
+      expect(await res.text()).toMatch(/without the bounded grant/);
+      expect(log).toEqual([]);
+      expect(directory.invites.size).toBe(0);
+    });
+
     it('a gate that names no caller (the pre-#1931 shape) — refused, nothing written', async () => {
       remount({ requireAdmin: (async () => undefined) as never });
       const res = await create('editor');
@@ -512,7 +524,7 @@ describe('mountInviteRoutes — the canAssign bound', () => {
 
     it('a bound that answers with no coverage, or an inconsistent one — refused, nothing written', async () => {
       for (const answer of [undefined, { covered: true }, { covered: true, missing: ['billing:manage'] }, { allowed: true }]) {
-        remount({ canAssign: (async () => answer) as never });
+        remount({ assignScopeRoleBounded: (async () => answer) as never });
         const res = await create('editor');
         expect(res.status).toBe(500);
         expect(await res.text()).toMatch(/did not answer with a coverage/);
@@ -523,7 +535,7 @@ describe('mountInviteRoutes — the canAssign bound', () => {
 
     it('a bound that throws — the throw is the answer, and nothing was written', async () => {
       remount({
-        canAssign: async () => {
+        assignScopeRoleBounded: async () => {
           throw new Error('no such role in this tenant: editor');
         },
       });

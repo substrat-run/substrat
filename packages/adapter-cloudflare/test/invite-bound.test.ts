@@ -93,9 +93,10 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
       },
       roles: ['office-admin', 'manager', 'reader'],
       directory: () => directory,
-      assignScopeRole: async (_env, scope, principal, roleKey) => {
-        grants.push(`${principal} ${roleKey}`);
-        await host.assignScopeRole(scopeId.parse(scope), principal, roleKey);
+      assignScopeRoleBounded: async (_env, node, caller, principal, roleKey) => {
+        const bound = await host.assignScopeRoleBounded(boundTenant, node.scopeId, caller, principal, roleKey);
+        if (bound.covered) grants.push(`${principal} ${roleKey}`);
+        return bound;
       },
       revokeScopeRole: (_env, scope, principal, roleKey) => host.revokeScopeRole(scopeId.parse(scope), principal, roleKey),
       canAssign: (_env, node, principal, roleKey) => host.canAssign(boundTenant, node.scopeId, principal, roleKey),

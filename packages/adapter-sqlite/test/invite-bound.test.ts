@@ -112,9 +112,10 @@ describe('invite routes over the SQLite host — the canAssign bound (#1931)', (
       },
       roles: ['office-admin', 'manager', 'reader'],
       directory: () => directory,
-      assignScopeRole: async (_env, _scope, principal, roleKey) => {
-        grants.push(`${principal} ${roleKey}`);
-        await host.admin.assignRole(staff, { principalId: principal, roleKey, node });
+      assignScopeRoleBounded: async (_env, n, caller, principal, roleKey) => {
+        const bound = await host.assignScopeRoleBounded(boundTenant, n.scopeId, caller, principal, roleKey);
+        if (bound.covered) grants.push(`${principal} ${roleKey}`);
+        return bound;
       },
       revokeScopeRole: (_env, _scope, principal, roleKey) => host.admin.unassignRole(staff, { principalId: principal, roleKey, node }),
       canAssign: (_env, n, principal, roleKey) => host.canAssign(boundTenant, n.scopeId, principal, roleKey),

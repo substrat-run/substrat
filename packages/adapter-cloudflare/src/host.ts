@@ -1060,6 +1060,9 @@ interface ScopeStubRpc {
   ): Promise<PeerCoverage[]>;
   /** `ctx.canAssign`'s bound for a named principal (#1931); `null` for a role the tenant lacks. */
   canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage | null>;
+  assignScopeRoleBoundedFor(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
+  ): Promise<Coverage | null>;
   /** Every module this scope holds or has held system authority for, and where each
    *  stands (#1674) — the kernel's `systemGrantsStatus`, run in the scope's own storage. */
   systemGrantsStatus(): Promise<SystemGrantsEntry[]>;
@@ -3531,6 +3534,20 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     await this.peerScopeGate(tenantId, scopeId, 'canAssign');
     const bound = await this.scopeStub(scopeId).canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey);
+    if (!bound) throw unknownRoleError(roleKey);
+    return coverage.parse(bound);
+  }
+
+  async assignScopeRoleBounded(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
+  ): Promise<Coverage> {
+    if (this.cpLess && !(await this.scopeStub(scopeId).servesTenant(tenantId))) {
+      throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    }
+    await this.peerScopeGate(tenantId, scopeId, 'assignScopeRoleBounded');
+    const bound = await this.scopeStub(scopeId).assignScopeRoleBoundedFor(
+      tenantId, scopeId, principalId.parse(caller), principalId.parse(assignee), roleKey,
+    );
     if (!bound) throw unknownRoleError(roleKey);
     return coverage.parse(bound);
   }

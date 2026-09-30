@@ -3274,6 +3274,28 @@ export function defineScopeDO(
       );
     }
 
+    /** Check and grant in one serialized scope task; a refusal never writes a tuple. */
+    async assignScopeRoleBoundedFor(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      caller: PrincipalId,
+      assignee: PrincipalId,
+      roleKey: string,
+    ): Promise<Coverage | null> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () => {
+        const bound = await this.assignmentBound({ kind: 'principal', id: caller }, tenantId, scopeId, roleKey);
+        if (bound?.covered) {
+          this.sql.exec(
+            `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
+             VALUES (?, ?, ?, NULL)`,
+            `principal:${assignee}`, `role:${roleKey}`, `scope:${scopeId}`,
+          );
+        }
+        return bound;
+      });
+    }
+
     /**
      * §5.1's assignment bound, resolved against the SAME role table the checker
      * expands — the tenant's projected role, not a vertical's compile-time `ROLES`

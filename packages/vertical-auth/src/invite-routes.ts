@@ -77,12 +77,14 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
    * without it, or an answer that is not a coverage, refuses create and revoke.
    */
   canAssign: (env: E, node: N, principal: PrincipalId, roleKey: string) => Promise<Coverage>;
+  /** Check the bound and grant in one scope task. A refusal returns coverage and writes nothing. */
+  assignScopeRoleBounded: (
+    env: E, node: N, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
+  ) => Promise<Coverage>;
   /** The role keys a teammate may be invited at — the vertical's own ROLES. */
   roles: readonly string[];
   /** The tenant's identity directory — the invite rows and the sub → principal binding. */
   directory: (env: E, node: N) => InviteDirectory;
-  /** Grant the pre-minted principal its role at scope level — the host's `assignScopeRole`. */
-  assignScopeRole: (env: E, scopeId: N['scopeId'], principal: PrincipalId, roleKey: string) => Promise<void>;
   /**
    * Take that grant back — the host's `revokeScopeRole`. The grant and the invite row live
    * in two different Durable Objects, so the create has no transaction across them: when
@@ -146,10 +148,13 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
 ): void {
   const originOf = (req: Request): string => (deps.origin?.(req) ?? new URL(req.url).origin).replace(/\/$/, '');
 
-  /** Who the gate admitted — refusing a mount wired short: no bound, or a gate naming no caller. */
+  /** Who the gate admitted — refusing a mount wired short or a gate naming no caller. */
   const admitted = (caller: unknown): InviteCaller => {
     if (typeof deps.canAssign !== 'function') {
       throw new HTTPException(500, { message: 'invites are mounted without the canAssign bound — refusing to confer an unbounded role' });
+    }
+    if (typeof deps.assignScopeRoleBounded !== 'function') {
+      throw new HTTPException(500, { message: 'invites are mounted without the bounded grant — refusing to confer an unbounded role' });
     }
     const parsed = inviteCaller.safeParse(caller);
     if (!parsed.success) {
@@ -158,9 +163,9 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     return parsed.data;
   };
 
-  /** Refuse unless `caller` already holds every permission `roleKey` carries at `node`. */
-  const assertCanAssign = async (env: E, node: N, caller: InviteCaller, roleKey: string, act: string): Promise<void> => {
-    const bound = coverage.safeParse(await deps.canAssign(env, node, caller.principal, roleKey));
+  /** Refuse unless the bound says `caller` holds every permission of `roleKey`. */
+  const assertCoverage = (answer: unknown, roleKey: string, act: string): void => {
+    const bound = coverage.safeParse(answer);
     if (!bound.success) {
       throw new HTTPException(500, { message: 'the canAssign bound did not answer with a coverage — refusing' });
     }
@@ -168,6 +173,9 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
       throw new HTTPException(403, { message: `you cannot ${act} '${roleKey}': you do not hold ${bound.data.missing.join(', ')}` });
     }
   };
+
+  const assertCanAssign = async (env: E, node: N, caller: InviteCaller, roleKey: string, act: string): Promise<void> =>
+    assertCoverage(await deps.canAssign(env, node, caller.principal, roleKey), roleKey, act);
 
   app.get('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
@@ -181,13 +189,16 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     const caller = admitted(await deps.requireAdmin(c));
     const { email, roleKey } = await bodyOf(c, inviteBody);
     if (!deps.roles.includes(roleKey)) throw new HTTPException(400, { message: `unknown role '${roleKey}'` });
-    await assertCanAssign(c.env, node, caller, roleKey, 'invite at');
     const principal = principalId.parse(ulid());
     // A long, URL-safe token; only its hash is stored. Two UUIDs = 256 bits of entropy.
     const token = claimToken();
     // The grant first: an invite row whose principal holds nothing is a link that binds a
     // teammate to no access, whereas a grant with no row is inert — nobody can bind to it.
-    await deps.assignScopeRole(c.env, node.scopeId, principal, roleKey);
+    assertCoverage(
+      await deps.assignScopeRoleBounded(c.env, node, caller.principal, principal, roleKey),
+      roleKey,
+      'invite at',
+    );
     try {
       await deps.directory(c.env, node).createInvite(node.scopeId, principal, roleKey, email ?? null, await sha256Hex(token));
     } catch (err) {

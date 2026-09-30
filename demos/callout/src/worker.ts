@@ -543,7 +543,8 @@ mountInviteRoutes(app, {
   requireAdmin,
   roles: ROLES.map((r) => r.key),
   directory: identityDo,
-  assignScopeRole: (env, scope, principal, roleKey) => hostFor(env).assignScopeRole(scope, principal, roleKey),
+  assignScopeRoleBounded: (env, node, caller, assignee, roleKey) =>
+    hostFor(env).assignScopeRoleBounded(node.tenantId, node.scopeId, caller, assignee, roleKey),
   revokeScopeRole: (env, scope, principal, roleKey) => hostFor(env).revokeScopeRole(scope, principal, roleKey),
   canAssign: (env, node, principal, roleKey) => hostFor(env).canAssign(node.tenantId, node.scopeId, principal, roleKey),
   authProvider: authProviderFor,
