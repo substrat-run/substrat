@@ -197,6 +197,8 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
   it('paces recurring job starts per scope and retries after the interval', async () => {
     const stub = sweeperStub();
     const key = `job-start:${sA}`;
+    await stub.noteScope(t, sA);
+    asReport(await stub.sweepNow());
     const first = await runInDurableObject(stub, (_instance, state) => state.storage.get<number>(key));
     expect(first).toBeTypeOf('number');
     await stub.sweepNow();
