@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   moduleId,
+  permissionKey,
   platformActorId,
   principalId,
   scopeId,
@@ -62,6 +63,12 @@ export interface Kit {
   readonly clock: ManualClock;
   freshDesk(opts: { agents: number }): Promise<Desk>;
   hire(desk: Desk): Promise<PrincipalId>;
+  /**
+   * Somebody on the directory whose ONLY grant is `conversation:draft` — enough to write a
+   * profile, and no read access to any thread. What a follow gives them is the whole of
+   * what they can see, which makes a follow observable. Not in the ring's `agents` list.
+   */
+  guest(desk: Desk): Promise<PrincipalId>;
   as(desk: Desk, who: PrincipalId): Promise<ScopeStub>;
   /** The schedule's own principal, as the platform sweep invokes an operation. */
   system(desk: Desk): Promise<ScopeStub>;
@@ -192,6 +199,22 @@ export function createKit(prefix: string): Kit {
         conversationId: id,
         until: new Date(Date.parse(clock.read()) + ms).toISOString(),
       });
+    },
+
+    async guest(desk) {
+      const p = principalId.parse(ulid());
+      await host.admin.grant(staff, {
+        principalId: p,
+        permission: permissionKey.parse('conversation:draft'),
+        node: { tenantId: desk.tenant, scopeId: desk.scope },
+        grantedBy: desk.admin,
+      });
+      await (await host.getScope(p, desk.tenant, desk.scope)).invoke('ticket0/set-agent-profile', {
+        displayName: 'Guest',
+        avatarUrl: null,
+        signature: null,
+      });
+      return p;
     },
 
     async configure(desk, settings) {

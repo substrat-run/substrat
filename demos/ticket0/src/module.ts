@@ -578,12 +578,15 @@ const ASSIGNABLE_STAFF_SQL = `display_name != ? AND ${ON_THE_DESK_SQL}`;
  * Somebody this desk can put ON a conversation — the follower directory (#1086).
  *
  * The same directory `assign` reads and the same assistant rule, because a watcher
- * and an assignee are drawn from the same people. It does not ask `onTheDesk`: following
- * hands nobody work, and whether a NEW follow of somebody an admin has taken off the desk
- * should be refused is a decision nobody has made (#1083). The refusal differs because the act
+ * and an assignee are drawn from the same people. The refusal differs because the act
  * does: the assistant is not refused here for holding a queue it never works, but for
  * already reading every conversation in the scope, which makes following it a grant
  * that confers nothing and a record that says something untrue.
+ *
+ * Somebody an admin has taken off the desk (`onTheDesk`, #1083) is refused too. A follow is
+ * a durable `conversation:read` on a customer's thread, and putting it on an ex-colleague
+ * hands them the customer's words. It is a NEW follow that is refused: what they already
+ * follow is a tuple this module keeps no list of, so it cannot be enumerated to withdraw.
  */
 function followableStaffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
   const row = staffOrThrow(ctx, principal);
@@ -591,6 +594,12 @@ function followableStaffOrThrow(ctx: OperationContext, principal: string): Agent
     throw substratError(
       'validation_failed',
       `the assistant cannot follow a conversation: ${principal} — it already reads every one of them`,
+    );
+  }
+  if (!onTheDesk(row)) {
+    throw substratError(
+      'validation_failed',
+      `not on this desk any more: ${principal} — they were taken off it, and an admin can put them back`,
     );
   }
   return row;

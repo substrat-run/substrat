@@ -169,6 +169,47 @@ describe('a manual assign refuses them, and takes them again once reinstated', (
   });
 });
 
+describe('a follow is a read on the customer’s thread, so it is not put on somebody who has left', () => {
+  const canRead = async (d: Desk, who: PrincipalId, conversationId: string) =>
+    (await kit.as(d, who))
+      .invoke('ticket0/get-conversation', { conversationId })
+      .then(() => true, () => false);
+
+  it('refuses to follow an off-boarded colleague onto a conversation, and takes them again once reinstated', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    const guest = await kit.guest(d);
+    const admin = await kit.as(d, d.admin);
+    const id = await kit.mail(d);
+    expect(await canRead(d, guest, id)).toBe(false);
+
+    await setOff(d, guest, true);
+    await expect(admin.invoke('ticket0/follow-conversation', { conversationId: id, follower: guest })).rejects.toThrow(
+      /not on this desk any more/,
+    );
+    // Nothing was granted: the refusal is before the write, so they still cannot read it.
+    expect(await canRead(d, guest, id)).toBe(false);
+
+    await setOff(d, guest, false);
+    await admin.invoke('ticket0/follow-conversation', { conversationId: id, follower: guest });
+    expect(await canRead(d, guest, id)).toBe(true);
+  });
+
+  it('unfollowing still works for somebody who has left — the way out is not closed', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    const guest = await kit.guest(d);
+    const admin = await kit.as(d, d.admin);
+    const id = await kit.mail(d);
+    await admin.invoke('ticket0/follow-conversation', { conversationId: id, follower: guest });
+    expect(await canRead(d, guest, id)).toBe(true);
+    await setOff(d, guest, true);
+    // Their existing follow survives being taken off the desk — the module keeps no list
+    // of follows to withdraw — and an admin can still remove it by hand.
+    expect(await canRead(d, guest, id)).toBe(true);
+    await admin.invoke('ticket0/unfollow-conversation', { conversationId: id, follower: guest });
+    expect(await canRead(d, guest, id)).toBe(false);
+  });
+});
+
 describe('the broadcast leaves them out, and a conversation they hold is the desk’s to hear about', () => {
   let desk: Desk;
   let stays: PrincipalId;
