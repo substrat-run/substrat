@@ -11,3 +11,7 @@ The member invite routes now apply the role-assignment bound (#1931). An admin c
 This needs two changes from a vertical that mounts `mountInviteRoutes`. Its `requireAdmin` returns the `{ principal }` it admitted, and it passes a `canAssign` dep, one line over the host: `canAssign: (env, node, principal, roleKey) => hostFor(env).canAssign(node.tenantId, node.scopeId, principal, roleKey)`. A mount without the dep, or with a gate that names no caller, refuses both routes instead of running them unbounded.
 
 That line uses a new host read, `host.canAssign(tenantId, scopeId, principal, roleKey)`. It gives the answer `ctx.canAssign` gives that principal inside an operation, from the same projected role and the same comparison, so an entity-narrowed grant does not satisfy it. Both adapters implement it, and the permission contract suite holds the two answers equal. The identity directory gains `getInvite`, which reads one open invite by its principal.
+
+An invite whose role the tenant no longer defines can still be revoked. That role confers nothing, and the route lets through exactly the host's "no such role" refusal for that role; any other error still refuses. The kernel exports that refusal as `unknownRoleError` / `isUnknownRoleError`. On a host without a control plane, `host.canAssign` checks the scope was provisioned for the tenant it is asked under, and refuses as an unknown scope otherwise.
+
+`ScopeHost.canAssign` is a new required member of the `ScopeHost` interface, so a host implemented outside these two adapters must add it.
