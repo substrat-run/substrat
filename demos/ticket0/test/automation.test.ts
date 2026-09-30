@@ -450,14 +450,49 @@ describe('no-reply notify: the desk hears once about a customer who has waited t
     expect(kit.events(desk, 'ticket0.no-reply-notified', id)).toHaveLength(1);
   });
 
-  it('a customer who writes again is a new wait, and a new notice once it has lasted the window', async () => {
+  it('a customer who writes again after the desk was told is announced again at the next sweep — the re-arm', async () => {
     const [id] = (await kit.notifications(desk, agentA)).map((n) => n.conversation_id!);
-    await kit.mail(desk, { into: id, body: 'Hello? Anyone?' });
-    kit.clock.advance(4 * HOUR - 1000);
+    const before = await told(agentA, id!);
     expect(await sweepNotify(desk)).toBe(0);
-    kit.clock.advance(1000);
+    await kit.mail(desk, { into: id, body: 'Hello? Anyone?' });
+    // The wait behind the chase is the customer's whole wait, which is older than the
+    // window, so there is nothing to wait for: the desk hears the moment they chase.
     expect(await sweepNotify(desk)).toBe(1);
-    expect(await told(agentA, id!)).toBe(2);
+    expect(await told(agentA, id!)).toBe(before + 1);
+    expect(await sweepNotify(desk)).toBe(0);
+  });
+
+  it('the wait runs from the OLDEST unanswered message: a nudge does not restart the clock', async () => {
+    const d = await kit.freshDesk({ agents: 1 });
+    await kit.configure(d, { noReplyNotify: { afterHours: 4 } });
+    const id = await kit.mail(d);
+    kit.clock.advance(3 * HOUR);
+    await kit.mail(d, { into: id, body: 'Any news?' });
+    kit.clock.advance(HOUR - 60_000 - 1000);
+    expect(await sweepNotify(d)).toBe(0); // 4h minus a second since the FIRST message
+    kit.clock.advance(1000);
+    expect(await sweepNotify(d)).toBe(1);
+    expect(await kit.escalations(d, d.agents[0]!, id)).toBe(1);
+    // The announcement reports when the wait began, not when the nudge came.
+    const [event] = kit.events(d, 'ticket0.no-reply-notified', id);
+    expect(Date.parse(kit.clock.read()) - Date.parse(JSON.parse(event!.payload).waiting_since)).toBeGreaterThanOrEqual(
+      4 * HOUR,
+    );
+  });
+
+  it('an answer from the desk ends the wait, and the next message starts a new one from itself', async () => {
+    const d = await kit.freshDesk({ agents: 1 });
+    await kit.configure(d, { noReplyNotify: { afterHours: 4 } });
+    const id = await kit.mail(d);
+    kit.clock.advance(3 * HOUR);
+    await (await kit.as(d, d.admin)).invoke('ticket0/post-public-reply', { conversationId: id, body: 'On it.' });
+    kit.clock.advance(HOUR);
+    await kit.mail(d, { into: id, body: 'Thanks — and one more thing.' });
+    // Four hours since the FIRST message, but the desk answered it: this is a fresh wait.
+    kit.clock.advance(4 * HOUR - 1000);
+    expect(await sweepNotify(d)).toBe(0);
+    kit.clock.advance(1000);
+    expect(await sweepNotify(d)).toBe(1);
   });
 
   it('only the holder is told when somebody holds it', async () => {
@@ -657,7 +692,7 @@ describe('the scans are indexed, because they run on every tick', () => {
     expect(close).toContainEqual(expect.stringMatching(/USING INDEX \S*conversation_state_updated_at \(state=\? AND updated_at<\?\)/));
     expect(close.filter((x) => /^SCAN\b|TEMP B-TREE/.test(x))).toEqual([]);
 
-    const notify = plan(NO_REPLY_WAITING, HANDED_TO_A_PERSON, '2026-01-01T00:00:00.000Z', 200);
+    const notify = plan(NO_REPLY_WAITING, HANDED_TO_A_PERSON, HANDED_TO_A_PERSON, '2026-01-01T00:00:00.000Z', 200);
     // The live set through its partial index, and each conversation's newest public
     // message through the messages index that already exists — never a walk of every message.
     expect(notify).toContainEqual(expect.stringMatching(/USING INDEX ticket0_conversations_live\b/));

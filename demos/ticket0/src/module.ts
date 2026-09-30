@@ -1517,31 +1517,54 @@ export const AUTO_CLOSE_DUE = `SELECT * FROM ticket0_conversations
 
 /**
  * The customers who have waited since `cutoff` with nobody answering, longest first
- * (#1083). Binds `[HANDED_TO_A_PERSON, cutoff, limit]`.
+ * (#1083). Binds `[HANDED_TO_A_PERSON, HANDED_TO_A_PERSON, cutoff, limit]`.
  *
- * "Nobody answering" is a fact about the NEWEST public message: it is the customer's, or
- * it is the acknowledgement `request-human` writes (a request for a person that still
- * stands — `handoffStandsSql` says why that counts). An answer from an agent or the
- * assistant, or an internal note (never public), puts the ball elsewhere. The wait is
- * counted from THAT message, so a customer who writes again restarts it.
+ * Two messages matter, and they answer different questions:
  *
- * `no_reply_notified_at < m.created_at` is the idempotency: an announcement made for
- * this message is stamped later than it, so this conversation drops out of the scan
- * until the customer says something new. Live, unparked conversations only (`snoozed`
- * was put aside on purpose).
+ *   - `w`, the OLDEST public message after the desk's last public answer, says HOW LONG
+ *     the customer has waited. Counted from the oldest and not the newest, because a
+ *     customer who chases — a second message an hour before the window closes — must not
+ *     be forgiven for it: measuring from the newest made the most impatient customer the
+ *     one who never reached the desk.
+ *   - `m`, the NEWEST public message, says whether anybody has answered since, and is
+ *     what re-arms an announcement (below).
+ *
+ * "Nobody answering" is a fact about `m`: it is the customer's, or it is the
+ * acknowledgement `request-human` writes (a request for a person that still stands —
+ * `handoffStandsSql` says why that counts). An answer is a public message from an agent
+ * or the assistant, or any system message that is not that acknowledgement; an internal
+ * note (never public) is neither. A customer who writes after an answer starts a NEW
+ * wait, from that message.
+ *
+ * `no_reply_notified_at < m.created_at` is the idempotency and the re-arm: an
+ * announcement made for this stretch of waiting is stamped later than the newest message,
+ * so the conversation drops out of the scan. A customer who writes AGAIN makes `m` newer
+ * than the stamp, and — since the wait behind it is older than the window — the desk is
+ * told again at the next sweep. Live, unparked conversations only (`snoozed` was put
+ * aside on purpose).
  */
-export const NO_REPLY_WAITING = `SELECT c.*, m.created_at AS waiting_since
+export const NO_REPLY_WAITING = `SELECT c.*, w.created_at AS waiting_since
         FROM ticket0_conversations c
         JOIN ticket0_messages m
           ON m.id = (SELECT p.id FROM ticket0_messages p
                       WHERE p.conversation_id = c.id AND p.visibility = 'public'
                       ORDER BY p.id DESC LIMIT 1)
+        JOIN ticket0_messages w
+          ON w.id = (SELECT q.id FROM ticket0_messages q
+                      WHERE q.conversation_id = c.id AND q.visibility = 'public'
+                        AND q.id > COALESCE(
+                              (SELECT a.id FROM ticket0_messages a
+                                WHERE a.conversation_id = c.id AND a.visibility = 'public'
+                                  AND (a.author_kind IN ('agent', 'assistant')
+                                       OR (a.author_kind = 'system' AND a.body_text != ?))
+                                ORDER BY a.id DESC LIMIT 1), '')
+                      ORDER BY q.id LIMIT 1)
         WHERE c.state IN ('new', 'open')
           AND c.merged_into IS NULL
           AND (m.author_kind = 'contact' OR (m.author_kind = 'system' AND m.body_text = ?))
-          AND m.created_at <= ?
+          AND w.created_at <= ?
           AND (c.no_reply_notified_at IS NULL OR c.no_reply_notified_at < m.created_at)
-        ORDER BY m.created_at, c.id LIMIT ?`;
+        ORDER BY w.created_at, c.id LIMIT ?`;
 
 /**
  * Who is next, after `after` — or who is first, when nobody has been handed anything
@@ -3854,10 +3877,11 @@ const operations = {
    * at all, so nothing personal can leave with it.
    *
    * WHO is waiting is `NO_REPLY_WAITING`'s predicate, and it says why each clause is
-   * there. IDEMPOTENT by a stamp: `no_reply_notified_at` is written when the desk was
-   * told, and the scan skips a conversation stamped after its newest customer message,
-   * so a customer who waits a week is one notification and one who writes again is a
-   * new wait and a new one. A run that found nobody to tell stamps nothing and counts
+   * there. The wait is counted from the OLDEST customer message the desk has not answered,
+   * so a customer who chases is not forgiven for it. IDEMPOTENT by a stamp:
+   * `no_reply_notified_at` is written when the desk was told, and the scan skips a
+   * conversation stamped after its newest message, so a customer who waits a week is one
+   * notification, and one who writes again is told to the desk again. A run that found nobody to tell stamps nothing and counts
    * nothing, so the day somebody joins the desk is the day it is told.
    *
    * Emits `ticket0.no-reply-notified` per conversation, carrying ids, the state, the
@@ -3872,6 +3896,7 @@ const operations = {
     if (hours === null) return { notified: 0 };
     const now = ctx.now();
     const waiting = ctx.sql.query<ConversationRow & { waiting_since: string }>(NO_REPLY_WAITING, [
+      HANDED_TO_A_PERSON,
       HANDED_TO_A_PERSON,
       shiftInstant(now, -hours * 3_600_000),
       NO_REPLY_BATCH,
