@@ -56,6 +56,10 @@ import {
   usageTotal,
 } from '@substrat-run/engine-metering';
 import {
+  AUTO_CLOSE_MAX_DAYS,
+  AUTO_CLOSE_MIN_DAYS,
+  AUTO_TAG_RULES_MAX,
+  autoTagRule,
   DESK_METRICS_AGENTS,
   DESK_METRICS_MAX_DAYS,
   DESK_METRICS_WINDOW_DAYS,
@@ -63,6 +67,8 @@ import {
   MACRO_ACTION_OPERATIONS,
   MACRO_REPLY_OPERATIONS,
   macroActions,
+  NO_REPLY_MAX_HOURS,
+  NO_REPLY_MIN_HOURS,
   SAVED_REPLY_VARIABLES,
   savedReplyToken,
   SEARCH_OVERFETCH,
@@ -72,6 +78,8 @@ import {
   ticket0Entities,
   ticket0Lifecycles,
   ticket0Operations,
+  type AutoTagRule,
+  type DeskSetting,
   type MacroAction,
 } from '../spec/model.js';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
@@ -94,6 +102,7 @@ type UsageRateRow = EntityRow<typeof ticket0Entities, 'usageRate'>;
 type NotificationRow = EntityRow<typeof ticket0Entities, 'notification'>;
 type SignupRow = EntityRow<typeof ticket0Entities, 'signup'>;
 type BlockRuleRow = EntityRow<typeof ticket0Entities, 'blockRule'>;
+type BehaviourRunRow = EntityRow<typeof ticket0Entities, 'behaviourRun'>;
 
 const conversationRef = (id: string) => ({ entityType: 'conversation', entityId: id });
 const contactRef = (id: string) => ({ entityType: 'contact', entityId: id });
@@ -462,6 +471,13 @@ async function runMacroPart(
   return handler(ctx, declared.input ? declared.input.parse(input) : input);
 }
 
+/** A colleague's directory row, or nothing. The one read of `ticket0_agent_profiles` by principal. */
+function profileOf(ctx: OperationContext, principal: string): AgentProfileRow | undefined {
+  return ctx.sql.query<AgentProfileRow>('SELECT * FROM ticket0_agent_profiles WHERE principal = ?', [
+    principal,
+  ])[0];
+}
+
 /**
  * Somebody who is on this desk at all — membership, and only that.
  *
@@ -476,10 +492,7 @@ async function runMacroPart(
  * one `assign` asks.
  */
 function staffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
-  const row = ctx.sql.query<AgentProfileRow>(
-    'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
-    [principal],
-  )[0];
+  const row = profileOf(ctx, principal);
   if (!row) {
     throw substratError(
       'validation_failed',
@@ -525,8 +538,42 @@ function assignableStaffOrThrow(ctx: OperationContext, principal: string): Agent
       `the assistant cannot be an assignee: ${principal} — it answers on its own and reads no queue`,
     );
   }
+  if (!onTheDesk(row)) {
+    throw substratError(
+      'validation_failed',
+      `not on this desk any more: ${principal} — they were taken off it, and an admin can put them back`,
+    );
+  }
   return row;
 }
+
+/**
+ * Is this colleague on the desk — the ONE definition of who may be handed work or told
+ * about it (#1083), in the two forms the callers need.
+ *
+ * Off the desk is `offboarded_at`, which an admin sets through
+ * `ticket0/set-agent-offboarded`. It MIRRORS a role revocation and does not derive from
+ * one, because module code cannot read another principal's roles; the column's
+ * docblock says what that costs. What it does not do is move anything: a conversation
+ * already assigned to somebody who has since left stays theirs.
+ *
+ * `onTheDesk` is the row form, read by `assignableStaffOrThrow`. `ON_THE_DESK_SQL` is
+ * the same test as a fragment, read by the round-robin ring and by `notifyStaff`'s
+ * broadcast. Two spellings of one rule, side by side and held to each other by
+ * `test/off-boarding.test.ts`, which walks every combination through both. The
+ * assistant is a separate question (`isAssistant`), asked beside this one at every
+ * call site, because it is off the desk for a different reason: it is not a person.
+ */
+const onTheDesk = (row: AgentProfileRow): boolean => row.offboarded_at === null;
+const ON_THE_DESK_SQL = 'offboarded_at IS NULL';
+
+/**
+ * The people a conversation can be handed to or a broadcast can reach, as a `WHERE`:
+ * on the desk and not the assistant. Binds `[ASSISTANT_NAME]`. The ring and the
+ * broadcast both read the directory through this, so the two cannot disagree about who
+ * is in it — and `assign` judges the same set a row at a time.
+ */
+const ASSIGNABLE_STAFF_SQL = `display_name != ? AND ${ON_THE_DESK_SQL}`;
 
 /**
  * Somebody this desk can put ON a conversation — the follower directory (#1086).
@@ -536,6 +583,11 @@ function assignableStaffOrThrow(ctx: OperationContext, principal: string): Agent
  * does: the assistant is not refused here for holding a queue it never works, but for
  * already reading every conversation in the scope, which makes following it a grant
  * that confers nothing and a record that says something untrue.
+ *
+ * Somebody an admin has taken off the desk (`onTheDesk`, #1083) is refused too. A follow is
+ * a durable `conversation:read` on a customer's thread, and putting it on an ex-colleague
+ * hands them the customer's words. It is a NEW follow that is refused: what they already
+ * follow is a tuple this module keeps no list of, so it cannot be enumerated to withdraw.
  */
 function followableStaffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
   const row = staffOrThrow(ctx, principal);
@@ -543,6 +595,12 @@ function followableStaffOrThrow(ctx: OperationContext, principal: string): Agent
     throw substratError(
       'validation_failed',
       `the assistant cannot follow a conversation: ${principal} — it already reads every one of them`,
+    );
+  }
+  if (!onTheDesk(row)) {
+    throw substratError(
+      'validation_failed',
+      `not on this desk any more: ${principal} — they were taken off it, and an admin can put them back`,
     );
   }
   return row;
@@ -962,6 +1020,7 @@ interface WriteMessage {
 
 function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
   const id = ulid();
+  const now = ctx.now();
   ctx.sql.exec(
     `INSERT INTO ticket0_messages
        (id, conversation_id, author_kind, author_principal, visibility, body_text, body_html,
@@ -980,9 +1039,30 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
       m.citedArticleIds && m.citedArticleIds.length > 0
         ? JSON.stringify(m.citedArticleIds)
         : null,
-      ctx.now(),
+      now,
     ],
   );
+  if (m.visibility === 'public') {
+    if (m.authorKind === 'contact' || (m.authorKind === 'system' && m.bodyText === HANDED_TO_A_PERSON)) {
+      // A nudge keeps the oldest unanswered instant. A new message after a notice
+      // re-arms the candidate even if both writes have the same millisecond timestamp.
+      ctx.sql.exec(
+        `UPDATE ticket0_conversations
+            SET no_reply_candidate_at = CASE
+                  WHEN no_reply_notified_at > COALESCE(no_reply_waiting_since, ?) THEN no_reply_notified_at
+                  ELSE COALESCE(no_reply_waiting_since, ?) END,
+                no_reply_waiting_since = COALESCE(no_reply_waiting_since, ?)
+          WHERE id = ?`,
+        [now, now, now, m.conversationId],
+      );
+    } else {
+      // A public desk answer ends this stretch of waiting. Internal notes never do.
+      ctx.sql.exec(
+        'UPDATE ticket0_conversations SET no_reply_waiting_since = NULL, no_reply_candidate_at = NULL WHERE id = ?',
+        [m.conversationId],
+      );
+    }
+  }
   ctx.link({ entityType: 'message', entityId: id }, conversationRef(m.conversationId));
   return messageOrThrow(ctx, id);
 }
@@ -1217,7 +1297,15 @@ function notifyStaff(
   conversation: ConversationRow,
   kind: NotificationRow['kind'],
 ): number {
-  if (conversation.assignee) return notify(ctx, conversation.assignee, kind, conversation.id) ? 1 : 0;
+  // Whoever holds it — unless they have been taken off the desk. Telling somebody who
+  // is not there is telling nobody, which is the failure the rest of this function exists
+  // to refuse, so a conversation held by a departed colleague is the desk's to hear about.
+  // The conversation itself is not moved (`onTheDesk` says why).
+  if (conversation.assignee) {
+    const holder = profileOf(ctx, conversation.assignee);
+    if (holder === undefined || onTheDesk(holder))
+      return notify(ctx, conversation.assignee, kind, conversation.id) ? 1 : 0;
+  }
   // Not the assistant's own accounts, which are in this directory because they need a
   // byline — and only for that, since #1154: `assignableStaffOrThrow` refuses them as
   // an assignee too. Telling the assistant that the assistant gave up is a notification
@@ -1225,12 +1313,107 @@ function notifyStaff(
   // actually has. The name is the test the same way `post-public-reply` decides an
   // author's kind by it — one rule about who the assistant is, not three.
   const staff = ctx.sql.query<{ principal: string }>(
-    'SELECT principal FROM ticket0_agent_profiles WHERE display_name != ? ORDER BY principal',
+    `SELECT principal FROM ticket0_agent_profiles WHERE ${ASSIGNABLE_STAFF_SQL} ORDER BY principal`,
     [ASSISTANT_NAME],
   );
   let told = 0;
   for (const row of staff) if (notify(ctx, row.principal, kind, conversation.id)) told++;
   return told;
+}
+
+// ---------------------------------------------------------------------------
+// Closing — one body, three doors
+// ---------------------------------------------------------------------------
+
+/**
+ * Close a conversation — everything a closing operation does after its permission check.
+ *
+ * Three operations run this: a person's `ticket0/close`, the reaper's
+ * `ticket0/reap-abandoned` and the desk's `ticket0/auto-close`. The event is the promise
+ * they share, and it is written once so it cannot drift: nothing downstream should have to
+ * know which door a conversation left through, and the trail already names the operation.
+ * `edge` is the operation's own name because the lifecycle declares each door's edge
+ * separately — the reaper's only out of `new`, auto-close's only out of `resolved` — so a
+ * caller that widened its query is refused by the machine and not by this function.
+ */
+function closeConversation(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  edge: 'ticket0/close' | 'ticket0/reap-abandoned' | 'ticket0/auto-close',
+): ConversationRow {
+  const row = settle(ctx, conversation, step(conversation, edge));
+  ctx.emit({
+    type: 'ticket0.conversation-closed',
+    schemaVersion: 1,
+    entity: conversationRef(row.id),
+    piiClass: 'none',
+    payload: { id: row.id },
+  });
+  return row;
+}
+
+// ---------------------------------------------------------------------------
+// Tagging — one body, two doors
+// ---------------------------------------------------------------------------
+
+/**
+ * Put a tag on a conversation — everything `ticket0/tag-conversation` does after its
+ * permission check (#1083).
+ *
+ * Two operations run this, a person's `tag-conversation` and the desk's `auto-tag`, for
+ * `assignConversation`'s reason: the lifecycle rule, the row and the event are one piece
+ * of code, and only who passed the check differs. `added` is whether this call put the
+ * tag on: tagging twice is not a second tagging, so it emits nothing, and a consumer
+ * counting the event is counting the tag going ON, once.
+ */
+function putTag(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  tag: string,
+): { row: TagRow; added: boolean } {
+  step(conversation, 'ticket0/tag-conversation');
+  const existing = ctx.sql.query<TagRow>(
+    'SELECT * FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?',
+    [conversation.id, tag],
+  )[0];
+  if (existing) return { row: existing, added: false };
+  ctx.sql.exec(
+    'INSERT INTO ticket0_conversation_tags (conversation_id, tag, created_at) VALUES (?, ?, ?)',
+    [conversation.id, tag, ctx.now()],
+  );
+  const row = ctx.sql.query<TagRow>(
+    'SELECT * FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?',
+    [conversation.id, tag],
+  )[0]!;
+  ctx.emit({
+    type: 'ticket0.conversation-tagged',
+    schemaVersion: 1,
+    // About the conversation. A tag is keyed by both its columns and cannot be
+    // pointed at, and "this conversation was tagged" is the fact anyway.
+    entity: conversationRef(row.conversation_id),
+    piiClass: 'none',
+    payload: { conversation_id: row.conversation_id, tag: row.tag, created_at: row.created_at },
+  });
+  return { row, added: true };
+}
+
+/**
+ * Tell whoever holds a conversation about something that happened on it, and nobody when
+ * nobody does (#1083).
+ *
+ * The four notices that go to a HOLDER (`replied`, `mentioned`, `snooze-woke`, and
+ * `notifyStaff`'s own first branch) are one rule: a departed holder is not told, because
+ * telling somebody who is not there is telling nobody. `notifyStaff` already falls back to
+ * the whole desk in that case, so this is that function with its "nobody holds it" broadcast
+ * switched off — an unassigned conversation is still nobody's to be told about, which is
+ * the rule these call sites had before and the one the inbox already answers.
+ */
+function notifyHolder(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  kind: NotificationRow['kind'],
+): void {
+  if (conversation.assignee) notifyStaff(ctx, conversation, kind);
 }
 
 // ---------------------------------------------------------------------------
@@ -1336,6 +1519,69 @@ export const ROUND_ROBIN_WAITING = `SELECT * FROM ticket0_conversations c
                OR ${handoffStandsSql('c.id')})
         ORDER BY c.created_at, c.id LIMIT ?`;
 
+/** How many conversations one run of `ticket0/auto-tag` reads. `WAKE_BATCH`'s bargain. */
+export const AUTO_TAG_BATCH = 200;
+/** How many resolved conversations one run of `ticket0/auto-close` closes. `REAP_BATCH`'s bargain. */
+export const AUTO_CLOSE_BATCH = 200;
+/** How many customers one run of `ticket0/notify-no-reply` announces. `WAKE_BATCH`'s bargain. */
+export const NO_REPLY_BATCH = 200;
+
+/**
+ * The conversations auto-tag has not looked at yet, oldest first (#1083). Binds
+ * `[limit]`. Oldest first and bounded by `AUTO_TAG_BATCH`: a conversation the desk
+ * permanently may not act on stays unstamped at the head, and enough of them could starve
+ * the batch (theoretical today; the sweep logs how many it refused, and a keyset cursor on
+ * `(created_at, id)` is the fix). The WHERE is textually the partial index's (`ticket0_conversations_untagged`
+ * in migration 0016), which is why it is exported: `test/automation.test.ts` holds the
+ * PLAN to it. Live work only: a resolved or closed conversation is done.
+ */
+export const AUTO_TAG_PENDING = `SELECT * FROM ticket0_conversations
+        WHERE auto_tagged_at IS NULL
+          AND state IN ('new', 'open', 'snoozed')
+          AND merged_into IS NULL
+        ORDER BY created_at, id LIMIT ?`;
+
+/**
+ * The resolved conversations left alone since `cutoff`, longest-idle first (#1083).
+ * Binds `[cutoff, limit]`. Bounded by `AUTO_CLOSE_BATCH`, longest-idle first: a conversation the
+ * desk permanently may not act on stays at the head and enough of them could starve the
+ * batch (theoretical today; the sweep logs how many it refused, and a keyset cursor on
+ * `(updated_at, id)` is the fix). `<=` is the boundary: idle EXACTLY the window is closed, a
+ * second short is not.
+ *
+ * No index of its own, and that is measured rather than assumed: the kernel already
+ * provisions `(state, updated_at)` for the conversation list's declared sort, and a
+ * partial index of this shape lost to it or tied with it. `test/automation.test.ts`
+ * holds the PLAN to a seek on both columns and no sort, so the day that list index goes
+ * away this scan says so instead of quietly reading every conversation.
+ */
+export const AUTO_CLOSE_DUE = `SELECT * FROM ticket0_conversations
+        WHERE state = 'resolved'
+          AND merged_into IS NULL
+          AND updated_at <= ?
+        ORDER BY updated_at, id LIMIT ?`;
+
+/**
+ * Indexed candidates whose wait and notice throttle have both reached `cutoff` (#1083).
+ * Binds `[cutoff, limit]`. `writeMessage` maintains the oldest unanswered instant and
+ * re-arms a candidate on a new public customer message. A notice clears the candidate;
+ * merely waiting longer never re-announces it. The candidate is the later of the oldest
+ * unanswered message and the previous notice, so one window must pass on both clocks.
+ * This also re-arms messages written in the notice's millisecond: the message write,
+ * rather than a timestamp comparison, makes the candidate eligible again.
+ *
+ * The partial index excludes finished and parked conversations and orders due work.
+ * A permanently refused candidate can still occupy the bounded batch repeatedly; a
+ * cursor or retry time for refusals would address that separately.
+ */
+export const NO_REPLY_WAITING = `SELECT c.*, c.no_reply_waiting_since AS waiting_since
+        FROM ticket0_conversations c INDEXED BY ticket0_conversations_no_reply_candidate
+        WHERE c.no_reply_candidate_at IS NOT NULL
+          AND c.state IN ('new', 'open')
+          AND c.merged_into IS NULL
+          AND c.no_reply_candidate_at <= ?
+        ORDER BY c.no_reply_candidate_at, c.id LIMIT ?`;
+
 /**
  * Who is next, after `after` — or who is first, when nobody has been handed anything
  * yet or `after` was the last in line.
@@ -1351,17 +1597,19 @@ export const ROUND_ROBIN_WAITING = `SELECT * FROM ticket0_conversations c
  * become unassignable still marks a place in the order, and the next person after that
  * place is next.
  *
- * What the ring does NOT know is who is at their desk. There is no presence to read
- * (see `notifyStaff`), and nothing in a scope records that someone has left: a profile
- * is never deleted, and module code cannot ask the kernel who still holds a role. So an
- * agent who has been off-boarded stays in line until their profile says otherwise.
- * That is a sharp edge of switching this on, and it is named on #1083 and in the
- * Settings hint rather than papered over here.
+ * What the ring does NOT know is who is at their desk: there is no presence to read
+ * (see `notifyStaff`). It does know who has been taken off the desk — `ON_THE_DESK_SQL`,
+ * which an admin sets with `ticket0/set-agent-offboarded` — and an off-boarded agent is
+ * not in line, so no sweep ever hands them a conversation. That is a mirror of a role
+ * revocation and not a derivation of it, because module code cannot ask the kernel who
+ * still holds a role; until an admin records the departure here, the profile reads as on
+ * the desk. Somebody who was last in line and has since left still marks a place in the
+ * order, exactly as the paragraph above says of anyone who became unassignable.
  *
  * `undefined` is a desk with nobody to hand anything to.
  */
 function nextInTurn(ctx: OperationContext, after: string | null): string | undefined {
-  const ring = 'SELECT principal FROM ticket0_agent_profiles WHERE display_name != ?';
+  const ring = `SELECT principal FROM ticket0_agent_profiles WHERE ${ASSIGNABLE_STAFF_SQL}`;
   if (after !== null) {
     const next = ctx.sql.query<{ principal: string }>(
       `${ring} AND principal > ? ORDER BY principal LIMIT 1`,
@@ -1640,14 +1888,15 @@ function isAutonomous(ctx: OperationContext): boolean {
 function storedSettings(row: DeskRow): Record<string, unknown> {
   if (row.settings === null) return {};
   try {
-    const parsed: unknown = JSON.parse(row.settings);
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
+    return asRecord(JSON.parse(row.settings) as unknown) ?? {};
   } catch {
     return {};
   }
 }
+
+/** A JSON object, or null for anything else — an array, a scalar, null. */
+const asRecord = (v: unknown): Record<string, unknown> | null =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 
 /**
  * Has this desk switched round-robin on? Only an explicit `true` counts — the rule
@@ -1656,6 +1905,74 @@ function storedSettings(row: DeskRow): Record<string, unknown> {
  */
 function roundRobinOn(row: DeskRow): boolean {
   return storedSettings(row).roundRobin === true;
+}
+
+/**
+ * The desk's auto-tag rules — read leniently, as `slaPolicy` reads its targets (#1083).
+ *
+ * A rule counts only when it parses against the schema `configure-desk` writes it
+ * with; one that does not (a shape a later version wrote, then a rollback) is dropped
+ * on its own, not the list with it. The list is capped on the way OUT as well as in,
+ * for `abandonedAfter`'s reason: the row outlives the parse that wrote it. No usable
+ * rule is an empty list, which is off.
+ */
+function autoTagRules(row: DeskRow): AutoTagRule[] {
+  const rules = asRecord(storedSettings(row).autoTag)?.rules;
+  if (!Array.isArray(rules)) return [];
+  const usable: AutoTagRule[] = [];
+  for (const candidate of rules.slice(0, AUTO_TAG_RULES_MAX)) {
+    const parsed = autoTagRule.safeParse(candidate);
+    if (parsed.success) usable.push(parsed.data);
+  }
+  return usable;
+}
+
+/**
+ * One whole number from a switch's object, or null — off. Inside the bounds the schema
+ * declares or nothing: a value this version did not write, or one nobody chose, must not
+ * become "close everything resolved yesterday" (`closed` is terminal).
+ */
+function switchNumber(row: DeskRow, key: string, field: string, min: number, max: number): number | null {
+  const value = asRecord(storedSettings(row)[key])?.[field];
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
+    ? value
+    : null;
+}
+
+/** Days a resolved conversation is left alone before auto-close takes it, or null: off. */
+const autoCloseDays = (row: DeskRow): number | null =>
+  switchNumber(row, 'autoClose', 'afterDays', AUTO_CLOSE_MIN_DAYS, AUTO_CLOSE_MAX_DAYS);
+
+/** Hours a customer waits before the desk is told, or null: off. */
+const noReplyHours = (row: DeskRow): number | null =>
+  switchNumber(row, 'noReplyNotify', 'afterHours', NO_REPLY_MIN_HOURS, NO_REPLY_MAX_HOURS);
+
+/**
+ * The built-in behaviours, by the key each has in `deskSettingsBlob` — the closed set
+ * `ticket0_behaviour_runs.behaviour` holds. Not a CHECK in the table, so the next
+ * behaviour costs no migration; this type is where the set is closed.
+ */
+type Behaviour = DeskSetting;
+
+/**
+ * A behaviour ACTED: stamp when, and how many things it did (#1083).
+ *
+ * `count` is CONVERSATIONS acted on, not tags put on or targets missed: the row answers
+ * "how many conversations did this touch", the same unit for every behaviour. Called only
+ * with a positive count. A sweep that found nothing to do writes nothing, so
+ * the row answers "when did this last do something" and a switch that has quietly
+ * stopped matching stays visibly old. It is bookkeeping about the desk's automation, so
+ * it carries no event and no person — `round_robin_last`'s precedent — and it is written
+ * in the sweep's own transaction, so a rolled-back sweep leaves no stamp claiming it ran.
+ */
+function recordFired(ctx: OperationContext, behaviour: Behaviour, count: number): void {
+  if (count <= 0) return;
+  ctx.sql.exec(
+    `INSERT INTO ticket0_behaviour_runs (behaviour, last_fired_at, last_count) VALUES (?, ?, ?)
+     ON CONFLICT (behaviour) DO UPDATE SET last_fired_at = excluded.last_fired_at,
+                                           last_count = excluded.last_count`,
+    [behaviour, ctx.now(), count],
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2584,6 +2901,15 @@ const operations = {
     return publicDesk(row);
   },
 
+  'ticket0/list-behaviour-runs': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.deskConfigure));
+    return {
+      runs: ctx.sql.query<BehaviourRunRow>(
+        'SELECT behaviour, last_fired_at, last_count FROM ticket0_behaviour_runs ORDER BY behaviour',
+      ),
+    };
+  },
+
   'ticket0/rotate-verification-secret': async (ctx) => {
     assertAllowed(await ctx.check(T0_PERM.deskConfigure));
     desk(ctx);
@@ -2687,6 +3013,37 @@ const operations = {
       payload: { id: row.id, kind: row.kind },
     });
     return { id: row.id, kind: row.kind };
+  },
+
+  'ticket0/set-agent-offboarded': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.deskConfigure));
+    const profile = staffOrThrow(ctx, input.principal);
+    // The assistant is not staff, so it is never on the desk to be taken off — a row
+    // saying it was would only be read as if it meant something.
+    if (isAssistant(profile)) {
+      throw substratError(
+        'validation_failed',
+        `the assistant is not on the desk as staff: ${input.principal}`,
+      );
+    }
+    // Idempotent both ways. Taking off somebody already off keeps the FIRST instant, so
+    // the record says when they left rather than when somebody last clicked; putting back
+    // somebody who is on changes nothing. Neither emits: the event is a change.
+    if (input.offboarded === !onTheDesk(profile)) return profile;
+    ctx.sql.exec('UPDATE ticket0_agent_profiles SET offboarded_at = ? WHERE principal = ?', [
+      input.offboarded ? ctx.now() : null,
+      profile.principal,
+    ]);
+    const row = staffOrThrow(ctx, input.principal);
+    // The principal and the instant. The name is erasable and never rides an event.
+    ctx.emit({
+      type: 'ticket0.agent-offboarding-set',
+      schemaVersion: 1,
+      entity: { entityType: 'agentProfile', entityId: row.principal },
+      piiClass: 'none',
+      payload: { principal: row.principal, offboarded_at: row.offboarded_at },
+    });
+    return row;
   },
 
   'ticket0/set-agent-profile': async (ctx, input) => {
@@ -3200,7 +3557,7 @@ const operations = {
       bodyText: input.body,
     });
     touch(ctx, conversation.id);
-    if (conversation.assignee) notify(ctx, conversation.assignee, 'mentioned', conversation.id);
+    notifyHolder(ctx, conversation, 'mentioned');
     ctx.emit(messageEvent(row, 'ticket0.note-posted'));
     return row;
   },
@@ -3346,6 +3703,7 @@ const operations = {
         last,
         DESK,
       ]);
+      recordFired(ctx, 'roundRobin', assigned);
     }
     // The one case worth a warning: work was waiting and nobody was in the ring to take it.
     if (assigned < waiting.length) {
@@ -3409,6 +3767,7 @@ const operations = {
         notifyStaff(ctx, conversation, 'escalated');
       }
     }
+    recordFired(ctx, 'sla', told.size);
     if (breached > 0) {
       ctx.log.warn('{breached} service-level targets breached across {conversations} conversations', {
         breached,
@@ -3416,6 +3775,205 @@ const operations = {
       });
     }
     return { breached };
+  },
+
+  /**
+   * Auto-tag (#1083) — the schedule's only entry point, never a route.
+   *
+   * Off unless the desk wrote rules. Each conversation it has not looked at yet is read
+   * ONCE against them — its subject and the first thing the customer wrote, matched as a
+   * case-insensitive substring, no pattern language — and every tag a matching rule names
+   * goes on through `putTag`, behind the same per-conversation check `tag-conversation`
+   * makes, on the same key. The desk's tagging and a person's are the same act.
+   *
+   * IDEMPOTENT by a mark and not by the tags themselves: `auto_tagged_at` is stamped on
+   * every conversation it reads, whether or not a rule matched, and the scan is "not
+   * stamped yet". So a second run finds nothing it has handled, and — the property a
+   * tag-present test could not give — a person who removes an automatic tag does not
+   * watch the next sweep put it back. Editing the rules later does not re-read what was
+   * already read; that is the price of that property, and it is deliberate.
+   *
+   * WHICH conversations: live work (`new`, `open`, `snoozed`) not merged away. That
+   * includes the backlog a desk already has when it writes its first rule, which is what
+   * "everything not yet looked at" means, and is bounded per pass (`AUTO_TAG_BATCH`).
+   *
+   * It does not touch `updated_at`. A tag is not the customer or the desk doing
+   * something, and bumping it would float the conversation up an activity-sorted inbox
+   * and restart the silence the sweeps measure — `escalate-sla-breaches`' reasoning.
+   */
+  'ticket0/auto-tag': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationAssign));
+    const rules = autoTagRules(desk(ctx)).map((r) => ({ ...r, needle: r.contains.toLowerCase() }));
+    if (rules.length === 0) return { tagged: 0 };
+    // A desk whose rules all read the subject never needs a message read.
+    const readsBody = rules.some((r) => r.in !== 'subject');
+    const pending = ctx.sql.query<ConversationRow>(AUTO_TAG_PENDING, [AUTO_TAG_BATCH]);
+    let tagged = 0;
+    let conversationsTagged = 0;
+    let refused = 0;
+    for (const conversation of pending) {
+      // A refusal on ONE conversation leaves that one alone and the pass goes on: the
+      // node check above is what stops the behaviour, and a row the desk may not act on
+      // must not take the rest of the batch down with it. It is not stamped, so it is
+      // looked at again once the desk may act on it.
+      if (!(await ctx.check(T0_PERM.conversationAssign, conversationRef(conversation.id))).allowed) {
+        refused++;
+        continue;
+      }
+      const first = readsBody
+        ? ctx.sql.query<{ body: string }>(
+            `SELECT body_text AS body FROM ticket0_messages
+              WHERE conversation_id = ? AND author_kind = 'contact' AND visibility = 'public'
+              ORDER BY id LIMIT 1`,
+            [conversation.id],
+          )[0]
+        : undefined;
+      const subject = conversation.subject.toLowerCase();
+      const body = (first?.body ?? '').toLowerCase();
+      // Two rules naming one tag put it on once: `putTag` finds the row the first left.
+      const before = tagged;
+      for (const rule of rules) {
+        const hit =
+          (rule.in !== 'body' && subject.includes(rule.needle)) ||
+          (rule.in !== 'subject' && body.includes(rule.needle));
+        if (hit && putTag(ctx, conversation, rule.tag).added) tagged++;
+      }
+      if (tagged > before) conversationsTagged++;
+      ctx.sql.exec('UPDATE ticket0_conversations SET auto_tagged_at = ? WHERE id = ?', [
+        ctx.now(),
+        conversation.id,
+      ]);
+    }
+    recordFired(ctx, 'autoTag', conversationsTagged);
+    if (refused > 0) ctx.log.warn('auto-tag skipped {refused} conversations it may not act on', { refused });
+    if (tagged > 0) ctx.log.info('auto-tagged {tagged} tags', { tagged });
+    return { tagged };
+  },
+
+  /**
+   * Auto-close (#1083) — the schedule's only entry point, never a route.
+   *
+   * `ticket0/close` for the conversations the desk is done with and the customer has not
+   * come back to. Off unless the desk set a window; then it closes each RESOLVED
+   * conversation idle that many days, through the `ticket0/auto-close` edge, which the
+   * lifecycle declares out of `resolved` alone — so a query that one day widened would
+   * be refused by the machine. Behind `close`'s key, checked per conversation first.
+   *
+   * IDLE is `updated_at`, the column the reaper measures: every message and every
+   * lifecycle move refreshes it through `settle()`, so the clock is "since anybody
+   * last did anything". A customer's reply reopens the conversation (`resolved` →
+   * `open`, an edge out of `resolved`) and it leaves this scan; when it is resolved
+   * again it has a new `updated_at` and a new clock. `<=` makes the boundary exact:
+   * idle for the whole window is closed, a second short is not.
+   *
+   * IDEMPOTENT by construction: `closed` is terminal, so what it closes is no longer
+   * `resolved` and a second run finds nothing. `resolved_at` is untouched, so the
+   * reports keep counting what was answered, and the event is the one `close`
+   * publishes — nothing downstream has to know which door it came through. Nobody is
+   * notified: the desk resolved it, and closing it later changes nothing they need.
+   * Bounded per pass, oldest idle first.
+   */
+  'ticket0/auto-close': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationResolve));
+    const days = autoCloseDays(desk(ctx));
+    if (days === null) return { closed: 0 };
+    const due = ctx.sql.query<ConversationRow>(AUTO_CLOSE_DUE, [
+      shiftDays(ctx.now(), -days),
+      AUTO_CLOSE_BATCH,
+    ]);
+    let closed = 0;
+    let refused = 0;
+    for (const conversation of due) {
+      // A refusal on one conversation skips it and the pass goes on (see `auto-tag`).
+      if (!(await ctx.check(T0_PERM.conversationResolve, conversationRef(conversation.id))).allowed) {
+        refused++;
+        continue;
+      }
+      closeConversation(ctx, conversation, 'ticket0/auto-close');
+      closed++;
+    }
+    recordFired(ctx, 'autoClose', closed);
+    if (refused > 0) ctx.log.warn('auto-close skipped {refused} conversations it may not act on', { refused });
+    if (closed > 0) ctx.log.info('auto-closed {closed} resolved conversations', { closed });
+    return { closed };
+  },
+
+  /**
+   * No-reply notify (#1083) — the schedule's only entry point, never a route.
+   *
+   * Tells the desk about each customer who has been waiting longer than the desk said it
+   * would let them, through `notifyStaff` and the `escalated` notification the SLA sweep
+   * and the assistant's hand-offs already use: whoever holds the conversation, or when
+   * nobody does, everybody on the desk. The notification is the conversation's id and
+   * nothing else, and nothing is sent to the customer — there is no email on this path
+   * at all, so nothing personal can leave with it.
+   *
+   * WHO is waiting is `NO_REPLY_WAITING`'s predicate, and it says why each clause is
+   * there. The wait is counted from the OLDEST customer message the desk has not answered,
+   * so a customer who chases is not forgiven for it. A notice clears the indexed
+   * candidate until another public customer message re-arms it. The notice time then
+   * holds the next candidate back for a whole window, including when that message has
+   * the same timestamp as the notice. A run that found nobody to tell stamps nothing,
+   * so the day somebody joins the desk is the day it is told.
+   *
+   * Emits `ticket0.no-reply-notified` per conversation, carrying ids, the state, the
+   * holder and when the wait began — never a word of the customer's. It does not touch
+   * `updated_at`: telling the desk is neither the customer nor the desk acting, and
+   * bumping it would restart the silence the reaper and auto-close measure on exactly
+   * the conversation nobody is answering.
+   */
+  'ticket0/notify-no-reply': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationEscalate));
+    const hours = noReplyHours(desk(ctx));
+    if (hours === null) return { notified: 0 };
+    const now = ctx.now();
+    const cutoff = shiftInstant(now, -hours * 3_600_000);
+    const waiting = ctx.sql.query<ConversationRow & { waiting_since: string }>(NO_REPLY_WAITING, [cutoff, NO_REPLY_BATCH]);
+    let notified = 0;
+    let refused = 0;
+    for (const conversation of waiting) {
+      // A refusal on one conversation skips it and the pass goes on (see `auto-tag`).
+      if (!(await ctx.check(T0_PERM.conversationEscalate, conversationRef(conversation.id))).allowed) {
+        refused++;
+        continue;
+      }
+      const told = notifyStaff(ctx, conversation, 'escalated');
+      if (told === 0) continue;
+      const latest = ctx.sql.query<{ id: string }>(
+        `SELECT id FROM ticket0_messages WHERE conversation_id = ? AND visibility = 'public'
+         ORDER BY id DESC LIMIT 1`,
+        [conversation.id],
+      )[0];
+      ctx.sql.exec(
+        `UPDATE ticket0_conversations
+            SET no_reply_notified_at = ?, no_reply_notified_message_id = ?, no_reply_candidate_at = NULL
+          WHERE id = ?`,
+        [now, latest?.id ?? null, conversation.id],
+      );
+      ctx.emit({
+        type: 'ticket0.no-reply-notified',
+        schemaVersion: 1,
+        entity: conversationRef(conversation.id),
+        piiClass: 'none',
+        payload: {
+          id: conversation.id,
+          state: conversation.state,
+          assignee: conversation.assignee,
+          waiting_since: conversation.waiting_since,
+          told,
+        },
+      });
+      notified++;
+    }
+    recordFired(ctx, 'noReplyNotify', notified);
+    if (refused > 0) ctx.log.warn('notify-no-reply skipped {refused} conversations it may not act on', { refused });
+    if (notified + refused < waiting.length) {
+      ctx.log.warn('{waiting} waiting customers could not be announced: nobody is on the desk', {
+        waiting: waiting.length - notified - refused,
+      });
+    }
+    if (notified > 0) ctx.log.info('told the desk about {notified} waiting customers', { notified });
+    return { notified };
   },
 
   'ticket0/set-priority': async (ctx, input) => {
@@ -3566,7 +4124,7 @@ const operations = {
       // Whoever is holding it. An unassigned conversation is nobody's to be told
       // about — it is back in the inbox, which is where an unassigned conversation
       // is looked for anyway.
-      if (row.assignee) notify(ctx, row.assignee, 'snooze-woke', row.id);
+      notifyHolder(ctx, row, 'snooze-woke');
     }
     if (due.length > 0) ctx.log.info('woke {woke} snoozed conversations', { woke: due.length });
     return { woke: due.length };
@@ -3620,17 +4178,7 @@ const operations = {
     assertAllowed(
       await ctx.check(T0_PERM.conversationResolve, conversationRef(input.conversationId)),
     );
-    const conversation = conversationOrThrow(ctx, input.conversationId);
-    const next = step(conversation, 'ticket0/close');
-    const row = settle(ctx, conversation, next);
-    ctx.emit({
-      type: 'ticket0.conversation-closed',
-      schemaVersion: 1,
-      entity: conversationRef(row.id),
-      piiClass: 'none',
-      payload: { id: row.id },
-    });
-    return row;
+    return closeConversation(ctx, conversationOrThrow(ctx, input.conversationId), 'ticket0/close');
   },
 
   /**
@@ -3690,20 +4238,10 @@ const operations = {
       REAP_ABANDONED_SQL,
       [cutoff, REAP_BATCH],
     );
-    for (const conversation of abandoned) {
-      const next = step(conversation, 'ticket0/reap-abandoned');
-      const row = settle(ctx, conversation, next);
-      // The same event `ticket0/close` publishes. A consumer must not have to know
-      // which of the two doors a conversation was closed through — and `resolved_at`
-      // stays null either way, so the reports go on counting only what was answered.
-      ctx.emit({
-        type: 'ticket0.conversation-closed',
-        schemaVersion: 1,
-        entity: conversationRef(row.id),
-        piiClass: 'none',
-        payload: { id: row.id },
-      });
-    }
+    // The same body `ticket0/close` runs, so the same event: a consumer must not have to
+    // know which door a conversation was closed through — and `resolved_at` stays null
+    // either way, so the reports go on counting only what was answered.
+    for (const conversation of abandoned) closeConversation(ctx, conversation, 'ticket0/reap-abandoned');
     if (abandoned.length > 0) {
       ctx.log.info('closed {reaped} abandoned conversations', { reaped: abandoned.length });
     }
@@ -3834,33 +4372,8 @@ const operations = {
     assertAllowed(
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
     );
-    const conversation = conversationOrThrow(ctx, input.conversationId);
-    step(conversation, 'ticket0/tag-conversation');
-    const existing = ctx.sql.query<TagRow>(
-      'SELECT * FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?',
-      [conversation.id, input.tag],
-    )[0];
-    // Already tagged is not a second tagging, so it emits nothing - a consumer
-    // counting this event is counting the tag going ON, once.
-    if (existing) return existing;
-    ctx.sql.exec(
-      'INSERT INTO ticket0_conversation_tags (conversation_id, tag, created_at) VALUES (?, ?, ?)',
-      [conversation.id, input.tag, ctx.now()],
-    );
-    const row = ctx.sql.query<TagRow>(
-      'SELECT * FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?',
-      [conversation.id, input.tag],
-    )[0]!;
-    ctx.emit({
-      type: 'ticket0.conversation-tagged',
-      schemaVersion: 1,
-      // About the conversation. A tag is keyed by both its columns and cannot be
-      // pointed at, and "this conversation was tagged" is the fact anyway.
-      entity: conversationRef(row.conversation_id),
-      piiClass: 'none',
-      payload: { conversation_id: row.conversation_id, tag: row.tag, created_at: row.created_at },
-    });
-    return row;
+    // Everything after the check is `putTag`, which auto-tag runs too.
+    return putTag(ctx, conversationOrThrow(ctx, input.conversationId), input.tag).row;
   },
 
   /**
@@ -4899,7 +5412,7 @@ const operations = {
     }
 
     settle(ctx, conversation, next);
-    if (conversation.assignee) notify(ctx, conversation.assignee, 'replied', conversation.id);
+    notifyHolder(ctx, conversation, 'replied');
     ctx.emit(messageEvent(row, 'ticket0.message-ingested'));
     return row;
   },
@@ -5159,7 +5672,7 @@ const operations = {
       bodyText: input.body,
     });
     settle(ctx, conversation, next);
-    if (conversation.assignee) notify(ctx, conversation.assignee, 'replied', conversation.id);
+    notifyHolder(ctx, conversation, 'replied');
     ctx.emit(messageEvent(row, 'ticket0.message-ingested'));
     return row;
   },

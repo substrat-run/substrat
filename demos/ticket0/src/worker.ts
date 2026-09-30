@@ -127,9 +127,9 @@ export { IdentityDO };
 
 /**
  * The deployment's own timer (#461, #1646): a roster-keeping singleton whose alarm runs
- * each provisioned desk's due recurring work — executor retries and the four schedules
+ * each provisioned desk's due recurring work — executor retries and the seven schedules
  * `src/manifest.ts` declares (wake-snoozed, reap-abandoned, assign-round-robin,
- * escalate-sla-breaches).
+ * escalate-sla-breaches, and the #1083 behaviours auto-tag, auto-close, notify-no-reply).
  *
  * Nothing else fires them on a hosted desk. The control plane's cron runs the platform
  * sweep against a host that registers no modules, so its schedule phase iterates an empty

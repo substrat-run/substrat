@@ -74,6 +74,21 @@
       "version": "0015",
       "slug": "index-reaper-and-assistant-health",
       "sql": "CREATE INDEX ticket0_ai_turns_conversation_outcome ON ticket0_ai_turns (conversation_id, outcome);\n\nCREATE INDEX ticket0_ai_turns_created_outcome ON ticket0_ai_turns (created_at, outcome);\n\nCREATE INDEX ticket0_ai_turns_outcome_created ON ticket0_ai_turns (outcome, created_at, id);\n\nCREATE INDEX ticket0_messages_desk_reply ON ticket0_messages (conversation_id, created_at)\n  WHERE visibility = 'public' AND author_kind != 'contact';"
+    },
+    {
+      "version": "0016",
+      "slug": "add-ticket0_agent_profiles-offboarded_at-and-3-more",
+      "sql": "ALTER TABLE ticket0_agent_profiles ADD COLUMN offboarded_at TEXT;\n\nCREATE TABLE ticket0_behaviour_runs (\n  behaviour TEXT PRIMARY KEY NOT NULL,\n  last_fired_at TEXT NOT NULL,\n  last_count INTEGER NOT NULL\n);\n\nALTER TABLE ticket0_conversations ADD COLUMN auto_tagged_at TEXT;\n\nALTER TABLE ticket0_conversations ADD COLUMN no_reply_notified_at TEXT;\n\nCREATE INDEX ticket0_conversations_untagged ON ticket0_conversations (auto_tagged_at, created_at, id)\n  WHERE auto_tagged_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL;"
+    },
+    {
+      "version": "0017",
+      "slug": "add-ticket0_conversations-no_reply_waiting_since-and-2-more",
+      "sql": "ALTER TABLE ticket0_conversations ADD COLUMN no_reply_waiting_since TEXT;\n\nALTER TABLE ticket0_conversations ADD COLUMN no_reply_candidate_at TEXT;\n\nALTER TABLE ticket0_conversations ADD COLUMN no_reply_notified_message_id TEXT;\n\n-- Populate the candidate once for live backlog from the oldest unanswered public message.\n-- Previously announced preview rows stay disarmed; future message writes re-arm them.\nUPDATE ticket0_conversations AS c\n   SET no_reply_waiting_since = (\n     SELECT q.created_at FROM ticket0_messages q\n      WHERE q.conversation_id = c.id AND q.visibility = 'public'\n        AND q.id > COALESCE((\n          SELECT a.id FROM ticket0_messages a\n           WHERE a.conversation_id = c.id AND a.visibility = 'public'\n             AND (a.author_kind IN ('agent', 'assistant')\n                  OR (a.author_kind = 'system' AND a.body_text != 'Passing this to a person now — someone from the team will reply here.'))\n           ORDER BY a.id DESC LIMIT 1), '')\n      ORDER BY q.id LIMIT 1)\n WHERE c.state IN ('new', 'open') AND c.merged_into IS NULL;\n\nUPDATE ticket0_conversations\n   SET no_reply_candidate_at = no_reply_waiting_since\n WHERE no_reply_waiting_since IS NOT NULL AND no_reply_notified_at IS NULL;\n\nCREATE INDEX ticket0_conversations_no_reply_candidate\n  ON ticket0_conversations (no_reply_candidate_at, id)\n  WHERE no_reply_candidate_at IS NOT NULL AND state IN ('new', 'open') AND merged_into IS NULL;"
+    },
+    {
+      "version": "0018",
+      "slug": "backfill-snoozed-no-reply-candidates",
+      "sql": "-- 0017 already ran on PR previews; fill the snoozed backlog when they upgrade.\n-- The candidate index still excludes snoozed rows until wake-snoozed opens them.\nUPDATE ticket0_conversations AS c\n   SET no_reply_waiting_since = (\n     SELECT q.created_at FROM ticket0_messages q\n      WHERE q.conversation_id = c.id AND q.visibility = 'public'\n        AND q.id > COALESCE((\n          SELECT a.id FROM ticket0_messages a\n           WHERE a.conversation_id = c.id AND a.visibility = 'public'\n             AND (a.author_kind IN ('agent', 'assistant')\n                  OR (a.author_kind = 'system' AND a.body_text != 'Passing this to a person now — someone from the team will reply here.'))\n           ORDER BY a.id DESC LIMIT 1), '')\n      ORDER BY q.id LIMIT 1)\n WHERE c.state = 'snoozed' AND c.merged_into IS NULL AND c.no_reply_waiting_since IS NULL;\n\nUPDATE ticket0_conversations\n   SET no_reply_candidate_at = no_reply_waiting_since\n WHERE state = 'snoozed' AND merged_into IS NULL\n   AND no_reply_waiting_since IS NOT NULL AND no_reply_candidate_at IS NULL\n   AND no_reply_notified_at IS NULL;"
     }
   ]
 }

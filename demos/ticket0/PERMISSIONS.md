@@ -98,7 +98,10 @@ schedule can do exactly this and no more.
 | Operation | Cadence | System principal | Permissions |
 | --- | --- | --- | --- |
 | `ticket0/assign-round-robin` | every 5 min | `system:@substrat-run/demo-ticket0` | `conversation:assign` |
+| `ticket0/auto-close` | every 60 min | `system:@substrat-run/demo-ticket0` | `conversation:resolve` |
+| `ticket0/auto-tag` | every 5 min | `system:@substrat-run/demo-ticket0` | `conversation:assign` |
 | `ticket0/escalate-sla-breaches` | every 5 min | `system:@substrat-run/demo-ticket0` | `conversation:escalate` |
+| `ticket0/notify-no-reply` | every 15 min | `system:@substrat-run/demo-ticket0` | `conversation:escalate` |
 | `ticket0/reap-abandoned` | every 60 min | `system:@substrat-run/demo-ticket0` | `conversation:resolve` |
 | `ticket0/wake-snoozed` | every 5 min | `system:@substrat-run/demo-ticket0` | `conversation:assign` |
 

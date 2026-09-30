@@ -79,11 +79,23 @@ export async function everyPage<T>(
   }
 }
 
-export function assignableStaff<T extends { principal: string; display_name: string }>(
-  staff: Iterable<T>,
-  keep?: string | null,
-): T[] {
+export function assignableStaff<
+  T extends { principal: string; display_name: string; offboarded_at?: string | null },
+>(staff: Iterable<T>, keep?: string | null): T[] {
+  // Two ways out of the picker, and `keep` survives both: the assistant, and somebody an
+  // admin has taken off the desk (#1083). The server refuses either as an assignee.
   return [...staff].filter(
-    (a) => a.display_name !== ASSISTANT_DISPLAY_NAME || a.principal === keep,
+    (a) =>
+      a.principal === keep || (a.display_name !== ASSISTANT_DISPLAY_NAME && !a.offboarded_at),
   );
+}
+
+/**
+ * The people who work — or worked — this desk: the directory minus the assistant, with
+ * the ones an admin has taken off KEPT. The Team roster reads this and not
+ * `assignableStaff`, because a roster that dropped somebody the moment they were taken off
+ * would leave no way to put them back.
+ */
+export function deskPeople<T extends { display_name: string }>(staff: Iterable<T>): T[] {
+  return [...staff].filter((a) => a.display_name !== ASSISTANT_DISPLAY_NAME);
 }

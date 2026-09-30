@@ -14,6 +14,7 @@ import {
   REAP_ABANDONED_SQL, ASSISTANT_HEALTH_COUNTS_SQL, ASSISTANT_HEALTH_RECENT_SQL,
   ASSISTANT_HEALTH_WAITING_SQL, ASSISTANT_HEALTH_WAITING_TOTAL_SQL,
 } from '../src/health-queries.js';
+import { NO_REPLY_WAITING } from '../src/module.js';
 
 type Query = { sql: string; args: (string | number)[] };
 const queries = {
@@ -107,14 +108,78 @@ beforeAll(async () => {
 
 afterAll(() => { db?.close(); if (dir) rmSync(dir, { recursive: true, force: true }); });
 
+type Row = Record<string, unknown>;
+/**
+ * Every row as it was, plus the columns a later migration added.
+ * An upgrade preserves what was there; it does not promise a table never grows. Migration
+ * 0016 (#1083) added nullable columns, so `SELECT *` after it names more keys than before,
+ * Migration 0017 backfills waiting candidates on live conversations; every other new
+ * column stays NULL. Compare the original keys and check the candidate separately.
+ */
+function preserved(after: unknown, before: unknown): { kept: unknown; addedAreNull: boolean } {
+  let addedAreNull = true;
+  const kept = (after as Row[][]).map((table, i) =>
+    table.map((row, j) => {
+      const was = (before as Row[][])[i]![j] as Row;
+      const out: Row = {};
+      for (const [key, value] of Object.entries(row)) {
+        if (key in was) out[key] = value;
+        else if (key !== 'no_reply_waiting_since' && key !== 'no_reply_candidate_at' && value !== null)
+          addedAreNull = false;
+      }
+      return out;
+    }),
+  );
+  return { kept, addedAreNull };
+}
+/** The same reduction for a read result: rows are compared on the columns the old rows had. */
+function keptResults(after: unknown, before: unknown): unknown {
+  const b = before as Record<string, Row[]>;
+  return Object.fromEntries(
+    Object.entries(after as Record<string, Row[]>).map(([name, rows]) => [
+      name,
+      rows.map((row, i) => {
+        const was = b[name]![i] as Row;
+        return Object.fromEntries(Object.entries(row).filter(([key]) => key in was));
+      }),
+    ]),
+  );
+}
+
 it('preserves every populated pre-0015 row and every production read result across provisioning twice', () => {
-  expect(afterRows).toEqual(beforeRows);
-  expect(results()).toEqual(beforeResults);
+  const rowsNow = preserved(afterRows, beforeRows);
+  expect(rowsNow.kept).toEqual(beforeRows);
+  expect(rowsNow.addedAreNull).toBe(true);
+  const candidates = db.prepare(`SELECT COUNT(*) AS n FROM ticket0_conversations
+    WHERE no_reply_candidate_at IS NOT NULL AND no_reply_candidate_at = no_reply_waiting_since`).get() as { n: number };
+  expect(candidates.n).toBeGreaterThan(0);
+  expect(db.prepare(`SELECT COUNT(*) AS n FROM ticket0_conversations
+    WHERE no_reply_candidate_at IS NOT NULL AND no_reply_candidate_at != no_reply_waiting_since`).get())
+    .toEqual({ n: 0 });
+  expect(keptResults(results(), beforeResults)).toEqual(beforeResults);
   expect(db.prepare(queries.counts.sql).get(...queries.counts.args)).toEqual({ turns: 2000, failed: 100, drafted: 100 });
   expect(db.prepare(queries.waitingTotal.sql).get()).toEqual({ n: 500 });
   expect(db.prepare(queries.reap.sql).all(...queries.reap.args)).toHaveLength(169);
   expect(db.prepare(queries.recent.sql).all(...queries.recent.args)).toHaveLength(10);
   expect(db.prepare(queries.waiting.sql).all(...queries.waiting.args)).toHaveLength(10);
+});
+
+it('backfills a snoozed unanswered conversation so wake makes it a due candidate', () => {
+  const snoozed = db.prepare(`SELECT id, no_reply_waiting_since, no_reply_candidate_at
+    FROM ticket0_conversations
+    WHERE state = 'snoozed' AND merged_into IS NULL AND no_reply_waiting_since IS NOT NULL
+    LIMIT 1`).get() as { id: string; no_reply_waiting_since: string; no_reply_candidate_at: string } | undefined;
+  expect(snoozed).toBeDefined();
+  expect(snoozed!.no_reply_candidate_at).toBe(snoozed!.no_reply_waiting_since);
+
+  db.exec('SAVEPOINT wake_probe');
+  try {
+    db.prepare("UPDATE ticket0_conversations SET state = 'open' WHERE id = ?").run(snoozed!.id);
+    const due = db.prepare(NO_REPLY_WAITING).all('2026-10-01T00:00:00.000Z', 2000) as { id: string }[];
+    expect(due.map((row) => row.id)).toContain(snoozed!.id);
+  } finally {
+    db.exec('ROLLBACK TO wake_probe; RELEASE wake_probe');
+  }
 });
 
 const cases: { index: string; query: keyof typeof queries; seek: RegExp }[] = [

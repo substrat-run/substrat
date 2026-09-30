@@ -304,6 +304,35 @@ const CLIENT_COLUMNS = {
   timezone: z.string().nullable(),
 } as const;
 
+/** How many auto-tag rules a desk may hold. A list an admin reads, not a program. */
+export const AUTO_TAG_RULES_MAX = 20;
+/** The longest substring or tag one rule may carry. */
+export const AUTO_TAG_TEXT_MAX = 100;
+/** Auto-close's window, in days. `closed` is terminal, so the floor is one whole day. */
+export const AUTO_CLOSE_MIN_DAYS = 1;
+export const AUTO_CLOSE_MAX_DAYS = 365;
+/** No-reply notify's window, in hours. A month is where "waiting" stops meaning anything. */
+export const NO_REPLY_MIN_HOURS = 1;
+export const NO_REPLY_MAX_HOURS = 720;
+
+/**
+ * One auto-tag rule (#1083): where to look, what to look for, which tag to put on.
+ *
+ * `contains` is a plain case-insensitive substring — not a pattern, so nothing here can
+ * be made to run away on a hostile message. `in` names WHAT is searched: the subject,
+ * the first thing the customer wrote, or either. `.strict()` so a typo such as
+ * `{ contain: 'refund' }` is refused at save time rather than saved as a rule that
+ * never matches.
+ */
+export const autoTagRule = z
+  .object({
+    in: z.enum(['subject', 'body', 'either']),
+    contains: z.string().trim().min(1).max(AUTO_TAG_TEXT_MAX),
+    tag: z.string().trim().min(1).max(AUTO_TAG_TEXT_MAX),
+  })
+  .strict();
+export type AutoTagRule = z.infer<typeof autoTagRule>;
+
 /**
  * One service-level target per priority, in whole minutes (#1082). A priority left
  * out has no target, so a desk can hold `urgent` to an hour and promise nothing about
@@ -367,8 +396,50 @@ export const deskSettingsBlob = z
       .strict()
       .nullable()
       .optional(),
+    /**
+     * Tag a conversation on arrival when its subject or first message says something a
+     * rule looks for (#1083). Swept by `ticket0/auto-tag`.
+     *
+     * The rules are a CLOSED shape (`autoTagRule`): one substring, one place to look for
+     * it, one tag. There is no expression, no template and no AND/OR, because a
+     * condition language is what the decision refused, and a list of "contains X, tag Y"
+     * is not one. Absent or `null` is off, and `null` is what switches it off again,
+     * because the key is set whole: a call that names `autoTag` replaces every rule.
+     */
+    autoTag: z
+      .object({ rules: z.array(autoTagRule).min(1).max(AUTO_TAG_RULES_MAX) })
+      .strict()
+      .nullable()
+      .optional(),
+    /**
+     * Close a RESOLVED conversation that has been left alone for this many days
+     * (#1083). Swept by `ticket0/auto-close`. Absent or `null` is off.
+     *
+     * Only `resolved` — a conversation somebody is still working is never touched, and
+     * one nobody ever picked up has its own reaper (`abandonedAfterDays`). Closed is
+     * terminal, so the floor is a day: a zero would close what was resolved this
+     * morning. A customer who writes back reopens it and starts the clock over.
+     */
+    autoClose: z
+      .object({ afterDays: z.number().int().min(AUTO_CLOSE_MIN_DAYS).max(AUTO_CLOSE_MAX_DAYS) })
+      .strict()
+      .nullable()
+      .optional(),
+    /**
+     * Tell the desk about a conversation whose customer has been waiting this many
+     * hours with no answer (#1083). Swept by `ticket0/notify-no-reply`, and it tells the
+     * desk once per unanswered message. Absent or `null` is off.
+     */
+    noReplyNotify: z
+      .object({ afterHours: z.number().int().min(NO_REPLY_MIN_HOURS).max(NO_REPLY_MAX_HOURS) })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict();
+
+/** The blob's keys — the built-in behaviours a desk switches on, one name each. */
+export type DeskSetting = keyof z.infer<typeof deskSettingsBlob>;
 
 export const ticket0Entities = defineEntities({
   /**
@@ -424,6 +495,29 @@ export const ticket0Entities = defineEntities({
       avatar_url: z.string().nullable(),
       signature: z.string().nullable(),
       created_at: z.string(),
+      /**
+       * When this person was taken off the desk, or null while they are on it (#1083).
+       *
+       * A MIRROR of a decision made elsewhere, not a derivation of it. Whether somebody
+       * still holds a role on this desk is a fact the tenant's admin records in the
+       * platform, and module code has no way to read another principal's roles: `ctx.check`
+       * judges the caller and nothing else. So an admin who removes a colleague's role
+       * says so here too, through `ticket0/set-agent-offboarded`, and until they do the
+       * profile reads as on the desk — which is the failure this column narrows rather
+       * than removes.
+       *
+       * Off the desk means: not in round-robin's rotation, not an assignee `assign`
+       * accepts, not in the broadcast a conversation nobody holds sends. It is not
+       * deleted and nothing they already hold moves — a conversation assigned to them
+       * stays theirs until a person moves it — and the profile keeps its name, so the
+       * history they authored still has a byline. Only an admin sets or clears it; the
+       * profile's own save (`set-agent-profile`) never writes it, so nobody reinstates
+       * themselves.
+       *
+       * Null on every row that predates the column: everybody already on the desk is
+       * still on it.
+       */
+      offboarded_at: z.string().nullable(),
     }),
     primaryKey: ['principal'],
     // All three are the person: the name outright, a picture of them by reference,
@@ -532,6 +626,33 @@ export const ticket0Entities = defineEntities({
        */
       first_response_breached_at: z.string().nullable(),
       resolution_breached_at: z.string().nullable(),
+      /**
+       * When `ticket0/auto-tag` last read this conversation's subject and first message
+       * against the desk's rules, matched or not (#1083). Stamped once and never
+       * cleared, which is what makes the behaviour idempotent for a reason a tag cannot
+       * be: a person who takes an automatic tag off must not watch the next sweep put it
+       * back, so "already looked at" is a fact about the conversation, not about whether
+       * a tag is present.
+       *
+       * Null is not yet looked at, and is every row older than the column. A desk that
+       * switches auto-tag on therefore has its live backlog read once (new, open and
+       * snoozed; resolved and closed work is done and is left alone), the same bargain
+       * round-robin makes for what is waiting.
+       */
+      auto_tagged_at: z.string().nullable(),
+      /**
+       * When `ticket0/notify-no-reply` last told the desk this customer was waiting.
+       * The conversation is announced again only after a newer customer message and
+       * another full window (`src/module.ts` maintains the indexed candidate), so a customer who waits a week is
+       * one notification and not one per sweep. Null is never announced.
+       */
+      no_reply_notified_at: z.string().nullable(),
+      /** Oldest unanswered public message, retained so the sweep can seek due work. */
+      no_reply_waiting_since: z.string().nullable(),
+      /** Indexed candidate time; cleared after a notice until another customer message. */
+      no_reply_candidate_at: z.string().nullable(),
+      /** The public message current when the last notice was sent. */
+      no_reply_notified_message_id: z.string().nullable(),
       merged_into: z.string().nullable(),
       follows: z.string().nullable(),
       created_at: z.string(),
@@ -772,6 +893,34 @@ export const ticket0Entities = defineEntities({
       created_at: z.string(),
       updated_at: z.string(),
     }),
+  },
+
+  /**
+   * When a built-in behaviour last DID something (#1083) — one row per behaviour, and
+   * only for a behaviour that has done it at least once.
+   *
+   * A switch that is on and has stopped matching looks exactly like one that is working
+   * and has nothing to do, from anywhere but here: a desk that turned on auto-close in
+   * March and reads "last fired 11 March" in September knows something has changed. So a
+   * sweep stamps its row ONLY when it acted; a sweep that found nothing to do writes
+   * nothing, and a behaviour that never fired has no row rather than a row saying so.
+   *
+   * A table rather than a column per behaviour: a column is a migration, and the whole
+   * point of the settings blob was that the next behaviour costs none. `behaviour` is
+   * the blob key (`roundRobin`, `sla`, `autoTag`, `autoClose`, `noReplyNotify`) and is
+   * deliberately not a CHECK enum, for the same reason; `src/module.ts` holds the closed
+   * set. It is bookkeeping about a desk's own automation, so it carries no person and no
+   * conversation — only how many things the last firing did.
+   */
+  behaviourRun: {
+    table: 'ticket0_behaviour_runs',
+    fields: z.object({
+      behaviour: z.string(),
+      last_fired_at: z.string(),
+      /** How many CONVERSATIONS the LAST firing acted on — assigned, tagged, breached, closed, told. */
+      last_count: z.number().int(),
+    }),
+    primaryKey: ['behaviour'],
   },
 
   /**
@@ -1180,6 +1329,23 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     http: { method: 'GET', path: '/desk' },
   },
 
+  /**
+   * When each built-in behaviour last did something (#1083), for the screen that
+   * switches them on.
+   *
+   * Its own read rather than a field on `get-desk`, so the desk row's shape stays what
+   * the desk decided and a behaviour's bookkeeping does not ride on every settings
+   * fetch. Behind `desk:configure`, the key the switches themselves sit behind: whoever
+   * may turn a behaviour on may ask whether it is doing anything. Only behaviours that
+   * have fired appear, so an empty list is "nothing has ever fired" and never "unknown".
+   */
+  'ticket0/list-behaviour-runs': {
+    summary: 'When each of the desk’s built-in behaviours last acted',
+    permission: 'desk:configure',
+    output: z.object({ runs: z.array(ticket0Entities.behaviourRun.fields) }),
+    http: { method: 'GET', path: '/desk/behaviours' },
+  },
+
   'ticket0/configure-desk': {
     summary: 'Change the desk’s settings',
     permission: 'desk:configure',
@@ -1430,6 +1596,44 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     output: ticket0Entities.agentProfile.fields,
     paged: { over: { entity: 'agentProfile', sortable: ['display_name', 'created_at'] } },
     http: { method: 'GET', path: '/agents' },
+  },
+
+  /**
+   * Take a colleague off the desk, or put them back (#1083).
+   *
+   * An admin's decision, behind `desk:configure` — not a new key, because deciding who
+   * is on the desk is the same kind of act as deciding what the desk does. It takes a
+   * principal in the input and it is the ONLY writer of `offboarded_at`:
+   * `set-agent-profile` is keyed by the caller and never touches the column, so a person
+   * cannot put themselves back after somebody took them off.
+   *
+   * This MIRRORS a role revocation; it does not derive from one. The platform is where a
+   * role is revoked, and module code cannot read another principal's roles, so an admin
+   * who removes a colleague says so in both places. The rule that follows from the
+   * column lives in one predicate in `src/module.ts` (`onTheDesk`), which round-robin,
+   * `assign` and the broadcast all read.
+   *
+   * `offboarded: false` puts them back and is idempotent both ways: taking off somebody
+   * already off keeps the FIRST instant, and reinstating somebody who is on changes
+   * nothing. A conversation already assigned to them is left exactly where it is.
+   *
+   * The event carries the principal and the instant and nothing personal; the name is
+   * erasable and an event is where an erasure cannot reach.
+   */
+  'ticket0/set-agent-offboarded': {
+    summary: 'Take a colleague off the desk, or put them back',
+    permission: 'desk:configure',
+    input: z.object({ principal: z.string().min(1), offboarded: z.boolean() }),
+    output: ticket0Entities.agentProfile.fields,
+    http: { method: 'PUT', path: '/agents/{principal}/offboarded' },
+    emits: {
+      entity: 'agentProfile',
+      entityIdFrom: 'principal',
+      type: 'ticket0.agent-offboarding-set',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['principal', 'offboarded_at'],
+    },
   },
 
   // ─── Knowledge base ──────────────────────────────────────────────────────────
@@ -2066,6 +2270,66 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     summary: 'Record each conversation that missed a response or resolution target, and tell the desk once',
     permission: 'conversation:escalate',
     output: z.object({ breached: z.number().int() }),
+  },
+
+  /**
+   * Auto-tag (#1083): put the tag a desk's rule names on a conversation whose subject or
+   * first message says what the rule looks for.
+   *
+   * A SCHEDULE for round-robin's reason, and it is `ticket0/tag-conversation` done by the
+   * desk: the same key (`conversation:assign`, which `wake-snoozed` and round-robin
+   * already hold, so no desk needs re-provisioning), the same per-conversation check, the
+   * same lifecycle rule and the same `ticket0.conversation-tagged` event. Nothing a
+   * person's tagging could not do, and the trail names this operation on each tag.
+   *
+   * `output` is a count of tags put on. No `emits`, because each tag publishes the
+   * event a person's does.
+   */
+  'ticket0/auto-tag': {
+    // Not a tool: a schedule's entry point; nothing calls it by hand.
+    mcp: false,
+    summary: 'Tag each new conversation the desk’s rules match, once',
+    permission: 'conversation:assign',
+    output: z.object({ tagged: z.number().int() }),
+  },
+
+  /**
+   * Auto-close (#1083): close a resolved conversation nobody has touched for the desk's
+   * number of days.
+   *
+   * `ticket0/close` done by the desk, on `close`'s key (`conversation:resolve`, which the
+   * reaper already holds) and with its event — nothing downstream can tell which door a
+   * conversation was closed through except by the operation the trail records. The edge
+   * it takes exists ONLY out of `resolved` (see the lifecycle), so a sweep that one day
+   * widened its query would be refused by the machine, as the reaper's is.
+   *
+   * `output` is a count of conversations closed.
+   */
+  'ticket0/auto-close': {
+    // Not a tool: a schedule's entry point; nothing calls it by hand.
+    mcp: false,
+    summary: 'Close resolved conversations that have been left alone for the desk’s window',
+    permission: 'conversation:resolve',
+    output: z.object({ closed: z.number().int() }),
+  },
+
+  /**
+   * No-reply notify (#1083): tell the desk a customer has been waiting longer than it
+   * said it would let them.
+   *
+   * On `conversation:escalate`, the key the service-level sweep holds, because this is
+   * that sweep's cousin: it notices time passing and tells the desk, through the same
+   * `notifyStaff` and the same `escalated` notification. It sends nothing to the
+   * customer, and the notification carries the conversation's id and no text.
+   *
+   * `output` is a count of conversations announced.
+   */
+  'ticket0/notify-no-reply': {
+    // Not a tool: a schedule's entry point; nothing calls it by hand.
+    mcp: false,
+    summary: 'Tell the desk about each customer who has waited too long for an answer, once',
+    permission: 'conversation:escalate',
+    output: z.object({ notified: z.number().int() }),
   },
 
   /**
@@ -3960,6 +4224,10 @@ export const ticket0Lifecycles = defineLifecycles(
       resolved: {
         on: {
           'ticket0/close': 'closed',
+          // Auto-close (#1083), declared HERE only for the reaper's reason: `resolved` is
+          // the one state that means "the desk is done and the customer has not said
+          // otherwise", and a sweep that widened its query would be refused elsewhere.
+          'ticket0/auto-close': 'closed',
           'ticket0/ingest-message': 'open',
           'ticket0/widget-post': 'open',
           'ticket0/request-human': 'open',

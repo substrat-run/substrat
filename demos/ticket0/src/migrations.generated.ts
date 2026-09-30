@@ -380,4 +380,84 @@ export const ticket0Migrations: SqlMigration[] = [
         WHERE visibility = 'public' AND author_kind != 'contact';
     `,
   },
+  {
+    // add-ticket0_agent_profiles-offboarded_at-and-3-more
+    version: '0016',
+    sql: `
+      ALTER TABLE ticket0_agent_profiles ADD COLUMN offboarded_at TEXT;
+
+      CREATE TABLE ticket0_behaviour_runs (
+        behaviour TEXT PRIMARY KEY NOT NULL,
+        last_fired_at TEXT NOT NULL,
+        last_count INTEGER NOT NULL
+      );
+
+      ALTER TABLE ticket0_conversations ADD COLUMN auto_tagged_at TEXT;
+
+      ALTER TABLE ticket0_conversations ADD COLUMN no_reply_notified_at TEXT;
+
+      CREATE INDEX ticket0_conversations_untagged ON ticket0_conversations (auto_tagged_at, created_at, id)
+        WHERE auto_tagged_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL;
+    `,
+  },
+  {
+    // add-ticket0_conversations-no_reply_waiting_since-and-2-more
+    version: '0017',
+    sql: `
+      ALTER TABLE ticket0_conversations ADD COLUMN no_reply_waiting_since TEXT;
+
+      ALTER TABLE ticket0_conversations ADD COLUMN no_reply_candidate_at TEXT;
+
+      ALTER TABLE ticket0_conversations ADD COLUMN no_reply_notified_message_id TEXT;
+
+      -- Populate the candidate once for live backlog from the oldest unanswered public message.
+      -- Previously announced preview rows stay disarmed; future message writes re-arm them.
+      UPDATE ticket0_conversations AS c
+         SET no_reply_waiting_since = (
+           SELECT q.created_at FROM ticket0_messages q
+            WHERE q.conversation_id = c.id AND q.visibility = 'public'
+              AND q.id > COALESCE((
+                SELECT a.id FROM ticket0_messages a
+                 WHERE a.conversation_id = c.id AND a.visibility = 'public'
+                   AND (a.author_kind IN ('agent', 'assistant')
+                        OR (a.author_kind = 'system' AND a.body_text != 'Passing this to a person now — someone from the team will reply here.'))
+                 ORDER BY a.id DESC LIMIT 1), '')
+            ORDER BY q.id LIMIT 1)
+       WHERE c.state IN ('new', 'open') AND c.merged_into IS NULL;
+
+      UPDATE ticket0_conversations
+         SET no_reply_candidate_at = no_reply_waiting_since
+       WHERE no_reply_waiting_since IS NOT NULL AND no_reply_notified_at IS NULL;
+
+      CREATE INDEX ticket0_conversations_no_reply_candidate
+        ON ticket0_conversations (no_reply_candidate_at, id)
+        WHERE no_reply_candidate_at IS NOT NULL AND state IN ('new', 'open') AND merged_into IS NULL;
+    `,
+  },
+  {
+    // backfill-snoozed-no-reply-candidates
+    version: '0018',
+    sql: `
+      -- 0017 already ran on PR previews; fill the snoozed backlog when they upgrade.
+      -- The candidate index still excludes snoozed rows until wake-snoozed opens them.
+      UPDATE ticket0_conversations AS c
+         SET no_reply_waiting_since = (
+           SELECT q.created_at FROM ticket0_messages q
+            WHERE q.conversation_id = c.id AND q.visibility = 'public'
+              AND q.id > COALESCE((
+                SELECT a.id FROM ticket0_messages a
+                 WHERE a.conversation_id = c.id AND a.visibility = 'public'
+                   AND (a.author_kind IN ('agent', 'assistant')
+                        OR (a.author_kind = 'system' AND a.body_text != 'Passing this to a person now — someone from the team will reply here.'))
+                 ORDER BY a.id DESC LIMIT 1), '')
+            ORDER BY q.id LIMIT 1)
+       WHERE c.state = 'snoozed' AND c.merged_into IS NULL AND c.no_reply_waiting_since IS NULL;
+
+      UPDATE ticket0_conversations
+         SET no_reply_candidate_at = no_reply_waiting_since
+       WHERE state = 'snoozed' AND merged_into IS NULL
+         AND no_reply_waiting_since IS NOT NULL AND no_reply_candidate_at IS NULL
+         AND no_reply_notified_at IS NULL;
+    `,
+  },
 ];

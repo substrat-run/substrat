@@ -903,6 +903,56 @@
                             }
                           ]
                         },
+                        "auto_tagged_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "no_reply_notified_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "no_reply_waiting_since": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "no_reply_candidate_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "no_reply_notified_message_id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "merged_into": {
                           "anyOf": [
                             {
@@ -948,6 +998,11 @@
                         "resolution_due_at",
                         "first_response_breached_at",
                         "resolution_breached_at",
+                        "auto_tagged_at",
+                        "no_reply_notified_at",
+                        "no_reply_waiting_since",
+                        "no_reply_candidate_at",
+                        "no_reply_notified_message_id",
                         "merged_into",
                         "follows",
                         "created_at",
@@ -1202,6 +1257,56 @@
                         }
                       ]
                     },
+                    "auto_tagged_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_waiting_since": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_candidate_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -1247,6 +1352,11 @@
                     "resolution_due_at",
                     "first_response_breached_at",
                     "resolution_breached_at",
+                    "auto_tagged_at",
+                    "no_reply_notified_at",
+                    "no_reply_waiting_since",
+                    "no_reply_candidate_at",
+                    "no_reply_notified_message_id",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -1679,6 +1789,56 @@
                         }
                       ]
                     },
+                    "auto_tagged_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_waiting_since": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_candidate_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -1724,6 +1884,11 @@
                     "resolution_due_at",
                     "first_response_breached_at",
                     "resolution_breached_at",
+                    "auto_tagged_at",
+                    "no_reply_notified_at",
+                    "no_reply_waiting_since",
+                    "no_reply_candidate_at",
+                    "no_reply_notified_message_id",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -1977,6 +2142,98 @@
                                 "additionalProperties": false
                               }
                             },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "autoTag": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "rules": {
+                                "minItems": 1,
+                                "maxItems": 20,
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "in": {
+                                      "type": "string",
+                                      "enum": [
+                                        "subject",
+                                        "body",
+                                        "either"
+                                      ]
+                                    },
+                                    "contains": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 100
+                                    },
+                                    "tag": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 100
+                                    }
+                                  },
+                                  "required": [
+                                    "in",
+                                    "contains",
+                                    "tag"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              }
+                            },
+                            "required": [
+                              "rules"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "autoClose": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "afterDays": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 365
+                              }
+                            },
+                            "required": [
+                              "afterDays"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "noReplyNotify": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "afterHours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 720
+                              }
+                            },
+                            "required": [
+                              "afterHours"
+                            ],
                             "additionalProperties": false
                           },
                           {
@@ -4120,6 +4377,56 @@
                         }
                       ]
                     },
+                    "auto_tagged_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_waiting_since": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_candidate_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -4165,6 +4472,11 @@
                     "resolution_due_at",
                     "first_response_breached_at",
                     "resolution_breached_at",
+                    "auto_tagged_at",
+                    "no_reply_notified_at",
+                    "no_reply_waiting_since",
+                    "no_reply_candidate_at",
+                    "no_reply_notified_message_id",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -4825,6 +5137,16 @@
                       },
                       "created_at": {
                         "type": "string"
+                      },
+                      "offboarded_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -4832,10 +5154,81 @@
                       "display_name",
                       "avatar_url",
                       "signature",
-                      "created_at"
+                      "created_at",
+                      "offboarded_at"
                     ],
                     "additionalProperties": false
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/desk/behaviours": {
+      "get": {
+        "operationId": "ticket0-list-behaviour-runs",
+        "summary": "When each of the desk’s built-in behaviours last acted",
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "runs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "behaviour": {
+                            "type": "string"
+                          },
+                          "last_fired_at": {
+                            "type": "string"
+                          },
+                          "last_count": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "behaviour",
+                          "last_fired_at",
+                          "last_count"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "runs"
+                  ],
+                  "additionalProperties": false
                 }
               }
             }
@@ -5492,6 +5885,56 @@
                           }
                         ]
                       },
+                      "auto_tagged_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_notified_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_waiting_since": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_candidate_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_notified_message_id": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "merged_into": {
                         "anyOf": [
                           {
@@ -5537,6 +5980,11 @@
                       "resolution_due_at",
                       "first_response_breached_at",
                       "resolution_breached_at",
+                      "auto_tagged_at",
+                      "no_reply_notified_at",
+                      "no_reply_waiting_since",
+                      "no_reply_candidate_at",
+                      "no_reply_notified_message_id",
                       "merged_into",
                       "follows",
                       "created_at",
@@ -5786,6 +6234,56 @@
                           }
                         ]
                       },
+                      "auto_tagged_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_notified_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_waiting_since": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_candidate_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_notified_message_id": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "merged_into": {
                         "anyOf": [
                           {
@@ -5831,6 +6329,11 @@
                       "resolution_due_at",
                       "first_response_breached_at",
                       "resolution_breached_at",
+                      "auto_tagged_at",
+                      "no_reply_notified_at",
+                      "no_reply_waiting_since",
+                      "no_reply_candidate_at",
+                      "no_reply_notified_message_id",
                       "merged_into",
                       "follows",
                       "created_at",
@@ -7023,6 +7526,56 @@
                         }
                       ]
                     },
+                    "auto_tagged_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_waiting_since": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_candidate_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -7068,6 +7621,11 @@
                     "resolution_due_at",
                     "first_response_breached_at",
                     "resolution_breached_at",
+                    "auto_tagged_at",
+                    "no_reply_notified_at",
+                    "no_reply_waiting_since",
+                    "no_reply_candidate_at",
+                    "no_reply_notified_message_id",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -7637,6 +8195,56 @@
                           }
                         ]
                       },
+                      "auto_tagged_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_notified_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_waiting_since": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_candidate_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_notified_message_id": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "merged_into": {
                         "anyOf": [
                           {
@@ -7682,6 +8290,11 @@
                       "resolution_due_at",
                       "first_response_breached_at",
                       "resolution_breached_at",
+                      "auto_tagged_at",
+                      "no_reply_notified_at",
+                      "no_reply_waiting_since",
+                      "no_reply_candidate_at",
+                      "no_reply_notified_message_id",
                       "merged_into",
                       "follows",
                       "created_at",
@@ -10360,6 +10973,56 @@
                         }
                       ]
                     },
+                    "auto_tagged_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_waiting_since": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_candidate_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -10405,6 +11068,11 @@
                     "resolution_due_at",
                     "first_response_breached_at",
                     "resolution_breached_at",
+                    "auto_tagged_at",
+                    "no_reply_notified_at",
+                    "no_reply_waiting_since",
+                    "no_reply_candidate_at",
+                    "no_reply_notified_message_id",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -10939,6 +11607,56 @@
                           }
                         ]
                       },
+                      "auto_tagged_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_notified_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_waiting_since": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_candidate_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "no_reply_notified_message_id": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "merged_into": {
                         "anyOf": [
                           {
@@ -10984,6 +11702,11 @@
                       "resolution_due_at",
                       "first_response_breached_at",
                       "resolution_breached_at",
+                      "auto_tagged_at",
+                      "no_reply_notified_at",
+                      "no_reply_waiting_since",
+                      "no_reply_candidate_at",
+                      "no_reply_notified_message_id",
                       "merged_into",
                       "follows",
                       "created_at",
@@ -11158,6 +11881,139 @@
         }
       }
     },
+    "/api/agents/{principal}/offboarded": {
+      "put": {
+        "operationId": "ticket0-set-agent-offboarded",
+        "summary": "Take a colleague off the desk, or put them back",
+        "parameters": [
+          {
+            "name": "principal",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "principal": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "offboarded": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "principal",
+                  "offboarded"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "principal": {
+                      "type": "string"
+                    },
+                    "display_name": {
+                      "type": "string"
+                    },
+                    "avatar_url": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "signature": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "offboarded_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "principal",
+                    "display_name",
+                    "avatar_url",
+                    "signature",
+                    "created_at",
+                    "offboarded_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/agents/me": {
       "put": {
         "operationId": "ticket0-set-agent-profile",
@@ -11256,6 +12112,16 @@
                     },
                     "created_at": {
                       "type": "string"
+                    },
+                    "offboarded_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -11263,7 +12129,8 @@
                     "display_name",
                     "avatar_url",
                     "signature",
-                    "created_at"
+                    "created_at",
+                    "offboarded_at"
                   ],
                   "additionalProperties": false
                 }
@@ -11499,6 +12366,56 @@
                         }
                       ]
                     },
+                    "auto_tagged_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_waiting_since": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_candidate_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -11544,6 +12461,11 @@
                     "resolution_due_at",
                     "first_response_breached_at",
                     "resolution_breached_at",
+                    "auto_tagged_at",
+                    "no_reply_notified_at",
+                    "no_reply_waiting_since",
+                    "no_reply_candidate_at",
+                    "no_reply_notified_message_id",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -12018,6 +12940,56 @@
                         }
                       ]
                     },
+                    "auto_tagged_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_waiting_since": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_candidate_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -12063,6 +13035,11 @@
                     "resolution_due_at",
                     "first_response_breached_at",
                     "resolution_breached_at",
+                    "auto_tagged_at",
+                    "no_reply_notified_at",
+                    "no_reply_waiting_since",
+                    "no_reply_candidate_at",
+                    "no_reply_notified_message_id",
                     "merged_into",
                     "follows",
                     "created_at",
@@ -13000,6 +13977,56 @@
                         }
                       ]
                     },
+                    "auto_tagged_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_waiting_since": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_candidate_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "merged_into": {
                       "anyOf": [
                         {
@@ -13045,6 +14072,11 @@
                     "resolution_due_at",
                     "first_response_breached_at",
                     "resolution_breached_at",
+                    "auto_tagged_at",
+                    "no_reply_notified_at",
+                    "no_reply_waiting_since",
+                    "no_reply_candidate_at",
+                    "no_reply_notified_message_id",
                     "merged_into",
                     "follows",
                     "created_at",

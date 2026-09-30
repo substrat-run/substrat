@@ -18,7 +18,23 @@ import {
   type PendingInvite,
   type Session,
 } from '../api.js';
-import { assignableStaff, everyAgentProfile, forgetAgents } from '../agents.js';
+import { deskPeople, everyAgentProfile, forgetAgents } from '../agents.js';
+import {
+  AUTO_CLOSE_MAX_DAYS,
+  AUTO_CLOSE_MIN_DAYS,
+  AUTO_TAG_RULES_MAX,
+  automationErrorOf,
+  automationFormOf,
+  automationPayloadOf,
+  lastFiredLabel,
+  NO_REPLY_MAX_HOURS,
+  NO_REPLY_MIN_HOURS,
+  RULE_PLACES,
+  type AutomationForm,
+  type BehaviourRun,
+  type RuleRow,
+  type RulePlace,
+} from '../automation.js';
 import { contacts } from '../contacts.js';
 import {
   formatMinutes,
@@ -204,6 +220,8 @@ function Team({ session }: { session: Session }) {
   // on the roster loading — so one of them going down must not take the other's section
   // with it, which a single page-level state would. Same split as `Desk` and `Knowledge`.
   const [staffFailed, setStaffFailed] = useState<string | null>(null);
+  // Taking somebody off the desk failing is about the roster, not about an invite.
+  const [rosterFailed, setRosterFailed] = useState<string | null>(null);
   const [inviteFailed, setInviteFailed] = useState<string | null>(null);
 
   const [role, setRole] = useState('agent');
@@ -224,10 +242,10 @@ function Team({ session }: { session: Session }) {
     void everyAgentProfile()
       .then((all) => {
         // "On the desk" means the people on it, so the assistant's profile — which
-        // exists for its byline — is not one of them (#1154). Same filter the two
-        // assignee pickers use, so the roster and the pickers cannot disagree about
-        // who works here.
-        setStaff(assignableStaff(all));
+        // exists for its byline — is not one of them (#1154). Somebody an admin has
+        // taken off the desk stays LISTED, marked, so there is a way to put them back;
+        // the pickers drop them (`assignableStaff`).
+        setStaff(deskPeople(all));
         setStaffFailed(null);
       })
       .catch((e: Error) => setStaffFailed(e.message));
@@ -273,6 +291,17 @@ function Team({ session }: { session: Session }) {
     }
   };
 
+  const setOffboarded = async (principal: string, offboarded: boolean) => {
+    setRosterFailed(null);
+    try {
+      await api.setAgentOffboarded({ principal, offboarded });
+      forgetAgents();
+      load();
+    } catch (e) {
+      setRosterFailed(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const revoke = async (principal: string) => {
     setFailed(null);
     try {
@@ -293,6 +322,11 @@ function Team({ session }: { session: Session }) {
       <div className="micro" style={{ marginBottom: 8 }}>
         On the desk
       </div>
+      {rosterFailed ? (
+        <div className="t-small" style={{ color: 'var(--red, #b3261e)', marginBottom: 8 }}>
+          {rosterFailed}
+        </div>
+      ) : null}
       <div style={{ marginBottom: 26 }}>
         {staffFailed ? (
           <div className="t-small" style={{ color: 'var(--red, #b3261e)' }}>
@@ -322,7 +356,24 @@ function Team({ session }: { session: Session }) {
                 <div className="t-small mono" style={{ color: 'var(--secondary)' }}>
                   {a.principal}
                 </div>
+                {a.offboarded_at ? (
+                  <div className="t-small" style={{ color: 'var(--secondary)' }}>
+                    Off the desk since {new Date(a.offboarded_at).toLocaleDateString()} — not handed new
+                    conversations. What they already hold stays theirs until somebody moves it.
+                  </div>
+                ) : null}
               </div>
+              <button
+                className="btn"
+                onClick={() => void setOffboarded(a.principal, !a.offboarded_at)}
+                title={
+                  a.offboarded_at
+                    ? 'Put them back in the rotation and the assignee picker'
+                    : 'Record that they have left the desk. Remove their role too — this does not.'
+                }
+              >
+                {a.offboarded_at ? 'Put back' : 'Left the desk'}
+              </button>
             </Row>
           ))
         )}
@@ -629,6 +680,18 @@ function Desk() {
   // `desk.settings` on every keystroke: a half-typed number is not a setting, and
   // `slaPayloadOf` turns the boxes into one only at Save.
   const [sla, setSla] = useState<SlaForm>(() => slaFormOf(null));
+  // The three newer behaviours' boxes (#1083), for the same reason: a half-typed number is
+  // not a setting, and `automationPayloadOf` turns the boxes into one only at Save.
+  const [automation, setAutomation] = useState<AutomationForm>(() => automationFormOf(null));
+  // Keep a failed read distinct from a behaviour that has never fired.
+  const [runs, setRuns] = useState<BehaviourRun[] | null>(null);
+  const [runsFailed, setRunsFailed] = useState(false);
+  const loadRuns = () => {
+    setRunsFailed(false);
+    void api.listBehaviourRuns()
+      .then((r) => setRuns(r.runs))
+      .catch(() => setRunsFailed(true));
+  };
 
   useEffect(() => {
     void api
@@ -636,8 +699,10 @@ function Desk() {
       .then((d) => {
         setDesk(d);
         setSla(slaFormOf(d.settings));
+        setAutomation(automationFormOf(d.settings));
       })
       .catch((e: Error) => setLoadFailed(e.message));
+    loadRuns();
   }, []);
   // A rejected request is not a slow one. Saying "Loading…" forever is the screen
   // lying about which of the two happened.
@@ -706,12 +771,21 @@ function Desk() {
   })(desk.abandoned_after_days);
 
   const slaError = slaErrorOf(sla);
+  const automationError = automationErrorOf(automation);
+  const fired = (behaviour: string) => runsFailed
+    ? <>Last-fired status unavailable. <button type="button" onClick={loadRuns}>Retry</button></>
+    : runs === null ? 'Loading last-fired status…' : lastFiredLabel(runs, behaviour, Date.now());
+  const patchRule = (i: number, patch: Partial<RuleRow>) =>
+    setAutomation({
+      ...automation,
+      rules: automation.rules.map((x, j) => (j === i ? { ...x, ...patch } : x)),
+    });
 
   const save = async () => {
     // Refused here rather than sent and refused there: the message is already on
     // screen against the field, and Save is disabled, so this is the last guard
     // rather than the first.
-    if (windowError || slaError) return;
+    if (windowError || slaError || automationError) return;
     setSaving(true);
     setSaved(false);
     setFailed(null);
@@ -727,7 +801,7 @@ function Desk() {
         abandonedAfterDays: desk.abandoned_after_days,
         // `sla` goes whole, and `null` when every box is empty: the desk sets this key
         // whole, and null is how it hears "no service levels".
-        settings: { roundRobin, sla: slaPayloadOf(sla) },
+        settings: { roundRobin, sla: slaPayloadOf(sla), ...automationPayloadOf(automation) },
       });
       setSaved(true);
     } catch (e) {
@@ -812,7 +886,7 @@ function Desk() {
       </Field>
       <Field
         label="Round-robin assignment"
-        hint="On the desk's next sweep (within about a quarter of an hour), each conversation nobody has picked up goes to the next person on the Team list, in turn. Turning it on hands out the conversations already waiting too. It never re-assigns a conversation somebody unassigned. On a desk where the assistant answers, a chat stays with the assistant until it hands the chat to a person. Everyone on the Team list is in the rotation, including anyone who has since left the desk."
+        hint="On the desk's next sweep (within about a quarter of an hour), each conversation nobody has picked up goes to the next person on the Team list, in turn. Turning it on hands out the conversations already waiting too. It never re-assigns a conversation somebody unassigned. On a desk where the assistant answers, a chat stays with the assistant until it hands the chat to a person. Everyone on the Team list is in the rotation except people marked as having left the desk: mark somebody there when you remove their role, because the desk cannot see roles itself."
       >
         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input
@@ -824,6 +898,9 @@ function Desk() {
           />
           <span className="t-small">Hand out conversations in turn</span>
         </span>
+        <div className="t-small" style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
+          {fired('roundRobin')}
+        </div>
       </Field>
       <Field
         label="Service levels"
@@ -854,9 +931,122 @@ function Desk() {
             <SlaRow key={p} priority={p} form={sla} onChange={setSla} />
           ))}
         </div>
+        <div className="t-small" style={{ color: 'var(--text-secondary)', marginTop: 6 }}>
+          {fired('sla')}
+        </div>
         {slaError ? (
           <div className="t-small" style={{ color: 'var(--danger-2)', marginTop: 6 }}>
             {slaError}
+          </div>
+        ) : null}
+      </Field>
+      <Field
+        label="Auto-close"
+        hint={`Close a RESOLVED conversation that nobody has touched for this many days (${AUTO_CLOSE_MIN_DAYS}–${AUTO_CLOSE_MAX_DAYS}). Only resolved ones: work somebody is on is never closed. A customer who writes back reopens it and starts the count again. Closed is final, so this errs long. Runs on the desk's timer, about once an hour. Leave it empty to switch it off.`}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            className="input mono"
+            type="number"
+            min={AUTO_CLOSE_MIN_DAYS}
+            max={AUTO_CLOSE_MAX_DAYS}
+            style={{ width: 80 }}
+            placeholder="off"
+            aria-label="Days before a resolved conversation is closed"
+            value={automation.autoCloseDays}
+            onChange={(e) => setAutomation({ ...automation, autoCloseDays: e.target.value })}
+          />
+          <span className="t-small" style={{ color: 'var(--text-secondary)' }}>
+            days
+          </span>
+        </div>
+        <div className="t-small" style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
+          {fired('autoClose')}
+        </div>
+      </Field>
+      <Field
+        label="No-reply notice"
+        hint={`Tell the desk when a customer has waited this many hours (${NO_REPLY_MIN_HOURS}–${NO_REPLY_MAX_HOURS}) with nobody answering, counted from the oldest message the desk has not answered, so a customer who chases does not restart the wait. Whoever holds the conversation is told, or everyone still on the desk when nobody does, or when the holder has left it. A customer who keeps writing after the desk was told is announced again at most once per window. A public reply ends the wait; an internal note does not. Parked and finished conversations are left alone. Nothing is sent to the customer. Leave it empty to switch it off.`}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            className="input mono"
+            type="number"
+            min={NO_REPLY_MIN_HOURS}
+            max={NO_REPLY_MAX_HOURS}
+            style={{ width: 80 }}
+            placeholder="off"
+            aria-label="Hours a customer waits before the desk is told"
+            value={automation.noReplyHours}
+            onChange={(e) => setAutomation({ ...automation, noReplyHours: e.target.value })}
+          />
+          <span className="t-small" style={{ color: 'var(--text-secondary)' }}>
+            hours
+          </span>
+        </div>
+        <div className="t-small" style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
+          {fired('noReplyNotify')}
+        </div>
+      </Field>
+      <Field
+        label="Auto-tag"
+        hint={`Put a tag on a conversation whose subject or first message contains some text (any capitals; up to ${AUTO_TAG_RULES_MAX} rules). Each conversation is read once, when the desk's timer next runs — including the ones already open when you add the first rule — so a rule added later does not go back over old mail, and a tag somebody takes off stays off. Leave the rules empty to switch it off.`}
+      >
+        {automation.rules.map((r, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+            <span className="t-small">If</span>
+            <select
+              className="input"
+              aria-label={`Rule ${i + 1}: where to look`}
+              value={r.in}
+              onChange={(e) => patchRule(i, { in: e.target.value as RulePlace })}
+            >
+              {RULE_PLACES.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+            <span className="t-small">contains</span>
+            <input
+              className="input"
+              style={{ width: 160 }}
+              aria-label={`Rule ${i + 1}: text to look for`}
+              value={r.contains}
+              onChange={(e) => patchRule(i, { contains: e.target.value })}
+            />
+            <span className="t-small">tag it</span>
+            <input
+              className="input"
+              style={{ width: 130 }}
+              aria-label={`Rule ${i + 1}: tag to put on`}
+              value={r.tag}
+              onChange={(e) => patchRule(i, { tag: e.target.value })}
+            />
+            <button
+              className="btn"
+              aria-label={`Remove rule ${i + 1}`}
+              onClick={() => setAutomation({ ...automation, rules: automation.rules.filter((_, j) => j !== i) })}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        <button
+          className="btn"
+          disabled={automation.rules.length >= AUTO_TAG_RULES_MAX}
+          onClick={() =>
+            setAutomation({ ...automation, rules: [...automation.rules, { in: 'either', contains: '', tag: '' }] })
+          }
+        >
+          Add a rule
+        </button>
+        <div className="t-small" style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
+          {fired('autoTag')}
+        </div>
+        {automationError ? (
+          <div className="t-small" style={{ color: 'var(--danger-2)', marginTop: 6 }}>
+            {automationError}
           </div>
         ) : null}
       </Field>
@@ -927,7 +1117,7 @@ function Desk() {
         <button
           className="btn btn-primary"
           onClick={() => void save()}
-          disabled={saving || windowError !== null || slaError !== null}
+          disabled={saving || windowError !== null || slaError !== null || automationError !== null}
         >
           {saving ? 'Saving…' : 'Save'}
         </button>

@@ -306,7 +306,7 @@ export const ticket0Manifest = moduleManifest.parse({
      *
      * On a HOSTED desk what sweeps is the deployment's own `SweeperDO` (`src/worker.ts`,
      * #1646) — not the control plane, whose host registers no modules and so fires none
-     * of the four schedules here. The sweeper passes every two minutes over the desks it
+     * of the schedules here. The sweeper passes every two minutes over the desks it
      * has been told about, and a desk is told about at provision, or at a reconcile for
      * one provisioned before the sweeper existed. A desk that is on no roster runs none of
      * these, and records a breach only when somebody acts on the late conversation.
@@ -321,6 +321,50 @@ export const ticket0Manifest = moduleManifest.parse({
     {
       operation: 'ticket0/escalate-sla-breaches',
       cadence: { everyMinutes: 5 },
+      permissions: ['conversation:escalate'],
+    },
+    /**
+     * Auto-tag (#1083) — off unless the desk has written rules, and then each
+     * conversation still to be looked at is read once against them.
+     *
+     * Five minutes for round-robin's reason: a tag is what a person filters the inbox by,
+     * and "it arrived and it was already labelled" is the cadence they read as instant.
+     * Its key is `conversation:assign`, the one `ticket0/tag-conversation` checks and the
+     * two sweeps above already hold, so no desk needs re-provisioning for it.
+     */
+    {
+      operation: 'ticket0/auto-tag',
+      cadence: { everyMinutes: 5 },
+      permissions: ['conversation:assign'],
+    },
+    /**
+     * Auto-close (#1083) — off unless the desk set a window, and then a resolved
+     * conversation left alone that long is closed.
+     *
+     * Hourly for the reaper's reason, and the arithmetic is the same: cadence times the
+     * batch is the drain rate, and what it measures is a whole number of days at its
+     * shortest, so closing an hour after the window elapses is indistinguishable from
+     * closing on the stroke of it. Its key is `conversation:resolve`, the one
+     * `ticket0/close` checks and the reaper already holds.
+     */
+    {
+      operation: 'ticket0/auto-close',
+      cadence: { everyMinutes: 60 },
+      permissions: ['conversation:resolve'],
+    },
+    /**
+     * No-reply notify (#1083) — off unless the desk set a window, and then a customer
+     * who has waited that long is announced to the desk once.
+     *
+     * Fifteen minutes: the window is counted in hours, so a quarter of an hour of lag is
+     * inside the noise, and it runs a live-conversation scan that does not need to run
+     * every five. Its key is `conversation:escalate`, the service-level sweep's, for the
+     * reason that sweep gives: the trail should record a notice as a notice, and a
+     * desk provisioned before this existed already holds the tuple.
+     */
+    {
+      operation: 'ticket0/notify-no-reply',
+      cadence: { everyMinutes: 15 },
       permissions: ['conversation:escalate'],
     },
   ],
