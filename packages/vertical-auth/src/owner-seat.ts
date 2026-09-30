@@ -48,6 +48,9 @@ export const OWNER_CLAIM_TTL_MS = 15 * 60_000;
  */
 export const OWNER_SEAT_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS identity (scope_id TEXT NOT NULL, sub TEXT NOT NULL, principal TEXT NOT NULL, PRIMARY KEY (scope_id, sub))`,
+  // Member removal addresses a principal, not one login. A principal may have several
+  // bound subjects, so this index serves the complete lookup and the one-statement delete.
+  `CREATE INDEX IF NOT EXISTS identity_scope_principal ON identity (scope_id, principal)`,
   // The owner seat waiting to be claimed: set at provision, consumed by the claim. `claim_until`
   // bounds the plain first-sign-in path (ms epoch); NULL — a row from before the column existed —
   // reads as CLOSED, since a seat that sat unclaimed across an upgrade is exactly the case.
@@ -346,6 +349,23 @@ export function unbindSubject(sql: RegistrySql, scopeId: string, sub: string): b
   const had = [...sql.exec('SELECT 1 FROM identity WHERE scope_id = ? AND sub = ?', scopeId, sub)].length > 0;
   sql.exec('DELETE FROM identity WHERE scope_id = ? AND sub = ?', scopeId, sub);
   return had;
+}
+
+/**
+ * Unbind every verified subject for a principal in this scope, returning the subjects
+ * that were removed so the caller can report each place absent to its identity pool.
+ * The SELECT and single DELETE are synchronous within one directory turn: a caller
+ * cannot stop after the first login and report a member fully removed while another
+ * binding remains live. Roles and grants stay with the principal for the vertical to
+ * revoke; the owner seat is not re-opened.
+ */
+export function unbindPrincipal(sql: RegistrySql, scopeId: string, principal: string): string[] {
+  const subs = [...sql.exec(
+    'SELECT sub FROM identity WHERE scope_id = ? AND principal = ? ORDER BY sub',
+    scopeId, principal,
+  )].map((row) => row.sub as string);
+  sql.exec('DELETE FROM identity WHERE scope_id = ? AND principal = ?', scopeId, principal);
+  return subs;
 }
 
 /**

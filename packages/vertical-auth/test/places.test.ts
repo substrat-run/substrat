@@ -9,7 +9,7 @@ import {
   resetPlacesMemo,
   unbindMember,
 } from '../src/places.js';
-import { OWNER_SEAT_DDL, migrateOwnerSeat, recordOwnerSeat, resolvePrincipal, subjectsOf, unbindSubject } from '../src/owner-seat.js';
+import { OWNER_SEAT_DDL, migrateOwnerSeat, recordOwnerSeat, resolvePrincipal, subjectsOf, unbindSubject, unbindPrincipal } from '../src/owner-seat.js';
 import type { RegistrySql } from '../src/site-registry.js';
 
 /**
@@ -291,6 +291,16 @@ describe("the directory's removal half, and the whole set a repair sends", () =>
     expect(resolvePrincipal(sql, 'OTHER-SCOPE', 'sub-ann', 2)).toBe('principal-x');
     expect(resolvePrincipal(sql, SCOPE, 'sub-owner', 2)).toBe('principal-owner');
     expect(unbindSubject(sql, SCOPE, 'sub-ann')).toBe(false);
+  });
+
+  it('unbinds every subject of one principal without touching another principal or scope', () => {
+    sql.exec('INSERT INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', SCOPE, 'sub-ann-alt', 'principal-ann');
+    expect(unbindPrincipal(sql, SCOPE, 'principal-ann')).toEqual(['sub-ann', 'sub-ann-alt']);
+    expect(resolvePrincipal(sql, SCOPE, 'sub-ann', 2)).toBeNull();
+    expect(resolvePrincipal(sql, SCOPE, 'sub-ann-alt', 2)).toBeNull();
+    expect(resolvePrincipal(sql, SCOPE, 'sub-owner', 2)).toBe('principal-owner');
+    expect(resolvePrincipal(sql, 'OTHER-SCOPE', 'sub-ann', 2)).toBe('principal-x');
+    expect(unbindPrincipal(sql, SCOPE, 'principal-ann')).toEqual([]);
   });
 
   it('lists the subjects bound in a scope, bounded, in a stable order', () => {
