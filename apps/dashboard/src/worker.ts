@@ -3274,8 +3274,10 @@ async function requiredProvidersBySlug(
  * them: the shared plane's store — the directory a `connector:<provider>` dispatch opens.
  * Metadata only; a connection row cannot carry its secret.
  */
-async function connectionsFor(env: Env, tenantId: TenantId, vertical?: string) {
-  const cp = controlPlaneFor(env, tenantId);
+async function connectionsFor(env: Env, tenantId: TenantId, principal: DashboardNode['principal'], vertical?: string) {
+  // The member's own credential (#977), the one every other call in their request uses —
+  // not a second, person-less token for the same tenant.
+  const cp = controlPlaneFor(env, tenantId, principal);
   return cp.listConnections(vertical === undefined ? {} : { vertical });
 }
 
@@ -3322,7 +3324,7 @@ app.get('/api/apps/:scopeId/integrations', async (c) => {
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const required =
     (await requiredProvidersBySlug(host, c.env, node.tenantId, [appRow.vertical_slug])).get(appRow.vertical_slug) ?? [];
-  const rows = await connectionsFor(c.env, node.tenantId, appRow.vertical_slug);
+  const rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
   // Declared providers first, then any live connection whose provider the vertical no
   // longer declares (still real — it can be disconnected here).
   const slugs = [...required];
@@ -3414,7 +3416,7 @@ app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
   const spec = PROVIDERS[c.req.param('provider')];
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
-  const rows = await connectionsFor(c.env, node.tenantId, appRow.vertical_slug);
+  const rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
   // Revoking picks a row to DESTROY, so with an account-keyed fleet (Fortnox: one
   // connection per client company) this door refuses rather than guess which company.
   const live = liveConnectionsFor(rows, spec.provider);
@@ -3457,7 +3459,7 @@ async function inspectableConnection(
   const spec = PROVIDERS[c.req.param('provider') ?? ''];
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
-  const rows = await connectionsFor(c.env, node.tenantId, appRow.vertical_slug);
+  const rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
   const live = liveConnectionFor(rows, spec.provider);
   if (!live) throw new HTTPException(404, { message: 'not connected' });
   // Inspection runs on the plane: it is the only place the sealed secret can be opened,
@@ -3484,7 +3486,7 @@ app.post('/api/apps/:scopeId/integrations/:provider/verify', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   let connection = null;
   if (node) {
-    const rows = await connectionsFor(c.env, node.tenantId);
+    const rows = await connectionsFor(c.env, node.tenantId, node.principal);
     const live = liveConnectionFor(rows, spec.provider);
     connection = live ? connectionView(live) : null;
   }
@@ -3566,7 +3568,7 @@ app.get('/api/integrations', async (c) => {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const requiredBy = await requiredProvidersBySlug(host, c.env, node.tenantId, apps.map((a) => a.vertical_slug));
-  const rows = await connectionsFor(c.env, node.tenantId);
+  const rows = await connectionsFor(c.env, node.tenantId, node.principal);
   // #1232: one bulk tenant-wide read for every row's strip — per-connection calls
   // would be N round trips. `since` a day back rather than a row cap, so with many
   // connections the truncation is semantic (a window) instead of arbitrary.
