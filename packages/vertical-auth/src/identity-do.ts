@@ -25,6 +25,7 @@ import {
   mintOwnerClaim as mintOwnerClaimRow,
   claimOwner as claimOwnerRow,
   unbindSubject as unbindSubjectRow,
+  unbindPrincipal as unbindPrincipalRow,
   subjectsOf as subjectsOfRows,
   transferOwner as transferOwnerRow,
   completeOwnerTransfer as completeOwnerTransferRow,
@@ -369,6 +370,12 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     return unbindSubjectRow(this.registrySql, scopeId, sub);
   }
 
+  /** Remove all of a principal's bindings in this scope, returning their subjects so the
+   * caller can report each absent place. A removal cannot miss a login behind a scan cap. */
+  async unbindPrincipal(scopeId: string, principal: string): Promise<string[]> {
+    return unbindPrincipalRow(this.registrySql, scopeId, principal);
+  }
+
   /** The subjects bound in this scope, at most `limit` — the whole set a places repair sends. */
   async subjectsOf(scopeId: string, limit: number): Promise<string[]> {
     return subjectsOfRows(this.registrySql, scopeId, limit);
@@ -466,6 +473,7 @@ export type IdentityStub = {
   revokeInvite(scopeId: string, principal: string): Promise<void>;
   claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
   unbind(scopeId: string, sub: string): Promise<boolean>;
+  unbindPrincipal(scopeId: string, principal: string): Promise<string[]>;
   subjectsOf(scopeId: string, limit: number): Promise<string[]>;
 };
 
