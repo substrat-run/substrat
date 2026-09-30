@@ -33,6 +33,16 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "offboarded_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -40,7 +50,8 @@
           "display_name",
           "avatar_url",
           "signature",
-          "created_at"
+          "created_at",
+          "offboarded_at"
         ],
         "additionalProperties": false
       },
@@ -147,6 +158,34 @@
       },
       "parents": [
         "conversation"
+      ]
+    },
+    "behaviourRun": {
+      "table": "ticket0_behaviour_runs",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "behaviour": {
+            "type": "string"
+          },
+          "last_fired_at": {
+            "type": "string"
+          },
+          "last_count": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "behaviour",
+          "last_fired_at",
+          "last_count"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "behaviour"
       ]
     },
     "blockRule": {
@@ -432,6 +471,26 @@
               }
             ]
           },
+          "auto_tagged_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "no_reply_notified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "merged_into": {
             "anyOf": [
               {
@@ -477,6 +536,8 @@
           "resolution_due_at",
           "first_response_breached_at",
           "resolution_breached_at",
+          "auto_tagged_at",
+          "no_reply_notified_at",
           "merged_into",
           "follows",
           "created_at",
@@ -1566,6 +1627,7 @@
         },
         "resolved": {
           "on": {
+            "ticket0/auto-close": "closed",
             "ticket0/close": "closed",
             "ticket0/ingest-message": "open",
             "ticket0/post-public-reply": "open",

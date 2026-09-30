@@ -107,9 +107,47 @@ beforeAll(async () => {
 
 afterAll(() => { db?.close(); if (dir) rmSync(dir, { recursive: true, force: true }); });
 
+type Row = Record<string, unknown>;
+/**
+ * Every row as it was, plus the columns a later migration added — which must be NULL.
+ * An upgrade preserves what was there; it does not promise a table never grows. Migration
+ * 0016 (#1083) added nullable columns, so `SELECT *` after it names more keys than before,
+ * and the honest comparison is on the keys that were there and nothing-in-the-new-ones.
+ */
+function preserved(after: unknown, before: unknown): { kept: unknown; addedAreNull: boolean } {
+  let addedAreNull = true;
+  const kept = (after as Row[][]).map((table, i) =>
+    table.map((row, j) => {
+      const was = (before as Row[][])[i]![j] as Row;
+      const out: Row = {};
+      for (const [key, value] of Object.entries(row)) {
+        if (key in was) out[key] = value;
+        else if (value !== null) addedAreNull = false;
+      }
+      return out;
+    }),
+  );
+  return { kept, addedAreNull };
+}
+/** The same reduction for a read result: rows are compared on the columns the old rows had. */
+function keptResults(after: unknown, before: unknown): unknown {
+  const b = before as Record<string, Row[]>;
+  return Object.fromEntries(
+    Object.entries(after as Record<string, Row[]>).map(([name, rows]) => [
+      name,
+      rows.map((row, i) => {
+        const was = b[name]![i] as Row;
+        return Object.fromEntries(Object.entries(row).filter(([key]) => key in was));
+      }),
+    ]),
+  );
+}
+
 it('preserves every populated pre-0015 row and every production read result across provisioning twice', () => {
-  expect(afterRows).toEqual(beforeRows);
-  expect(results()).toEqual(beforeResults);
+  const rowsNow = preserved(afterRows, beforeRows);
+  expect(rowsNow.kept).toEqual(beforeRows);
+  expect(rowsNow.addedAreNull).toBe(true);
+  expect(keptResults(results(), beforeResults)).toEqual(beforeResults);
   expect(db.prepare(queries.counts.sql).get(...queries.counts.args)).toEqual({ turns: 2000, failed: 100, drafted: 100 });
   expect(db.prepare(queries.waitingTotal.sql).get()).toEqual({ n: 500 });
   expect(db.prepare(queries.reap.sql).all(...queries.reap.args)).toHaveLength(169);

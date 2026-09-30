@@ -16,7 +16,7 @@ import { everyPage } from './staff.js';
 // The picker's rule lives in `staff.ts` — a leaf the vertical's suite can import
 // without a DOM — and is re-exported here so a screen has one place to import staff
 // from. See that file for why the assistant is in the directory and not in the picker.
-export { ASSISTANT_DISPLAY_NAME, assignableStaff } from './staff.js';
+export { ASSISTANT_DISPLAY_NAME, assignableStaff, deskPeople } from './staff.js';
 
 let cache: Promise<Map<string, AgentProfile>> | null = null;
 

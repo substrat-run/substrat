@@ -82,6 +82,7 @@ export interface AgentProfile {
   avatar_url: string | null;
   signature: string | null;
   created_at: string;
+  offboarded_at: string | null;
 }
 
 /** `ticket0_conversations` — declared in spec/model.ts. */
@@ -103,6 +104,8 @@ export interface Conversation {
   resolution_due_at: string | null;
   first_response_breached_at: string | null;
   resolution_breached_at: string | null;
+  auto_tagged_at: string | null;
+  no_reply_notified_at: string | null;
   merged_into: string | null;
   follows: string | null;
   created_at: string;
@@ -207,6 +210,13 @@ export interface DeskSettings {
   round_robin_last: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** `ticket0_behaviour_runs` — declared in spec/model.ts. */
+export interface BehaviourRun {
+  behaviour: string;
+  last_fired_at: string;
+  last_count: number;
 }
 
 /** `ticket0_block_rules` — declared in spec/model.ts. */
@@ -360,7 +370,7 @@ export interface Ticket0Client {
    *
    * `PATCH /desk` — `ticket0/configure-desk`
    */
-  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean; abandonedAfterDays?: number | null; settings?: { roundRobin?: boolean; sla?: { firstResponseMinutes?: { low?: number; normal?: number; urgent?: number }; resolutionMinutes?: { low?: number; normal?: number; urgent?: number } } | null } }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; abandoned_after_days: number | null; settings: string | null; created_at: string; updated_at: string }>;
+  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean; abandonedAfterDays?: number | null; settings?: { roundRobin?: boolean; sla?: { firstResponseMinutes?: { low?: number; normal?: number; urgent?: number }; resolutionMinutes?: { low?: number; normal?: number; urgent?: number } } | null; autoTag?: { rules: ({ in: "subject" | "body" | "either"; contains: string; tag: string })[] } | null; autoClose?: { afterDays: number } | null; noReplyNotify?: { afterHours: number } | null } }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; abandoned_after_days: number | null; settings: string | null; created_at: string; updated_at: string }>;
 
   /**
    * Confirm an address from the link in its email
@@ -455,6 +465,13 @@ export interface Ticket0Client {
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
   listAgents(): Promise<Paged<AgentProfile>>;
+
+  /**
+   * When each of the desk’s built-in behaviours last acted
+   *
+   * `GET /desk/behaviours` — `ticket0/list-behaviour-runs`
+   */
+  listBehaviourRuns(): Promise<{ runs: BehaviourRun[] }>;
 
   /**
    * Who this desk refuses
@@ -737,6 +754,13 @@ export interface Ticket0Client {
    * `GET /kb/search` — `ticket0/search-kb`
    */
   searchKb(input: { q: string; sourceId?: string; limit?: number }): Promise<{ results: { id: string; source_id: string; url: string; title: string; heading_path: string; body: string; content_hash: string; ingested_at: string; snippet: string; rank: number }[]; limit: number; capped: boolean }>;
+
+  /**
+   * Take a colleague off the desk, or put them back
+   *
+   * `PUT /agents/{principal}/offboarded` — `ticket0/set-agent-offboarded`
+   */
+  setAgentOffboarded(input: { principal: string; offboarded: boolean }): Promise<AgentProfile>;
 
   /**
    * Set your own display name and signature
@@ -1085,6 +1109,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/relay/inbound", "POST", input, undefined),
     listAgents: () =>
       page("/agents", "GET", undefined, undefined),
+    listBehaviourRuns: () =>
+      send("/desk/behaviours", "GET", undefined, undefined),
     listBlockRules: (input: Args) =>
       page("/desk/block-rules", "GET", undefined, input),
     listContacts: () =>
@@ -1157,6 +1183,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       page("/conversations/search", "GET", undefined, input),
     searchKb: (input: Args) =>
       send("/kb/search", "GET", undefined, input),
+    setAgentOffboarded: (input: Args) =>
+      send(`/agents/${encodeURIComponent(String(input.principal))}/offboarded`, "PUT", omit(input, ["principal"]), undefined),
     setAgentProfile: (input: Args) =>
       send("/agents/me", "PUT", input, undefined),
     setPriority: (input: Args) =>

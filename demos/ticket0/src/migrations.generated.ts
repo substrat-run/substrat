@@ -380,4 +380,27 @@ export const ticket0Migrations: SqlMigration[] = [
         WHERE visibility = 'public' AND author_kind != 'contact';
     `,
   },
+  {
+    // add-ticket0_agent_profiles-offboarded_at-and-3-more
+    version: '0016',
+    sql: `
+      ALTER TABLE ticket0_agent_profiles ADD COLUMN offboarded_at TEXT;
+
+      CREATE TABLE ticket0_behaviour_runs (
+        behaviour TEXT PRIMARY KEY NOT NULL,
+        last_fired_at TEXT NOT NULL,
+        last_count INTEGER NOT NULL
+      );
+
+      ALTER TABLE ticket0_conversations ADD COLUMN auto_tagged_at TEXT;
+
+      ALTER TABLE ticket0_conversations ADD COLUMN no_reply_notified_at TEXT;
+
+      CREATE INDEX ticket0_conversations_untagged ON ticket0_conversations (auto_tagged_at, created_at, id)
+        WHERE auto_tagged_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL;
+
+      CREATE INDEX ticket0_conversations_live ON ticket0_conversations (state, created_at, id)
+        WHERE state IN ('new', 'open') AND merged_into IS NULL;
+    `,
+  },
 ];

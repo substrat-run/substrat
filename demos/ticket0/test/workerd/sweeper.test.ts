@@ -39,6 +39,7 @@
 import { SELF, env, fetchMock, runInDurableObject } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
+  moduleId,
   permissionKey,
   principalId,
   scopeId,
@@ -55,6 +56,7 @@ import {
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
 import { classifyError } from '@substrat-run/vertical-host';
+import { ticket0Manifest } from '../../src/manifest.js';
 import { MODULES } from '../../src/provision.js';
 
 interface Conversation {
@@ -175,9 +177,10 @@ describe('ticket0 on workerd — the deployment sweeps its own desks (#1646)', (
     expect(report.errors).toEqual([]);
     expect(report.scopes).toBe(1);
     // A desk's first pass runs every schedule it declares once — wake-snoozed,
-    // reap-abandoned, assign-round-robin, escalate-sla-breaches — and none fails under
-    // the entitlements a real install projects.
-    expect(report.schedules).toEqual({ scopes: 1, fired: 4, skipped: 0, failed: 0 });
+    // reap-abandoned, assign-round-robin, escalate-sla-breaches, and (#1083) auto-tag,
+    // auto-close, notify-no-reply — and none fails under the entitlements a real install
+    // projects.
+    expect(report.schedules).toEqual({ scopes: 1, fired: 7, skipped: 0, failed: 0 });
 
     expect(await conversation(desk, due)).toMatchObject({ state: 'open', snoozed_until: null });
     expect(await conversation(desk, notYet)).toMatchObject({ state: 'snoozed', snoozed_until: FUTURE });
@@ -1199,5 +1202,142 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     expect((await directory().ownerSeat(s)).state).toBe('unclaimed');
     expect(await directory().resolvePrincipal(s, `sub-a-${s}`)).toBe(A);
     expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+});
+
+/**
+ * #1083 on the runtime a hosted desk runs: the built-in behaviours' SQL, executed by a
+ * Durable Object's SQLite and fired by the deployment's own sweeper.
+ *
+ * The node suites (`test/automation.test.ts`, `test/off-boarding.test.ts`) hold every
+ * behavioural claim. What only a Durable Object can answer is whether the SQL those
+ * behaviours run is SQL the DO accepts — a correlated subquery in a join, an upsert, three
+ * partial indexes from one migration — and whether the schedules the manifest declares
+ * are wired to the sweeper, since a schedule the host never fires is the failure #1646
+ * was. So this drives all three new schedules and the ring through one pass of the real
+ * sweeper, and reads the outcome back through the operations the app calls.
+ *
+ * The DO host has no injectable clock, so a wait is aged in the rows themselves.
+ */
+describe('ticket0 on workerd — the built-in behaviours run on a Durable Object (#1083)', () => {
+  const behaviours = scopeId.parse(ulid());
+  const stub = () => env.SCOPE.get(env.SCOPE.idFromName(behaviours));
+  const LONG_AGO = '2020-01-01T00:00:00.000Z';
+
+  let owner_: Awaited<ReturnType<CloudflareScopeHost['getScope']>>;
+  let relay_: Awaited<ReturnType<CloudflareScopeHost['getScope']>>;
+
+  beforeAll(async () => {
+    expect((await platform('/internal/provision', { tenantId: t, scopeId: behaviours, owner, entitlements })).status).toBe(201);
+    owner_ = await host().getScope(owner, t, behaviours);
+    relay_ = await host().getScope(await relayOf(behaviours), t, behaviours);
+    // The owner is on the desk: a profile is what puts anybody in the ring and the broadcast.
+    await owner_.invoke('ticket0/set-agent-profile', { displayName: 'Owner', avatarUrl: null, signature: null });
+  });
+
+  afterAll(async () => {
+    expect((await platform('/internal/delete-scope', { scopeId: behaviours })).status).toBe(200);
+  });
+
+  async function mail(subject: string, body: string): Promise<string> {
+    const arrived = await relay_.invoke<{ conversation_id: string }>('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: `customer-${(arrivals += 1)}@customer.example`,
+      contactName: null,
+      subject,
+      bodyText: body,
+      emailMessageId: `<behaviour-${arrivals}@mail.example>`,
+    });
+    return arrived.conversation_id;
+  }
+
+  const sql = (statement: string, ...bindings: (string | number)[]) =>
+    runInDurableObject(stub(), (_i, state) => {
+      state.storage.sql.exec(statement, ...bindings);
+    });
+
+  it('the migration built its indexes and its table on the DO', async () => {
+    const names = await runInDurableObject(stub(), (_i, state) =>
+      [
+        ...state.storage.sql.exec(
+          `SELECT name FROM sqlite_master
+            WHERE name IN ('ticket0_conversations_untagged', 'ticket0_conversations_live', 'ticket0_behaviour_runs')
+            ORDER BY name`,
+        ),
+      ].map((r) => String(r.name)),
+    );
+    expect(names).toEqual([
+      'ticket0_behaviour_runs',
+      'ticket0_conversations_live',
+      'ticket0_conversations_untagged',
+    ]);
+  });
+
+  it('one sweeper pass tags, closes and announces — and stamps when each last fired', async () => {
+    await owner_.invoke('ticket0/configure-desk', {
+      settings: {
+        autoTag: { rules: [{ in: 'subject', contains: 'refund', tag: 'billing' }] },
+        autoClose: { afterDays: 1 },
+        noReplyNotify: { afterHours: 1 },
+      },
+    });
+
+    const tagged = await mail('REFUND for order 12', 'Charged twice.');
+    const waiting = await mail('Where is my export?', 'Waiting on this.');
+    const finished = await mail('All sorted', 'Thanks.');
+    await owner_.invoke('ticket0/post-public-reply', { conversationId: finished, body: 'Done.' });
+    await owner_.invoke('ticket0/resolve', { conversationId: finished });
+    // Age what the windows measure: the customer's message, and the resolved conversation.
+    await sql('UPDATE ticket0_messages SET created_at = ? WHERE conversation_id = ?', LONG_AGO, waiting);
+    await sql('UPDATE ticket0_conversations SET updated_at = ? WHERE id = ?', LONG_AGO, finished);
+
+    const report = await sweep();
+    expect(report.errors).toEqual([]);
+    expect(report.schedules.failed).toBe(0);
+
+    const tags = await owner_.invoke<{ tags: { tag: string }[] }>('ticket0/list-conversation-tags', {
+      conversationId: tagged,
+    });
+    expect(tags.tags.map((x) => x.tag)).toEqual(['billing']);
+    expect((await conversation(behaviours, finished)).state).toBe('closed');
+
+    const notices = await owner_.invoke<Page<{ kind: string; conversation_id: string | null }>>(
+      'ticket0/my-notifications',
+      {},
+    );
+    expect(notices.entries.filter((n) => n.kind === 'escalated' && n.conversation_id === waiting)).toHaveLength(1);
+
+    const runs = await owner_.invoke<{ runs: { behaviour: string; last_count: number }[] }>(
+      'ticket0/list-behaviour-runs',
+      {},
+    );
+    expect(runs.runs.map((r) => r.behaviour)).toEqual(['autoClose', 'autoTag', 'noReplyNotify']);
+  });
+
+  it('the ring skips an off-boarded agent on the DO, and hands work once they are back', async () => {
+    await owner_.invoke('ticket0/configure-desk', { settings: { roundRobin: true } });
+    await owner_.invoke('ticket0/set-agent-offboarded', { principal: owner, offboarded: true });
+    // The desk's own principal, as the sweeper runs the schedule: a schedule is due once per
+    // cadence, so the ring is invoked directly rather than waited for.
+    const ring = async () =>
+      (await (await host().getSystemScope(moduleId.parse(ticket0Manifest.id), t, behaviours)).invoke<{
+        assigned: number;
+      }>('ticket0/assign-round-robin')).assigned;
+
+    const first = await mail('Nobody home', 'Anyone?');
+    expect(await ring()).toBe(0);
+    expect((await conversation(behaviours, first)) as Conversation & { assignee: string | null }).toMatchObject({
+      assignee: null,
+    });
+    await expect(
+      owner_.invoke('ticket0/assign', { conversationId: first, assignee: owner }),
+    ).rejects.toThrow(/not on this desk any more/);
+
+    await owner_.invoke('ticket0/set-agent-offboarded', { principal: owner, offboarded: false });
+    // The two conversations the previous case left unassigned are the backlog, and go with it.
+    expect(await ring()).toBe(3);
+    expect(
+      (await conversation(behaviours, first)) as Conversation & { assignee: string | null },
+    ).toMatchObject({ assignee: owner });
   });
 });
