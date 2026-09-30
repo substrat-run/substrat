@@ -276,6 +276,57 @@ describe('the broadcast leaves them out, and a conversation they hold is the des
   });
 });
 
+describe('a notice for the holder goes to the desk when the holder has left — replied, mentioned, woke', () => {
+  let d: Desk;
+  let stays: PrincipalId;
+  let gone: PrincipalId;
+  let id: string;
+  const has = (who: PrincipalId, kind: string) =>
+    kit.notifications(d, who).then((ns) => ns.filter((n) => n.kind === kind && n.conversation_id === id).length);
+
+  beforeAll(async () => {
+    d = await kit.freshDesk({ agents: 2 });
+    [stays, gone] = d.agents as [PrincipalId, PrincipalId];
+    id = await kit.mail(d);
+    await (await kit.as(d, d.admin)).invoke('ticket0/assign', { conversationId: id, assignee: gone });
+  });
+
+  it('while the holder is on the desk they alone are told — replied and mentioned', async () => {
+    await kit.mail(d, { into: id, body: 'Any news?' });
+    await (await kit.as(d, d.admin)).invoke('ticket0/post-note', { conversationId: id, body: 'Checking.' });
+    expect(await has(gone, 'replied')).toBe(1);
+    expect(await has(gone, 'mentioned')).toBe(1);
+    expect(await has(stays, 'replied')).toBe(0);
+    expect(await has(stays, 'mentioned')).toBe(0);
+  });
+
+  it('once they have left, the same events reach the desk and not them', async () => {
+    await setOff(d, gone, true);
+    await kit.mail(d, { into: id, body: 'Hello again?' });
+    await (await kit.as(d, d.admin)).invoke('ticket0/post-note', { conversationId: id, body: 'Still on it.' });
+    expect(await has(stays, 'replied')).toBe(1);
+    expect(await has(stays, 'mentioned')).toBe(1);
+    // Nothing new for them: what they were told before they left is all they have.
+    expect(await has(gone, 'replied')).toBe(1);
+    expect(await has(gone, 'mentioned')).toBe(1);
+  });
+
+  it('a snooze that lapses on a departed holder’s conversation wakes to the desk', async () => {
+    const parked = await kit.mail(d);
+    await (await kit.as(d, d.admin)).invoke('ticket0/assign', { conversationId: parked, assignee: stays });
+    await kit.park(d, parked, HOUR);
+    // Held by somebody who has since left: put it on them through the row, because the
+    // door (`assign`) now refuses them.
+    kit.sql(d, (db) => db.prepare('UPDATE ticket0_conversations SET assignee = ? WHERE id = ?').run(gone, parked));
+    kit.clock.advance(2 * HOUR);
+    expect(await kit.sweep(d, 'ticket0/wake-snoozed', 'woke')).toBeGreaterThanOrEqual(1);
+    const wokeFor = async (who: PrincipalId) =>
+      (await kit.notifications(d, who)).filter((n) => n.kind === 'snooze-woke' && n.conversation_id === parked).length;
+    expect(await wokeFor(stays)).toBe(1);
+    expect(await wokeFor(gone)).toBe(0);
+  });
+});
+
 describe('the one predicate: the same person is judged the same way at every door', () => {
   it('the assistant and an off-boarded agent are out of all three; an agent on the desk is in all three', async () => {
     const d = await kit.freshDesk({ agents: 2 });

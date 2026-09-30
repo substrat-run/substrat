@@ -1374,6 +1374,25 @@ function putTag(
   return { row, added: true };
 }
 
+/**
+ * Tell whoever holds a conversation about something that happened on it, and nobody when
+ * nobody does (#1083).
+ *
+ * The four notices that go to a HOLDER (`replied`, `mentioned`, `snooze-woke`, and
+ * `notifyStaff`'s own first branch) are one rule: a departed holder is not told, because
+ * telling somebody who is not there is telling nobody. `notifyStaff` already falls back to
+ * the whole desk in that case, so this is that function with its "nobody holds it" broadcast
+ * switched off — an unassigned conversation is still nobody's to be told about, which is
+ * the rule these call sites had before and the one the inbox already answers.
+ */
+function notifyHolder(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  kind: NotificationRow['kind'],
+): void {
+  if (conversation.assignee) notifyStaff(ctx, conversation, kind);
+}
+
 // ---------------------------------------------------------------------------
 // Assignment — one body, two doors
 // ---------------------------------------------------------------------------
@@ -3539,7 +3558,7 @@ const operations = {
       bodyText: input.body,
     });
     touch(ctx, conversation.id);
-    if (conversation.assignee) notify(ctx, conversation.assignee, 'mentioned', conversation.id);
+    notifyHolder(ctx, conversation, 'mentioned');
     ctx.emit(messageEvent(row, 'ticket0.note-posted'));
     return row;
   },
@@ -4085,7 +4104,7 @@ const operations = {
       // Whoever is holding it. An unassigned conversation is nobody's to be told
       // about — it is back in the inbox, which is where an unassigned conversation
       // is looked for anyway.
-      if (row.assignee) notify(ctx, row.assignee, 'snooze-woke', row.id);
+      notifyHolder(ctx, row, 'snooze-woke');
     }
     if (due.length > 0) ctx.log.info('woke {woke} snoozed conversations', { woke: due.length });
     return { woke: due.length };
@@ -5373,7 +5392,7 @@ const operations = {
     }
 
     settle(ctx, conversation, next);
-    if (conversation.assignee) notify(ctx, conversation.assignee, 'replied', conversation.id);
+    notifyHolder(ctx, conversation, 'replied');
     ctx.emit(messageEvent(row, 'ticket0.message-ingested'));
     return row;
   },
@@ -5633,7 +5652,7 @@ const operations = {
       bodyText: input.body,
     });
     settle(ctx, conversation, next);
-    if (conversation.assignee) notify(ctx, conversation.assignee, 'replied', conversation.id);
+    notifyHolder(ctx, conversation, 'replied');
     ctx.emit(messageEvent(row, 'ticket0.message-ingested'));
     return row;
   },
