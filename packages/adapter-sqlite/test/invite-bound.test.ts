@@ -43,7 +43,7 @@ class MemoryDirectory implements InviteDirectory {
 describe('invite routes over the SQLite host — the canAssign bound (#1931)', () => {
   let dir: string;
   let host: SqliteScopeHost;
-  let app: Hono;
+  let app: Hono<{ Bindings: Record<string, never> }>;
   let directory: MemoryDirectory;
   let grants: string[];
   const staff = platformActorId.parse(ulid());
@@ -97,7 +97,7 @@ describe('invite routes over the SQLite host — the canAssign bound (#1931)', (
   beforeEach(() => {
     directory = new MemoryDirectory();
     grants = [];
-    app = new Hono();
+    app = new Hono<{ Bindings: Record<string, never> }>();
     app.onError((err, c) => (err instanceof HTTPException ? err.getResponse() : c.json({ error: err.message }, 500)));
     mountInviteRoutes(app, {
       nodeFor: () => node,
@@ -115,7 +115,9 @@ describe('invite routes over the SQLite host — the canAssign bound (#1931)', (
       },
       revokeScopeRole: (_env, _scope, principal, roleKey) => host.admin.unassignRole(staff, { principalId: principal, roleKey, node }),
       canAssign: (_env, n, principal, roleKey) => host.canAssign(n.tenantId, n.scopeId, principal, roleKey),
-      authProvider: async () => ({ resolve: async () => null, handle: async () => new Response(null, { status: 404 }) }),
+      authProvider: async () => {
+        throw new Error('accept is not exercised here');
+      },
     });
   });
 

@@ -39,7 +39,7 @@ class MemoryDirectory implements InviteDirectory {
 
 describe('invite routes over a CP-less host — the canAssign bound (#1931)', () => {
   let host: CloudflareScopeHost;
-  let app: Hono;
+  let app: Hono<{ Bindings: Record<string, never> }>;
   let directory: MemoryDirectory;
   let grants: string[];
   const t = tenantId.parse(ulid());
@@ -78,7 +78,7 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
   beforeEach(() => {
     directory = new MemoryDirectory();
     grants = [];
-    app = new Hono();
+    app = new Hono<{ Bindings: Record<string, never> }>();
     app.onError((err, c) => (err instanceof HTTPException ? err.getResponse() : c.json({ error: err.message }, 500)));
     mountInviteRoutes(app, {
       nodeFor: () => ({ tenantId: t, scopeId: s }),
@@ -96,7 +96,9 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
       },
       revokeScopeRole: (_env, scope, principal, roleKey) => host.revokeScopeRole(scopeId.parse(scope), principal, roleKey),
       canAssign: (_env, node, principal, roleKey) => host.canAssign(node.tenantId, node.scopeId, principal, roleKey),
-      authProvider: async () => ({ resolve: async () => null, handle: async () => new Response(null, { status: 404 }) }),
+      authProvider: async () => {
+        throw new Error('accept is not exercised here');
+      },
     });
   });
 
