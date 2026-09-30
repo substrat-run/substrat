@@ -42,7 +42,8 @@ interface MockDocument {
   file: { name: string; bytes: number } | null;
   parties: {
     id: string;
-    name: string;
+    /** Null when the party carries no name field at all. */
+    name: string | null;
     signTime: string | null;
     auth: string;
     /** Whether `update` carried a `personal_number` field — value irrelevant (#687). */
@@ -96,6 +97,7 @@ declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 export class ScriveMock {
   readonly documents = new Map<string, MockDocument>();
   private seq = 0;
+  private partySeq = 0;
   failWith: number | undefined;
   private readonly onCallback: ScriveMockOptions['onCallback'];
   private readonly strictDelivery: boolean;
@@ -129,11 +131,32 @@ export class ScriveMock {
   }
 
   /**
+   * Reorder the party list: `order[i]` is the old index now at position i. Each party
+   * keeps its id, so this is how a test proves attribution follows the id and that a
+   * dispatch without ids is not pinned by a position that no longer means anything.
+   */
+  reorderParties(documentId: string, order: number[]): void {
+    const doc = this.mustGet(documentId);
+    doc.parties = order.map((i) => {
+      const party = doc.parties[i];
+      if (!party) throw new Error(`mock: no party ${i} on ${documentId}`);
+      return party;
+    });
+  }
+
+  /** A fresh party id, never derived from a document or a slot. */
+  private nextPartyId(): string {
+    this.partySeq += 1;
+    return `9${String(this.partySeq).padStart(8, '0')}`;
+  }
+
+  /**
    * Edit a party the way a person can at Scrive (#1927): the sender correcting a
    * pending party's name or address, or a signatory filling in their own. The
    * party keeps its `id` — the one thing about it that does not move.
+   * `name: null` drops the name field altogether.
    */
-  editParty(documentId: string, partyIndex: number, edit: { name?: string; email?: string }): void {
+  editParty(documentId: string, partyIndex: number, edit: { name?: string | null; email?: string }): void {
     const party = this.mustGet(documentId).parties[partyIndex];
     if (!party) throw new Error(`mock: no party ${partyIndex} on ${documentId}`);
     if (edit.name !== undefined) party.name = edit.name;
@@ -171,7 +194,7 @@ export class ScriveMock {
         is_signatory: p.isSignatory,
         sign_time: p.signTime,
         fields: [
-          { type: 'name', value: p.name },
+          ...(p.name !== null ? [{ type: 'name', value: p.name }] : []),
           ...(p.email !== null ? [{ type: 'email', value: p.email }] : []),
         ],
       })),
@@ -303,7 +326,7 @@ export class ScriveMock {
             // here rather than silently against the real API.
             return respond(400, { error_message: `exactly one author required, got ${authors}` });
           }
-          doc.parties = patch.parties.map((p, i) => {
+          doc.parties = patch.parties.map((p) => {
             const email = p.fields.find((f) => f.type === 'email')?.value;
             const isAuthor = p.is_author === true;
             // THE AUTHOR IS THE ACCOUNT, whatever the caller sent (#852).
@@ -320,9 +343,10 @@ export class ScriveMock {
             // also verified — so this substitution is deliberately limited to the
             // author party.
             return {
-              // Unique across documents, like Scrive's own — a test that pinned the
-              // wrong document's ids must not match by coincidence.
-              id: `${doc.id}-party-${i}`,
+              // Unique across documents and unrelated to the slot, like Scrive's own —
+              // a test that pinned the wrong document's ids, or pinned by position
+              // after a reorder, must not match by coincidence.
+              id: this.nextPartyId(),
               name: isAuthor
                 ? this.accountHolder.name
                 : String(p.fields.find((f) => f.type === 'name')?.value ?? ''),
