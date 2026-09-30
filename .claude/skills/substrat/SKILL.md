@@ -112,6 +112,12 @@ Imported directly; their in-scope functions run in **your** transaction.
   answer "is this person on the platform"; and an invitation confers nothing until
   accepted. Reach for it before hand-rolling any invite flow — those two properties are
   easy to lose and expensive to lose.
+- **`@substrat-run/engine-absence`** — leave types, absence requests, decisions, balances,
+  and availability (`requestAbsence`, `decideAbsence`, `balanceAsOf`, `availability`).
+  The vertical decides which days count and which year owns a balance.
+- **`@substrat-run/engine-metering`** — configure meters, record usage, and close periods
+  (`configureMeter`, `recordUsage`, `closePeriod`, `usageTotal`). Record usage by call in
+  the transaction that produced it, so the usage row and the work commit together.
 
 ### Tier 2 — engines you feed by event
 
