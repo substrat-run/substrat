@@ -1960,7 +1960,9 @@ type Behaviour = DeskSetting;
 /**
  * A behaviour ACTED: stamp when, and how many things it did (#1083).
  *
- * Called only with a positive count. A sweep that found nothing to do writes nothing, so
+ * `count` is CONVERSATIONS acted on, not tags put on or targets missed: the row answers
+ * "how many conversations did this touch", the same unit for every behaviour. Called only
+ * with a positive count. A sweep that found nothing to do writes nothing, so
  * the row answers "when did this last do something" and a switch that has quietly
  * stopped matching stays visibly old. It is bookkeeping about the desk's automation, so
  * it carries no event and no person — `round_robin_last`'s precedent — and it is written
@@ -3768,7 +3770,7 @@ const operations = {
         notifyStaff(ctx, conversation, 'escalated');
       }
     }
-    recordFired(ctx, 'sla', breached);
+    recordFired(ctx, 'sla', told.size);
     if (breached > 0) {
       ctx.log.warn('{breached} service-level targets breached across {conversations} conversations', {
         breached,
@@ -3810,6 +3812,7 @@ const operations = {
     const readsBody = rules.some((r) => r.in !== 'subject');
     const pending = ctx.sql.query<ConversationRow>(AUTO_TAG_PENDING, [AUTO_TAG_BATCH]);
     let tagged = 0;
+    let conversationsTagged = 0;
     for (const conversation of pending) {
       assertAllowed(
         await ctx.check(T0_PERM.conversationAssign, conversationRef(conversation.id)),
@@ -3825,18 +3828,20 @@ const operations = {
       const subject = conversation.subject.toLowerCase();
       const body = (first?.body ?? '').toLowerCase();
       // Two rules naming one tag put it on once: `putTag` finds the row the first left.
+      const before = tagged;
       for (const rule of rules) {
         const hit =
           (rule.in !== 'body' && subject.includes(rule.needle)) ||
           (rule.in !== 'subject' && body.includes(rule.needle));
         if (hit && putTag(ctx, conversation, rule.tag).added) tagged++;
       }
+      if (tagged > before) conversationsTagged++;
       ctx.sql.exec('UPDATE ticket0_conversations SET auto_tagged_at = ? WHERE id = ?', [
         ctx.now(),
         conversation.id,
       ]);
     }
-    recordFired(ctx, 'autoTag', tagged);
+    recordFired(ctx, 'autoTag', conversationsTagged);
     if (tagged > 0) ctx.log.info('auto-tagged {tagged} tags', { tagged });
     return { tagged };
   },

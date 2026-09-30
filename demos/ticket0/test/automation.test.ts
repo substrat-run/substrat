@@ -254,6 +254,22 @@ describe('auto-tag: each new conversation is read once against the desk’s rule
     expect((await kit.runs(d))[0]!.last_fired_at).toBe(firedAt);
   });
 
+  it('counts conversations in last-fired, not tags: two rules on one conversation are one', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    await kit.configure(d, {
+      autoTag: {
+        rules: [
+          { in: 'subject', contains: 'refund', tag: 'billing' },
+          { in: 'either', contains: 'urgent', tag: 'priority' },
+        ],
+      },
+    });
+    await kit.mail(d, { subject: 'Urgent refund', body: 'x' });
+    await kit.mail(d, { subject: 'Refund', body: 'x' });
+    expect(await sweepTag(d)).toBe(3); // three tags went on ...
+    expect((await kit.runs(d))[0]).toMatchObject({ behaviour: 'autoTag', last_count: 2 }); // ... on two conversations
+  });
+
   it('is bounded per pass, and the next pass takes the rest', async () => {
     const d = await kit.freshDesk({ agents: 0 });
     await kit.configure(d, { autoTag: { rules: [{ in: 'subject', contains: 'refund', tag: 'billing' }] } });
@@ -652,6 +668,16 @@ describe('last fired: every behaviour says when it last did something', () => {
     await system.invoke('ticket0/assign-round-robin');
     await system.invoke('ticket0/escalate-sla-breaches');
     expect(await kit.runs(d)).toEqual(before);
+  });
+
+  it('service levels count conversations: one that missed both targets is one', async () => {
+    const d = await kit.freshDesk({ agents: 1 });
+    await kit.configure(d, { sla: { firstResponseMinutes: { normal: 10 }, resolutionMinutes: { normal: 20 } } });
+    await kit.mail(d);
+    kit.clock.advance(30 * MINUTE);
+    const system = await kit.system(d);
+    expect(((await system.invoke('ticket0/escalate-sla-breaches')) as { breached: number }).breached).toBe(2);
+    expect((await kit.runs(d))[0]).toMatchObject({ behaviour: 'sla', last_count: 1 });
   });
 
   it('a behaviour that is switched off never stamps, however often the schedule comes round', async () => {

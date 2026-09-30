@@ -911,7 +911,7 @@ export const ticket0Entities = defineEntities({
     fields: z.object({
       behaviour: z.string(),
       last_fired_at: z.string(),
-      /** How many things the LAST firing did — conversations assigned, tagged, closed, told. */
+      /** How many CONVERSATIONS the LAST firing acted on — assigned, tagged, breached, closed, told. */
       last_count: z.number().int(),
     }),
     primaryKey: ['behaviour'],
