@@ -4807,6 +4807,7 @@ app.get('/api/apps/:scopeId/traffic', async (c) => {
           bucketMinutes: b.bucketMinutes,
           requests: b.requests,
           errors: b.errors,
+          durationP95: b.durationP95,
           class2xx: b.class2xx,
           class3xx: b.class3xx,
           class4xx: b.class4xx,

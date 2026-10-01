@@ -1328,7 +1328,7 @@ export class TenantNarrowedControlPlane {
       class3xx?: number;
       class4xx?: number;
       durationP50: number;
-      durationP95: number;
+      durationP95?: number;
     }>
   > {
     const scopeIds = [...new Set(input.scopeIds)];
@@ -1339,6 +1339,7 @@ export class TenantNarrowedControlPlane {
     }
     const num = (v: unknown) => (typeof v === 'number' ? v : 0);
     const optNum = (v: unknown) => (typeof v === 'number' ? v : undefined);
+    const latency = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
     const pages = await Promise.all(
       batches.map((ids) => {
         const q = new URLSearchParams({ tenantId: this.tenantId, hours: String(input.hours) });
@@ -1360,7 +1361,7 @@ export class TenantNarrowedControlPlane {
         class3xx: optNum(r['class3xx']),
         class4xx: optNum(r['class4xx']),
         durationP50: num(r['durationP50']),
-        durationP95: num(r['durationP95']),
+        durationP95: latency(r['durationP95']),
       }));
   }
 
